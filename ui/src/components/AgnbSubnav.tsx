@@ -20,6 +20,7 @@ export const AGNB_SUBNAV = {
     { to: "/content", label: "Briefs" },
     { to: "/blog-automation", label: "Blog archive" },
     { to: "/linkedin-hooks", label: "Hooks" },
+    { to: "/bofu", label: "BoFu" },
   ],
   campaigns: [
     { to: "/campaigns", label: "Campaigns" },
@@ -30,11 +31,11 @@ export const AGNB_SUBNAV = {
     { to: "/linkedin", label: "LinkedIn scraper" },
     { to: "/csv", label: "CSV leads" },
     { to: "/rocket", label: "Rocket ↗" },
-    { to: "/buckets", label: "Buckets" },
     { to: "/icps", label: "ICPs" },
   ],
   experiments: [
     { to: "/experiments", label: "Auto-experiments" },
+    { to: "/buckets", label: "Buckets" },
     { to: "/bucket-compare", label: "Compare" },
     { to: "/cohorts", label: "Cohorts" },
     { to: "/subjects", label: "Subjects" },

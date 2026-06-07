@@ -22,7 +22,7 @@ function tone(s: string): "default" | "secondary" | "outline" {
 
 export function Buckets() {
   const { setBreadcrumbs } = useBreadcrumbs();
-  useEffect(() => setBreadcrumbs([{ label: "Campaigns" }, { label: "Buckets" }]), [setBreadcrumbs]);
+  useEffect(() => setBreadcrumbs([{ label: "Experiments" }, { label: "Buckets" }]), [setBreadcrumbs]);
   const [status, setStatus] = useState<string>("all");
   const [open, setOpen] = useState(false);
   const qc = useQueryClient();
@@ -52,7 +52,7 @@ export function Buckets() {
           ))}
         </div>
       </div>
-      <AgnbSubnav group="campaigns" />
+      <AgnbSubnav group="experiments" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

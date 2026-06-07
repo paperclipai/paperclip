@@ -15,7 +15,7 @@ const TYPES = ["comparison", "alternatives", "vs", "use_case", "integration", "m
 
 export function Bofu() {
   const { setBreadcrumbs } = useBreadcrumbs();
-  useEffect(() => setBreadcrumbs([{ label: "Research" }, { label: "BoFu" }]), [setBreadcrumbs]);
+  useEffect(() => setBreadcrumbs([{ label: "Content" }, { label: "BoFu" }]), [setBreadcrumbs]);
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const { data, isLoading, error } = useQuery({ queryKey: queryKeys.agnb.bofu, queryFn: () => researchApi.bofu() });
@@ -28,7 +28,7 @@ export function Bofu() {
         <h1 className="text-lg font-semibold">BoFu tracker</h1>
         <Button size="sm" onClick={() => setOpen(true)}>Add page</Button>
       </div>
-      <AgnbSubnav group="research" />
+      <AgnbSubnav group="content" />
       {open && (
         <AgnbFormModal
           title="Add BoFu page"
