@@ -381,7 +381,7 @@ This is the short roadmap preview. See the full roadmap in [ROADMAP.md](ROADMAP.
 
 <br/>
 
-## Community & Plugins
+## Plugins
 
 Find Plugins and more at [awesome-paperclip](https://github.com/gsxdsm/awesome-paperclip)
 
