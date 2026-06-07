@@ -73,8 +73,7 @@ export const MAX_MISSING_DISPOSITION_RECOVERY_ATTEMPTS = 3;
 
 export type MissingDispositionCapDecision =
   | { action: "enqueue_wake" }
-  | { action: "post_cap_comment_and_stop" }
-  | { action: "stop_silently" };
+  | { action: "post_cap_comment_and_stop" };
 
 export function decideMissingDispositionCap(recoveryAction: {
   attemptCount: number;
@@ -83,10 +82,9 @@ export function decideMissingDispositionCap(recoveryAction: {
   if (recoveryAction.maxAttempts === null || recoveryAction.attemptCount <= recoveryAction.maxAttempts) {
     return { action: "enqueue_wake" };
   }
-  if (recoveryAction.attemptCount === recoveryAction.maxAttempts + 1) {
-    return { action: "post_cap_comment_and_stop" };
-  }
-  return { action: "stop_silently" };
+  // Any over-cap count triggers the comment; the call-site DB dedup (<!-- missing_disposition_cap:{id} -->)
+  // prevents double-posting on concurrent upserts that skip attempt numbers (e.g. 3→5).
+  return { action: "post_cap_comment_and_stop" };
 }
 
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
@@ -2119,10 +2117,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   function buildMissingDispositionCapReachedComment(input: {
     issue: typeof issues.$inferSelect;
-    recoveryAction: { id: string; maxAttempts: number | null; ownerAgentId: string | null };
+    recoveryAction: { id: string; attemptCount: number; maxAttempts: number | null; ownerAgentId: string | null };
     recoveryOwner: { id: string; name: string | null } | null;
     prefix: string;
   }) {
+    const attemptCount = input.recoveryAction.attemptCount;
     const maxAttempts = input.recoveryAction.maxAttempts ?? MAX_MISSING_DISPOSITION_RECOVERY_ATTEMPTS;
     const ownerMention = input.recoveryOwner
       ? `[@${input.recoveryOwner.name ?? input.recoveryOwner.id}](agent://${input.recoveryOwner.id})`
@@ -2132,7 +2131,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       "",
       `- Source issue: ${issueUiLink({ identifier: input.issue.identifier, id: input.issue.id }, input.prefix)}`,
       `- Recovery action: \`${input.recoveryAction.id}\``,
-      `- Attempts used: ${maxAttempts}/${maxAttempts}`,
+      `- Attempts used: ${attemptCount}/${maxAttempts}`,
       `- Recovery owner: ${ownerMention}`,
       "- Next action: a board operator or the recovery owner should manually choose a valid disposition for this issue (done, cancelled, in_review with an owner, blocked with first-class blockers, or an explicit continuation path).",
       "",
@@ -2389,7 +2388,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         );
       }
     }
-    // capDecision.action === "stop_silently": wake already capped and comment already posted; no action needed
 
     if (recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
       const [currentIssue] = await db

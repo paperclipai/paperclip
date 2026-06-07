@@ -17,16 +17,16 @@ describe("Contract C: missing_disposition attempt cap", () => {
       .toEqual({ action: "enqueue_wake" });
   });
 
-  it("posts the cap comment exactly once when attemptCount first exceeds the cap (maxAttempts + 1)", () => {
+  it("posts the cap comment for any attemptCount that exceeds the cap", () => {
+    // The call-site DB dedup (<!-- missing_disposition_cap:{id} --> marker in system comments) guarantees
+    // single-post across concurrent upserts — decideMissingDispositionCap does not need to track "first vs
+    // subsequent" crossing; it always returns post_cap_comment_and_stop for any > maxAttempts count.
     expect(decideMissingDispositionCap({ attemptCount: 4, maxAttempts: MAX_MISSING_DISPOSITION_RECOVERY_ATTEMPTS }))
       .toEqual({ action: "post_cap_comment_and_stop" });
-  });
-
-  it("stops silently on subsequent over-cap calls so the cap comment is not duplicated", () => {
     expect(decideMissingDispositionCap({ attemptCount: 5, maxAttempts: MAX_MISSING_DISPOSITION_RECOVERY_ATTEMPTS }))
-      .toEqual({ action: "stop_silently" });
+      .toEqual({ action: "post_cap_comment_and_stop" });
     expect(decideMissingDispositionCap({ attemptCount: 99, maxAttempts: MAX_MISSING_DISPOSITION_RECOVERY_ATTEMPTS }))
-      .toEqual({ action: "stop_silently" });
+      .toEqual({ action: "post_cap_comment_and_stop" });
   });
 
   it("never caps when maxAttempts is null (unbounded legacy behaviour)", () => {
