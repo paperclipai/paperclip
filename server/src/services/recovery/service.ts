@@ -408,7 +408,7 @@ function buildLivenessEscalationDescription(finding: IssueLivenessFinding) {
   const selectedOwner = finding.recommendedOwnerAgentId ?? "none";
 
   return [
-    "Paperclip detected a harness-level issue graph liveness incident.",
+    "AGNB detected a harness-level issue graph liveness incident.",
     "",
     "## Source",
     "",
@@ -434,7 +434,7 @@ function buildLivenessEscalationDescription(finding: IssueLivenessFinding) {
 
 function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escalation: typeof issues.$inferSelect) {
   return [
-    "Paperclip detected a harness-level liveness incident in this issue's dependency graph.",
+    "AGNB detected a harness-level liveness incident in this issue's dependency graph.",
     "",
     `- Escalation issue: ${escalation.identifier ?? escalation.id}`,
     `- Incident key: \`${finding.incidentKey}\``,
@@ -715,7 +715,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         [
           "## Assigned Orphan Blocker",
           "",
-          `Paperclip found this issue is blocking ${blockingLinks} but had no assignee, so no heartbeat could pick it up.`,
+          `AGNB found this issue is blocking ${blockingLinks} but had no assignee, so no heartbeat could pick it up.`,
           "",
           "- Assigned it back to the agent that created the blocker.",
           "- Next action: resolve this blocker or reassign it to the right owner.",
@@ -1340,7 +1340,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       ).join("\n")
       : "- none detected";
     return [
-      `Paperclip detected ${input.level} output silence on an active heartbeat run.`,
+      `AGNB detected ${input.level} output silence on an active heartbeat run.`,
       "",
       "## Run",
       "",
@@ -1418,7 +1418,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       blockedByIssueIds: nextBlockerIds,
     });
     await issuesSvc.addComment(input.sourceIssue.id, [
-      "Paperclip detected critical output silence on this issue's active run.",
+      "AGNB detected critical output silence on this issue's active run.",
       "",
       `- Evaluation issue: ${input.evaluationIssue.identifier ?? input.evaluationIssue.id}`,
       `- Run: \`${input.run.id}\``,
@@ -1895,7 +1895,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         : "unknown";
       const missingDisposition = input.successfulRunHandoffEvidence?.missingDisposition ?? "clear_next_step";
       return [
-        "Paperclip exhausted the bounded corrective handoff for a successful run that still has no valid issue disposition.",
+        "AGNB exhausted the bounded corrective handoff for a successful run that still has no valid issue disposition.",
         "",
         "This is not a runtime/adapter crash report. The source run succeeded; the remaining problem is the missing `done`, `in_review`, `blocked`, delegated follow-up, or explicit continuation path.",
         "",
@@ -1923,7 +1923,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
 
     return [
-      "Paperclip exhausted automatic recovery for an assigned issue and created this explicit recovery task.",
+      "AGNB exhausted automatic recovery for an assigned issue and created this explicit recovery task.",
       "",
       "## Source",
       "",
@@ -2176,7 +2176,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
 
     return [
-      "Paperclip stopped automatic stranded-work recovery for this recovery issue.",
+      "AGNB stopped automatic stranded-work recovery for this recovery issue.",
       "",
       `- Recovery issue: ${issueUiLink({ identifier: input.issue.identifier, id: input.issue.id }, input.prefix)}`,
       `- Previous status: \`${input.previousStatus}\``,
@@ -2333,7 +2333,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       : [
         "",
         `- Recovery action: \`${recoveryAction.id}\``,
-        "- Recovery owner: board escalation, because Paperclip could not find an invokable manager, creator, or executive owner with budget available.",
+        "- Recovery owner: board escalation, because AGNB could not find an invokable manager, creator, or executive owner with budget available.",
         "- Next action: a board operator should assign an invokable recovery owner, fix the agent/runtime state, or record an intentional manual resolution.",
       ].join("\n");
 
@@ -2532,7 +2532,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             previousStatus: "todo",
             latestRun,
             comment:
-              "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
+              "AGNB automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
               `but it still has no live execution path.${failureSummary ?? ""} ` +
               "Moving it to `blocked` so it is visible for intervention.",
           });
@@ -2608,7 +2608,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             previousStatus: "in_progress",
             latestRun: successfulRun,
             comment:
-              "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
+              "AGNB automatically retried continuation for this assigned `in_progress` issue and the retry " +
               "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
           });
           if (updated) {
@@ -2651,7 +2651,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             previousStatus: "in_progress",
             latestRun,
             comment:
-              "Paperclip detected a non-retryable failure on this issue's continuation run " +
+              "AGNB detected a non-retryable failure on this issue's continuation run " +
               `(\`${classification.errorCode}\`). Skipping automatic retries and moving it to \`blocked\` ` +
               `so it is visible for intervention.${failureSummary ?? ""}`,
           });
@@ -2681,7 +2681,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               previousStatus: "in_progress",
               latestRun,
               comment:
-                "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
+                "AGNB automatically retried continuation for this assigned `in_progress` issue after its live " +
                 `execution disappeared, but it still has no live execution path${attemptCopy}.${causeCopy}${failureSummary ?? ""} ` +
                 "Moving it to `blocked` so it is visible for intervention.",
             });

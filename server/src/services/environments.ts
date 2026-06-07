@@ -20,7 +20,7 @@ type EnvironmentRow = typeof environments.$inferSelect;
 type EnvironmentLeaseRow = typeof environmentLeases.$inferSelect;
 const DEFAULT_LOCAL_ENVIRONMENT_NAME = "Local";
 const DEFAULT_LOCAL_ENVIRONMENT_DESCRIPTION =
-  "Default execution environment for Paperclip runs on this machine.";
+  "Default execution environment for AGNB runs on this machine.";
 
 function cloneRecord(value: unknown, fallback: Record<string, unknown> | null = null): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;

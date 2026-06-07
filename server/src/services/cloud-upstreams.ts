@@ -283,14 +283,14 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
       await assertNoRunningRun(input.connectionId, input.companyId, db);
       const preview = await localPreview(connection);
       if (!preview.schemaCompatible) {
-        throw badRequest("Cloud stack schema is not compatible with this local Paperclip version");
+        throw badRequest("Cloud stack schema is not compatible with this local AGNB version");
       }
 
       const bundle = await buildBundle(connection, "apply");
       const runId = crypto.randomUUID();
       const now = new Date();
       const initialEvents = [
-        event(now.toISOString(), "connect", "completed", "Connected to the target Paperclip Cloud stack."),
+        event(now.toISOString(), "connect", "completed", "Connected to the target AGNB Cloud stack."),
         event(now.toISOString(), "scan", "completed", "Scanned the local company inventory."),
         event(now.toISOString(), "preview", "completed", "Generated the transfer manifest."),
         ...(input.retryOfRunId
@@ -692,7 +692,7 @@ export async function reconcileCloudUpstreamRunsOnStartup(db: Db, now = new Date
           ...report,
           error: optionalString(report.error) ?? "orphaned_running_run",
           errorMessage: optionalString(report.errorMessage)
-            ?? "The server restarted while this cloud upstream run was running, so Paperclip marked it failed instead of leaving it stuck.",
+            ?? "The server restarted while this cloud upstream run was running, so AGNB marked it failed instead of leaving it stuck.",
           reconciledAt: now.toISOString(),
         },
       })
@@ -719,7 +719,7 @@ function targetFromDiscovery(discovery: Record<string, unknown>): CloudUpstreamT
     companyId: stringField(stack, "companyId"),
     primaryHost: optionalString(stack.primaryHost) ?? new URL(origin).host,
     origin,
-    product: optionalString(discovery.product) ?? "Paperclip Cloud",
+    product: optionalString(discovery.product) ?? "AGNB Cloud",
     schemaMajor: optionalNumber(schema?.major) ?? numberField(transfer, "supportedSchemaMajor"),
     maxChunkBytes: optionalNumber(transfer.maxChunkBytes) ?? 8 * 1024 * 1024,
   };

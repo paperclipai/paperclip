@@ -18,6 +18,18 @@
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["dev"],
       "port": 3100
+    },
+    {
+      "name": "Docs (Mintlify)",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["docs:dev"],
+      "port": 3000
+    },
+    {
+      "name": "Quickstart Preview (static)",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "4100", "--directory", "/tmp/docs-preview"],
+      "port": 4100
     }
   ]
 }

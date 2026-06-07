@@ -1475,9 +1475,9 @@ function buildMissingRuntimeSourceDetail(skill: Pick<CompanySkill, "name" | "sou
   const marker = getMissingSourceMarker(skill.metadata);
   const sourcePath = asString(marker?.sourcePath) ?? normalizeSourceLocatorDirectory(skill.sourceLocator);
   if (sourcePath) {
-    return `Company skill "${skill.name}" is in the library, but Paperclip cannot find its local source at ${sourcePath}.`;
+    return `Company skill "${skill.name}" is in the library, but AGNB cannot find its local source at ${sourcePath}.`;
   }
-  return `Company skill "${skill.name}" is in the library, but Paperclip cannot find a valid local runtime source for it.`;
+  return `Company skill "${skill.name}" is in the library, but AGNB cannot find a valid local runtime source for it.`;
 }
 
 export async function findMissingLocalSkillIds(
@@ -1758,8 +1758,8 @@ function deriveSkillSourceInfo(skill: SkillSourceInfoTarget): {
   if (metadata.sourceKind === "paperclip_bundled") {
     return {
       editable: false,
-      editableReason: "Bundled Paperclip skills are read-only.",
-      sourceLabel: "Paperclip bundled",
+      editableReason: "Bundled AGNB skills are read-only.",
+      sourceLabel: "AGNB bundled",
       sourceBadge: "paperclip",
       sourcePath: null,
     };
@@ -1808,7 +1808,7 @@ function deriveSkillSourceInfo(skill: SkillSourceInfoTarget): {
       return {
         editable: true,
         editableReason: null,
-        sourceLabel: "Paperclip workspace",
+        sourceLabel: "AGNB workspace",
         sourceBadge: "paperclip",
         sourcePath: managedRoot,
       };
@@ -3152,7 +3152,7 @@ export function companySkillService(db: Db) {
         missingDetail: sourceResolution.status === "missing" ? sourceResolution.detail : null,
         required,
         requiredReason: required
-          ? "Bundled Paperclip skills are always available for local adapters."
+          ? "Bundled AGNB skills are always available for local adapters."
           : null,
       });
     }
