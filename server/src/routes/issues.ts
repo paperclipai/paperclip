@@ -5808,6 +5808,38 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+
+    // Force-release: agents/users with tasks:assign permission can release any stale run,
+    // bypassing the assignee-only check. Used by the expire-stale-runs daemon and CTO agent.
+    // Passes undefined actorAgentId to svc.release so both assignee guards are skipped,
+    // giving identical release semantics (status->todo, assignee cleared).
+    if (req.query.force === "true") {
+      await assertCanAssignTasks(req, existing.companyId);
+      const released = await svc.release(id, undefined, null);
+      if (!released) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: released.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.force_released",
+        entityType: "issue",
+        entityId: released.id,
+        details: {
+          issueId: released.id,
+          prevCheckoutRunId: existing.checkoutRunId,
+          prevExecutionRunId: existing.executionRunId,
+        },
+      });
+      res.json(released);
+      return;
+    }
+
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;
