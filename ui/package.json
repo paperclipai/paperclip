@@ -77,7 +77,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "tailwindcss": "^4.0.7",
     "typescript": "^5.7.3",
-    "storybook": "10.3.5",
+    "storybook": "10.4.2",
     "vite": "^6.1.0",
     "vitest": "^4.1.8"
   }
