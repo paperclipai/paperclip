@@ -31,7 +31,6 @@ export function WinLoss() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="pipeline" />
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-lg font-semibold">Win/loss</h1>
         <div className="flex flex-wrap items-center gap-1">
@@ -44,6 +43,7 @@ export function WinLoss() {
           ))}
         </div>
       </div>
+      <AgnbSubnav group="pipeline" />
       {viewing && <ViewModal interview={viewing} onClose={() => setViewing(null)} />}
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (

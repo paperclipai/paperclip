@@ -1,5 +1,6 @@
-import { NavLink } from "@/lib/router";
+import { NavLink, useLocation } from "@/lib/router";
 import { cn } from "../lib/utils";
+
 
 /** Sub-navigation groups for the AGNB sections (mirrors AGNB's SUBNAV config). */
 export const AGNB_SUBNAV = {
@@ -93,25 +94,30 @@ export type AgnbSubnavGroup = keyof typeof AGNB_SUBNAV;
 
 /** Horizontal tab bar for an AGNB section. Links are company-prefixed by the router. */
 export function AgnbSubnav({ group }: { group: AgnbSubnavGroup }) {
+  const location = useLocation();
+  // company-relative path (strip the leading /<companyPrefix> segment) for active matching
+  const rel = "/" + location.pathname.split("/").filter(Boolean).slice(1).join("/");
+
   return (
     <div className="flex min-h-9 flex-wrap items-center gap-1 border-b border-border">
-      {AGNB_SUBNAV[group].map((item) => (
-        <NavLink
-          key={item.to}
-          to={item.to}
-          end
-          className={({ isActive }) =>
-            cn(
+      {AGNB_SUBNAV[group].map((item) => {
+        const active = rel === item.to;
+        return (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            end
+            className={cn(
               "relative inline-flex h-9 items-center px-2.5 text-sm font-medium transition-colors",
-              isActive
+              active
                 ? "text-foreground after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-foreground"
                 : "text-foreground/60 hover:text-foreground",
-            )
-          }
-        >
-          {item.label}
-        </NavLink>
-      ))}
+            )}
+          >
+            {item.label}
+          </NavLink>
+        );
+      })}
     </div>
   );
 }

@@ -19,11 +19,11 @@ export function Backlog() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="team" />
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-lg font-semibold">Backlog</h1>
         <span className="text-xs text-muted-foreground">Unassigned</span>
       </div>
+      <AgnbSubnav group="team" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

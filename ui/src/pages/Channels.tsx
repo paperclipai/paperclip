@@ -10,10 +10,10 @@ export function Channels() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="pipeline" />
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-lg font-semibold">Channels</h1>
       </div>
+      <AgnbSubnav group="pipeline" />
       <EmptyState icon={Share2} message="Channel attribution is unavailable." />
     </div>
   );

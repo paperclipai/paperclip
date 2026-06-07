@@ -33,7 +33,6 @@ export function Invoices() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="assets" />
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-lg font-semibold">Invoices</h1>
         <div className="flex flex-wrap items-center gap-1">
@@ -46,6 +45,7 @@ export function Invoices() {
           ))}
         </div>
       </div>
+      <AgnbSubnav group="assets" />
 
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (

@@ -20,10 +20,10 @@ export function ChangelogQueue() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="renewals" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Changelog</h1>
       </div>
+      <AgnbSubnav group="renewals" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

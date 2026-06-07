@@ -25,10 +25,10 @@ export function Attribution() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="pipeline" />
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-lg font-semibold">Attribution</h1>
       </div>
+      <AgnbSubnav group="pipeline" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

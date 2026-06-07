@@ -24,11 +24,11 @@ export function Tokens() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="ops" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">API tokens</h1>
         <Button size="sm" onClick={() => setOpen(true)}>New token</Button>
       </div>
+      <AgnbSubnav group="ops" />
       {open && (
         <AgnbFormModal
           title="New API token"

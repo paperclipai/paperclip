@@ -26,8 +26,8 @@ export function Throughput() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="team" />
       <h1 className="text-lg font-semibold">Throughput (7d)</h1>
+      <AgnbSubnav group="team" />
       {loading ? (
         <PageSkeleton variant="list" />
       ) : rows.length === 0 ? (

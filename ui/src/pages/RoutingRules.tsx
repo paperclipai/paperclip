@@ -23,8 +23,8 @@ export function RoutingRules() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="team" />
       <h1 className="text-lg font-semibold">Routing rules</h1>
+      <AgnbSubnav group="team" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

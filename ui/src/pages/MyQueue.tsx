@@ -23,7 +23,6 @@ export function MyQueue() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="team" />
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-lg font-semibold">My queue</h1>
         <div className="flex flex-wrap gap-1">
@@ -32,6 +31,7 @@ export function MyQueue() {
           ))}
         </div>
       </div>
+      <AgnbSubnav group="team" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

@@ -24,11 +24,11 @@ export function Reviews() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="mentions" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Reviews radar</h1>
         <Button size="sm" onClick={() => setOpen(true)}>Track platform</Button>
       </div>
+      <AgnbSubnav group="mentions" />
       {open && (
         <AgnbFormModal
           title="Track a review platform"

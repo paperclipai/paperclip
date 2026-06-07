@@ -32,11 +32,11 @@ export function Renewals() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="renewals" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Renewals</h1>
         <Button size="sm" onClick={() => setOpen(true)}>Add renewal</Button>
       </div>
+      <AgnbSubnav group="renewals" />
       {open && (
         <AgnbFormModal
           title="Add renewal"

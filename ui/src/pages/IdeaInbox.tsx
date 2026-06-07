@@ -27,8 +27,8 @@ export function IdeaInbox() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="research" />
       <h1 className="text-lg font-semibold">Idea inbox</h1>
+      <AgnbSubnav group="research" />
       <div className="flex gap-2">
         <Input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") capture(); }} placeholder="Capture an idea…" />
         <Button size="sm" onClick={capture} disabled={!text.trim()}>Capture</Button>

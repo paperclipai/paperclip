@@ -23,8 +23,8 @@ export function WebhooksCatalog() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="ops" />
       <h1 className="text-lg font-semibold">Event catalog</h1>
+      <AgnbSubnav group="ops" />
       <p className="text-xs text-muted-foreground">Events AGNB emits for outbound webhook subscriptions.</p>
       <div className="grid gap-2 sm:grid-cols-2">
         {CATALOG.map((e) => (

@@ -22,11 +22,11 @@ export function Competitors() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="research" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Competition</h1>
         <Button size="sm" onClick={() => setOpen(true)}>Add competitor</Button>
       </div>
+      <AgnbSubnav group="research" />
       {open && (
         <AgnbFormModal
           title="Add competitor"

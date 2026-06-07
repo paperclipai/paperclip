@@ -23,8 +23,8 @@ export function Experiments() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="experiments" />
       <h1 className="text-lg font-semibold">Auto-experiments</h1>
+      <AgnbSubnav group="experiments" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

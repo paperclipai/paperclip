@@ -48,8 +48,8 @@ export function Cohorts() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="experiments" />
       <h1 className="text-lg font-semibold">Cohort heatmap</h1>
+      <AgnbSubnav group="experiments" />
       <p className="text-xs text-muted-foreground">Positive-reply rate · ICP × week (12w)</p>
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (

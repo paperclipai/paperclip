@@ -17,8 +17,8 @@ export function YoutubeIdeas() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="youtube" />
       <h1 className="text-lg font-semibold">Ideas</h1>
+      <AgnbSubnav group="youtube" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

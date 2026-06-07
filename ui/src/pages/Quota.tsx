@@ -18,8 +18,8 @@ export function Quota() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="ops" />
       <h1 className="text-lg font-semibold">Rocket quota</h1>
+      <AgnbSubnav group="ops" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

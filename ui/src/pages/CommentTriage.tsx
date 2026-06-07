@@ -24,13 +24,13 @@ export function CommentTriage() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="ops" />
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-lg font-semibold">Comment triage</h1>
         <div className="flex flex-wrap gap-1">
           {FILTERS.map((f) => <button key={f} onClick={() => setFilter(f)} className={cn("rounded-md border px-2 py-0.5 text-xs capitalize", filter === f ? "border-foreground bg-foreground text-background" : "border-border text-muted-foreground")}>{f}</button>)}
         </div>
       </div>
+      <AgnbSubnav group="ops" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

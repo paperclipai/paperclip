@@ -11,8 +11,8 @@ export function Rocket() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="campaigns" />
       <h1 className="text-lg font-semibold">Rocket SDR</h1>
+      <AgnbSubnav group="campaigns" />
       <EmptyState icon={RocketIcon} message="Rocket SDR runs in its own dashboard. Campaign sends + native reply triage live there." />
       <div className="flex justify-center">
         <Button asChild>

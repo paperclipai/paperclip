@@ -60,7 +60,6 @@ export function Assets() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="assets" />
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-lg font-semibold">Assets</h1>
@@ -75,6 +74,7 @@ export function Assets() {
           </Link>
         </Button>
       </div>
+      <AgnbSubnav group="assets" />
 
       {error && (
         <p className="text-sm text-destructive">{(error as Error).message}</p>

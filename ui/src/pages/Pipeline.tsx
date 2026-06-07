@@ -29,7 +29,6 @@ export function Pipeline() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="pipeline" />
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
@@ -39,6 +38,7 @@ export function Pipeline() {
           <p className="text-sm text-muted-foreground">Deals by stage from the HubSpot mirror, kept current by the Sales-Ops Analyst.</p>
         </div>
       </div>
+      <AgnbSubnav group="pipeline" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

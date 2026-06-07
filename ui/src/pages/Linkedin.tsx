@@ -23,7 +23,6 @@ export function Linkedin() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="campaigns" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">LinkedIn scraper</h1>
         <div className="flex gap-2">
@@ -31,6 +30,7 @@ export function Linkedin() {
           <Button size="sm" onClick={() => setOpen(true)}>Scrape profile</Button>
         </div>
       </div>
+      <AgnbSubnav group="campaigns" />
       {open && (
         <AgnbFormModal
           title="Scrape LinkedIn profile"

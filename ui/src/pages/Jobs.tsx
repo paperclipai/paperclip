@@ -53,13 +53,13 @@ export function Jobs() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="ops" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Jobs</h1>
         <span className="text-xs text-muted-foreground">
           scheduler {data?.enabled ? "on" : "off"} · {jobs.length} jobs
         </span>
       </div>
+      <AgnbSubnav group="ops" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

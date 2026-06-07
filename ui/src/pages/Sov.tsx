@@ -31,11 +31,11 @@ export function Sov() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="mentions" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Share of voice</h1>
         <Button size="sm" onClick={() => setOpen(true)}>Add prompt</Button>
       </div>
+      <AgnbSubnav group="mentions" />
       {open && (
         <AgnbFormModal
           title="Add SoV prompt"

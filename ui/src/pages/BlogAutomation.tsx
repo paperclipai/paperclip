@@ -34,10 +34,10 @@ export function BlogAutomation() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="assets" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Blog drafts (archive)</h1>
       </div>
+      <AgnbSubnav group="assets" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

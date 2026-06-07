@@ -30,7 +30,6 @@ export function ReplyDrafts() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="inbox" />
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-lg font-semibold">Reply drafts</h1>
         <div className="flex flex-wrap gap-1">
@@ -42,6 +41,7 @@ export function ReplyDrafts() {
           ))}
         </div>
       </div>
+      <AgnbSubnav group="inbox" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

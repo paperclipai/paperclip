@@ -58,8 +58,8 @@ export function Demos() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="pipeline" />
       <h1 className="text-lg font-semibold">Demos</h1>
+      <AgnbSubnav group="pipeline" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

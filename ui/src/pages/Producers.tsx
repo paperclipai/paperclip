@@ -79,11 +79,11 @@ export function Producers() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="ops" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Producers</h1>
         <span className="text-xs text-muted-foreground">{rows.length} agents</span>
       </div>
+      <AgnbSubnav group="ops" />
       {err && <p className="text-sm text-destructive">{err.message}</p>}
       {loading ? (
         <PageSkeleton variant="list" />

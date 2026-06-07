@@ -22,11 +22,11 @@ export function RssFeeds() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="research" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">RSS feeds</h1>
         <Button size="sm" onClick={() => setOpen(true)}>Add feed</Button>
       </div>
+      <AgnbSubnav group="research" />
       {open && (
         <AgnbFormModal
           title="Add RSS feed"

@@ -24,11 +24,11 @@ export function Icps() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="campaigns" />
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">ICPs</h1>
         <Button size="sm" onClick={() => setOpen(true)}>New ICP</Button>
       </div>
+      <AgnbSubnav group="campaigns" />
       {open && (
         <AgnbFormModal
           title="New ICP"

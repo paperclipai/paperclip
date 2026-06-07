@@ -30,7 +30,6 @@ export function HookBank() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="assets" />
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-lg font-semibold">Hook bank</h1>
         <div className="flex flex-wrap items-center gap-1">
@@ -43,6 +42,7 @@ export function HookBank() {
           <Button size="sm" className="ml-1" onClick={() => setOpen(true)}>Add hook</Button>
         </div>
       </div>
+      <AgnbSubnav group="assets" />
       {open && (
         <AgnbFormModal
           title="Add hook"
