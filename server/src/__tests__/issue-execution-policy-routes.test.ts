@@ -606,4 +606,96 @@ describe("issue execution policy routes", () => {
       }),
     );
   });
+
+  // BLO-9316: agent must be able to correct an in_review issue to blocked
+  // when unresolved first-class blockers already exist, even when an execution
+  // policy review stage is active and the actor is the current participant.
+  describe("in_review → blocked correction with active execution stage (BLO-9316)", () => {
+    const reviewStageId = "55555555-5555-4555-8555-555555555555";
+    const reviewerAgentId = "44444444-4444-4444-8444-444444444444";
+    const implementerAgentId = "33333333-3333-4333-8333-333333333333";
+
+    function makeInReviewIssue(overrides: Record<string, unknown> = {}) {
+      const policy = normalizeIssueExecutionPolicy({
+        stages: [
+          {
+            id: reviewStageId,
+            type: "review",
+            participants: [{ type: "agent", agentId: reviewerAgentId }],
+          },
+        ],
+      })!;
+      return {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+        status: "in_review",
+        assigneeAgentId: reviewerAgentId,
+        assigneeUserId: null,
+        createdByUserId: "local-board",
+        identifier: "PAP-4382",
+        title: "Issue with active review + unresolved blocker",
+        executionPolicy: policy,
+        executionState: {
+          status: "pending",
+          currentStageId: reviewStageId,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: reviewerAgentId },
+          returnAssignee: { type: "agent", agentId: implementerAgentId },
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+        ...overrides,
+      };
+    }
+
+    it("allows the reviewer (current participant) to transition to blocked: does not override to in_progress", async () => {
+      const issue = makeInReviewIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: reviewerAgentId,
+        companyId: "company-1",
+        runId: "run-blo-9316",
+      }))
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ status: "blocked", comment: "Blocked by BLO-9270, cannot review until resolved." });
+
+      expect(res.status).toBe(200);
+      const updateCall = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+      expect(updateCall.status).toBe("blocked");
+      expect(updateCall.executionState).toBeNull();
+    });
+
+    it("allows the implementer (non-participant) to transition to blocked without a stage-advance error", async () => {
+      const issue = makeInReviewIssue({ assigneeAgentId: reviewerAgentId });
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: implementerAgentId,
+        companyId: "company-1",
+        runId: "run-blo-9316b",
+      }))
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ status: "blocked" });
+
+      expect(res.status).toBe(200);
+      const updateCall = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+      expect(updateCall.status).toBe("blocked");
+      expect(updateCall.executionState).toBeNull();
+    });
+  });
 });

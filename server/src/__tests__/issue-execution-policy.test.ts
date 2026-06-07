@@ -1446,4 +1446,95 @@ describe("issue execution policy transitions", () => {
       ).toThrow("Monitor bounds are already exhausted");
     });
   });
+
+  describe("blocked status correction from in_review (BLO-9316)", () => {
+    const policy = twoStagePolicy();
+    const reviewStageId = policy.stages[0].id;
+    const pendingState: IssueExecutionState = {
+      status: "pending",
+      currentStageId: reviewStageId,
+      currentStageIndex: 0,
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: qaAgentId },
+      returnAssignee: { type: "agent", agentId: coderAgentId },
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+    };
+
+    it("allows the current participant (reviewer) to transition to blocked: clears execution state, does not override to in_progress", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: pendingState,
+        },
+        policy,
+        requestedStatus: "blocked",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+      });
+
+      expect(result.patch.status).toBeUndefined();
+      expect(result.patch.executionState).toBeNull();
+    });
+
+    it("allows a non-participant (implementer) to transition to blocked: clears execution state, does not throw stage-advance error", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: pendingState,
+        },
+        policy,
+        requestedStatus: "blocked",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+      });
+
+      expect(result.patch.status).toBeUndefined();
+      expect(result.patch.executionState).toBeNull();
+    });
+
+    it("does not treat blocked as requesting-changes: no comment required", () => {
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: qaAgentId,
+            assigneeUserId: null,
+            executionPolicy: policy,
+            executionState: pendingState,
+          },
+          policy,
+          requestedStatus: "blocked",
+          requestedAssigneePatch: {},
+          actor: { agentId: qaAgentId },
+          commentBody: null,
+        }),
+      ).not.toThrow();
+    });
+
+    it("still rejects in_progress when unresolved blockers would be present (the guard is in issues.ts, not here, but in_progress is not overridden)", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: pendingState,
+        },
+        policy,
+        requestedStatus: "blocked",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+      });
+
+      expect(result.patch.status).not.toBe("in_progress");
+    });
+  });
 });

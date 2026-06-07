@@ -661,6 +661,14 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       throw unprocessable(`No eligible ${activeStage.type} participant is configured for this issue`);
     }
 
+    // A blocked transition is a status correction, not a stage advance or
+    // "requesting changes" action. Clear the pending execution state so a
+    // future PATCH on the blocked issue does not drift back to in_review.
+    if (requestedStatus === "blocked") {
+      patch.executionState = null;
+      return { patch };
+    }
+
     if (!stageHasParticipant(activeStage, currentParticipant)) {
       const participant = selectStageParticipant(activeStage, {
         preferred: explicitAssignee ?? existingState?.currentParticipant ?? null,
