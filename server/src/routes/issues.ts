@@ -52,6 +52,7 @@ import {
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  MEASUREMENT_CONTEXT_LABEL_NAMES,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type CompanySearchQuery,
   type CompanySearchResponse,
@@ -1567,6 +1568,89 @@ export function issueRoutes(
         "scheduled_issue_monitor",
       ],
     });
+  }
+
+  // §14 Conditions B, C, D: gate recovery-owner dispositions.
+  // Only fires for agent actors. Board actors bypass (they have audit authority).
+  function assertRecoveryDispositionGate(input: {
+    existing: {
+      id: string;
+      assigneeAgentId: string | null;
+      previousAssigneeAgentId: string | null | undefined;
+      labels?: Array<{ name: string }>;
+    };
+    updateFields: Record<string, unknown>;
+    actorAgentId: string | null | undefined;
+  }, res: Response): boolean {
+    const nextStatus = typeof input.updateFields.status === "string" ? input.updateFields.status : null;
+    if (nextStatus !== "done" && nextStatus !== "cancelled") return true;
+    if (!input.existing.previousAssigneeAgentId) return true;
+
+    const actorAgentId = input.actorAgentId;
+    if (!actorAgentId) {
+      res.status(403).json({ error: "Agent authentication required for recovery disposition" });
+      return false;
+    }
+
+    // Condition D — canary/bake-off/measurement issues may not be completed by a recovery owner.
+    if (nextStatus === "done") {
+      const measurementLabels = MEASUREMENT_CONTEXT_LABEL_NAMES as readonly string[];
+      const hasMeasurementTag = (input.existing.labels ?? []).some(
+        (l) => measurementLabels.includes(l.name.toLowerCase()),
+      );
+      if (hasMeasurementTag) {
+        res.status(422).json({
+          error:
+            "Recovery owner cannot complete a measurement-context issue (Condition D). " +
+            "Allowed actions: route to blocked with named owner, or close as cancelled with recoveryKind.",
+          code: "recovery_disposition_condition_d_violation",
+          details: {
+            issueId: input.existing.id,
+            previousAssigneeAgentId: input.existing.previousAssigneeAgentId,
+            securityPrinciples: ["Separation of Disposition Authority"],
+          },
+        });
+        return false;
+      }
+    }
+
+    // Condition B — assignee must already be the recovery owner (pre-reassigned in a prior call).
+    if (input.existing.assigneeAgentId !== actorAgentId) {
+      res.status(422).json({
+        error:
+          "Recovery owner must update assigneeAgentId to themselves before closing this issue (Condition B). " +
+          "Perform the reassignment in a separate PATCH call, then close.",
+        code: "recovery_disposition_condition_b_violation",
+        details: {
+          issueId: input.existing.id,
+          currentAssigneeAgentId: input.existing.assigneeAgentId,
+          actorAgentId,
+          previousAssigneeAgentId: input.existing.previousAssigneeAgentId,
+          securityPrinciples: ["Separation of Disposition Authority"],
+        },
+      });
+      return false;
+    }
+
+    // Condition C — recoveryKind must be present in the payload.
+    const recoveryKind = input.updateFields.recoveryKind;
+    if (!recoveryKind || typeof recoveryKind !== "string") {
+      res.status(422).json({
+        error:
+          "Recovery owner must supply recoveryKind when closing a recovery-reassigned issue (Condition C). " +
+          "Valid values: liveness_exhausted, sweeper_recovery, explicit_recovery_owner.",
+        code: "recovery_disposition_condition_c_violation",
+        details: {
+          issueId: input.existing.id,
+          previousAssigneeAgentId: input.existing.previousAssigneeAgentId,
+          validRecoveryKinds: ["liveness_exhausted", "sweeper_recovery", "explicit_recovery_owner"],
+          securityPrinciples: ["Separation of Disposition Authority"],
+        },
+      });
+      return false;
+    }
+
+    return true;
   }
 
   async function logExpiredRequestConfirmations(input: {
@@ -4937,6 +5021,22 @@ export function issueRoutes(
       updateFields,
       actorType: req.actor.type,
     });
+
+    if (req.actor.type === "agent") {
+      if (!assertRecoveryDispositionGate(
+        {
+          existing: {
+            id: existing.id,
+            assigneeAgentId: existing.assigneeAgentId,
+            previousAssigneeAgentId: existing.previousAssigneeAgentId ?? null,
+            labels: existing.labels,
+          },
+          updateFields,
+          actorAgentId: req.actor.agentId,
+        },
+        res,
+      )) return;
+    }
 
     const nextAssigneeAgentId =
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);
