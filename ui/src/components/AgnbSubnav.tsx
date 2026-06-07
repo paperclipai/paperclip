@@ -43,7 +43,6 @@ export const AGNB_SUBNAV = {
   research: [
     { to: "/competitors", label: "Competition" },
     { to: "/rss-feeds", label: "RSS" },
-    { to: "/bofu", label: "BoFu" },
   ],
   mentions: [
     { to: "/mentions", label: "Mentions" },
