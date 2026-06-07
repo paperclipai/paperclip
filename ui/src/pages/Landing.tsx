@@ -8,6 +8,7 @@ import { getRememberedInvitePath } from "@/lib/invite-memory";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/context/ThemeContext";
 import { SiteNav } from "@/components/SiteNav";
+import { PageRail, RailGroup, RailMini, RailHead } from "@/components/StoryRail";
 import {
   ArrowRight,
   Activity,
@@ -959,162 +960,76 @@ function FinaleMetric() {
   );
 }
 
-const STORY: {
-  n: string;
-  t: string;
+const STORY_GROUPS: {
   icon: typeof Gauge;
-  d: string;
-  visual: React.ReactNode;
+  kicker: string;
+  title: string;
+  intro: string;
+  minis: { num: string; title: string; desc: string; visual: React.ReactNode }[];
 }[] = [
   {
-    n: "01",
-    t: "Set the North Star",
-    icon: Gauge,
-    d: "One metric the whole company optimizes — pipeline, content shipped, share of voice, reviews resolved. Every action traces back to it.",
-    visual: <GoalTrace />,
-  },
-  {
-    n: "02",
-    t: "Build the org",
     icon: Network,
-    d: "Hire a CEO, then a CMO, CFO, and the producers beneath them. Reporting lines, budgets, and tools — your company, your structure.",
-    visual: <OrgChart />,
+    kicker: "Chapter 01",
+    title: "Stand up the company",
+    intro: "Point it at a goal, then build the team that chases it.",
+    minis: [
+      {
+        num: "01",
+        title: "Set the North Star",
+        desc: "One metric the whole company optimizes — pipeline, content shipped, share of voice, reviews resolved. Every action traces back to it.",
+        visual: <GoalTrace />,
+      },
+      {
+        num: "02",
+        title: "Build the org",
+        desc: "Hire a CEO, then a CMO, CFO, and the producers beneath them. Reporting lines, budgets, and tools — your company, your structure.",
+        visual: <OrgChart />,
+      },
+    ],
   },
   {
-    n: "03",
-    t: "Agents wake on heartbeats",
     icon: Activity,
-    d: "Scheduled or on demand, agents fire, check their assignments, and pick up work. No prompting, no babysitting.",
-    visual: <Heartbeat />,
+    kicker: "Chapter 02",
+    title: "Let it run",
+    intro: "Agents wake on their own, pick up work, and ship — around the clock.",
+    minis: [
+      {
+        num: "03",
+        title: "Agents wake on heartbeats",
+        desc: "Scheduled or on demand, agents fire, check their assignments, and pick up work. No prompting, no babysitting.",
+        visual: <Heartbeat />,
+      },
+      {
+        num: "04",
+        title: "They do the work",
+        desc: "Draft blogs, run outreach, sync the CRM, track rank, watch reviews — in parallel, around the clock.",
+        visual: <LiveConsole />,
+      },
+    ],
   },
   {
-    n: "04",
-    t: "They do the work",
-    icon: Terminal,
-    d: "Draft blogs, run outreach, sync the CRM, track rank, watch reviews — in parallel, around the clock.",
-    visual: <LiveConsole />,
-  },
-  {
-    n: "05",
-    t: "You stay in control",
-    icon: CheckSquare,
-    d: "Budgets cap the spend. Approvals gate the risky moves. Step in any time — or let it run.",
-    visual: <BudgetTable />,
-  },
-  {
-    n: "06",
-    t: "The metric moves",
     icon: BarChart3,
-    d: "Work compounds. Pipeline fills, content ships, rank climbs — reported back on the cockpit in real time.",
-    visual: <FinaleMetric />,
+    kicker: "Chapter 03",
+    title: "Stay in control, watch it grow",
+    intro: "You hold the budget and the approvals. The metric does the climbing.",
+    minis: [
+      {
+        num: "05",
+        title: "Budgets & approvals",
+        desc: "Budgets cap the spend. Approvals gate the risky moves. Step in any time — or let it run.",
+        visual: <BudgetTable />,
+      },
+      {
+        num: "06",
+        title: "The metric moves",
+        desc: "Work compounds. Pipeline fills, content ships, rank climbs — reported back on the cockpit in real time.",
+        visual: <FinaleMetric />,
+      },
+    ],
   },
 ];
 
-function StoryBeat({
-  s,
-  active,
-}: {
-  s: (typeof STORY)[number];
-  active: boolean;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [seen, setSeen] = useState(false);
-  useEffect(() => {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      setSeen(true);
-      return;
-    }
-    const el = ref.current;
-    if (!el) return;
-    const io = new IntersectionObserver(
-      ([e]) => {
-        if (e.isIntersecting) {
-          setSeen(true);
-          io.disconnect();
-        }
-      },
-      { threshold: 0.15 },
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, []);
-
-  return (
-    <div ref={ref} className="relative">
-      {/* node on the rail */}
-      <span className="absolute left-5 top-0 z-10 -translate-x-1/2 md:left-6">
-        <span
-          className={cn(
-            "flex size-10 items-center justify-center rounded-full border transition-all duration-500",
-            active
-              ? "border-[#f97316] bg-[#f97316] text-white shadow-[0_0_0_6px_rgba(249,115,22,0.12)]"
-              : "border-black/10 bg-white text-gray-400 dark:border-white/15 dark:bg-[#1b1410]",
-          )}
-        >
-          <s.icon className="size-4" />
-        </span>
-      </span>
-
-      {/* content hangs to the right of the rail */}
-      <div className="pl-14 md:grid md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] md:items-center md:gap-10 md:pl-20">
-        <div
-          className={cn(
-            "transition-all duration-700",
-            seen ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0",
-          )}
-        >
-          <span className="font-mono text-[12px] font-semibold text-[#f97316]">{s.n}</span>
-          <h3 className="mt-1 text-[22px] font-bold tracking-[-0.01em] text-gray-900 dark:text-neutral-100">
-            {s.t}
-          </h3>
-          <p className="mt-2 max-w-md text-[15px] leading-relaxed text-gray-500 dark:text-neutral-400">
-            {s.d}
-          </p>
-        </div>
-        <div
-          className={cn(
-            "mt-5 transition-all duration-700 md:mt-0",
-            seen ? "translate-y-0 opacity-100 delay-100" : "translate-y-6 opacity-0",
-          )}
-        >
-          {s.visual}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function StoryTimeline() {
-  const ref = useRef<HTMLDivElement>(null);
-  const [p, setP] = useState(0);
-
-  useEffect(() => {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      setP(1);
-      return;
-    }
-    let raf = 0;
-    const onScroll = () => {
-      if (raf) return;
-      raf = requestAnimationFrame(() => {
-        raf = 0;
-        const el = ref.current;
-        if (!el) return;
-        const r = el.getBoundingClientRect();
-        const anchor = window.innerHeight * 0.5;
-        setP(Math.max(0, Math.min(1, (anchor - r.top) / r.height)));
-      });
-    };
-    onScroll();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("resize", onScroll);
-    return () => {
-      window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("resize", onScroll);
-      if (raf) cancelAnimationFrame(raf);
-    };
-  }, []);
-
+function StorySection() {
   return (
     <Section id="how" className="scroll-mt-20 py-20">
       <div className="mb-14 max-w-2xl pl-14 md:pl-20">
@@ -1127,27 +1042,18 @@ function StoryTimeline() {
           One story, start to finish.
         </h2>
         <p className="mt-4 max-w-xl text-[16px] leading-relaxed text-gray-500 dark:text-neutral-400">
-          Watch a company come alive — set the goal, build the team, and let it run while you sleep.
+          Three chapters, six moves — set the goal, build the team, and let it run while you sleep.
         </p>
       </div>
 
-      <div ref={ref} className="relative">
-        {/* base rail (left) */}
-        <div className="pointer-events-none absolute left-5 top-1 h-[calc(100%-0.25rem)] w-px -translate-x-1/2 bg-black/[0.08] dark:bg-white/[0.10] md:left-6" />
-        {/* drawn fill */}
-        <div
-          className="pointer-events-none absolute left-5 top-1 w-px -translate-x-1/2 bg-gradient-to-b from-[#f97316] to-[#fb923c] md:left-6"
-          style={{ height: `${p * 100}%` }}
-        />
-        <div className="space-y-16 md:space-y-24">
-          {STORY.map((s, i) => (
-            <StoryBeat
-              key={s.n}
-              s={s}
-              active={p >= (i + 0.5) / STORY.length - 0.03}
-            />
-          ))}
-        </div>
+      <div className="space-y-16 md:space-y-24">
+        {STORY_GROUPS.map((g) => (
+          <RailGroup key={g.title} icon={g.icon} kicker={g.kicker} title={g.title} intro={g.intro}>
+            {g.minis.map((m) => (
+              <RailMini key={m.num} num={m.num} title={m.title} desc={m.desc} visual={m.visual} />
+            ))}
+          </RailGroup>
+        ))}
       </div>
     </Section>
   );
@@ -1219,6 +1125,8 @@ export function LandingPage() {
       `}</style>
 
       <SiteNav />
+
+      <PageRail>
 
       {/* ── Hero (centered, Finn-style) ── */}
       <Section className="relative pb-12 pt-12 text-center sm:pt-16">
@@ -1385,7 +1293,7 @@ export function LandingPage() {
 
       {/* ── Modules ── */}
       <Section className="scroll-mt-20 py-12" id="cockpit">
-        <Eyebrow>The cockpit</Eyebrow>
+        <RailHead icon={Gauge} kicker="The cockpit">
         <h2 className="mb-10 text-[clamp(28px,3.4vw,42px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
           Six engines. One throttle.
         </h2>
@@ -1400,6 +1308,7 @@ export function LandingPage() {
             </div>
           ))}
         </div>
+        </RailHead>
       </Section>
 
       {/* ── Feature showcase (real screenshots) — center-spine rail ── */}
@@ -1495,11 +1404,11 @@ export function LandingPage() {
       </Section>
 
       {/* ── How it runs — scroll-driven story timeline ── */}
-      <StoryTimeline />
+      <StorySection />
 
       {/* ── Integrations ── */}
       <Section className="scroll-mt-20 py-16" id="integrations">
-        <Eyebrow>Works with your stack</Eyebrow>
+        <RailHead icon={Network} kicker="Works with your stack">
         <h2 className="mb-8 text-[clamp(24px,3vw,38px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
           Drop it in. Nothing breaks.
         </h2>
@@ -1516,6 +1425,7 @@ export function LandingPage() {
         <p className="mt-6 text-[13px] text-gray-500 dark:text-neutral-400">
           + HubSpot webhooks, GSC property, PostHog events, Slack alerts, LinkedIn API, and more out of the box.
         </p>
+        </RailHead>
       </Section>
 
       {/* ── Bring your own agent ── */}
@@ -1600,6 +1510,8 @@ export function LandingPage() {
           </div>
         </div>
       </Section>
+
+      </PageRail>
 
       {/* ── Footer ── */}
       <LandingFooter />
