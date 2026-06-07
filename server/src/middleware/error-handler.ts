@@ -14,6 +14,10 @@ export interface ErrorContext {
   reqQuery?: unknown;
 }
 
+export function shouldPersistErrorRequestBody(method: string): boolean {
+  return !["POST", "PUT", "PATCH", "DELETE"].includes(method.toUpperCase());
+}
+
 function attachErrorContext(
   req: Request,
   res: Response,
@@ -24,7 +28,7 @@ function attachErrorContext(
     error: payload,
     method: req.method,
     url: req.originalUrl,
-    reqBody: req.body,
+    reqBody: shouldPersistErrorRequestBody(req.method) ? req.body : undefined,
     reqParams: req.params,
     reqQuery: req.query,
   } satisfies ErrorContext;

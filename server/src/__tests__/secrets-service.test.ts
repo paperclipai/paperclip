@@ -3,7 +3,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   agents,
   companies,
@@ -834,8 +834,20 @@ describeEmbeddedPostgres("secretService", () => {
     });
     const rotated = await svc.rotate(secret.id, { value: "rotated-runtime-secret" });
     const resolved = await svc.resolveSecretValue(companyId, rotated.id, "latest");
+    const rotatedVersion = await db
+      .select()
+      .from(companySecretVersions)
+      .where(and(
+        eq(companySecretVersions.secretId, secret.id),
+        eq(companySecretVersions.version, 2),
+      ))
+      .then((rows) => rows[0] ?? null);
 
     expect(resolved).toBe("resolved-secret");
+    expect(rotatedVersion).toMatchObject({
+      status: "current",
+      fingerprintSha256: "fingerprint-sha-2",
+    });
     expect(createSpy).toHaveBeenCalledWith(expect.objectContaining({
       providerConfig: expect.objectContaining({
         id: awsVault.id,

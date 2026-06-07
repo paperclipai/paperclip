@@ -3,9 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 import { errorHandler } from "../middleware/error-handler.js";
 
-function makeReq(): Request {
+function makeReq(method = "GET"): Request {
   return {
-    method: "GET",
+    method,
     originalUrl: "/api/test",
     body: { a: 1 },
     params: { id: "123" },
@@ -74,5 +74,27 @@ describe("errorHandler", () => {
     expect(res.json).toHaveBeenCalledWith({ error: "db exploded" });
     expect(res.err).toBe(err);
     expect(res.__errorContext?.error?.message).toBe("db exploded");
+  });
+
+  it("omits write request bodies from persisted error context", () => {
+    const req = makeReq("POST");
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+
+    errorHandler(new Error("boom"), req, res, next);
+
+    expect(res.__errorContext?.reqBody).toBeUndefined();
+    expect(res.__errorContext?.reqParams).toEqual({ id: "123" });
+    expect(res.__errorContext?.reqQuery).toEqual({ q: "x" });
+  });
+
+  it("keeps non-write request bodies in persisted error context", () => {
+    const req = makeReq("GET");
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+
+    errorHandler(new Error("boom"), req, res, next);
+
+    expect(res.__errorContext?.reqBody).toEqual({ a: 1 });
   });
 });

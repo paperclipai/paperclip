@@ -19,6 +19,7 @@ const mockSecretService = vi.hoisted(() => ({
   checkProviderConfigHealth: vi.fn(),
   getById: vi.fn(),
   create: vi.fn(),
+  rotate: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
   previewRemoteImport: vi.fn(),
@@ -104,6 +105,60 @@ describe("secret routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockSecretService.listProviderConfigs).not.toHaveBeenCalled();
+  });
+
+  it("rotates a secret and logs only the new version", async () => {
+    const createdAt = new Date("2026-05-15T10:00:00.000Z");
+    const existing = {
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      key: "runtime-token",
+      name: "Runtime token",
+      provider: "local_encrypted",
+      status: "active",
+      managedMode: "paperclip_managed",
+      externalRef: null,
+      providerConfigId: null,
+      providerMetadata: null,
+      latestVersion: 1,
+      description: null,
+      lastResolvedAt: null,
+      lastRotatedAt: createdAt,
+      deletedAt: null,
+      createdByAgentId: null,
+      createdByUserId: "user-1",
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const rotated = { ...existing, latestVersion: 2, updatedAt: createdAt };
+    mockSecretService.getById.mockResolvedValue(existing);
+    mockSecretService.rotate.mockResolvedValue(rotated);
+
+    const res = await request(createApp()).post(`/api/secrets/${existing.id}/rotate`).send({
+      value: "new-runtime-value",
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: existing.id, latestVersion: 2 });
+    expect(mockSecretService.rotate).toHaveBeenCalledWith(
+      existing.id,
+      {
+        value: "new-runtime-value",
+        externalRef: undefined,
+        providerVersionRef: undefined,
+        providerConfigId: undefined,
+      },
+      { userId: "user-1", agentId: null },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "secret.rotated",
+        entityId: existing.id,
+        details: { version: 2 },
+      }),
+    );
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("new-runtime-value");
   });
 
   it("rejects provider vault cross-company access before calling the service", async () => {

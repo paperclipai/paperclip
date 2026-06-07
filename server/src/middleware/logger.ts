@@ -5,6 +5,7 @@ import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
 import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
+import { shouldPersistErrorRequestBody } from "./error-handler.js";
 
 function resolveServerLogDir(): string {
   const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
@@ -76,7 +77,12 @@ export const httpLogger = pinoHttp({
       }
       const props: Record<string, unknown> = {};
       const { body, params, query } = req as any;
-      if (body && typeof body === "object" && Object.keys(body).length > 0) {
+      if (
+        shouldPersistErrorRequestBody(req.method ?? "") &&
+        body &&
+        typeof body === "object" &&
+        Object.keys(body).length > 0
+      ) {
         props.reqBody = body;
       }
       if (params && typeof params === "object" && Object.keys(params).length > 0) {

@@ -294,6 +294,14 @@ function assertSelectableProviderConfig(config: {
   }
 }
 
+function preparedFingerprintSha256(prepared: PreparedSecretVersion): string {
+  const fingerprint = (prepared.fingerprintSha256 ?? prepared.valueSha256).trim();
+  if (!fingerprint) {
+    throw unprocessable("Secret provider returned an invalid version fingerprint");
+  }
+  return fingerprint;
+}
+
 export function secretService(db: Db) {
   type NormalizeEnvOptions = {
     strictMode?: boolean;
@@ -1525,7 +1533,7 @@ export function secretService(db: Db) {
               version: 1,
               material: preparedSecret.material,
               valueSha256: preparedSecret.valueSha256,
-              fingerprintSha256: preparedSecret.fingerprintSha256 ?? preparedSecret.valueSha256,
+              fingerprintSha256: preparedFingerprintSha256(preparedSecret),
               providerVersionRef: preparedSecret.providerVersionRef ?? null,
               status: "current",
               createdByAgentId: actor?.agentId ?? null,
@@ -1688,7 +1696,7 @@ export function secretService(db: Db) {
           version: 1,
           material: prepared.material,
           valueSha256: prepared.valueSha256,
-          fingerprintSha256: prepared.fingerprintSha256 ?? prepared.valueSha256,
+          fingerprintSha256: preparedFingerprintSha256(prepared),
           providerVersionRef: prepared.providerVersionRef ?? null,
           status: "disabled",
           createdByAgentId: actor?.agentId ?? null,
@@ -1818,7 +1826,7 @@ export function secretService(db: Db) {
           version: nextVersion,
           material: prepared.material,
           valueSha256: prepared.valueSha256,
-          fingerprintSha256: prepared.fingerprintSha256 ?? prepared.valueSha256,
+          fingerprintSha256: preparedFingerprintSha256(prepared),
           providerVersionRef: prepared.providerVersionRef ?? null,
           status: "disabled",
           createdByAgentId: actor?.agentId ?? null,
