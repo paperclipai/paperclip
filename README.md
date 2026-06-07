@@ -351,6 +351,8 @@ pnpm db:migrate       # Apply migrations
 
 See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 
+For agent checkout readiness before implementation, review, or deploy handoff, use the source-only checklist in [docs/README.md](docs/README.md). It covers repo surface checks, owned paths, dirty-worktree handling, local validation, and issue receipt expectations.
+
 <br/>
 
 ## Roadmap

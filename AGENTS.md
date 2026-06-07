@@ -31,6 +31,16 @@ Before making changes, read in this order:
 - `packages/plugins/`: plugin system packages
 - `doc/`: operational and product docs
 
+## 3.1 Checkout Readiness
+
+Before implementation, review, or deploy handoff, complete the source-only readiness checklist in `docs/README.md`.
+
+- Confirm you are in the expected repo root and on the issue branch before editing.
+- Inspect `git status --short --branch` and treat existing dirty files as owned by someone else unless the issue explicitly names them.
+- State the paths you intend to own, and keep edits inside that boundary.
+- Run the smallest relevant local validation before moving work to review or deploy surfaces.
+- Record the validation commands and results in the issue receipt. Do not claim host, runtime, service, or deployment health without evidence from commands you actually ran.
+
 ## 4. Dev Setup (Auto DB)
 
 Use embedded PGlite in dev by leaving `DATABASE_URL` unset.
