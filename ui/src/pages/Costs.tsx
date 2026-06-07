@@ -556,7 +556,7 @@ export function Costs() {
       <div className="space-y-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
-                <h1 className="font-serif text-3xl font-medium tracking-tight">Costs</h1>
+                <h1 className="font-serif text-2xl font-medium tracking-tight">Costs</h1>
                 <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-muted-foreground">
                   <span className="font-mono font-medium text-primary">
                     {formatCents(spendData?.summary.spendCents ?? 0)}

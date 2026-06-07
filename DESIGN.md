@@ -69,8 +69,10 @@ Self-host for production if the font CDN is a latency/privacy concern.
 **Type scale (rem):**
 | Role | Font | Size | Weight | Notes |
 |---|---|---|---|---|
-| Masthead | Newsreader | 2.5rem / 40px | 500 | company name; `letter-spacing:-0.01em` |
-| Display | Newsreader | 2.125rem / 34px | 500 | hero headings |
+| Masthead | Newsreader | 2.5rem / 40px | 500 | the **company name** hero (Dashboard); `text-3xl`+ ok, `letter-spacing:-0.01em` |
+| Display | Newsreader | 2.125rem / 34px | 500 | hero headings, instance landing |
+| **Page title** | Newsreader | **1.5rem / 24px** | 500 | **every page H1** (Agents, Issues, Costs, Projects…) → `text-2xl`. NOT the company masthead. |
+| **Sub-page title** | Newsreader | 1.125rem / 18px | 500 | settings/admin sub-pages → `text-lg` |
 | Entity name | Newsreader | 1rem / 16px | 500 | agent/issue/project names |
 | Mast status | Newsreader italic | 1rem / 16px | 400 | the live status line |
 | Body | Hanken Grotesk | 0.875rem / 14px | 400 | default UI text |
@@ -286,3 +288,4 @@ the model id).
 | 2026-06-04 | Dark-first; Sodium amber accent over blue; serif masthead; tape/blotter over card grid | Owner-approved via animated HTML preview (3 rounds). |
 | 2026-06-04 | Agent face (5-state living icon) + EKG heartbeat spine + thinking cursor | Owner asked to push the "alive" animation (Perplexity moving-eyes reference); approved at v3. |
 | 2026-06-04 | Portrait-vs-eyes rule; generated portraits (Imagen 4.0 Fast); org collab wire; roster name→role→model | Owner direction from Paperclip ref screenshots. Portraits = identity (roster/org/office), eyes = live work (activity). Diversity default: POC, Caribbean + Latin American. Built `AgentFace`/`HeartbeatSpine`/`AgentPortrait` + `docs/portrait-generation.md`. |
+| 2026-06-07 | **Page-title scale codified** (reconcile two parallel design sweeps): company-name **masthead** = hero size (Dashboard, `text-3xl`); every other **page H1** = `text-2xl` serif; settings/sub-pages = `text-lg`. | Two sessions GLASSHOUSE'd in parallel and diverged on title size (most pages `text-2xl`, but Dashboard/Costs `text-3xl`). DESIGN.md had no "page title" role, only "masthead". Added the role; aligned the Costs outlier (`text-3xl`→`text-2xl`). Dashboard stays large because its title IS the company name (the masthead). |
