@@ -6913,6 +6913,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "done" || issue.status === "cancelled") {
+      // HIV-229 Bug 2 layer 2: belt-and-braces guard. A comment wake on a terminal issue without
+      // explicit resume intent must always be cancelled, even when wakeCommentId is set. The
+      // wakeCommentId bypass below is only valid for interaction wakes (e.g. a referenced comment
+      // on an in-progress issue), not for the case where the comment itself triggered the wake on
+      // an already-terminal issue — that path is the source of the done→in_progress flip-back loop.
+      const wakeCtx = context && typeof context === "object" ? context : {};
+      const wakeReasonForRun = typeof wakeCtx["wakeReason"] === "string" ? wakeCtx["wakeReason"] : null;
+      const isCommentWake = wakeReasonForRun === "issue_commented" || wakeReasonForRun === "issue_comment_mentioned";
+      if (isCommentWake && !resumeIntent) {
+        return {
+          stale: true,
+          errorCode: "skipped_terminal_issue",
+          reason: `Cancelled because issue is in terminal status (${issue.status}) and the comment wake lacks resume intent`,
+          details: { issueId, currentStatus: issue.status, wakeReason: wakeReasonForRun },
+        };
+      }
       if (!resumeIntent && !wakeCommentId) {
         return {
           stale: true,

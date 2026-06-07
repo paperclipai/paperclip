@@ -38,6 +38,30 @@ const MAX_RUNS_FOR_STREAK = 100;
 const MAX_PARENT_WALK_DEPTH = 25;
 export const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review evidence refreshed.";
 
+// HIV-229 Bug 1: discriminate zero-work upstream rate-limit failures from real runs.
+// These are failed runs where the Claude API rejected the request before any tokens were consumed.
+// Counting them in elapsed-time or churn calculations produces false-positive productivity triggers.
+export function isZeroWorkUpstream(run: HeartbeatRunRow): boolean {
+  if (!run || run.status !== "failed") return false;
+  const ctx =
+    run.contextSnapshot && typeof run.contextSnapshot === "object" ? (run.contextSnapshot as Record<string, unknown>) : {};
+  const errorFamily = typeof ctx["errorFamily"] === "string" ? ctx["errorFamily"] : null;
+  const livenessReason = typeof run.livenessReason === "string" ? run.livenessReason.toLowerCase() : "";
+  const scheduledRetryReason = typeof run.scheduledRetryReason === "string" ? run.scheduledRetryReason : "";
+  const isUpstream =
+    errorFamily === "transient_upstream" ||
+    livenessReason.includes("claude_transient_upstream") ||
+    livenessReason.includes("transient_upstream") ||
+    scheduledRetryReason === "transient_failure";
+  if (!isUpstream) return false;
+  const usage =
+    run.usageJson && typeof run.usageJson === "object" ? (run.usageJson as Record<string, unknown>) : {};
+  const outputTokens = Number(usage["outputTokens"] ?? 0) || 0;
+  const inputTokens = Number(usage["inputTokens"] ?? 0) || 0;
+  const costUsd = Number(usage["costUsd"] ?? 0) || 0;
+  return outputTokens === 0 && inputTokens === 0 && costUsd === 0;
+}
+
 type IssueRow = typeof issues.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
@@ -386,6 +410,9 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     thresholds: ProductivityReviewThresholds,
     now: Date,
   ): Promise<ProductivityReviewEvidence | null> {
+    // HIV-229 Bug 3: freeze all productivity metrics while the issue is blocked.
+    if (sourceIssue.status === "blocked") return null;
+
     const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
     const sixHoursAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000);
 
@@ -423,23 +450,39 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     const terminalRuns = latestRuns.filter((run) =>
       TERMINAL_RUN_STATUSES.includes(run.status as (typeof TERMINAL_RUN_STATUSES)[number]),
     );
+    // HIV-229 Bug 3: streak floor — runs predating the current in_progress episode (i.e. before
+    // the last blocked→in_progress unblock) do not contribute to the streak. applyStatusSideEffects
+    // already resets startedAt on every *→in_progress transition, so sourceIssue.startedAt is the
+    // unblock timestamp.
+    const sourceStartedAt = sourceIssue.startedAt ?? sourceIssue.executionLockedAt ?? null;
     let noCommentStreak = 0;
     for (const run of terminalRuns) {
+      // HIV-229 Bug 3: don't cross the episode boundary.
+      if (sourceStartedAt && run.startedAt && run.startedAt < sourceStartedAt) break;
+      // HIV-229 Bug 1: zero-work upstream failures are invisible to the streak — they neither
+      // increment it nor break it (they produce no comment, so a break would be wrong too).
+      if (isZeroWorkUpstream(run)) continue;
       if (commentRunIds.has(run.id)) break;
       noCommentStreak += 1;
     }
 
+    // HIV-229 Bug 1: exclude zero-work upstream runs from rolling-window churn counts.
+    // Computed in-memory from the already-fetched latestRuns (100-run cap covers any 6h window).
+    const productiveRuns = latestRuns.filter((run) => !isZeroWorkUpstream(run));
+    const runCountLastHour = productiveRuns.filter(
+      (run) => run.createdAt != null && run.createdAt >= oneHourAgo,
+    ).length;
+    const runCountLastSixHours = productiveRuns.filter(
+      (run) => run.createdAt != null && run.createdAt >= sixHoursAgo,
+    ).length;
+
     const [
-      runCountLastHour,
-      runCountLastSixHours,
       assigneeRunCommentCount,
       assigneeRunCommentCountLastHour,
       assigneeRunCommentCountLastSixHours,
       latestComments,
       costRow,
     ] = await Promise.all([
-      countIssueRunsSince(sourceIssue.companyId, sourceAgent.id, sourceIssue.id, oneHourAgo),
-      countIssueRunsSince(sourceIssue.companyId, sourceAgent.id, sourceIssue.id, sixHoursAgo),
       countIssueCommentsSince(sourceIssue.companyId, sourceIssue.id, sourceAgent.id),
       countIssueCommentsSince(sourceIssue.companyId, sourceIssue.id, sourceAgent.id, oneHourAgo),
       countIssueCommentsSince(sourceIssue.companyId, sourceIssue.id, sourceAgent.id, sixHoursAgo),
@@ -470,10 +513,25 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     const activeRunCount = latestRuns.filter((run) =>
       ACTIVE_RUN_STATUSES.includes(run.status as (typeof ACTIVE_RUN_STATUSES)[number]),
     ).length;
-    const activeStartedAt = sourceIssue.startedAt ?? sourceIssue.executionLockedAt ?? null;
-    const elapsedMs = sourceIssue.status === "in_progress" && activeStartedAt
-      ? Math.max(0, now.getTime() - activeStartedAt.getTime())
-      : null;
+
+    // HIV-229 Bug 1: re-baseline elapsed time to the most recent non-zero-work run so that
+    // a window of consecutive upstream rate-limit failures doesn't inflate the active duration.
+    let elapsedMs: number | null = null;
+    if (sourceIssue.status === "in_progress") {
+      const allZeroWork = productiveRuns.length === 0 && latestRuns.length > 0;
+      if (allZeroWork) {
+        elapsedMs = 0;
+      } else {
+        const productiveLatestRunStartedAt =
+          productiveRuns.length > 0 ? productiveRuns[0]?.startedAt ?? null : null;
+        const episodeStartedAt =
+          productiveLatestRunStartedAt ??
+          sourceIssue.startedAt ??
+          sourceIssue.executionLockedAt ??
+          null;
+        elapsedMs = episodeStartedAt ? Math.max(0, now.getTime() - episodeStartedAt.getTime()) : null;
+      }
+    }
 
     const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
     const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
