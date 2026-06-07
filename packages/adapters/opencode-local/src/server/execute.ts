@@ -35,6 +35,7 @@ import {
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   refreshPaperclipWorkspaceEnvForExecution,
+  renderLocalIssueContextCheatSheet,
   renderTemplate,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
@@ -532,9 +533,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
     const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+    const issueContextCheatSheet = renderLocalIssueContextCheatSheet(wakeTaskId);
     const prompt = joinPromptSections([
       instructionsPrefix,
       renderedBootstrapPrompt,
+      issueContextCheatSheet,
       wakePrompt,
       sessionHandoffNote,
       renderedPrompt,
@@ -543,6 +546,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       promptChars: prompt.length,
       instructionsChars: instructionsPrefix.length,
       bootstrapPromptChars: renderedBootstrapPrompt.length,
+      issueContextCheatSheetChars: issueContextCheatSheet.length,
       wakePromptChars: wakePrompt.length,
       sessionHandoffChars: sessionHandoffNote.length,
       heartbeatPromptChars: renderedPrompt.length,

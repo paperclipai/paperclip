@@ -889,6 +889,23 @@ export function renderPaperclipWakePrompt(
   return lines.join("\n").trim();
 }
 
+export function renderLocalIssueContextCheatSheet(issueId: string | null | undefined): string {
+  const id = typeof issueId === "string" && issueId.trim() ? issueId.trim() : null;
+  if (!id) return "";
+  return [
+    `## Your issue is ${id}. Read it with tools you ALREADY have (bash + curl + the \`paperclip\` skill). Do NOT grep the repo for issue text.`,
+    `# Read the thread:`,
+    `curl -sS -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_URL/api/issues/${id}/heartbeat-context"`,
+    `curl -sS -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_URL/api/issues/${id}/comments?order=asc"`,
+    `# Post a status comment:`,
+    `curl -sS -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -H "Content-Type: application/json" \\`,
+    `  "$PAPERCLIP_API_URL/api/issues/${id}/comments" -d '{"body":"<markdown>"}'`,
+    `# Set status (todo|in_progress|in_review|blocked|done):`,
+    `curl -sS -X PATCH -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -H "Content-Type: application/json" \\`,
+    `  "$PAPERCLIP_API_URL/api/issues/${id}" -d '{"status":"in_progress","comment":"<markdown>"}'`,
+  ].join("\n");
+}
+
 export function redactEnvForLogs(env: Record<string, string>): Record<string, string> {
   const redacted: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {

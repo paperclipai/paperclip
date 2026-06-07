@@ -10,8 +10,10 @@ import {
   buildRuntimeMountedSkillSnapshot,
   buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  joinPromptSections,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
+  renderLocalIssueContextCheatSheet,
   renderPaperclipWakePrompt,
   runningProcesses,
   runChildProcess,
@@ -1159,5 +1161,39 @@ describe("appendWithByteCap", () => {
     expect(output).not.toContain("\uFFFD");
     expect(Buffer.from(output, "utf8").toString("utf8")).toBe(output);
     expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(7);
+  });
+});
+
+describe("renderLocalIssueContextCheatSheet", () => {
+  it("renders cheat-sheet containing the actual issue id for a local adapter wake with issue id", () => {
+    const issueId = "abc-123-def";
+    const cheatSheet = renderLocalIssueContextCheatSheet(issueId);
+
+    expect(cheatSheet).toContain(issueId);
+    expect(cheatSheet).toContain("heartbeat-context");
+    expect(cheatSheet).toContain("$PAPERCLIP_API_KEY");
+    expect(cheatSheet).toContain("$PAPERCLIP_API_URL");
+  });
+
+  it("returns empty string (absent) when issue id is null or absent (non-local adapter gate)", () => {
+    expect(renderLocalIssueContextCheatSheet(null)).toBe("");
+    expect(renderLocalIssueContextCheatSheet(undefined)).toBe("");
+    expect(renderLocalIssueContextCheatSheet("")).toBe("");
+    expect(renderLocalIssueContextCheatSheet("   ")).toBe("");
+  });
+
+  it("section appears before the main heartbeat template in the joined prompt for a local wake", () => {
+    const issueId = "sag-3397-test-id";
+    const cheatSheet = renderLocalIssueContextCheatSheet(issueId);
+    const wakeSection = "## Paperclip Wake Payload\n- reason: issue_assigned";
+    const mainTemplate = DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE;
+
+    const prompt = joinPromptSections([cheatSheet, wakeSection, mainTemplate]);
+
+    const cheatPos = prompt.indexOf(issueId);
+    const mainPos = prompt.indexOf("Execution contract:");
+    expect(cheatPos).toBeGreaterThan(-1);
+    expect(mainPos).toBeGreaterThan(-1);
+    expect(cheatPos).toBeLessThan(mainPos);
   });
 });
