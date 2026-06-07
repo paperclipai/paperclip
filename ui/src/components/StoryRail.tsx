@@ -28,25 +28,11 @@ const BASE_X = 7; // resting x of the vertical line (in the left gutter)
 
 type Seg = { y0: number; y1: number; nodes: { x: number; y: number }[] };
 
-// Break the rail into segments at large vertical gaps between nodes, so the
-// line fades out and back in between blocks (instead of one unbroken e2e line).
-// Each segment fades at both ends; the gaps are the "line breaks".
-const SEG_GAP = 1000; // px between consecutive nodes that triggers a break
-const SEG_PAD_TOP = 150;
-const SEG_PAD_BOT = 170;
-
+// One continuous line down the whole page, bowing out to each node, fading
+// only at the very top and bottom.
 function buildSegments(nodes: { x: number; y: number }[], height: number): Seg[] {
-  if (!height || nodes.length === 0) return [];
-  const groups: { x: number; y: number }[][] = [[nodes[0]]];
-  for (let i = 1; i < nodes.length; i++) {
-    if (nodes[i].y - nodes[i - 1].y > SEG_GAP) groups.push([nodes[i]]);
-    else groups[groups.length - 1].push(nodes[i]);
-  }
-  return groups.map((g) => ({
-    y0: Math.max(0, g[0].y - SEG_PAD_TOP),
-    y1: Math.min(height, g[g.length - 1].y + SEG_PAD_BOT),
-    nodes: g,
-  }));
+  if (!height) return [];
+  return [{ y0: 0, y1: height, nodes }];
 }
 
 function railPath(seg: Seg): string {
@@ -112,14 +98,18 @@ function RailSvg({ rootRef }: { rootRef: React.RefObject<HTMLDivElement | null> 
             fill="none"
           >
             <defs>
-              {segs.map((s, i) => (
-                <linearGradient key={i} id={`rail-fade-${i}`} gradientUnits="userSpaceOnUse" x1="0" y1={s.y0} x2="0" y2={s.y1}>
-                  <stop offset="0%" stopColor="#f97316" stopOpacity="0" />
-                  <stop offset="9%" stopColor="#f97316" stopOpacity="0.85" />
-                  <stop offset="91%" stopColor="#fb923c" stopOpacity="0.85" />
-                  <stop offset="100%" stopColor="#fb923c" stopOpacity="0" />
-                </linearGradient>
-              ))}
+              {segs.map((s, i) => {
+                const span = Math.max(1, s.y1 - s.y0);
+                const f = Math.min(0.45, 130 / span); // ~130px fade at each end
+                return (
+                  <linearGradient key={i} id={`rail-fade-${i}`} gradientUnits="userSpaceOnUse" x1="0" y1={s.y0} x2="0" y2={s.y1}>
+                    <stop offset="0%" stopColor="#f97316" stopOpacity="0" />
+                    <stop offset={`${(f * 100).toFixed(2)}%`} stopColor="#f97316" stopOpacity="0.8" />
+                    <stop offset={`${((1 - f) * 100).toFixed(2)}%`} stopColor="#fb923c" stopOpacity="0.8" />
+                    <stop offset="100%" stopColor="#fb923c" stopOpacity="0" />
+                  </linearGradient>
+                );
+              })}
             </defs>
             {segs.map((s, i) => (
               <path

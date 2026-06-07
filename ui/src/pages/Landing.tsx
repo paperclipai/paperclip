@@ -702,11 +702,6 @@ function Eyebrow({ children }: { children: React.ReactNode }) {
 function StatCallout({ pill, stat, body }: { pill: string; stat: string; body: string }) {
   return (
     <div className="relative flex flex-col items-start py-6">
-      {/* glow node */}
-      <span className="relative mb-5 flex size-3.5 items-center justify-center">
-        <span className="agnb-pulse-ring absolute inset-0 rounded-full bg-[#f97316]/50" />
-        <span className="relative size-3.5 rounded-full bg-[#f97316]" />
-      </span>
       <span className="mb-4 inline-flex items-center gap-1.5 rounded-full border border-black/[0.08] bg-white px-3 py-1 font-mono text-[11px] uppercase tracking-[0.14em] text-gray-500 dark:border-white/10 dark:bg-[#261f19] dark:text-neutral-400">
         {pill}
       </span>
