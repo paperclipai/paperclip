@@ -8,6 +8,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { DashboardLive } from "./pages/DashboardLive";
 import { Companies } from "./pages/Companies";
 import { InstanceHome } from "./pages/InstanceHome";
+import { RoboLoading } from "./components/RoboLoading";
 import { Agents } from "./pages/Agents";
 import { AgentDetail } from "./pages/AgentDetail";
 import { Projects } from "./pages/Projects";
@@ -202,7 +203,7 @@ function CompanyRootRedirect() {
   const { loading } = useCompany();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <RoboLoading />;
   }
 
   // Always land on the instance-owner home so the owner can choose: open an
@@ -217,7 +218,7 @@ function UnprefixedBoardRedirect() {
   const { companies, selectedCompany, loading } = useCompany();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <RoboLoading />;
   }
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;

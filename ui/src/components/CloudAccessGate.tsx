@@ -4,6 +4,8 @@ import { accessApi } from "@/api/access";
 import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
 import { queryKeys } from "@/lib/queryKeys";
+import { RoboLoading } from "./RoboLoading";
+import { RoboError } from "./RoboError";
 
 function BootstrapPendingPage({ hasActiveInvite = false }: { hasActiveInvite?: boolean }) {
   return (
@@ -77,18 +79,18 @@ export function CloudAccessGate() {
     (isAuthenticatedMode && sessionQuery.isLoading) ||
     (isAuthenticatedMode && !!sessionQuery.data && boardAccessQuery.isLoading)
   ) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <RoboLoading />;
   }
 
   if (healthQuery.error || boardAccessQuery.error) {
     return (
-      <div className="mx-auto max-w-xl py-10 text-sm text-destructive">
-        {healthQuery.error instanceof Error
-          ? healthQuery.error.message
-          : boardAccessQuery.error instanceof Error
-            ? boardAccessQuery.error.message
-            : "Failed to load app state"}
-      </div>
+      <RoboError
+        error={healthQuery.error ?? boardAccessQuery.error ?? "Failed to load app state"}
+        onRetry={() => {
+          void healthQuery.refetch();
+          void boardAccessQuery.refetch();
+        }}
+      />
     );
   }
 
