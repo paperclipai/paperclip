@@ -82,10 +82,16 @@ Candidates must move through explicit lifecycle states:
 Allowed forward transitions:
 
 - `proposed` -> `reviewed`, `rejected`, or `expired`
-- `reviewed` -> `approved`, `rejected`, or `expired`
+- `reviewed` -> `proposed`, `approved`, `rejected`, or `expired`
 - `approved` -> `migrated`, `rejected`, or `expired`
 - `migrated` -> `expired` or `deleted`
 - `expired` -> `deleted`
+
+Use `reviewed` -> `proposed` only when review requires the proposer to clarify
+or rework source references, summary wording, privacy classification, retention
+metadata, or ownership before a final decision. This keeps fixable candidates
+out of reject-and-recreate churn while preserving the terminal nature of
+`rejected` and `deleted`.
 
 Rejected and deleted candidates must not return to a mutable active state. A new
 candidate may be created if new canonical evidence appears.
@@ -100,7 +106,7 @@ candidate records. Required fields:
   "id": "memcand_...",
   "sourceRefs": [
     {
-      "type": "github_issue|github_pr|file|calendar|mail|host_check|runtime_receipt|manual_attestation|memory_recall",
+      "type": "github_issue",
       "ref": "stable external or internal reference",
       "observedAt": "2026-06-07T00:00:00.000Z",
       "canonical": false
@@ -137,6 +143,19 @@ candidate records. Required fields:
   "updatedAt": "2026-06-07T00:00:00.000Z"
 }
 ```
+
+Enumerated field values:
+
+- `sourceRefs[].type`: `github_issue`, `github_pr`, `file`, `calendar`, `mail`,
+  `host_check`, `runtime_receipt`, `manual_attestation`, or `memory_recall`.
+- `reviewState`: `proposed`, `reviewed`, `approved`, `migrated`, `rejected`,
+  `expired`, or `deleted`.
+- `privacyClass`: `agent_private`, `operator_private`, `operator_shared`,
+  `company_internal`, or `public`.
+- `staleLive`: `stale`, `live`, or `unknown`.
+- `retentionPolicy.class`: `ephemeral`, `time_boxed`, `until_superseded`, or
+  `permanent_reviewed`.
+- `owner.type` and `approvals[].approverType`: `agent`, `operator`, or `team`.
 
 Validation expectations:
 
