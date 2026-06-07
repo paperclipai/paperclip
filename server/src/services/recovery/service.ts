@@ -67,6 +67,16 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "ti
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
+// BASA-1607 Rule 1: orphan-post-completion auto-reap grace. A run whose
+// source issue is terminal and execution-locked to this run is folded once
+// silence exceeds this grace window. Calibrated from BASA-1208 (20s tail-gap
+// singleton) with safety margin so legitimate post-completion shutdown isn't
+// pre-empted.
+export const ORPHAN_POST_COMPLETION_REAP_GRACE_MS = 5 * 60 * 1000;
+// BASA-1607 Rule 2: suppress new spawns when same (runId, source) review was
+// closed false-positive within this window. 4h chosen (NOT 2m) per BASA-1191
+// cascade evidence where the 2m re-fire window allowed recursive review.
+export const STALE_ACTIVE_RUN_REPLAY_SUPPRESSION_WINDOW_MS = 4 * 60 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
@@ -844,6 +854,42 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  // BASA-1607 Rule 2 — fingerprint-replay suppression.
+  // Returns the most recent stale-run evaluation for this (companyId, runId)
+  // that reached a terminal state within `windowMs`. Used to suppress new
+  // review spawns after a human/agent already triaged the same orphan.
+  // Independent of Rule 1: even when the fold path lands, replay protection
+  // keeps the 90s re-fire cascade documented in BASA-1191 from re-spawning.
+  async function findRecentlyClosedStaleRunEvaluation(
+    companyId: string,
+    runId: string,
+    now: Date,
+    windowMs = STALE_ACTIVE_RUN_REPLAY_SUPPRESSION_WINDOW_MS,
+  ) {
+    const cutoff = new Date(now.getTime() - windowMs);
+    const [row] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+          gt(issues.updatedAt, cutoff),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1);
+    return row ?? null;
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -919,11 +965,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return issue ?? null;
   }
 
+  // BASA-1607 evidence kinds.
+  // - "activity": pre-existing path — same-run activity-log row recorded the
+  //   source-status transition. Brittle when the close was attributed to a
+  //   sibling/continuation run row even though the orphan run authored it.
+  // - "execution_run_id_match": Rule 1 path — the source issue's
+  //   `executionRunId` still points at this run AND the issue is terminal.
+  //   Sufficient signal that this run owns the close, independent of which
+  //   row in `activity_log` recorded it. Used by Rule 1 to fold orphan
+  //   processes whose activity-log evidence is missing or attributed
+  //   elsewhere (the BASA-22729 / b62d140e shape).
+  type StaleRunFoldEvidence =
+    | { kind: "activity"; id: string; createdAt: Date; action: string }
+    | { kind: "execution_run_id_match"; id: string; createdAt: Date; action: string };
+
   async function latestSameRunSourceTerminalEvidence(input: {
     run: typeof heartbeatRuns.$inferSelect;
     sourceIssue: typeof issues.$inferSelect;
     evidenceAfter: Date | null;
-  }) {
+  }): Promise<StaleRunFoldEvidence | null> {
     if (!isTerminalIssueStatus(input.sourceIssue.status)) return null;
     const after = input.evidenceAfter ?? input.run.startedAt ?? input.run.createdAt ?? null;
     const activityPredicates = [
@@ -959,6 +1019,34 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       };
     }
     return null;
+  }
+
+  // BASA-1607 Rule 1 — orphan-post-completion auto-reap detection.
+  // Returns synthesized evidence when the source issue is terminal AND its
+  // `executionRunId` still points at this run. This catches orphan processes
+  // that authored the close but whose activity-log row was attributed to a
+  // sibling run row (or where the row is otherwise missing). Independent of
+  // and complementary to `latestSameRunSourceTerminalEvidence`.
+  function executionRunIdMatchEvidence(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect;
+  }): StaleRunFoldEvidence | null {
+    if (!isTerminalIssueStatus(input.sourceIssue.status)) return null;
+    if (input.sourceIssue.executionRunId !== input.run.id) return null;
+    const createdAt =
+      input.sourceIssue.completedAt ??
+      input.sourceIssue.cancelledAt ??
+      input.sourceIssue.updatedAt ??
+      input.run.lastOutputAt ??
+      input.run.startedAt ??
+      input.run.createdAt ??
+      new Date();
+    return {
+      kind: "execution_run_id_match" as const,
+      id: input.sourceIssue.id,
+      createdAt,
+      action: "issue.execution_lock_match",
+    };
   }
 
   async function nextRunEventSeq(runId: string) {
@@ -1083,7 +1171,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     run: typeof heartbeatRuns.$inferSelect;
     runningAgent: typeof agents.$inferSelect;
     sourceIssue: typeof issues.$inferSelect;
-    evidence: Awaited<ReturnType<typeof latestSameRunSourceTerminalEvidence>>;
+    evidence: StaleRunFoldEvidence | null;
     existingEvaluation: Awaited<ReturnType<typeof findOpenStaleRunEvaluation>>;
     silenceStartedAt: Date | null;
     silenceAgeMs: number | null;
@@ -1494,6 +1582,99 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           now: input.now,
         });
       }
+      // BASA-1607 Rule 1 — orphan-post-completion auto-reap.
+      // No activity-log row matched, but the source issue's `executionRunId`
+      // still points at this run. That is sufficient evidence that this run
+      // authored the close (the issues-table column is set on checkout and
+      // cleared by the fold path itself), regardless of which row in
+      // `activity_log` was attributed to the transition. Fold once silence
+      // exceeds the post-completion grace window so legitimate post-close
+      // shutdown isn't pre-empted.
+      const orphanEvidence = executionRunIdMatchEvidence({
+        run: input.run,
+        sourceIssue,
+      });
+      const silenceAgeForOrphan = silenceAgeMsForRun(input.run, input.now);
+      if (
+        orphanEvidence &&
+        silenceAgeForOrphan !== null &&
+        silenceAgeForOrphan >= ORPHAN_POST_COMPLETION_REAP_GRACE_MS
+      ) {
+        return foldSourceResolvedStaleRun({
+          run: input.run,
+          runningAgent,
+          sourceIssue,
+          evidence: orphanEvidence,
+          existingEvaluation: existing,
+          silenceStartedAt,
+          silenceAgeMs: silenceAgeForOrphan,
+          now: input.now,
+        });
+      }
+    }
+    // BASA-1607 Rule 2 — fingerprint-replay suppression.
+    // If a stale-run evaluation for this same (companyId, runId) was triaged
+    // and closed within the suppression window, skip new spawn entirely. The
+    // existing eval is the durable record; re-spawning every ~90s after a
+    // close is exactly the BASA-1191 cascade pattern. Independent of Rule 1
+    // so closed-by-board false-positives are also protected.
+    //
+    // Exception — explicit `continue` rearm: when the latest watchdog
+    // decision for this run is `continue` and its rearm window has passed,
+    // the operator chose "watch it again after the rearm" and Rule 2 must
+    // not override that signal. Preserves the contract documented in the
+    // `continue`-rearm test path.
+    if (!existing) {
+      const recentClosure = await findRecentlyClosedStaleRunEvaluation(
+        input.run.companyId,
+        input.run.id,
+        input.now,
+      );
+      if (recentClosure) {
+        const [latestDecision] = await db
+          .select({
+            decision: heartbeatRunWatchdogDecisions.decision,
+            snoozedUntil: heartbeatRunWatchdogDecisions.snoozedUntil,
+            createdAt: heartbeatRunWatchdogDecisions.createdAt,
+          })
+          .from(heartbeatRunWatchdogDecisions)
+          .where(
+            and(
+              eq(heartbeatRunWatchdogDecisions.companyId, input.run.companyId),
+              eq(heartbeatRunWatchdogDecisions.runId, input.run.id),
+            ),
+          )
+          .orderBy(desc(heartbeatRunWatchdogDecisions.createdAt))
+          .limit(1);
+        const continueRearmed =
+          latestDecision?.decision === "continue" &&
+          latestDecision.snoozedUntil != null &&
+          latestDecision.snoozedUntil <= input.now;
+        if (!continueRearmed) {
+          await logActivity(db, {
+            companyId: input.run.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: input.run.agentId,
+            runId: input.run.id,
+            action: "heartbeat.output_stale_replay_suppressed",
+            entityType: "heartbeat_run",
+            entityId: input.run.id,
+            details: {
+              source: "recovery.scan_silent_active_runs",
+              suppressedByEvaluationId: recentClosure.id,
+              suppressedByEvaluationIdentifier: recentClosure.identifier,
+              suppressedByEvaluationStatus: recentClosure.status,
+              suppressionWindowMs: STALE_ACTIVE_RUN_REPLAY_SUPPRESSION_WINDOW_MS,
+              lastClosedAt: recentClosure.updatedAt.toISOString(),
+            },
+          });
+          return {
+            kind: "replay_suppressed" as const,
+            evaluationIssueId: recentClosure.id,
+          };
+        }
+      }
     }
     const prefix = await getCompanyIssuePrefix(input.run.companyId);
     const evidence = await collectStaleRunEvidence({
@@ -1505,6 +1686,38 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
     const level = (evidence.silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS ? "critical" : "suspicious";
     if (existing) {
+      // BASA-1607 Rule 3a — terminal-state-aware threshold comments.
+      // `findOpenStaleRunEvaluation` already filters out done/cancelled, but
+      // a concurrent close could land between that select and the comment
+      // write. Re-read the latest status before adding any threshold-crossed
+      // follow-up comment so 4h-critical / future 8h / 12h / 24h escalations
+      // never re-engage an evaluation that the board or assignee has triaged.
+      const currentExistingStatus = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, existing.id))
+        .limit(1)
+        .then((rows) => rows[0]?.status ?? null);
+      if (isTerminalIssueStatus(currentExistingStatus)) {
+        await logActivity(db, {
+          companyId: input.run.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: input.run.agentId,
+          runId: input.run.id,
+          action: "heartbeat.output_stale_threshold_comment_skipped",
+          entityType: "issue",
+          entityId: existing.id,
+          details: {
+            source: "recovery.scan_silent_active_runs",
+            reason: "evaluation_terminal_state",
+            evaluationIssueId: existing.id,
+            evaluationStatus: currentExistingStatus,
+            level,
+          },
+        });
+        return { kind: "existing" as const, evaluationIssueId: existing.id };
+      }
       if (level === "critical" && existing.priority !== "high") {
         await issuesSvc.update(existing.id, {
           priority: "high",
@@ -1641,6 +1854,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       folded: 0,
       snoozed: 0,
       skipped: 0,
+      // BASA-1607 Rule 2 — counter for suppressed-by-recent-closure spawns.
+      replaySuppressed: 0,
       evaluationIssueIds: [] as string[],
     };
 
@@ -1654,6 +1869,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       else if (outcome.kind === "existing") result.existing += 1;
       else if (outcome.kind === "escalated") result.escalated += 1;
       else if (outcome.kind === "folded") result.folded += 1;
+      else if (outcome.kind === "replay_suppressed") result.replaySuppressed += 1;
       else result.skipped += 1;
       if ("evaluationIssueId" in outcome && outcome.evaluationIssueId) {
         result.evaluationIssueIds.push(outcome.evaluationIssueId);
