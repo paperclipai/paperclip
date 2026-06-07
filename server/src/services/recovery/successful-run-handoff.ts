@@ -389,8 +389,8 @@ export function decideSuccessfulRunHandoff(input: {
   }
   if (issue.assigneeUserId) return { kind: "skip", reason: "issue is human-owned" };
   if (issue.status !== "in_progress") return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
-  if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
   if (hasEventDrivenHubIdlePath(issue)) return { kind: "skip", reason: "issue has event-driven hub idle path" };
+  if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
   if (issue.monitorNextCheckAt && issue.monitorNextCheckAt > new Date()) {
     return { kind: "skip", reason: "issue has a future monitor wake" };
   }

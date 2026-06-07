@@ -143,6 +143,17 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "issue has event-driven hub idle path",
     });
+    expect(decide({
+      issue: {
+        ...issue,
+        executionState: {
+          idlePath: { kind: "event_driven_hub_idle" },
+        },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "issue has event-driven hub idle path",
+    });
   });
 
   it("does not queue when an in-progress issue has a future monitor wake", () => {
