@@ -978,6 +978,7 @@ export const PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS = [
   "members",
   "invites",
   "secrets",
+  "instance",
 ] as const;
 export type PluginReservedCompanySettingsRouteSegment =
   (typeof PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS)[number];

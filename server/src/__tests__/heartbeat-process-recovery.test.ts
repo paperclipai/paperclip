@@ -979,7 +979,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(2);
 
     const failedRun = runs.find((row) => row.id === runId);
-    const retryRun = runs.find((row) => row.id !== runId);
+    const retryRuns = runs.filter((row) => row.retryOfRunId === runId);
+    expect(retryRuns).toHaveLength(1);
+    const retryRun = retryRuns[0];
     expect(failedRun?.status).toBe("failed");
     expect(failedRun?.errorCode).toBe("process_lost");
     expect(failedRun?.livenessState).toBe("failed");
@@ -994,11 +996,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRun?.processLossRetryCount).toBe(1);
     expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
 
-    const issue = await db
-      .select()
-      .from(issues)
-      .where(eq(issues.id, issueId))
-      .then((rows) => rows[0] ?? null);
+    const issue = await waitForValue(async () =>
+      db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => {
+          const row = rows[0] ?? null;
+          return row?.executionRunId === retryRun?.id ? row : null;
+        })
+    );
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
     expect(issue?.checkoutRunId).toBe(runId);
   });
