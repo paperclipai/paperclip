@@ -332,13 +332,16 @@ describe("approval routes idempotent retries", () => {
       requestedByUserId: null,
     });
     mockApprovalService.resubmit.mockResolvedValue({
-      id: "approval-9",
-      companyId: "company-1",
-      type: "request_board_approval",
-      status: "pending",
-      payload: { title: "Updated request" },
-      requestedByAgentId: "agent-1",
-      requestedByUserId: null,
+      approval: {
+        id: "approval-9",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "pending",
+        payload: { title: "Updated request" },
+        requestedByAgentId: "agent-1",
+        requestedByUserId: null,
+      },
+      applied: true,
     });
 
     const res = await request(await createAgentApp({ agentId: "agent-1" }))
@@ -374,13 +377,16 @@ describe("approval routes idempotent retries", () => {
       requestedByUserId: null,
     });
     mockApprovalService.resubmit.mockResolvedValue({
-      id: "approval-10",
-      companyId: "company-1",
-      type: "request_board_approval",
-      status: "pending",
-      payload: { title: "Board updated request" },
-      requestedByAgentId: "agent-2",
-      requestedByUserId: null,
+      approval: {
+        id: "approval-10",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "pending",
+        payload: { title: "Board updated request" },
+        requestedByAgentId: "agent-2",
+        requestedByUserId: null,
+      },
+      applied: true,
     });
 
     const res = await request(await createApp())
@@ -403,6 +409,40 @@ describe("approval routes idempotent retries", () => {
         entityId: "approval-10",
       }),
     );
+  });
+
+  it("does not emit duplicate resubmit logs when already pending", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-11",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: { title: "Already pending request" },
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+    });
+    mockApprovalService.resubmit.mockResolvedValue({
+      approval: {
+        id: "approval-11",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "pending",
+        payload: { title: "Already pending request" },
+        requestedByAgentId: "agent-1",
+        requestedByUserId: null,
+      },
+      applied: false,
+    });
+
+    const res = await request(await createAgentApp({ agentId: "agent-1" }))
+      .post("/api/approvals/approval-11/resubmit")
+      .send({ payload: { title: "Already pending request" } });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.resubmit).toHaveBeenCalledWith("approval-11", {
+      title: "Already pending request",
+    });
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
   it("lets agents create generic issue-linked board approval requests", async () => {
