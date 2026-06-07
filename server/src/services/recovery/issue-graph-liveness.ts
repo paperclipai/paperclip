@@ -16,6 +16,7 @@ export interface IssueLivenessIssueInput {
   companyId: string;
   identifier: string | null;
   title: string;
+  description?: string | null;
   status: string;
   projectId?: string | null;
   goalId?: string | null;
@@ -42,6 +43,7 @@ export interface IssueLivenessAgentInput {
   name: string;
   role: string;
   title?: string | null;
+  capabilities?: string | null;
   status: string;
   reportsTo?: string | null;
 }
@@ -125,6 +127,83 @@ function isInvokableAgent(
   agentsById: Map<string, IssueLivenessAgentInput>,
 ) {
   return Boolean(agent && isAgentInvokable({ agent, agents: [...agentsById.values()] }));
+}
+
+const IMPLEMENTATION_AGENT_ROLE_PATTERNS = [
+  /\bcto\b/i,
+  /\bengineer\b/i,
+  /\bdeveloper\b/i,
+  /\bdevops\b/i,
+  /\bcoder\b/i,
+];
+
+const READ_ONLY_AGENT_PATTERNS = [
+  /\bresearch(er)?\b/i,
+  /\bdocumentation\b/i,
+  /\bindexer\b/i,
+  /\bread[-\s]?only\b/i,
+];
+
+const IMPLEMENTATION_ISSUE_PATTERNS = [
+  /\bimplement(ation)?\b/i,
+  /\bfix\b/i,
+  /\bbuild\b/i,
+  /\bcode\b/i,
+  /\bfrontend\b/i,
+  /\bbackend\b/i,
+  /\bapi\b/i,
+  /\bcomponent\b/i,
+  /\bmigration\b/i,
+  /\bschema\b/i,
+  /\bdeploy(ment)?\b/i,
+];
+
+function roleFitText(agent: IssueLivenessAgentInput) {
+  return [agent.role, agent.title, agent.capabilities]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join(" ");
+}
+
+function isReadOnlyAgent(agent: IssueLivenessAgentInput) {
+  const text = roleFitText(agent);
+  return READ_ONLY_AGENT_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function isImplementationCapableAgent(
+  agent: IssueLivenessAgentInput | null | undefined,
+  agentsById: Map<string, IssueLivenessAgentInput>,
+) {
+  if (!agent || !isInvokableAgent(agent, agentsById) || isReadOnlyAgent(agent)) return false;
+  const text = roleFitText(agent);
+  return IMPLEMENTATION_AGENT_ROLE_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function isImplementationIssue(issue: IssueLivenessIssueInput) {
+  const text = [issue.title, issue.description]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join("\n");
+  return IMPLEMENTATION_ISSUE_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function ownerCandidatesForIssueWork(
+  issue: IssueLivenessIssueInput,
+  candidates: IssueLivenessOwnerCandidate[],
+  agentsById: Map<string, IssueLivenessAgentInput>,
+) {
+  if (!isImplementationIssue(issue)) return candidates;
+
+  const executionCandidates = candidates.filter((candidate) =>
+    isImplementationCapableAgent(agentsById.get(candidate.agentId), agentsById)
+  );
+  return executionCandidates.length > 0 ? executionCandidates : candidates;
+}
+
+function recoveryActionForIssueWork(issue: IssueLivenessIssueInput) {
+  if (!isImplementationIssue(issue)) {
+    return `Review ${issueLabel(issue)} and assign it to an active owner or replace the blocker with an actionable issue.`;
+  }
+
+  return `Review ${issueLabel(issue)} and assign executable implementation work to an implementation-capable active owner. If no implementation-capable agent is active, a read-only owner may produce diagnosis/handoff only; leave the executable issue blocked on a named engineer/CTO action rather than treating the read-only assignment as recovered.`;
 }
 
 function hasActiveExecutionPath(
@@ -307,7 +386,7 @@ function ownerCandidatesForRecoveryIssue(
     );
   }
 
-  return candidates;
+  return ownerCandidatesForIssueWork(issue, candidates, agentsById);
 }
 
 function incidentKey(input: {
@@ -551,8 +630,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
         recoveryIssue: blocker,
         recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
         recommendedOwnerCandidates: ownerCandidates,
-        recommendedAction:
-          `Review ${issueLabel(blocker)} and assign it to an active owner or replace the blocker with an actionable issue.`,
+        recommendedAction: recoveryActionForIssueWork(blocker),
         blockerIssueId: blocker.id,
       });
     }
