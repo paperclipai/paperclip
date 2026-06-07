@@ -492,7 +492,7 @@ function ApprovalInboxRow({
           <div className="hidden shrink-0 items-center gap-2 sm:flex">
             <Button
               size="sm"
-              className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+              className="h-8 bg-primary px-3 text-primary-foreground hover:bg-primary/90"
               onClick={onApprove}
               disabled={isPending}
             >
@@ -514,7 +514,7 @@ function ApprovalInboxRow({
         <div className="mt-3 flex gap-2 sm:hidden">
           <Button
             size="sm"
-            className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+            className="h-8 bg-primary px-3 text-primary-foreground hover:bg-primary/90"
             onClick={onApprove}
             disabled={isPending}
           >
@@ -620,7 +620,7 @@ function JoinRequestInboxRow({
         <div className="hidden shrink-0 items-center gap-2 sm:flex">
           <Button
             size="sm"
-            className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+            className="h-8 bg-primary px-3 text-primary-foreground hover:bg-primary/90"
             onClick={onApprove}
             disabled={isPending}
           >
@@ -640,7 +640,7 @@ function JoinRequestInboxRow({
       <div className="mt-3 flex gap-2 sm:hidden">
         <Button
           size="sm"
-          className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+          className="h-8 bg-primary px-3 text-primary-foreground hover:bg-primary/90"
           onClick={onApprove}
           disabled={isPending}
         >
