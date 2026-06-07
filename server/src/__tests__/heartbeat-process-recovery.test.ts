@@ -26,6 +26,7 @@ import {
   issueDocuments,
   issuePlanDecompositions,
   issueRecoveryActions,
+  issueResultCommentGraceFlags,
   issueRelations,
   issueThreadInteractions,
   issueTreeHoldMembers,
@@ -3314,6 +3315,190 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       source: "issue.productive_terminal_continuation_recovery",
     });
     expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
+  });
+
+  // SAG-3385: Result-comment grace + idempotency guard tests
+  describe("result-comment grace before §9.2 stranded-work recovery", () => {
+    async function seedResultCommentGraceFixture(input: {
+      livenessState?: "advanced" | "completed" | "needs_followup" | null;
+    } = {}) {
+      const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "succeeded",
+        livenessState: input.livenessState ?? "advanced",
+      });
+      const commentId = randomUUID();
+      await db.insert(issueComments).values({
+        id: commentId,
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        authorType: "agent",
+        createdByRunId: runId,
+        body: "Here is my work output.",
+      });
+      return { companyId, agentId, runId, wakeupRequestId, issueId, commentId };
+    }
+
+    it("queues a disposition-flush continuation when a succeeded run left a result comment", async () => {
+      const { companyId, agentId, runId, issueId, commentId } = await seedResultCommentGraceFixture();
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result.dispositionFlushQueued).toBe(1);
+      expect(result.continuationRequeued).toBe(0);
+      expect(result.escalated).toBe(0);
+      expect(result.issueIds).toEqual([issueId]);
+
+      // Verify the flush wake has allowDeliverableWork: false (status_only hint).
+      // contextSnapshot is stored on heartbeatRuns, not agentWakeupRequests.
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      const flushRun = runs.find((r) =>
+        (r.contextSnapshot as Record<string, unknown>)?.retryReason === "result_comment_disposition_flush",
+      );
+      expect(flushRun).toBeTruthy();
+      expect(flushRun?.contextSnapshot).toMatchObject({
+        issueId,
+        retryReason: "result_comment_disposition_flush",
+        resultCommentId: commentId,
+        allowDeliverableWork: false,
+        recoveryIntent: "status_only",
+      });
+
+      // Verify the grace flag was set
+      const graceFlags = await db
+        .select()
+        .from(issueResultCommentGraceFlags)
+        .where(
+          and(
+            eq(issueResultCommentGraceFlags.companyId, companyId),
+            eq(issueResultCommentGraceFlags.sourceIssueId, issueId),
+            eq(issueResultCommentGraceFlags.runId, runId),
+          ),
+        );
+      expect(graceFlags).toHaveLength(1);
+      expect(graceFlags[0]?.resultCommentId).toBe(commentId);
+
+      if (flushRun?.id) {
+        await waitForRunToSettle(heartbeat, flushRun.id);
+      }
+    });
+
+    it("does NOT queue a second flush for the same (issueId, runId) strand — idempotency guard", async () => {
+      const { companyId, agentId, runId, issueId } = await seedResultCommentGraceFixture();
+      const heartbeat = heartbeatService(db);
+
+      // First scan: grace given
+      const result1 = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result1.dispositionFlushQueued).toBe(1);
+
+      // Settle all queued runs so the issue remains in_progress with the SAME original runId
+      // (simulate flush run NOT being queued yet / issue still stranded on same run)
+      const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+      for (const w of wakeups) {
+        if (w.runId) await waitForRunToSettle(heartbeat, w.runId);
+      }
+
+      // Reset the issue to in_progress with the original runId so the second scan sees the same strand
+      await db.update(issues).set({ status: "in_progress", checkoutRunId: runId }).where(eq(issues.id, issueId));
+      await db.update(agentWakeupRequests).set({ status: "failed" }).where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.status, "queued"),
+        ),
+      );
+
+      // Second scan: idempotency guard fires — no second flush
+      const result2 = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result2.dispositionFlushQueued).toBe(0);
+
+      // Exactly one grace flag in the table for this (issueId, runId)
+      const graceFlags = await db
+        .select()
+        .from(issueResultCommentGraceFlags)
+        .where(
+          and(
+            eq(issueResultCommentGraceFlags.companyId, companyId),
+            eq(issueResultCommentGraceFlags.sourceIssueId, issueId),
+            eq(issueResultCommentGraceFlags.runId, runId),
+          ),
+        );
+      expect(graceFlags).toHaveLength(1);
+    });
+
+    it("does NOT give grace to a flush run itself — prevents free-wake loop", async () => {
+      // Directly seed a run whose contextSnapshot identifies it as a disposition-flush run.
+      // The grace check skips flush runs so normal §9.2 continuation recovery applies.
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const runId = randomUUID();
+      const wakeupRequestId = randomUUID();
+      const issueId = randomUUID();
+      const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+      const now = new Date("2026-03-19T00:00:00.000Z");
+
+      await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix, requireBoardApprovalForNewAgents: false });
+      await db.insert(agents).values({ id: agentId, companyId, name: "CodexCoder", role: "engineer", status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+      await db.insert(agentWakeupRequests).values({ id: wakeupRequestId, companyId, agentId, source: "automation", triggerDetail: "system", reason: "issue_continuation_needed", payload: { issueId }, status: "failed", runId, claimedAt: now, finishedAt: new Date("2026-03-19T00:05:00.000Z") });
+      await db.insert(heartbeatRuns).values({
+        id: runId, companyId, agentId, invocationSource: "automation", triggerDetail: "system",
+        status: "succeeded", wakeupRequestId, startedAt: now, finishedAt: new Date("2026-03-19T00:05:00.000Z"),
+        updatedAt: new Date("2026-03-19T00:05:00.000Z"), livenessState: "advanced",
+        contextSnapshot: {
+          issueId, taskId: issueId, wakeReason: "issue_continuation_needed",
+          retryReason: "result_comment_disposition_flush",
+          source: "issue.result_comment_grace_continuation",
+          allowDeliverableWork: false, recoveryIntent: "status_only",
+        },
+      });
+      await db.insert(issues).values({ id: issueId, companyId, title: "Flush run test", status: "in_progress", priority: "medium", assigneeAgentId: agentId, checkoutRunId: runId, issueNumber: 1, identifier: `${issuePrefix}-1`, startedAt: now });
+      // Agent result comment created by the flush run
+      await db.insert(issueComments).values({ id: randomUUID(), companyId, issueId, authorAgentId: agentId, authorType: "agent", createdByRunId: runId, body: "Issuing PATCH now." });
+
+      const heartbeat = heartbeatService(db);
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+      // Flush run must NOT earn another grace wake
+      expect(result.dispositionFlushQueued).toBe(0);
+      // Normal productive continuation recovery fires instead
+      expect(result.continuationRequeued).toBe(1);
+
+      const graceFlags = await db.select().from(issueResultCommentGraceFlags).where(
+        and(eq(issueResultCommentGraceFlags.sourceIssueId, issueId), eq(issueResultCommentGraceFlags.runId, runId)),
+      );
+      expect(graceFlags).toHaveLength(0);
+
+      const flushRun = await db.select().from(agentWakeupRequests).where(
+        and(eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.status, "queued")),
+      );
+      if (flushRun[0]?.runId) await waitForRunToSettle(heartbeat, flushRun[0].runId);
+    });
+
+    it("skips grace when the run left only system comments (no agent result comments)", async () => {
+      const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "succeeded",
+        livenessState: "advanced",
+      });
+      // Seed only a system comment for this run
+      await db.insert(issueComments).values({
+        id: randomUUID(),
+        companyId,
+        issueId,
+        authorType: "system",
+        createdByRunId: runId,
+        body: "Paperclip recovery notice.",
+      });
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result.dispositionFlushQueued).toBe(0);
+      // Normal productive continuation recovery applies
+      expect(result.continuationRequeued).toBe(1);
+    });
   });
 
   it("does not reconcile user-assigned work through the agent stranded-work recovery path", async () => {
