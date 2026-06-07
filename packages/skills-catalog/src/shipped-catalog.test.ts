@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { catalogManifest, catalogSkills, resolveCatalogSkillRef } from "./index.js";
 
@@ -86,5 +87,28 @@ describe("shipped skills catalog", () => {
     expect(resolveCatalogSkillRef(sample.id)).toMatchObject({ key: sample.key });
     expect(resolveCatalogSkillRef(sample.key)).toMatchObject({ key: sample.key });
     expect(resolveCatalogSkillRef(sample.slug)).toMatchObject({ key: sample.key });
+  });
+
+  it("keeps the GitHub PR workflow aligned with repository PR templates and truth-first verification", async () => {
+    const markdown = await fs.readFile(
+      new URL("../catalog/bundled/software-development/github-pr-workflow/SKILL.md", import.meta.url),
+      "utf8",
+    );
+
+    expect(markdown).toContain(".github/PULL_REQUEST_TEMPLATE.md");
+    expect(markdown).toContain("Do not replace it with the fallback structure");
+    for (const section of [
+      "## Thinking Path",
+      "## What Changed",
+      "## Verification",
+      "## Risks",
+      "## Model Used",
+      "## Checklist",
+    ]) {
+      expect(markdown).toContain(section);
+    }
+    expect(markdown).toContain("Never fabricate test results");
+    expect(markdown).toContain("Never recycle a title or PR body");
+    expect(markdown).toContain("Repository lint wins over stylistic task wording");
   });
 });
