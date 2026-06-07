@@ -225,6 +225,7 @@ export function deriveIssueCommentRunLogAttribution(
 export interface IssueFilters {
   attention?: "blocked";
   status?: string;
+  priority?: string;
   assigneeAgentId?: string;
   participantAgentId?: string;
   assigneeUserId?: string;
@@ -3863,6 +3864,12 @@ export function issueService(db: Db) {
       if (filters?.status) {
         const statuses = filters.status.split(",").map((s) => s.trim());
         conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
+      }
+      if (filters?.priority) {
+        const priorities = filters.priority.split(",").map((p) => p.trim()).filter((p) => p.length > 0);
+        if (priorities.length > 0) {
+          conditions.push(priorities.length === 1 ? eq(issues.priority, priorities[0]) : inArray(issues.priority, priorities));
+        }
       }
       if (filters?.assigneeAgentId) {
         conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));

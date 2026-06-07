@@ -1800,6 +1800,92 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result?.description).toHaveLength(1200);
     expect(result?.description?.endsWith("—")).toBe(true);
   });
+
+  it("filters by single priority value (ZERA-490)", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const criticalId = randomUUID();
+    const highId = randomUUID();
+    const mediumId = randomUUID();
+    const lowId = randomUUID();
+
+    await db.insert(issues).values([
+      { id: criticalId, companyId, title: "Critical", status: "todo", priority: "critical" },
+      { id: highId, companyId, title: "High", status: "todo", priority: "high" },
+      { id: mediumId, companyId, title: "Medium", status: "todo", priority: "medium" },
+      { id: lowId, companyId, title: "Low", status: "todo", priority: "low" },
+    ]);
+
+    const highResult = await svc.list(companyId, { priority: "high" });
+    expect(highResult.map((issue) => issue.id)).toEqual([highId]);
+
+    const mediumResult = await svc.list(companyId, { priority: "medium" });
+    expect(mediumResult.map((issue) => issue.id)).toEqual([mediumId]);
+  });
+
+  it("filters by comma-separated priority list and combines with status (ZERA-490)", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const criticalTodoId = randomUUID();
+    const highTodoId = randomUUID();
+    const mediumTodoId = randomUUID();
+    const criticalDoneId = randomUUID();
+
+    await db.insert(issues).values([
+      { id: criticalTodoId, companyId, title: "Critical todo", status: "todo", priority: "critical" },
+      { id: highTodoId, companyId, title: "High todo", status: "todo", priority: "high" },
+      { id: mediumTodoId, companyId, title: "Medium todo", status: "todo", priority: "medium" },
+      { id: criticalDoneId, companyId, title: "Critical done", status: "done", priority: "critical" },
+    ]);
+
+    const criticalHigh = await svc.list(companyId, { priority: "critical,high" });
+    expect(new Set(criticalHigh.map((issue) => issue.id))).toEqual(new Set([criticalTodoId, highTodoId, criticalDoneId]));
+
+    const criticalHighTodo = await svc.list(companyId, {
+      priority: "critical,high",
+      status: "todo",
+    });
+    expect(new Set(criticalHighTodo.map((issue) => issue.id))).toEqual(new Set([criticalTodoId, highTodoId]));
+  });
+
+  it("ignores blank and empty priority filter values (ZERA-490)", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const criticalId = randomUUID();
+    const mediumId = randomUUID();
+
+    await db.insert(issues).values([
+      { id: criticalId, companyId, title: "Critical", status: "todo", priority: "critical" },
+      { id: mediumId, companyId, title: "Medium", status: "todo", priority: "medium" },
+    ]);
+
+    const emptyResult = await svc.list(companyId, { priority: "" });
+    expect(new Set(emptyResult.map((issue) => issue.id))).toEqual(new Set([criticalId, mediumId]));
+
+    const blanksResult = await svc.list(companyId, { priority: " , " });
+    expect(new Set(blanksResult.map((issue) => issue.id))).toEqual(new Set([criticalId, mediumId]));
+  });
 });
 
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
