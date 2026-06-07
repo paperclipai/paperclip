@@ -90,6 +90,38 @@ export interface StartedServer {
   databaseUrl: string;
 }
 
+/**
+ * Bound a cold-start step so a hanging dependency can't pin a serverless cold boot to
+ * the function's max duration (we observed a 300s hang → 504). On timeout OR error it
+ * logs and CONTINUES — the control plane starts (degraded) rather than wedging. Used
+ * only on serverless; the persistent worker awaits these fully.
+ */
+async function boundColdStartStep(label: string, ms: number, run: () => Promise<unknown>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timed = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      logger.warn(
+        { coldStartStep: label, timeoutMs: ms },
+        `cold-start step '${label}' exceeded ${ms}ms — continuing (runs again next boot / on the worker)`,
+      );
+      resolve();
+    }, ms);
+  });
+  try {
+    await Promise.race([
+      Promise.resolve()
+        .then(run)
+        .then(() => undefined)
+        .catch((err) => {
+          logger.warn({ coldStartStep: label, err }, `cold-start step '${label}' failed — continuing`);
+        }),
+      timed,
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function startServer(): Promise<StartedServer> {
   // --- cold-start boot timing -------------------------------------------------
   // One-shot per process: startServer runs exactly once per (cold) instance, so
@@ -566,9 +598,14 @@ export async function startServer(): Promise<StartedServer> {
   if (config.deploymentMode === "local_trusted") {
     await ensureLocalTrustedBoardPrincipal(db as any);
   }
-  const accessBackfill = await backfillPrincipalAccessCompatibility(db as any);
-  if (accessBackfill.agentMembershipsInserted > 0 || accessBackfill.humanGrantsInserted > 0) {
-    logger.info(accessBackfill, "Backfilled principal access compatibility records");
+  // One-time data backfill — owned by the persistent worker, NOT the serverless control
+  // plane. Running it on every Vercel cold boot adds DB load and risks pinning the cold
+  // start (it was the 300s-hang / EMAXCONN source). Skip on Vercel, like migrations.
+  if (!process.env.VERCEL) {
+    const accessBackfill = await backfillPrincipalAccessCompatibility(db as any);
+    if (accessBackfill.agentMembershipsInserted > 0 || accessBackfill.humanGrantsInserted > 0) {
+      logger.info(accessBackfill, "Backfilled principal access compatibility records");
+    }
   }
   if (config.deploymentMode === "authenticated") {
     const {
@@ -906,7 +943,14 @@ export async function startServer(): Promise<StartedServer> {
   // Without this, adapter type validation (assertKnownAdapterType) would
   // reject valid external adapter types during the startup loading window.
   const { waitForExternalAdapters } = await import("./adapters/registry.js");
-  await waitForExternalAdapters();
+  if (process.env.VERCEL) {
+    // Bound it: if an external adapter import stalls, a serverless cold boot must not
+    // hang to the function's max duration (→ 504). Continue after the bound; adapter
+    // type validation may briefly miss a slow external type, which is recoverable.
+    await boundColdStartStep("waitForExternalAdapters", 15_000, () => waitForExternalAdapters());
+  } else {
+    await waitForExternalAdapters();
+  }
   bootMark("adapters");
 
   const startedServer = {
