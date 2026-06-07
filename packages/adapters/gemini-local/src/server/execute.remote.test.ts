@@ -184,6 +184,11 @@ describe("gemini remote execution", () => {
       expect.stringContaining(".gemini/skills"),
       expect.anything(),
     );
+    expect(runSshCommand).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining(".mcp.json"),
+      expect.anything(),
+    );
     const call = runChildProcess.mock.calls[0] as unknown as
       | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
