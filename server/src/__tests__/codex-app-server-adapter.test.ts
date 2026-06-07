@@ -12,6 +12,8 @@ type MockServerOptions = {
   failResume?: boolean;
   authMethod?: string | null;
   requiresOpenaiAuth?: boolean | null;
+  turnStatus?: "completed" | "failed";
+  turnErrorMessage?: string;
 };
 
 function createThread(id: string, cwd = "/srv/paperclip") {
@@ -39,13 +41,17 @@ function createThread(id: string, cwd = "/srv/paperclip") {
   };
 }
 
-function createTurn(id: string, status: "inProgress" | "completed" | "failed" = "inProgress") {
+function createTurn(
+  id: string,
+  status: "inProgress" | "completed" | "failed" = "inProgress",
+  errorMessage: string | null = null,
+) {
   return {
     id,
     items: [],
     itemsView: "full",
     status,
-    error: null,
+    error: errorMessage ? { message: errorMessage } : null,
     startedAt: 1,
     completedAt: status === "inProgress" ? null : 2,
     durationMs: status === "inProgress" ? null : 100,
@@ -155,6 +161,8 @@ async function startMockCodexAppServer(options: MockServerOptions = {}) {
       }
 
       if (method === "turn/start") {
+        const turnStatus = options.turnStatus ?? "completed";
+        const turnErrorMessage = options.turnErrorMessage ?? "Codex App Server turn failed";
         ws.send(
           JSON.stringify({
             id: message.id,
@@ -212,7 +220,11 @@ async function startMockCodexAppServer(options: MockServerOptions = {}) {
             method: "turn/completed",
             params: {
               threadId: "thread-started",
-              turn: createTurn("turn-1", "completed"),
+              turn: createTurn(
+                "turn-1",
+                turnStatus,
+                turnStatus === "failed" ? turnErrorMessage : null,
+              ),
             },
           }),
         );
@@ -310,6 +322,26 @@ describe("codex app-server adapter", () => {
       expect.arrayContaining(["initialize", "thread/start", "turn/start"]),
     );
     expect(mock.receivedAuthorizationHeaders).toEqual([]);
+  });
+
+  it("returns a failed result when Codex reports a failed turn/completed notification", async () => {
+    const mock = await startMockCodexAppServer({
+      turnStatus: "failed",
+      turnErrorMessage: "remote turn blew up",
+    });
+    cleanup.push(() => mock.close());
+
+    const { ctx, logs } = createExecutionContext({
+      appServerUrl: mock.url,
+      dangerouslyBypassApprovalsAndSandbox: true,
+    });
+
+    const result = await executeCodexViaAppServer(ctx);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorMessage).toContain("remote turn blew up");
+    expect(logs.stdout.join("")).toContain('"type":"turn.failed"');
+    expect(logs.stdout.join("")).toContain("remote turn blew up");
   });
 
   it("sends Authorization bearer auth only when a remote token is configured", async () => {

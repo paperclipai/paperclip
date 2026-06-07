@@ -663,17 +663,22 @@ export async function executeCodexViaAppServer(
           const usage = usageByTurn.get(turnId ?? "");
           if (status === "failed") {
             const error = asRecord(turn?.error);
+            const message = asString(error?.message, "Codex App Server turn failed");
             await pushStdoutEvent({
               type: "turn.failed",
-              error: { message: asString(error?.message, "Codex App Server turn failed") },
+              error: { message },
               usage,
             });
-          } else {
-            await pushStdoutEvent({
-              type: "turn.completed",
-              usage,
-            });
+            if (turnId && activeTurnId === turnId && turnCompletedReject) {
+              turnCompletedReject(new Error(message));
+            }
+            return;
           }
+
+          await pushStdoutEvent({
+            type: "turn.completed",
+            usage,
+          });
           if (turnId && activeTurnId === turnId && turnCompletedResolve) {
             turnCompletedResolve();
           }
