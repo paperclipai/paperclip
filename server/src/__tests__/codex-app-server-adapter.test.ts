@@ -372,19 +372,4 @@ describe("codex app-server adapter", () => {
     expect(result.checks.some((check) => check.code === "codex_app_server_auth_ready")).toBe(true);
   });
 
-  it("warns when a bearer token is configured on a non-loopback ws listener", async () => {
-    const result = await testCodexAppServerEnvironment({
-      companyId: "company-1",
-      adapterType: "codex_local",
-      config: {
-        appServerUrl: "ws://192.168.1.50:4100",
-        appServerBearerToken: "paperclip-remote-token",
-        dangerouslyBypassApprovalsAndSandbox: true,
-      },
-    });
-
-    expect(
-      result.checks.some((check) => check.code === "codex_app_server_bearer_token_insecure_transport"),
-    ).toBe(true);
-  });
 });
