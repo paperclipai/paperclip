@@ -331,4 +331,12 @@ describe("successful run handoff decision", () => {
     if (result.kind !== "skip") return;
     expect(result.reason).toContain("routine");
   });
+
+  it("Contract A: disabled routine trigger (enabled=false) is NOT treated as routine coverage — issue proceeds to missing_disposition", () => {
+    // The DB query that populates hasActiveRoutineNextFire filters on eq(routineTriggers.enabled, true).
+    // A routine whose trigger has enabled=false is excluded by that filter, so the caller passes
+    // hasActiveRoutineNextFire=false, and missing_disposition recovery must proceed.
+    const result = decide({ hasActiveRoutineNextFire: false });
+    expect(result.kind).toBe("enqueue");
+  });
 });
