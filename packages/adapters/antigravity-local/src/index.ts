@@ -1,12 +1,12 @@
 import {
-  buildSandboxNpmInstallCommand,
   type AdapterModelProfileDefinition,
 } from "@paperclipai/adapter-utils";
 
 export const type = "antigravity_local";
 export const label = "Antigravity CLI (local)";
 
-export const SANDBOX_INSTALL_COMMAND = buildSandboxNpmInstallCommand("@google/antigravity-cli");
+// agy is not published to npm; it must be installed via https://antigravity.dev
+export const SANDBOX_INSTALL_COMMAND: null = null;
 
 export const DEFAULT_ANTIGRAVITY_LOCAL_MODEL = "auto";
 

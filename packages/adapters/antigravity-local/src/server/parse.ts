@@ -1,6 +1,5 @@
-import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { asString, parseJson } from "@paperclipai/adapter-utils/server-utils";
 
-const UUID_RE = /\b([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\b/i;
 const CONVERSATION_ID_RE = /(?:conversation|session)(?:\s+id)?[:\s]+([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i;
 
 export function parseAntigravityOutput(stdout: string, stderr: string) {
@@ -8,17 +7,12 @@ export function parseAntigravityOutput(stdout: string, stderr: string) {
   const messages: string[] = [];
   let errorMessage: string | null = null;
 
-  // Extract session/conversation ID
+  // Extract session/conversation ID only from explicit "conversation id: <uuid>" patterns
+  // to avoid misidentifying UUIDs from tool results or file content as the session ID.
   const combinedText = `${stdout}\n${stderr}`;
   const conversationMatch = combinedText.match(CONVERSATION_ID_RE);
   if (conversationMatch && conversationMatch[1]) {
     sessionId = conversationMatch[1];
-  } else {
-    // Fallback to any UUID in the output
-    const uuidMatch = combinedText.match(UUID_RE);
-    if (uuidMatch && uuidMatch[1]) {
-      sessionId = uuidMatch[1];
-    }
   }
 
   // Parse stdout lines

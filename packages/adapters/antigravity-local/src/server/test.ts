@@ -82,15 +82,18 @@ export async function testEnvironment(
     if (typeof value === "string") env[key] = value;
   }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
-  const installCheck = await maybeRunSandboxInstallCommand({
-    runId,
-    target,
-    adapterKey: "antigravity",
-    installCommand: SANDBOX_INSTALL_COMMAND,
-    detectCommand: command,
-    env,
-  });
-  if (installCheck) checks.push(installCheck);
+  // agy is not on npm; skip sandbox auto-install (SANDBOX_INSTALL_COMMAND is null)
+  if (SANDBOX_INSTALL_COMMAND) {
+    const installCheck = await maybeRunSandboxInstallCommand({
+      runId,
+      target,
+      adapterKey: "antigravity",
+      installCommand: SANDBOX_INSTALL_COMMAND,
+      detectCommand: command,
+      env,
+    });
+    if (installCheck) checks.push(installCheck);
+  }
 
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
