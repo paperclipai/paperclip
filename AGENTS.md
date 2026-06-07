@@ -179,7 +179,7 @@ A change is done when all are true:
 4. Docs updated when behavior or commands change
 5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
 
-## 11. Fork-Specific: HenkDz/paperclip
+## 12. Fork-Specific: HenkDz/paperclip
 
 This is a fork of `paperclipai/paperclip` with QoL patches and an **external-only** Hermes adapter story on branch `feat/externalize-hermes-adapter` ([tree](https://github.com/HenkDz/paperclip/tree/feat/externalize-hermes-adapter)).
 
@@ -212,7 +212,7 @@ These are local modifications in the fork's UI. If re-copying source, these must
 
 ### Plugin System
 
-PR #2218 (`feat/external-adapter-phase1`) adds external adapter support. See root `AGENTS.md` for full details.
+PR #2218 (`feat/external-adapter-phase1`) added external adapter support. Key invariants for working in this area:
 
 - Adapters can be loaded as external plugins via `~/.paperclip/adapter-plugins.json`
 - The plugin-loader should have ZERO hardcoded adapter imports — pure dynamic loading

@@ -16,7 +16,7 @@
   "topbarLinks": [
     {
       "name": "GitHub",
-      "url": "https://github.com/paperclip-ai/paperclip"
+      "url": "https://github.com/paperclipai/paperclip"
     }
   ],
   "navigation": {
@@ -46,8 +46,6 @@
               "guides/board-operator/managing-agents",
               "guides/board-operator/org-structure",
               "guides/board-operator/managing-tasks",
-              "guides/board-operator/execution-workspaces-and-runtime-services",
-              "guides/board-operator/delegation",
               "guides/board-operator/execution-workspaces-and-runtime-services",
               "guides/board-operator/delegation",
               "guides/board-operator/approvals",
@@ -144,6 +142,6 @@
     ]
   },
   "footerSocials": {
-    "github": "https://github.com/paperclip-ai/paperclip"
+    "github": "https://github.com/paperclipai/paperclip"
   }
 }

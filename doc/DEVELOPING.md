@@ -13,7 +13,7 @@ Current implementation status:
 ## Prerequisites
 
 - Node.js 20+
-- pnpm 9+
+- pnpm 9.15+ (matches `packageManager` in `package.json`)
 
 ## Dependency Lockfile Policy
 
