@@ -1273,26 +1273,24 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRun?.processLossRetryCount).toBe(1);
     expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
 
-    const issue = await waitForValue(async () =>
-      db
-        .select()
-        .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((rows) => {
-          const row = rows[0] ?? null;
-          return row?.checkoutRunId === null ? row : null;
-        })
-    );
-    expect([retryRun?.id ?? null, null]).toContain(issue?.executionRunId ?? null);
-
-    const checkoutReleasedIssue = await waitForValue(async () =>
-      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
-        const row = rows[0] ?? null;
-        return row?.checkoutRunId === null ? row : null;
-      })
-    );
-    // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
-    expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
+    // checkoutRunId races with the retry run's async adoptStaleCheckoutRun call
+    // (startNextQueuedRunForAgent fires executeRun fire-and-forget; with agentStatus:
+    // "idle" the retry starts immediately and adopts the stale checkout before or
+    // after this read). Wait for the settled state instead of asserting the
+    // ephemeral intermediate value.
+    await waitForRunToSettle(heartbeat, retryRun!.id);
+    const settledIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(settledIssue?.checkoutRunId).toBe(retryRun?.id ?? null);
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {
