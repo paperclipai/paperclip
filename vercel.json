@@ -5,6 +5,7 @@
   "installCommand": "pnpm install --frozen-lockfile",
   "buildCommand": "pnpm run build:vercel",
   "fluid": true,
+  "regions": ["pdx1"],
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api" },
     {

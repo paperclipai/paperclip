@@ -66,7 +66,11 @@ export function createDb(url: string) {
     max: isServerless ? 1 : 10,
     idle_timeout: isServerless ? 10 : undefined,
     max_lifetime: isServerless ? 60 * 5 : undefined,
-    connect_timeout: 30,
+    // Fast-fail a slow/contended cold connect so the app gate can't hang ~30s on
+    // "LOADING…" (it then surfaces a coded RoboError + Retry). With the function now
+    // co-located in the DB's region (vercel.json regions: pdx1 ↔ Supabase us-west-2),
+    // a healthy connect is well under this.
+    connect_timeout: isServerless ? 10 : 30,
     // pgbouncer transaction mode (Supabase :6543) can't use prepared statements.
     prepare: usesTransactionPooler ? false : undefined,
   });

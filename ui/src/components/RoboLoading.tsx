@@ -7,7 +7,7 @@ import { AgentFace } from "./AgentFace";
  */
 export function RoboLoading({
   label = "Loading",
-  size = 56,
+  size = 88,
   className,
 }: {
   label?: string;
