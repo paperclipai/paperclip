@@ -7,12 +7,19 @@ const ANTHROPIC_MODELS_TIMEOUT_MS = 5000;
 const ANTHROPIC_MODELS_CACHE_TTL_MS = 60_000;
 const ANTHROPIC_API_VERSION = "2023-06-01";
 
-/** AWS Bedrock model IDs — region-qualified identifiers required by the Bedrock API. */
+/**
+ * AWS Bedrock model IDs using global inference profiles.
+ * Global profiles (global.anthropic.*) route requests to the nearest available
+ * region automatically, so they work for US, EU, and AP users alike.
+ * See: https://docs.aws.amazon.com/bedrock/latest/userguide/cross-region-inference.html
+ */
 const BEDROCK_MODELS: AdapterModel[] = [
-  { id: "us.anthropic.claude-opus-4-8-v1", label: "Bedrock Opus 4.8" },
-  { id: "us.anthropic.claude-opus-4-6-v1", label: "Bedrock Opus 4.6" },
-  { id: "us.anthropic.claude-sonnet-4-5-20250929-v2:0", label: "Bedrock Sonnet 4.5" },
-  { id: "us.anthropic.claude-haiku-4-5-20251001-v1:0", label: "Bedrock Haiku 4.5" },
+  { id: "global.anthropic.claude-opus-4-8", label: "Bedrock Opus 4.8" },
+  { id: "global.anthropic.claude-opus-4-7", label: "Bedrock Opus 4.7" },
+  { id: "global.anthropic.claude-opus-4-6-v1", label: "Bedrock Opus 4.6" },
+  { id: "global.anthropic.claude-sonnet-4-6", label: "Bedrock Sonnet 4.6" },
+  { id: "global.anthropic.claude-sonnet-4-5-20250929-v1:0", label: "Bedrock Sonnet 4.5" },
+  { id: "global.anthropic.claude-haiku-4-5-20251001-v1:0", label: "Bedrock Haiku 4.5" },
 ];
 
 let cached: { keyFingerprint: string; baseUrl: string; expiresAt: number; models: AdapterModel[] } | null = null;
@@ -156,8 +163,7 @@ export function resetClaudeModelsCacheForTests() {
   cached = null;
 }
 
-/** Check whether a model ID is a Bedrock-native identifier (not an Anthropic API short name). */
-/** Bedrock model IDs use region-qualified prefixes (e.g. us.anthropic.*, eu.anthropic.*) or ARNs. */
+/** Check whether a model ID is a Bedrock-native identifier (region-qualified prefix or ARN). */
 export function isBedrockModelId(model: string): boolean {
   return /^\w+\.anthropic\./.test(model) || model.startsWith("arn:aws:bedrock:");
 }
