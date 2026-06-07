@@ -10,11 +10,20 @@ import {
   agentWakeupRequests,
   activityLog,
   costEvents,
+  financeEvents,
   heartbeatRunEvents,
   heartbeatRuns,
   issueExecutionDecisions,
   issues,
   issueComments,
+  issueThreadInteractions,
+  approvalComments,
+  approvals,
+  assets,
+  goals,
+  joinRequests,
+  projects,
+  routines,
 } from "@paperclipai/db";
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
@@ -518,10 +527,36 @@ export function agentService(db: Db) {
         );
         await tx.delete(issueExecutionDecisions).where(eq(issueExecutionDecisions.actorAgentId, id));
         await tx.delete(issueComments).where(eq(issueComments.authorAgentId, id));
+        // cost_events references both the agent and its heartbeat_runs (heartbeat_run_id),
+        // so delete it before the runs. agent_id is NOT NULL → delete, don't null.
+        await tx.delete(costEvents).where(
+          or(
+            eq(costEvents.agentId, id),
+            sql`${costEvents.heartbeatRunId} in (select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${id})`,
+          ),
+        );
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.agentId, id));
+        // Null out the agent on rows we keep for history/ownership (these FKs are
+        // restrict/no-action, so they'd otherwise abort the delete with a 500).
+        await tx.update(approvalComments).set({ authorAgentId: null }).where(eq(approvalComments.authorAgentId, id));
+        await tx.update(approvals).set({ requestedByAgentId: null }).where(eq(approvals.requestedByAgentId, id));
+        await tx.update(assets).set({ createdByAgentId: null }).where(eq(assets.createdByAgentId, id));
+        await tx.update(financeEvents).set({ agentId: null }).where(eq(financeEvents.agentId, id));
+        await tx.update(goals).set({ ownerAgentId: null }).where(eq(goals.ownerAgentId, id));
+        await tx
+          .update(issueThreadInteractions)
+          .set({ createdByAgentId: null })
+          .where(eq(issueThreadInteractions.createdByAgentId, id));
+        await tx
+          .update(issueThreadInteractions)
+          .set({ resolvedByAgentId: null })
+          .where(eq(issueThreadInteractions.resolvedByAgentId, id));
+        await tx.update(joinRequests).set({ createdAgentId: null }).where(eq(joinRequests.createdAgentId, id));
+        await tx.update(projects).set({ leadAgentId: null }).where(eq(projects.leadAgentId, id));
+        await tx.update(routines).set({ assigneeAgentId: null }).where(eq(routines.assigneeAgentId, id));
         const deleted = await tx
           .delete(agents)
           .where(eq(agents.id, id))
