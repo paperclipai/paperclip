@@ -2156,7 +2156,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           reason: "no_invokable_recovery_owner",
         },
       monitorPolicy: null,
-      maxAttempts: MAX_MISSING_DISPOSITION_RECOVERY_ATTEMPTS,
+      maxAttempts: recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
+        ? MAX_MISSING_DISPOSITION_RECOVERY_ATTEMPTS
+        : null,
       lastAttemptAt: now,
     });
 

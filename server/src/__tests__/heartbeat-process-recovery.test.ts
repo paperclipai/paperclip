@@ -85,6 +85,7 @@ import {
   redactDetectedSuccessfulRunProgressSummaryForBoard,
 } from "../services/heartbeat.ts";
 import {
+  MAX_MISSING_DISPOSITION_RECOVERY_ATTEMPTS,
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
@@ -756,7 +757,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       returnOwnerAgentId: input.agentId,
       cause: input.cause ?? "stranded_assigned_issue",
       attemptCount: 1,
-      maxAttempts: null,
+      // Contract C: only missing_disposition cause is bounded; all others must remain null (unbounded)
+      maxAttempts: input.kind === "missing_disposition" ? MAX_MISSING_DISPOSITION_RECOVERY_ATTEMPTS : null,
     });
     expect(action.evidence).toMatchObject({
       sourceIssueId: input.issueId,
@@ -2897,6 +2899,31 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         await waitForRunToSettle(heartbeat, row.id);
       }
     }
+  });
+
+  it("creates recovery action with null maxAttempts for non-missing-disposition causes (Contract C must not cap process-loss or budget_blocked recovery)", async () => {
+    // Regression guard: Contract C caps are scoped to missing_disposition only.
+    // Non-retryable non-missing causes (budget_blocked, process-loss, etc.) must produce maxAttempts=null (unbounded).
+    // If maxAttempts leaked to all causes, these would be incorrectly capped at MAX_MISSING_DISPOSITION_RECOVERY_ATTEMPTS.
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "budget_blocked",
+      runError: "Budget exceeded; refusing to dispatch.",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reconcileStrandedAssignedIssues();
+
+    // expectSourceScopedStrandedRecoveryAction asserts maxAttempts: null for non-missing-disposition kind
+    await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+      retryReason: null,
+    });
   });
 
   it("leaves the productive-but-stranded continuation path unchanged under the new classifier", async () => {
