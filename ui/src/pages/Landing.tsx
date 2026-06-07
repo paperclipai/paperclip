@@ -921,7 +921,10 @@ function Faq({ q, a }: { q: string; a: string }) {
 
 function FinaleMetric() {
   return (
-    <div className="rounded-2xl border border-black/[0.07] bg-white p-6 shadow-sm dark:border-white/[0.08] dark:bg-[#261f19]">
+    <div className="relative rounded-2xl border border-black/[0.07] bg-white p-6 shadow-sm dark:border-white/[0.08] dark:bg-[#261f19]">
+      {/* corner-bracket accents */}
+      <span className="pointer-events-none absolute -left-1.5 -top-1.5 size-5 rounded-tl-md border-l-2 border-t-2 border-[#f97316]/60" aria-hidden />
+      <span className="pointer-events-none absolute -bottom-1.5 -right-1.5 size-5 rounded-br-md border-b-2 border-r-2 border-[#f97316]/60" aria-hidden />
       <div className="flex items-baseline gap-2">
         <span className="text-[40px] font-bold tracking-[-0.03em] text-gray-900 dark:text-neutral-100">
           $<CountUp to={1240} />k
@@ -1010,11 +1013,9 @@ const STORY: {
 function StoryBeat({
   s,
   active,
-  left,
 }: {
   s: (typeof STORY)[number];
   active: boolean;
-  left: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [seen, setSeen] = useState(false);
@@ -1032,19 +1033,19 @@ function StoryBeat({
           io.disconnect();
         }
       },
-      { threshold: 0.2 },
+      { threshold: 0.15 },
     );
     io.observe(el);
     return () => io.disconnect();
   }, []);
 
   return (
-    <div ref={ref} className="relative md:grid md:grid-cols-2 md:items-center md:gap-14">
-      {/* node on the spine */}
-      <span className="absolute left-5 top-0.5 z-10 -translate-x-1/2 md:left-1/2">
+    <div ref={ref} className="relative">
+      {/* node on the rail */}
+      <span className="absolute left-5 top-0 z-10 -translate-x-1/2 md:left-6">
         <span
           className={cn(
-            "flex size-9 items-center justify-center rounded-full border transition-all duration-500",
+            "flex size-10 items-center justify-center rounded-full border transition-all duration-500",
             active
               ? "border-[#f97316] bg-[#f97316] text-white shadow-[0_0_0_6px_rgba(249,115,22,0.12)]"
               : "border-black/10 bg-white text-gray-400 dark:border-white/15 dark:bg-[#1b1410]",
@@ -1054,37 +1055,30 @@ function StoryBeat({
         </span>
       </span>
 
-      {/* text */}
-      <div
-        className={cn(
-          "pl-14 transition-all duration-700 md:pl-0",
-          seen ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0",
-          left ? "md:order-1 md:pr-14 md:text-right" : "md:order-2 md:pl-14",
-        )}
-      >
-        <span className="font-mono text-[12px] font-semibold text-[#f97316]">{s.n}</span>
-        <h3 className="mt-1 text-[21px] font-bold tracking-[-0.01em] text-gray-900 dark:text-neutral-100">
-          {s.t}
-        </h3>
-        <p
+      {/* content hangs to the right of the rail */}
+      <div className="pl-14 md:grid md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] md:items-center md:gap-10 md:pl-20">
+        <div
           className={cn(
-            "mt-2 text-[15px] leading-relaxed text-gray-500 dark:text-neutral-400",
-            left ? "md:ml-auto md:max-w-sm" : "md:max-w-sm",
+            "transition-all duration-700",
+            seen ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0",
           )}
         >
-          {s.d}
-        </p>
-      </div>
-
-      {/* visual */}
-      <div
-        className={cn(
-          "mt-5 pl-14 transition-all duration-700 md:mt-0 md:pl-0",
-          seen ? "translate-y-0 opacity-100 delay-100" : "translate-y-6 opacity-0",
-          left ? "md:order-2 md:pl-14" : "md:order-1 md:pr-14",
-        )}
-      >
-        {s.visual}
+          <span className="font-mono text-[12px] font-semibold text-[#f97316]">{s.n}</span>
+          <h3 className="mt-1 text-[22px] font-bold tracking-[-0.01em] text-gray-900 dark:text-neutral-100">
+            {s.t}
+          </h3>
+          <p className="mt-2 max-w-md text-[15px] leading-relaxed text-gray-500 dark:text-neutral-400">
+            {s.d}
+          </p>
+        </div>
+        <div
+          className={cn(
+            "mt-5 transition-all duration-700 md:mt-0",
+            seen ? "translate-y-0 opacity-100 delay-100" : "translate-y-6 opacity-0",
+          )}
+        >
+          {s.visual}
+        </div>
       </div>
     </div>
   );
@@ -1107,7 +1101,7 @@ function StoryTimeline() {
         const el = ref.current;
         if (!el) return;
         const r = el.getBoundingClientRect();
-        const anchor = window.innerHeight * 0.55;
+        const anchor = window.innerHeight * 0.5;
         setP(Math.max(0, Math.min(1, (anchor - r.top) / r.height)));
       });
     };
@@ -1123,34 +1117,33 @@ function StoryTimeline() {
 
   return (
     <Section id="how" className="scroll-mt-20 py-20">
-      <div className="mb-16 text-center">
+      <div className="mb-14 max-w-2xl pl-14 md:pl-20">
         <Eyebrow>
           <span className="inline-flex items-center gap-1.5">
             <GitBranch className="size-3.5" /> From goal to growth
           </span>
         </Eyebrow>
-        <h2 className="mx-auto max-w-2xl text-[clamp(26px,3.4vw,42px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
+        <h2 className="text-[clamp(26px,3.4vw,42px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
           One story, start to finish.
         </h2>
-        <p className="mx-auto mt-4 max-w-xl text-[16px] leading-relaxed text-gray-500 dark:text-neutral-400">
+        <p className="mt-4 max-w-xl text-[16px] leading-relaxed text-gray-500 dark:text-neutral-400">
           Watch a company come alive — set the goal, build the team, and let it run while you sleep.
         </p>
       </div>
 
       <div ref={ref} className="relative">
-        {/* base spine */}
-        <div className="pointer-events-none absolute left-5 top-1 h-[calc(100%-0.25rem)] w-px -translate-x-1/2 bg-black/[0.08] dark:bg-white/[0.10] md:left-1/2" />
+        {/* base rail (left) */}
+        <div className="pointer-events-none absolute left-5 top-1 h-[calc(100%-0.25rem)] w-px -translate-x-1/2 bg-black/[0.08] dark:bg-white/[0.10] md:left-6" />
         {/* drawn fill */}
         <div
-          className="pointer-events-none absolute left-5 top-1 w-px -translate-x-1/2 bg-gradient-to-b from-[#f97316] to-[#fb923c] md:left-1/2"
+          className="pointer-events-none absolute left-5 top-1 w-px -translate-x-1/2 bg-gradient-to-b from-[#f97316] to-[#fb923c] md:left-6"
           style={{ height: `${p * 100}%` }}
         />
-        <div className="space-y-16 md:space-y-28">
+        <div className="space-y-16 md:space-y-24">
           {STORY.map((s, i) => (
             <StoryBeat
               key={s.n}
               s={s}
-              left={i % 2 === 0}
               active={p >= (i + 0.5) / STORY.length - 0.03}
             />
           ))}
