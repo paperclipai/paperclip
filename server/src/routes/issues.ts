@@ -5883,6 +5883,175 @@ export function issueRoutes(
     res.json(result);
   });
 
+  // Self-service stale checkout release — clears checkoutRunId when the
+  // checkout run is no longer active. Does NOT change status or assignee.
+  // Accessible to: owning agent (self), board users.
+  router.post("/issues/:id/release-stale-checkout", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    if (req.actor.type === "agent") {
+      const actorAgentId = req.actor.agentId;
+      if (!actorAgentId) {
+        res.status(403).json({ error: "Agent authentication required" });
+        return;
+      }
+      if (existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
+        res.status(403).json({
+          error: "Agent can only release its own stale checkout",
+          details: {
+            issueId: existing.id,
+            assigneeAgentId: existing.assigneeAgentId,
+            actorAgentId,
+          },
+        });
+        return;
+      }
+    } else {
+      assertBoard(req);
+    }
+
+    const result = await svc.releaseStaleCheckout(
+      id,
+      req.actor.type === "agent" ? (req.actor.agentId ?? null) : null,
+    );
+    if (!result) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.stale_checkout_released",
+      entityType: "issue",
+      entityId: existing.id,
+      details: {
+        wasStale: result.wasStale,
+        clearedCheckoutRunId: existing.checkoutRunId,
+        actorType: req.actor.type,
+      },
+    });
+
+    res.json(result.issue);
+  });
+
+  // Recovery action resolution by URL-param actionId. Alias for the existing
+  // /issues/:id/recovery-actions/resolve that embeds actionId in the path so
+  // agents can construct a direct URL without knowing the body schema.
+  // Body: { resolution, note, sourceIssueStatus? }
+  // "resolution" maps to "outcome"; "note" maps to "resolutionNote".
+  router.post("/issues/:id/recovery-actions/:actionId/resolve", async (req, res) => {
+    // Merge actionId from URL params into req.body and forward to shared logic.
+    const actionId = req.params.actionId as string;
+    const { resolution, note, sourceIssueStatus } = req.body ?? {};
+    req.body = {
+      actionId,
+      outcome: resolution ?? req.body?.outcome,
+      resolutionNote: note ?? req.body?.resolutionNote,
+      ...(sourceIssueStatus !== undefined ? { sourceIssueStatus } : {}),
+    };
+    // Re-use the same handler by falling through to the existing route.
+    // Express does not support internal forwards, so we call the service directly.
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
+    if (
+      !(await assertRecoveryActionAuthority(
+        req,
+        res,
+        issue,
+        activeRecoveryAction,
+        { source: "recovery_action_resolution" },
+      ))
+    ) {
+      return;
+    }
+
+    const { outcome, sourceIssueStatus: issueStatus, resolutionNote } = req.body;
+    if (outcome === "false_positive" || outcome === "cancelled") {
+      assertBoard(req);
+    }
+
+    const actor = getActorInfo(req);
+    const updateFields = issueStatus ? { status: issueStatus } : {};
+    await assertAgentInReviewReviewPath({
+      existing: issue,
+      updateFields,
+      actorType: req.actor.type,
+    });
+
+    const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
+    const result = await db.transaction(async (tx) => {
+      let updatedIssue = issue;
+      if (issueStatus) {
+        const patched = await svc.update(
+          id,
+          {
+            status: issueStatus,
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          },
+          tx,
+        );
+        if (!patched) throw notFound("Issue not found");
+        updatedIssue = patched;
+      }
+
+      const recoveryAction = await recoveryActionsSvc.resolveActiveForIssue(
+        {
+          companyId: issue.companyId,
+          sourceIssueId: issue.id,
+          actionId: actionId ?? null,
+          status: actionStatus,
+          outcome,
+          resolutionNote: resolutionNote ?? null,
+        },
+        tx,
+      );
+      if (!recoveryAction) throw notFound("Active recovery action not found");
+
+      return { issue: updatedIssue, recoveryAction };
+    });
+
+    await routinesSvc.syncRunStatusForIssue(result.issue.id);
+
+    await logActivity(db, {
+      companyId: result.issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.recovery_action_resolved",
+      entityType: "issue",
+      entityId: result.issue.id,
+      details: {
+        recoveryActionId: result.recoveryAction.id,
+        recoveryActionStatus: result.recoveryAction.status,
+        outcome,
+        actionId,
+        source: "url_param",
+      },
+    });
+
+    res.json({ issue: result.issue, recoveryAction: result.recoveryAction });
+  });
+
   router.get("/issues/:id/comments", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);

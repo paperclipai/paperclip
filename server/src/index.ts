@@ -717,13 +717,39 @@ export async function startServer(): Promise<StartedServer> {
     });
   
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    // Fleet circuit breaker: sliding window of agent error timestamps.
+    // When ≥ fleetCircuitBreakerThreshold agents error within fleetCircuitBreakerWindowMs,
+    // trigger a recovery sweep to reassign stranded issues.
+    // heartbeat is assigned below; onFleetAgentError only ever fires asynchronously after construction.
+    const fleetErrorTimestamps: number[] = [];
+    // eslint-disable-next-line prefer-const
+    let heartbeat!: ReturnType<typeof heartbeatService>;
+    const onFleetAgentError = (agentId: string) => {
+      const now = Date.now();
+      fleetErrorTimestamps.push(now);
+      const windowStart = now - config.fleetCircuitBreakerWindowMs;
+      while (fleetErrorTimestamps.length > 0 && fleetErrorTimestamps[0] < windowStart) {
+        fleetErrorTimestamps.shift();
+      }
+      if (fleetErrorTimestamps.length >= config.fleetCircuitBreakerThreshold) {
+        fleetErrorTimestamps.length = 0;
+        logger.error(
+          { agentId, threshold: config.fleetCircuitBreakerThreshold, windowMs: config.fleetCircuitBreakerWindowMs },
+          "fleet circuit breaker triggered — running emergency stranded-issue recovery",
+        );
+        void heartbeat.reconcileStrandedAssignedIssues().catch((err) => {
+          logger.error({ err }, "fleet circuit breaker recovery sweep failed");
+        });
+      }
+    };
+
+    heartbeat = heartbeatService(db as any, { pluginWorkerManager, onFleetAgentError });
     const routines = routineService(db as any, { pluginWorkerManager });
-  
+
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
     void heartbeat
-      .reapOrphanedRuns()
+      .reapOrphanedRuns({ requeueStalenessMs: config.runRequeueStalenessMs })
       .then(() => heartbeat.promoteDueScheduledRetries())
       .then(async (promotion) => {
         await heartbeat.resumeQueuedRuns();
@@ -763,33 +789,38 @@ export async function startServer(): Promise<StartedServer> {
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
-    setInterval(() => {
-      void heartbeat
-        .tickTimers(new Date())
-        .then((result) => {
-          if (result.enqueued > 0) {
-            logger.info({ ...result }, "heartbeat timer tick enqueued runs");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "heartbeat timer tick failed");
-        });
+    let drainModeActive = false;
 
-      void routines
-        .tickScheduledTriggers(new Date())
-        .then((result) => {
-          if (result.triggered > 0) {
-            logger.info({ ...result }, "routine scheduler tick enqueued runs");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "routine scheduler tick failed");
-        });
-  
+    setInterval(() => {
+      if (!drainModeActive) {
+        void heartbeat
+          .tickTimers(new Date())
+          .then((result) => {
+            if (result.enqueued > 0) {
+              logger.info({ ...result }, "heartbeat timer tick enqueued runs");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "heartbeat timer tick failed");
+          });
+
+        void routines
+          .tickScheduledTriggers(new Date())
+          .then((result) => {
+            if (result.triggered > 0) {
+              logger.info({ ...result }, "routine scheduler tick enqueued runs");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "routine scheduler tick failed");
+          });
+      }
+
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
       // persisted queued work is still being driven forward.
+      // requeueStalenessMs is 0 here so periodic reaps never requeue — only the startup reap does.
       void heartbeat
-        .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+        .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000, requeueStalenessMs: 0 })
         .then(() => heartbeat.promoteDueScheduledRetries())
         .then(async (promotion) => {
           await heartbeat.resumeQueuedRuns();
@@ -830,8 +861,35 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
     }, config.heartbeatSchedulerIntervalMs);
+
+    // Heap memory monitor — Deliverables 1 & 2.
+    // At 70% heap: log a warning and expose the metric.
+    // At 75% heap: enter drain mode (stop accepting new runs) then schedule a restart.
+    setInterval(() => {
+      const { heapUsed, heapTotal } = process.memoryUsage();
+      if (heapTotal === 0) return;
+      const heapPercent = (heapUsed / heapTotal) * 100;
+
+      if (heapPercent >= config.heapDrainThresholdPercent && !drainModeActive) {
+        drainModeActive = true;
+        logger.error(
+          { heapPercent: heapPercent.toFixed(1), heapUsed, heapTotal, drainThreshold: config.heapDrainThresholdPercent },
+          "heap drain threshold reached — entering drain mode; server will restart after drain window",
+        );
+        // Allow up to 30 seconds for in-flight runs to finish, then exit so systemd restarts the process.
+        setTimeout(() => {
+          logger.warn("heap drain window elapsed — exiting for systemd restart");
+          process.exit(0);
+        }, 30_000);
+      } else if (heapPercent >= config.heapAlarmThresholdPercent) {
+        logger.warn(
+          { heapPercent: heapPercent.toFixed(1), heapUsed, heapTotal, alarmThreshold: config.heapAlarmThresholdPercent },
+          "heap alarm threshold reached",
+        );
+      }
+    }, config.heapMonitorIntervalMs);
   }
-  
+
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
 

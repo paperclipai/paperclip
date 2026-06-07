@@ -5645,6 +5645,65 @@ export function issueService(db: Db) {
         };
       }),
 
+    releaseStaleCheckout: async (id: string, actorAgentId: string | null) => {
+      await clearExecutionRunIfTerminal(id);
+      const existing = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(eq(issues.id, id))
+        .then((rows) => rows[0] ?? null);
+
+      if (!existing) return null;
+
+      if (actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
+        throw conflict("Only the assignee agent can release a stale checkout", {
+          issueId: existing.id,
+          assigneeAgentId: existing.assigneeAgentId,
+          actorAgentId,
+        });
+      }
+
+      if (!existing.checkoutRunId) {
+        const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
+        if (!row) return null;
+        const [enriched] = await withIssueLabels(db, [row]);
+        return { issue: enriched, wasStale: false };
+      }
+
+      const stale = await isTerminalOrMissingHeartbeatRun(existing.checkoutRunId);
+      if (!stale) {
+        throw conflict("Checkout run is still active and cannot be force-released", {
+          issueId: existing.id,
+          checkoutRunId: existing.checkoutRunId,
+        });
+      }
+
+      const updated = await db
+        .update(issues)
+        .set({
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(issues.id, id), eq(issues.checkoutRunId, existing.checkoutRunId)))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      const row = updated ?? await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      const [enriched] = await withIssueLabels(db, [row]);
+      return { issue: enriched, wasStale: true };
+    },
+
     listLabels: (companyId: string) =>
       db.select().from(labels).where(eq(labels.companyId, companyId)).orderBy(asc(labels.name), asc(labels.id)),
 

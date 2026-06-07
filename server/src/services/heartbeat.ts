@@ -2983,6 +2983,7 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  onFleetAgentError?: (agentId: string) => void;
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
@@ -5543,6 +5544,109 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return queued;
   }
 
+  async function enqueueRestartRequeue(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    now: Date,
+  ) {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
+    const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    const retryContextSnapshot = withRecoveryModelProfileHint({
+      ...contextSnapshot,
+      retryOfRunId: run.id,
+      wakeReason: "server_restart_requeue",
+      retryReason: "server_restart",
+    }, "normal_model");
+
+    const queued = await db.transaction(async (tx) => {
+      const wakeupRequest = await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: "server_restart_requeue",
+          payload: withRecoveryModelProfileHint({
+            ...(issueId ? { issueId } : {}),
+            retryOfRunId: run.id,
+          }, "normal_model"),
+          status: "queued",
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const retryRun = await tx
+        .insert(heartbeatRuns)
+        .values({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          invocationSource: "automation",
+          triggerDetail: "system",
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: retryContextSnapshot,
+          sessionIdBefore: sessionBefore,
+          retryOfRunId: run.id,
+          processLossRetryCount: run.processLossRetryCount ?? 0,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      await tx
+        .update(agentWakeupRequests)
+        .set({
+          runId: retryRun.id,
+          updatedAt: now,
+        })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      if (issueId) {
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: retryRun.id,
+            executionAgentNameKey: normalizeAgentNameKey(agent.name),
+            executionLockedAt: now,
+            updatedAt: now,
+          })
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
+      }
+
+      return retryRun;
+    });
+
+    publishLiveEvent({
+      companyId: queued.companyId,
+      type: "heartbeat.run.queued",
+      payload: {
+        runId: queued.id,
+        agentId: queued.agentId,
+        invocationSource: queued.invocationSource,
+        triggerDetail: queued.triggerDetail,
+        wakeupRequestId: queued.wakeupRequestId,
+      },
+    });
+
+    await appendRunEvent(queued, 1, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: "Queued automatic requeue after server restart; run was young enough to retry",
+      payload: {
+        retryOfRunId: run.id,
+      },
+    });
+
+    return queued;
+  }
+
   type ScheduledRetryGate =
     | { allowed: true }
     | {
@@ -7045,6 +7149,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ? "idle"
           : "error";
 
+    if (nextStatus === "error") {
+      options.onFleetAgentError?.(agentId);
+    }
+
     const updated = await db
       .update(agents)
       .set({
@@ -7294,8 +7402,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; requeueStalenessMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    // Runs younger than requeueStalenessMs at startup reap time are requeued rather than errored.
+    // 0 disables requeue (all orphans are failed); >0 enables it for young runs.
+    const requeueStalenessMs = opts?.requeueStalenessMs ?? 0;
     const now = new Date();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
@@ -7310,6 +7421,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(eq(heartbeatRuns.status, "running"));
 
     const reaped: string[] = [];
+    const requeued: string[] = [];
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
@@ -7352,6 +7464,58 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           pid: run.processPid,
           processGroupId: run.processGroupId,
         });
+      }
+
+      // Restart-requeue: runs that are young enough at server restart are requeued rather than failed.
+      // requeueStalenessMs=0 disables this path (periodic reaps never requeue).
+      if (requeueStalenessMs > 0 && !tracksLocalChild) {
+        const runAge = run.createdAt ? now.getTime() - new Date(run.createdAt).getTime() : Infinity;
+        if (runAge < requeueStalenessMs) {
+          const agent = await getAgent(run.agentId);
+          if (agent) {
+            let finalizedRun = await setRunStatus(run.id, "failed", {
+              error: "Server restarted; run automatically requeued",
+              errorCode: "server_restart",
+              finishedAt: now,
+              resultJson: mergeRunStopMetadataForAgent(
+                { adapterType, adapterConfig },
+                "failed",
+                {
+                  resultJson: parseObject(run.resultJson),
+                  errorCode: "server_restart",
+                  errorMessage: "Server restarted; run automatically requeued",
+                },
+              ),
+            });
+            await setWakeupStatus(run.wakeupRequestId, "failed", {
+              finishedAt: now,
+              error: "Server restarted; run automatically requeued",
+            });
+            if (!finalizedRun) finalizedRun = await getRun(run.id);
+            if (finalizedRun) {
+              finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
+              await releaseEnvironmentLeasesForRun({
+                runId: finalizedRun.id,
+                companyId: finalizedRun.companyId,
+                agentId: finalizedRun.agentId,
+                status: finalizedRun.status,
+                failureReason: finalizedRun.error ?? undefined,
+              });
+              const requeuedRun = await enqueueRestartRequeue(finalizedRun, agent, now);
+              await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "warn",
+                message: `Server restart detected; requeued as run ${requeuedRun.id}`,
+                payload: { requeuedRunId: requeuedRun.id },
+              });
+              await startNextQueuedRunForAgent(run.agentId);
+            }
+            runningProcesses.delete(run.id);
+            requeued.push(run.id);
+            continue;
+          }
+        }
       }
 
       const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
@@ -7417,10 +7581,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       reaped.push(run.id);
     }
 
-    if (reaped.length > 0) {
-      logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
+    if (reaped.length > 0 || requeued.length > 0) {
+      logger.warn({ reapedCount: reaped.length, runIds: reaped, requeuedCount: requeued.length, requeuedRunIds: requeued }, "reaped orphaned heartbeat runs");
     }
-    return { reaped: reaped.length, runIds: reaped };
+    return { reaped: reaped.length, runIds: reaped, requeued: requeued.length, requeuedRunIds: requeued };
   }
 
   async function resumeQueuedRuns() {
