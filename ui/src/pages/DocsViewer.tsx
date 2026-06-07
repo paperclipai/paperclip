@@ -28,6 +28,7 @@ export function DocsViewer() {
   useEffect(() => {
     const t = (() => { try { return localStorage.getItem("paperclip.theme"); } catch { return null; } })();
     if (t) document.documentElement.classList.toggle("dark", t === "dark");
+    document.title = "Docs — All Gas No Brakes";
   }, []);
 
   // current page path (after /docs/)

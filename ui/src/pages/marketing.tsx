@@ -21,7 +21,8 @@ function Shell({ eyebrow, title, sub, children }: { eyebrow: string; title: stri
   useEffect(() => {
     const t = (() => { try { return localStorage.getItem("paperclip.theme"); } catch { return null; } })();
     if (t) document.documentElement.classList.toggle("dark", t === "dark");
-  }, []);
+    document.title = `${title} — All Gas No Brakes`;
+  }, [title]);
   return (
     <div className="agnb-scroll h-screen overflow-y-auto bg-[#F6F3EC] text-gray-900 antialiased dark:bg-[#1b1410] dark:text-neutral-100">
       <SiteNav />
@@ -577,7 +578,8 @@ function LegalShell({ title, updated, lines }: { title: string; updated: string;
   useEffect(() => {
     const t = (() => { try { return localStorage.getItem("paperclip.theme"); } catch { return null; } })();
     if (t) document.documentElement.classList.toggle("dark", t === "dark");
-  }, []);
+    document.title = `${title} — All Gas No Brakes`;
+  }, [title]);
   return (
     <div className="agnb-scroll h-screen overflow-y-auto bg-[#F6F3EC] text-gray-900 antialiased dark:bg-[#1b1410] dark:text-neutral-100">
       <SiteNav />
@@ -696,6 +698,7 @@ export function ContactPage() {
   useEffect(() => {
     const t = (() => { try { return localStorage.getItem("paperclip.theme"); } catch { return null; } })();
     if (t) document.documentElement.classList.toggle("dark", t === "dark");
+    document.title = "Contact Sales — All Gas No Brakes";
   }, []);
   const [sent, setSent] = useState(false);
 
@@ -795,6 +798,7 @@ export function SignInPage() {
   useEffect(() => {
     const t = (() => { try { return localStorage.getItem("paperclip.theme"); } catch { return null; } })();
     if (t) document.documentElement.classList.toggle("dark", t === "dark");
+    document.title = "Sign in — All Gas No Brakes";
   }, []);
   return (
     <div className="agnb-scroll relative flex h-screen flex-col overflow-y-auto bg-[#F6F3EC] text-gray-900 antialiased dark:bg-[#1b1410] dark:text-neutral-100">
