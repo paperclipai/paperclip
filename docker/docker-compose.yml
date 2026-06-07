@@ -16,9 +16,7 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   server:
-    build:
-      context: ..
-      dockerfile: Dockerfile
+    image: ghcr.io/misterbusiness1/paperclip-prod:latest-pwfix
     ports:
       - "3100:3100"
     environment:

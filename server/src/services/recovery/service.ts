@@ -844,6 +844,43 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  async function latestTerminalStaleRunEvaluation(companyId: string, runId: string) {
+    const [row] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        completedAt: issues.completedAt,
+        cancelledAt: issues.cancelledAt,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .orderBy(desc(sql<Date>`coalesce(${issues.completedAt}, ${issues.cancelledAt}, ${issues.updatedAt})`))
+      .limit(1);
+    return row ?? null;
+  }
+
+  async function hasTerminalStaleRunSuppression(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "lastOutputAt">,
+  ) {
+    const terminalEvaluation = await latestTerminalStaleRunEvaluation(run.companyId, run.id);
+    if (!terminalEvaluation) return false;
+
+    const terminalAt = terminalEvaluation.completedAt ?? terminalEvaluation.cancelledAt ?? terminalEvaluation.updatedAt;
+    if (!terminalAt) return false;
+    if (!run.lastOutputAt) return true;
+    return run.lastOutputAt.getTime() <= terminalAt.getTime();
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -1647,6 +1684,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     for (const run of candidates) {
       if (await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now)) {
         result.snoozed += 1;
+        continue;
+      }
+      if (await hasTerminalStaleRunSuppression(run)) {
+        result.skipped += 1;
         continue;
       }
       const outcome = await createOrUpdateStaleRunEvaluation({ run, now });

@@ -1,0 +1,75 @@
+name: Build and push paperclip-prod overlay image
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - docker/Dockerfile.overlay
+  workflow_dispatch:
+    inputs:
+      upstream_image:
+        description: 'Upstream image tag (e.g. ghcr.io/misterbusiness1/paperclip:latest)'
+        required: false
+        default: 'ghcr.io/misterbusiness1/paperclip:latest'
+      playwright_version:
+        description: 'Playwright version (must match upstream)'
+        required: false
+        default: '1.58.2'
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/paperclip-prod
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: tag
+        run: |
+          UPSTREAM="${{ inputs.upstream_image || 'ghcr.io/misterbusiness1/paperclip:latest' }}"
+          TAG_PART=$(echo "$UPSTREAM" | cut -d: -f2 | tr '/' '-')
+          echo "tag=${TAG_PART}-pwfix" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${{ github.repository_owner }}/paperclip-prod:${TAG_PART}-pwfix" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push overlay image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.overlay
+          push: true
+          tags: ${{ steps.tag.outputs.image }}
+          build-args: |
+            UPSTREAM_IMAGE=${{ inputs.upstream_image || 'ghcr.io/misterbusiness1/paperclip:latest' }}
+            PLAYWRIGHT_VERSION=${{ inputs.playwright_version || '1.58.2' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test overlay image
+        run: |
+          docker run --rm \
+            --user root \
+            "${{ steps.tag.outputs.image }}" \
+            node -e "
+              const { chromium } = require('/app/node_modules/.pnpm/playwright@1.58.2/node_modules/playwright');
+              chromium.launch({args:['--no-sandbox','--disable-setuid-sandbox']}).then(b=>b.close()).then(()=>{ console.log('OK'); process.exit(0); }).catch(e=>{ console.error(e); process.exit(1); });
+            "
+
+      - name: Output image reference
+        run: echo "::notice title=Overlay image published::${{ steps.tag.outputs.image }}"

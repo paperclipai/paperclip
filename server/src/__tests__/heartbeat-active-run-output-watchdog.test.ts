@@ -66,6 +66,7 @@ vi.mock("../adapters/index.ts", async () => {
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const EMBEDDED_POSTGRES_BOOT_TIMEOUT_MS = 120_000;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -105,7 +106,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-active-run-output-watchdog-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, EMBEDDED_POSTGRES_BOOT_TIMEOUT_MS);
 
   afterEach(async () => {
     for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -121,7 +122,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  });
+  }, EMBEDDED_POSTGRES_BOOT_TIMEOUT_MS);
 
   async function seedRunningRun(opts: {
     now: Date;
@@ -680,6 +681,60 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
     expect(evaluations.filter((issue) => !["done", "cancelled"].includes(issue.status))).toHaveLength(1);
+  });
+
+  it("suppresses duplicate evaluations after terminal cleanup until fresh output resumes", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    const evaluationIssueId = first.evaluationIssueIds[0];
+    expect(evaluationIssueId).toBeTruthy();
+
+    const cleanupAt = new Date(now.getTime() + 5 * 60_000);
+    await db
+      .update(issues)
+      .set({
+        status: "done",
+        completedAt: cleanupAt,
+        updatedAt: cleanupAt,
+      })
+      .where(eq(issues.id, evaluationIssueId!));
+    await db
+      .update(issues)
+      .set({
+        status: "done",
+        executionRunId: null,
+        completedAt: cleanupAt,
+        updatedAt: cleanupAt,
+      })
+      .where(eq(issues.id, issueId));
+
+    const suppressed = await heartbeat.scanSilentActiveRuns({
+      now: new Date(cleanupAt.getTime() + 60_000),
+      companyId,
+    });
+    expect(suppressed).toMatchObject({ created: 0, existing: 0, skipped: 1 });
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        lastOutputAt: new Date(cleanupAt.getTime() + 2 * 60_000),
+        lastOutputSeq: 67,
+        updatedAt: new Date(cleanupAt.getTime() + 2 * 60_000),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const rearmed = await heartbeat.scanSilentActiveRuns({
+      now: new Date(cleanupAt.getTime() + ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 3 * 60_000),
+      companyId,
+    });
+    expect(rearmed.created).toBe(1);
+    expect(rearmed.evaluationIssueIds[0]).not.toBe(evaluationIssueId);
   });
 
   it("rejects agent watchdog decisions using issues not bound to the target run", async () => {

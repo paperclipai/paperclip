@@ -5322,6 +5322,9 @@ export function issueService(db: Db) {
       }),
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+      if (checkoutRunId && (await isTerminalOrMissingHeartbeatRun(checkoutRunId))) {
+        throw Object.assign(new Error("checkout_run_terminated"), { statusCode: 409, code: "checkout_run_terminated" });
+      }
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
