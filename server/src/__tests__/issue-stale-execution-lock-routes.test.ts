@@ -282,6 +282,15 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     const issueId = await insertLockedIssue({ companyId, agentId, checkoutRunId: failedRunId });
     const app = createApp(agentActor(companyId, agentId, currentRunId));
 
+    const checkoutRes = await request(app)
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId, expectedStatuses: ["in_progress"] });
+    expect(checkoutRes.status, JSON.stringify(checkoutRes.body)).toBe(200);
+    expect(checkoutRes.body).toMatchObject({
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+
     const commentRes = await request(app)
       .post(`/api/issues/${issueId}/comments`)
       .send({ body: "Successor run can comment after stale checkout adoption." });
