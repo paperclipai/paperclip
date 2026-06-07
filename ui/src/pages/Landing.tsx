@@ -1023,7 +1023,9 @@ export function LandingPage() {
 
         {/* Headline */}
         <h1 className="mx-auto max-w-[920px] text-[clamp(46px,7vw,80px)] font-extrabold leading-[1.0] tracking-[-0.04em] text-gray-900 dark:text-neutral-100">
-          Your growth engine.
+          Your growth team,
+          <br />
+          now autonomous.
           <span
             className="mt-1.5 block bg-gradient-to-r from-amber-500 via-orange-500 to-red-600 bg-clip-text font-medium text-transparent"
             style={SERIF}
