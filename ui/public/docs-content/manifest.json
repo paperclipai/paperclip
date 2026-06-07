@@ -105,14 +105,6 @@
               "title": "How Delegation Works"
             },
             {
-              "path": "guides/board-operator/execution-workspaces-and-runtime-services",
-              "title": "Execution Workspaces And Runtime Services"
-            },
-            {
-              "path": "guides/board-operator/delegation",
-              "title": "How Delegation Works"
-            },
-            {
               "path": "guides/board-operator/approvals",
               "title": "Approvals"
             },
