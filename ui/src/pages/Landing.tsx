@@ -1116,8 +1116,8 @@ export function LandingPage() {
 
       <PageRail>
 
-      {/* ── Hero (centered, Finn-style) ── */}
-      <Section className="relative pb-12 pt-12 pl-14 sm:pt-16 md:pl-20">
+      {/* ── Hero (Group 1 opener) ── */}
+      <Section className="relative pb-12 pt-12 sm:pt-16">
         {/* warm glow */}
         <div
           className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[420px]"
@@ -1127,6 +1127,7 @@ export function LandingPage() {
           }}
         />
 
+        <RailHead icon={Zap}>
         {/* Announcement pill */}
         <a
           href="#cockpit"
@@ -1174,6 +1175,7 @@ export function LandingPage() {
         <p className="mt-4 text-[12.5px] text-gray-400 dark:text-neutral-500">
           Invite-only beta · No credit card needed · Setup in under 2 minutes
         </p>
+        </RailHead>
 
         {/* Product shot — real dashboard */}
         <div className="relative mx-auto mt-14 max-w-5xl">
@@ -1197,8 +1199,9 @@ export function LandingPage() {
         </div>
       </Section>
 
-      {/* ── Problem ── */}
-      <Section className="py-20 pl-14 md:pl-20">
+      {/* ── Problem (Group 2 opener) ── */}
+      <Section className="py-20">
+        <RailHead icon={Network} kicker="The problem">
         <div className="grid grid-cols-1 items-start gap-12 lg:grid-cols-[1.4fr_1fr]">
           <div>
             <h2 className="text-[clamp(30px,3.8vw,46px)] font-bold leading-[1.08] tracking-[-0.025em] text-gray-900 dark:text-neutral-100">
@@ -1226,6 +1229,7 @@ export function LandingPage() {
             </div>
           </div>
         </div>
+        </RailHead>
       </Section>
 
       {/* ── Before / After (visual) ── */}
@@ -1359,9 +1363,12 @@ export function LandingPage() {
         </div>
       </Section>
 
-      {/* ── Testimonials ── */}
+      {/* ── How it runs — scroll-driven story timeline (Group 4) ── */}
+      <StorySection />
+
+      {/* ── Testimonials (Group 5 opener) ── */}
       <Section className="py-12 pl-14 md:pl-20">
-        <Eyebrow>From the crew</Eyebrow>
+        <RailHead icon={CheckSquare} kicker="From the crew">
         <h2 className="mb-10 text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
           Real teams. Real momentum.
         </h2>
@@ -1381,14 +1388,12 @@ export function LandingPage() {
             </div>
           ))}
         </div>
+        </RailHead>
       </Section>
 
-      {/* ── How it runs — scroll-driven story timeline ── */}
-      <StorySection />
-
-      {/* ── Integrations ── */}
-      <Section className="scroll-mt-20 py-16" id="integrations">
-        <RailHead icon={Network} kicker="Works with your stack">
+      {/* ── Integrations (Group 5) ── */}
+      <Section className="scroll-mt-20 py-16 pl-14 md:pl-20" id="integrations">
+        <Eyebrow>Works with your stack</Eyebrow>
         <h2 className="mb-8 text-[clamp(24px,3vw,38px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
           Drop it in. Nothing breaks.
         </h2>
@@ -1405,7 +1410,6 @@ export function LandingPage() {
         <p className="mt-6 text-[13px] text-gray-500 dark:text-neutral-400">
           + HubSpot webhooks, GSC property, PostHog events, Slack alerts, LinkedIn API, and more out of the box.
         </p>
-        </RailHead>
       </Section>
 
       {/* ── Bring your own agent ── */}
@@ -1441,17 +1445,16 @@ export function LandingPage() {
         </div>
       </Section>
 
-      {/* ── Manifesto ── */}
-      <Section className="py-16 pl-14 md:pl-20">
-        <div className="grid grid-cols-1 gap-8 md:grid-cols-[auto_1fr] md:items-center">
-          <Gauge className="size-10 text-[#f97316]" />
-          <blockquote className="text-[clamp(24px,3vw,36px)] font-semibold leading-[1.2] tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
+      {/* ── Manifesto (Group 6 opener) ── */}
+      <Section className="py-16">
+        <RailHead icon={BarChart3} kicker="The mission">
+          <blockquote className="max-w-3xl text-[clamp(24px,3vw,36px)] font-semibold leading-[1.2] tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
             &ldquo;Ship fast, measure everything, automate the rest.
             <span className="text-gray-400 dark:text-neutral-500">
               {" "}The competition is still scheduling a meeting about it.&rdquo;
             </span>
           </blockquote>
-        </div>
+        </RailHead>
       </Section>
 
       {/* ── FAQ ── */}
