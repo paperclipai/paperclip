@@ -6071,7 +6071,7 @@ export function issueService(db: Db) {
         if (normalized) tokens.add(normalized.toLowerCase());
       }
 
-      const explicitAgentMentionIds = extractAgentMentionIds(body);
+      const explicitAgentMentionIds = extractAgentMentionIds(body).filter((agentId) => isUuidLike(agentId));
       if (tokens.size === 0 && explicitAgentMentionIds.length === 0) return [];
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));

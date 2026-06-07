@@ -534,6 +534,24 @@ export function extractMentionedSkillIdsFromSources(
   return [...mentionedIds];
 }
 
+export function partitionMentionedSkillIds(mentionedSkillIds: string[]): {
+  uuidSkillIds: string[];
+  slugSkillIds: string[];
+} {
+  const uuidSkillIds = Array.from(
+    new Set(mentionedSkillIds.filter((skillId) => isUuidLike(skillId))),
+  );
+  const slugSkillIds = Array.from(
+    new Set(
+      mentionedSkillIds
+        .filter((skillId) => !isUuidLike(skillId))
+        .map((skillId) => skillId.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  );
+  return { uuidSkillIds, slugSkillIds };
+}
+
 export function applyRunScopedMentionedSkillKeys(
   config: Record<string, unknown>,
   skillKeys: string[],
@@ -608,21 +626,47 @@ async function resolveRunScopedMentionedSkillKeys(input: {
   ]);
   if (mentionedSkillIds.length === 0) return [];
 
+  const { uuidSkillIds: mentionedUuidSkillIds, slugSkillIds: mentionedSlugSkillIds } =
+    partitionMentionedSkillIds(mentionedSkillIds);
   const skillRows = await input.db
     .select({
       id: companySkillsTable.id,
+      slug: companySkillsTable.slug,
       key: companySkillsTable.key,
     })
     .from(companySkillsTable)
     .where(
       and(
         eq(companySkillsTable.companyId, input.companyId),
-        inArray(companySkillsTable.id, mentionedSkillIds),
+        or(
+          mentionedUuidSkillIds.length > 0
+            ? inArray(companySkillsTable.id, mentionedUuidSkillIds)
+            : sql`false`,
+          mentionedSlugSkillIds.length > 0
+            ? inArray(companySkillsTable.slug, mentionedSlugSkillIds)
+            : sql`false`,
+        ),
       ),
     );
   const skillKeyById = new Map(skillRows.map((row) => [row.id, row.key]));
+  const slugKeyCandidates = new Map<string, string[]>();
+  for (const row of skillRows) {
+    const existing = slugKeyCandidates.get(row.slug);
+    if (existing) {
+      existing.push(row.key);
+    } else {
+      slugKeyCandidates.set(row.slug, [row.key]);
+    }
+  }
   return mentionedSkillIds
-    .map((skillId) => skillKeyById.get(skillId) ?? null)
+    .map((skillId) => {
+      if (isUuidLike(skillId)) return skillKeyById.get(skillId) ?? null;
+      const candidates = slugKeyCandidates.get(skillId.trim().toLowerCase());
+      // Refuse to resolve when multiple skills share a slug — (companyId, slug)
+      // has no DB-level uniqueness, so picking one would be non-deterministic.
+      if (!candidates || candidates.length !== 1) return null;
+      return candidates[0];
+    })
     .filter((skillKey): skillKey is string => Boolean(skillKey));
 }
 
