@@ -26,6 +26,7 @@ import {
   companyPortabilityService,
   companyService,
   feedbackService,
+  issueService,
   logActivity,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
@@ -466,6 +467,16 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
     res.json({ ok: true });
+  });
+
+  router.post("/:companyId/admin/backfill-project-ids", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    const dryRun = req.query.dryRun === "true" || req.query.dryRun === "1";
+    const issueSvc = issueService(db);
+    const result = await issueSvc.backfillProjectIds(companyId, dryRun);
+    res.json(result);
   });
 
   return router;

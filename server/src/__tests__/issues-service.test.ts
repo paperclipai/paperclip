@@ -4535,3 +4535,121 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(record?.childIssues.every((child) => typeof child.title === "string")).toBe(true);
   });
 });
+
+describeEmbeddedPostgres("projectId inheritance via parentId", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-projectid-inherit-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issues);
+    await db.delete(projects);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompanyAndProject() {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Inherit Test Co",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Inherit Project",
+      status: "in_progress",
+    });
+    return { companyId, projectId };
+  }
+
+  it("inherits projectId from direct parent when child omits it", async () => {
+    const { companyId, projectId } = await seedCompanyAndProject();
+    const parent = await svc.create(companyId, {
+      title: "Parent issue",
+      status: "todo",
+      priority: "medium",
+      projectId,
+    });
+
+    const child = await svc.create(companyId, {
+      title: "Child issue",
+      status: "todo",
+      priority: "medium",
+      parentId: parent.id,
+      // projectId intentionally omitted
+    });
+
+    expect(child.projectId).toBe(projectId);
+  });
+
+  it("inherits projectId from grandparent when parent has no projectId", async () => {
+    const { companyId, projectId } = await seedCompanyAndProject();
+    const grandparent = await svc.create(companyId, {
+      title: "Grandparent issue",
+      status: "todo",
+      priority: "medium",
+      projectId,
+    });
+    // Create parent without projectId by inserting directly
+    const parentId = randomUUID();
+    await db.insert(issues).values({
+      id: parentId,
+      companyId,
+      parentId: grandparent.id,
+      projectId: null,
+      title: "Parent issue (no project)",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const child = await svc.create(companyId, {
+      title: "Child issue",
+      status: "todo",
+      priority: "medium",
+      parentId,
+      // projectId intentionally omitted
+    });
+
+    expect(child.projectId).toBe(projectId);
+  });
+
+  it("respects explicit projectId override even when parent has a different one", async () => {
+    const { companyId, projectId: parentProjectId } = await seedCompanyAndProject();
+    const childProjectId = randomUUID();
+    await db.insert(projects).values({
+      id: childProjectId,
+      companyId,
+      name: "Child Project",
+      status: "in_progress",
+    });
+    const parent = await svc.create(companyId, {
+      title: "Parent issue",
+      status: "todo",
+      priority: "medium",
+      projectId: parentProjectId,
+    });
+
+    const child = await svc.create(companyId, {
+      title: "Child issue with explicit project",
+      status: "todo",
+      priority: "medium",
+      parentId: parent.id,
+      projectId: childProjectId, // explicitly override
+    });
+
+    expect(child.projectId).toBe(childProjectId);
+  });
+});

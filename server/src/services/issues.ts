@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -777,6 +777,7 @@ async function getWorkspaceInheritanceIssue(
       projectWorkspaceId: issues.projectWorkspaceId,
       executionWorkspaceId: issues.executionWorkspaceId,
       executionWorkspaceSettings: issues.executionWorkspaceSettings,
+      parentId: issues.parentId,
     })
     .from(issues)
     .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
@@ -785,6 +786,33 @@ async function getWorkspaceInheritanceIssue(
     throw notFound("Workspace inheritance issue not found");
   }
   return issue;
+}
+
+async function resolveAncestorProjectId(
+  db: Pick<Db, "execute">,
+  companyId: string,
+  issueId: string,
+): Promise<string | null> {
+  // Walk ancestor chain via recursive CTE to find first non-null projectId.
+  // Depth cap prevents runaway queries on pathological trees.
+  const rows = await db.execute<{ project_id: string | null }>(sql`
+    WITH RECURSIVE ancestor_chain AS (
+      SELECT id, project_id, parent_id, 0 AS depth
+      FROM issues
+      WHERE id = ${issueId}::uuid AND company_id = ${companyId}::uuid
+      UNION ALL
+      SELECT i.id, i.project_id, i.parent_id, ac.depth + 1
+      FROM issues i
+      INNER JOIN ancestor_chain ac ON i.id = ac.parent_id
+      WHERE i.company_id = ${companyId}::uuid AND ac.depth < 50
+    )
+    SELECT project_id
+    FROM ancestor_chain
+    WHERE project_id IS NOT NULL
+    ORDER BY depth ASC
+    LIMIT 1
+  `);
+  return rows.rows[0]?.project_id ?? null;
 }
 
 function touchedByUserCondition(companyId: string, userId: string) {
@@ -4733,8 +4761,12 @@ export function issueService(db: Db) {
           issueData.executionWorkspaceSettings !== undefined;
         if (workspaceInheritanceIssueId) {
           const workspaceSource = await getWorkspaceInheritanceIssue(tx, companyId, workspaceInheritanceIssueId);
-          if (issueData.projectId == null && workspaceSource.projectId) {
-            issueData.projectId = workspaceSource.projectId;
+          if (issueData.projectId == null) {
+            const inherited = workspaceSource.projectId
+              ?? (workspaceSource.parentId
+                ? await resolveAncestorProjectId(tx, companyId, workspaceSource.parentId)
+                : null);
+            if (inherited) issueData.projectId = inherited;
           }
           if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
@@ -6256,6 +6288,33 @@ export function issueService(db: Db) {
         project: a.projectId ? projectMap.get(a.projectId) ?? null : null,
         goal: a.goalId ? goalMap.get(a.goalId) ?? null : null,
       }));
+    },
+
+    backfillProjectIds: async (companyId: string, dryRun = false) => {
+      const candidates = await db
+        .select({ id: issues.id, parentId: issues.parentId })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), isNull(issues.projectId), isNotNull(issues.parentId)));
+
+      let updated = 0;
+      let skipped = 0;
+      let errored = 0;
+
+      for (const candidate of candidates) {
+        try {
+          if (!candidate.parentId) { skipped++; continue; }
+          const inherited = await resolveAncestorProjectId(db, companyId, candidate.parentId);
+          if (!inherited) { skipped++; continue; }
+          if (!dryRun) {
+            await db.update(issues).set({ projectId: inherited }).where(eq(issues.id, candidate.id));
+          }
+          updated++;
+        } catch {
+          errored++;
+        }
+      }
+
+      return { updated, skipped, errored, total: candidates.length, dryRun };
     },
   };
 }
