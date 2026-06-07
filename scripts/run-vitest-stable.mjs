@@ -61,6 +61,54 @@ const serializedServerVitestArgs = [
   "--no-file-parallelism",
   "--maxWorkers=1",
 ];
+const pluginSdkRoot = path.join(repoRoot, "packages", "plugins", "sdk");
+
+function mtimeMsOrNull(filePath) {
+  try {
+    return statSync(filePath).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+function ensurePluginSdkDistFresh() {
+  const srcMtimeCandidates = walk(path.join(pluginSdkRoot, "src"))
+    .filter((filePath) => filePath.endsWith(".ts"));
+  const distMtimeCandidates = [
+    path.join(pluginSdkRoot, "dist", "index.js"),
+    path.join(pluginSdkRoot, "dist", "testing.js"),
+  ];
+
+  const srcMtimes = srcMtimeCandidates
+    .map(mtimeMsOrNull)
+    .filter((value) => typeof value === "number");
+  if (srcMtimes.length === 0) {
+    fail("Could not stat @paperclipai/plugin-sdk src files.");
+  }
+  const newestSrcMtime = Math.max(...srcMtimes);
+
+  const distMtimes = distMtimeCandidates
+    .map(mtimeMsOrNull)
+    .filter((value) => typeof value === "number");
+  const oldestDistMtime = distMtimes.length > 0 ? Math.min(...distMtimes) : null;
+
+  if (oldestDistMtime !== null && oldestDistMtime >= newestSrcMtime) {
+    return;
+  }
+
+  console.log("\n[test:run] Building @paperclipai/plugin-sdk (dist missing/outdated)");
+  const result = spawnSync("pnpm", ["--filter", "@paperclipai/plugin-sdk", "build"], {
+    cwd: repoRoot,
+    env: process.env,
+    stdio: "inherit",
+  });
+  if (result.error) {
+    fail(`Failed to start plugin-sdk build: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    fail(`plugin-sdk build failed with exit code ${result.status ?? 1}`);
+  }
+}
 
 function walk(dir) {
   const entries = readdirSync(dir);
@@ -359,6 +407,8 @@ if (options.dryRun) {
   );
   process.exit(0);
 }
+
+ensurePluginSdkDistFresh();
 
 if (options.mode === generalModeName || options.mode === allModeName) {
   if (options.group) {

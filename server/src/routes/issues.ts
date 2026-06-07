@@ -138,6 +138,76 @@ import {
 } from "../services/trust-preset-resolver.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+
+function normalizeCommentForDedup(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().replace(/\s+/g, " ").toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeMirrorOnlyRecapForDedup(value: string | null | undefined): string | null {
+  const normalized = normalizeCommentForDedup(value);
+  if (!normalized) return null;
+  return normalized
+    .replace(/\b(mirrored?\b|mirror(ed)? content|duplicate|copied from|verbatim|acknowledged latest)\b/g, " ")
+    .replace(/\b(done issue|completed review|review thread|resolved thread|in_review)\b/g, " ")
+    .replace(/\b(no new|unchanged|no additional|already covered|same as above|no delta)\b/g, " ")
+    .replace(/\b(evidence|input|context|signal|scope|decision)\b/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isMirrorOnlyNoNewEvidenceRecap(value: string | null | undefined): boolean {
+  const normalized = normalizeCommentForDedup(value);
+  if (!normalized) return false;
+  const hasMirrorSignal =
+    /\b(mirrored?\b|mirror(ed)? content|duplicate|copied from|verbatim|acknowledged latest)\b/.test(normalized);
+  const hasNoNewSignal =
+    /\b(no new|unchanged|no additional|already covered|same as above|no delta)\b/.test(normalized)
+    && /\b(evidence|input|context|signal|scope|decision)\b/.test(normalized);
+  const hasCompletedReviewThreadSignal =
+    /\b(done issue|completed review|review thread|resolved thread|in_review)\b/.test(normalized);
+  const hasNegatedNewEvidenceSignal = /\bno new evidence\b/.test(normalized);
+  const hasExplicitNewEvidenceSignal =
+    (/\bnew evidence\b/.test(normalized) && !hasNegatedNewEvidenceSignal)
+    || /\b(net[- ]?new|new signal|new context|new decision|new scope|additional evidence)\b/.test(normalized);
+  return hasMirrorSignal && (hasNoNewSignal || hasCompletedReviewThreadSignal) && !hasExplicitNewEvidenceSignal;
+}
+
+async function shouldSkipNoopAgentCommentDedup(input: {
+  svc: ReturnType<typeof issueService>;
+  issueId: string;
+  issueStatus: string;
+  actorType: "agent" | "user";
+  actorId: string | null;
+  commentBody: string | null | undefined;
+  hasFieldChanges: boolean;
+}) {
+  if (!input.actorId) return false;
+  if (input.hasFieldChanges) return false;
+  if (input.issueStatus !== "blocked" && input.issueStatus !== "in_review" && input.issueStatus !== "done") return false;
+  const requested = normalizeCommentForDedup(input.commentBody);
+  if (!requested) return false;
+
+  const [latest] = await input.svc.listComments(input.issueId, { order: "desc", limit: 1 });
+  const latestBody = normalizeCommentForDedup(latest?.body);
+  if (
+    isMirrorOnlyNoNewEvidenceRecap(requested) &&
+    isMirrorOnlyNoNewEvidenceRecap(latestBody)
+  ) {
+    const requestedSemantic = normalizeMirrorOnlyRecapForDedup(requested);
+    const latestSemantic = normalizeMirrorOnlyRecapForDedup(latestBody);
+    return requestedSemantic === latestSemantic;
+  }
+  const sameAuthor = latest
+    ? input.actorType === "agent"
+      ? latest.authorAgentId === input.actorId
+      : latest.authorUserId === input.actorId
+    : false;
+  if (!sameAuthor) return false;
+  return latestBody === requested;
+}
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -709,12 +779,30 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
+  commentBody: string | null | undefined;
 }) {
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  if (input.issueStatus !== "done" && input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
+  const body = (input.commentBody ?? "").trim();
+  if (!body) return false;
+  if (input.issueStatus === "blocked") {
+    // Keep blocked issues inert for mirror-only "no new evidence" recaps.
+    return !isMirrorOnlyNoNewEvidenceRecap(body);
+  }
+  const normalizedBody = body.toLowerCase();
+  // Ignore mirrored/duplicate board comments on completed review threads unless they
+  // explicitly add net-new evidence.
+  if (isMirrorOnlyNoNewEvidenceRecap(normalizedBody)) return false;
+  // Keep closed issues inert unless the comment introduces concrete follow-up scope.
+  const hasScopeSignal =
+    /\b(new scope|follow[- ]?up|please (fix|implement|add|update|investigate)|next action|deliverable|acceptance criteria|regression|bug)\b/.test(
+      normalizedBody,
+    )
+    || /(?:^|\n)\s*-\s\[\s\]\s+/.test(normalizedBody);
+  if (!hasScopeSignal) return false;
   return true;
 }
 
@@ -732,6 +820,30 @@ function shouldHumanCommentResumeInProgressScheduledRetry(input: {
 
 function isExplicitResumeCapableStatus(status: string | null | undefined) {
   return status === "done" || status === "blocked" || status === "todo" || status === "in_progress";
+}
+
+function shouldSuppressRoutineBlockedAgentCommentWake(input: {
+  issueStatus: string | null | undefined;
+  issueOriginKind: string | null | undefined;
+  actorType: "agent" | "user";
+  reopened: boolean;
+}) {
+  if (input.reopened) return false;
+  return input.actorType === "agent" && input.issueStatus === "blocked" && input.issueOriginKind === "routine_execution";
+}
+
+function shouldSuppressMirrorBlockedCommentWake(input: {
+  issueStatus: string | null | undefined;
+  actorType: "agent" | "user";
+  reopened: boolean;
+  commentBody: string | null | undefined;
+  resumeRequested?: boolean;
+}) {
+  if (input.reopened) return false;
+  if (input.resumeRequested === true) return false;
+  if (input.actorType !== "user") return false;
+  if (input.issueStatus !== "blocked") return false;
+  return isMirrorOnlyNoNewEvidenceRecap(input.commentBody);
 }
 
 function queueResolvedInteractionContinuationWakeup(input: {
@@ -4784,6 +4896,7 @@ export function issueRoutes(
           assigneeAgentId: requestedAssigneeAgentId,
           actorType: actor.actorType,
           actorId: actor.actorId,
+          commentBody,
         })) ||
       shouldResumeInProgressScheduledRetry;
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
@@ -5371,7 +5484,25 @@ export function issueRoutes(
     }
 
     let comment = null;
+    const skipNoopDedupComment = await shouldSkipNoopAgentCommentDedup({
+      svc,
+      issueId: id,
+      issueStatus: issue.status,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      commentBody,
+      hasFieldChanges,
+    });
     if (commentBody) {
+      if (skipNoopDedupComment) {
+        issueResponse = {
+          ...issueResponse,
+          relatedWork: updateReferenceSummaryAfter ?? await issueReferencesSvc.listIssueReferenceSummary(issue.id),
+          referencedIssueIdentifiers: (updateReferenceSummaryAfter ?? await issueReferencesSvc.listIssueReferenceSummary(issue.id))
+            .outbound
+            .map((item) => item.issue.identifier ?? item.issue.id),
+        };
+      } else {
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
         ?? await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       comment = await svc.addComment(id, commentBody, {
@@ -5442,6 +5573,7 @@ export function issueRoutes(
         actor,
         source: "issue.comment",
       });
+      }
 
     } else if (updateReferenceSummaryAfter) {
       issueResponse = {
@@ -5548,7 +5680,33 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+        const closedCommentHasFollowUpSignal =
+          isClosedIssueStatus(existing.status)
+          && shouldImplicitlyMoveCommentedIssueToTodo({
+            issueStatus: existing.status,
+            assigneeAgentId: assigneeId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            commentBody,
+          });
+        const suppressRoutineBlockedAgentCommentWake = shouldSuppressRoutineBlockedAgentCommentWake({
+          issueStatus: issue.status,
+          issueOriginKind: issue.originKind,
+          actorType: actor.actorType,
+          reopened,
+        });
+        const suppressMirrorBlockedCommentWake = shouldSuppressMirrorBlockedCommentWake({
+          issueStatus: issue.status,
+          actorType: actor.actorType,
+          reopened,
+          commentBody,
+          resumeRequested,
+        });
+        const skipAssigneeCommentWake =
+          selfComment
+          || (isClosedIssueStatus(existing.status) && !reopened && !closedCommentHasFollowUpSignal)
+          || suppressRoutineBlockedAgentCommentWake
+          || suppressMirrorBlockedCommentWake;
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
@@ -5587,6 +5745,7 @@ export function issueRoutes(
         }
 
         for (const mentionedId of mentionedIds) {
+          if (isClosed && !reopened) continue;
           if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
           addWakeup(mentionedId, {
             source: "automation",
@@ -6539,6 +6698,7 @@ export function issueRoutes(
         assigneeAgentId: issue.assigneeAgentId,
         actorType: actor.actorType,
         actorId: actor.actorId,
+        commentBody: req.body.body,
       }) ||
       shouldResumeInProgressScheduledRetry;
     const hasUnresolvedFirstClassBlockers =
@@ -6715,7 +6875,20 @@ export function issueRoutes(
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
-      const skipWake = selfComment || isClosed;
+      const suppressRoutineBlockedAgentCommentWake = shouldSuppressRoutineBlockedAgentCommentWake({
+        issueStatus: currentIssue.status,
+        issueOriginKind: currentIssue.originKind,
+        actorType: actor.actorType,
+        reopened,
+      });
+      const suppressMirrorBlockedCommentWake = shouldSuppressMirrorBlockedCommentWake({
+        issueStatus: currentIssue.status,
+        actorType: actor.actorType,
+        reopened,
+        commentBody: req.body.body,
+        resumeRequested,
+      });
+      const skipWake = selfComment || isClosed || suppressRoutineBlockedAgentCommentWake || suppressMirrorBlockedCommentWake;
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
@@ -6780,6 +6953,7 @@ export function issueRoutes(
       }
 
       for (const mentionedId of mentionedIds) {
+        if (isClosed && !reopened) continue;
         if (wakeups.has(mentionedId)) continue;
         if (actorIsAgent && actor.actorId === mentionedId) continue;
         wakeups.set(mentionedId, {

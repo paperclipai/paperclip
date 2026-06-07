@@ -7,6 +7,7 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
+  listComments: vi.fn(),
   getDependencyReadiness: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
   findMentionedAgents: vi.fn(),
@@ -229,6 +230,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockIssueService.assertCheckoutOwner.mockReset();
     mockIssueService.update.mockReset();
     mockIssueService.addComment.mockReset();
+    mockIssueService.listComments.mockReset();
     mockIssueService.getDependencyReadiness.mockReset();
     mockIssueService.getCurrentScheduledRetry.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
@@ -305,6 +307,7 @@ describe.sequential("issue comment reopen routes", () => {
       authorUserId: "local-board",
     });
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.getDependencyReadiness.mockResolvedValue({
       issueId: "11111111-1111-4111-8111-111111111111",
       blockerIssueIds: [],
@@ -383,7 +386,7 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("implicitly reopens closed issues via the PATCH comment path when reassigning to an agent", async () => {
+  it("implicitly reopens closed issues via the PATCH comment path when reassigning to an agent and follow-up scope is explicit", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("done"),
@@ -392,7 +395,10 @@ describe.sequential("issue comment reopen routes", () => {
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ comment: "hello", assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
+      .send({
+        comment: "Please investigate this bug and add follow-up regression coverage.",
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      });
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalledWith(
@@ -495,7 +501,7 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("implicitly reopens closed issues via POST comments when an agent is assigned", async () => {
+  it("implicitly reopens closed issues via POST comments when follow-up scope is explicit", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("done"),
@@ -504,7 +510,67 @@ describe.sequential("issue comment reopen routes", () => {
 
     const res = await request(await installActor(createApp()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
-      .send({ body: "hello" });
+      .send({ body: "Follow-up requested: please investigate and add a regression test for this bug." });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "todo" },
+    );
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "issue_reopened_via_comment",
+        payload: expect.objectContaining({
+          reopenedFrom: "done",
+        }),
+      }),
+    ));
+  });
+
+  it("does not implicitly reopen done issues for mirrored review-thread comments with no net-new evidence", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({
+        body: "Mirrored from completed review thread: duplicate context, no new evidence or scope.",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled());
+  });
+
+  it("does not wake mentioned agents for mirrored no-new-evidence comments on done issues", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueService.findMentionedAgents.mockResolvedValue([
+      "22222222-2222-4222-8222-222222222222",
+    ]);
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({
+        body: "@maintainer mirrored from completed review thread: duplicate context, no new evidence or scope.",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled());
+  });
+
+  it("reopens done issues when mirrored comments include explicit net-new evidence and follow-up scope", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({
+        body: "Mirrored summary, but there is net-new evidence: new scope follow-up required to fix this bug.",
+      });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.update).toHaveBeenCalledWith(
@@ -823,6 +889,26 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     ));
+  });
+
+  it("does not wake assignee for mirror-only blocked recap comments via POST", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: "11111111-1111-4111-8111-111111111111",
+      blockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerCount: 1,
+      allBlockersDone: false,
+      isDependencyReady: false,
+    });
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Mirrored from completed review thread: duplicate context, no new evidence or scope." });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled());
   });
 
   it("does not implicitly reopen closed issues via POST comments when no agent is assigned", async () => {

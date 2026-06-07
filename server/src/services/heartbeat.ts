@@ -2043,6 +2043,26 @@ function shouldRequireIssueCommentForWake(
   );
 }
 
+const VERIFICATION_TASK_RE = /\b(?:verification|verify|validate)\b/i;
+const RUN_ARTIFACT_COMMAND_RE = /\b(?:command output|ran|executed|output)\b/i;
+const RUN_ARTIFACT_DELTA_RE = /\b(?:verification delta|delta|changed|result|outcome)\b/i;
+const RUN_ARTIFACT_NOOP_RE = /\b(?:no-?op|no change|nothing to change|already (?:up[- ]to[- ]date|correct)|evidence[- ]backed)\b/i;
+
+function requiresRunArtifactComment(issue: { title: string; description: string | null } | null) {
+  if (!issue) return false;
+  return VERIFICATION_TASK_RE.test(issue.title) || VERIFICATION_TASK_RE.test(issue.description ?? "");
+}
+
+function isRunArtifactCommentBody(body: string | null | undefined) {
+  if (!body) return false;
+  const compact = body.replace(/\s+/g, " ").trim();
+  if (!compact) return false;
+  return (
+    (RUN_ARTIFACT_COMMAND_RE.test(compact) && RUN_ARTIFACT_DELTA_RE.test(compact)) ||
+    RUN_ARTIFACT_NOOP_RE.test(compact)
+  );
+}
+
 function allowsIssueInteractionWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
@@ -2170,6 +2190,35 @@ export function extractWakeCommentIds(
     out.push(value);
   }
   return out;
+}
+
+function isMirrorOnlyNoNewEvidenceComment(body: string | null | undefined) {
+  const normalized = (body ?? "").trim().toLowerCase();
+  if (!normalized) return false;
+  const hasMirrorSignal =
+    /\b(mirrored?\b|mirror(ed)? content|duplicate|copied from|verbatim|acknowledged latest)\b/.test(normalized);
+  const hasNoNewSignal =
+    /\b(no new|unchanged|no additional|already covered|same as above|no delta)\b/.test(normalized)
+    && /\b(evidence|input|context|signal|scope|decision)\b/.test(normalized);
+  const hasCompletedReviewThreadSignal =
+    /\b(done issue|completed review|review thread|resolved thread|in_review)\b/.test(normalized);
+  const hasNegatedNewEvidenceSignal = /\bno new evidence\b/.test(normalized);
+  const hasExplicitNewEvidenceSignal =
+    /\b(new evidence|net[- ]?new|new signal|new context|new decision|new scope|additional evidence)\b/.test(normalized)
+    && !hasNegatedNewEvidenceSignal;
+  return hasMirrorSignal && (hasNoNewSignal || hasCompletedReviewThreadSignal) && !hasExplicitNewEvidenceSignal;
+}
+
+function hasExplicitDeferredReopenSignal(body: string | null | undefined) {
+  const normalized = (body ?? "").trim().toLowerCase();
+  if (!normalized) return false;
+  const hasNegatedNewEvidenceSignal = /\bno new evidence\b/.test(normalized);
+  const hasExplicitNewEvidenceSignal =
+    /\b(new evidence|net[- ]?new|new signal|new context|new decision|new scope|additional evidence)\b/.test(normalized)
+    && !hasNegatedNewEvidenceSignal;
+  const hasReviewerDecisionSignal =
+    /\b(reviewer decision|review decision|reopen|resume|required follow[- ]?up|must fix|must address)\b/.test(normalized);
+  return hasExplicitNewEvidenceSignal || hasReviewerDecisionSignal;
 }
 
 function mergeWakeCommentIds(...values: Array<unknown>): string[] {
@@ -5132,6 +5181,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return db
       .select({
         id: issueComments.id,
+        body: issueComments.body,
       })
       .from(issueComments)
       .where(
@@ -5356,13 +5406,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const postedComment = await findRunIssueComment(run.id, run.companyId, issueId);
-    if (postedComment) {
+    const issueMeta = await db
+      .select({ title: issues.title, description: issues.description })
+      .from(issues)
+      .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+      .then((rows) => rows[0] ?? null);
+    const artifactRequired = requiresRunArtifactComment(issueMeta);
+
+    if (postedComment && (!artifactRequired || isRunArtifactCommentBody(postedComment.body))) {
       await patchRunIssueCommentStatus(run.id, {
         issueCommentStatus: "satisfied",
         issueCommentSatisfiedByCommentId: postedComment.id,
         issueCommentRetryQueuedAt: null,
       });
       return { outcome: "satisfied" as const, queuedRun: null };
+    }
+
+    if (postedComment && artifactRequired) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message:
+          "Run comment did not include a run-linked progress artifact. Include command output + verification delta, or evidence-backed no-op.",
+      });
     }
 
     if (readNonEmptyString(contextSnapshot.retryReason) === "missing_issue_comment") {
@@ -5455,6 +5522,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       wakeReason: "process_lost_retry",
       retryReason: "process_lost",
     }, "normal_model");
+    // Process-loss retries are synthetic wakes. They should not replay prior
+    // comment-triggered wake metadata or inline wake payload batches.
+    delete retryContextSnapshot[WAKE_COMMENT_IDS_KEY];
+    delete retryContextSnapshot.commentId;
+    delete retryContextSnapshot.wakeCommentId;
+    delete retryContextSnapshot[PAPERCLIP_WAKE_PAYLOAD_KEY];
 
     const queued = await db.transaction(async (tx) => {
       const wakeupRequest = await tx
@@ -6864,6 +6937,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const wakeCommentId = deriveCommentId(context, null);
+    const wakeCommentIds = Array.from(new Set([
+      ...extractWakeCommentIds(context),
+      ...(wakeCommentId ? [wakeCommentId] : []),
+    ]));
     const isInteractionWake = allowsIssueInteractionWake(context);
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
@@ -6913,13 +6990,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "done" || issue.status === "cancelled") {
-      if (!resumeIntent && !wakeCommentId) {
-        return {
-          stale: true,
-          errorCode: "issue_terminal_status",
-          reason: `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`,
-          details: { issueId, currentStatus: issue.status },
-        };
+      if (!resumeIntent) {
+        if (wakeCommentIds.length === 0) {
+          return {
+            stale: true,
+            errorCode: "issue_terminal_status",
+            reason: `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`,
+            details: { issueId, currentStatus: issue.status },
+          };
+        }
+
+        const commentBodies = await db
+          .select({ body: issueComments.body })
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.companyId, run.companyId),
+              eq(issueComments.issueId, issueId),
+              inArray(issueComments.id, wakeCommentIds),
+            ),
+          );
+        const hasExplicitReopenSignal = commentBodies.some((row) =>
+          hasExplicitDeferredReopenSignal(row.body),
+        );
+
+        if (!hasExplicitReopenSignal) {
+          return {
+            stale: true,
+            errorCode: "issue_terminal_status",
+            reason:
+              `Cancelled because issue reached terminal status (${issue.status}) and wake comments had no explicit reopen evidence`,
+            details: {
+              issueId,
+              currentStatus: issue.status,
+              wakeCommentIds,
+            },
+          };
+        }
       }
     }
 
@@ -9463,15 +9570,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
+        const deferredCommentBodies = deferredCommentIds.length > 0
+          ? await tx
+              .select({ body: issueComments.body })
+              .from(issueComments)
+              .where(inArray(issueComments.id, deferredCommentIds))
+          : [];
+        const hasMirrorOnlyDeferredComment = deferredCommentBodies.some((row) =>
+          isMirrorOnlyNoNewEvidenceComment(row.body),
+        );
+        const hasExplicitDeferredReopen = deferredCommentBodies.some((row) =>
+          hasExplicitDeferredReopenSignal(row.body),
+        );
         // Only human/comment-reopen interactions should revive completed issues;
         // system follow-ups such as retry or cleanup wakes must not reopen closed work.
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
           (issue.status === "done" || issue.status === "cancelled") &&
-          (
-            deferred.requestedByActorType === "user" ||
-            deferredWakeReason === "issue_reopened_via_comment"
-          );
+          deferred.requestedByActorType === "user" &&
+          !hasMirrorOnlyDeferredComment &&
+          hasExplicitDeferredReopen;
         let reopenedActivity: LogActivityInput | null = null;
 
         if (shouldReopenDeferredCommentWake) {

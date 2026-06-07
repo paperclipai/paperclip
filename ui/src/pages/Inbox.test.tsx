@@ -227,6 +227,8 @@ function createJoinRequest(
 }
 
 function resetInboxApiMocks() {
+  window.localStorage?.clear();
+  window.sessionStorage?.clear();
   routerMock.location.pathname = "/";
   routerMock.location.search = "";
   routerMock.location.hash = "";
