@@ -42,7 +42,16 @@ export function Projects() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-end">
+      <div className="flex items-end justify-between gap-3">
+        <div>
+          <h1 className="font-serif text-2xl font-medium tracking-tight">Projects</h1>
+          {projects.length > 0 && (
+            <p className="mt-1.5 text-[12.5px] text-muted-foreground">
+              <span className="font-mono text-foreground">{projects.length}</span>{" "}
+              {projects.length === 1 ? "project" : "projects"}
+            </p>
+          )}
+        </div>
         <Button size="sm" variant="outline" onClick={openNewProject}>
           <Plus className="h-4 w-4 mr-1" />
           Add Project

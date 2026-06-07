@@ -450,7 +450,7 @@ function SearchTabContent({
     return (
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 px-4 py-10 sm:px-6">
         <div>
-          <h2 className="text-lg font-semibold">Type to search company memory.</h2>
+          <h2 className="font-serif text-xl font-medium">Type to search company memory.</h2>
           <p className="mt-1 text-sm text-muted-foreground">
             Issues, comments, plan documents, agents, projects — same surface, ranked by relevance.
           </p>

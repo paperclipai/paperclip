@@ -36,6 +36,16 @@ export function Goals() {
 
   return (
     <div className="space-y-4">
+      <div>
+        <h1 className="font-serif text-2xl font-medium tracking-tight">Goals</h1>
+        {goals && goals.length > 0 && (
+          <p className="mt-1.5 text-[12.5px] text-muted-foreground">
+            <span className="font-mono text-foreground">{goals.length}</span>{" "}
+            {goals.length === 1 ? "goal" : "goals"}
+          </p>
+        )}
+      </div>
+
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {goals && goals.length === 0 && (

@@ -84,13 +84,22 @@ export function Approvals() {
 
   return (
     <div className="space-y-4">
+      <div>
+        <h1 className="font-serif text-2xl font-medium tracking-tight">Approvals</h1>
+        {pendingCount > 0 && (
+          <p className="mt-1.5 text-[12.5px] text-muted-foreground">
+            <span className="font-mono text-foreground">{pendingCount}</span> awaiting review
+          </p>
+        )}
+      </div>
+
       <div className="flex items-center justify-between">
         <Tabs value={statusFilter} onValueChange={(v) => navigate(`/approvals/${v}`)}>
           <PageTabBar items={[
             { value: "pending", label: <>Pending{pendingCount > 0 && (
               <span className={cn(
-                "ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
-                "bg-yellow-500/20 text-yellow-500"
+                "ml-1.5 rounded-[2px] px-1.5 py-0.5 text-[10px] font-medium",
+                "bg-status-warning/15 text-status-warning"
               )}>
                 {pendingCount}
               </span>

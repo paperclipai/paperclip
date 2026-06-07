@@ -179,7 +179,11 @@ export function Issues() {
   }
 
   return (
-    <IssuesList
+    <div className="space-y-4">
+      <div>
+        <h1 className="font-serif text-2xl font-medium tracking-tight">Issues</h1>
+      </div>
+      <IssuesList
       issues={issues ?? []}
       isLoading={isLoading}
       isLoadingMoreIssues={isFetchingNextPage}
@@ -198,6 +202,7 @@ export function Issues() {
       onLoadMoreIssues={loadMoreServerIssues}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
       searchFilters={participantAgentId || workspaceIdFilter ? { participantAgentId, workspaceId: workspaceIdFilter } : undefined}
-    />
+      />
+    </div>
   );
 }
