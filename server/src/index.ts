@@ -229,17 +229,17 @@ export async function startServer(): Promise<StartedServer> {
   }
   
   const LOCAL_BOARD_USER_ID = "local-board";
-  const LOCAL_BOARD_USER_EMAIL = "local@paperclip.local";
+  const LOCAL_BOARD_USER_EMAIL = "local@hirefinn.ai";
   const LOCAL_BOARD_USER_NAME = "Board";
-  
+
   async function ensureLocalTrustedBoardPrincipal(db: any): Promise<void> {
     const now = new Date();
     const existingUser = await db
-      .select({ id: authUsers.id })
+      .select({ id: authUsers.id, email: authUsers.email, name: authUsers.name })
       .from(authUsers)
       .where(eq(authUsers.id, LOCAL_BOARD_USER_ID))
-      .then((rows: Array<{ id: string }>) => rows[0] ?? null);
-  
+      .then((rows: Array<{ id: string; email: string | null; name: string | null }>) => rows[0] ?? null);
+
     if (!existingUser) {
       await db.insert(authUsers).values({
         id: LOCAL_BOARD_USER_ID,
@@ -250,6 +250,13 @@ export async function startServer(): Promise<StartedServer> {
         createdAt: now,
         updatedAt: now,
       });
+    } else if (existingUser.email !== LOCAL_BOARD_USER_EMAIL || existingUser.name !== LOCAL_BOARD_USER_NAME) {
+      // Self-heal branding drift (e.g. the old local@paperclip.local default) so
+      // existing dev + prod instances pick up the rename on next startup.
+      await db
+        .update(authUsers)
+        .set({ email: LOCAL_BOARD_USER_EMAIL, name: LOCAL_BOARD_USER_NAME, updatedAt: now })
+        .where(eq(authUsers.id, LOCAL_BOARD_USER_ID));
     }
   
     const role = await db
