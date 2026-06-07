@@ -94,6 +94,7 @@ export function NewAgent() {
     enabled: !!selectedCompanyId,
   });
 
+
   const { data: companySkills } = useQuery({
     queryKey: queryKeys.companySkills.list(selectedCompanyId ?? ""),
     queryFn: () => companySkillsApi.list(selectedCompanyId!),

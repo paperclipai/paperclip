@@ -29,6 +29,7 @@ export type {
   AdapterConfigSchema,
   AdapterRuntimeCommandSpec,
   ServerAdapterModule,
+  ListModelsContext,
   QuotaWindow,
   ProviderQuotaResult,
   TranscriptEntry,

@@ -26,5 +26,6 @@ export type {
   UsageSummary,
   AdapterAgent,
   AdapterRuntime,
+  ListModelsContext,
 } from "@paperclipai/adapter-utils";
 export { runningProcesses } from "./utils.js";

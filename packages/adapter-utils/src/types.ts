@@ -301,6 +301,11 @@ export interface ProviderQuotaResult {
   windows: QuotaWindow[];
 }
 
+export interface ListModelsContext {
+  cwd?: string;
+  env?: Record<string, string>;
+}
+
 // ---------------------------------------------------------------------------
 // Adapter config schema — declarative UI config for external adapters
 // ---------------------------------------------------------------------------
@@ -356,7 +361,7 @@ export interface ServerAdapterModule {
   sessionManagement?: import("./session-compaction.js").AdapterSessionManagement;
   supportsLocalAgentJwt?: boolean;
   models?: AdapterModel[];
-  listModels?: () => Promise<AdapterModel[]>;
+  listModels?: (ctx?: ListModelsContext) => Promise<AdapterModel[]>;
   modelProfiles?: AdapterModelProfileDefinition[];
   listModelProfiles?: () => Promise<AdapterModelProfileDefinition[]>;
   /**

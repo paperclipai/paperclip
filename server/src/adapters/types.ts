@@ -32,4 +32,5 @@ export type {
   AdapterConfigSchema,
   AdapterRuntimeCommandSpec,
   ServerAdapterModule,
+  ListModelsContext,
 } from "@paperclipai/adapter-utils";

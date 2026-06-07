@@ -1,4 +1,5 @@
 import type {
+  AdapterConfigSchema,
   AdapterModel,
   AdapterModelProfileDefinition,
   AdapterRuntimeCommandSpec,
@@ -497,6 +498,70 @@ const hermesLocalAdapter: ServerAdapterModule = {
   requiresMaterializedRuntimeSkills: false,
   agentConfigurationDoc: hermesAgentConfigurationDoc,
   detectModel: () => detectModelFromHermes(),
+  getConfigSchema: (): AdapterConfigSchema => ({
+    fields: [
+      {
+        key: "model",
+        label: "Model",
+        type: "text",
+        default: "anthropic/claude-sonnet-4",
+        hint: "Model in provider/model format (e.g. anthropic/claude-sonnet-4, openrouter/anthropic/claude-sonnet-4)",
+      },
+      {
+        key: "hermesCommand",
+        label: "Hermes command",
+        type: "text",
+        default: "hermes",
+        hint: "Custom path to the Hermes CLI binary.",
+      },
+      {
+        key: "timeoutSec",
+        label: "Timeout (seconds)",
+        type: "number",
+        default: 300,
+        hint: "Execution timeout in seconds.",
+      },
+      {
+        key: "graceSec",
+        label: "Grace period (seconds)",
+        type: "number",
+        default: 10,
+        hint: "Grace period before SIGKILL after timeout.",
+      },
+      {
+        key: "persistSession",
+        label: "Persist session",
+        type: "toggle",
+        default: true,
+        hint: "Resume sessions across heartbeats.",
+      },
+      {
+        key: "checkpoints",
+        label: "Filesystem checkpoints",
+        type: "toggle",
+        default: false,
+        hint: "Enable filesystem checkpoints for rollback safety.",
+      },
+      {
+        key: "verbose",
+        label: "Verbose output",
+        type: "toggle",
+        default: false,
+      },
+      {
+        key: "promptTemplate",
+        label: "Prompt template",
+        type: "textarea",
+        hint: "Custom prompt template. Use {{variable}} syntax (e.g. {{taskTitle}}, {{taskBody}}).",
+      },
+      {
+        key: "env",
+        label: "Environment JSON",
+        type: "textarea",
+        hint: 'Optional JSON object of extra environment variables (e.g. {"ANTHROPIC_API_KEY":"sk-..."}).',
+      },
+    ],
+  }),
 };
 
 const adaptersByType = new Map<string, ServerAdapterModule>();

@@ -1,6 +1,7 @@
 services:
   db:
     image: postgres:17-alpine
+    hostname: db
     environment:
       POSTGRES_USER: paperclip
       POSTGRES_PASSWORD: paperclip
@@ -27,8 +28,21 @@ services:
       SERVE_UI: "true"
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
-      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
-      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://192.168.100.34:3100}"
+      BETTER_AUTH_SECRET: "3a31c87ce12f6206bdbd8e0f98a27e227180a958a7dace9be2cd47f3d19e56ed"
+      OPENCODE_CONFIG: "~/.config/opencode/opencode.json"
+      PAPERCLIP_ONBOARD_COMPANY_NAME: "ZapLM"
+      PAPERCLIP_ONBOARD_COMPANY_GOAL: "Revolutionize the way people interact with technology through AI-powered solutions."
+      PAPERCLIP_ONBOARD_AGENT_NAME: "CEO"
+      PAPERCLIP_ONBOARD_ADAPTER_TYPE: "hermes_local"
+      PAPERCLIP_ONBOARD_MODEL: "glm-5.1"
+      PAPERCLIP_ONBOARD_TASK_TITLE: "Hire your first engineer"
+      PAPERCLIP_ONBOARD_TASK_DESCRIPTION: "Your first engineer will be responsible for building the core features of our AI-powered platform, collaborating with the CEO to define the product roadmap, and ensuring the scalability and reliability of our technology infrastructure."
+      PAPERCLIP_ONBOARD_ADMIN_EMAIL: "alexandre.nunes.batista@gmail.com"
+      PAPERCLIP_ONBOARD_ADMIN_PASSWORD: "PR@subas2"
+      PAPERCLIP_ONBOARD_ADMIN_NAME: "Admin"
+      PAPERCLIP_ONBOARD_SKIP: "false"
+      GLM_API_KEY: "6028c9cb48e14c2195c8db3f9525dafd.ZS9oungQRnpGo3Uw"
     volumes:
       - paperclip-data:/paperclip
     depends_on:
