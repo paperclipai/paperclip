@@ -56,9 +56,16 @@ export function createDb(url: string) {
   const isServerless = !!process.env.VERCEL;
   const usesTransactionPooler = /:6543(\/|\?|$)/.test(url) || /[?&]pgbouncer=true/i.test(url);
   const sql = postgres(url, {
-    max: isServerless ? 3 : 10,
-    idle_timeout: isServerless ? 20 : undefined,
-    max_lifetime: isServerless ? 60 * 10 : undefined,
+    // Vercel FREEZES idle instances without closing their pooled connections, so each
+    // warm/frozen instance holds its pool against the Supabase pooler. With enough
+    // instances (churn from deploys + traffic bursts) even the transaction pooler's
+    // 200-client cap fills → `EMAXCONN` → cold boots fail (`database_unreachable`).
+    // So on serverless hold AT MOST ONE connection per instance, release it fast when
+    // idle, and recycle it on a short max_lifetime so stale frozen connections drain.
+    // The persistent (Railway) worker keeps the larger default pool.
+    max: isServerless ? 1 : 10,
+    idle_timeout: isServerless ? 10 : undefined,
+    max_lifetime: isServerless ? 60 * 5 : undefined,
     connect_timeout: 30,
     // pgbouncer transaction mode (Supabase :6543) can't use prepared statements.
     prepare: usesTransactionPooler ? false : undefined,
