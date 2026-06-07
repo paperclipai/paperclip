@@ -526,6 +526,35 @@ export function agentService(db: Db) {
       return updated ? getById(updated.id) : null;
     },
 
+    clearError: async (id: string) => {
+      const existing = await getById(id);
+      if (!existing) return null;
+      if (existing.status === "terminated") throw conflict("Cannot clear error on terminated agent");
+      if (existing.status === "pending_approval") {
+        throw conflict("Pending approval agents cannot have errors cleared");
+      }
+      if (existing.status !== "error") {
+        throw conflict("Only agents in error status can have their error cleared");
+      }
+
+      const updated = await db
+        .update(agents)
+        .set({
+          status: "idle",
+          pauseReason: null,
+          pausedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(agents.id, id), eq(agents.status, "error")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (!updated) {
+        throw conflict("Only agents in error status can have their error cleared");
+      }
+      return getById(updated.id);
+    },
+
     terminate: async (id: string) => {
       const existing = await getById(id);
       if (!existing) return null;

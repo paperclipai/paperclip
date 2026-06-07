@@ -403,6 +403,7 @@ export type {
   AgentAccessState,
   AgentChainOfCommandEntry,
   AgentDetail,
+  ClearAgentErrorResponse,
   AgentPermissions,
   AgentInstructionsBundleMode,
   AgentInstructionsFileSummary,

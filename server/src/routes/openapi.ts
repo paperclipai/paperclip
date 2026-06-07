@@ -418,6 +418,10 @@ const responses = {
     description: "Not found",
     content: { "application/json": { schema: ErrorSchema } },
   },
+  conflict: {
+    description: "Conflict",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
   unprocessable: {
     description: "Unprocessable entity",
     content: { "application/json": { schema: ErrorSchema } },
@@ -1245,6 +1249,15 @@ registry.registerPath({
   summary: "Resume an agent",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/clear-error",
+  tags: ["agents"],
+  summary: "Clear an agent error",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registry.registerPath({

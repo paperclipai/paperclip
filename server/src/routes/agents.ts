@@ -2879,6 +2879,38 @@ export function agentRoutes(
     res.json(agent);
   });
 
+  router.post("/agents/:id/clear-error", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const existing = await getAccessibleAgent(req, res, id);
+    if (!existing) {
+      return;
+    }
+    if (existing.orgChainHealth?.status === "invalid_org_chain") {
+      res.status(409).json({
+        error: existing.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before clearing its error",
+      });
+      return;
+    }
+
+    const agent = await svc.clearError(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "agent.error_cleared",
+      entityType: "agent",
+      entityId: agent.id,
+    });
+
+    res.json(agent);
+  });
+
   router.post("/agents/:id/approve", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;

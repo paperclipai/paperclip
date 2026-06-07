@@ -109,6 +109,8 @@ export interface AgentDetail extends Agent {
   access: AgentAccessState;
 }
 
+export type ClearAgentErrorResponse = Agent;
+
 export interface AgentKeyCreated {
   id: string;
   name: string;
