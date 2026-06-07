@@ -574,6 +574,70 @@ export function computeBoundedTransientHeartbeatRetrySchedule(
   };
 }
 
+function isTerminalIssueStatus(status: string | null | undefined): status is "done" | "cancelled" {
+  return status === "done" || status === "cancelled";
+}
+
+export function hasExplicitTerminalIssueReopenIntent(
+  contextSnapshot: unknown,
+  payload: unknown = null,
+) {
+  const context = parseObject(contextSnapshot);
+  const parsedPayload = parseObject(payload);
+  return context.explicitReopenIntent === true
+    || context.reopenIntent === true
+    || parsedPayload.explicitReopenIntent === true
+    || parsedPayload.reopenIntent === true
+    || parsedPayload.reopen === true
+    || context.resumeIntent === true
+    || context.followUpRequested === true
+    || parsedPayload.resumeIntent === true
+    || parsedPayload.followUpRequested === true;
+}
+
+export function shouldAllowTerminalQueuedRunWake(input: {
+  issueStatus: string | null | undefined;
+  contextSnapshot: unknown;
+  payload?: unknown;
+}) {
+  if (!isTerminalIssueStatus(input.issueStatus)) return true;
+  return hasExplicitTerminalIssueReopenIntent(input.contextSnapshot, input.payload ?? null);
+}
+
+export function shouldPromoteDeferredCommentWakeForTerminalIssue(input: {
+  issueStatus: string | null | undefined;
+  contextSnapshot: unknown;
+  payload?: unknown;
+  requestedByActorType?: string | null;
+}) {
+  if (!isTerminalIssueStatus(input.issueStatus)) return false;
+  const context = parseObject(input.contextSnapshot);
+  const payload = parseObject(input.payload ?? null);
+  const commentIds = new Set(
+    [
+      ...extractWakeCommentIds(context),
+      readNonEmptyString(payload.commentId),
+      readNonEmptyString(payload.wakeCommentId),
+    ].filter((value): value is string => typeof value === "string" && value.length > 0),
+  );
+  if (commentIds.size === 0) return false;
+  return hasExplicitTerminalIssueReopenIntent(context, payload);
+}
+
+export function buildScheduledRetryTerminalSuppression(input: {
+  issueStatus: string | null | undefined;
+  issueId: string | null;
+}) {
+  if (!isTerminalIssueStatus(input.issueStatus)) return { allowed: true as const };
+  return {
+    allowed: false as const,
+    reason: `Scheduled retry suppressed because issue reached terminal status (${input.issueStatus})`,
+    errorCode: input.issueStatus === "cancelled" ? "issue_cancelled" as const : "issue_terminal_status" as const,
+    issueId: input.issueId,
+    details: { issueId: input.issueId, currentStatus: input.issueStatus },
+  };
+}
+
 async function resolveRunScopedMentionedSkillKeys(input: {
   db: Db;
   companyId: string;
@@ -5647,14 +5711,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    if (issue.status === "cancelled" || issue.status === "done") {
-      return {
-        allowed: false,
-        reason: `Scheduled retry suppressed because issue reached terminal status (${issue.status})`,
-        errorCode: issue.status === "cancelled" ? "issue_cancelled" : "issue_terminal_status",
-        issueId,
-        details: { issueId, currentStatus: issue.status },
-      };
+    const terminalSuppression = buildScheduledRetryTerminalSuppression({ issueStatus: issue.status, issueId });
+    if (!terminalSuppression.allowed) {
+      return terminalSuppression;
     }
 
     if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON && issue.status !== "in_progress") {
@@ -6016,6 +6075,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+    if (issueId) {
+      const retryIssue = await db
+        .select({ id: issues.id, status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+        .then((rows) => rows[0] ?? null);
+      const terminalSuppression = retryIssue
+        ? buildScheduledRetryTerminalSuppression({ issueStatus: retryIssue.status, issueId })
+        : { allowed: true as const };
+      if (!terminalSuppression.allowed) {
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "info",
+          message: terminalSuppression.reason,
+          payload: {
+            retryReason,
+            scheduledRetryAttempt: nextAttempt,
+            maxAttempts,
+            ...terminalSuppression.details,
+          },
+        });
+        return {
+          outcome: "not_scheduled" as const,
+          reason: terminalSuppression.reason,
+          errorCode: terminalSuppression.errorCode,
+          issueId: terminalSuppression.issueId,
+        };
+      }
+    }
     if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
       const gate = await evaluateScheduledRetryGate({ run, agent, contextSnapshot, retryReason });
       if (!gate.allowed) {
@@ -6912,15 +7001,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    if (issue.status === "done" || issue.status === "cancelled") {
-      if (!resumeIntent && !wakeCommentId) {
-        return {
-          stale: true,
-          errorCode: "issue_terminal_status",
-          reason: `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`,
-          details: { issueId, currentStatus: issue.status },
-        };
-      }
+    if (
+      isTerminalIssueStatus(issue.status) &&
+      !shouldAllowTerminalQueuedRunWake({ issueStatus: issue.status, contextSnapshot: context, payload: null })
+    ) {
+      return {
+        stale: true,
+        errorCode: "issue_terminal_status",
+        reason: `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`,
+        details: { issueId, currentStatus: issue.status },
+      };
     }
 
     if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON && issue.status !== "in_progress") {
@@ -9462,16 +9552,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           };
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
-        const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
-        // Only human/comment-reopen interactions should revive completed issues;
-        // system follow-ups such as retry or cleanup wakes must not reopen closed work.
-        const shouldReopenDeferredCommentWake =
-          deferredCommentIds.length > 0 &&
-          (issue.status === "done" || issue.status === "cancelled") &&
-          (
-            deferred.requestedByActorType === "user" ||
-            deferredWakeReason === "issue_reopened_via_comment"
-          );
+        // Comment-created wakes are communicative by default. Terminal issues may only be
+        // reopened/promoted when the originating request carried explicit reopen/follow-up intent.
+        const shouldReopenDeferredCommentWake = shouldPromoteDeferredCommentWakeForTerminalIssue({
+          issueStatus: issue.status,
+          contextSnapshot: deferredContextSeed,
+          payload: deferredPayload,
+          requestedByActorType: deferred.requestedByActorType,
+        });
+        if (isTerminalIssueStatus(issue.status) && deferredCommentIds.length > 0 && !shouldReopenDeferredCommentWake) {
+          const now = new Date();
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: `Deferred comment wake suppressed because issue reached terminal status (${issue.status}) without explicit reopen intent`,
+              updatedAt: now,
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
         let reopenedActivity: LogActivityInput | null = null;
 
         if (shouldReopenDeferredCommentWake) {
