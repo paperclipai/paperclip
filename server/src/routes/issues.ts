@@ -4262,6 +4262,27 @@ export function issueRoutes(
     }
     await assertIssueEnvironmentSelection(companyId, createBody.executionWorkspaceSettings?.environmentId);
 
+    // CONA-337 Control 1: creation-time enforcement of the continuation contract.
+    // A new issue with status=blocked requires at least one unresolved blockedByIssueIds entry.
+    if (req.body.status === "blocked") {
+      const requestedIds = Array.isArray(req.body.blockedByIssueIds)
+        ? (req.body.blockedByIssueIds as string[])
+        : [];
+      let unresolvedCount = 0;
+      if (requestedIds.length > 0) {
+        const unresolvedIds = await svc.listUnresolvedBlockerIssueIds(companyId, requestedIds);
+        unresolvedCount = unresolvedIds.length;
+      }
+      if (unresolvedCount === 0) {
+        res.status(422).json({
+          error: "continuation_contract_violation",
+          message: "status=blocked requires at least one unresolved blockedByIssueIds entry",
+          code: 422,
+        });
+        return;
+      }
+    }
+
     const actor = getActorInfo(req);
     const executionPolicy = applyActorMonitorScheduledBy(
       normalizeIssueExecutionPolicy(createBody.executionPolicy),
@@ -4381,6 +4402,29 @@ export function issueRoutes(
       });
     }
     await assertIssueEnvironmentSelection(parent.companyId, createBody.executionWorkspaceSettings?.environmentId);
+
+    // CONA-337 Control 1: child-creation enforcement of the continuation contract.
+    if (req.body.status === "blocked") {
+      const requestedIds = Array.isArray(req.body.blockedByIssueIds)
+        ? (req.body.blockedByIssueIds as string[])
+        : [];
+      let unresolvedCount = 0;
+      if (requestedIds.length > 0) {
+        const unresolvedIds = await svc.listUnresolvedBlockerIssueIds(
+          parent.companyId,
+          requestedIds,
+        );
+        unresolvedCount = unresolvedIds.length;
+      }
+      if (unresolvedCount === 0) {
+        res.status(422).json({
+          error: "continuation_contract_violation",
+          message: "status=blocked requires at least one unresolved blockedByIssueIds entry",
+          code: 422,
+        });
+        return;
+      }
+    }
 
     const actor = getActorInfo(req);
     const executionPolicy = applyActorMonitorScheduledBy(
@@ -4929,6 +4973,41 @@ export function issueRoutes(
           ...existingExecutionState,
           reviewRequest,
         };
+      }
+    }
+
+    // CONA-337 Control 1: continuation-contract hard gate.
+    // status=blocked requires at least one unresolved blockedByIssueIds entry —
+    // covers both an explicit status=blocked transition and a no-op PATCH that
+    // would leave an already-blocked issue with all blockers done.
+    {
+      const resolvedStatus =
+        typeof updateFields.status === "string" ? updateFields.status : existing.status;
+      if (resolvedStatus === "blocked") {
+        let unresolvedCount: number;
+        if (Array.isArray(req.body.blockedByIssueIds)) {
+          const requestedIds = req.body.blockedByIssueIds as string[];
+          if (requestedIds.length === 0) {
+            unresolvedCount = 0;
+          } else {
+            const unresolvedIds = await svc.listUnresolvedBlockerIssueIds(
+              existing.companyId,
+              requestedIds,
+            );
+            unresolvedCount = unresolvedIds.length;
+          }
+        } else {
+          const readiness = await svc.getDependencyReadiness(existing.id);
+          unresolvedCount = readiness.unresolvedBlockerCount;
+        }
+        if (unresolvedCount === 0) {
+          res.status(422).json({
+            error: "continuation_contract_violation",
+            message: "status=blocked requires at least one unresolved blockedByIssueIds entry",
+            code: 422,
+          });
+          return;
+        }
       }
     }
 
@@ -5636,6 +5715,23 @@ export function issueRoutes(
 
       const becameTerminal =
         !["done", "cancelled"].includes(existing.status) && ["done", "cancelled"].includes(issue.status);
+      if (becameTerminal) {
+        // Auto-resolve any active recovery actions on the issue now that it has reached a terminal state.
+        // The documented "owner heartbeat confirms done" mechanism does not exist as an automatic trigger;
+        // this is the correct hook. Outcome is "restored" for done, "cancelled" for cancelled.
+        const recoveryOutcome = issue.status === "done" ? "restored" : "cancelled";
+        await recoveryActionsSvc
+          .resolveActiveForIssue({
+            companyId: issue.companyId,
+            sourceIssueId: issue.id,
+            status: recoveryOutcome === "cancelled" ? "cancelled" : "resolved",
+            outcome: recoveryOutcome,
+            resolutionNote: `Auto-resolved: issue reached ${issue.status} status.`,
+          })
+          .catch((err) => {
+            logger.warn({ err, issueId: issue.id }, "failed to auto-resolve recovery action on terminal status");
+          });
+      }
       if (becameTerminal && issue.parentId) {
         const parent = await svc.getWakeableParentAfterChildCompletion(issue.parentId);
         if (parent) {

@@ -1243,6 +1243,7 @@ type IssueBlockerAttentionInputNode =
 type IssueBlockerAttentionEdge = {
   issueId: string;
   blockerIssueId: string;
+  isExplicitBlocker: boolean;
 };
 type IssueBlockerAttentionQueryRow = IssueBlockerAttentionNode & {
   issueId: string | null;
@@ -1616,10 +1617,10 @@ async function listIssueBlockerAttentionMap(
       appendBlockerAttentionEdges(edgesByIssueId, [
         ...explicitBlockerRows
           .filter((row): row is IssueBlockerAttentionQueryRow & { issueId: string } => row.issueId !== null)
-          .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId })),
+          .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId, isExplicitBlocker: true })),
         ...childRows
           .filter((row): row is IssueBlockerAttentionQueryRow & { issueId: string } => row.issueId !== null)
-          .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId })),
+          .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId, isExplicitBlocker: false })),
       ]);
 
       for (const row of [...explicitBlockerRows, ...childRows]) {
@@ -1906,7 +1907,7 @@ async function listIssueBlockerAttentionMap(
     attentionMap.set(root.id, createIssueBlockerAttention({
       state,
       reason,
-      unresolvedBlockerCount: topLevelEdges.length,
+      unresolvedBlockerCount: topLevelEdges.filter((e) => e.isExplicitBlocker).length,
       coveredBlockerCount,
       stalledBlockerCount,
       attentionBlockerCount,
@@ -4217,6 +4218,14 @@ export function issueService(db: Db) {
 
     listDependencyReadiness: async (companyId: string, issueIds: string[], dbOrTx: any = db) => {
       return listIssueDependencyReadinessMap(dbOrTx, companyId, issueIds);
+    },
+
+    listUnresolvedBlockerIssueIds: async (
+      companyId: string,
+      blockerIssueIds: string[],
+      dbOrTx: any = db,
+    ) => {
+      return listUnresolvedBlockerIssueIds(dbOrTx, companyId, blockerIssueIds);
     },
 
     listBlockerAttention: async (
