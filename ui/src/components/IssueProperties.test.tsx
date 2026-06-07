@@ -436,6 +436,28 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("renders when issue project data is a slim API summary", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        projectId: "project-1",
+        project: {
+          id: "project-1",
+          name: "Onboarding",
+          status: "in_progress",
+          targetDate: null,
+        } as Issue["project"],
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Project");
+    expect(container.textContent).toContain("project-");
+
+    act(() => root.unmount());
+  });
+
   it("renders blocked-by issues as direct chips and edits them from an add action", async () => {
     const onUpdate = vi.fn();
     mockIssuesApi.list.mockResolvedValue([
