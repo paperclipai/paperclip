@@ -115,6 +115,24 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(extracted?.toISOString()).toBe("2026-04-23T03:15:00.000Z");
   });
 
+  it("parses Retry-After seconds hints", () => {
+    const now = new Date("2026-04-22T15:15:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      { stderr: "HTTP 429\nRetry-After: 120" },
+      now,
+    );
+    expect(extracted?.toISOString()).toBe("2026-04-22T15:17:00.000Z");
+  });
+
+  it("parses Retry-After HTTP date hints", () => {
+    const now = new Date("2026-04-22T15:15:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      { stderr: "Retry-After: Wed, 22 Apr 2026 16:00:00 GMT" },
+      now,
+    );
+    expect(extracted?.toISOString()).toBe("2026-04-22T16:00:00.000Z");
+  });
+
   it("returns null when no reset hint is present", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),

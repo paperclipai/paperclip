@@ -13,6 +13,9 @@ const CLAUDE_TRANSIENT_UPSTREAM_RE =
   /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+const CLAUDE_RETRY_AFTER_RE = /(?:^|\b)retry-after\s*[:=]\s*([^\r\n]+)/im;
+const RETRY_AFTER_SECONDS_MAX = 24 * 60 * 60;
+const RETRY_AFTER_MS_MAX = RETRY_AFTER_SECONDS_MAX * 1000;
 
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
@@ -321,6 +324,21 @@ function nextClockTimeInTimeZone(input: {
   return retryAt;
 }
 
+function parseRetryAfterValue(rawRetryAfter: string, now: Date): Date | null {
+  const cleaned = rawRetryAfter.trim().replace(/[.;,\s]+$/g, "");
+  if (!cleaned) return null;
+
+  if (/^\d+$/.test(cleaned)) {
+    const seconds = Number.parseInt(cleaned, 10);
+    if (!Number.isFinite(seconds) || seconds < 0) return null;
+    return new Date(now.getTime() + Math.min(seconds * 1000, RETRY_AFTER_MS_MAX));
+  }
+
+  const parsedMs = Date.parse(cleaned);
+  if (!Number.isFinite(parsedMs)) return null;
+  return new Date(parsedMs);
+}
+
 function parseClaudeResetClockTime(clockText: string, now: Date, timeZoneHint?: string | null): Date | null {
   const normalized = clockText.trim().replace(/\s+/g, " ");
   const match = normalized.match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?/i);
@@ -362,6 +380,13 @@ export function extractClaudeRetryNotBefore(
   now = new Date(),
 ): Date | null {
   const haystack = buildClaudeTransientHaystack(input);
+
+  const retryAfterMatch = haystack.match(CLAUDE_RETRY_AFTER_RE);
+  if (retryAfterMatch) {
+    const retryAfter = parseRetryAfterValue(retryAfterMatch[1] ?? "", now);
+    if (retryAfter) return retryAfter;
+  }
+
   const match = haystack.match(CLAUDE_EXTRA_USAGE_RESET_RE);
   if (!match) return null;
   return parseClaudeResetClockTime(match[1] ?? "", now, match[2]);

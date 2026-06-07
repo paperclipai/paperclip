@@ -64,6 +64,34 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+const DEFAULT_TRANSIENT_RETRY_BUDGET_MS = 10 * 60 * 1000;
+const TRANSIENT_RETRY_MIN_DELAY_MS = 1_000;
+const TRANSIENT_RETRY_MAX_DELAY_MS = 30_000;
+const LLAP_CAPACITY_PRESSURE_RE = /x-llap-capacity-pressure\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)/i;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function computeDecorrelatedJitterDelayMs(previousDelayMs: number): number {
+  const low = TRANSIENT_RETRY_MIN_DELAY_MS;
+  const high = Math.max(low, Math.min(TRANSIENT_RETRY_MAX_DELAY_MS, previousDelayMs * 3));
+  const jittered = low + Math.random() * (high - low);
+  return Math.round(Math.min(TRANSIENT_RETRY_MAX_DELAY_MS, jittered));
+}
+
+function extractLlapCapacityPressure(input: {
+  parsed: Record<string, unknown> | null;
+  stdout: string;
+  stderr: string;
+}): number | null {
+  const candidate = [input.stderr, input.stdout, input.parsed ? JSON.stringify(input.parsed) : ""].join("\n");
+  const match = candidate.match(LLAP_CAPACITY_PRESSURE_RE);
+  if (!match) return null;
+  const parsed = Number.parseFloat(match[1] ?? "");
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 interface ClaudeExecutionInput {
   runId: string;
   agent: AdapterExecutionContext["agent"];
@@ -397,6 +425,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     typeof configEnv.CLAUDE_CONFIG_DIR === "string" && configEnv.CLAUDE_CONFIG_DIR.trim().length > 0;
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+  const transientRetryBudgetMs = Math.max(
+    0,
+    asNumber(config.transientRetryBudgetMs, DEFAULT_TRANSIENT_RETRY_BUDGET_MS),
+  );
   const runtimeConfig = await buildClaudeRuntimeConfig({
     runId,
     agent,
@@ -942,23 +974,78 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   try {
-    const initial = await runAttempt(sessionId ?? null);
-    if (
-      sessionId &&
-      !initial.proc.timedOut &&
-      (initial.proc.exitCode ?? 0) !== 0 &&
-      initial.parsed &&
-      isClaudeUnknownSessionError(initial.parsed)
-    ) {
+    const retryBudgetDeadline = Date.now() + transientRetryBudgetMs;
+    let nextResumeSessionId = sessionId ?? null;
+    let clearSessionOnMissingSession = false;
+    let previousDelayMs = TRANSIENT_RETRY_MIN_DELAY_MS;
+
+    while (true) {
+      const attempt = await runAttempt(nextResumeSessionId);
+      if (
+        nextResumeSessionId &&
+        !attempt.proc.timedOut &&
+        (attempt.proc.exitCode ?? 0) !== 0 &&
+        attempt.parsed &&
+        isClaudeUnknownSessionError(attempt.parsed)
+      ) {
+        await onLog(
+          "stdout",
+          `[paperclip] Claude resume session "${nextResumeSessionId}" is unavailable; retrying with a fresh session.\n`,
+        );
+        nextResumeSessionId = null;
+        clearSessionOnMissingSession = true;
+        continue;
+      }
+
+      const result = toAdapterResult(attempt, {
+        fallbackSessionId: runtimeSessionId || runtime.sessionId,
+        clearSessionOnMissingSession,
+      });
+      const capacityPressure = extractLlapCapacityPressure({
+        parsed: attempt.parsed,
+        stdout: attempt.proc.stdout,
+        stderr: attempt.proc.stderr,
+      });
+      if (capacityPressure !== null) {
+        await onLog(
+          "stdout",
+          `[paperclip] Detected X-LLAP-Capacity-Pressure=${capacityPressure}; applying transient retry policy when needed.\n`,
+        );
+      }
+
+      if (result.errorFamily !== "transient_upstream") {
+        return result;
+      }
+
+      const nowMs = Date.now();
+      const retryNotBeforeMs = (() => {
+        if (!result.retryNotBefore) return 0;
+        const retryAtMs = new Date(result.retryNotBefore).getTime();
+        if (!Number.isFinite(retryAtMs)) return 0;
+        return Math.max(0, retryAtMs - nowMs);
+      })();
+      const jitterDelayMs = computeDecorrelatedJitterDelayMs(previousDelayMs);
+      previousDelayMs = jitterDelayMs;
+      const sleepMs = Math.max(jitterDelayMs, retryNotBeforeMs);
+
+      if (nowMs + sleepMs > retryBudgetDeadline) {
+        await onLog(
+          "stdout",
+          `[paperclip] Transient retry budget (${transientRetryBudgetMs}ms) exhausted; returning latest upstream failure.\n`,
+        );
+        return result;
+      }
+
       await onLog(
         "stdout",
-        `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+        `[paperclip] Transient upstream failure detected; retrying in ${sleepMs}ms (jitter=${jitterDelayMs}ms${retryNotBeforeMs > 0 ? `, retryNotBefore=${retryNotBeforeMs}ms` : ""}).\n`,
       );
-      const retry = await runAttempt(null);
-      return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
-    }
+      await sleep(sleepMs);
 
-    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+      nextResumeSessionId = typeof result.sessionId === "string" && result.sessionId.trim().length > 0
+        ? result.sessionId
+        : null;
+    }
   } finally {
     if (paperclipBridge) {
       await paperclipBridge.stop();
