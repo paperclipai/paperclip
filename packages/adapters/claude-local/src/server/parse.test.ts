@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  describeClaudeFailure,
   extractClaudeRetryNotBefore,
+  isClaudeSuccessfulResult,
   isClaudeTransientUpstreamError,
 } from "./parse.js";
 
@@ -93,6 +95,61 @@ describe("isClaudeTransientUpstreamError", () => {
         errorMessage: "Invalid request_error: Unknown parameter 'foo'.",
       }),
     ).toBe(false);
+  });
+});
+
+describe("isClaudeSuccessfulResult", () => {
+  it("recognizes subtype=success with is_error=false as success", () => {
+    expect(
+      isClaudeSuccessfulResult({
+        subtype: "success",
+        is_error: false,
+        result: "Done. Issue reassigned to GM.",
+      }),
+    ).toBe(true);
+  });
+
+  it("recognizes subtype=success without an explicit is_error field as success", () => {
+    expect(isClaudeSuccessfulResult({ subtype: "success", result: "ok" })).toBe(true);
+  });
+
+  it("does not classify subtype=success with is_error=true as success", () => {
+    expect(isClaudeSuccessfulResult({ subtype: "success", is_error: true })).toBe(false);
+  });
+
+  it("does not classify error subtypes as success", () => {
+    expect(isClaudeSuccessfulResult({ subtype: "error_max_turns" })).toBe(false);
+    expect(isClaudeSuccessfulResult({ subtype: "error_during_execution" })).toBe(false);
+  });
+
+  it("does not classify a missing parsed result as success", () => {
+    expect(isClaudeSuccessfulResult(null)).toBe(false);
+    expect(isClaudeSuccessfulResult(undefined)).toBe(false);
+    expect(isClaudeSuccessfulResult({})).toBe(false);
+  });
+});
+
+describe("describeClaudeFailure", () => {
+  it("returns null when the parsed result indicates a successful Claude run", () => {
+    // Reproduces ZDA-2909: a successful audit was being recorded as
+    // 'Claude run failed: subtype=success: <result>' because the host process
+    // exited non-zero after `terminalResultCleanup` killed the CLI.
+    expect(
+      describeClaudeFailure({
+        subtype: "success",
+        is_error: false,
+        result: "PP3 Audit — ZDA-2876: ✅ PASS",
+      }),
+    ).toBeNull();
+  });
+
+  it("describes a real failure when subtype is an error and is_error=true", () => {
+    const message = describeClaudeFailure({
+      subtype: "error_max_turns",
+      is_error: true,
+      result: "Maximum turns reached.",
+    });
+    expect(message).toBe("Claude run failed: subtype=error_max_turns: Maximum turns reached.");
   });
 });
 

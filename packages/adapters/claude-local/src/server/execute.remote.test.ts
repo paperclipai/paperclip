@@ -328,4 +328,72 @@ describe("claude remote execution", () => {
     expect(call?.[2]).toContain("session-123");
   });
 
+  // ZDA-2909 regression: when terminalResultCleanup SIGTERMs the Claude CLI
+  // after it has already emitted a `subtype=success` result event, the host
+  // process exits non-zero (or with a SIGTERM signal). The adapter must still
+  // record the run as a success based on the JSON result, not flag it as
+  // "Claude run failed: subtype=success:".
+  it("records the run as a success when the CLI emits subtype=success but the process is killed during cleanup", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-success-sigterm-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    runChildProcess.mockImplementationOnce(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (async () => ({
+        // Mirror what `terminalResultCleanup` -> SIGTERM produces: non-null
+        // exit code (CLI handled SIGTERM and exited 143) AND a SIGTERM signal.
+        exitCode: 143,
+        signal: "SIGTERM",
+        timedOut: false,
+        stdout: [
+          JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-sonnet" }),
+          JSON.stringify({
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            session_id: "claude-session-1",
+            result: "PP3 Audit — ZDA-2876: ✅ PASS",
+            usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 },
+          }),
+        ].join("\n"),
+        stderr: "",
+        pid: 123,
+        startedAt: new Date().toISOString(),
+      })) as any,
+    );
+
+    const result = await execute({
+      runId: "run-success-sigterm",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: { command: "claude" },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(result.errorMessage).toBeNull();
+    expect(result.errorCode).toBeNull();
+    // Heartbeat classifies the run as succeeded only when exitCode === 0.
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toContain("PP3 Audit");
+  });
+
 });

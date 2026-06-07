@@ -52,6 +52,7 @@ import {
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
+  isClaudeSuccessfulResult,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
 } from "./parse.js";
@@ -880,10 +881,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
     const parsedIsError = asBoolean(parsed.is_error, false);
-    const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
+    // The Claude CLI's final result JSON (subtype=success, is_error=false) is the
+    // authoritative success signal. The host process may exit non-zero because
+    // `terminalResultCleanup` SIGTERMs the CLI after the result event, or because
+    // the CLI itself returns 143 on signal — neither indicates the run failed.
+    const parsedSucceeded = isClaudeSuccessfulResult(parsed);
+    const failed = !parsedSucceeded && ((proc.exitCode ?? 0) !== 0 || parsedIsError);
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
+    // Surface a clean exit code to downstream consumers (heartbeat treats
+    // exitCode!==0 as failure regardless of errorMessage) when the parsed
+    // result indicates success.
+    const reportedExitCode = parsedSucceeded ? 0 : proc.exitCode;
     const transientUpstream =
       failed &&
       !loginMeta.requiresLogin &&
@@ -918,7 +928,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     return {
-      exitCode: proc.exitCode,
+      exitCode: reportedExitCode,
       signal: proc.signal,
       timedOut: false,
       errorMessage,
