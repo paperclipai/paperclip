@@ -262,7 +262,6 @@ function FeatureRow({
   bullets,
   src,
   alt,
-  flip = false,
 }: {
   eyebrow: string;
   title: React.ReactNode;
@@ -270,15 +269,9 @@ function FeatureRow({
   bullets: string[];
   src: string;
   alt: string;
-  flip?: boolean;
 }) {
   return (
-    <div className={cn("relative grid grid-cols-1 items-center gap-10 lg:grid-cols-2 lg:gap-16", flip && "lg:[&>*:first-child]:order-2")}>
-      {/* rail node — center spine */}
-      <span className="absolute left-1/2 top-1/2 z-10 hidden size-3.5 -translate-x-1/2 -translate-y-1/2 items-center justify-center lg:flex">
-        <span className="agnb-pulse-ring absolute inset-0 rounded-full bg-[#f97316]/40" />
-        <span className="relative size-3.5 rounded-full border-2 border-white bg-[#f97316] dark:border-neutral-950" />
-      </span>
+    <div className="relative grid grid-cols-1 items-center gap-10 lg:grid-cols-2 lg:gap-16">
       <div>
         <Eyebrow>{eyebrow}</Eyebrow>
         <h3 className="max-w-md text-[clamp(24px,2.8vw,34px)] font-bold leading-[1.1] tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
@@ -708,7 +701,7 @@ function Eyebrow({ children }: { children: React.ReactNode }) {
 
 function StatCallout({ pill, stat, body }: { pill: string; stat: string; body: string }) {
   return (
-    <div className="relative flex flex-col items-center py-6 text-center">
+    <div className="relative flex flex-col items-start py-6">
       {/* glow node */}
       <span className="relative mb-5 flex size-3.5 items-center justify-center">
         <span className="agnb-pulse-ring absolute inset-0 rounded-full bg-[#f97316]/50" />
@@ -1129,7 +1122,7 @@ export function LandingPage() {
       <PageRail>
 
       {/* ── Hero (centered, Finn-style) ── */}
-      <Section className="relative pb-12 pt-12 text-center sm:pt-16">
+      <Section className="relative pb-12 pt-12 pl-14 sm:pt-16 md:pl-20">
         {/* warm glow */}
         <div
           className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[420px]"
@@ -1154,7 +1147,7 @@ export function LandingPage() {
         </a>
 
         {/* Headline */}
-        <h1 className="mx-auto max-w-[18ch] text-[clamp(44px,6.6vw,76px)] font-extrabold leading-[1.02] tracking-[-0.04em] text-gray-900 dark:text-neutral-100">
+        <h1 className="max-w-[18ch] text-[clamp(44px,6.6vw,76px)] font-extrabold leading-[1.02] tracking-[-0.04em] text-gray-900 dark:text-neutral-100">
           Your growth team,
           <br />
           <span className="bg-gradient-to-r from-amber-400 via-orange-500 to-red-600 bg-clip-text text-transparent">
@@ -1163,13 +1156,13 @@ export function LandingPage() {
         </h1>
 
         {/* Subtitle */}
-        <p className="mx-auto mb-8 mt-6 max-w-[600px] text-[19px] leading-[1.55] text-gray-500 dark:text-neutral-400">
+        <p className="mb-8 mt-6 max-w-[600px] text-[19px] leading-[1.55] text-gray-500 dark:text-neutral-400">
           Outbound, inbound, content, and revenue — run by autonomous agents in
           one cockpit, while you sleep. Twelve dashboards become one.
         </p>
 
         {/* CTAs */}
-        <div className="inline-flex flex-wrap items-center justify-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <a
             href="#signin"
             className="group inline-flex items-center gap-2 rounded-lg bg-[#f97316] px-7 py-3.5 text-sm font-semibold text-white shadow-[0_8px_24px_-6px_rgba(249,115,22,0.5)] transition hover:bg-[#ea6a0c]"
@@ -1198,11 +1191,11 @@ export function LandingPage() {
       </Section>
 
       {/* ── Trusted by (real Finn customer logos) ── */}
-      <Section className="py-12">
-        <p className="mb-8 text-center font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400 dark:text-neutral-500">
+      <Section className="py-12 pl-14 md:pl-20">
+        <p className="mb-8 font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400 dark:text-neutral-500">
           From the team behind <span className="text-gray-700 dark:text-neutral-300">Finn</span> — trusted in production by
         </p>
-        <div className="flex flex-wrap items-center justify-center gap-x-12 gap-y-7 opacity-50 grayscale transition hover:opacity-100 hover:grayscale-0 sm:gap-x-16 dark:opacity-60 dark:invert dark:hover:invert-0">
+        <div className="flex flex-wrap items-center justify-start gap-x-12 gap-y-7 opacity-50 grayscale transition hover:opacity-100 hover:grayscale-0 sm:gap-x-16 dark:opacity-60 dark:invert dark:hover:invert-0">
           {TRUSTED_LOGOS.map((l) => (
             <img key={l.name} src={l.file} alt={l.name} className={cn(l.h, "w-auto object-contain")} />
           ))}
@@ -1210,7 +1203,7 @@ export function LandingPage() {
       </Section>
 
       {/* ── Problem ── */}
-      <Section className="py-20">
+      <Section className="py-20 pl-14 md:pl-20">
         <div className="grid grid-cols-1 items-center gap-12 lg:grid-cols-[1.4fr_1fr]">
           <div>
             <h2 className="text-[clamp(30px,3.8vw,46px)] font-bold leading-[1.08] tracking-[-0.025em] text-gray-900 dark:text-neutral-100">
@@ -1241,9 +1234,9 @@ export function LandingPage() {
       </Section>
 
       {/* ── Before / After (visual) ── */}
-      <Section className="py-16">
-        <div className="mb-10 text-center">
-          <Eyebrow><span className="mx-auto">Twelve dashboards become one</span></Eyebrow>
+      <Section className="py-16 pl-14 md:pl-20">
+        <div className="mb-10">
+          <Eyebrow>Twelve dashboards become one</Eyebrow>
           <h2 className="text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
             From tab chaos to one orbit.
           </h2>
@@ -1283,7 +1276,7 @@ export function LandingPage() {
       </Section>
 
       {/* ── Stat callout ── */}
-      <Section className="py-8">
+      <Section className="py-8 pl-14 md:pl-20">
         <StatCallout
           pill="Did you know?"
           stat="24/7"
@@ -1311,13 +1304,8 @@ export function LandingPage() {
         </RailHead>
       </Section>
 
-      {/* ── Feature showcase (real screenshots) — center-spine rail ── */}
-      <Section className="relative space-y-24 py-16 sm:py-20">
-        <div
-          className="pointer-events-none absolute inset-y-10 left-1/2 hidden w-px -translate-x-1/2 lg:block"
-          style={{ backgroundImage: "repeating-linear-gradient(to bottom, rgba(249,115,22,0.4) 0 5px, transparent 5px 12px)" }}
-          aria-hidden
-        />
+      {/* ── Feature showcase (real screenshots) ── */}
+      <Section className="relative space-y-24 py-16 pl-14 sm:py-20 md:pl-20">
         <FeatureRow
           eyebrow="One north star"
           title={<>Every KPI that matters, <span className="text-gray-400 dark:text-neutral-500">on one screen.</span></>}
@@ -1331,7 +1319,6 @@ export function LandingPage() {
           alt="North Star KPI dashboard"
         />
         <FeatureRow
-          flip
           eyebrow="Outbound"
           title={<>Campaigns ranked by <span className="text-gray-400 dark:text-neutral-500">what actually replies.</span></>}
           body="Multi-sender across email + LinkedIn, AI-drafted replies, sequence control. Stop guessing which campaign works — every one is ranked by reply rate."
@@ -1358,15 +1345,13 @@ export function LandingPage() {
       </Section>
 
       {/* ── Inside the agent company (diagrams) ── */}
-      <Section className="py-16">
-        <div className="mb-10 text-center">
-          <Eyebrow>
-            <span className="mx-auto">Inside the agent company</span>
-          </Eyebrow>
+      <Section className="py-16 pl-14 md:pl-20">
+        <div className="mb-10">
+          <Eyebrow>Inside the agent company</Eyebrow>
           <h2 className="text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
             A real company. Just staffed by agents.
           </h2>
-          <p className="mx-auto mt-3 max-w-xl text-[15px] leading-relaxed text-gray-500 dark:text-neutral-400">
+          <p className="mt-3 max-w-xl text-[15px] leading-relaxed text-gray-500 dark:text-neutral-400">
             An org chart, a heartbeat, a budget, and goals that trace top to bottom —
             the same scaffolding you'd give a human team.
           </p>
@@ -1380,7 +1365,7 @@ export function LandingPage() {
       </Section>
 
       {/* ── Testimonials ── */}
-      <Section className="py-12">
+      <Section className="py-12 pl-14 md:pl-20">
         <Eyebrow>From the crew</Eyebrow>
         <h2 className="mb-10 text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
           Real teams. Real momentum.
@@ -1429,9 +1414,9 @@ export function LandingPage() {
       </Section>
 
       {/* ── Bring your own agent ── */}
-      <Section className="py-16">
+      <Section className="py-16 pl-14 md:pl-20">
         <div className="rounded-3xl border border-black/[0.07] dark:border-white/[0.08] bg-white dark:bg-[#261f19] p-8 sm:p-12">
-          <div className="flex flex-col items-center text-center">
+          <div className="flex flex-col items-start">
             <Eyebrow>Bring your own agent</Eyebrow>
             <h2 className="max-w-2xl text-[clamp(24px,3vw,38px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
               Runs on the models you already trust.
@@ -1440,7 +1425,7 @@ export function LandingPage() {
               Point each agent at Claude, Gemini, OpenAI, or a local runtime. Swap
               providers per-agent — no lock-in, no rewrites.
             </p>
-            <div className="mt-9 flex flex-wrap items-center justify-center gap-x-12 gap-y-8 sm:gap-x-16">
+            <div className="mt-9 flex flex-wrap items-center justify-start gap-x-12 gap-y-8 sm:gap-x-16">
               {/* Claude (text mark — primary) */}
               <span className="font-serif text-[22px] font-semibold tracking-tight text-gray-800 dark:text-neutral-200" style={{ fontFamily: "Georgia, serif" }}>
                 Claude
@@ -1462,7 +1447,7 @@ export function LandingPage() {
       </Section>
 
       {/* ── Manifesto ── */}
-      <Section className="py-16">
+      <Section className="py-16 pl-14 md:pl-20">
         <div className="grid grid-cols-1 gap-8 md:grid-cols-[auto_1fr] md:items-center">
           <Gauge className="size-10 text-[#f97316]" />
           <blockquote className="text-[clamp(24px,3vw,36px)] font-semibold leading-[1.2] tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
@@ -1475,7 +1460,7 @@ export function LandingPage() {
       </Section>
 
       {/* ── FAQ ── */}
-      <Section className="scroll-mt-20 py-12" id="faq">
+      <Section className="scroll-mt-20 py-12 pl-14 md:pl-20" id="faq">
         <Eyebrow>Questions</Eyebrow>
         <div className="mt-2">
           {FAQS.map((f) => (
@@ -1485,7 +1470,7 @@ export function LandingPage() {
       </Section>
 
       {/* ── Sign in (moved out of hero) ── */}
-      <Section className="py-20">
+      <Section className="py-20 pl-14 md:pl-20">
         <div className="grid grid-cols-1 items-center gap-12 rounded-3xl border border-black/[0.07] dark:border-white/[0.08] bg-white dark:bg-[#261f19] p-8 shadow-sm sm:p-12 lg:grid-cols-2">
           <div>
             <Eyebrow>Your instance. Your agents.</Eyebrow>

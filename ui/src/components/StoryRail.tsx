@@ -79,8 +79,9 @@ export function PageRail({ children }: { children: ReactNode }) {
 
 function GroupNode({ icon: Icon }: { icon: IconType }) {
   return (
-    <span className="flex size-11 items-center justify-center rounded-full border border-[#f97316] bg-[#f97316] text-white shadow-[0_0_0_6px_rgba(249,115,22,0.10)]">
-      <Icon className="size-5" />
+    <span className="relative flex size-11 items-center justify-center rounded-full border border-[#f97316] bg-[#f97316] text-white shadow-[0_0_18px_3px_rgba(249,115,22,0.45),0_0_0_6px_rgba(249,115,22,0.10)]">
+      <span className="pointer-events-none absolute -inset-2 rounded-full bg-[#f97316]/25 blur-md" aria-hidden />
+      <Icon className="relative size-5" />
     </span>
   );
 }
@@ -166,7 +167,7 @@ export function RailMini({
   return (
     <div ref={ref} className="relative pl-9">
       {/* small node on the sub-rail + horizontal tick */}
-      <span className="absolute left-2 top-1.5 z-10 size-3 -translate-x-1/2 rounded-full bg-[#f97316] ring-4 ring-[#f97316]/15" />
+      <span className="absolute left-2 top-1.5 z-10 size-3 -translate-x-1/2 rounded-full bg-[#f97316] shadow-[0_0_10px_2px_rgba(249,115,22,0.5)] ring-4 ring-[#f97316]/15" />
       <span className="pointer-events-none absolute left-2 top-3 h-px w-5 bg-[#f97316]/25" aria-hidden />
       <div
         className={cn(
