@@ -164,6 +164,7 @@ function nextResultText(status: string, issueId?: string | null) {
   if (status === "issue_created" && issueId) return `Created execution issue ${issueId}`;
   if (status === "coalesced") return "Coalesced into an existing live execution issue";
   if (status === "skipped") return "Skipped because a live execution issue already exists";
+  if (status === "parent_terminal") return "Skipped because the parent issue is in a terminal state";
   if (status === "completed") return "Execution issue completed";
   if (status === "failed") return "Execution failed";
   return status;
@@ -1221,6 +1222,29 @@ export function routineService(
             nextRunAt,
           }, txDb);
           return updated ?? createdRun;
+        }
+
+        if (input.routine.parentIssueId) {
+          const parentStatus = await txDb
+            .select({ status: issues.status })
+            .from(issues)
+            .where(eq(issues.id, input.routine.parentIssueId))
+            .then((rows) => rows[0]?.status ?? null);
+          if (parentStatus === "done" || parentStatus === "cancelled") {
+            const updated = await finalizeRun(createdRun.id, {
+              status: "parent_terminal",
+              completedAt: triggeredAt,
+            }, txDb);
+            await updateRoutineTouchedState({
+              routineId: input.routine.id,
+              triggerId: input.trigger?.id ?? null,
+              triggeredAt,
+              status: "parent_terminal",
+              issueId: null,
+              nextRunAt,
+            }, txDb);
+            return updated ?? createdRun;
+          }
         }
 
         try {

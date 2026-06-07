@@ -1422,4 +1422,121 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
   });
+
+  it("skips execution-issue creation when parentIssueId is done", async () => {
+    const { companyId, agentId, projectId, issueSvc, svc } = await seedFixture();
+
+    const parentIssue = await issueSvc.create(companyId, {
+      projectId,
+      title: "parent task",
+      description: null,
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const routine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: parentIssue.id,
+        title: "child routine",
+        description: null,
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+
+    expect(run.status).toBe("parent_terminal");
+    expect(run.linkedIssueId).toBeNull();
+
+    const createdIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+    expect(createdIssues).toHaveLength(0);
+  });
+
+  it("skips execution-issue creation when parentIssueId is cancelled", async () => {
+    const { companyId, agentId, projectId, issueSvc, svc } = await seedFixture();
+
+    const parentIssue = await issueSvc.create(companyId, {
+      projectId,
+      title: "parent task",
+      description: null,
+      status: "cancelled",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const routine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: parentIssue.id,
+        title: "child routine",
+        description: null,
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+
+    expect(run.status).toBe("parent_terminal");
+    expect(run.linkedIssueId).toBeNull();
+
+    const createdIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+    expect(createdIssues).toHaveLength(0);
+  });
+
+  it("creates execution issue normally when parentIssueId is active", async () => {
+    const { companyId, agentId, projectId, issueSvc, svc } = await seedFixture();
+
+    const parentIssue = await issueSvc.create(companyId, {
+      projectId,
+      title: "parent task",
+      description: null,
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const routine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: parentIssue.id,
+        title: "child routine",
+        description: null,
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).toBeTruthy();
+  });
 });

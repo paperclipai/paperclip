@@ -380,6 +380,7 @@ export const ROUTINE_RUN_STATUSES = [
   "received",
   "coalesced",
   "skipped",
+  "parent_terminal",
   "issue_created",
   "completed",
   "failed",
