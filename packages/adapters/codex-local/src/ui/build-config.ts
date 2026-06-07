@@ -69,6 +69,7 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
 export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unknown> {
   const ac: Record<string, unknown> = {};
   if (v.cwd) ac.cwd = v.cwd;
+  if (v.url) ac.appServerUrl = v.url;
   if (v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
   ac.model = v.model || DEFAULT_CODEX_LOCAL_MODEL;
   if (v.thinkingEffort) ac.modelReasoningEffort = v.thinkingEffort;

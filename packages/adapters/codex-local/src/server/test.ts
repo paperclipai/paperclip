@@ -333,7 +333,6 @@ export async function testEnvironment(
         const parsed = parseCodexJsonl(probe.stdout);
         const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errorMessage);
         const authEvidence = `${parsed.errorMessage ?? ""}\n${probe.stdout}\n${probe.stderr}`.trim();
-
         if (probe.timedOut) {
           checks.push({
             code: "codex_hello_probe_timed_out",
