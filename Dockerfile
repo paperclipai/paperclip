@@ -60,10 +60,15 @@ WORKDIR /app
 COPY --chown=node:node --from=build /app /app
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
   && apt-get update \
-  && apt-get install -y --no-install-recommends openssh-client jq \
-  && rm -rf /var/lib/apt/lists/* \
+  && apt-get install -y --no-install-recommends openssh-client jq python3-venv \
+  && python3 -m venv /opt/qmd \
+  && /opt/qmd/bin/pip install --no-cache-dir qmd==0.1.2 \
+  && ln -s /opt/qmd/bin/qmd /usr/local/bin/qmd \
+  && PLAYWRIGHT_BROWSERS_PATH=/ms-playwright pnpm exec playwright install --with-deps chromium \
   && mkdir -p /paperclip \
-  && chown node:node /paperclip
+  && chown -R node:node /paperclip /ms-playwright \
+  && HOME=/paperclip PLAYWRIGHT_BROWSERS_PATH=/ms-playwright gosu node node scripts/check-agent-runtime-tools.mjs \
+  && rm -rf /var/lib/apt/lists/*
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
@@ -80,7 +85,8 @@ ENV NODE_ENV=production \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
-  OPENCODE_ALLOW_ALL_MODELS=true
+  OPENCODE_ALLOW_ALL_MODELS=true \
+  PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 VOLUME ["/paperclip"]
 EXPOSE 3100
