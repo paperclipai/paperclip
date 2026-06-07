@@ -44,9 +44,23 @@ const UNKNOWN: Omit<ResolvedError, "detail"> = {
 };
 
 function messageOf(err: unknown): string {
+  if (err == null) return "";
   if (typeof err === "string") return err;
   if (err instanceof Error) return err.message;
-  if (err && typeof err === "object" && "message" in err) return String((err as { message: unknown }).message);
+  if (typeof err === "object") {
+    const o = err as Record<string, unknown>;
+    const body = (o.body ?? o.data) as Record<string, unknown> | undefined;
+    // Common API/error shapes: {message}, {error}, {body:{error|message}}.
+    const cand = o.message ?? o.error ?? body?.error ?? body?.message;
+    if (typeof cand === "string" && cand) return cand;
+    // Never surface a bare "[object Object]" — fall back to the JSON shape.
+    try {
+      const j = JSON.stringify(err);
+      if (j && j !== "{}") return j;
+    } catch {
+      /* unserializable — fall through */
+    }
+  }
   return String(err ?? "");
 }
 

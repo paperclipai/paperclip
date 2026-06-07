@@ -1092,7 +1092,7 @@ span.valadrien-os-project-mention-chip {
   border: 1px solid var(--border); background: var(--background);
   border-radius: 3px; overflow: hidden; flex: none;
 }
-.agent-face .af-eyes { display: flex; gap: 16%; animation: af-look var(--af-look, 3.4s) cubic-bezier(.5,0,.5,1) infinite; }
+.agent-face .af-eyes { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; gap: 16%; animation: af-look var(--af-look, 3.4s) cubic-bezier(.5,0,.5,1) infinite; }
 .agent-face .af-eye {
   width: 14%; height: 36%; border-radius: 2.5px; background: var(--status-running);
   box-shadow: 0 0 7px color-mix(in oklch, var(--status-running) 88%, transparent);
