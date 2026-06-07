@@ -1002,7 +1002,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
-    expect(issue?.checkoutRunId).toBe(runId);
+    // checkoutRunId races with the retry run's async adoptStaleCheckoutRun call
+    // (startNextQueuedRunForAgent fires executeRun fire-and-forget; with agentStatus:
+    // "idle" the retry starts immediately and adopts the stale checkout before or
+    // after this read). Wait for the settled state instead of asserting the
+    // ephemeral intermediate value.
+    await waitForRunToSettle(heartbeat, retryRun!.id);
+    const settledIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(settledIssue?.checkoutRunId).toBe(retryRun?.id ?? null);
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {
