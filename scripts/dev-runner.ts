@@ -1,5 +1,5 @@
 #!/usr/bin/env -S node --import tsx
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -530,13 +530,33 @@ async function waitForChildExit() {
   return await childExitPromise;
 }
 
+function killProcessTreeWindows(pid: number) {
+  // On Windows, child.kill() / TerminateProcess() only kills the direct process.
+  // With shell:true the direct child is cmd.exe; pnpm→tsx→node survive as orphans
+  // and keep the port bound. taskkill /F /T kills the full tree recursively.
+  try {
+    execFileSync("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "pipe" });
+  } catch {
+    // Non-zero exit means the process already exited — treat as success.
+  }
+}
+
 async function stopChildForRestart() {
   if (!child) return { code: 0, signal: null };
   childExitWasExpected = true;
-  child.kill("SIGTERM");
+  if (process.platform === "win32" && child.pid) {
+    killProcessTreeWindows(child.pid);
+  } else {
+    child.kill("SIGTERM");
+  }
   const killTimer = setTimeout(() => {
     if (child) {
-      child.kill("SIGKILL");
+      console.warn("[paperclip] graceful shutdown timed out, forcing kill");
+      if (process.platform === "win32" && child.pid) {
+        killProcessTreeWindows(child.pid);
+      } else {
+        child.kill("SIGKILL");
+      }
     }
   }, gracefulShutdownTimeoutMs);
   try {
@@ -588,21 +608,30 @@ async function startServerChild() {
 }
 
 async function maybeAutoRestartChild() {
-  if (mode !== "dev" || restartInFlight || !child) return;
+  if (mode !== "dev" || restartInFlight || !child) {
+    if (restartInFlight) {
+      console.warn("[paperclip] restart skipped: restartInFlight is true (previous restart may be stuck)");
+    }
+    return;
+  }
   const manualRestartRequested = consumeDevServerRestartRequest();
   if (!manualRestartRequested && dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
 
   restartInFlight = true;
+  console.log(`[paperclip] restart initiated (manual=${manualRestartRequested}, dirty=${dirtyPaths.size}, migrations=${pendingMigrations.length})`);
   let health: { devServer?: { enabled?: boolean; autoRestartEnabled?: boolean; activeRunCount?: number } } | null = null;
   try {
     health = await getDevHealthPayload();
-  } catch {
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[paperclip] restart aborted: health check threw — ${msg}`);
     restartInFlight = false;
     return;
   }
 
   const devServer = health?.devServer;
   if (!devServer?.enabled) {
+    console.warn("[paperclip] restart aborted: devServer.enabled is falsy in health response");
     restartInFlight = false;
     return;
   }
@@ -667,7 +696,11 @@ async function shutdown(signal: NodeJS.Signals) {
   }
 
   childExitWasExpected = true;
-  child.kill(signal);
+  if (process.platform === "win32" && child.pid) {
+    killProcessTreeWindows(child.pid);
+  } else {
+    child.kill(signal);
+  }
   const exit = await waitForChildExit();
   if (exit.signal) {
     exitForSignal(exit.signal);
