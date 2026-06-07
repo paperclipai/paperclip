@@ -1217,7 +1217,7 @@ export function LandingPage() {
         <p className="mb-8 text-center font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400 dark:text-neutral-500">
           From the team behind <span className="text-gray-700 dark:text-neutral-300">Finn</span> — trusted in production by
         </p>
-        <div className="flex flex-wrap items-center justify-center gap-x-12 gap-y-7 opacity-90 transition sm:gap-x-16 dark:opacity-90 dark:invert">
+        <div className="flex flex-wrap items-center justify-center gap-x-12 gap-y-7 opacity-50 grayscale transition hover:opacity-100 hover:grayscale-0 sm:gap-x-16 dark:opacity-60 dark:invert dark:hover:invert-0">
           {TRUSTED_LOGOS.map((l) => (
             <img key={l.name} src={l.file} alt={l.name} className={cn(l.h, "w-auto object-contain")} />
           ))}
