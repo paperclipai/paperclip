@@ -1,12 +1,12 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "name": "Paperclip",
-  "description": "The control plane for autonomous AI companies",
+  "name": "All Gas No Brakes",
+  "description": "Your growth team, now autonomous",
   "theme": "mint",
   "colors": {
-    "primary": "#2563EB",
-    "light": "#3B82F6",
-    "dark": "#1D4ED8"
+    "primary": "#f97316",
+    "light": "#fb923c",
+    "dark": "#ea6a0c"
   },
   "favicon": "/favicon.svg",
   "logo": {
@@ -31,6 +31,24 @@
               "start/quickstart",
               "start/core-concepts",
               "start/architecture"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Growth Platform",
+        "groups": [
+          {
+            "group": "All Gas No Brakes",
+            "pages": [
+              "agnb/overview",
+              "agnb/the-cockpit",
+              "agnb/engines",
+              "agnb/scheduled-jobs",
+              "agnb/producer-agents",
+              "agnb/integrations",
+              "agnb/north-star",
+              "agnb/governance"
             ]
           }
         ]
