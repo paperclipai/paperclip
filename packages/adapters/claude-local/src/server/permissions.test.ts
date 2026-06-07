@@ -42,4 +42,10 @@ describe("claude-local sandbox permission args", () => {
       "--dangerously-skip-permissions",
     ]);
   });
+
+  it("uses dangerously-skip-permissions outside sandbox probes", () => {
+    expect(buildClaudeProbePermissionArgs({ dangerouslySkipPermissions: true, targetIsSandbox: false })).toEqual([
+      "--dangerously-skip-permissions",
+    ]);
+  });
 });
