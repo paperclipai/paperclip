@@ -7,6 +7,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { getRememberedInvitePath } from "@/lib/invite-memory";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/context/ThemeContext";
+import { SiteNav } from "@/components/SiteNav";
 import {
   ArrowRight,
   Activity,
@@ -735,131 +736,6 @@ function StatCallout({ pill, stat, body }: { pill: string; stat: string; body: s
   );
 }
 
-// ─── Nav ──────────────────────────────────────────────────────────────────────
-
-const NAV_LINKS = [
-  { label: "How it runs", href: "#how" },
-  { label: "Integrations", href: "#integrations" },
-  { label: "FAQ", href: "#faq" },
-];
-
-const ENGINES = [
-  "Autonomous Agents", "Outbound", "Inbound", "Content Studio", "Revenue", "Work OS",
-];
-
-function LandingNav() {
-  const [scrolled, setScrolled] = useState(false);
-  const [enginesOpen, setEnginesOpen] = useState(false);
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const { theme, toggleTheme } = useTheme();
-
-  useEffect(() => {
-    const el = document.querySelector(".agnb-scroll");
-    const onScroll = () => setScrolled((el?.scrollTop ?? window.scrollY) > 16);
-    el?.addEventListener("scroll", onScroll);
-    window.addEventListener("scroll", onScroll);
-    return () => {
-      el?.removeEventListener("scroll", onScroll);
-      window.removeEventListener("scroll", onScroll);
-    };
-  }, []);
-
-  const linkCls = "rounded-md px-3 py-2 text-[13.5px] font-medium text-gray-500 dark:text-neutral-400 transition hover:text-gray-900 dark:hover:text-neutral-100";
-
-  return (
-    <header
-      className={cn(
-        "sticky top-0 z-50 w-full backdrop-blur-xl transition-all",
-        scrolled ? "border-b border-black/[0.06] dark:border-white/[0.06] bg-[#F6F3EC]/80 dark:bg-neutral-950/80" : "border-b border-transparent bg-transparent",
-      )}
-    >
-      <div className="relative mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
-        <a href="#top" className="flex items-center">
-          <img src="/logo-full-light.svg" alt="All Gas No Brakes" className="h-11 w-auto dark:hidden" />
-          <img src="/logo-full-dark.svg" alt="All Gas No Brakes" className="hidden h-11 w-auto dark:block" />
-        </a>
-
-        {/* Center nav */}
-        <nav className="absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 items-center gap-1 lg:flex">
-          <div
-            className="relative"
-            onMouseEnter={() => setEnginesOpen(true)}
-            onMouseLeave={() => setEnginesOpen(false)}
-          >
-            <button className="flex items-center gap-1 rounded-md px-3 py-2 text-[13.5px] font-medium text-gray-500 dark:text-neutral-400 transition hover:text-gray-900 dark:hover:text-neutral-100">
-              Engines
-              <ChevronRight className={cn("size-3.5 transition", enginesOpen ? "rotate-90" : "")} />
-            </button>
-            {enginesOpen && (
-              <div className="absolute left-1/2 top-full w-56 -translate-x-1/2 pt-2">
-                <div className="overflow-hidden rounded-xl border border-black/[0.08] dark:border-white/[0.08] bg-white dark:bg-neutral-900 p-1.5 shadow-xl">
-                  {ENGINES.map((e) => (
-                    <a
-                      key={e}
-                      href="#cockpit"
-                      className="flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] text-gray-600 dark:text-neutral-400 transition hover:bg-[#FAF8F4] dark:bg-neutral-900 dark:hover:bg-neutral-800 hover:text-gray-900 dark:hover:text-neutral-100"
-                    >
-                      <span className="size-1.5 rounded-full bg-[#f97316]/60" />
-                      {e}
-                    </a>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-          {NAV_LINKS.map((l) => (
-            <a key={l.href} href={l.href} className={linkCls}>{l.label}</a>
-          ))}
-        </nav>
-
-        {/* Right */}
-        <div className="flex items-center gap-2.5">
-          <button
-            onClick={toggleTheme}
-            aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-            className="inline-flex size-9 items-center justify-center rounded-md text-gray-500 transition hover:bg-black/[0.04] hover:text-gray-900 dark:text-neutral-400 dark:hover:bg-white/10 dark:hover:text-neutral-100"
-          >
-            {theme === "dark" ? <Sun className="size-[18px]" /> : <Moon className="size-[18px]" />}
-          </button>
-          <a
-            href="mailto:diggi@hirefinn.ai?subject=AGNB%20Access%20Request"
-            className="hidden rounded-md px-3.5 py-2 text-[13px] font-medium text-gray-600 dark:text-neutral-400 transition hover:text-gray-900 dark:hover:text-neutral-100 sm:inline-flex"
-          >
-            Request access
-          </a>
-          <a
-            href="#signin"
-            className="rounded-md bg-[#f97316] px-4 py-2 text-[13px] font-semibold text-white transition hover:bg-[#ea6a0c]"
-          >
-            Sign in
-          </a>
-          <button
-            onClick={() => setMobileOpen((v) => !v)}
-            className="inline-flex size-9 items-center justify-center rounded-md text-gray-600 dark:text-neutral-400 transition hover:text-gray-900 dark:hover:text-neutral-100 lg:hidden"
-            aria-label="menu"
-          >
-            {mobileOpen ? <Minus className="size-5" /> : <Plus className="size-5" />}
-          </button>
-        </div>
-      </div>
-
-      {mobileOpen && (
-        <div className="border-t border-black/[0.06] dark:border-white/[0.06] bg-[#F6F3EC]/95 dark:bg-neutral-950/95 px-6 py-3 backdrop-blur lg:hidden">
-          {[{ label: "Engines", href: "#cockpit" }, ...NAV_LINKS].map((l) => (
-            <a
-              key={l.href}
-              href={l.href}
-              onClick={() => setMobileOpen(false)}
-              className="block py-2.5 text-[15px] font-medium text-gray-600 dark:text-neutral-400 transition hover:text-gray-900 dark:hover:text-neutral-100"
-            >
-              {l.label}
-            </a>
-          ))}
-        </div>
-      )}
-    </header>
-  );
-}
 
 // ─── Footer ───────────────────────────────────────────────────────────────────
 
@@ -1130,7 +1006,7 @@ export function LandingPage() {
         .agnb-pulse-ring { animation: agnb-pulse-ring 2.8s ease-out infinite; }
       `}</style>
 
-      <LandingNav />
+      <SiteNav />
 
       {/* ── Hero (centered, Finn-style) ── */}
       <Section className="relative pb-12 pt-12 text-center sm:pt-16">

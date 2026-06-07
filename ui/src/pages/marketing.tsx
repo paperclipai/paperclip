@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
-import { useTheme } from "@/context/ThemeContext";
-import { LandingFooter, OrgChart, Heartbeat, BudgetTable, GoalTrace, Orbit } from "./Landing";
+import { SiteNav } from "@/components/SiteNav";
+import { LandingFooter, OrgChart, Heartbeat, BudgetTable, GoalTrace } from "./Landing";
 import {
   ArrowRight,
   ArrowLeft,
@@ -10,53 +10,12 @@ import {
   ChevronRight,
   Gauge,
   Minus,
-  Moon,
   Plus,
   ShieldCheck,
-  Sun,
   Terminal,
 } from "lucide-react";
 
 // ─── Shared primitives ────────────────────────────────────────────────────────
-
-function MarketingNav() {
-  const { theme, toggleTheme } = useTheme();
-  return (
-    <header className="sticky top-0 z-50 w-full border-b border-black/[0.06] bg-[#F6F3EC]/80 backdrop-blur-xl dark:border-white/[0.06] dark:bg-neutral-950/80">
-      <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
-        <a href="/auth" className="flex items-center">
-          <img src="/logo-full-light.svg" alt="All Gas No Brakes" className="h-10 w-auto dark:hidden" />
-          <img src="/logo-full-dark.svg" alt="All Gas No Brakes" className="hidden h-10 w-auto dark:block" />
-        </a>
-        <nav className="hidden items-center gap-1 lg:flex">
-          {[
-            { label: "Agents", href: "/platform/agents" },
-            { label: "Governance", href: "/platform/governance" },
-            { label: "Integrations", href: "/platform/integrations" },
-            { label: "Docs", href: "/docs" },
-            { label: "Changelog", href: "/changelog" },
-          ].map((l) => (
-            <a key={l.href} href={l.href} className="rounded-md px-3 py-2 text-[13.5px] font-medium text-gray-500 transition hover:text-gray-900 dark:text-neutral-400 dark:hover:text-neutral-100">
-              {l.label}
-            </a>
-          ))}
-        </nav>
-        <div className="flex items-center gap-2.5">
-          <button
-            onClick={toggleTheme}
-            aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-            className="inline-flex size-9 items-center justify-center rounded-md text-gray-500 transition hover:bg-black/[0.04] hover:text-gray-900 dark:text-neutral-400 dark:hover:bg-white/10 dark:hover:text-neutral-100"
-          >
-            {theme === "dark" ? <Sun className="size-[18px]" /> : <Moon className="size-[18px]" />}
-          </button>
-          <a href="/auth" className="rounded-md bg-[#f97316] px-4 py-2 text-[13px] font-semibold text-white transition hover:bg-[#ea6a0c]">
-            Sign in
-          </a>
-        </div>
-      </div>
-    </header>
-  );
-}
 
 function Shell({ eyebrow, title, sub, children }: { eyebrow: string; title: string; sub: string; children: React.ReactNode }) {
   useEffect(() => {
@@ -64,8 +23,8 @@ function Shell({ eyebrow, title, sub, children }: { eyebrow: string; title: stri
     if (t) document.documentElement.classList.toggle("dark", t === "dark");
   }, []);
   return (
-    <div className="min-h-screen bg-[#F6F3EC] text-gray-900 antialiased dark:bg-neutral-950 dark:text-neutral-100">
-      <MarketingNav />
+    <div className="agnb-scroll h-screen overflow-y-auto bg-[#F6F3EC] text-gray-900 antialiased dark:bg-neutral-950 dark:text-neutral-100">
+      <SiteNav />
       <section className="relative mx-auto max-w-6xl px-6 pb-10 pt-16 text-center sm:pt-20">
         <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[340px]" style={{ background: "radial-gradient(55% 55% at 50% 0%, rgba(249,115,22,0.10) 0%, transparent 70%)" }} />
         <p className="mb-4 font-mono text-[12px] font-semibold uppercase tracking-[0.18em] text-[#f97316]">{eyebrow}</p>
