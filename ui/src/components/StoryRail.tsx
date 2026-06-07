@@ -24,40 +24,40 @@ function reduceMotion() {
 
 // ── The page thread — an SVG line that bows out to each node ───────────────────
 
-const BASE_X = 7; // resting x of the vertical line (in the left gutter)
-const END_FADE = 120; // fade-in/out length at the very top & bottom (px)
-const BREAK_FADE = 48; // fade length on each side of a group break (px)
-const BREAK_GAP = 7; // transparent gap at a group break (px)
+const BASE_X = 11; // resting x of the vertical line (close to the content)
+const ON_FADE = 26; // short fade-in that ENDS on the node (no stub above it)
+const OFF_FADE = 90; // fade-out length before a group's bottom
+const OFF_TAIL = 12; // transparent tail at a group's bottom
 
 type Node = { x: number; y: number };
+type Group = { firstNodeY: number; bottom: number };
 
 function railPath(nodes: Node[], height: number): string {
   let d = `M ${BASE_X} 0`;
   for (const n of nodes) {
     const ax = Math.max(BASE_X, n.x); // bow apex (out to the node)
-    d += ` L ${BASE_X} ${(n.y - 26).toFixed(1)}`;
-    d += ` C ${BASE_X} ${(n.y - 13).toFixed(1)}, ${ax} ${(n.y - 13).toFixed(1)}, ${ax} ${n.y.toFixed(1)}`;
-    d += ` C ${ax} ${(n.y + 13).toFixed(1)}, ${BASE_X} ${(n.y + 13).toFixed(1)}, ${BASE_X} ${(n.y + 26).toFixed(1)}`;
+    d += ` L ${BASE_X} ${(n.y - 30).toFixed(1)}`;
+    d += ` C ${BASE_X} ${(n.y - 15).toFixed(1)}, ${ax} ${(n.y - 16).toFixed(1)}, ${ax} ${n.y.toFixed(1)}`;
+    d += ` C ${ax} ${(n.y + 16).toFixed(1)}, ${BASE_X} ${(n.y + 15).toFixed(1)}, ${BASE_X} ${(n.y + 30).toFixed(1)}`;
   }
   d += ` L ${BASE_X} ${height}`;
   return d;
 }
 
-// Build gradient stops: solid orange, fading in/out at the page ends and
-// dipping to transparent at each group boundary (the line-breaks).
-function gradientStops(height: number, breaks: number[]): { o: number; op: number }[] {
+// Each group's line is OFF until its first node, turns solid AT the node, runs
+// through the group, then fades out before the group's bottom. The gaps between
+// groups are the line-breaks. (No faded stub above a group's node.)
+function gradientStops(height: number, groups: Group[]): { o: number; op: number }[] {
   if (!height) return [];
-  const pts: { o: number; op: number }[] = [
-    { o: 0, op: 0 },
-    { o: END_FADE / height, op: 0.82 },
-  ];
-  for (const y of breaks) {
-    pts.push({ o: (y - BREAK_FADE) / height, op: 0.82 });
-    pts.push({ o: (y - BREAK_GAP) / height, op: 0 });
-    pts.push({ o: (y + BREAK_GAP) / height, op: 0 });
-    pts.push({ o: (y + BREAK_FADE) / height, op: 0.82 });
+  const pts: { o: number; op: number }[] = [{ o: 0, op: 0 }];
+  for (const g of groups) {
+    const s = g.firstNodeY;
+    const e = g.bottom;
+    pts.push({ o: (s - ON_FADE) / height, op: 0 });
+    pts.push({ o: s / height, op: 0.92 });
+    pts.push({ o: Math.max(s + 1, e - OFF_FADE) / height, op: 0.92 });
+    pts.push({ o: (e - OFF_TAIL) / height, op: 0 });
   }
-  pts.push({ o: 1 - END_FADE / height, op: 0.82 });
   pts.push({ o: 1, op: 0 });
   return pts
     .map((p) => ({ o: Math.max(0, Math.min(1, p.o)), op: p.op }))
@@ -67,7 +67,7 @@ function gradientStops(height: number, breaks: number[]): { o: number; op: numbe
 function RailSvg({ rootRef }: { rootRef: React.RefObject<HTMLDivElement | null> }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const [nodes, setNodes] = useState<Node[]>([]);
-  const [breaks, setBreaks] = useState<number[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
   const [size, setSize] = useState({ w: 0, h: 0 });
 
   useLayoutEffect(() => {
@@ -84,16 +84,20 @@ function RailSvg({ rootRef }: { rootRef: React.RefObject<HTMLDivElement | null> 
         })
         .filter((n) => n.y >= 0)
         .sort((a, b) => a.y - b.y);
-      // group boundaries = the top edge of every group except the first
-      const groups = Array.from(root.querySelectorAll<HTMLElement>("[data-rail-group]"));
-      const bks = groups
-        .slice(1)
-        .map((g) => g.getBoundingClientRect().top - br.top)
-        .filter((y) => y > END_FADE && y < h - END_FADE)
-        .sort((a, b) => a - b);
+      // one rail run per group: from its first node down to its bottom
+      const gs: Group[] = Array.from(root.querySelectorAll<HTMLElement>("[data-rail-group]"))
+        .map((g) => {
+          const gr = g.getBoundingClientRect();
+          const ys = Array.from(g.querySelectorAll<HTMLElement>("[data-rail-bow]")).map(
+            (n) => n.getBoundingClientRect().top - br.top + n.getBoundingClientRect().height / 2,
+          );
+          const top = gr.top - br.top;
+          return { firstNodeY: ys.length ? Math.min(...ys) : top + 70, bottom: gr.bottom - br.top };
+        })
+        .filter((g) => g.bottom > 0);
       setSize({ w: br.width, h });
       setNodes(ns);
-      setBreaks(bks);
+      setGroups(gs);
     };
     measure();
     const root = rootRef.current;
@@ -110,7 +114,7 @@ function RailSvg({ rootRef }: { rootRef: React.RefObject<HTMLDivElement | null> 
     };
   }, [rootRef]);
 
-  const stops = gradientStops(size.h, breaks);
+  const stops = gradientStops(size.h, groups);
 
   return (
     <div className="pointer-events-none absolute inset-0 z-0" aria-hidden>
@@ -134,7 +138,7 @@ function RailSvg({ rootRef }: { rootRef: React.RefObject<HTMLDivElement | null> 
             <path
               d={railPath(nodes, size.h)}
               stroke="url(#rail-fade)"
-              strokeWidth="1.6"
+              strokeWidth="2"
               strokeLinecap="round"
               vectorEffect="non-scaling-stroke"
             />
@@ -159,9 +163,9 @@ export function PageRail({ children }: { children: ReactNode }) {
 
 function GroupNode({ icon: Icon }: { icon: IconType }) {
   return (
-    <span className="relative flex size-11 items-center justify-center rounded-full border border-[#f97316] bg-[#f97316] text-white shadow-[0_0_18px_3px_rgba(249,115,22,0.45),0_0_0_6px_rgba(249,115,22,0.10)]">
-      <span className="pointer-events-none absolute -inset-2 rounded-full bg-[#f97316]/25 blur-md" aria-hidden />
-      <Icon className="relative size-5" />
+    <span className="relative flex size-9 items-center justify-center rounded-full border border-[#f97316] bg-[#f97316] text-white shadow-[0_0_14px_2px_rgba(249,115,22,0.4),0_0_0_5px_rgba(249,115,22,0.09)]">
+      <span className="pointer-events-none absolute -inset-1.5 rounded-full bg-[#f97316]/20 blur-md" aria-hidden />
+      <Icon className="relative size-4" />
     </span>
   );
 }
@@ -184,10 +188,10 @@ export function RailGroup({
   return (
     <div className="relative">
       {/* big node on the main thread */}
-      <span data-rail-bow className="absolute left-0 top-0 z-20 -translate-x-1/2">
+      <span data-rail-bow className="absolute left-1.5 top-0 z-20 -translate-x-1/2">
         <GroupNode icon={icon} />
       </span>
-      <div className="pl-14 md:pl-20">
+      <div className="pl-11 md:pl-14">
         {kicker && (
           <p className="font-mono text-[12px] font-semibold uppercase tracking-[0.16em] text-[#f97316]">{kicker}</p>
         )}
@@ -272,10 +276,10 @@ export function RailHead({
 }) {
   return (
     <div className="relative">
-      <span data-rail-bow className="absolute left-0 top-0 z-20 -translate-x-1/2">
+      <span data-rail-bow className="absolute left-1.5 top-0 z-20 -translate-x-1/2">
         <GroupNode icon={icon} />
       </span>
-      <div className="pl-14 md:pl-20">
+      <div className="pl-11 md:pl-14">
         {kicker && (
           <p className="mb-3 font-mono text-[12px] font-semibold uppercase tracking-[0.16em] text-[#f97316]">{kicker}</p>
         )}

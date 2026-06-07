@@ -1020,7 +1020,7 @@ const STORY_GROUPS: {
 function StorySection() {
   return (
     <Section id="how" className="scroll-mt-20 py-20">
-      <div className="mb-14 max-w-2xl pl-14 md:pl-20">
+      <div className="mb-14 max-w-2xl pl-11 md:pl-14">
         <Eyebrow>
           <span className="inline-flex items-center gap-1.5">
             <GitBranch className="size-3.5" /> From goal to growth
@@ -1189,7 +1189,7 @@ export function LandingPage() {
       </Section>
 
       {/* ── Trusted by (real Finn customer logos) ── */}
-      <Section className="py-12 pl-14 md:pl-20">
+      <Section className="py-12 pl-[68px] md:pl-20">
         <p className="mb-8 font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400 dark:text-neutral-500">
           From the team behind <span className="text-gray-700 dark:text-neutral-300">Finn</span> — trusted in production by
         </p>
@@ -1237,7 +1237,7 @@ export function LandingPage() {
       </Section>
 
       {/* ── Before / After (visual) ── */}
-      <Section className="py-16 pl-14 md:pl-20">
+      <Section className="py-16 pl-[68px] md:pl-20">
         <div className="mb-10">
           <Eyebrow>Twelve dashboards become one</Eyebrow>
           <h2 className="text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
@@ -1279,7 +1279,7 @@ export function LandingPage() {
       </Section>
 
       {/* ── Stat callout ── */}
-      <Section className="py-8 pl-14 md:pl-20">
+      <Section className="py-8 pl-[68px] md:pl-20">
         <StatCallout
           pill="Did you know?"
           stat="24/7"
@@ -1351,7 +1351,7 @@ export function LandingPage() {
       </Section>
 
       {/* ── Inside the agent company (diagrams) ── */}
-      <Section className="py-16 pl-14 md:pl-20">
+      <Section className="py-16 pl-[68px] md:pl-20">
         <div className="mb-10">
           <Eyebrow>Inside the agent company</Eyebrow>
           <h2 className="text-[clamp(26px,3.2vw,40px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
@@ -1404,7 +1404,7 @@ export function LandingPage() {
       </Section>
 
       {/* ── Integrations (Group 5) ── */}
-      <Section className="scroll-mt-20 py-16 pl-14 md:pl-20" id="integrations">
+      <Section className="scroll-mt-20 py-16 pl-[68px] md:pl-20" id="integrations">
         <Eyebrow>Works with your stack</Eyebrow>
         <h2 className="mb-8 text-[clamp(24px,3vw,38px)] font-bold tracking-[-0.02em] text-gray-900 dark:text-neutral-100">
           Drop it in. Nothing breaks.
@@ -1425,7 +1425,7 @@ export function LandingPage() {
       </Section>
 
       {/* ── Bring your own agent ── */}
-      <Section className="py-16 pl-14 md:pl-20">
+      <Section className="py-16 pl-[68px] md:pl-20">
         <div className="rounded-3xl border border-black/[0.07] dark:border-white/[0.08] bg-white dark:bg-[#261f19] p-8 sm:p-12">
           <div className="flex flex-col items-start">
             <Eyebrow>Bring your own agent</Eyebrow>
@@ -1473,7 +1473,7 @@ export function LandingPage() {
       </Section>
 
       {/* ── FAQ ── */}
-      <Section className="scroll-mt-20 py-12 pl-14 md:pl-20" id="faq">
+      <Section className="scroll-mt-20 py-12 pl-[68px] md:pl-20" id="faq">
         <Eyebrow>Questions</Eyebrow>
         <div className="mt-2">
           {FAQS.map((f) => (
@@ -1483,7 +1483,7 @@ export function LandingPage() {
       </Section>
 
       {/* ── Sign in (moved out of hero) ── */}
-      <Section className="py-20 pl-14 md:pl-20">
+      <Section className="py-20 pl-[68px] md:pl-20">
         <div className="grid grid-cols-1 items-center gap-12 rounded-3xl border border-black/[0.07] dark:border-white/[0.08] bg-white dark:bg-[#261f19] p-8 shadow-sm sm:p-12 lg:grid-cols-2">
           <div>
             <Eyebrow>Your instance. Your agents.</Eyebrow>
