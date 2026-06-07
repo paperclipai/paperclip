@@ -31,13 +31,13 @@ export function IssueGroupHeader({
           <ChevronRight
             className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", !collapsed && "rotate-90")}
           />
-          <span className="truncate text-sm font-semibold uppercase tracking-wide">
+          <span className="truncate font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
             {label}
           </span>
         </button>
       ) : (
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className="truncate text-sm font-semibold uppercase tracking-wide">
+          <span className="truncate font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
             {label}
           </span>
         </div>

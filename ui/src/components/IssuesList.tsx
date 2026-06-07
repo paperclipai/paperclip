@@ -106,12 +106,12 @@ const issueStatusLabels: Record<IssueStatus, string> = {
 };
 const progressSegmentClasses: Record<IssueStatus, string> = {
   backlog: "bg-muted-foreground/40",
-  todo: "bg-blue-500",
-  in_progress: "bg-yellow-500",
-  in_review: "bg-violet-500",
-  done: "bg-green-500",
-  blocked: "bg-red-500",
-  cancelled: "bg-neutral-400",
+  todo: "bg-status-info",
+  in_progress: "bg-status-running",
+  in_review: "bg-status-warning",
+  done: "bg-status-success",
+  blocked: "bg-status-error",
+  cancelled: "bg-muted-foreground/40",
 };
 
 /* ── View state ── */
@@ -1334,7 +1334,7 @@ export function IssuesList({
       {/* Toolbar */}
       <div className="flex items-center justify-between gap-2 sm:gap-3">
         <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-          <Button size="sm" variant="outline" onClick={() => openCreateIssueDialog()}>
+          <Button size="sm" onClick={() => openCreateIssueDialog()}>
             <Plus className="h-4 w-4 sm:mr-1" />
             <span className="hidden sm:inline">{createButtonLabel}</span>
           </Button>

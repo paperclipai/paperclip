@@ -68,9 +68,9 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
   const isAttentionBlocked = status === "blocked" && blockerAttention?.state === "needs_attention";
   const hasCoveredBlockedWork = isAttentionBlocked && (blockerAttention?.coveredBlockerCount ?? 0) > 0;
   const colorClass = isCoveredBlocked
-    ? "text-cyan-600 border-cyan-600 dark:text-cyan-400 dark:border-cyan-400"
+    ? "text-status-running border-status-running"
     : isStalledBlocked
-      ? "text-amber-600 border-amber-600 dark:text-amber-400 dark:border-amber-400"
+      ? "text-status-warning border-status-warning"
       : issueStatusIcon[status] ?? issueStatusIconDefault;
   const isDone = status === "done";
   const ariaLabel = status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(status);
@@ -101,7 +101,7 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
         <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-background bg-current" />
       )}
       {hasCoveredBlockedWork && (
-        <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-background bg-cyan-600 dark:bg-cyan-400" />
+        <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-background bg-status-running" />
       )}
       {isStalledBlocked && (
         <span className="absolute inset-0 m-auto h-1.5 w-1.5 rounded-full bg-current" />
