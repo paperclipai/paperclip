@@ -181,6 +181,52 @@ describe("buildSSEBuffer", () => {
     expect(text).toContain('"finish_reason":"stop"');
     expect(text).toContain("data: [DONE]");
   });
+
+  it("stamps index on each tool_call delta so the AI SDK stream parser can assemble them", () => {
+    const openAIResp = {
+      id: "chatcmpl-2",
+      object: "chat.completion",
+      created: 123,
+      model: "gemma4:26b",
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+              { id: "call_2_0", type: "function", function: { name: "bash", arguments: '{"cmd":"ls"}' } },
+              { id: "call_2_1", type: "function", function: { name: "read", arguments: '{"path":"/"}' } },
+            ],
+          },
+          finish_reason: "tool_calls",
+        },
+      ],
+      usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+    };
+
+    const buf = buildSSEBuffer(openAIResp);
+    const text = buf.toString("utf8");
+
+    const dataLines = text
+      .split("\n")
+      .filter((l) => l.startsWith("data: ") && !l.includes("[DONE]"));
+    expect(dataLines.length).toBeGreaterThanOrEqual(1);
+
+    const firstChunk = JSON.parse(dataLines[0].slice(6)) as {
+      choices: {
+        delta: {
+          tool_calls: { index: number; id: string; function: { name: string } }[];
+        };
+      }[];
+    };
+    const tcs = firstChunk.choices[0].delta.tool_calls;
+    expect(tcs).toHaveLength(2);
+    expect(tcs[0].index).toBe(0);
+    expect(tcs[1].index).toBe(1);
+    expect(tcs[0].id).toBe("call_2_0");
+    expect(tcs[1].id).toBe("call_2_1");
+  });
 });
 
 // ── Integration tests ──────────────────────────────────────────────────────────
@@ -268,6 +314,116 @@ describe("startGemma4ThinkProxy", () => {
       expect(received[0].body.think).toBe(false);
       expect(received[0].body.stream).toBe(false);
       expect(received[0].body.options).toMatchObject({ num_predict: 5 });
+    } finally {
+      await proxy.close();
+      await new Promise<void>((resolve) => fakeOllama.close(() => resolve()));
+    }
+  });
+
+  it("streams SSE with indexed tool_call deltas for gemma4 (live path)", async () => {
+    // Verify the SSE branch (clientWantsStreaming===true) carries index on each
+    // tool_call entry — the AI SDK stream parser requires index to assemble calls.
+    const fakeOllama = await new Promise<http.Server>((resolve) => {
+      const s = http.createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on("data", (c: Buffer) => chunks.push(c));
+        req.on("end", () => {
+          const resp = {
+            model: "gemma4:26b",
+            message: {
+              role: "assistant",
+              content: "",
+              tool_calls: [
+                { function: { name: "bash", arguments: { cmd: "ls" } } },
+                { function: { name: "read", arguments: { path: "/" } } },
+              ],
+            },
+            done: true,
+            done_reason: "tool_calls",
+            prompt_eval_count: 5,
+            eval_count: 3,
+          };
+          const buf = Buffer.from(JSON.stringify(resp), "utf8");
+          res.writeHead(200, {
+            "content-type": "application/json",
+            "content-length": String(buf.length),
+          });
+          res.end(buf);
+        });
+      });
+      s.listen(0, "127.0.0.1", () => resolve(s));
+    });
+
+    const ollamaPort = (fakeOllama.address() as { port: number }).port;
+    const proxy = await startGemma4ThinkProxy(`http://127.0.0.1:${ollamaPort}/v1`);
+
+    try {
+      const proxyUrl = new URL(proxy.proxyUrl);
+      const reqBody = Buffer.from(
+        JSON.stringify({
+          model: "gemma4:26b-a4b-it-q4_K_M",
+          messages: [{ role: "user", content: "list files" }],
+          stream: true,
+          tools: [
+            { type: "function", function: { name: "bash", parameters: {} } },
+            { type: "function", function: { name: "read", parameters: {} } },
+          ],
+        }),
+        "utf8",
+      );
+
+      const proxyResp = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = http.request(
+          {
+            hostname: proxyUrl.hostname,
+            port: Number(proxyUrl.port),
+            path: `${proxyUrl.pathname}/chat/completions`,
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "content-length": String(reqBody.length),
+            },
+          },
+          (res) => {
+            const chunks: Buffer[] = [];
+            res.on("data", (c: Buffer) => chunks.push(c));
+            res.on("end", () =>
+              resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString() }),
+            );
+          },
+        );
+        req.on("error", reject);
+        req.write(reqBody);
+        req.end();
+      });
+
+      expect(proxyResp.status).toBe(200);
+
+      // Parse SSE: each line starting with "data: " (skip [DONE])
+      const dataLines = proxyResp.body
+        .split("\n")
+        .filter((l) => l.startsWith("data: ") && !l.includes("[DONE]"));
+      expect(dataLines.length).toBeGreaterThanOrEqual(1);
+
+      const firstChunk = JSON.parse(dataLines[0].slice(6)) as {
+        choices: {
+          delta: {
+            tool_calls: { index: number; id: string; function: { name: string; arguments: string } }[];
+          };
+        }[];
+      };
+      const tcs = firstChunk.choices[0].delta.tool_calls;
+      expect(tcs).toBeDefined();
+      expect(tcs).toHaveLength(2);
+      // index must be present for AI SDK stream parser
+      expect(tcs[0].index).toBe(0);
+      expect(tcs[1].index).toBe(1);
+      // function names must survive the /api/chat → SSE round-trip
+      expect(tcs[0].function.name).toBe("bash");
+      expect(tcs[1].function.name).toBe("read");
+      // arguments must be JSON strings (OpenAI wire format)
+      expect(() => JSON.parse(tcs[0].function.arguments)).not.toThrow();
+      expect(() => JSON.parse(tcs[1].function.arguments)).not.toThrow();
     } finally {
       await proxy.close();
       await new Promise<void>((resolve) => fakeOllama.close(() => resolve()));

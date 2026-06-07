@@ -152,9 +152,16 @@ export function buildSSEBuffer(openAIResponse: Record<string, unknown>): Buffer 
     const msg = isPlainObject(choice.message) ? (choice.message as Record<string, unknown>) : {};
     const finishReason = choice.finish_reason as string | null;
 
-    // Opening chunk: role + full content (or tool_calls)
+    // Opening chunk: role + full content (or tool_calls).
+    // OpenAI streaming wire format requires each tool_calls[] entry to carry
+    // a per-call `index` so the AI SDK stream parser can assemble them correctly.
     const delta: Record<string, unknown> = { role: "assistant", content: msg.content ?? "" };
-    if (Array.isArray(msg.tool_calls)) delta.tool_calls = msg.tool_calls;
+    if (Array.isArray(msg.tool_calls)) {
+      delta.tool_calls = (msg.tool_calls as unknown[]).map((tc, i) => {
+        if (!isPlainObject(tc)) return tc;
+        return { ...tc, index: i };
+      });
+    }
 
     parts.push(
       `data: ${JSON.stringify({
@@ -236,6 +243,7 @@ export function startGemma4ThinkProxy(targetBaseUrl: string): Promise<ProxyHandl
 
         // Gemma4: translate to native /api/chat
         const clientWantsStreaming = parsed.stream === true;
+        console.log(`[gemma4-proxy] model=${model} clientWantsStreaming=${clientWantsStreaming}`);
         const ollamaBody = Buffer.from(JSON.stringify(buildOllamaRequest(parsed)), "utf8");
 
         const nativeParsed = new URL(nativeOrigin);
