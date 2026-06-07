@@ -338,12 +338,12 @@ describe("Secrets page layout", () => {
     await flushReact();
 
     expect(document.body.textContent).toContain("Remove provider vault");
-    expect(document.body.textContent).toContain("from Paperclip only");
+    expect(document.body.textContent).toContain("from All Gas No Brakes only");
     expect(document.body.textContent).toContain("does not delete");
     expect(document.body.textContent).toContain("AWS Secrets Manager");
 
     const confirmButton = [...document.querySelectorAll("button")].find(
-      (button) => button.textContent?.includes("Remove from Paperclip"),
+      (button) => button.textContent?.includes("Remove from All Gas No Brakes"),
     ) as HTMLButtonElement | undefined;
     await act(async () => {
       confirmButton?.click();

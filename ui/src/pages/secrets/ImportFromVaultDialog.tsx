@@ -277,10 +277,10 @@ function validateDraftRow(
 
   for (const existingSecret of existing) {
     if (existingSecret.name.trim().toLowerCase() === lowerName) {
-      return "A All Gas No Brakes secret already uses this name.";
+      return "An existing secret already uses this name.";
     }
     if (existingSecret.key.trim().toLowerCase() === lowerKey) {
-      return "A All Gas No Brakes secret already uses this key.";
+      return "An existing secret already uses this key.";
     }
   }
 

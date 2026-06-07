@@ -106,8 +106,7 @@ describe("SidebarAccountMenu", () => {
     await flushReact();
 
     expect(document.body.textContent).toContain("Edit profile");
-    expect(document.body.textContent).toContain("Documentation");
-    expect(document.body.textContent).toContain("Paperclip v1.2.3");
+    expect(document.body.textContent).toContain("All Gas No Brakes v1.2.3");
     expect(document.body.textContent).toContain("jane@example.com");
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
       .toContain("w-[277px]");

@@ -238,7 +238,7 @@ export function CloudUpstream() {
             <h1 className="text-lg font-semibold">Cloud upstream</h1>
           </div>
           <p className="max-w-2xl text-sm text-muted-foreground">
-            Push {selectedCompany.name} into a All Gas No Brakes Cloud stack. Automations stay paused until activation.
+            Push {selectedCompany.name} into an All Gas No Brakes Cloud stack. Automations stay paused until activation.
           </p>
         </div>
         {connection?.target.origin ? (

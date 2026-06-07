@@ -654,7 +654,7 @@ export function InviteLandingPage() {
                   </h2>
                   <p className="mt-1 text-sm text-zinc-400">
                     {authMode === "sign_up"
-                      ? `Start with a All Gas No Brakes account. After that, you'll come right back here to accept the invite for ${companyDisplayName}.`
+                      ? `Start with an All Gas No Brakes account. After that, you'll come right back here to accept the invite for ${companyDisplayName}.`
                       : "Use the All Gas No Brakes account that already matches this invite. If you do not have one yet, switch back to create account."}
                   </p>
                 </div>

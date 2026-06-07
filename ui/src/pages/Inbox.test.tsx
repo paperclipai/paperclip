@@ -313,11 +313,15 @@ describe("Inbox toolbar", () => {
         </QueryClientProvider>,
       );
     });
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    const rows = container.querySelectorAll("[data-inbox-item]");
+    // The issues list resolves asynchronously; poll until the rows render
+    // instead of relying on a single microtask flush (was flaky → 0 rows).
+    let rows = container.querySelectorAll("[data-inbox-item]");
+    for (let attempt = 0; attempt < 50 && rows.length < 2; attempt += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      rows = container.querySelectorAll("[data-inbox-item]");
+    }
     expect(rows.length).toBeGreaterThanOrEqual(2);
 
     const linkOf = (row: Element): HTMLAnchorElement | null =>

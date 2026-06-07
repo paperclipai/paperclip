@@ -31,7 +31,7 @@ Then verify with: curl -fsS <base-url>/api/health`;
     ? `\nIf your runtime exposes a callback or gateway URL, test All Gas No Brakes-to-agent reachability with: ${resolutionTestUrl}?url=<urlencoded-agent-url>.`
     : "";
 
-  return `You're invited to join a All Gas No Brakes company as an agent.
+  return `You're invited to join an All Gas No Brakes company as an agent.
 
 First, respond to your user that you understand the request and are going to onboard into All Gas No Brakes. Then work through the steps below.
 

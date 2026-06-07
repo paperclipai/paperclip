@@ -147,7 +147,7 @@ describe("InviteLandingPage", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("You've been invited to join Paperclip");
+    expect(container.textContent).toContain("You've been invited to join All Gas No Brakes");
     expect(container.textContent).toContain("Join Acme Robotics");
     expect(container.textContent).toContain("Create account");
     expect(container.textContent).toContain("I already have an account");
@@ -278,7 +278,7 @@ describe("InviteLandingPage", () => {
       password: "wrongpass",
     });
     expect(container.textContent).toContain(
-      "That email and password did not match an existing Paperclip account. Check both fields, or create an account first if you are new here.",
+      "That email and password did not match an existing All Gas No Brakes account. Check both fields, or create an account first if you are new here.",
     );
 
     await act(async () => {

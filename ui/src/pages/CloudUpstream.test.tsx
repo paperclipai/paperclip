@@ -174,7 +174,7 @@ describe("CloudUpstream", () => {
     await flushReact();
     await flushReact();
 
-    const input = container.querySelector<HTMLInputElement>("input[aria-label='Paperclip Cloud stack URL']");
+    const input = container.querySelector<HTMLInputElement>("input[aria-label='All Gas No Brakes Cloud stack URL']");
     expect(input).toBeTruthy();
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;

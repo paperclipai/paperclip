@@ -18,12 +18,12 @@ describe("successful run handoff UI helpers", () => {
     expect(isSuccessfulRunHandoffComment(SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY)).toBe(true);
     expect(
       isSuccessfulRunHandoffComment(
-        "Paperclip exhausted the bounded successful-run handoff correction for this issue, but it still has no clear next-step disposition.",
+        "All Gas No Brakes exhausted the bounded successful-run handoff correction for this issue, but it still has no clear next-step disposition.",
       ),
     ).toBe(true);
     expect(
       isSuccessfulRunHandoffEscalationComment(
-        "Paperclip exhausted the bounded successful-run handoff correction for this issue, but it still has no clear next-step disposition.",
+        "All Gas No Brakes exhausted the bounded successful-run handoff correction for this issue, but it still has no clear next-step disposition.",
       ),
     ).toBe(true);
     expect(isSuccessfulRunHandoffComment("Ordinary issue comment")).toBe(false);

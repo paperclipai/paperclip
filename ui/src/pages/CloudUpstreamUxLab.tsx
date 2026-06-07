@@ -159,7 +159,7 @@ function CloudUpstreamRender({ fixture }: { fixture: Fixture }) {
             <h1 className="text-lg font-semibold">Cloud upstream</h1>
           </div>
           <p className="max-w-2xl text-sm text-muted-foreground">
-            Push {selectedCompanyName} into a All Gas No Brakes Cloud stack. Automations stay paused until activation.
+            Push {selectedCompanyName} into an All Gas No Brakes Cloud stack. Automations stay paused until activation.
           </p>
         </div>
         {connection?.target.origin ? (
