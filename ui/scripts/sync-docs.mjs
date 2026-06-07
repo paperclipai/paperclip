@@ -18,6 +18,12 @@ function frontmatterTitle(md, fallback) {
 fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
 
+// Copy static asset dirs (images, etc.) so in-app docs render embedded media.
+for (const dir of ["images", "assets", "logo"]) {
+  const src = path.join(SRC, dir);
+  if (fs.existsSync(src)) fs.cpSync(src, path.join(OUT, dir), { recursive: true });
+}
+
 const cfg = JSON.parse(fs.readFileSync(path.join(SRC, "docs.json"), "utf8"));
 const tabs = [];
 let copied = 0;
