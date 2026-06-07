@@ -1016,17 +1016,13 @@ export function LandingPage() {
           <span className="font-medium">New: agents now run your full growth stack.</span>
         </a>
 
-        {/* Brand kicker */}
-        <p
-          className="mb-3 bg-gradient-to-r from-amber-400 via-orange-500 to-red-600 bg-clip-text text-[clamp(15px,1.8vw,20px)] font-black uppercase italic tracking-[0.02em] text-transparent"
-          style={{ transform: "skewX(-9deg)" }}
-        >
-          All gas, no brakes.
-        </p>
-
         {/* Headline */}
         <h1 className="mx-auto max-w-[18ch] text-[clamp(44px,6.6vw,76px)] font-extrabold leading-[1.02] tracking-[-0.04em] text-gray-900 dark:text-neutral-100">
-          Your growth team, now autonomous.
+          Your growth team,
+          <br />
+          <span className="bg-gradient-to-r from-amber-400 via-orange-500 to-red-600 bg-clip-text text-transparent">
+            now autonomous.
+          </span>
         </h1>
 
         {/* Subtitle */}
