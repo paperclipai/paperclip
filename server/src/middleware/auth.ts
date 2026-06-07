@@ -21,6 +21,8 @@ interface ActorMiddlewareOptions {
 const TRUSTED_PROXY_AUTH_EMAIL_ENV = "PAPERCLIP_TRUST_PROXY_AUTH_EMAIL";
 const TRUSTED_PROXY_EMAIL_HEADERS = [
   "x-auth-request-email",
+  "x-auth-request-user",
+  "x-auth-request-preferred-username",
   "x-forwarded-email",
   "x-forwarded-user",
   "x-forwarded-preferred-username",

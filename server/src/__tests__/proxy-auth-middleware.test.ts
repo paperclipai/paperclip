@@ -79,6 +79,8 @@ describe("trusted proxy auth middleware", () => {
   it.each([
     ["X-Forwarded-Email"],
     ["X-Forwarded-User"],
+    ["X-Auth-Request-Email"],
+    ["X-Auth-Request-User"],
   ])("provisions the allowlisted proxy user from %s when it does not already exist", async (header) => {
     process.env.PAPERCLIP_TRUST_PROXY_AUTH_EMAIL = "lennie@trustedhealth.com";
     const db = createDb();
