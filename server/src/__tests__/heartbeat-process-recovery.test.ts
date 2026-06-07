@@ -1849,6 +1849,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       latestRunStatus: "succeeded",
       missingDisposition: "clear_next_step",
     });
+    expect(issue?.executionRunId).toBeNull();
+    // With APE-2446 fix: releaseIssueExecutionAndPromote now also clears checkoutRunId
+    // so a post-crash reap does not leave a stale checkout lock (zombie state).
+    expect(issue?.checkoutRunId).toBeNull();
   });
 
   it("clears the detached warning when the run reports activity again", async () => {

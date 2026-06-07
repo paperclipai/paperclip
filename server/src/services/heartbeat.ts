@@ -9352,6 +9352,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             executionRunId: null,
             executionAgentNameKey: null,
             executionLockedAt: null,
+            // Also clear checkoutRunId: a post-crash reap must not leave a stale
+            // checkout lock that blocks the next heartbeat from re-checking out
+            // the same issue (zombie/stale-lock -- APE-2446).
+            checkoutRunId: null,
             updatedAt: new Date(),
           })
           .where(eq(issues.id, issue.id));
