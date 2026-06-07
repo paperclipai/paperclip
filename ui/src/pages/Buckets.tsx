@@ -32,7 +32,6 @@ export function Buckets() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="campaigns" />
       {open && (
         <AgnbFormModal
           title="New bucket"
@@ -53,6 +52,7 @@ export function Buckets() {
           ))}
         </div>
       </div>
+      <AgnbSubnav group="campaigns" />
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
       {isLoading ? (
         <PageSkeleton variant="list" />

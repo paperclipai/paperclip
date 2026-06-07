@@ -38,11 +38,11 @@ export function NewAsset() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="assets" />
       <Link to="/assets" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
         <ArrowLeft className="h-3 w-3" /> Back to assets
       </Link>
       <h1 className="text-lg font-semibold">New asset</h1>
+      <AgnbSubnav group="assets" />
       <div className="grid max-w-2xl gap-3">
         <div>
           <label className="text-xs text-muted-foreground">Title</label>

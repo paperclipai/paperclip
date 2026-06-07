@@ -121,7 +121,6 @@ export function AssetDetail() {
 
   return (
     <div className="space-y-4">
-      <AgnbSubnav group="assets" />
       <Link to="/assets" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
         <ArrowLeft className="h-3 w-3" /> Back to assets
       </Link>
@@ -135,6 +134,7 @@ export function AssetDetail() {
           <button onClick={() => setTab("source")} className={cn("rounded-md border px-2.5 py-1 text-xs", tab === "source" ? "border-foreground bg-foreground text-background" : "border-border text-muted-foreground")}>Source HTML</button>
         </div>
       </div>
+      <AgnbSubnav group="assets" />
 
       {tab === "fill" ? (
         <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
