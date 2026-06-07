@@ -1196,7 +1196,7 @@ export function OnboardingWizard() {
                   )}
 
                   {isLocalAdapter && (
-                    <div className="space-y-2 rounded-md border border-border p-3">
+                    <div className="space-y-2 rounded-lg border border-border p-3">
                       <div className="flex items-center justify-between gap-2">
                         <div>
                           <p className="text-xs font-medium">
@@ -1219,14 +1219,14 @@ export function OnboardingWizard() {
                       </div>
 
                       {adapterEnvError && (
-                        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-[11px] text-destructive">
+                        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-[11px] text-destructive">
                           {adapterEnvError}
                         </div>
                       )}
 
                       {adapterEnvResult &&
                       adapterEnvResult.status === "pass" ? (
-                        <div className="flex items-center gap-2 rounded-[3px] border border-status-success/40 bg-status-success/10 px-3 py-2 text-xs text-status-success animate-in fade-in slide-in-from-bottom-1 duration-300">
+                        <div className="flex items-center gap-2 rounded-lg border border-status-success/40 bg-status-success/10 px-3 py-2 text-xs text-status-success animate-in fade-in slide-in-from-bottom-1 duration-300">
                           <Check className="h-3.5 w-3.5 shrink-0" />
                           <span className="font-medium">Environment ready</span>
                         </div>
@@ -1235,7 +1235,7 @@ export function OnboardingWizard() {
                       ) : null}
 
                       {shouldSuggestUnsetAnthropicApiKey && (
-                        <div className="rounded-[3px] border border-status-warning/40 bg-status-warning/10 px-2.5 py-2 space-y-2">
+                        <div className="rounded-lg border border-status-warning/40 bg-status-warning/10 px-2.5 py-2 space-y-2">
                           <p className="text-[11px] text-foreground leading-relaxed">
                             Claude failed while{" "}
                             <span className="font-mono text-status-warning">ANTHROPIC_API_KEY</span>{" "}
@@ -1259,7 +1259,7 @@ export function OnboardingWizard() {
                       )}
 
                       {adapterEnvResult && adapterEnvResult.status === "fail" && (
-                        <div className="rounded-md border border-border/70 bg-muted/20 px-2.5 py-2 text-[11px] space-y-1.5">
+                        <div className="rounded-lg border border-border/70 bg-muted/20 px-2.5 py-2 text-[11px] space-y-1.5">
                           <p className="font-medium">Manual debug</p>
                           <p className="text-muted-foreground font-mono break-all">
                             {adapterType === "cursor"
@@ -1564,7 +1564,7 @@ function AdapterCard({
       onClick={onSelect}
       aria-pressed={selected}
       className={cn(
-        "group relative flex items-start gap-2.5 rounded-[3px] border p-3 text-left transition-colors",
+        "group relative flex items-start gap-2.5 rounded-[2px] border p-3 text-left transition-colors",
         disabled
           ? "cursor-not-allowed border-border opacity-40"
           : selected
@@ -1620,7 +1620,7 @@ function AdapterEnvironmentResult({
         : "text-status-error border-status-error/40 bg-status-error/10";
 
   return (
-    <div className={cn("rounded-[3px] border px-3 py-2.5 text-[11px]", statusClass)}>
+    <div className={cn("rounded-lg border px-3 py-2.5 text-[11px]", statusClass)}>
       <div className="flex items-center justify-between gap-2">
         <span className="font-semibold">{statusLabel}</span>
         <span className="font-mono text-[10px] opacity-70">
