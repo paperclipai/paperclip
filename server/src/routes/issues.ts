@@ -5033,6 +5033,29 @@ export function issueRoutes(
           },
           "issue update rejected with 422",
         );
+      } else {
+        const candidate = err as any;
+        const constraintName =
+          candidate?.constraint ??
+          candidate?.constraint_name ??
+          candidate?.cause?.constraint ??
+          candidate?.cause?.constraint_name;
+
+        if (constraintName === "issues_parent_id_issues_id_fk") {
+          logger.warn(
+            { issueId: id, companyId: existing.companyId, error: err },
+            "issue update rejected due to stale parentId",
+          );
+          res.status(400).json({ error: "parent issue not found" });
+          return;
+        } else if (constraintName === "issues_goal_id_goals_id_fk") {
+          logger.warn(
+            { issueId: id, companyId: existing.companyId, error: err },
+            "issue update rejected due to stale goalId",
+          );
+          res.status(400).json({ error: "goal not found" });
+          return;
+        }
       }
       throw err;
     }
