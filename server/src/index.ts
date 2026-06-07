@@ -755,9 +755,11 @@ export async function startServer(): Promise<StartedServer> {
         }
       })
       .then(async () => {
-        const reviewed = await heartbeat.reconcileProductivityReviews();
-        if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
-          logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
+        if (config.productivityReviewEnabled) {
+          const reviewed = await heartbeat.reconcileProductivityReviews();
+          if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
+            logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
+          }
         }
       })
       .catch((err) => {
@@ -821,9 +823,11 @@ export async function startServer(): Promise<StartedServer> {
           }
         })
         .then(async () => {
-          const reviewed = await heartbeat.reconcileProductivityReviews();
-          if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
-            logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
+          if (config.productivityReviewEnabled) {
+            const reviewed = await heartbeat.reconcileProductivityReviews();
+            if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
+              logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
+            }
           }
         })
         .catch((err) => {

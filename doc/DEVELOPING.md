@@ -648,6 +648,44 @@ Default behavior:
 - `local_trusted`: enabled
 - `authenticated`: disabled
 
+## Productivity Review Toggle
+
+The heartbeat scheduler periodically runs `reconcileProductivityReviews` to detect stalled or high-churn assigned issues and create "Review productivity for ..." follow-up tasks. This runs both at startup and on every scheduler tick (default 30 s).
+
+To disable productivity review creation and updates without disabling the rest of the heartbeat scheduler:
+
+```sh
+PRODUCTIVITY_REVIEW_ENABLED=false
+```
+
+Default: `true` (enabled). Setting to `false` skips both the startup pass and the periodic pass; no productivity-review issues are created or updated while the flag is off. The heartbeat scheduler itself (`HEARTBEAT_SCHEDULER_ENABLED`) continues to run as normal.
+
+### When to disable
+
+- You are migrating instances or running a bulk backfill and do not want the reconciler producing review noise during the operation.
+- Your board has explicitly disabled productivity reviews as a policy and you want a hard guarantee that the server never creates them.
+- You are diagnosing an unexpected surge of "Review productivity for ..." issues (disable to stop the flow, investigate, then re-enable after adjusting thresholds via `DEFAULT_PRODUCTIVITY_REVIEW_*` constants or the threshold overrides accepted by `reconcileProductivityReviews`).
+
+### Default trigger thresholds (reference)
+
+| Threshold | Default | Env override? |
+|-----------|---------|--------------|
+| No-comment streak | 10 completed runs | via service `thresholds.noCommentStreakRuns` |
+| Long-active duration | 6 h | via `thresholds.longActiveMs` |
+| High churn (1 h) | 10 runs or assignee-run comments | via `thresholds.highChurnHourly` |
+| High churn (6 h) | 30 runs or assignee-run comments | via `thresholds.highChurnSixHours` |
+| Resolved-review snooze | 6 h | via `thresholds.resolvedSnoozeMs` |
+| Max reviews per 24 h window | 3 per source issue | via `thresholds.maxCreationsPerWindow` |
+
+### Operator troubleshooting: recurring productivity follow-up issues
+
+If "Review productivity for ..." issues keep appearing despite closing them:
+
+1. **Check the snooze window.** A resolved review is snoozed for `resolvedSnoozeMs` (default 6 h). If the source issue is still in `in_progress` and triggering again after the snooze expires, a new review is expected.
+2. **Inspect the source issue.** The description of each review issue links to the source issue and the primary trigger. Fix the root cause (stranded run, excessive churn, long elapsed time) rather than just closing the review.
+3. **Disable temporarily.** Set `PRODUCTIVITY_REVIEW_ENABLED=false` and restart to stop new reviews while you investigate. Check `reviewed.created` and `reviewed.updated` in server logs to confirm it is off.
+4. **Adjust thresholds.** If the defaults are too aggressive for your team's workload, raise the relevant threshold constants or pass custom overrides when calling `reconcileProductivityReviews`.
+
 ## CLI Client Operations
 
 Paperclip CLI now includes client-side control-plane commands in addition to setup commands.
