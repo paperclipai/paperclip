@@ -3,19 +3,19 @@ title: Claude Local
 summary: Claude Code local adapter setup and configuration
 ---
 
-The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports session persistence, skills injection, and structured output parsing.
+The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports session persistence, stable prompt-bundle materialization, skills injection, and structured output parsing.
 
 ## Prerequisites
 
 - Claude Code CLI installed (`claude` command available)
-- `ANTHROPIC_API_KEY` set in the environment or agent config
+- Claude subscription login (`claude login`) or `ANTHROPIC_API_KEY` set in the environment or agent config
 
 ## Configuration Fields
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
-| `model` | string | No | Claude model to use (e.g. `claude-opus-4-6`) |
+| `model` | string | No | Claude model to use (e.g. `claude-opus-4-7` or `claude-sonnet-4-6`) |
 | `promptTemplate` | string | No | Prompt used for all runs |
 | `env` | object | No | Environment variables (supports secret refs) |
 | `timeoutSec` | number | No | Process timeout (0 = no timeout) |
@@ -45,7 +45,9 @@ If resume fails with an unknown session error, the adapter automatically retries
 
 ## Skills Injection
 
-The adapter creates a temporary directory with symlinks to Paperclip skills and passes it via `--add-dir`. This makes skills discoverable without polluting the agent's working directory.
+The adapter creates a company-scoped, content-addressed prompt bundle under the active Paperclip instance and passes it via `--add-dir`. The bundle includes symlinks to selected Paperclip skills and, when configured, a stable `agent-instructions.md` used with `--append-system-prompt-file`. This keeps repeated agent instructions and skill manifests byte-stable across heartbeats, which lets Claude's prompt caching recognize repeated context.
+
+Prompt-cache hit telemetry is captured from Claude's `usage.cache_read_input_tokens` stream field. Paperclip normalizes that value to `usage.cachedInputTokens`, stores it on the run usage JSON, and writes it into the cost ledger's cached input token column.
 
 For manual local CLI usage outside heartbeat runs (for example running as `claudecoder` directly), use:
 
