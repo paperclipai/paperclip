@@ -128,6 +128,17 @@ import { CommentTriage } from "./pages/CommentTriage";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { LandingPage } from "./pages/Landing";
+import {
+  GetStartedPage,
+  QuickstartPage,
+  AgentsPage,
+  GovernancePage,
+  IntegrationsPage,
+  DocsPage,
+  ApiPage,
+  BlogPage,
+  ChangelogPage,
+} from "./pages/marketing";
 import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
@@ -430,6 +441,16 @@ export function App() {
       <Routes>
         <Route path="auth" element={<LandingPage />} />
         <Route path="auth/login" element={<AuthPage />} />
+        {/* Public marketing pages */}
+        <Route path="get-started" element={<GetStartedPage />} />
+        <Route path="quickstart" element={<QuickstartPage />} />
+        <Route path="platform/agents" element={<AgentsPage />} />
+        <Route path="platform/governance" element={<GovernancePage />} />
+        <Route path="platform/integrations" element={<IntegrationsPage />} />
+        <Route path="docs" element={<DocsPage />} />
+        <Route path="api" element={<ApiPage />} />
+        <Route path="blog" element={<BlogPage />} />
+        <Route path="changelog" element={<ChangelogPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />

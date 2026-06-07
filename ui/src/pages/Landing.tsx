@@ -863,42 +863,34 @@ function LandingNav() {
 
 // ─── Footer ───────────────────────────────────────────────────────────────────
 
-const FOOTER_COLS: { title: string; links: { label: string; href: string; external?: boolean; dot?: string }[] }[] = [
+export const FOOTER_COLS: { title: string; links: { label: string; href: string; external?: boolean; dot?: string }[] }[] = [
   {
     title: "Product",
     links: [
-      { label: "The cockpit", href: "#cockpit" },
-      { label: "How it runs", href: "#how" },
-      { label: "Integrations", href: "#integrations" },
-      { label: "Bring your own agent", href: "#cockpit" },
+      { label: "Get started", href: "/get-started" },
+      { label: "Quickstart", href: "/quickstart" },
     ],
   },
   {
-    title: "Engines",
+    title: "Platform",
     links: [
-      { label: "Outbound", href: "#cockpit" },
-      { label: "Inbound", href: "#cockpit" },
-      { label: "Content Studio", href: "#cockpit" },
-      { label: "Revenue", href: "#cockpit" },
-      { label: "Autonomous Agents", href: "#cockpit" },
+      { label: "Agents", href: "/platform/agents" },
+      { label: "Governance", href: "/platform/governance" },
+      { label: "Integrations", href: "/platform/integrations" },
+    ],
+  },
+  {
+    title: "Developers",
+    links: [
+      { label: "Documentation", href: "/docs" },
+      { label: "API reference", href: "/api" },
     ],
   },
   {
     title: "Resources",
     links: [
-      { label: "FAQ", href: "#faq" },
-      { label: "Status", href: "#", dot: "#22c55e" },
-      { label: "Changelog", href: "#" },
-      { label: "Request access", href: "mailto:diggi@hirefinn.ai?subject=AGNB%20Access%20Request" },
-    ],
-  },
-  {
-    title: "Company",
-    links: [
-      { label: "Built by Finn", href: "https://www.hirefinn.ai", external: true },
-      { label: "Manifesto", href: "#" },
-      { label: "Careers", href: "#" },
-      { label: "Contact", href: "mailto:diggi@hirefinn.ai" },
+      { label: "Blog", href: "/blog" },
+      { label: "Changelog", href: "/changelog" },
     ],
   },
 ];
@@ -933,7 +925,7 @@ const SOCIALS: { label: string; href: string; icon: React.ReactNode }[] = [
   },
 ];
 
-function LandingFooter() {
+export function LandingFooter() {
   const { theme, toggleTheme } = useTheme();
   return (
     <footer className="border-t border-black/[0.07] bg-[#FAF8F4] dark:border-white/[0.08] dark:bg-neutral-950">
