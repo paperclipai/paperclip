@@ -128,13 +128,13 @@ import { CommentTriage } from "./pages/CommentTriage";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { LandingPage } from "./pages/Landing";
+import { DocsViewer } from "./pages/DocsViewer";
 import {
   GetStartedPage,
   QuickstartPage,
   AgentsPage,
   GovernancePage,
   IntegrationsPage,
-  DocsPage,
   ApiPage,
   BlogPage,
   ChangelogPage,
@@ -452,7 +452,7 @@ export function App() {
         <Route path="platform/agents" element={<AgentsPage />} />
         <Route path="platform/governance" element={<GovernancePage />} />
         <Route path="platform/integrations" element={<IntegrationsPage />} />
-        <Route path="docs" element={<DocsPage />} />
+        <Route path="docs/*" element={<DocsViewer />} />
         <Route path="api" element={<ApiPage />} />
         <Route path="blog" element={<BlogPage />} />
         <Route path="changelog" element={<ChangelogPage />} />

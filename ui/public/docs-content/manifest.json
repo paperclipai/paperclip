@@ -1,0 +1,333 @@
+{
+  "name": "All Gas No Brakes",
+  "description": "Your growth team, now autonomous",
+  "tabs": [
+    {
+      "tab": "Get Started",
+      "groups": [
+        {
+          "group": "Introduction",
+          "pages": [
+            {
+              "path": "start/what-is-paperclip",
+              "title": "What is All Gas No Brakes?"
+            },
+            {
+              "path": "start/quickstart",
+              "title": "Quickstart"
+            },
+            {
+              "path": "start/core-concepts",
+              "title": "Core Concepts"
+            },
+            {
+              "path": "start/architecture",
+              "title": "Architecture"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tab": "Growth Platform",
+      "groups": [
+        {
+          "group": "All Gas No Brakes",
+          "pages": [
+            {
+              "path": "agnb/overview",
+              "title": "What is All Gas No Brakes?"
+            },
+            {
+              "path": "agnb/the-cockpit",
+              "title": "The Cockpit"
+            },
+            {
+              "path": "agnb/engines",
+              "title": "The Six Engines"
+            },
+            {
+              "path": "agnb/scheduled-jobs",
+              "title": "Scheduled Jobs"
+            },
+            {
+              "path": "agnb/producer-agents",
+              "title": "Producer Agents"
+            },
+            {
+              "path": "agnb/integrations",
+              "title": "Integrations"
+            },
+            {
+              "path": "agnb/north-star",
+              "title": "North Star"
+            },
+            {
+              "path": "agnb/governance",
+              "title": "Governance"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tab": "Guides",
+      "groups": [
+        {
+          "group": "Board Operator",
+          "pages": [
+            {
+              "path": "guides/board-operator/dashboard",
+              "title": "Dashboard"
+            },
+            {
+              "path": "guides/board-operator/creating-a-company",
+              "title": "Creating a Company"
+            },
+            {
+              "path": "guides/board-operator/managing-agents",
+              "title": "Managing Agents"
+            },
+            {
+              "path": "guides/board-operator/org-structure",
+              "title": "Org Structure"
+            },
+            {
+              "path": "guides/board-operator/managing-tasks",
+              "title": "Managing Tasks"
+            },
+            {
+              "path": "guides/board-operator/execution-workspaces-and-runtime-services",
+              "title": "Execution Workspaces And Runtime Services"
+            },
+            {
+              "path": "guides/board-operator/delegation",
+              "title": "How Delegation Works"
+            },
+            {
+              "path": "guides/board-operator/execution-workspaces-and-runtime-services",
+              "title": "Execution Workspaces And Runtime Services"
+            },
+            {
+              "path": "guides/board-operator/delegation",
+              "title": "How Delegation Works"
+            },
+            {
+              "path": "guides/board-operator/approvals",
+              "title": "Approvals"
+            },
+            {
+              "path": "guides/board-operator/costs-and-budgets",
+              "title": "Costs and Budgets"
+            },
+            {
+              "path": "guides/board-operator/activity-log",
+              "title": "Activity Log"
+            },
+            {
+              "path": "guides/board-operator/importing-and-exporting",
+              "title": "Importing & Exporting Companies"
+            }
+          ]
+        },
+        {
+          "group": "Agent Developer",
+          "pages": [
+            {
+              "path": "guides/agent-developer/how-agents-work",
+              "title": "How Agents Work"
+            },
+            {
+              "path": "guides/agent-developer/heartbeat-protocol",
+              "title": "Heartbeat Protocol"
+            },
+            {
+              "path": "guides/agent-developer/writing-a-skill",
+              "title": "Writing a Skill"
+            },
+            {
+              "path": "guides/agent-developer/task-workflow",
+              "title": "Task Workflow"
+            },
+            {
+              "path": "guides/agent-developer/comments-and-communication",
+              "title": "Comments and Communication"
+            },
+            {
+              "path": "guides/agent-developer/handling-approvals",
+              "title": "Handling Approvals"
+            },
+            {
+              "path": "guides/agent-developer/cost-reporting",
+              "title": "Cost Reporting"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tab": "Deploy",
+      "groups": [
+        {
+          "group": "Deployment",
+          "pages": [
+            {
+              "path": "deploy/overview",
+              "title": "Deployment Overview"
+            },
+            {
+              "path": "deploy/local-development",
+              "title": "Local Development"
+            },
+            {
+              "path": "deploy/tailscale-private-access",
+              "title": "Tailscale Private Access"
+            },
+            {
+              "path": "deploy/docker",
+              "title": "Docker"
+            },
+            {
+              "path": "deploy/deployment-modes",
+              "title": "Deployment Modes"
+            },
+            {
+              "path": "deploy/database",
+              "title": "Database"
+            },
+            {
+              "path": "deploy/secrets",
+              "title": "Secrets Management"
+            },
+            {
+              "path": "deploy/storage",
+              "title": "Storage"
+            },
+            {
+              "path": "deploy/environment-variables",
+              "title": "Environment Variables"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tab": "Adapters",
+      "groups": [
+        {
+          "group": "Agent Adapters",
+          "pages": [
+            {
+              "path": "adapters/overview",
+              "title": "Adapters Overview"
+            },
+            {
+              "path": "adapters/claude-local",
+              "title": "Claude Local"
+            },
+            {
+              "path": "adapters/codex-local",
+              "title": "Codex Local"
+            },
+            {
+              "path": "adapters/process",
+              "title": "Process Adapter"
+            },
+            {
+              "path": "adapters/http",
+              "title": "HTTP Adapter"
+            },
+            {
+              "path": "adapters/external-adapters",
+              "title": "External Adapters"
+            },
+            {
+              "path": "adapters/adapter-ui-parser",
+              "title": "Adapter UI Parser Contract"
+            },
+            {
+              "path": "adapters/creating-an-adapter",
+              "title": "Creating an Adapter"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tab": "API Reference",
+      "groups": [
+        {
+          "group": "REST API",
+          "pages": [
+            {
+              "path": "api/overview",
+              "title": "API Overview"
+            },
+            {
+              "path": "api/authentication",
+              "title": "Authentication"
+            },
+            {
+              "path": "api/companies",
+              "title": "Companies"
+            },
+            {
+              "path": "api/agents",
+              "title": "Agents"
+            },
+            {
+              "path": "api/issues",
+              "title": "Issues"
+            },
+            {
+              "path": "api/approvals",
+              "title": "Approvals"
+            },
+            {
+              "path": "api/goals-and-projects",
+              "title": "Goals and Projects"
+            },
+            {
+              "path": "api/costs",
+              "title": "Costs"
+            },
+            {
+              "path": "api/secrets",
+              "title": "Secrets"
+            },
+            {
+              "path": "api/activity",
+              "title": "Activity"
+            },
+            {
+              "path": "api/dashboard",
+              "title": "Dashboard"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tab": "CLI",
+      "groups": [
+        {
+          "group": "CLI Reference",
+          "pages": [
+            {
+              "path": "cli/overview",
+              "title": "CLI Overview"
+            },
+            {
+              "path": "cli/setup-commands",
+              "title": "Setup Commands"
+            },
+            {
+              "path": "cli/control-plane-commands",
+              "title": "Control-Plane Commands"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
