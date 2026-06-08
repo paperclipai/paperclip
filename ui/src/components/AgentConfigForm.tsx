@@ -401,7 +401,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const { data: companyAgents = [] } = useQuery({
     queryKey: selectedCompanyId ? queryKeys.agents.list(selectedCompanyId) : ["agents", "none", "list"],
     queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: Boolean(!isCreate && selectedCompanyId),
+    // Needed in both edit (reportsTo, recovery fallback) and create (recovery
+    // fallback dropdown on the hire form) modes whenever a company is selected.
+    enabled: Boolean(selectedCompanyId),
   });
 
   /** Props passed to adapter-specific config field components */
@@ -415,6 +417,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     eff: eff as <T>(group: "adapterConfig", field: string, original: T) => T,
     mark: mark as (group: "adapterConfig", field: string, value: unknown) => void,
     models,
+    agents: companyAgents,
+    selfAgentId: isCreate ? undefined : props.agent.id,
     hideInstructionsFile,
   };
 
