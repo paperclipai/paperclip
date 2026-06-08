@@ -45,5 +45,8 @@
     "test": "pnpm -w exec vitest run --root packages/skills-catalog --config vitest.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "validate": "node ../../cli/node_modules/tsx/dist/cli.mjs scripts/validate-catalog.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0"
   }
 }

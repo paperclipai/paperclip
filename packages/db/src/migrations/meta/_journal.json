@@ -670,8 +670,36 @@
     {
       "idx": 95,
       "version": "7",
+      "when": 1780507597454,
+      "tag": "0095_issue_comment_tombstones",
+      "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1780507597455,
+      "tag": "0096_document_annotation_issue_comment_links",
+      "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1780534000000,
+      "tag": "0097_low_trust_source_trust",
+      "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1780534200000,
+      "tag": "0098_project_icon",
+      "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
       "when": 1778966210569,
-      "tag": "0095_plugin_config_company_scope",
+      "tag": "0099_plugin_config_company_scope",
       "breakpoints": true
     }
   ]

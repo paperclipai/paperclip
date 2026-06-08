@@ -37,6 +37,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Check, ChevronDown, ChevronRight, Copy, Diff, Download, FilePenLine, FileText, Lock, MoreHorizontal, Plus, Trash2, Unlock, X } from "lucide-react";
 import { DocumentDiffModal } from "./DocumentDiffModal";
+import { SourceTrustBadge } from "./SourceTrustBadge";
 
 type DraftState = {
   key: string;
@@ -138,6 +139,7 @@ function toDocumentSummary(document: IssueDocument) {
     lockedAt: document.lockedAt,
     lockedByAgentId: document.lockedByAgentId,
     lockedByUserId: document.lockedByUserId,
+    sourceTrust: document.sourceTrust,
     createdAt: document.createdAt,
     updatedAt: document.updatedAt,
   };
@@ -929,6 +931,7 @@ export function IssueDocumentsSection({
                     <span className="shrink-0 rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
                       {doc.key}
                     </span>
+                    <SourceTrustBadge sourceTrust={doc.sourceTrust} artifactLabel="document" />
                     <DropdownMenu
                       open={revisionMenuOpenKey === doc.key}
                       onOpenChange={(open) => setRevisionMenuOpenKey(open ? doc.key : null)}

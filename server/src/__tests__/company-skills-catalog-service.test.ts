@@ -223,6 +223,47 @@ describeEmbeddedPostgres("companySkillService.installFromCatalog", () => {
     });
   });
 
+  it("installs script-bearing catalog skills when materialized bytes pass the static audit", async () => {
+    const script = "print('safe')\n";
+    const scriptFiles: CatalogSkillFile[] = [
+      ...sampleFiles,
+      { path: "scripts/run.py", kind: "script", sizeBytes: Buffer.byteLength(script), sha256: sha256(script) },
+    ];
+    const scriptCatalogSkill: CatalogSkill = {
+      ...sampleCatalogSkill,
+      trustLevel: "scripts_executables",
+      files: scriptFiles,
+      contentHash: contentHash(scriptFiles),
+    };
+    mockCatalogService.getCatalogSkillOrThrow.mockReturnValue(scriptCatalogSkill);
+    mockCatalogService.copyCatalogSkillFile.mockImplementation(async (_ref: string, filePath: string, targetPath: string) => {
+      if (filePath === "scripts/run.py") {
+        await fs.writeFile(targetPath, script, "utf8");
+        return;
+      }
+      const content = filePath === "SKILL.md" ? sampleSkillMarkdown : sampleReferenceMarkdown;
+      await fs.writeFile(targetPath, content, "utf8");
+    });
+    const companyId = await createCompany();
+
+    const result = await svc.installFromCatalog(companyId, {
+      catalogSkillId: scriptCatalogSkill.id,
+    });
+
+    expect(result.action).toBe("created");
+    expect(result.skill).toMatchObject({
+      trustLevel: "scripts_executables",
+      metadata: expect.objectContaining({
+        auditVerdict: "warning",
+        auditCodes: expect.arrayContaining(["script_trust"]),
+      }),
+    });
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      "Skill includes a script file.",
+    ]));
+    await expect(fs.readFile(path.join(result.skill.sourceLocator!, "scripts/run.py"), "utf8")).resolves.toBe(script);
+  });
+
   it("restores portable catalog provenance when importing packaged skills", async () => {
     const companyId = await createCompany();
     const importedFiles = {
