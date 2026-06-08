@@ -110,6 +110,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/orchestration",
+    "name": "@paperclipai/orchestration",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/plugins/create-paperclip-plugin",
     "name": "@paperclipai/create-paperclip-plugin",
     "publishFromCi": true
