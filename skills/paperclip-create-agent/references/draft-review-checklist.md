@@ -58,6 +58,7 @@ Use it for every path: exact template, adjacent template, or generic fallback.
 - [ ] `desiredSkills` lists only skills that already exist in the company library, or will be installed first via the company-skills workflow
 - [ ] Adapter config matches this Paperclip instance (cwd, model, credentials) per `/llms/agent-configuration/<adapter>.txt`
 - [ ] Local managed-bundle adapters send custom instructions through top-level `instructionsBundle.files["AGENTS.md"]` and do not set `adapterConfig.promptTemplate` or `bootstrapPromptTemplate`
+- [ ] For `codex_local` hires backed by Azure AI Foundry (`*.openai.azure.com` / `*.cognitiveservices.azure.com`), `adapterConfig.fastMode` is set to `false` explicitly — even if no `model` is pinned (Azure does not support remote response compaction; leaving the default in place silently breaks long sessions)
 - [ ] Placeholders like `{{companyName}}`, `{{managerTitle}}`, `{{issuePrefix}}`, and any URL stubs are replaced with real values
 
 ## H. Safety and permissions (least privilege)
