@@ -316,7 +316,23 @@ describe("issue update comment wakeups", () => {
       });
 
     expect(res.status).toBe(200);
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+      "run-1",
+      "Interrupted by board comment",
+      expect.objectContaining({
+        errorCode: "operator_interrupted",
+        resultJson: expect.objectContaining({
+          operatorInterrupted: true,
+          interruptionSource: "issue_comment_interrupt",
+          interruptedIssueId: existing.id,
+        }),
+        eventMessage: "run interrupted by board comment",
+        eventPayload: expect.objectContaining({
+          issueId: existing.id,
+          source: "issue_comment_interrupt",
+        }),
+      }),
+    );
     await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ASSIGNEE_AGENT_ID,
@@ -386,7 +402,19 @@ describe("issue update comment wakeups", () => {
       });
 
     expect(res.status).toBe(200);
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("run-2");
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+      "run-2",
+      "Interrupted by board comment",
+      expect.objectContaining({
+        errorCode: "operator_interrupted",
+        resultJson: expect.objectContaining({
+          operatorInterrupted: true,
+          interruptionSource: "issue_comment_interrupt",
+          interruptedIssueId: existing.id,
+        }),
+        eventMessage: "run interrupted by board comment",
+      }),
+    );
     await vi.waitFor(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalledWith(
       existing.companyId,
       "stop here, I will take it",

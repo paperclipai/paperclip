@@ -10612,11 +10612,41 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return wakeupIds.length;
   }
 
-  async function cancelRunInternal(runId: string, reason = "Cancelled by control plane") {
+  type CancelRunOptions = {
+    errorCode?: string;
+    resultJson?: Record<string, unknown>;
+    eventMessage?: string;
+    eventPayload?: Record<string, unknown>;
+  };
+
+  async function cancelRunInternal(runId: string, reason = "Cancelled by control plane", options: CancelRunOptions = {}) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
     if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) return run;
     const agent = await getAgent(run.agentId);
+    const errorCode = options.errorCode ?? "cancelled";
+    const resultJson = agent
+      ? {
+          ...mergeRunStopMetadataForAgent(agent, "cancelled", {
+            resultJson: parseObject(run.resultJson),
+            errorCode,
+            errorMessage: reason,
+          }),
+          ...(options.resultJson ?? {}),
+        }
+      : options.resultJson;
+
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: new Date(),
+      error: reason,
+      errorCode,
+      ...(resultJson ? { resultJson } : {}),
+    });
+
+    await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+      finishedAt: new Date(),
+      error: reason,
+    });
 
     const running = runningProcesses.get(run.id);
     if (running) {
@@ -10632,30 +10662,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
     }
 
-    const cancelled = await setRunStatus(run.id, "cancelled", {
-      finishedAt: new Date(),
-      error: reason,
-      errorCode: "cancelled",
-      ...(agent ? {
-        resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
-          resultJson: parseObject(run.resultJson),
-          errorCode: "cancelled",
-          errorMessage: reason,
-        }),
-      } : {}),
-    });
-
-    await setWakeupStatus(run.wakeupRequestId, "cancelled", {
-      finishedAt: new Date(),
-      error: reason,
-    });
-
     if (cancelled) {
       await appendRunEvent(cancelled, 1, {
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
-        message: "run cancelled",
+        message: options.eventMessage ?? "run cancelled",
+        ...(options.eventPayload ? { payload: options.eventPayload } : {}),
       });
       await releaseIssueExecutionAndPromote(cancelled);
     }
@@ -11100,7 +11113,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     },
 
-    cancelRun: (runId: string, reason?: string) => cancelRunInternal(runId, reason),
+    cancelRun: (runId: string, reason?: string, options?: CancelRunOptions) => cancelRunInternal(runId, reason, options),
 
     cancelActiveForAgent: (agentId: string, reason?: string) => cancelActiveForAgentInternal(agentId, reason),
 
