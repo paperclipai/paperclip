@@ -133,7 +133,7 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
 };
 
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
-const IMPORT_FORBIDDEN_ADAPTER_TYPES = new Set(["process", "http"]);
+const IMPORT_FORBIDDEN_ADAPTER_TYPES = new Set(["process", "http", "atomic_agent_http"]);
 const execFileAsync = promisify(execFile);
 let bundledSkillsCommitPromise: Promise<string | null> | null = null;
 

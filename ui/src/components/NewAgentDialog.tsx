@@ -23,7 +23,7 @@ import {
 import { cn } from "@/lib/utils";
 import { buildAgentOnboardingPrompt } from "@/lib/agent-onboarding-prompt";
 import { listUIAdapters } from "../adapters";
-import { isVisualAdapterChoice } from "../adapters/metadata";
+import { compareAdapterVisualOrder, isVisualAdapterChoice } from "../adapters/metadata";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { useToast } from "../context/ToastContext";
@@ -111,7 +111,7 @@ export function NewAgentDialog() {
       .sort((a, b) => {
         if (a.recommended && !b.recommended) return -1;
         if (!a.recommended && b.recommended) return 1;
-        return a.label.localeCompare(b.label);
+        return compareAdapterVisualOrder(a.value, b.value);
       });
   }, [disabledTypes, serverAdapters]);
 

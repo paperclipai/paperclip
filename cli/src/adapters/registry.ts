@@ -11,6 +11,7 @@ import { printPiStreamEvent } from "@paperclipai/adapter-pi-local/cli";
 import { printOpenClawGatewayStreamEvent } from "@paperclipai/adapter-openclaw-gateway/cli";
 import { processCLIAdapter } from "./process/index.js";
 import { httpCLIAdapter } from "./http/index.js";
+import { atomicAgentHttpCLIAdapter } from "./atomic-agent-http/index.js";
 
 const claudeLocalCLIAdapter: CLIAdapterModule = {
   type: "claude_local",
@@ -76,6 +77,7 @@ const adaptersByType = new Map<string, CLIAdapterModule>(
     openclawGatewayCLIAdapter,
     processCLIAdapter,
     httpCLIAdapter,
+    atomicAgentHttpCLIAdapter,
   ].map((a) => [a.type, a]),
 );
 

@@ -55,6 +55,8 @@ function createValuesForAdapterType(
     nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
   } else if (adapterType === "opencode_local") {
     nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
+  } else if (adapterType === "atomic_agent_http") {
+    nextValues.url = "http://127.0.0.1:1337";
   }
   return nextValues;
 }
