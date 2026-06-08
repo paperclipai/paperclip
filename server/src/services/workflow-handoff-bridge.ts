@@ -292,12 +292,6 @@ async function resolveHandoffFromBridge(
 
   if (!resolved) return false;
 
-  await logActivity(db, {
-    companyId: bridge.companyId,
-    actorType: "system",
-    actorId: "workflow_handoff_bridge",
-    action: "workflow.handoff.bridge_resolved",
-    entityType: "workflow_run",
   try {
     await logActivity(db, {
       companyId: bridge.companyId,

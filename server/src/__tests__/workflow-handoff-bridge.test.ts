@@ -327,6 +327,44 @@ describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
     expect(run?.status).toBe("running");
   });
 
+  it("still resolves accepted replies when resolution activity logging fails", async () => {
+    const { runId, bridgeId } = await insertWaitingWorkflowBridge(db, {
+      runStatus: "awaiting_human",
+      runError: null,
+      externalThreadId: "thread-root-1",
+      externalMessageId: "question-reply-1",
+    });
+    mocks.detectClickUpAwaitingHumanBridgeEventsAfterMessage.mockResolvedValueOnce({
+      status: "sent",
+      detail: "replies-detected",
+      events: [{
+        kind: "reply",
+        externalEventId: "human-reply-1",
+        externalThreadId: "thread-root-1",
+        externalMessageId: "question-reply-1",
+        body: "Sydney",
+        metadata: { clickupReplyId: "human-reply-1" },
+      }],
+    });
+    mocks.logActivity.mockRejectedValueOnce(new Error("activity log unavailable"));
+
+    const result = await workflowHandoffBridgeService(db).pollActiveBridges();
+
+    expect(result.resolved).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(mocks.addClickUpChatMessageReaction).toHaveBeenCalledWith(
+      "human-reply-1",
+      "white_check_mark",
+      expect.objectContaining({ personalToken: "token-123" }),
+    );
+
+    const [bridge] = await db.select().from(workflowHandoffBridges).where(eq(workflowHandoffBridges.id, bridgeId));
+    expect(bridge?.status).toBe("closed");
+    expect(bridge?.closeOutcome).toBe("responded");
+    const [run] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId));
+    expect(run?.status).toBe("running");
+  });
+
   it("closes terminal run bridges without accepting late replies", async () => {
     const { runId, phaseId, handoffId, bridgeId } = await insertWaitingWorkflowBridge(db, {
       runStatus: "failed",
