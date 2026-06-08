@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
+import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -25,6 +25,7 @@ import {
   wakeAgentSchema,
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
+  LOW_TRUST_REVIEW_PRESET,
 } from "@paperclipai/shared";
 import {
   readPaperclipSkillSyncPreference,
@@ -99,6 +100,9 @@ import {
 import { getTelemetryClient } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { recoveryService } from "../services/recovery/service.js";
+import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
+import { readObject } from "../lib/objects.js";
+import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
@@ -114,6 +118,14 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   if (!Number.isFinite(parsed)) return fallback;
   if (parsed <= 0) return fallback;
   return Math.min(max, Math.trunc(parsed));
+}
+
+function readRunIssueId(context: Record<string, unknown> | null) {
+  const directIssueId = context?.issueId;
+  if (typeof directIssueId === "string" && isUuidLike(directIssueId)) return directIssueId;
+  const paperclipIssue = readObject(context?.paperclipIssue);
+  const nestedIssueId = paperclipIssue?.id;
+  return typeof nestedIssueId === "string" && isUuidLike(nestedIssueId) ? nestedIssueId : null;
 }
 
 export function agentRoutes(
@@ -189,6 +201,35 @@ export function agentRoutes(
     await assertEnvironmentSelectionForCompany(environmentService(db), companyId, environmentId, {
       allowedDrivers: allowedEnvironmentDriversForAgent(adapterType),
     });
+  }
+
+  async function decideAgentRead(req: Request, agent: { id: string; companyId: string }) {
+    return access.decide({
+      actor: req.actor,
+      action: "agent:read",
+      resource: { type: "agent", companyId: agent.companyId, agentId: agent.id },
+    });
+  }
+
+  async function assertAgentReadAllowed(req: Request, res: Response, agent: { id: string; companyId: string }) {
+    const decision = await decideAgentRead(req, agent);
+    if (decision.allowed) return true;
+    res.status(403).json({ error: "Agent is outside this actor's authorization boundary" });
+    return false;
+  }
+
+  async function filterAgentsForActor<T extends Record<string, unknown>>(
+    req: Request,
+    rows: T[],
+    fallbackCompanyId?: string,
+  ) {
+    const decisions = await Promise.all(rows.map((agent) => {
+      const id = typeof agent.id === "string" ? agent.id : null;
+      const companyId = typeof agent.companyId === "string" ? agent.companyId : fallbackCompanyId ?? null;
+      if (!id || !companyId) return Promise.resolve({ allowed: false });
+      return decideAgentRead(req, { id, companyId });
+    }));
+    return rows.filter((_, index) => decisions[index]?.allowed);
   }
 
   /**
@@ -531,6 +572,69 @@ export function agentRoutes(
       ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
       chainOfCommand,
       access: accessState,
+    };
+  }
+
+  async function resolveAgentSelfTrustPreset(req: Request, agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
+    if (req.actor.type !== "agent" || req.actor.agentId !== agent.id) {
+      return { kind: "standard" as const };
+    }
+    const run = req.actor.type === "agent" && req.actor.runId
+      ? await db
+          .select({
+            companyId: heartbeatRuns.companyId,
+            agentId: heartbeatRuns.agentId,
+            contextSnapshot: heartbeatRuns.contextSnapshot,
+          })
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.id, req.actor.runId), eq(heartbeatRuns.companyId, agent.companyId)))
+          .then((rows) => rows[0] ?? null)
+      : null;
+    const runContext = run?.agentId === agent.id ? readObject(run.contextSnapshot) : null;
+    const runExecutionPolicy = readObject(runContext?.executionPolicy);
+    const runIssueId = readRunIssueId(runContext);
+    const runScopedIssue = runIssueId
+      ? await db
+          .select({
+            companyId: issuesTable.companyId,
+            projectId: issuesTable.projectId,
+            executionPolicy: issuesTable.executionPolicy,
+            projectExecutionWorkspacePolicy: projectsTable.executionWorkspacePolicy,
+          })
+          .from(issuesTable)
+          .leftJoin(projectsTable, and(eq(projectsTable.id, issuesTable.projectId), eq(projectsTable.companyId, issuesTable.companyId)))
+          .where(and(eq(issuesTable.id, runIssueId), eq(issuesTable.companyId, agent.companyId)))
+          .then((rows) => rows[0] ?? null)
+      : null;
+
+    return resolveCoreTrustPreset({
+      companyId: agent.companyId,
+      agent,
+      project: runScopedIssue?.projectId
+        ? {
+            companyId: runScopedIssue.companyId,
+            executionWorkspacePolicy: runScopedIssue.projectExecutionWorkspacePolicy,
+          }
+        : null,
+      issue: runScopedIssue
+        ? {
+            companyId: runScopedIssue.companyId,
+            executionPolicy: runScopedIssue.executionPolicy,
+          }
+        : null,
+      run: runExecutionPolicy ? { companyId: agent.companyId, executionPolicy: runExecutionPolicy } : null,
+    });
+  }
+
+  function buildLowTrustSelfView(agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
+    return {
+      id: agent.id,
+      companyId: agent.companyId,
+      name: agent.name,
+      role: agent.role,
+      title: agent.title,
+      status: agent.status,
+      trustPreset: LOW_TRUST_REVIEW_PRESET,
     };
   }
 
@@ -1606,7 +1710,7 @@ export function agentRoutes(
       });
       return;
     }
-    const result = await svc.list(companyId);
+    const result = await filterAgentsForActor(req, await svc.list(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
       res.json(result);
@@ -1681,7 +1785,7 @@ export function agentRoutes(
   router.get("/companies/:companyId/org", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const tree = await svc.orgForCompany(companyId);
+    const tree = await filterAgentsForActor(req, await svc.orgForCompany(companyId), companyId);
     const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
     res.json(leanTree);
   });
@@ -1690,7 +1794,7 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const style = (ORG_CHART_STYLES.includes(req.query.style as OrgChartStyle) ? req.query.style : "warmth") as OrgChartStyle;
-    const tree = await svc.orgForCompany(companyId);
+    const tree = await filterAgentsForActor(req, await svc.orgForCompany(companyId), companyId);
     const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
     const svg = renderOrgChartSvg(leanTree as unknown as OrgNode[], style);
     res.setHeader("Content-Type", "image/svg+xml");
@@ -1702,7 +1806,7 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const style = (ORG_CHART_STYLES.includes(req.query.style as OrgChartStyle) ? req.query.style : "warmth") as OrgChartStyle;
-    const tree = await svc.orgForCompany(companyId);
+    const tree = await filterAgentsForActor(req, await svc.orgForCompany(companyId), companyId);
     const leanTree = tree.map((node) => toLeanOrgNode(node as Record<string, unknown>));
     const png = await renderOrgChartPng(leanTree as unknown as OrgNode[], style);
     res.setHeader("Content-Type", "image/png");
@@ -1725,6 +1829,15 @@ export function agentRoutes(
     const agent = await svc.getById(req.actor.agentId);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    const trustPreset = await resolveAgentSelfTrustPreset(req, agent);
+    if (trustPreset.kind === "denied") {
+      res.status(403).json({ error: trustPreset.detail });
+      return;
+    }
+    if (trustPreset.kind === "low_trust_review") {
+      res.json(buildLowTrustSelfView(agent));
       return;
     }
     res.json(await buildAgentDetail(agent));
@@ -1796,7 +1909,19 @@ export function agentRoutes(
       return;
     }
     assertCompanyAccess(req, agent.companyId);
+    if (!(await assertAgentReadAllowed(req, res, agent))) return;
     const isSelf = req.actor.type === "agent" && req.actor.agentId === id;
+    if (isSelf) {
+      const trustPreset = await resolveAgentSelfTrustPreset(req, agent);
+      if (trustPreset.kind === "denied") {
+        res.status(403).json({ error: trustPreset.detail });
+        return;
+      }
+      if (trustPreset.kind === "low_trust_review") {
+        res.json(buildLowTrustSelfView(agent));
+        return;
+      }
+    }
     const canReadSensitiveDetail = isSelf
       ? true
       : await actorCanReadConfigurationsForCompany(req, agent.companyId);
@@ -2294,6 +2419,7 @@ export function agentRoutes(
       details: {
         canCreateAgents: agent.permissions?.canCreateAgents ?? false,
         canAssignTasks: effectiveCanAssignTasks,
+        trustPreset: agent.permissions?.trustPreset ?? "standard",
       },
     });
 
@@ -2725,7 +2851,14 @@ export function agentRoutes(
   router.post("/agents/:id/resume", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    if (!(await getAccessibleAgent(req, res, id))) {
+    const existing = await getAccessibleAgent(req, res, id);
+    if (!existing) {
+      return;
+    }
+    if (existing.orgChainHealth?.status === "invalid_org_chain") {
+      res.status(409).json({
+        error: existing.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before resuming it",
+      });
       return;
     }
     const agent = await svc.resume(id);
@@ -2739,6 +2872,38 @@ export function agentRoutes(
       actorType: "user",
       actorId: req.actor.userId ?? "board",
       action: "agent.resumed",
+      entityType: "agent",
+      entityId: agent.id,
+    });
+
+    res.json(agent);
+  });
+
+  router.post("/agents/:id/clear-error", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const existing = await getAccessibleAgent(req, res, id);
+    if (!existing) {
+      return;
+    }
+    if (existing.orgChainHealth?.status === "invalid_org_chain") {
+      res.status(409).json({
+        error: existing.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before clearing its error",
+      });
+      return;
+    }
+
+    const agent = await svc.clearError(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "agent.error_cleared",
       entityType: "agent",
       entityId: agent.id,
     });
@@ -2793,7 +2958,21 @@ export function agentRoutes(
       return;
     }
 
-    await heartbeat.cancelActiveForAgent(id);
+    const companyAgentRows = await db
+      .select({
+        id: agentsTable.id,
+        companyId: agentsTable.companyId,
+        name: agentsTable.name,
+        reportsTo: agentsTable.reportsTo,
+        status: agentsTable.status,
+      })
+      .from(agentsTable)
+      .where(eq(agentsTable.companyId, agent.companyId));
+    const invalidOrgChainDescendantIds = listInvalidOrgChainDescendantIds(id, companyAgentRows);
+    const cancellation = await heartbeat.cancelInvocationsForAgents(
+      [id, ...invalidOrgChainDescendantIds],
+      "Cancelled because the agent was terminated or became invalid-org-chain under a terminated manager",
+    );
 
     await logActivity(db, {
       companyId: agent.companyId,
@@ -2802,6 +2981,18 @@ export function agentRoutes(
       action: "agent.terminated",
       entityType: "agent",
       entityId: agent.id,
+      details: {
+        invalidOrgChain: {
+          descendantCount: invalidOrgChainDescendantIds.length,
+          descendantIds: invalidOrgChainDescendantIds,
+          state: invalidOrgChainDescendantIds.length > 0 ? "descendants_invalid_under_terminated_manager" : "none",
+        },
+        cancellation: {
+          agentIds: cancellation.agentIds,
+          runsCancelled: cancellation.runsCancelled,
+          wakeupsCancelled: cancellation.wakeupsCancelled,
+        },
+      },
     });
 
     res.json(agent);
@@ -2933,6 +3124,12 @@ export function agentRoutes(
     } else {
       await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     }
+    if (agent.orgChainHealth?.status === "invalid_org_chain") {
+      res.status(409).json({
+        error: agent.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before starting runs",
+      });
+      return;
+    }
 
     const run = await heartbeat.wakeup(id, {
       source: opts.source,
@@ -3000,6 +3197,12 @@ export function agentRoutes(
       }
     } else {
       await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+    }
+    if (agent.orgChainHealth?.status === "invalid_org_chain") {
+      res.status(409).json({
+        error: agent.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before starting runs",
+      });
+      return;
     }
 
     const body = (req.body ?? {}) as Partial<{

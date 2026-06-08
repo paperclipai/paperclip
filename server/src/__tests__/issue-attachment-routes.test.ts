@@ -1,4 +1,5 @@
 import { Readable } from "node:stream";
+import type { IncomingMessage } from "node:http";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -190,6 +191,13 @@ function makeAttachment(contentType: string, originalFilename: string) {
   };
 }
 
+function parseBinaryResponse(res: IncomingMessage, callback: (error: Error | null, body?: Buffer) => void) {
+  const chunks: Buffer[] = [];
+  res.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+  res.on("end", () => callback(null, Buffer.concat(chunks)));
+  res.on("error", callback);
+}
+
 describe("normalizeIssueAttachmentMaxBytes", () => {
   it("keeps the process-level attachment cap as the final cap", async () => {
     const previous = process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES;
@@ -362,7 +370,10 @@ describe("issue attachment routes", () => {
     mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("text/html", "report.html"));
 
     const app = await createApp(storage);
-    const res = await request(app).get("/api/attachments/attachment-1/content");
+    const res = await request(app)
+      .get("/api/attachments/attachment-1/content")
+      .buffer(true)
+      .parse(parseBinaryResponse);
 
     expect(res.status).toBe(200);
     expect([

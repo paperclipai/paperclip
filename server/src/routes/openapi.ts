@@ -35,6 +35,8 @@ import {
   createCompanySchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,
+  companyArtifactsQuerySchema,
+  companyArtifactsResponseSchema,
   // Routine
   createRoutineSchema,
   updateRoutineSchema,
@@ -98,6 +100,7 @@ import {
   claimJoinRequestApiKeySchema,
   createCliAuthChallengeSchema,
   resolveCliAuthChallengeSchema,
+  createBoardApiKeySchema,
   updateCompanyMemberSchema,
   updateCompanyMemberWithPermissionsSchema,
   archiveCompanyMemberSchema,
@@ -106,6 +109,23 @@ import {
   // Instance settings
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
+  issueGraphLivenessAutoRecoveryRequestSchema,
+  // Resource memberships
+  updateResourceMembershipSchema,
+  // Document annotations
+  createDocumentAnnotationCommentSchema,
+  createDocumentAnnotationThreadSchema,
+  updateDocumentAnnotationThreadSchema,
+  // Issue recovery and decomposition
+  createAcceptedPlanDecompositionSchema,
+  resolveIssueRecoveryActionSchema,
+  cancelIssueThreadInteractionSchema,
+  // Secret provider configs and remote import
+  createSecretProviderConfigSchema,
+  updateSecretProviderConfigSchema,
+  secretProviderConfigDiscoveryPreviewSchema,
+  remoteSecretImportPreviewSchema,
+  remoteSecretImportSchema,
 } from "@paperclipai/shared";
 
 type JsonSchema = Record<string, unknown>;
@@ -115,6 +135,7 @@ type OpenApiPathRegistration = {
   path: string;
   request?: {
     params?: z.ZodTypeAny;
+    query?: z.ZodTypeAny;
     body?: {
       content: Record<string, { schema: unknown }>;
       required?: boolean;
@@ -343,6 +364,12 @@ class OpenAPIRegistry {
       if (request?.params) {
         normalizedOperation.parameters = parametersFromSchema(request.params, "path");
       }
+      if (request?.query) {
+        normalizedOperation.parameters = [
+          ...((normalizedOperation.parameters as unknown[]) ?? []),
+          ...parametersFromSchema(request.query, "query"),
+        ];
+      }
       if (request?.body) {
         normalizedOperation.requestBody = {
           ...request.body,
@@ -391,6 +418,14 @@ const responses = {
     description: "Not found",
     content: { "application/json": { schema: ErrorSchema } },
   },
+  conflict: {
+    description: "Conflict",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
+  unprocessable: {
+    description: "Unprocessable entity",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
   serverError: {
     description: "Internal server error",
     content: { "application/json": { schema: ErrorSchema } },
@@ -403,6 +438,43 @@ const jsonBody = (schema: z.ZodTypeAny) => ({
 });
 
 const r = responses;
+
+function paramsSchemaFromPath(routePath: string): z.ZodObject<z.ZodRawShape> | undefined {
+  const names = [...routePath.matchAll(/\{([A-Za-z0-9_]+)\}/g)].map((match) => match[1]);
+  if (names.length === 0) return undefined;
+  const shape: z.ZodRawShape = {};
+  for (const name of names) {
+    shape[name] = z.string();
+  }
+  return z.object(shape);
+}
+
+function registerCurrentRoute(input: {
+  method: string;
+  path: string;
+  tags: string[];
+  summary: string;
+  query?: z.ZodTypeAny;
+  body?: z.ZodTypeAny;
+  responses?: Record<string, OpenApiResponse>;
+}) {
+  const params = paramsSchemaFromPath(input.path);
+  const request = params || input.query || input.body
+    ? {
+        ...(params ? { params } : {}),
+        ...(input.query ? { query: input.query } : {}),
+        ...(input.body ? { body: jsonBody(input.body) } : {}),
+      }
+    : undefined;
+  registry.registerPath({
+    method: input.method,
+    path: input.path,
+    tags: input.tags,
+    summary: input.summary,
+    ...(request ? { request } : {}),
+    responses: input.responses ?? { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+  });
+}
 
 type OpenApiAuthLevel =
   | "public"
@@ -449,6 +521,7 @@ const PUBLIC_OPERATIONS = new Set([
 const BOARD_ONLY_PREFIXES = [
   "/api/auth/",
   "/api/admin/",
+  "/api/cloud-upstreams",
   "/api/plugins",
   "/api/instance/",
 ];
@@ -472,6 +545,27 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/members/{memberId}/archive",
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
   "GET /api/companies/{companyId}/user-directory",
+  "GET /api/board-api-keys",
+  "POST /api/board-api-keys",
+  "DELETE /api/board-api-keys/{keyId}",
+  "POST /api/bootstrap/claim",
+  "GET /api/companies/{companyId}/resource-memberships/me",
+  "PUT /api/companies/{companyId}/resource-memberships/me/agents/{agentId}",
+  "PUT /api/companies/{companyId}/resource-memberships/me/projects/{projectId}",
+  "GET /api/companies/{companyId}/secret-provider-configs",
+  "POST /api/companies/{companyId}/secret-provider-configs",
+  "GET /api/companies/{companyId}/secret-providers/health",
+  "POST /api/companies/{companyId}/secret-provider-configs/discovery/preview",
+  "GET /api/secret-provider-configs/{id}",
+  "PATCH /api/secret-provider-configs/{id}",
+  "DELETE /api/secret-provider-configs/{id}",
+  "POST /api/secret-provider-configs/{id}/default",
+  "POST /api/secret-provider-configs/{id}/health",
+  "POST /api/companies/{companyId}/secrets/remote-import",
+  "POST /api/companies/{companyId}/secrets/remote-import/preview",
+  "GET /api/secrets/{id}/usage",
+  "GET /api/secrets/{id}/access-events",
+  "POST /api/health/dev-server/restart",
   "POST /api/issues/{id}/interactions/{interactionId}/accept",
   "POST /api/issues/{id}/interactions/{interactionId}/reject",
   "POST /api/issues/{id}/interactions/{interactionId}/respond",
@@ -496,15 +590,20 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/assets/images",
   "POST /api/companies/{companyId}/logo",
   "POST /api/cli-auth/challenges",
+  "POST /api/board-api-keys",
   "POST /api/companies",
   "POST /api/companies/{companyId}/invites",
   "POST /api/companies/{companyId}/openclaw/invite-prompt",
   "POST /api/companies/{companyId}/cost-events",
   "POST /api/companies/{companyId}/finance-events",
+  "POST /api/companies/{companyId}/secret-provider-configs",
   "POST /api/companies/{companyId}/environments",
   "POST /api/companies/{companyId}/goals",
   "POST /api/companies/{companyId}/labels",
+  "POST /api/issues/{id}/documents/{key}/annotations",
+  "POST /api/issues/{id}/documents/{key}/annotations/{threadId}/comments",
   "POST /api/issues/{id}/work-products",
+  "POST /api/issues/{id}/low-trust/promotions",
   "POST /api/issues/{id}/approvals",
   "POST /api/companies/{companyId}/issues",
   "POST /api/issues/{id}/children",
@@ -525,6 +624,8 @@ const CREATED_OPERATIONS = new Set([
 ]);
 
 const ACCEPTED_OPERATIONS = new Set([
+  "POST /api/companies/import",
+  "POST /api/health/dev-server/restart",
   "POST /api/invites/{token}/accept",
 ]);
 
@@ -695,6 +796,28 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/artifacts",
+  tags: ["companies"],
+  summary: "List company artifacts",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: companyArtifactsQuerySchema,
+  },
+  responses: {
+    200: {
+      description: "Company artifact projection",
+      content: {
+        "application/json": {
+          schema: companyArtifactsResponseSchema,
+        },
+      },
+    },
+    401: r.unauthorized,
+  },
+});
+
+registry.registerPath({
   method: "patch",
   path: "/api/companies/{companyId}",
   tags: ["companies"],
@@ -780,6 +903,24 @@ registry.registerPath({
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
+
+// ─── Teams Catalog ──────────────────────────────────────────────────────────
+
+for (const route of [
+  ["get", "/api/teams/catalog", "List catalog teams"],
+  ["get", "/api/teams/catalog/{catalogId}/files", "Get catalog team file"],
+  ["get", "/api/teams/catalog/{catalogId}", "Get catalog team"],
+  ["get", "/api/companies/{companyId}/teams/catalog/installed", "List installed catalog teams"],
+  ["post", "/api/companies/{companyId}/teams/catalog/{catalogId}/preview", "Preview catalog team install"],
+  ["post", "/api/companies/{companyId}/teams/catalog/{catalogId}/install", "Install catalog team"],
+] as const) {
+  registerCurrentRoute({
+    method: route[0],
+    path: route[1],
+    tags: ["teams"],
+    summary: route[2],
+  });
+}
 
 // ─── Agents ──────────────────────────────────────────────────────────────────
 
@@ -1108,6 +1249,15 @@ registry.registerPath({
   summary: "Resume an agent",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/clear-error",
+  tags: ["agents"],
+  summary: "Clear an agent error",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registry.registerPath({
@@ -3813,6 +3963,415 @@ registry.registerPath({
   request: { params: z.object({ type: z.string() }) },
   responses: { 200: { description: "JavaScript file" }, 404: r.notFound },
 });
+
+// ─── Current route coverage ─────────────────────────────────────────────────
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/adapters/{type}",
+  tags: ["adapters"],
+  summary: "Get adapter registration details",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/adapters/{type}/model-profiles",
+  tags: ["adapters"],
+  summary: "List adapter model profiles for a company",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/health/dev-server/restart",
+  tags: ["health"],
+  summary: "Request a managed dev-server restart",
+  responses: { 202: r.ok(), 403: r.forbidden, 404: r.notFound, 409: { description: "Restart is not required" } },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/bootstrap/claim",
+  tags: ["access"],
+  summary: "Claim first instance admin from a browser session",
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound, 409: { description: "Instance admin already claimed" } },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/board-api-keys",
+  tags: ["access"],
+  summary: "List board API keys",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/board-api-keys",
+  tags: ["access"],
+  summary: "Create a named board API key",
+  body: createBoardApiKeySchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/board-api-keys/{keyId}",
+  tags: ["access"],
+  summary: "Revoke a board API key",
+});
+
+for (const route of [
+  ["get", "/api/companies/import/jobs/{jobId}", "Get company import job status"],
+  ["get", "/api/companies/{companyId}/search", "Search company data"],
+  ["get", "/api/companies/{companyId}/issues/count", "Count issues in a company"],
+] as const) {
+  registerCurrentRoute({
+    method: route[0],
+    path: route[1],
+    tags: ["companies"],
+    summary: route[2],
+  });
+}
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/issues/{id}/cost-summary",
+  tags: ["costs"],
+  summary: "Get issue cost summary",
+});
+
+for (const route of [
+  ["get", "/api/companies/{companyId}/resource-memberships/me", "List current user's resource memberships"],
+  ["put", "/api/companies/{companyId}/resource-memberships/me/agents/{agentId}", "Join or leave an agent resource"],
+  ["put", "/api/companies/{companyId}/resource-memberships/me/projects/{projectId}", "Join or leave a project resource"],
+] as const) {
+  registerCurrentRoute({
+    method: route[0],
+    path: route[1],
+    tags: ["resource-memberships"],
+    summary: route[2],
+    ...(route[0] === "put" ? { body: updateResourceMembershipSchema } : {}),
+  });
+}
+
+const cloudCompanyQuerySchema = z.object({
+  companyId: z.string().min(1),
+});
+const cloudCompanyBodySchema = z.object({
+  companyId: z.string().min(1),
+});
+const cloudConnectStartSchema = z.object({
+  companyId: z.string().min(1),
+  remoteUrl: z.string().min(1),
+  redirectUri: z.string().min(1),
+});
+const cloudConnectFinishSchema = z.object({
+  pendingConnectionId: z.string().min(1),
+  code: z.string().min(1),
+  state: z.string().min(1),
+});
+const cloudPushRunSchema = cloudCompanyBodySchema.extend({
+  retryOfRunId: z.string().optional(),
+});
+const cloudPushRunActivationSchema = cloudCompanyBodySchema.extend({
+  entityType: z.enum(["agents", "routines", "monitors"]),
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/cloud-upstreams",
+  tags: ["cloud-upstreams"],
+  summary: "List cloud upstream connections",
+  query: cloudCompanyQuerySchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/cloud-upstreams/connect/start",
+  tags: ["cloud-upstreams"],
+  summary: "Start a cloud upstream connection",
+  body: cloudConnectStartSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/cloud-upstreams/connect/finish",
+  tags: ["cloud-upstreams"],
+  summary: "Finish a cloud upstream connection",
+  body: cloudConnectFinishSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/cloud-upstreams/{connectionId}/push-runs/preview",
+  tags: ["cloud-upstreams"],
+  summary: "Preview a cloud upstream push run",
+  body: cloudCompanyBodySchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/cloud-upstreams/{connectionId}/push-runs",
+  tags: ["cloud-upstreams"],
+  summary: "Create a cloud upstream push run",
+  body: cloudPushRunSchema,
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/cloud-upstreams/{connectionId}/push-runs/{runId}",
+  tags: ["cloud-upstreams"],
+  summary: "Get a cloud upstream push run",
+  query: cloudCompanyQuerySchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/cloud-upstreams/{connectionId}/push-runs/{runId}/cancel",
+  tags: ["cloud-upstreams"],
+  summary: "Cancel a cloud upstream push run",
+  body: cloudCompanyBodySchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/cloud-upstreams/{connectionId}/push-runs/{runId}/activation",
+  tags: ["cloud-upstreams"],
+  summary: "Activate cloud upstream push run entities",
+  body: cloudPushRunActivationSchema,
+});
+
+for (const route of [
+  ["get", "/api/companies/{companyId}/secret-providers/health", "Check configured secret providers"],
+  ["get", "/api/companies/{companyId}/secret-provider-configs", "List secret provider configurations"],
+  ["get", "/api/secret-provider-configs/{id}", "Get a secret provider configuration"],
+  ["delete", "/api/secret-provider-configs/{id}", "Delete a secret provider configuration"],
+  ["post", "/api/secret-provider-configs/{id}/default", "Set the default secret provider configuration"],
+  ["post", "/api/secret-provider-configs/{id}/health", "Check a secret provider configuration"],
+  ["get", "/api/secrets/{id}/usage", "Get secret usage"],
+  ["get", "/api/secrets/{id}/access-events", "List secret access events"],
+] as const) {
+  registerCurrentRoute({
+    method: route[0],
+    path: route[1],
+    tags: ["secrets"],
+    summary: route[2],
+  });
+}
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/secret-provider-configs",
+  tags: ["secrets"],
+  summary: "Create a secret provider configuration",
+  body: createSecretProviderConfigSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/secret-provider-configs/{id}",
+  tags: ["secrets"],
+  summary: "Update a secret provider configuration",
+  body: updateSecretProviderConfigSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/secret-provider-configs/discovery/preview",
+  tags: ["secrets"],
+  summary: "Preview secret provider discovery",
+  body: secretProviderConfigDiscoveryPreviewSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/secrets/remote-import/preview",
+  tags: ["secrets"],
+  summary: "Preview remote secret import",
+  body: remoteSecretImportPreviewSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/secrets/remote-import",
+  tags: ["secrets"],
+  summary: "Import remote secrets",
+  body: remoteSecretImportSchema,
+});
+
+for (const route of [
+  ["get", "/api/skills/catalog", "List catalog skills"],
+  ["get", "/api/skills/catalog/{catalogId}", "Get a catalog skill"],
+  ["get", "/api/skills/catalog/{catalogId}/files", "List catalog skill files"],
+  ["post", "/api/companies/{companyId}/skills/install-catalog", "Install a catalog skill"],
+  ["post", "/api/companies/{companyId}/skills/{skillId}/audit", "Audit a company skill"],
+  ["post", "/api/companies/{companyId}/skills/{skillId}/reset", "Reset a company skill"],
+] as const) {
+  registerCurrentRoute({
+    method: route[0],
+    path: route[1],
+    tags: ["skills"],
+    summary: route[2],
+    ...(route[0] === "post" ? { body: z.record(z.unknown()).optional() } : {}),
+  });
+}
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview",
+  tags: ["instance-settings"],
+  summary: "Preview issue graph liveness auto-recovery",
+  body: issueGraphLivenessAutoRecoveryRequestSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/instance/settings/experimental/issue-graph-liveness-auto-recovery/run",
+  tags: ["instance-settings"],
+  summary: "Run issue graph liveness auto-recovery",
+  body: issueGraphLivenessAutoRecoveryRequestSchema,
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/issues/{id}/accepted-plan-decompositions",
+  tags: ["issues"],
+  summary: "List accepted plan decompositions",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/accepted-plan-decompositions",
+  tags: ["issues"],
+  summary: "Create accepted plan decomposition child issues",
+  body: createAcceptedPlanDecompositionSchema,
+});
+
+for (const route of [
+  ["get", "/api/issues/{id}/documents/{key}/annotations", "List document annotation threads"],
+  ["get", "/api/issues/{id}/documents/{key}/annotations/{threadId}", "Get a document annotation thread"],
+  ["post", "/api/issues/{id}/documents/{key}/lock", "Lock an issue document"],
+  ["post", "/api/issues/{id}/documents/{key}/unlock", "Unlock an issue document"],
+] as const) {
+  registerCurrentRoute({
+    method: route[0],
+    path: route[1],
+    tags: ["issues"],
+    summary: route[2],
+  });
+}
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/documents/{key}/annotations",
+  tags: ["issues"],
+  summary: "Create a document annotation thread",
+  body: createDocumentAnnotationThreadSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/documents/{key}/annotations/{threadId}/comments",
+  tags: ["issues"],
+  summary: "Add a document annotation comment",
+  body: createDocumentAnnotationCommentSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/low-trust/promotions",
+  tags: ["issues"],
+  summary: "Promote quarantined low-trust output",
+  body: z.object({
+    sourceArtifactKind: z.enum(["comment", "document", "work_product", "issue"]),
+    sourceArtifactId: z.string().uuid(),
+    title: z.string().trim().min(1).max(200),
+    summary: z.string().trim().min(1).max(8_000),
+  }),
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/issues/{id}/documents/{key}/annotations/{threadId}",
+  tags: ["issues"],
+  summary: "Update a document annotation thread",
+  body: updateDocumentAnnotationThreadSchema,
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/issues/{id}/recovery-actions",
+  tags: ["issues"],
+  summary: "List issue recovery actions",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/recovery-actions/resolve",
+  tags: ["issues"],
+  summary: "Resolve an issue recovery action",
+  body: resolveIssueRecoveryActionSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/scheduled-retry/retry-now",
+  tags: ["issues"],
+  summary: "Retry a scheduled issue run now",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/monitor/check-now",
+  tags: ["issues"],
+  summary: "Run an issue monitor check now",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/interactions/{interactionId}/cancel",
+  tags: ["issues"],
+  summary: "Cancel an issue question interaction",
+  body: cancelIssueThreadInteractionSchema,
+});
+
+for (const route of [
+  ["get", "/api/routines/{id}/revisions", "List routine revisions"],
+  ["post", "/api/routines/{id}/revisions/{revisionId}/restore", "Restore a routine revision"],
+] as const) {
+  registerCurrentRoute({
+    method: route[0],
+    path: route[1],
+    tags: ["routines"],
+    summary: route[2],
+  });
+}
+
+const pluginLocalFolderRequestSchema = z.object({
+  path: z.string().min(1),
+  access: z.enum(["read", "readWrite"]).optional(),
+  requiredDirectories: z.array(z.string()).optional(),
+  requiredFiles: z.array(z.string()).optional(),
+});
+
+for (const route of [
+  ["get", "/api/plugins/{pluginId}/companies/{companyId}/local-folders", "List plugin local folders"],
+  ["get", "/api/plugins/{pluginId}/companies/{companyId}/local-folders/{folderKey}/status", "Get plugin local folder status"],
+  ["post", "/api/plugins/{pluginId}/companies/{companyId}/local-folders/{folderKey}/validate", "Validate a plugin local folder"],
+  ["put", "/api/plugins/{pluginId}/companies/{companyId}/local-folders/{folderKey}", "Save a plugin local folder"],
+] as const) {
+  registerCurrentRoute({
+    method: route[0],
+    path: route[1],
+    tags: ["plugins"],
+    summary: route[2],
+    ...(route[0] === "post" || route[0] === "put" ? { body: pluginLocalFolderRequestSchema } : {}),
+  });
+}
 
 // ─── Spec builder ─────────────────────────────────────────────────────────────
 

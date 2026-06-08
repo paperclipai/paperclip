@@ -10,6 +10,7 @@ import {
   PlayCircle,
   Plus,
   Users,
+  AlertTriangle,
 } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -43,6 +44,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { Agent } from "@paperclipai/shared";
+
+/**
+ * When no agent is running, the sidebar falls back to showing at most this many
+ * recently-active agents plus a "See all agents" link (IA Phase 5).
+ */
+const RECENT_AGENT_LIMIT = 5;
 
 const AGENT_SORT_CHOICES: SidebarSectionRadioChoice[] = [
   { value: "top", label: "Top" },
@@ -108,12 +115,15 @@ function SidebarAgentItem({
   const isActive = activeAgentId === routeRef;
   const isPaused = agent.status === "paused";
   const isBudgetPaused = isPaused && agent.pauseReason === "budget";
+  const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
   const pauseResumeLabel = isPaused ? "Resume agent" : "Pause agent";
-  const pauseResumeDisabled = disabled || agent.status === "pending_approval" || isBudgetPaused;
+  const pauseResumeDisabled = disabled || agent.status === "pending_approval" || isBudgetPaused || (isPaused && hasInvalidOrgChain);
   const pauseResumeDisabledLabel = disabled
     ? "Updating..."
     : isBudgetPaused
       ? "Budget paused"
+      : isPaused && hasInvalidOrgChain
+        ? "Invalid org chain"
       : pauseResumeLabel;
 
   return (
@@ -133,6 +143,9 @@ function SidebarAgentItem({
       >
         <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
         <span className="flex-1 truncate">{agent.name}</span>
+        {hasInvalidOrgChain ? (
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
+        ) : null}
         {(agent.pauseReason === "budget" || runCount > 0) && (
           <span className="ml-auto flex items-center gap-1.5 shrink-0">
             {agent.pauseReason === "budget" ? (
@@ -210,7 +223,7 @@ function SidebarAgentItem({
   );
 }
 
-export function SidebarAgents() {
+export function SidebarAgents({ streamlined = false }: { streamlined?: boolean } = {}) {
   const [open, setOpen] = useState(true);
   const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(() => new Set());
   const queryClient = useQueryClient();
@@ -276,6 +289,25 @@ export function SidebarAgents() {
     () => sortAgents(orderedAgents, sortMode),
     [orderedAgents, sortMode],
   );
+
+  // IA Phase 5 (streamlined): if any agent has a live run, show only those
+  // active agents. Otherwise fall back to up to RECENT_AGENT_LIMIT agents. Either
+  // way a "See all agents" link is shown so the full list is always reachable.
+  // Classic mode (PAP-89, flag OFF) restores the show-all behavior.
+  const runningAgents = useMemo(
+    () => sortedAgents.filter((agent: Agent) => (liveCountByAgent.get(agent.id) ?? 0) > 0),
+    [sortedAgents, liveCountByAgent],
+  );
+  const hasActiveAgents = runningAgents.length > 0;
+  const displayedAgents = !streamlined
+    ? sortedAgents
+    : hasActiveAgents
+      ? runningAgents
+      : sortedAgents.slice(0, RECENT_AGENT_LIMIT);
+  // Always expose "See all agents" whenever the displayed list is a subset of all
+  // agents, so users never lose the entry point to the full list. In classic mode
+  // every agent is already shown, so the link is unnecessary.
+  const showSeeAllLink = streamlined && sortedAgents.length > 0;
 
   const agentMatch = location.pathname.match(/^\/(?:[^/]+\/)?agents\/([^/]+)(?:\/([^/]+))?/);
   const activeAgentId = agentMatch?.[1] ?? null;
@@ -406,7 +438,7 @@ export function SidebarAgents() {
         onRadioValueChange: persistSortMode,
       }}
     >
-      {sortedAgents.map((agent: Agent) => {
+      {displayedAgents.map((agent: Agent) => {
         const runCount = liveCountByAgent.get(agent.id) ?? 0;
         return (
           <SidebarAgentItem
@@ -424,6 +456,19 @@ export function SidebarAgents() {
           />
         );
       })}
+      {showSeeAllLink && (
+        <Link
+          to="/agents/all"
+          state={SIDEBAR_SCROLL_RESET_STATE}
+          onClick={() => {
+            if (isMobile) setSidebarOpen(false);
+          }}
+          className="flex items-center gap-2.5 px-3 py-1.5 pointer-coarse:py-1 text-[13px] font-medium text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+        >
+          <Users className="shrink-0 h-3.5 w-3.5" />
+          <span>See all agents</span>
+        </Link>
+      )}
     </SidebarSection>
   );
 }

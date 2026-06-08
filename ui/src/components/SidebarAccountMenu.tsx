@@ -5,7 +5,6 @@ import {
   LogOut,
   type LucideIcon,
   Moon,
-  Settings,
   UserRound,
   Sun,
   UserRoundPen,
@@ -20,12 +19,11 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn } from "../lib/utils";
 
-const PROFILE_SETTINGS_PATH = "/instance/settings/profile";
+const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
 const DOCS_URL = "https://docs.paperclip.ing/";
 
 interface SidebarAccountMenuProps {
   deploymentMode?: DeploymentMode;
-  instanceSettingsTarget: string;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   version?: string | null;
@@ -103,7 +101,6 @@ function MenuAction({ label, description, icon: Icon, onClick, href, external = 
 
 export function SidebarAccountMenu({
   deploymentMode,
-  instanceSettingsTarget,
   open: controlledOpen,
   onOpenChange,
   version,
@@ -198,13 +195,6 @@ export function SidebarAccountMenu({
                 description="Update your display name and avatar."
                 icon={UserRoundPen}
                 href={PROFILE_SETTINGS_PATH}
-                onClick={closeNavigationChrome}
-              />
-              <MenuAction
-                label="Instance settings"
-                description="Jump back to the last settings page you opened."
-                icon={Settings}
-                href={instanceSettingsTarget}
                 onClick={closeNavigationChrome}
               />
               <MenuAction

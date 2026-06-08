@@ -502,6 +502,38 @@ CI runs `pnpm --filter @paperclipai/skills-catalog validate` and the package's
 vitest suite, so always regenerate the manifest in the same commit as the
 catalog change.
 
+## App-Shipped Teams Catalog
+
+The team catalog package mirrors the skills catalog workflow for
+agentcompanies/v1 team packages:
+
+```text
+packages/teams-catalog/
+  catalog/
+    bundled/<category>/<slug>/TEAM.md
+    optional/<category>/<slug>/TEAM.md
+  generated/catalog.json
+  scripts/
+    build-catalog-manifest.ts
+    validate-catalog.ts
+```
+
+Validate without writing the manifest:
+
+```sh
+pnpm --filter @paperclipai/teams-catalog validate
+```
+
+Regenerate `generated/catalog.json` after editing catalog team files:
+
+```sh
+pnpm --filter @paperclipai/teams-catalog build:manifest
+```
+
+Team install/preview APIs enforce source policy. External skill sources require
+explicit approval flags, and local-path skill sources are development-only
+unless `allowLocalPathSources` is set by the caller.
+
 ## Quick Health Checks
 
 In another terminal:

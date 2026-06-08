@@ -20,7 +20,7 @@ export type RunRetryStateSummary = {
 
 const RETRY_REASON_LABELS: Record<string, string> = {
   transient_failure: "Transient failure",
-  missing_issue_comment: "Missing issue comment",
+  missing_issue_comment: "Missing task comment",
   process_lost: "Process lost",
   assignment_recovery: "Assignment recovery",
   issue_continuation_needed: "Continuation needed",

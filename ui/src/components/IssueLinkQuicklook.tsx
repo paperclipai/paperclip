@@ -182,7 +182,7 @@ export const IssueLinkQuicklook = React.forwardRef<
             <div className="h-4 w-full rounded bg-accent/40" />
             <div className="h-4 w-3/4 rounded bg-accent/30" />
             {!isLoading ? (
-              <p className="text-xs text-muted-foreground">Unable to load issue preview.</p>
+              <p className="text-xs text-muted-foreground">Unable to load task preview.</p>
             ) : null}
           </div>
         )}

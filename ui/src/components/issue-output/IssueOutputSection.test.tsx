@@ -87,6 +87,23 @@ describe("IssueOutputSection", () => {
     expect(markup).toBe("");
   });
 
+  it("renders nothing for markdown-only artifact work products", () => {
+    const markup = renderToStaticMarkup(
+      <IssueOutputSection
+        workProducts={[
+          makeWorkProduct({
+            id: "wp-markdown",
+            title: "plan.md",
+            isPrimary: true,
+            metadata: metadata("att-1", "text/markdown", "plan.md"),
+          }),
+        ]}
+      />,
+    );
+
+    expect(markup).toBe("");
+  });
+
   it("renders the primary card plus an Also produced list for multiple outputs", () => {
     const markup = renderToStaticMarkup(
       <IssueOutputSection

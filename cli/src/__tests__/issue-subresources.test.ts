@@ -163,6 +163,7 @@ describe("issue subresource commands", () => {
       ]);
       await run(["issue", "interaction:accept", ISSUE_ID, INTERACTION_ID]);
       await run(["issue", "interaction:accept", ISSUE_ID, INTERACTION_ID, "--selected-client-keys", "yes"]);
+      await run(["issue", "interaction:accept", ISSUE_ID, INTERACTION_ID, "--selected-option-ids", "file-a,file-b"]);
       await run(["issue", "interaction:reject", ISSUE_ID, INTERACTION_ID, "--reason", "no"]);
       await run(["issue", "interaction:cancel", ISSUE_ID, INTERACTION_ID, "--reason", "stale"]);
       await run([
@@ -196,6 +197,7 @@ describe("issue subresource commands", () => {
       ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions`],
       ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions/${INTERACTION_ID}/accept`],
       ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions/${INTERACTION_ID}/accept`],
+      ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions/${INTERACTION_ID}/accept`],
       ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions/${INTERACTION_ID}/reject`],
       ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions/${INTERACTION_ID}/cancel`],
       ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/interactions/${INTERACTION_ID}/respond`],
@@ -215,6 +217,43 @@ describe("issue subresource commands", () => {
       ["GET", `http://localhost:3100/api/issues/${ISSUE_ID}/feedback-votes`],
       ["POST", `http://localhost:3100/api/issues/${ISSUE_ID}/feedback-votes`],
     ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[4]?.[1]?.body))).toEqual({
+      selectedOptionIds: ["file-a", "file-b"],
+    });
+  });
+
+  it("forwards the agent run-id header and inferred content-type on attachment:upload", async () => {
+    // Regression: the multipart upload uses a hand-rolled fetch (not the JSON
+    // client), so it must forward X-Paperclip-Run-Id itself — otherwise an
+    // agent-authenticated upload is rejected with "401 Agent run id required".
+    const RUN_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const tmp = await mkdtemp(join(tmpdir(), "paperclip-cli-test-"));
+    const filePath = join(tmp, "deliverable.html");
+    await writeFile(filePath, "<html><body>hi</body></html>", "utf8");
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    try {
+      await run([
+        "issue", "attachment:upload", ISSUE_ID,
+        "--company-id", COMPANY_ID,
+        "--file", filePath,
+        "--run-id", RUN_ID,
+      ]);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`http://localhost:3100/api/companies/${COMPANY_ID}/issues/${ISSUE_ID}/attachments`);
+    expect(init.method).toBe("POST");
+    const headers = init.headers as Record<string, string>;
+    expect(headers["x-paperclip-run-id"]).toBe(RUN_ID);
+    expect(headers.authorization).toBe("Bearer board-token");
+    const file = (init.body as FormData).get("file") as File;
+    expect(file.type).toBe("text/html");
   });
 });
 

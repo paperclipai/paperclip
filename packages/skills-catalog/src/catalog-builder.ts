@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import {
   asBoolean,
+  isPlainRecord,
   asString,
   asStringArray,
   parseFrontmatterMarkdown,
@@ -14,21 +15,52 @@ import type {
   CatalogSkillFile,
   CatalogSkillFileKind,
   CatalogSkillKind,
+  CatalogSkillSource,
   CatalogTrustLevel,
 } from "./types.js";
 
 const CATALOG_PACKAGE_NAME = "@paperclipai/skills-catalog";
 const CATALOG_SCHEMA_VERSION = 1;
 const SKILL_ENTRYPOINT = "SKILL.md";
+const CATALOG_REFERENCE_FILE = "catalog-ref.json";
 const MAX_CATALOG_FILE_BYTES = 1024 * 1024;
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const CATALOG_KINDS = new Set<CatalogSkillKind>(["bundled", "optional"]);
 
-interface SkillCandidate {
+interface BaseSkillCandidate {
   kind: CatalogSkillKind;
   category: string;
   slug: string;
   absolutePath: string;
+}
+
+type SkillCandidate =
+  | (BaseSkillCandidate & { source: "local" })
+  | (BaseSkillCandidate & { source: "reference"; descriptorPath: string });
+
+interface ReferencedGitHubSourceDescriptor {
+  type: "github";
+  hostname?: string;
+  owner: string;
+  repo: string;
+  ref: string;
+  commit: string;
+  path: string;
+}
+
+interface ReferencedSkillDescriptor {
+  source: ReferencedGitHubSourceDescriptor;
+  files?: string[];
+  defaultInstall?: boolean;
+  recommendedForRoles?: string[];
+  requires?: string[];
+  tags?: string[];
+}
+
+interface GitHubTreeEntry {
+  path: string;
+  type: "blob" | "tree" | string;
+  size?: number;
 }
 
 interface BuildCatalogManifestOptions {
@@ -171,11 +203,23 @@ async function discoverSkillCandidates(packageDir: string, errors: string[]) {
         if (!slugEntry.isDirectory()) continue;
         const slug = slugEntry.name;
         const skillDir = path.join(categoryDir, slug);
-        if (!existsSync(path.join(skillDir, SKILL_ENTRYPOINT))) {
-          errors.push(`${relativePackagePath(packageDir, skillDir)} is missing SKILL.md.`);
+        const hasLocalSkill = existsSync(path.join(skillDir, SKILL_ENTRYPOINT));
+        const descriptorPath = path.join(skillDir, CATALOG_REFERENCE_FILE);
+        const hasReference = existsSync(descriptorPath);
+
+        if (hasLocalSkill && hasReference) {
+          errors.push(`${relativePackagePath(packageDir, skillDir)} must contain either SKILL.md or ${CATALOG_REFERENCE_FILE}, not both.`);
           continue;
         }
-        candidates.push({ kind, category, slug, absolutePath: skillDir });
+        if (!hasLocalSkill && !hasReference) {
+          errors.push(`${relativePackagePath(packageDir, skillDir)} is missing SKILL.md or ${CATALOG_REFERENCE_FILE}.`);
+          continue;
+        }
+        candidates.push(
+          hasReference
+            ? { kind, category, slug, absolutePath: skillDir, source: "reference", descriptorPath }
+            : { kind, category, slug, absolutePath: skillDir, source: "local" },
+        );
       }
     }
   }
@@ -191,13 +235,13 @@ async function collectMisplacedSkillFiles(catalogDir: string, errors: string[]) 
         await visit(absolutePath);
         continue;
       }
-      if (entry.name !== SKILL_ENTRYPOINT) continue;
+      if (entry.name !== SKILL_ENTRYPOINT && entry.name !== CATALOG_REFERENCE_FILE) continue;
 
       const relativePath = toPosixPath(path.relative(catalogDir, absolutePath));
       const parts = relativePath.split("/");
       const kind = parts[0];
       if (parts.length !== 4 || !CATALOG_KINDS.has(kind as CatalogSkillKind)) {
-        errors.push(`catalog/${relativePath} is not under catalog/<bundled|optional>/<category>/<slug>/SKILL.md.`);
+        errors.push(`catalog/${relativePath} is not under catalog/<bundled|optional>/<category>/<slug>/{SKILL.md,${CATALOG_REFERENCE_FILE}}.`);
       }
     }
   }
@@ -210,6 +254,10 @@ async function buildCatalogSkill(
   candidate: SkillCandidate,
   errors: string[],
 ): Promise<CatalogSkill | null> {
+  if (candidate.source === "reference") {
+    return buildReferencedCatalogSkill(packageDir, candidate, errors);
+  }
+
   const prefix = relativePackagePath(packageDir, candidate.absolutePath);
   validateSlug("category", candidate.category, prefix, errors);
   validateSlug("slug", candidate.slug, prefix, errors);
@@ -266,6 +314,268 @@ async function buildCatalogSkill(
     files,
     contentHash: buildContentHash(files),
   };
+}
+
+async function buildReferencedCatalogSkill(
+  packageDir: string,
+  candidate: Extract<SkillCandidate, { source: "reference" }>,
+  errors: string[],
+): Promise<CatalogSkill | null> {
+  const prefix = relativePackagePath(packageDir, candidate.absolutePath);
+  validateSlug("category", candidate.category, prefix, errors);
+  validateSlug("slug", candidate.slug, prefix, errors);
+
+  const descriptor = await readReferencedSkillDescriptor(candidate.descriptorPath, prefix, errors);
+  if (!descriptor) return null;
+
+  const id = `paperclipai:${candidate.kind}:${candidate.category}:${candidate.slug}`;
+  const key = `paperclipai/${candidate.kind}/${candidate.category}/${candidate.slug}`;
+  const source = buildCatalogSkillSource(descriptor.source, errors, `${prefix}/${CATALOG_REFERENCE_FILE}`);
+  if (!source) return null;
+
+  const files = await collectReferencedSkillFiles(source, descriptor.files ?? [SKILL_ENTRYPOINT], prefix, errors);
+  const skillMarkdown = await readReferencedFileText(source, SKILL_ENTRYPOINT, prefix, errors);
+  if (!skillMarkdown) return null;
+
+  const parsed = parseFrontmatterMarkdown(skillMarkdown);
+  if (!parsed.hasFrontmatter) {
+    errors.push(`${source.url}/${SKILL_ENTRYPOINT} must start with YAML frontmatter.`);
+  }
+
+  const name = asString(parsed.frontmatter.name);
+  if (!name) errors.push(`${source.url}/${SKILL_ENTRYPOINT} frontmatter must include name.`);
+
+  const description = asString(parsed.frontmatter.description);
+  if (!description) errors.push(`${source.url}/${SKILL_ENTRYPOINT} frontmatter must include description.`);
+
+  const explicitKey = asString(parsed.frontmatter.key);
+  if (explicitKey && explicitKey !== key) {
+    errors.push(`${source.url}/${SKILL_ENTRYPOINT} key must be ${key}.`);
+  }
+
+  const explicitSlug = asString(parsed.frontmatter.slug);
+  if (explicitSlug && explicitSlug !== candidate.slug) {
+    errors.push(`${source.url}/${SKILL_ENTRYPOINT} slug must be ${candidate.slug}.`);
+  }
+
+  const defaultInstall = asBoolean(descriptor.defaultInstall) ?? false;
+  const recommendedForRoles = readStringArrayField(descriptor.recommendedForRoles, "recommendedForRoles", prefix, errors);
+  const requires = readStringArrayField(descriptor.requires, "requires", prefix, errors);
+  const tags = readStringArrayField(descriptor.tags, "tags", prefix, errors);
+
+  if (!files.some((file) => file.path === SKILL_ENTRYPOINT && file.kind === "skill")) {
+    errors.push(`${prefix} referenced inventory does not contain SKILL.md.`);
+  }
+  if (!name || !description) return null;
+
+  return {
+    id,
+    key,
+    kind: candidate.kind,
+    category: candidate.category,
+    slug: candidate.slug,
+    name,
+    description,
+    path: toPosixPath(path.relative(packageDir, candidate.absolutePath)),
+    entrypoint: SKILL_ENTRYPOINT,
+    trustLevel: deriveTrustLevel(files),
+    compatibility: "compatible",
+    defaultInstall,
+    recommendedForRoles,
+    requires,
+    tags,
+    files,
+    contentHash: buildContentHash(files),
+    source,
+  };
+}
+
+async function readReferencedSkillDescriptor(
+  descriptorPath: string,
+  prefix: string,
+  errors: string[],
+): Promise<ReferencedSkillDescriptor | null> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await fs.readFile(descriptorPath, "utf8"));
+  } catch (error) {
+    errors.push(`${prefix}/${CATALOG_REFERENCE_FILE} is missing or invalid JSON: ${errorMessage(error)}`);
+    return null;
+  }
+
+  if (!isPlainRecord(raw) || !isPlainRecord(raw.source)) {
+    errors.push(`${prefix}/${CATALOG_REFERENCE_FILE} must include a source object.`);
+    return null;
+  }
+  const sourceRaw = raw.source;
+  if (asString(sourceRaw.type) !== "github") {
+    errors.push(`${prefix}/${CATALOG_REFERENCE_FILE} source.type must be "github".`);
+    return null;
+  }
+
+  const owner = asString(sourceRaw.owner);
+  const repo = asString(sourceRaw.repo);
+  const ref = asString(sourceRaw.ref);
+  const commit = asString(sourceRaw.commit);
+  const sourcePath = asString(sourceRaw.path);
+  if (!owner || !repo || !ref || !commit || sourcePath === null) {
+    errors.push(`${prefix}/${CATALOG_REFERENCE_FILE} GitHub source must include owner, repo, ref, commit, and path.`);
+    return null;
+  }
+
+  const descriptor: ReferencedSkillDescriptor = {
+    source: {
+      type: "github",
+      hostname: asString(sourceRaw.hostname) ?? "github.com",
+      owner,
+      repo,
+      ref,
+      commit,
+      path: sourcePath,
+    },
+    defaultInstall: asBoolean(raw.defaultInstall) ?? false,
+    files: asStringArray(raw.files ?? undefined) ?? undefined,
+    recommendedForRoles: asStringArray(raw.recommendedForRoles ?? undefined) ?? undefined,
+    requires: asStringArray(raw.requires ?? undefined) ?? undefined,
+    tags: asStringArray(raw.tags ?? undefined) ?? undefined,
+  };
+
+  if (raw.files !== undefined && !descriptor.files) errors.push(`${prefix}/${CATALOG_REFERENCE_FILE} files must be an array of strings.`);
+  if (raw.recommendedForRoles !== undefined && !descriptor.recommendedForRoles) errors.push(`${prefix}/${CATALOG_REFERENCE_FILE} recommendedForRoles must be an array of strings.`);
+  if (raw.requires !== undefined && !descriptor.requires) errors.push(`${prefix}/${CATALOG_REFERENCE_FILE} requires must be an array of strings.`);
+  if (raw.tags !== undefined && !descriptor.tags) errors.push(`${prefix}/${CATALOG_REFERENCE_FILE} tags must be an array of strings.`);
+
+  return descriptor;
+}
+
+function buildCatalogSkillSource(
+  descriptor: ReferencedGitHubSourceDescriptor,
+  errors: string[],
+  prefix: string,
+): CatalogSkillSource | null {
+  if (!/^[0-9a-f]{40}$/i.test(descriptor.commit)) {
+    errors.push(`${prefix} source.commit must be a 40-character Git commit SHA.`);
+  }
+  const sourcePath = normalizeReferencedPath(descriptor.path);
+  if (sourcePath === null) {
+    errors.push(`${prefix} source.path must be a portable path within the repository.`);
+  }
+  const hostname = descriptor.hostname ?? "github.com";
+  const url = `https://${hostname}/${descriptor.owner}/${descriptor.repo}/tree/${descriptor.ref}/${sourcePath ?? ""}`.replace(/\/$/, "");
+  if (!/^[0-9a-f]{40}$/i.test(descriptor.commit) || sourcePath === null) return null;
+  return {
+    type: "github",
+    hostname,
+    owner: descriptor.owner,
+    repo: descriptor.repo,
+    ref: descriptor.ref,
+    commit: descriptor.commit,
+    path: sourcePath ?? "",
+    url,
+  };
+}
+
+async function collectReferencedSkillFiles(
+  source: CatalogSkillSource,
+  includePatterns: string[],
+  prefix: string,
+  errors: string[],
+): Promise<CatalogSkillFile[]> {
+  const tree = await fetchGitHubTree(source, prefix, errors);
+  const sourceRoot = source.path ? `${source.path}/` : "";
+  const normalizedPatterns: string[] = [];
+  for (const pattern of includePatterns) {
+    const normalizedPattern = normalizeReferencedPath(pattern);
+    if (normalizedPattern === null) {
+      errors.push(`${prefix} referenced include path is invalid: ${pattern}`);
+      continue;
+    }
+    if (normalizedPattern) normalizedPatterns.push(normalizedPattern);
+  }
+  const files: CatalogSkillFile[] = [];
+
+  for (const entry of tree) {
+    if (entry.type !== "blob") continue;
+    if (!entry.path.startsWith(sourceRoot)) continue;
+    const relativePath = entry.path.slice(sourceRoot.length);
+    if (!normalizedPatterns.some((pattern) => referencedPathMatches(relativePath, pattern))) continue;
+    if ((entry.size ?? 0) > MAX_CATALOG_FILE_BYTES) {
+      errors.push(`${prefix}/${relativePath} exceeds ${MAX_CATALOG_FILE_BYTES} bytes.`);
+      continue;
+    }
+
+    const bytes = await fetchReferencedFileBytes(source, relativePath, prefix, errors);
+    if (!bytes) continue;
+    files.push({
+      path: relativePath,
+      kind: classifyCatalogFile(relativePath),
+      sizeBytes: bytes.byteLength,
+      sha256: sha256(bytes),
+    });
+  }
+
+  files.sort((a, b) => {
+    if (a.path === SKILL_ENTRYPOINT) return -1;
+    if (b.path === SKILL_ENTRYPOINT) return 1;
+    return a.path.localeCompare(b.path);
+  });
+  return files;
+}
+
+async function fetchGitHubTree(
+  source: CatalogSkillSource,
+  prefix: string,
+  errors: string[],
+): Promise<GitHubTreeEntry[]> {
+  const url = `${githubApiBase(source.hostname)}/repos/${source.owner}/${source.repo}/git/trees/${source.commit}?recursive=1`;
+  try {
+    const response = await fetch(url, { headers: { accept: "application/vnd.github+json" } });
+    if (!response.ok) {
+      errors.push(`${prefix} failed to fetch GitHub tree: HTTP ${response.status}.`);
+      return [];
+    }
+    const body = await response.json() as { tree?: GitHubTreeEntry[]; truncated?: boolean };
+    if (body.truncated) errors.push(`${prefix} GitHub tree response was truncated.`);
+    return Array.isArray(body.tree) ? body.tree : [];
+  } catch (error) {
+    errors.push(`${prefix} failed to fetch GitHub tree: ${errorMessage(error)}.`);
+    return [];
+  }
+}
+
+async function readReferencedFileText(
+  source: CatalogSkillSource,
+  relativePath: string,
+  prefix: string,
+  errors: string[],
+) {
+  const bytes = await fetchReferencedFileBytes(source, relativePath, prefix, errors);
+  return bytes ? bytes.toString("utf8") : null;
+}
+
+async function fetchReferencedFileBytes(
+  source: CatalogSkillSource,
+  relativePath: string,
+  prefix: string,
+  errors: string[],
+): Promise<Buffer | null> {
+  const normalizedPath = normalizeReferencedPath(relativePath);
+  if (!normalizedPath) {
+    errors.push(`${prefix} referenced file path is invalid: ${relativePath}`);
+    return null;
+  }
+  const url = rawGitHubUrl(source, normalizedPath);
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      errors.push(`${prefix}/${normalizedPath} failed to fetch pinned GitHub file: HTTP ${response.status}.`);
+      return null;
+    }
+    return Buffer.from(await response.arrayBuffer());
+  } catch (error) {
+    errors.push(`${prefix}/${normalizedPath} failed to fetch pinned GitHub file: ${errorMessage(error)}.`);
+    return null;
+  }
 }
 
 async function collectSkillFiles(
@@ -431,6 +741,40 @@ function relativePackagePath(packageDir: string, absolutePath: string) {
 
 function toPosixPath(input: string) {
   return input.split(path.sep).join("/");
+}
+
+function normalizeReferencedPath(input: string) {
+  const normalized = input.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+  if (normalized === "") return "";
+  const parts = normalized.split("/");
+  if (parts.includes("") || parts.includes(".") || parts.includes("..") || path.posix.isAbsolute(normalized)) {
+    return null;
+  }
+  return normalized;
+}
+
+function referencedPathMatches(relativePath: string, pattern: string) {
+  if (pattern.endsWith("/**")) {
+    const directory = pattern.slice(0, -3);
+    return relativePath === directory || relativePath.startsWith(`${directory}/`);
+  }
+  return relativePath === pattern;
+}
+
+function githubApiBase(hostname: string) {
+  const normalized = hostname.toLowerCase();
+  return normalized === "github.com" || normalized === "www.github.com"
+    ? "https://api.github.com"
+    : `https://${hostname}/api/v3`;
+}
+
+function rawGitHubUrl(source: CatalogSkillSource, relativePath: string) {
+  const fullPath = source.path ? `${source.path}/${relativePath}` : relativePath;
+  const encodedPath = fullPath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+  const normalized = source.hostname.toLowerCase();
+  return normalized === "github.com" || normalized === "www.github.com"
+    ? `https://raw.githubusercontent.com/${source.owner}/${source.repo}/${source.commit}/${encodedPath}`
+    : `https://${source.hostname}/raw/${source.owner}/${source.repo}/${source.commit}/${encodedPath}`;
 }
 
 function isPathInside(parent: string, child: string) {
