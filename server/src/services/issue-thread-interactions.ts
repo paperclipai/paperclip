@@ -235,9 +235,10 @@ function clampTargetText(value: string) {
 function safeHref(value: unknown): string | null {
   const href = optionalNonEmptyString(value);
   if (!href) return null;
-  const lower = href.toLowerCase();
-  if (lower.startsWith("javascript:") || lower.startsWith("data:") || href.startsWith("//")) return null;
-  return href;
+  if (href.startsWith("#")) return href;
+  if (href.startsWith("/") && !href.startsWith("//")) return href;
+  if (/^https?:\/\//i.test(href)) return href;
+  return null;
 }
 
 function normalizeLiteralVersion(value: unknown): unknown {

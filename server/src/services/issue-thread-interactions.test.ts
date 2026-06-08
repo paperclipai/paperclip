@@ -223,6 +223,64 @@ describe("issueThreadInteractionService", () => {
     });
   });
 
+  it("drops unsupported legacy custom target URLs during request confirmation hydration", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    const existingRow = {
+      id: "interaction-legacy-custom",
+      companyId: "company-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee_on_accept",
+      idempotencyKey: "confirmation:legacy-custom",
+      sourceCommentId: null,
+      sourceRunId: null,
+      title: "Approve imported target?",
+      summary: null,
+      createdByAgentId: "agent-1",
+      createdByUserId: null,
+      resolvedByAgentId: null,
+      resolvedByUserId: null,
+      payload: {
+        version: "1",
+        prompt: "Approve this target?",
+        target: {
+          type: "custom",
+          label: "Legacy FTP target",
+          url: "ftp://example.com/archive",
+        },
+      },
+      result: null,
+      resolvedAt: null,
+      createdAt: new Date("2026-06-07T15:00:00.000Z"),
+      updatedAt: new Date("2026-06-07T15:00:00.000Z"),
+    };
+
+    const db: any = {
+      select: vi.fn(() => createSelectChain([existingRow])),
+      insert: vi.fn(),
+      update: vi.fn(),
+    };
+
+    const listed = await issueThreadInteractionService(db as never).listForIssue(existingRow.issueId);
+
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({
+      id: "interaction-legacy-custom",
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        target: {
+          type: "custom",
+          key: "Legacy FTP target",
+          label: "Legacy FTP target",
+          href: null,
+        },
+      },
+    });
+  });
+
   it("answerQuestions normalizes duplicate option ids and persists answered results", async () => {
     const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
 
