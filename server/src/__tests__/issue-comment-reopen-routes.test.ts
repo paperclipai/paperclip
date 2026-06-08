@@ -522,6 +522,39 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
+  it("does not enqueue issue_comment_mentioned from inline-code agent mention examples", async () => {
+    const issue = {
+      ...makeIssue("todo"),
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+    };
+    const body = [
+      "Only the prose should matter here.",
+      "",
+      "`[@Seneschal](agent://33333333-3333-4333-8333-333333333333)` is an example, not a real mention.",
+    ].join("\n");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: issue.id,
+      companyId: issue.companyId,
+      body,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: null,
+      authorUserId: "local-board",
+    });
+    mockIssueService.findMentionedAgents.mockResolvedValue([]);
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.findMentionedAgents).toHaveBeenCalledWith("company-1", body);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("rejects non-assignee agent POST comments on closed issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.addComment.mockResolvedValue({

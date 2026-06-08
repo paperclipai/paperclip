@@ -36,6 +36,36 @@ describe("project-mentions", () => {
     expect(extractAgentMentionIds(`[@CodexCoder](${href})`)).toEqual(["agent-123"]);
   });
 
+  it("ignores agent mentions inside inline code and fenced code blocks", () => {
+    const liveHref = buildAgentMentionHref("agent-live");
+    const codeHref = buildAgentMentionHref("agent-code");
+    const markdown = [
+      `Use [@Live](${liveHref}) here.`,
+      "",
+      `\`[@Code](${codeHref})\` should not count.`,
+      "",
+      "```md",
+      `[@CodeFence](${buildAgentMentionHref("agent-fence")})`,
+      "```",
+    ].join("\n");
+
+    expect(extractAgentMentionIds(markdown)).toEqual(["agent-live"]);
+  });
+
+  it("ignores agent mentions inside indented tilde fenced code blocks", () => {
+    const liveHref = buildAgentMentionHref("agent-live");
+    const codeHref = buildAgentMentionHref("agent-code");
+    const markdown = [
+      `Use [@Live](${liveHref}) here.`,
+      "",
+      "  ~~~md",
+      `  [@Code](${codeHref})`,
+      "  ~~~",
+    ].join("\n");
+
+    expect(extractAgentMentionIds(markdown)).toEqual(["agent-live"]);
+  });
+
   it("round-trips user mentions", () => {
     const href = buildUserMentionHref("user-123");
     expect(parseUserMentionHref(href)).toEqual({
