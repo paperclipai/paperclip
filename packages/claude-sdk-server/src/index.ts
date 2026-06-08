@@ -3,29 +3,29 @@ import fs from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { WebSocket, WebSocketServer } from "ws";
 import {
-  execute as executeClaude,
-  readClaudeAuthStatus,
-} from "@paperclipai/adapter-claude-local/server";
+  CLAUDE_BRIDGE_METHOD_HEALTH_CHECK,
+  CLAUDE_BRIDGE_METHOD_INITIALIZE,
+  CLAUDE_BRIDGE_METHOD_RUN_EXECUTE,
+  CLAUDE_BRIDGE_NOTIFICATION_RUN_LOG,
+  CLAUDE_BRIDGE_NOTIFICATION_RUN_SPAWN,
+} from "@paperclipai/claude-bridge-protocol";
 import type {
-  AdapterExecutionContext,
-  AdapterExecutionResult,
-  AdapterRuntime,
-  AdapterAgent,
-} from "@paperclipai/adapter-utils";
-
-type JsonRpcId = string | number;
-
-type JsonRpcRequest = {
-  id: JsonRpcId;
-  method: string;
-  params?: unknown;
-};
+  ClaudeBridgeHealthCheckResult,
+  ClaudeBridgeInitializeResult,
+  ClaudeBridgeJsonRpcRequest,
+  ClaudeBridgeRunExecuteParams,
+  ClaudeBridgeRunLogParams,
+  ClaudeBridgeRunSpawnParams,
+  JsonRpcId,
+} from "@paperclipai/claude-bridge-protocol";
+import { executeClaude, readClaudeAuthStatus } from "./execute.js";
+import type { ClaudeBridgeExecutionContext, ClaudeBridgeExecutionResult } from "./types.js";
 
 type ClaudeSdkServerOptions = {
   listenUrl: string;
   bearerToken?: string | null;
-  executor?: (ctx: AdapterExecutionContext) => Promise<AdapterExecutionResult>;
-  healthCheck?: () => Promise<Record<string, unknown>>;
+  executor?: (ctx: ClaudeBridgeExecutionContext) => Promise<ClaudeBridgeExecutionResult>;
+  healthCheck?: () => Promise<ClaudeBridgeHealthCheckResult>;
   serverVersion?: string;
 };
 
@@ -83,7 +83,18 @@ function sendNotification(ws: WebSocket, method: string, params: unknown) {
   );
 }
 
-async function defaultHealthCheck() {
+function teeRunLogToLocalOutput(runId: string | null, stream: "stdout" | "stderr", chunk: string) {
+  if (!chunk) return;
+  const target = stream === "stderr" ? process.stderr : process.stdout;
+  const prefix = `[paperclip-claude-sdk-server${runId ? `:${runId}` : ""}] `;
+  const lines = chunk.split(/(?<=\n)/);
+  for (const line of lines) {
+    if (!line) continue;
+    target.write(`${prefix}${line}`);
+  }
+}
+
+async function defaultHealthCheck(): Promise<ClaudeBridgeHealthCheckResult> {
   const authStatus = await readClaudeAuthStatus();
   const authConfigured =
     Boolean(nonEmpty(process.env.ANTHROPIC_API_KEY)) ||
@@ -100,7 +111,7 @@ async function defaultHealthCheck() {
   };
 }
 
-function parseAgent(value: unknown): AdapterAgent {
+function parseAgent(value: unknown): ClaudeBridgeExecutionContext["agent"] {
   const record = asRecord(value) ?? {};
   return {
     id: nonEmpty(record.id) ?? "",
@@ -111,7 +122,7 @@ function parseAgent(value: unknown): AdapterAgent {
   };
 }
 
-function parseRuntime(value: unknown): AdapterRuntime {
+function parseRuntime(value: unknown): ClaudeBridgeExecutionContext["runtime"] {
   const record = asRecord(value) ?? {};
   return {
     sessionId: nonEmpty(record.sessionId),
@@ -181,47 +192,49 @@ export function createClaudeSdkServer(options: ClaudeSdkServerOptions) {
       return;
     }
 
-    const request = asRecord(parsed) as JsonRpcRequest | null;
+    const request = asRecord(parsed) as ClaudeBridgeJsonRpcRequest | null;
     if (!request || request.id === undefined || typeof request.method !== "string") return;
 
     try {
       switch (request.method) {
-        case "initialize":
+        case CLAUDE_BRIDGE_METHOD_INITIALIZE:
           ws.send(
             createJsonRpcResult(request.id, {
               serverInfo: {
                 name: "paperclip-claude-sdk-server",
                 version: serverVersion,
               },
-            }),
+            } satisfies ClaudeBridgeInitializeResult),
           );
           return;
-        case "health/check": {
+        case CLAUDE_BRIDGE_METHOD_HEALTH_CHECK: {
           const result = await healthCheck();
           ws.send(createJsonRpcResult(request.id, result));
           return;
         }
-        case "run/execute": {
-          const params = asRecord(request.params) ?? {};
-          const ctx: AdapterExecutionContext = {
+        case CLAUDE_BRIDGE_METHOD_RUN_EXECUTE: {
+          const params = (asRecord(request.params) ?? {}) as unknown as ClaudeBridgeRunExecuteParams;
+          const ctx: ClaudeBridgeExecutionContext = {
             runId: nonEmpty(params.runId) ?? "",
             agent: parseAgent(params.agent),
             runtime: parseRuntime(params.runtime),
             config: asRecord(params.config) ?? {},
             context: asRecord(params.context) ?? {},
             authToken: nonEmpty(params.authToken) ?? undefined,
+            resolvedInstructions: (asRecord(params.resolvedInstructions) as ClaudeBridgeExecutionContext["resolvedInstructions"]) ?? null,
             onLog: async (stream, chunk) => {
-              sendNotification(ws, "run/log", {
+              teeRunLogToLocalOutput(nonEmpty(params.runId), stream, chunk);
+              sendNotification(ws, CLAUDE_BRIDGE_NOTIFICATION_RUN_LOG, {
                 runId: nonEmpty(params.runId),
                 stream,
                 chunk,
-              });
+              } satisfies ClaudeBridgeRunLogParams);
             },
             onSpawn: async (meta) => {
-              sendNotification(ws, "run/spawn", {
+              sendNotification(ws, CLAUDE_BRIDGE_NOTIFICATION_RUN_SPAWN, {
                 runId: nonEmpty(params.runId),
                 ...meta,
-              });
+              } satisfies ClaudeBridgeRunSpawnParams);
             },
           };
           const result = await executor(ctx);

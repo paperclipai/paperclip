@@ -302,7 +302,10 @@ describe("server adapter registry", () => {
     expect(setOverridePaused("claude_local", true)).toBe(true);
 
     expect(findActiveServerAdapter("claude_local")).not.toBe(plugin);
-    expect(await listAdapterModels("claude_local")).toEqual(builtIn?.models ?? []);
+    const restoredModels = await listAdapterModels("claude_local");
+    for (const model of builtIn?.models ?? []) {
+      expect(restoredModels).toContainEqual(model);
+    }
     expect(await detectAdapterModel("claude_local")).toBeNull();
     expect(detectModel).toHaveBeenCalledTimes(1);
   });

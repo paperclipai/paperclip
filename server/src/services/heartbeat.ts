@@ -1556,6 +1556,43 @@ export function mergeModelProfileAdapterConfig(input: {
   };
 }
 
+function readConfiguredTimeoutSec(config: Record<string, unknown> | null | undefined): number | null {
+  if (!config || !Object.prototype.hasOwnProperty.call(config, "timeoutSec")) return null;
+  const value = asNumber(config.timeoutSec, Number.NaN);
+  return Number.isFinite(value) ? value : null;
+}
+
+function describeTimeoutSecSource(input: {
+  baseConfig: Record<string, unknown>;
+  modelProfile: ModelProfileApplication;
+  issueAdapterConfig: Record<string, unknown> | null | undefined;
+  mergedConfig: Record<string, unknown>;
+}) {
+  const effective = readConfiguredTimeoutSec(input.mergedConfig);
+  if (effective === null) return null;
+
+  const base = readConfiguredTimeoutSec(input.baseConfig);
+  const modelProfile = readConfiguredTimeoutSec(input.modelProfile.adapterConfig);
+  const issueOverride = readConfiguredTimeoutSec(input.issueAdapterConfig);
+
+  const source =
+    issueOverride !== null && issueOverride === effective
+      ? "issue_override"
+      : modelProfile !== null && modelProfile === effective
+        ? `model_profile:${input.modelProfile.applied ?? input.modelProfile.requested ?? "unknown"}`
+        : base !== null && base === effective
+          ? "agent_config"
+          : "unknown";
+
+  return {
+    effective,
+    source,
+    base,
+    modelProfile,
+    issueOverride,
+  };
+}
+
 function modelProfileRunMetadata(
   modelProfile: ModelProfileApplication,
 ): Record<string, unknown> | null {
@@ -8628,6 +8665,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await onLog(
           "stdout",
           `[paperclip] Enabled run-scoped skills from issue mentions: ${runScopedMentionedSkillKeys.join(", ")}\n`,
+        );
+      }
+      const timeoutTrace = describeTimeoutSecSource({
+        baseConfig: persistedWorkspaceManagedConfig,
+        modelProfile: modelProfileApplication,
+        issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
+        mergedConfig,
+      });
+      if (timeoutTrace) {
+        await onLog(
+          "stdout",
+          `[paperclip] Effective timeoutSec=${timeoutTrace.effective} ` +
+            `(source=${timeoutTrace.source}; ` +
+            `agent=${timeoutTrace.base ?? "(unset)"}; ` +
+            `modelProfile=${timeoutTrace.modelProfile ?? "(unset)"}; ` +
+            `issueOverride=${timeoutTrace.issueOverride ?? "(unset)"})\n`,
         );
       }
       for (const warning of runtimeWorkspaceWarnings) {

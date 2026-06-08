@@ -292,14 +292,20 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  packages/claude-bridge-protocol:
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.12.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
   packages/claude-sdk-server:
     dependencies:
-      '@paperclipai/adapter-claude-local':
+      '@paperclipai/claude-bridge-protocol':
         specifier: workspace:*
-        version: link:../adapters/claude-local
-      '@paperclipai/adapter-utils':
-        specifier: workspace:*
-        version: link:../adapter-utils
+        version: link:../claude-bridge-protocol
       ws:
         specifier: ^8.19.0
         version: 8.19.0
@@ -700,6 +706,9 @@ importers:
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../packages/adapter-utils
+      '@paperclipai/claude-bridge-protocol':
+        specifier: workspace:*
+        version: link:../packages/claude-bridge-protocol
       '@paperclipai/db':
         specifier: workspace:*
         version: link:../packages/db

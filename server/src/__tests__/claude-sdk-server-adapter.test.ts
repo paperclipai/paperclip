@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import http from "node:http";
+import fs from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { WebSocketServer } from "ws";
 import {
@@ -243,6 +244,42 @@ describe("claude sdk server adapter", () => {
     expect(forwardedConfig.agentSdkServerUrl).toBeUndefined();
     expect(forwardedConfig.agentSdkServerBearerToken).toBeUndefined();
     expect(forwardedAgentConfig.agentSdkServerUrl).toBeUndefined();
+    expect(forwardedConfig.env).toMatchObject({
+      PAPERCLIP_AGENT_ID: "agent-1",
+      PAPERCLIP_COMPANY_ID: "company-1",
+      PAPERCLIP_API_URL: "http://localhost:3100",
+      PAPERCLIP_RUN_ID: "run-1",
+      PAPERCLIP_API_KEY: "paperclip-api-key",
+    });
+  });
+
+  it("forwards local agent instructions contents to the remote bridge", async () => {
+    const mock = await startMockClaudeSdkServer();
+    cleanup.push(() => mock.close());
+
+    const instructionsPath = "/tmp/paperclip-claude-remote-instructions.md";
+    await fs.writeFile(instructionsPath, "Remote bridge instructions go here.\n", "utf8");
+    cleanup.push(async () => {
+      await fs.rm(instructionsPath, { force: true });
+    });
+
+    const { ctx } = createExecutionContext({
+      agentSdkServerUrl: mock.url,
+      instructionsFilePath: instructionsPath,
+      dangerouslySkipPermissions: true,
+    });
+
+    const result = await executeClaudeViaSdkServer(ctx);
+
+    expect(result.exitCode).toBe(0);
+    const executeMessage = mock.executePayloads[0] ?? {};
+    const params = (executeMessage.params as Record<string, unknown>) ?? {};
+    const resolvedInstructions =
+      params.resolvedInstructions && typeof params.resolvedInstructions === "object"
+        ? (params.resolvedInstructions as Record<string, unknown>)
+        : {};
+    expect(resolvedInstructions.sourcePath).toBe(instructionsPath);
+    expect(resolvedInstructions.contents).toContain("Remote bridge instructions go here.");
   });
 
   it("sends Authorization bearer auth only when a remote token is configured", async () => {

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { createClaudeSdkServer, readBearerTokenFromFile } from "./index.js";
+import { readClaudeAuthStatus } from "./execute.js";
+import { ELEVATED_ALLOWED_TOOLS, isElevatedExecution } from "./permissions.js";
 
 function printHelp() {
   process.stdout.write(`paperclip-claude-sdk-server
@@ -55,6 +57,30 @@ async function parseArgs(argv: string[]): Promise<CliOptions> {
 
 async function main() {
   const options = await parseArgs(process.argv.slice(2));
+  if (isElevatedExecution()) {
+    process.stdout.write(
+      "[paperclip-claude-sdk-server] detected root/sudo execution; Claude will use --allowedTools instead of --dangerously-skip-permissions.\n",
+    );
+    process.stdout.write(
+      `[paperclip-claude-sdk-server] allowed tools: ${ELEVATED_ALLOWED_TOOLS}\n`,
+    );
+  }
+  const authStatus = await readClaudeAuthStatus();
+  if (!authStatus) {
+    process.stdout.write(
+      "[paperclip-claude-sdk-server] claude auth status: unavailable (failed to query `claude auth status`).\n",
+    );
+  } else if (authStatus.loggedIn) {
+    process.stdout.write(
+      `[paperclip-claude-sdk-server] claude auth status: logged in` +
+        `${authStatus.authMethod ? ` via ${authStatus.authMethod}` : ""}` +
+        `${authStatus.subscriptionType ? ` (${authStatus.subscriptionType})` : ""}.\n`,
+    );
+  } else {
+    process.stdout.write(
+      "[paperclip-claude-sdk-server] claude auth status: not logged in.\n",
+    );
+  }
   const bridge = createClaudeSdkServer({
     listenUrl: options.listenUrl,
     bearerToken: options.bearerToken,

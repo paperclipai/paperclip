@@ -1,4 +1,24 @@
+import fs from "node:fs/promises";
 import { WebSocket } from "ws";
+import {
+  CLAUDE_BRIDGE_METHOD_HEALTH_CHECK,
+  CLAUDE_BRIDGE_METHOD_INITIALIZE,
+  CLAUDE_BRIDGE_METHOD_RUN_EXECUTE,
+  CLAUDE_BRIDGE_NOTIFICATION_RUN_LOG,
+  CLAUDE_BRIDGE_NOTIFICATION_RUN_SPAWN,
+} from "@paperclipai/claude-bridge-protocol";
+import type {
+  ClaudeBridgeHealthCheckResult,
+  ClaudeBridgeInitializeParams,
+  ClaudeBridgeJsonRpcNotification,
+  ClaudeBridgeJsonRpcRequest,
+  ClaudeBridgeJsonRpcResponse,
+  ClaudeBridgeResolvedInstructions,
+  ClaudeBridgeRunExecuteParams,
+  ClaudeBridgeRunLogParams,
+  ClaudeBridgeRunSpawnParams,
+  JsonRpcId,
+} from "@paperclipai/claude-bridge-protocol";
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
@@ -11,31 +31,9 @@ import type {
 import {
   asNumber,
   asString,
+  buildPaperclipEnv,
   parseObject,
 } from "./utils.js";
-
-type JsonRpcId = string | number;
-
-type JsonRpcResponse = {
-  id?: JsonRpcId;
-  result?: unknown;
-  error?: {
-    code?: unknown;
-    message?: unknown;
-    data?: unknown;
-  };
-};
-
-type JsonRpcNotification = {
-  method: string;
-  params?: unknown;
-};
-
-type JsonRpcRequest = {
-  id: JsonRpcId;
-  method: string;
-  params?: unknown;
-};
 
 type PendingRequest = {
   resolve: (value: unknown) => void;
@@ -90,6 +88,42 @@ function stripClaudeSdkServerConfig(config: Record<string, unknown>): Record<str
   delete next.agentSdkServerHeaders;
   delete next.agentSdkServerBearerToken;
   return next;
+}
+
+function buildRemoteClaudeEnv(
+  agent: AdapterExecutionContext["agent"],
+  runId: string,
+  config: Record<string, unknown>,
+  authToken: string | undefined,
+): Record<string, unknown> {
+  const envConfig = parseObject(config.env);
+  const env: Record<string, unknown> = {
+    ...buildPaperclipEnv(agent),
+    ...envConfig,
+    PAPERCLIP_RUN_ID: runId,
+  };
+  if (!nonEmpty(env.PAPERCLIP_API_KEY) && authToken) {
+    env.PAPERCLIP_API_KEY = authToken;
+  }
+  return env;
+}
+
+async function readResolvedInstructions(
+  instructionsFilePath: unknown,
+  onLog: AdapterExecutionContext["onLog"],
+): Promise<ClaudeBridgeResolvedInstructions | null> {
+  const trimmed = nonEmpty(instructionsFilePath);
+  if (!trimmed) return null;
+  try {
+    const contents = await fs.readFile(trimmed, "utf8");
+    return { sourcePath: trimmed, contents };
+  } catch (err) {
+    await onLog(
+      "stdout",
+      `[paperclip] Warning: could not read agent instructions file "${trimmed}" before forwarding it to the remote Claude bridge: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return null;
+  }
 }
 
 function isRemoteClaudeSdkConfig(config: Record<string, unknown>): boolean {
@@ -244,8 +278,8 @@ class ClaudeSdkServerClient {
   constructor(
     private readonly url: string,
     private readonly headers: Record<string, string>,
-    private readonly onNotification: (message: JsonRpcNotification) => Promise<void> | void,
-    private readonly onServerRequest: (message: JsonRpcRequest) => Promise<void> | void,
+    private readonly onNotification: (message: ClaudeBridgeJsonRpcNotification) => Promise<void> | void,
+    private readonly onServerRequest: (message: ClaudeBridgeJsonRpcRequest) => Promise<void> | void,
   ) {}
 
   async connect(timeoutMs: number): Promise<void> {
@@ -280,13 +314,13 @@ class ClaudeSdkServerClient {
   }
 
   async initialize(): Promise<void> {
-    await this.request("initialize", {
+    await this.request(CLAUDE_BRIDGE_METHOD_INITIALIZE, {
       clientInfo: {
         name: "paperclip",
         title: "Paperclip",
         version: "0.2.7",
       },
-    }, 5_000);
+    } satisfies ClaudeBridgeInitializeParams, 5_000);
   }
 
   async request<T>(method: string, params: unknown, timeoutMs?: number): Promise<T> {
@@ -344,15 +378,15 @@ class ClaudeSdkServerClient {
     const record = asRecord(parsed);
     if (!record) return;
     if (record.method && record.id !== undefined) {
-      await this.onServerRequest(record as JsonRpcRequest);
+      await this.onServerRequest(record as unknown as ClaudeBridgeJsonRpcRequest);
       return;
     }
     if (record.method) {
-      await this.onNotification(record as JsonRpcNotification);
+      await this.onNotification(record as unknown as ClaudeBridgeJsonRpcNotification);
       return;
     }
 
-    const response = record as JsonRpcResponse;
+    const response = record as ClaudeBridgeJsonRpcResponse;
     if (response.id === undefined) return;
     const pending = this.pending.get(response.id);
     if (!pending) return;
@@ -375,10 +409,13 @@ export async function executeClaudeViaSdkServer(
   if (!url) throw new Error("Claude SDK server execution requires adapterConfig.agentSdkServerUrl");
 
   const remoteConfig = stripClaudeSdkServerConfig(config);
+  remoteConfig.env = buildRemoteClaudeEnv(agent, runId, remoteConfig, authToken ?? undefined);
   const remoteAgent = {
     ...agent,
+    adapterType: nonEmpty(agent.adapterType) ?? "claude_local",
     adapterConfig: stripClaudeSdkServerConfig(parseObject(agent.adapterConfig)),
   };
+  const resolvedInstructions = await readResolvedInstructions(config.instructionsFilePath, onLog);
 
   if (onMeta) {
     await onMeta({
@@ -389,6 +426,9 @@ export async function executeClaudeViaSdkServer(
       commandNotes: [
         `Using remote Paperclip Claude SDK server over WebSocket: ${url}`,
         "The remote bridge is expected to run Claude locally on its own host and stream stdout/stderr back to Paperclip.",
+        ...(resolvedInstructions
+          ? [`Forwarded agent instructions from ${resolvedInstructions.sourcePath} to the remote bridge.`]
+          : []),
         ...(Object.keys(headers).length > 0
           ? [`Configured ${Object.keys(headers).length} WebSocket header(s) for the bridge handshake.`]
           : []),
@@ -403,21 +443,23 @@ export async function executeClaudeViaSdkServer(
     async (message) => {
       const params = asRecord(message.params) ?? {};
       switch (message.method) {
-        case "run/log": {
-          const stream = asString(params.stream, "stdout") === "stderr" ? "stderr" : "stdout";
-          const chunk = asString(params.chunk, "");
+        case CLAUDE_BRIDGE_NOTIFICATION_RUN_LOG: {
+          const log = params as unknown as ClaudeBridgeRunLogParams;
+          const stream = asString(log.stream, "stdout") === "stderr" ? "stderr" : "stdout";
+          const chunk = asString(log.chunk, "");
           if (chunk) await onLog(stream, chunk);
           return;
         }
-        case "run/spawn": {
+        case CLAUDE_BRIDGE_NOTIFICATION_RUN_SPAWN: {
+          const spawn = params as unknown as ClaudeBridgeRunSpawnParams;
           if (!onSpawn) return;
-          const pid = typeof params.pid === "number" && Number.isFinite(params.pid) ? params.pid : null;
+          const pid = typeof spawn.pid === "number" && Number.isFinite(spawn.pid) ? spawn.pid : null;
           if (pid == null) return;
           const processGroupId =
-            typeof params.processGroupId === "number" && Number.isFinite(params.processGroupId)
-              ? params.processGroupId
+            typeof spawn.processGroupId === "number" && Number.isFinite(spawn.processGroupId)
+              ? spawn.processGroupId
               : null;
-          const startedAt = asString(params.startedAt, new Date().toISOString());
+          const startedAt = asString(spawn.startedAt, new Date().toISOString());
           await onSpawn({ pid, processGroupId, startedAt });
           return;
         }
@@ -441,14 +483,19 @@ export async function executeClaudeViaSdkServer(
       typeof remoteConfig.timeoutSec === "number" && Number.isFinite(remoteConfig.timeoutSec) && remoteConfig.timeoutSec > 0
         ? Math.max(1, Math.floor(remoteConfig.timeoutSec)) * 1000 + 30_000
         : undefined;
-    const result = await client.request("run/execute", {
-      runId,
-      agent: remoteAgent,
-      runtime,
-      config: remoteConfig,
-      context,
-      authToken: authToken ?? null,
-    }, timeoutMs);
+    const result = await client.request(
+      CLAUDE_BRIDGE_METHOD_RUN_EXECUTE,
+      {
+        runId,
+        agent: remoteAgent,
+        runtime,
+        config: remoteConfig,
+        context,
+        authToken: authToken ?? null,
+        resolvedInstructions,
+      } satisfies ClaudeBridgeRunExecuteParams,
+      timeoutMs,
+    );
     return normalizeRemoteExecutionResult(result, { model });
   } catch (err) {
     const message = toErrorMessage(err, "Claude SDK server execution failed");
@@ -563,8 +610,8 @@ export async function testClaudeSdkServerEnvironment(
       message: "Claude SDK server initialize handshake succeeded.",
     });
 
-    const health = asRecord(await client.request("health/check", {}, 5_000));
-    const bridgeName = nonEmpty(health?.bridge) ?? nonEmpty(health?.name);
+    const health = await client.request<ClaudeBridgeHealthCheckResult>(CLAUDE_BRIDGE_METHOD_HEALTH_CHECK, {}, 5_000);
+    const bridgeName = nonEmpty(health.bridge);
     if (bridgeName) {
       checks.push({
         code: "claude_sdk_server_health_ok",
@@ -578,7 +625,7 @@ export async function testClaudeSdkServerEnvironment(
         message: "Remote Claude bridge responded to health check.",
       });
     }
-    if (health?.authConfigured === false) {
+    if (health.authConfigured === false) {
       checks.push({
         code: "claude_sdk_server_auth_missing",
         level: "warn",

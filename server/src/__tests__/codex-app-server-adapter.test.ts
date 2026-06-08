@@ -63,6 +63,7 @@ async function startMockCodexAppServer(options: MockServerOptions = {}) {
   const wss = new WebSocketServer({ server });
   const receivedMethods: string[] = [];
   const receivedAuthorizationHeaders: string[] = [];
+  const receivedTurnInputs: string[] = [];
 
   wss.on("connection", (ws, req) => {
     if (typeof req.headers.authorization === "string") {
@@ -161,6 +162,18 @@ async function startMockCodexAppServer(options: MockServerOptions = {}) {
       }
 
       if (method === "turn/start") {
+        const params =
+          typeof message.params === "object" && message.params !== null
+            ? (message.params as Record<string, unknown>)
+            : null;
+        const input = Array.isArray(params?.input) ? params.input : [];
+        const firstInput =
+          input.length > 0 && typeof input[0] === "object" && input[0] !== null
+            ? (input[0] as Record<string, unknown>)
+            : null;
+        if (typeof firstInput?.text === "string") {
+          receivedTurnInputs.push(firstInput.text);
+        }
         const turnStatus = options.turnStatus ?? "completed";
         const turnErrorMessage = options.turnErrorMessage ?? "Codex App Server turn failed";
         ws.send(
@@ -239,6 +252,7 @@ async function startMockCodexAppServer(options: MockServerOptions = {}) {
     url: `ws://127.0.0.1:${port}`,
     receivedMethods,
     receivedAuthorizationHeaders,
+    receivedTurnInputs,
     async close() {
       await new Promise<void>((resolve, reject) => {
         wss.close((err) => (err ? reject(err) : resolve()));
@@ -322,6 +336,54 @@ describe("codex app-server adapter", () => {
       expect.arrayContaining(["initialize", "thread/start", "turn/start"]),
     );
     expect(mock.receivedAuthorizationHeaders).toEqual([]);
+  });
+
+  it("uses the shared Paperclip heartbeat prompt when no custom prompt template is configured", async () => {
+    const mock = await startMockCodexAppServer();
+    cleanup.push(() => mock.close());
+
+    const { ctx } = createExecutionContext({
+      appServerUrl: mock.url,
+      dangerouslyBypassApprovalsAndSandbox: true,
+    });
+
+    const result = await executeCodexViaAppServer(ctx);
+
+    expect(result.exitCode).toBe(0);
+    expect(mock.receivedTurnInputs[0]).toContain("clear final disposition");
+    expect(mock.receivedTurnInputs[0]).toContain(
+      "Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
+    );
+  });
+
+  it("includes wake payload and task markdown in the remote Codex prompt", async () => {
+    const mock = await startMockCodexAppServer();
+    cleanup.push(() => mock.close());
+
+    const { ctx } = createExecutionContext({
+      appServerUrl: mock.url,
+      dangerouslyBypassApprovalsAndSandbox: true,
+    });
+    ctx.context = {
+      paperclipWake: {
+        reason: "issue_assigned",
+        issue: { id: "issue-1", identifier: "PAP-1", title: "Answer the question" },
+        requestedCount: 1,
+        includedCount: 1,
+        latestCommentId: "comment-1",
+        fallbackFetchNeeded: false,
+        comments: [],
+      },
+      paperclipTaskMarkdown: "## Current task\n\nAnswer PAP-1 and close it if complete.",
+    };
+
+    const result = await executeCodexViaAppServer(ctx);
+
+    expect(result.exitCode).toBe(0);
+    expect(mock.receivedTurnInputs[0]).toContain("## Paperclip Wake Payload");
+    expect(mock.receivedTurnInputs[0]).toContain("PAP-1");
+    expect(mock.receivedTurnInputs[0]).toContain("## Current task");
+    expect(mock.receivedTurnInputs[0]).toContain("Answer PAP-1 and close it if complete.");
   });
 
   it("returns a failed result when Codex reports a failed turn/completed notification", async () => {

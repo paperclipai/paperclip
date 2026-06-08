@@ -10,13 +10,16 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { parseCodexJsonl } from "@paperclipai/adapter-codex-local/server";
 import {
+  DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   asBoolean,
   asNumber,
   asString,
   asStringArray,
   buildPaperclipEnv,
+  joinPromptSections,
   parseObject,
   redactEnvForLogs,
+  renderPaperclipWakePrompt,
   renderTemplate,
 } from "./utils.js";
 
@@ -197,6 +200,7 @@ function buildPrompt(
   promptTemplate: string,
   instructionsPrefix: string,
   remoteRuntimeNote: string,
+  resumedSession: boolean,
 ): string {
   const renderedPrompt = renderTemplate(promptTemplate, {
     agentId: ctx.agent.id,
@@ -207,8 +211,19 @@ function buildPrompt(
     run: { id: ctx.runId, source: "on_demand" },
     context: ctx.context,
   });
-  const cwdPrefix = cwd ? `Remote workspace cwd: ${cwd}\n\n` : "";
-  return `${instructionsPrefix}${remoteRuntimeNote}${cwdPrefix}${renderedPrompt}`;
+  const wakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, { resumedSession });
+  const sessionHandoffNote = asString(ctx.context.paperclipSessionHandoffMarkdown, "").trim();
+  const task = asString(ctx.context.paperclipTaskMarkdown, "").trim();
+  const cwdPrefix = cwd ? `Remote workspace cwd: ${cwd}` : "";
+  return joinPromptSections([
+    instructionsPrefix,
+    remoteRuntimeNote,
+    cwdPrefix,
+    wakePrompt,
+    sessionHandoffNote,
+    task,
+    renderedPrompt,
+  ]);
 }
 
 function createLegacyEvent(event: Record<string, unknown>): string {
@@ -513,7 +528,7 @@ export async function executeCodexViaAppServer(
 
   const promptTemplate = asString(
     config.promptTemplate,
-    "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
+    DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const configuredCwd = asString(config.cwd, "").trim();
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -564,8 +579,23 @@ export async function executeCodexViaAppServer(
 
   const instructions = await readInstructionsPrefix(asString(config.instructionsFilePath, ""), onLog);
   const remoteRuntimeNote = buildRemoteRuntimeNote(env);
-  const prompt = buildPrompt(ctx, cwd, promptTemplate, instructions.prefix, remoteRuntimeNote.plain);
-  const metaPrompt = buildPrompt(ctx, cwd, promptTemplate, instructions.prefix, remoteRuntimeNote.redacted);
+  const resumedSession = Boolean(asString(parseObject(runtime.sessionParams).sessionId, runtime.sessionId ?? ""));
+  const prompt = buildPrompt(
+    ctx,
+    cwd,
+    promptTemplate,
+    instructions.prefix,
+    remoteRuntimeNote.plain,
+    resumedSession,
+  );
+  const metaPrompt = buildPrompt(
+    ctx,
+    cwd,
+    promptTemplate,
+    instructions.prefix,
+    remoteRuntimeNote.redacted,
+    resumedSession,
+  );
 
   const commandNotes = [...instructions.notes];
   commandNotes.push(`Using Codex App Server over WebSocket: ${url}`);

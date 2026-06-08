@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { createClaudeSdkServer } from "./index.js";
+import type { ClaudeBridgeExecutionContext, ClaudeBridgeExecutionResult } from "./types.js";
 
 type RpcMessage = Record<string, unknown>;
 
@@ -63,11 +63,16 @@ afterEach(async () => {
 
 describe("claude sdk server", () => {
   it("serves initialize, health, and run/execute over websocket", async () => {
-    const calls: AdapterExecutionContext[] = [];
+    const calls: ClaudeBridgeExecutionContext[] = [];
     const bridge = createClaudeSdkServer({
       listenUrl: "ws://127.0.0.1:0",
-      healthCheck: async () => ({ bridge: "test-bridge", authConfigured: true }),
-      executor: async (ctx): Promise<AdapterExecutionResult> => {
+      healthCheck: async () => ({
+        bridge: "test-bridge",
+        authConfigured: true,
+        authMethod: null,
+        subscriptionType: null,
+      }),
+      executor: async (ctx): Promise<ClaudeBridgeExecutionResult> => {
         calls.push(ctx);
         await ctx.onSpawn?.({
           pid: 123,
@@ -158,6 +163,125 @@ describe("claude sdk server", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.authToken).toBe("paperclip-api-key");
     expect(calls[0]?.runtime.sessionId).toBe("claude-session-prev");
+  });
+
+  it("passes forwarded instructions through to the executor context", async () => {
+    const calls: ClaudeBridgeExecutionContext[] = [];
+    const bridge = createClaudeSdkServer({
+      listenUrl: "ws://127.0.0.1:0",
+      executor: async (ctx): Promise<ClaudeBridgeExecutionResult> => {
+        calls.push(ctx);
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          clearSession: false,
+        };
+      },
+    });
+    cleanup.push(() => bridge.close());
+    const listening = await bridge.listen();
+
+    const ws = await connect(listening.url);
+    cleanup.push(async () => {
+      ws.close();
+      await new Promise<void>((resolve) => ws.once("close", () => resolve()));
+    });
+
+    await request(ws, 1, "run/execute", {
+      runId: "run-1",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {},
+      config: {},
+      context: {},
+      authToken: null,
+      resolvedInstructions: {
+        sourcePath: "/paperclip/agent/AGENTS.md",
+        contents: "Forwarded instructions",
+      },
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.resolvedInstructions).toEqual({
+      sourcePath: "/paperclip/agent/AGENTS.md",
+      contents: "Forwarded instructions",
+    });
+  });
+
+  it("tees per-run logs to local stdout and stderr", async () => {
+    const stdoutWrites: string[] = [];
+    const stderrWrites: string[] = [];
+    const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+    const originalStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      stdoutWrites.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      return true;
+    }) as typeof process.stdout.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      stderrWrites.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      const bridge = createClaudeSdkServer({
+        listenUrl: "ws://127.0.0.1:0",
+        executor: async (ctx): Promise<ClaudeBridgeExecutionResult> => {
+          await ctx.onLog("stdout", "stdout line\n");
+          await ctx.onLog("stderr", "stderr line\n");
+          return {
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            clearSession: false,
+          };
+        },
+      });
+      cleanup.push(() => bridge.close());
+      const listening = await bridge.listen();
+
+      const ws = await connect(listening.url);
+      cleanup.push(async () => {
+        ws.close();
+        await new Promise<void>((resolve) => ws.once("close", () => resolve()));
+      });
+
+      const waitForRunFrames = waitForMessages(ws, 3);
+      ws.send(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "run/execute",
+          params: {
+            runId: "run-log-test",
+            agent: {
+              id: "agent-1",
+              companyId: "company-1",
+              name: "Claude",
+              adapterType: "claude_local",
+              adapterConfig: {},
+            },
+            runtime: {},
+            config: {},
+            context: {},
+            authToken: null,
+          },
+        }),
+      );
+
+      await waitForRunFrames;
+
+      expect(stdoutWrites.join("")).toContain("[paperclip-claude-sdk-server:run-log-test] stdout line\n");
+      expect(stderrWrites.join("")).toContain("[paperclip-claude-sdk-server:run-log-test] stderr line\n");
+    } finally {
+      process.stdout.write = originalStdoutWrite;
+      process.stderr.write = originalStderrWrite;
+    }
   });
 
   it("rejects websocket upgrades without the configured bearer token", async () => {
