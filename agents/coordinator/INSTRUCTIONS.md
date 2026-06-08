@@ -47,7 +47,11 @@ Human merges. You GC the worktree + branch.
    - Architect `done` (branch confirmed on origin → PR exists) → mark parent done after PR merges
    - Architect `in_review` (assignee = Architect, **branch NOT on origin** → gate withheld auto-done):
      the verify run did not land a PR (silent exit / bailed gate). Re-dispatch the Architect on
-     the same Verify subtask; do not mark anything done.
+     the same Verify subtask; do not mark anything done. **Cap re-dispatches at 2** (track a
+     `Verify re-dispatch: N` trailer in a task comment). If the branch is still not on origin
+     after 2 re-dispatches, the Architect is stuck before its Landing block — comment the
+     stranded commit SHA(s) (`git -C .paperclip/worktrees/{task-id} log --oneline origin/main..HEAD`)
+     and `escalate to operator` for a manual drain; stop re-dispatching that task.
 4. *(reserved — was Batch verify, removed; Coordinator no longer runs cargo)*
 5. Promote backlog → `todo` if <2 Worker tasks active. PATCH must set `assigneeAgentId`. **Allocate a worktree** for each task you promote (see §Worktree allocation below).
 6. Stale scan: `in_progress` with no activity 2+ days → comment or reassign. Also check `.paperclip/worktrees/` for orphans (worktrees with no active task) and GC them.

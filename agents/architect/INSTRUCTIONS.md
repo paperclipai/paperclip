@@ -139,36 +139,26 @@ These are hard rules. Past Architect runs have wasted 60+ minutes wrestling with
 3. Identify your task's changed files: `git diff --name-only main..HEAD`.
 4. Filter cargo output to errors/warnings whose file path appears in your changed-files list. These are yours to fix. Errors in files you did not touch belong to another concurrent task — leave them alone (your task branch is isolated, but worktree state may carry stale build artifacts from a sibling — your changed-files filter handles this).
 5. Fix all of your filtered errors and warnings. **Zero warnings tolerance applies to your changed files only.** Don't fix unrelated warnings — that's another task's responsibility.
-6. If you made changes: commit (see §Committing your fixes), then re-run cargo against the same worktree until clean. Hard stop after 3 cycles — comment with the remaining errors and `escalate to operator`.
-7. If you made no changes (cargo output had nothing in your files): proceed to PR (see §Opening the PR).
+6. If you made changes: commit them in-worktree, then re-run cargo against the same worktree until clean. Hard stop after 3 cycles — comment with the remaining errors and `escalate to operator`.
+7. **Once cargo is clean (with or without fixes), your immediate next tool call is the §Landing block — one atomic Bash invocation that commits any pending fix, pushes, and opens the PR.** Do NOT end your run, write a summary, or split this across turns first: the single worst (and most-recurring) failure mode in this pipeline is the Architect committing its fix and then stopping *before* it pushes — the work strands in the worktree, never reaches origin, and the server gate correctly holds the task at `in_review` with no PR (AA-1480/1482/1498/1503). Commit and push are NOT separate stages; they are one block precisely so there is no turn boundary for the run to die in. The run is not complete until the Landing block prints `PR confirmed for task/{task-id}`.
 
-## Committing your fixes
+## Landing: commit, push, and open the PR (ONE atomic block)
 
-If verification needed any code changes, commit them to the task branch.
-Self-contained block — re-enter the worktree first (see Step 0 cwd warning):
+After cargo is clean (with or without fixes), land the work. **Commit,
+push, and PR are a SINGLE self-contained Bash block — never split across
+turns.** They were previously two sections ("commit your fixes" then
+"open the PR"); that split was the bug — the model would run the commit,
+end the turn, and the run would die before the push/PR turn ever ran,
+stranding verified work in the worktree with no remote branch and no PR
+(AA-1480/1482/1498/1503). Merging them removes the turn boundary the run
+kept dying in: once this one block starts, push and PR happen in the same
+shell invocation, and `set -euo pipefail` makes any failing step abort
+non-zero rather than silently succeed.
 
-```sh
-set -euo pipefail
-WORKTREE="${PAPERCLIP_PROJECT:?set PAPERCLIP_PROJECT}/.paperclip/worktrees/{task-id}"
-cd "$WORKTREE"
-test "$(git branch --show-current)" = "task/{task-id}" || { echo "WRONG BRANCH/CWD — aborting"; exit 1; }
-git add <files-you-changed>
-git commit -m "fix: <what compilation issue>" -m "Stage: architect"
-```
-
-If verification was clean (no changes needed), skip this step — proceed
-straight to PR creation.
-
-## Opening the PR
-
-After verification passes (with or without fixes), open the PR from the
-task branch to `main`.
-
-**This MUST be one self-contained block.** It re-enters the worktree, sets
-`set -euo pipefail` (so any failing step aborts non-zero instead of
-silently exiting 0), and ends with a trailing assertion that the PR
-actually exists — a missing PR makes the whole run FAIL. Do not split
-these steps across separate Bash calls; the `cd` would not carry over.
+It re-enters the worktree, commits any pending fix (no-op if the tree is
+clean), pushes, opens the PR (idempotent — skips if one already exists),
+and ends with a trailing assertion that the remote branch AND a PR exist.
+A missing PR makes the whole run FAIL.
 
 ```sh
 set -euo pipefail
@@ -178,18 +168,28 @@ cd "$WORKTREE"
 test "$(git branch --show-current)" = "task/{task-id}" \
   || { echo "WRONG BRANCH/CWD: $(git branch --show-current) — aborting, NOT on task/{task-id}"; exit 1; }
 
-# 1. Make sure we're on the right GitHub account
+# 1. Commit any verification fixes (no-op if the tree is already clean —
+#    e.g. cargo was clean, or a prior run already committed the fix).
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  git add -A
+  git commit -m "fix: <what compilation issue>" -m "Stage: architect"
+fi
+
+# 2. Make sure we're on the right GitHub account.
 gh auth switch --user "${PAPERCLIP_GH_USER:?set PAPERCLIP_GH_USER to your repo's write account}"
 
-# 2. Push the task branch (from inside the worktree, on the task branch)
+# 3. Push the task branch (from inside the worktree, on the task branch).
 git push -u origin "task/{task-id}"
 
-# 3. Open the PR — base = main, head = task branch
-gh pr create \
-  --base main \
-  --head "task/{task-id}" \
-  --title "<task title>" \
-  --body "$(cat <<EOF
+# 4. Open the PR — base = main, head = task branch. Idempotent: skip if a
+#    PR for this head already exists (e.g. a re-dispatched run after a
+#    push-only partial landing).
+if ! gh pr list --head "task/{task-id}" --state all --json number -q '.[0].number' | grep -q .; then
+  gh pr create \
+    --base main \
+    --head "task/{task-id}" \
+    --title "<task title>" \
+    --body "$(cat <<EOF
 ## Summary
 <1–3 bullets describing what changed>
 
@@ -199,13 +199,13 @@ Closes #<task-id>
 ## Test plan
 - [ ] cargo check (passed)
 - [ ] cargo clippy (zero warnings)
-- [ ] cargo test (passed)
+- [ ] cargo test --lib (passed)
 EOF
 )"
+fi
 
-# 4. STRUCTURAL POSTCONDITION — a missing PR fails the run (non-zero exit).
-#    This is the anti-masquerade gate: run-success is NOT verification;
-#    a PR (or at minimum a pushed remote branch) must exist.
+# 5. STRUCTURAL POSTCONDITION — a missing remote branch or PR fails the run
+#    (non-zero exit). Run-success is NOT verification; a PR must exist.
 git ls-remote --exit-code --heads origin "task/{task-id}" >/dev/null \
   || { echo "NO REMOTE BRANCH task/{task-id} — push failed silently"; exit 1; }
 gh pr list --head "task/{task-id}" --state all --json number -q '.[0].number' | grep -q . \
