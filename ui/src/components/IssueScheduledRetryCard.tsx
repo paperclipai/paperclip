@@ -69,12 +69,12 @@ export function IssueScheduledRetryCard({
   return (
     <div
       data-testid="issue-scheduled-retry-card"
-      className="mb-3 rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-3 py-3"
+      className="mb-3 rounded-lg border border-status-running/30 bg-status-running/12 px-3 py-3"
     >
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="inline-flex items-center gap-1 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 font-medium text-cyan-700 dark:text-cyan-300">
+            <span className="inline-flex items-center gap-1 rounded-full border border-status-running/30 bg-status-running/12 px-2 py-0.5 font-medium text-status-running">
               <Clock className="h-3 w-3" aria-hidden="true" />
               {badgeLabel}
             </span>
@@ -171,7 +171,7 @@ export function RetryErrorBand({ error, onRetry, className }: RetryErrorBandProp
   return (
     <div
       className={cn(
-        "mt-2 flex items-start gap-2 rounded-md border border-rose-500/30 bg-rose-500/5 px-2 py-1.5 text-xs text-rose-700 dark:text-rose-300",
+        "mt-2 flex items-start gap-2 rounded-md border border-status-error/30 bg-status-error/12 px-2 py-1.5 text-xs text-status-error",
         className,
       )}
       role="alert"
@@ -185,7 +185,7 @@ export function RetryErrorBand({ error, onRetry, className }: RetryErrorBandProp
       <button
         type="button"
         onClick={onRetry}
-        className="shrink-0 font-medium text-rose-700 hover:underline dark:text-rose-300"
+        className="shrink-0 font-medium text-status-error hover:underline"
       >
         Try again
       </button>

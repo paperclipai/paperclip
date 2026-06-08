@@ -61,7 +61,7 @@ export function KeyboardShortcutsCheatsheetContent() {
       <div className="divide-y divide-border border-t border-border">
         {sections.map((section) => (
           <div key={section.title} className="px-5 py-3">
-            <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <h3 className="mb-2 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
               {section.title}
             </h3>
             <div className="space-y-1.5">

@@ -68,14 +68,14 @@ function OrgTreeNode({
           className={cn(
             "h-2 w-2 rounded-full shrink-0",
             node.status === "active"
-              ? "bg-green-400"
+              ? "bg-status-running"
               : node.status === "paused"
-                ? "bg-yellow-400"
+                ? "bg-status-warning"
                 : node.status === "pending_approval"
-                  ? "bg-amber-400"
+                  ? "bg-status-warning"
                 : node.status === "error"
-                  ? "bg-red-400"
-                  : "bg-neutral-400"
+                  ? "bg-status-error"
+                  : "bg-muted-foreground"
           )}
         />
         <span className="font-medium flex-1">{node.name}</span>

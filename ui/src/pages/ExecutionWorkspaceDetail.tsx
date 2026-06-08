@@ -862,7 +862,7 @@ export function ExecutionWorkspaceDetail() {
 
               <div className="space-y-6">
                 <div className="space-y-4">
-                  <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">General</div>
+                  <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">General</div>
                   <Field label="Workspace name">
                     <Input
                       value={form.name}
@@ -875,7 +875,7 @@ export function ExecutionWorkspaceDetail() {
                 <Separator />
 
                 <div className="space-y-4">
-                  <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Source control</div>
+                  <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Source control</div>
                   <div className="grid gap-4 sm:grid-cols-2">
                     <Field label="Branch name" hint="Useful for isolated worktrees">
                       <Input
@@ -908,7 +908,7 @@ export function ExecutionWorkspaceDetail() {
                 <Separator />
 
                 <div className="space-y-4">
-                  <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Paths</div>
+                  <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Paths</div>
                   <Field label="Working directory">
                     <Input
                       className="font-mono"
@@ -931,7 +931,7 @@ export function ExecutionWorkspaceDetail() {
                 <Separator />
 
                 <div className="space-y-4">
-                  <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Lifecycle commands</div>
+                  <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Lifecycle commands</div>
                   <Field label="Provision command" hint="Runs when ValadrienOs prepares this execution workspace">
                     <Textarea
                       className="min-h-20 font-mono"
@@ -963,7 +963,7 @@ export function ExecutionWorkspaceDetail() {
                 <Separator />
 
                 <div className="space-y-4">
-                  <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Runtime config</div>
+                  <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Runtime config</div>
                   <div className="rounded-md border border-dashed border-border/70 bg-background px-4 py-3">
                     <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
                       <div className="space-y-1">

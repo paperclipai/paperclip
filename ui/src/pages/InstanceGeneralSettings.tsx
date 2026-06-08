@@ -183,7 +183,7 @@ export function InstanceGeneralSettings() {
           </div>
 
           <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Daily</h3>
+            <h3 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Daily</h3>
             <div className="flex flex-wrap gap-2">
               {DAILY_RETENTION_PRESETS.map((days) => {
                 const active = backupRetention.dailyDays === days;
@@ -212,7 +212,7 @@ export function InstanceGeneralSettings() {
           </div>
 
           <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Weekly</h3>
+            <h3 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Weekly</h3>
             <div className="flex flex-wrap gap-2">
               {WEEKLY_RETENTION_PRESETS.map((weeks) => {
                 const active = backupRetention.weeklyWeeks === weeks;
@@ -242,7 +242,7 @@ export function InstanceGeneralSettings() {
           </div>
 
           <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Monthly</h3>
+            <h3 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Monthly</h3>
             <div className="flex flex-wrap gap-2">
               {MONTHLY_RETENTION_PRESETS.map((months) => {
                 const active = backupRetention.monthlyMonths === months;
@@ -375,7 +375,7 @@ export function InstanceGeneralSettings() {
 function StatusBox({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border border-border bg-background px-3 py-3">
-      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">{label}</div>
       <div className="mt-2 text-sm font-medium">{value}</div>
     </div>
   );

@@ -179,9 +179,9 @@ function formatRelative(value: Date | string | null | undefined): string {
 function statusTextTone(status: SecretStatus) {
   switch (status) {
     case "active":
-      return "text-emerald-700 dark:text-emerald-300";
+      return "text-status-success";
     case "disabled":
-      return "text-amber-700 dark:text-amber-300";
+      return "text-status-warning";
     case "archived":
       return "text-muted-foreground";
     case "deleted":
@@ -898,7 +898,7 @@ export function Secrets() {
               <EmptyState icon={Search} message="No secrets match your filters." />
             ) : (
               <table className="w-full text-sm">
-              <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
+              <thead className="bg-muted/40 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
                 <tr>
                   <th className="px-3 py-2 text-left font-medium">Name</th>
                   <th className="px-2 py-2 text-left font-medium">Mode</th>
@@ -1278,7 +1278,7 @@ export function Secrets() {
             </div>
             {createMode === "managed" ? (
               <>
-                <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2 text-[11px] text-emerald-700 dark:text-emerald-300">
+                <div className="rounded-md border border-status-success/30 bg-status-success/5 p-2 text-[11px] text-status-success">
                   ValadrienOs-managed secrets are created in the selected provider and future rotations
                   write a new provider version through ValadrienOs.
                   {awsManagedPathPreview ? (
@@ -1460,7 +1460,7 @@ export function Secrets() {
             ) : null}
 
             {vaultForm.provider === "gcp_secret_manager" || vaultForm.provider === "vault" ? (
-              <div className="rounded-md border border-sky-500/30 bg-sky-500/5 p-3 text-xs text-sky-700 dark:text-sky-300">
+              <div className="rounded-md border border-status-info/30 bg-status-info/5 p-3 text-xs text-status-info">
                 This provider can save draft routing metadata, but runtime writes and resolution stay disabled until
                 the provider module is implemented and reviewed.
               </div>
@@ -1685,12 +1685,12 @@ function SecretsFiltersPopover({
         <Button
           variant="outline"
           size="icon"
-          className={cn("relative h-8 w-8 shrink-0", activeFilterCount > 0 && "text-blue-600 dark:text-blue-400")}
+          className={cn("relative h-8 w-8 shrink-0", activeFilterCount > 0 && "text-status-info")}
           title={activeFilterCount > 0 ? `Filters: ${activeFilterCount}` : "Filter"}
         >
           <Filter className="h-3.5 w-3.5" />
           {activeFilterCount > 0 ? (
-            <span className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-[9px] font-bold text-white">
+            <span className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-status-info text-[9px] font-bold text-white">
               {activeFilterCount}
             </span>
           ) : null}
@@ -1762,11 +1762,11 @@ function SecretsFiltersPopover({
 function providerConfigStatusTone(status: SecretProviderConfigStatus) {
   switch (status) {
     case "ready":
-      return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+      return "border-status-success/30 bg-status-success/10 text-status-success";
     case "warning":
-      return "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+      return "border-status-warning/30 bg-status-warning/10 text-status-warning";
     case "coming_soon":
-      return "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300";
+      return "border-status-info/30 bg-status-info/10 text-status-info";
     case "disabled":
       return "border-muted bg-muted text-muted-foreground";
     default:
@@ -1801,7 +1801,7 @@ function ProviderVaultInlineWarning({ config }: { config: CompanySecretProviderC
   }
   const warning = config.status === "warning" || config.healthStatus === "warning";
   return (
-    <p className={cn("mt-1 flex items-center gap-1 text-[11px]", warning ? "text-amber-600 dark:text-amber-400" : "text-destructive")}>
+    <p className={cn("mt-1 flex items-center gap-1 text-[11px]", warning ? "text-status-warning" : "text-destructive")}>
       {warning ? <AlertTriangle className="h-3 w-3" /> : <AlertCircle className="h-3 w-3" />}
       {message}
     </p>
@@ -2201,7 +2201,7 @@ function AwsProviderVaultDiscoveryPanel({
       ) : null}
 
       {warnings.length > 0 ? (
-        <div className="space-y-1 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-300">
+        <div className="space-y-1 rounded-md border border-status-warning/30 bg-status-warning/5 p-3 text-xs text-status-warning">
           {warnings.map((warning) => (
             <div key={warning} className="flex gap-2">
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -2278,7 +2278,7 @@ function AwsProviderVaultDiscoveryCandidateRow({
         </Button>
       </div>
       {candidate.warnings.length > 0 ? (
-        <div className="mt-2 space-y-1 text-xs text-amber-700 dark:text-amber-300">
+        <div className="mt-2 space-y-1 text-xs text-status-warning">
           {candidate.warnings.map((warning) => (
             <div key={warning} className="flex gap-2">
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -2338,7 +2338,7 @@ function SecretDetailsTab({
       <DetailRow label="Last resolved">{formatRelative(secret.lastResolvedAt)}</DetailRow>
       {secret.externalRef ? (
         <div className="col-span-2">
-          <dt className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">
+          <dt className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground mb-1">
             {secret.managedMode === "external_reference" ? "Linked provider reference" : "Provider-managed path"}
           </dt>
           <dd className="font-mono text-xs break-all flex items-center gap-1">
@@ -2346,7 +2346,7 @@ function SecretDetailsTab({
           </dd>
         </div>
       ) : null}
-      <div className="col-span-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-700 dark:text-amber-300">
+      <div className="col-span-2 rounded-md border border-status-warning/30 bg-status-warning/5 p-2 text-[11px] text-status-warning">
         {modeDescription(secret.managedMode)} ValadrienOs never re-displays stored values.
       </div>
     </dl>
@@ -2356,7 +2356,7 @@ function SecretDetailsTab({
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</dt>
+      <dt className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">{label}</dt>
       <dd className="text-foreground">{children}</dd>
     </div>
   );

@@ -120,7 +120,7 @@ export function ActiveAgentsPanel({
 
   return (
     <div>
-      <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+      <h3 className="mb-3 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
         {title}
       </h3>
       {runs.length === 0 ? (

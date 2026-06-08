@@ -59,12 +59,12 @@ export function IssueReferenceActivitySummary({ event }: { event: Pick<ActivityE
     <div className="mt-2 space-y-1">
       <Section
         label="Added references"
-        icon={<Plus className="h-3 w-3 text-green-600 dark:text-green-400" aria-hidden="true" />}
+        icon={<Plus className="h-3 w-3 text-status-success" aria-hidden="true" />}
         items={added}
       />
       <Section
         label="Removed references"
-        icon={<Minus className="h-3 w-3 text-red-600 dark:text-red-400" aria-hidden="true" />}
+        icon={<Minus className="h-3 w-3 text-status-error" aria-hidden="true" />}
         items={removed}
         strikethrough
       />

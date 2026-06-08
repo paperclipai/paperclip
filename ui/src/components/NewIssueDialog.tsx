@@ -1628,7 +1628,7 @@ export function NewIssueDialog() {
                 </div>
               )}
               {showParentWorkspaceWarning ? (
-                <div className="rounded-md border border-amber-300/60 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-100">
+                <div className="rounded-md border border-status-warning/30 bg-status-warning/12 px-2 py-1.5 text-[11px] text-status-warning">
                   Warning: this sub-issue will no longer use the parent issue workspace{parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
                 </div>
               ) : null}
@@ -1937,7 +1937,7 @@ export function NewIssueDialog() {
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors",
                   workMode === "planning"
-                    ? "border-amber-500/60 bg-amber-500/15 text-amber-800 hover:bg-amber-500/25 dark:border-amber-500/50 dark:bg-amber-500/15 dark:text-amber-200 dark:hover:bg-amber-500/25"
+                    ? "border-status-warning/50 bg-status-warning/15 text-status-warning hover:bg-status-warning/25"
                     : "border-border text-muted-foreground hover:bg-accent/50",
                 )}
               >
@@ -1955,7 +1955,7 @@ export function NewIssueDialog() {
                     className={cn(
                       "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
                       option.value === workMode && "bg-accent",
-                      option.value === "planning" && "text-amber-700 dark:text-amber-300",
+                      option.value === "planning" && "text-status-warning",
                     )}
                     onClick={() => {
                       setWorkMode(option.value);
@@ -2021,9 +2021,9 @@ export function NewIssueDialog() {
         {assigneeValue && status === "backlog" ? (
           <div
             data-testid="new-issue-assigned-backlog-note"
-            className="mx-4 mb-2 flex items-start gap-2 rounded-md border border-amber-300/70 bg-amber-50/90 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100"
+            className="mx-4 mb-2 flex items-start gap-2 rounded-md border border-status-warning/30 bg-status-warning/12 px-3 py-2 text-xs text-status-warning"
           >
-            <Flag className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
+            <Flag className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warning" />
             <span className="leading-snug">
               Assigning implies executable intent — leave status as <span className="font-medium">Backlog</span> only to deliberately park this. The assignee will not be woken until status moves to <span className="font-medium">Todo</span> or <span className="font-medium">In Progress</span>.
             </span>

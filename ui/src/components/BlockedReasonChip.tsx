@@ -22,15 +22,15 @@ const VARIANT_STYLES: Record<BlockedReasonVariant, string> = {
   needs_decision:
     "border-violet-300/70 bg-violet-50 text-violet-800 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-300",
   recovery_required:
-    "border-cyan-300/70 bg-cyan-50 text-cyan-800 dark:border-cyan-500/30 dark:bg-cyan-500/10 dark:text-cyan-300",
+    "border-status-running/30 bg-status-running/12 text-status-running",
   stalled:
-    "border-amber-400/70 bg-amber-100 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/15 dark:text-amber-200",
+    "border-status-warning/30 bg-status-warning/12 text-status-warning",
   needs_attention:
-    "border-amber-300/70 bg-amber-50 text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300",
+    "border-status-warning/30 bg-status-warning/12 text-status-warning",
   external_wait:
-    "border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-500/30 dark:bg-slate-500/15 dark:text-slate-300",
+    "border-border bg-muted/20 text-muted-foreground",
   owner_paused:
-    "border-red-300/70 bg-red-50 text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300",
+    "border-status-error/30 bg-status-error/12 text-status-error",
 };
 
 const VARIANT_ICONS: Record<BlockedReasonVariant, IconComponent> = {
@@ -43,8 +43,8 @@ const VARIANT_ICONS: Record<BlockedReasonVariant, IconComponent> = {
 };
 
 const SEVERITY_DOT: Partial<Record<IssueBlockedInboxSeverity, string>> = {
-  critical: "bg-red-500",
-  high: "bg-orange-500",
+  critical: "bg-status-error",
+  high: "bg-status-warning",
 };
 
 export function BlockedReasonChip({

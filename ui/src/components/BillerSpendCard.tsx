@@ -101,7 +101,7 @@ export function BillerSpendCard({
           <>
             <div className="border-t border-border" />
             <div className="space-y-2">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              <p className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
                 Billing types
               </p>
               <div className="space-y-1.5">
@@ -120,7 +120,7 @@ export function BillerSpendCard({
           <>
             <div className="border-t border-border" />
             <div className="space-y-2">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              <p className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
                 Upstream providers
               </p>
               <div className="space-y-1.5">

@@ -15,10 +15,10 @@ import type { Approval, Agent } from "@valadrien-os/shared";
 import { cn } from "@/lib/utils";
 
 function statusIcon(status: string) {
-  if (status === "approved") return <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />;
-  if (status === "rejected") return <XCircle className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />;
-  if (status === "revision_requested") return <Clock className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />;
-  if (status === "pending") return <Clock className="h-3.5 w-3.5 text-yellow-600 dark:text-yellow-400" />;
+  if (status === "approved") return <CheckCircle2 className="h-3.5 w-3.5 text-status-success" />;
+  if (status === "rejected") return <XCircle className="h-3.5 w-3.5 text-status-error" />;
+  if (status === "revision_requested") return <Clock className="h-3.5 w-3.5 text-status-warning" />;
+  if (status === "pending") return <Clock className="h-3.5 w-3.5 text-status-warning" />;
   return null;
 }
 
@@ -52,7 +52,7 @@ export function ApprovalCard({
   const hasFooter = showResolutionButtons || Boolean(detailLink || onOpen);
 
   return (
-    <div className="rounded-xl border border-border/70 bg-card p-4 shadow-sm">
+    <div className="rounded-xl border border-border/70 bg-card p-4">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-start gap-3">
@@ -114,7 +114,7 @@ export function ApprovalCard({
               <>
                 <Button
                   size="sm"
-                  className="bg-green-700 hover:bg-green-600 text-white"
+                  className="bg-status-success hover:bg-status-success/90 text-white"
                   onClick={onApprove}
                   disabled={isPending}
                 >

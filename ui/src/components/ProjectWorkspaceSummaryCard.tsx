@@ -54,12 +54,12 @@ export function ProjectWorkspaceSummaryCard({
   const actionKey = `${summary.key}:${hasRunningServices ? "stop" : "start"}`;
 
   return (
-    <div className="rounded-lg border border-border bg-background p-4 shadow-sm sm:p-5">
+    <div className="rounded-lg border border-border bg-background p-4 sm:p-5">
       <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center rounded-full border border-border bg-background px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              <span className="inline-flex items-center rounded-full border border-border bg-background px-2.5 py-1 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
                 {workspaceKindLabel(summary.kind)}
               </span>
               <span className="inline-flex items-center rounded-full border border-border/70 bg-background px-2.5 py-1 text-xs text-muted-foreground">
@@ -70,14 +70,14 @@ export function ProjectWorkspaceSummaryCard({
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs",
                     hasRunningServices
-                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                      ? "border-status-running/30 bg-status-running/12 text-status-running"
                       : "border-border/70 bg-background text-muted-foreground",
                   )}
                 >
                   <span
                     className={cn(
                       "h-1.5 w-1.5 rounded-full",
-                      hasRunningServices ? "bg-emerald-500" : "bg-muted-foreground/40",
+                      hasRunningServices ? "bg-status-running" : "bg-muted-foreground/40",
                     )}
                   />
                   {summary.runningServiceCount}/{summary.serviceCount} services
@@ -149,7 +149,7 @@ export function ProjectWorkspaceSummaryCard({
               <div className="flex items-start gap-2">
                 <GitBranch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
-                  <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Branch</div>
+                  <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Branch</div>
                   <div className="flex items-start gap-2">
                     <CopyText
                       text={summary.branchName}
@@ -176,7 +176,7 @@ export function ProjectWorkspaceSummaryCard({
               <div className="flex items-start gap-2">
                 <FolderOpen className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
-                  <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Path</div>
+                  <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Path</div>
                   <div className="flex items-start gap-2">
                     <CopyText
                       text={summary.cwd}
@@ -204,7 +204,7 @@ export function ProjectWorkspaceSummaryCard({
               <div className="flex items-start gap-2">
                 <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0">
-                  <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Service</div>
+                  <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Service</div>
                   <a
                     href={summary.primaryServiceUrl}
                     target="_blank"
@@ -212,7 +212,7 @@ export function ProjectWorkspaceSummaryCard({
                     className={cn(
                       "break-all font-mono text-xs hover:underline",
                       summary.primaryServiceUrlRunning
-                        ? "text-emerald-700 hover:text-emerald-800 dark:text-emerald-300 dark:hover:text-emerald-200"
+                        ? "text-status-running hover:text-status-running/80"
                         : "text-foreground",
                     )}
                   >
@@ -226,7 +226,7 @@ export function ProjectWorkspaceSummaryCard({
 
         {summary.issues.length > 0 ? (
           <div className="space-y-2">
-            <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+            <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
               Linked issues
             </div>
             <div className="flex flex-wrap gap-2">

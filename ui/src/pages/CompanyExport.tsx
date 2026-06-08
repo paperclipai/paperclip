@@ -941,7 +941,7 @@ export function CompanyExport() {
               {selectedCount} / {totalFiles} file{totalFiles === 1 ? "" : "s"} selected
             </span>
             {warnings.length > 0 && (
-              <span className="text-amber-500">
+              <span className="text-status-warning">
                 {warnings.length} warning{warnings.length === 1 ? "" : "s"}
               </span>
             )}
@@ -961,9 +961,9 @@ export function CompanyExport() {
 
       {/* Warnings */}
       {warnings.length > 0 && (
-        <div className="mx-5 mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+        <div className="mx-5 mt-3 rounded-md border border-status-warning/30 bg-status-warning/12 px-4 py-3">
           {warnings.map((w) => (
-            <div key={w} className="text-xs text-amber-500">{w}</div>
+            <div key={w} className="text-xs text-status-warning">{w}</div>
           ))}
         </div>
       )}

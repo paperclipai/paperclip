@@ -149,7 +149,7 @@ function summarizeSandboxConfig(config: Record<string, unknown>): string | null 
 
 function SupportMark({ supported }: { supported: boolean }) {
   return supported ? (
-    <span className="inline-flex items-center gap-1 text-green-700 dark:text-green-400">
+    <span className="inline-flex items-center gap-1 text-status-success">
       <Check className="h-3 w-3" />
       Yes
     </span>
@@ -552,7 +552,7 @@ export function CompanyEnvironments() {
                     <div
                       className={
                         probe.ok
-                          ? "mt-3 rounded border border-green-500/30 bg-green-500/5 px-2.5 py-2 text-xs text-green-700"
+                          ? "mt-3 rounded border border-status-success/30 bg-status-success/10 px-2.5 py-2 text-xs text-status-success"
                           : "mt-3 rounded border border-destructive/30 bg-destructive/5 px-2.5 py-2 text-xs text-destructive"
                       }
                     >
@@ -801,7 +801,7 @@ export function CompanyEnvironments() {
                 </span>
               ) : null}
               {draftEnvironmentProbeMutation.data ? (
-                <span className={draftEnvironmentProbeMutation.data.ok ? "text-xs text-green-600" : "text-xs text-destructive"}>
+                <span className={draftEnvironmentProbeMutation.data.ok ? "text-xs text-status-success" : "text-xs text-destructive"}>
                   {draftEnvironmentProbeMutation.data.summary}
                 </span>
               ) : null}

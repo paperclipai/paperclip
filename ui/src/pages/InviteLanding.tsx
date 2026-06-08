@@ -608,7 +608,7 @@ export function InviteLandingPage() {
             ) : null}
 
             {sessionQuery.data ? (
-              <div className="border border-emerald-500/40 bg-emerald-500/10 p-4 text-sm text-emerald-50">
+              <div className="border border-status-success/40 bg-status-success/10 p-4 text-sm text-status-success">
                 Signed in as <span className="font-medium">{sessionLabel}</span>.
               </div>
             ) : null}
@@ -654,7 +654,7 @@ export function InviteLandingPage() {
                     onChange={(event) => setCapabilities(event.target.value)}
                   />
                 </label>
-                {error ? <p className="text-xs text-red-400">{error}</p> : null}
+                {error ? <p className="text-xs text-status-error">{error}</p> : null}
                 <Button
                   className="w-full rounded-none"
                   disabled={acceptMutation.isPending || agentName.trim().length === 0}
@@ -770,7 +770,7 @@ export function InviteLandingPage() {
                   {authFeedback ? (
                     <p
                       className={`text-xs ${
-                        authFeedback.tone === "info" ? "text-amber-300" : "text-red-400"
+                        authFeedback.tone === "info" ? "text-status-warning" : "text-status-error"
                       }`}
                     >
                       {authFeedback.message}
@@ -839,7 +839,7 @@ export function InviteLandingPage() {
                         }.`}
                   </p>
                 </div>
-                {error ? <p className="text-xs text-red-400">{error}</p> : null}
+                {error ? <p className="text-xs text-status-error">{error}</p> : null}
                 {shouldAutoAcceptHumanInvite ? (
                   <div className="text-sm text-zinc-400">
                     {acceptMutation.isPending ? "Submitting request..." : "Finishing sign-in..."}

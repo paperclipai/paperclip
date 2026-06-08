@@ -10,17 +10,17 @@ import {
 import { cn } from "../lib/utils";
 
 const toneClasses: Record<ToastTone, string> = {
-  info: "border-sky-300 bg-sky-50 text-sky-900 dark:border-sky-500/25 dark:bg-sky-950/60 dark:text-sky-100",
-  success: "border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-500/25 dark:bg-emerald-950/60 dark:text-emerald-100",
-  warn: "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/25 dark:bg-amber-950/60 dark:text-amber-100",
-  error: "border-red-300 bg-red-50 text-red-900 dark:border-red-500/30 dark:bg-red-950/60 dark:text-red-100",
+  info: "border-status-info/30 bg-status-info/12 text-status-info",
+  success: "border-status-success/30 bg-status-success/12 text-status-success",
+  warn: "border-status-warning/30 bg-status-warning/12 text-status-warning",
+  error: "border-status-error/30 bg-status-error/12 text-status-error",
 };
 
 const toneDotClasses: Record<ToastTone, string> = {
-  info: "bg-sky-500 dark:bg-sky-400",
-  success: "bg-emerald-500 dark:bg-emerald-400",
-  warn: "bg-amber-500 dark:bg-amber-400",
-  error: "bg-red-500 dark:bg-red-400",
+  info: "bg-status-info",
+  success: "bg-status-success",
+  warn: "bg-status-warning",
+  error: "bg-status-error",
 };
 
 function AnimatedToast({
@@ -40,7 +40,7 @@ function AnimatedToast({
   return (
     <li
       className={cn(
-        "pointer-events-auto rounded-sm border shadow-lg backdrop-blur-xl transition-[transform,opacity] duration-200 ease-out",
+        "pointer-events-auto rounded-sm border backdrop-blur-xl transition-[transform,opacity] duration-200 ease-out",
         visible
           ? "translate-y-0 opacity-100"
           : "translate-y-3 opacity-0",

@@ -183,7 +183,7 @@ export function ProviderQuotaCard({
           <>
             <div className="border-t border-border" />
             <div className="space-y-2">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              <p className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
                 Rolling windows
               </p>
               <div className="space-y-2.5">
@@ -222,7 +222,7 @@ export function ProviderQuotaCard({
           <>
             <div className="border-t border-border" />
             <div className="space-y-2">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              <p className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
                 Subscription
               </p>
               <p className="text-xs text-muted-foreground">
@@ -310,11 +310,11 @@ export function ProviderQuotaCard({
             <div className="border-t border-border" />
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-3">
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                <p className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
                   Subscription quota
                 </p>
                 {quotaSource && !isClaudeQuotaPanel && !isCodexQuotaPanel ? (
-                  <span className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                  <span className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
                     {quotaSourceDisplayName(quotaSource)}
                   </span>
                 ) : null}
@@ -338,10 +338,10 @@ export function ProviderQuotaCard({
                         qw.usedPercent == null
                           ? null
                           : qw.usedPercent >= 90
-                            ? "bg-red-400"
+                            ? "bg-status-error"
                             : qw.usedPercent >= 70
-                              ? "bg-yellow-400"
-                              : "bg-green-400";
+                              ? "bg-status-warning"
+                              : "bg-status-success";
                       return (
                         <div key={qw.label} className="space-y-1">
                           <div className="flex items-center justify-between gap-2 text-xs">

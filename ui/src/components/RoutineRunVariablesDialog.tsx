@@ -525,13 +525,13 @@ export function RoutineRunVariablesDialog({
           className="shrink-0 border-t border-border/60 bg-background px-6 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-4"
         >
           {!selection.assigneeAgentId ? (
-            <p className="mr-auto text-xs text-amber-600">Default agent required for this run.</p>
+            <p className="mr-auto text-xs text-status-warning">Default agent required for this run.</p>
           ) : missingRequired.length > 0 ? (
-            <p className="mr-auto text-xs text-amber-600">
+            <p className="mr-auto text-xs text-status-warning">
               Missing: {missingRequired.join(", ")}
             </p>
           ) : workspaceSelectionEnabled && !workspaceConfigValid ? (
-            <p className="mr-auto text-xs text-amber-600">
+            <p className="mr-auto text-xs text-status-warning">
               Choose an existing workspace before running.
             </p>
           ) : (

@@ -349,7 +349,7 @@ function CommandSection({
                     <span className={cn(
                       "inline-flex items-center rounded-full border px-2.5 py-1 text-[11px]",
                       item.healthStatus === "healthy"
-                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                        ? "border-status-success/30 bg-status-success/12 text-status-success"
                         : item.healthStatus === "unhealthy"
                           ? "border-destructive/30 bg-destructive/10 text-destructive"
                           : "border-border text-muted-foreground",
@@ -404,7 +404,7 @@ export function WorkspaceRuntimeControls({
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium",
                 runningCount > 0
-                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                  ? "border-status-running/30 bg-status-running/12 text-status-running"
                   : "border-border bg-background text-muted-foreground",
               )}
             >

@@ -23,9 +23,9 @@ function windowLabel(windowKind: BudgetPolicySummary["windowKind"]) {
 }
 
 function statusTone(status: BudgetPolicySummary["status"]) {
-  if (status === "hard_stop") return "text-red-300 border-red-500/30 bg-red-500/10";
-  if (status === "warning") return "text-amber-200 border-amber-500/30 bg-amber-500/10";
-  return "text-emerald-200 border-emerald-500/30 bg-emerald-500/10";
+  if (status === "hard_stop") return "text-status-error border-status-error/30 bg-status-error/12";
+  if (status === "warning") return "text-status-warning border-status-warning/30 bg-status-warning/12";
+  return "text-status-success border-status-success/30 bg-status-success/12";
 }
 
 export function BudgetPolicyCard({
@@ -56,14 +56,14 @@ export function BudgetPolicyCard({
   const observedBudgetGrid = isPlain ? (
     <div className="grid gap-6 sm:grid-cols-2">
       <div>
-        <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Observed</div>
+        <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Observed</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">{formatCents(summary.observedAmount)}</div>
         <div className="mt-1 text-xs text-muted-foreground">
           {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : "No cap configured"}
         </div>
       </div>
       <div>
-        <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Budget</div>
+        <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Budget</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">
           {summary.amount > 0 ? formatCents(summary.amount) : "Disabled"}
         </div>
@@ -75,14 +75,14 @@ export function BudgetPolicyCard({
   ) : (
     <div className="grid gap-3 sm:grid-cols-2">
       <div className="rounded-xl border border-border/70 bg-black/[0.18] px-4 py-3">
-        <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Observed</div>
+        <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Observed</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">{formatCents(summary.observedAmount)}</div>
         <div className="mt-1 text-xs text-muted-foreground">
           {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : "No cap configured"}
         </div>
       </div>
       <div className="rounded-xl border border-border/70 bg-black/[0.18] px-4 py-3">
-        <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Budget</div>
+        <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Budget</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">
           {summary.amount > 0 ? formatCents(summary.amount) : "Disabled"}
         </div>
@@ -104,10 +104,10 @@ export function BudgetPolicyCard({
           className={cn(
             "h-full rounded-full transition-[width,background-color] duration-200",
             summary.status === "hard_stop"
-              ? "bg-red-400"
+              ? "bg-status-error"
               : summary.status === "warning"
-                ? "bg-amber-300"
-                : "bg-emerald-300",
+                ? "bg-status-warning"
+                : "bg-status-success",
           )}
           style={{ width: `${progress}%` }}
         />
@@ -116,7 +116,7 @@ export function BudgetPolicyCard({
   );
 
   const pausedPane = summary.paused ? (
-    <div className="flex items-start gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+    <div className="flex items-start gap-2 rounded-xl border border-status-error/30 bg-status-error/12 px-3 py-2 text-sm text-status-error">
       <PauseCircle className="mt-0.5 h-4 w-4 shrink-0" />
       <div>
         {summary.scopeType === "project"
@@ -129,7 +129,7 @@ export function BudgetPolicyCard({
   const saveSection = onSave ? (
     <div className={cn("flex flex-col gap-3 sm:flex-row sm:items-end", isPlain ? "" : "rounded-xl border border-border/70 bg-background/50 p-3")}>
       <div className="min-w-0 flex-1">
-        <label className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+        <label className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
           Budget (USD)
         </label>
         <Input
@@ -156,7 +156,7 @@ export function BudgetPolicyCard({
       <div className="space-y-6">
         <div className="flex items-start justify-between gap-6">
           <div>
-            <div className="text-[11px] uppercase tracking-[0.22em] text-muted-foreground">
+            <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
               {summary.scopeType}
             </div>
             <div className="mt-2 text-xl font-semibold">{summary.scopeName}</div>
@@ -166,9 +166,9 @@ export function BudgetPolicyCard({
             className={cn(
               "inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em]",
               summary.status === "hard_stop"
-                ? "text-red-300"
+                ? "text-status-error"
                 : summary.status === "warning"
-                  ? "text-amber-200"
+                  ? "text-status-warning"
                   : "text-muted-foreground",
             )}
           >
@@ -189,11 +189,11 @@ export function BudgetPolicyCard({
   }
 
   return (
-    <Card className={cn("overflow-hidden border-border/70 bg-card/80", compact ? "" : "shadow-[0_20px_80px_-40px_rgba(0,0,0,0.55)]")}>
+    <Card className={cn("overflow-hidden border-border/70 bg-card/80")}>
       <CardHeader className={cn("gap-3", compact ? "px-4 pt-4 pb-2" : "px-5 pt-5 pb-3")}>
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="text-[11px] uppercase tracking-[0.22em] text-muted-foreground">
+            <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
               {summary.scopeType}
             </div>
             <CardTitle className="mt-1 text-base">{summary.scopeName}</CardTitle>

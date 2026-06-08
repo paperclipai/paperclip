@@ -15,13 +15,13 @@ import { useState } from "react";
 function statusDotColor(status?: string): string {
   switch (status) {
     case "active":
-      return "bg-green-400";
+      return "bg-status-success";
     case "paused":
-      return "bg-yellow-400";
+      return "bg-status-warning";
     case "archived":
-      return "bg-neutral-400";
+      return "bg-muted-foreground";
     default:
-      return "bg-green-400";
+      return "bg-status-success";
   }
 }
 

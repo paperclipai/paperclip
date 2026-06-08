@@ -318,7 +318,7 @@ export function PluginSettings() {
                               <>
                                 <div className="flex justify-between col-span-2">
                                   <span className="text-muted-foreground flex items-center gap-1">
-                                    <AlertTriangle className="h-3 w-3 text-amber-500" />
+                                    <AlertTriangle className="h-3 w-3 text-status-warning" />
                                     Crashes
                                   </span>
                                   <span className="text-xs">
@@ -437,7 +437,7 @@ export function PluginSettings() {
                             entry.level === "error"
                               ? "text-destructive"
                               : entry.level === "warn"
-                                ? "text-yellow-600 dark:text-yellow-400"
+                                ? "text-status-warning"
                                 : entry.level === "debug"
                                   ? "text-muted-foreground/60"
                                   : "text-muted-foreground"
@@ -482,7 +482,7 @@ export function PluginSettings() {
                                 {check.name}
                               </span>
                               {check.passed ? (
-                                <CheckCircle className="h-4 w-4 shrink-0 text-green-500" />
+                                <CheckCircle className="h-4 w-4 shrink-0 text-status-success" />
                               ) : (
                                 <XCircle className="h-4 w-4 shrink-0 text-destructive" />
                               )}
@@ -782,7 +782,7 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
         <div
           className={`rounded-md border px-3 py-2 text-sm ${
             message.type === "success"
-              ? "border-green-200 bg-green-50 text-green-700 dark:border-green-900 dark:bg-green-950/30 dark:text-green-400"
+              ? "border-status-success/30 bg-status-success/12 text-status-success"
               : "border-destructive/20 bg-destructive/10 text-destructive"
           }`}
         >
@@ -882,7 +882,7 @@ function RequirementList({
                 key={item}
                 className={`rounded border px-1.5 py-0.5 font-mono text-[11px] ${
                   inspectionUnavailable
-                    ? "border-amber-300/60 bg-amber-50 text-amber-700 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-300"
+                    ? "border-status-warning/40 bg-status-warning/12 text-status-warning"
                     : missing
                     ? "border-destructive/30 bg-destructive/10 text-destructive"
                     : "border-border bg-muted/50 text-foreground/80"
@@ -897,7 +897,7 @@ function RequirementList({
         <p className="text-xs text-muted-foreground">None declared.</p>
       )}
       {inspectionUnavailable ? (
-        <p className="text-xs text-amber-700 dark:text-amber-300">Configured root was not inspected.</p>
+        <p className="text-xs text-status-warning">Configured root was not inspected.</p>
       ) : missingItems.length > 0 ? (
         <p className="text-xs text-destructive">{missingLabel}: {missingItems.join(", ")}</p>
       ) : null}
@@ -1054,7 +1054,7 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
         <div
           className={`text-sm p-2 rounded border ${
             saveMessage.type === "success"
-              ? "text-green-700 bg-green-50 border-green-200 dark:text-green-400 dark:bg-green-950/30 dark:border-green-900"
+              ? "text-status-success bg-status-success/12 border-status-success/30"
               : "text-destructive bg-destructive/10 border-destructive/20"
           }`}
         >
@@ -1066,7 +1066,7 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
         <div
           className={`text-sm p-2 rounded border ${
             testResult.type === "success"
-              ? "text-green-700 bg-green-50 border-green-200 dark:text-green-400 dark:bg-green-950/30 dark:border-green-900"
+              ? "text-status-success bg-status-success/12 border-status-success/30"
               : "text-destructive bg-destructive/10 border-destructive/20"
           }`}
         >
@@ -1172,14 +1172,14 @@ function formatTimestamp(epochMs: number): string {
 function JobStatusDot({ status }: { status: string }) {
   const colorClass =
     status === "success" || status === "succeeded"
-      ? "bg-green-500"
+      ? "bg-status-success"
       : status === "failed"
-        ? "bg-red-500"
+        ? "bg-status-error"
         : status === "running"
-          ? "bg-blue-500 animate-pulse"
+          ? "bg-status-running animate-pulse"
           : status === "cancelled"
-            ? "bg-gray-400"
-            : "bg-amber-500"; // queued, pending
+            ? "bg-muted-foreground"
+            : "bg-status-warning"; // queued, pending
   return (
     <span
       className={`inline-block h-2 w-2 rounded-full shrink-0 ${colorClass}`}
@@ -1194,12 +1194,12 @@ function JobStatusDot({ status }: { status: string }) {
 function DeliveryStatusDot({ status }: { status: string }) {
   const colorClass =
     status === "processed" || status === "success"
-      ? "bg-green-500"
+      ? "bg-status-success"
       : status === "failed"
-        ? "bg-red-500"
+        ? "bg-status-error"
         : status === "received"
-          ? "bg-blue-500"
-          : "bg-amber-500"; // pending
+          ? "bg-status-info"
+          : "bg-status-warning"; // pending
   return (
     <span
       className={`inline-block h-2 w-2 rounded-full shrink-0 ${colorClass}`}

@@ -109,7 +109,7 @@ function KanbanColumn({
         title={`${statusLabel(status)}: ${issues.length}`}
       >
         <StatusIcon status={status} />
-        <span className="mt-2 [writing-mode:vertical-rl] rotate-180 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <span className="mt-2 [writing-mode:vertical-rl] rotate-180 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
           {statusLabel(status)}
         </span>
         <span className="mt-auto rounded-full bg-background px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
@@ -125,7 +125,7 @@ function KanbanColumn({
         <StatusIcon status={status} />
         {(!isEmpty || isOver) && (
           <>
-            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            <span className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
               {statusLabel(status)}
             </span>
             <span className="text-xs text-muted-foreground/60 ml-auto tabular-nums">
@@ -214,9 +214,9 @@ function KanbanCard({
       style={style}
       {...attributes}
       {...listeners}
-      className={`rounded-md border bg-card cursor-grab active:cursor-grabbing transition-shadow ${
+      className={`rounded-md border bg-card cursor-grab active:cursor-grabbing transition-colors ${
         isDragging && !isOverlay ? "opacity-30" : ""
-      } ${isOverlay ? "shadow-lg ring-1 ring-primary/20" : "hover:shadow-sm"} ${
+      } ${isOverlay ? "ring-1 ring-primary/20" : "hover:border-primary/40"} ${
         compact ? "p-2" : "p-2.5"
       }`}
     >
@@ -235,7 +235,7 @@ function KanbanCard({
           </span>
           {isSuccessfulRunHandoffRequired(issue) ? (
             <span
-              className="inline-flex items-center gap-1 rounded-full border border-amber-400/45 bg-amber-50/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
+              className="inline-flex items-center gap-1 rounded-full border border-status-warning/30 bg-status-warning/12 px-1.5 py-0.5 text-[10px] font-medium text-status-warning"
               title="This issue needs a next step"
               aria-label="Needs next step"
             >
@@ -244,10 +244,10 @@ function KanbanCard({
             </span>
           ) : null}
           {isLive && (
-            <span className="inline-flex shrink-0 items-center gap-1 text-[10px] font-medium text-blue-600 dark:text-blue-400">
+            <span className="inline-flex shrink-0 items-center gap-1 text-[10px] font-medium text-status-running">
               <span className="relative flex h-2 w-2">
-                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-status-running opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-status-running" />
               </span>
               {compact ? "Live" : null}
             </span>

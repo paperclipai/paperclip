@@ -70,7 +70,7 @@ export function IssueRow({
   const productivityReviewIndicator = productivityReview ? (
     <span
       className={cn(
-        "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-300",
+        "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-status-warning/40 bg-status-warning/12 text-status-warning",
         selected ? "border-muted-foreground text-muted-foreground" : null,
       )}
       title={`Productivity review: ${productivityReviewTriggerLabel(productivityReview.trigger)}`}
@@ -90,7 +90,7 @@ export function IssueRow({
   const parkedBlockerIndicator = hasAssignedBacklogBlocker(issue.blockedBy) ? (
     <span
       data-testid="issue-row-parked-blocker"
-      className="ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+      className="ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border border-status-warning/40 bg-status-warning/12 px-2 py-0.5 text-[10px] font-medium text-status-warning"
       title="Blocked by parked work — at least one assigned blocker is in backlog and will not wake its assignee."
     >
       <Flag className="h-2.5 w-2.5" aria-hidden />
@@ -186,14 +186,14 @@ export function IssueRow({
               }}
               className={cn(
                 "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
-                selected ? "hover:bg-muted/80" : "hover:bg-blue-500/20",
+                selected ? "hover:bg-muted/80" : "hover:bg-status-info/20",
               )}
               aria-label="Mark as read"
             >
               <span
                 className={cn(
                   "block h-2 w-2 rounded-full transition-opacity duration-300",
-                  selected ? "bg-muted-foreground/70" : "bg-blue-600 dark:bg-blue-400",
+                  selected ? "bg-muted-foreground/70" : "bg-status-info",
                   unreadState === "fading" ? "opacity-0" : "opacity-100",
                 )}
               />

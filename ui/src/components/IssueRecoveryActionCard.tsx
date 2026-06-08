@@ -72,22 +72,22 @@ const STATE_TONE: Record<RecoveryCardCardState, {
   needed: {
     label: "RECOVERY NEEDED",
     containerClass:
-      "border-amber-300/70 bg-amber-50/85 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100",
-    iconWrapClass: "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200",
-    iconClass: "text-amber-700 dark:text-amber-300",
-    labelClass: "text-amber-900 dark:text-amber-200",
+      "border-status-warning/40 bg-status-warning/10 text-status-warning",
+    iconWrapClass: "bg-status-warning/20 text-status-warning",
+    iconClass: "text-status-warning",
+    labelClass: "text-status-warning",
     Icon: TriangleAlert,
-    divider: "border-amber-300/60 dark:border-amber-500/30",
+    divider: "border-status-warning/30",
   },
   in_progress: {
     label: "RECOVERY IN PROGRESS",
     containerClass:
-      "border-sky-300/70 bg-sky-50/80 text-sky-950 dark:border-sky-500/40 dark:bg-sky-500/10 dark:text-sky-100",
-    iconWrapClass: "bg-sky-100 text-sky-800 dark:bg-sky-500/20 dark:text-sky-200",
-    iconClass: "text-sky-700 dark:text-sky-300",
-    labelClass: "text-sky-900 dark:text-sky-200",
+      "border-status-running/40 bg-status-running/10 text-status-running",
+    iconWrapClass: "bg-status-running/20 text-status-running",
+    iconClass: "text-status-running",
+    labelClass: "text-status-running",
     Icon: RefreshCw,
-    divider: "border-sky-300/60 dark:border-sky-500/30",
+    divider: "border-status-running/30",
   },
   observe_only: {
     label: "OBSERVING ACTIVE RUN",
@@ -102,22 +102,22 @@ const STATE_TONE: Record<RecoveryCardCardState, {
   escalated: {
     label: "RECOVERY ESCALATED",
     containerClass:
-      "border-red-400/60 bg-red-50/85 text-red-950 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-100",
-    iconWrapClass: "bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-200",
-    iconClass: "text-red-700 dark:text-red-300",
-    labelClass: "text-red-900 dark:text-red-200",
+      "border-status-error/40 bg-status-error/10 text-status-error",
+    iconWrapClass: "bg-status-error/20 text-status-error",
+    iconClass: "text-status-error",
+    labelClass: "text-status-error",
     Icon: OctagonAlert,
-    divider: "border-red-400/50 dark:border-red-500/30",
+    divider: "border-status-error/30",
   },
   resolved: {
     label: "RECOVERY RESOLVED",
     containerClass:
-      "border-emerald-300/70 bg-emerald-50/80 text-emerald-950 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-100",
-    iconWrapClass: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200",
-    iconClass: "text-emerald-700 dark:text-emerald-300",
-    labelClass: "text-emerald-900 dark:text-emerald-200",
+      "border-status-success/40 bg-status-success/10 text-status-success",
+    iconWrapClass: "bg-status-success/20 text-status-success",
+    iconClass: "text-status-success",
+    labelClass: "text-status-success",
     Icon: Sparkles,
-    divider: "border-emerald-300/60 dark:border-emerald-500/30",
+    divider: "border-status-success/30",
   },
 };
 
@@ -213,7 +213,7 @@ function MetadataRow({
 }) {
   return (
     <div className="grid grid-cols-[7.5rem_1fr] gap-x-3 gap-y-0 px-3 py-1.5 text-xs sm:px-4">
-      <dt className="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+      <dt className="truncate font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
         {label}
       </dt>
       <dd className="min-w-0 break-words text-foreground/90">{children}</dd>
@@ -381,7 +381,7 @@ export function IssueRecoveryActionCard({
       data-recovery-state={cardState}
       data-recovery-kind={action.kind}
       className={cn(
-        "relative w-full overflow-hidden rounded-lg border text-sm shadow-[0_1px_0_rgba(15,23,42,0.02)]",
+        "relative w-full overflow-hidden rounded-lg border text-sm",
         tone.containerClass,
         className,
       )}
@@ -501,7 +501,7 @@ export function IssueRecoveryActionCard({
               sideOffset={6}
               className="w-72 p-1.5"
             >
-              <div className="px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+              <div className="px-2 py-1 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
                 Resolve recovery
               </div>
               <div className="flex flex-col">

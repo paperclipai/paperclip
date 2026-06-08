@@ -67,7 +67,7 @@ function SaveIndicator({ state }: { state: ProjectFieldSaveState }) {
   }
   if (state === "saved") {
     return (
-      <span className="inline-flex items-center gap-1 text-[11px] text-green-600 dark:text-green-400">
+      <span className="inline-flex items-center gap-1 text-[11px] text-status-success">
         <Check className="h-3 w-3" />
         Saved
       </span>
@@ -672,7 +672,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
           </div>
           <div className="space-y-2 rounded-md border border-border/70 p-3">
             <div className="space-y-1">
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Repo</div>
+              <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Repo</div>
               {codebase.repoUrl ? (
                 <div className="flex items-center justify-between gap-2">
                   {isSafeExternalUrl(codebase.repoUrl) ? (
@@ -735,7 +735,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             </div>
 
             <div className="space-y-1">
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Local folder</div>
+              <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Local folder</div>
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0 space-y-1">
                   <div className="min-w-0 break-all font-mono text-xs text-muted-foreground">
@@ -792,9 +792,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                           className={cn(
                             "rounded-full px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
                             service.status === "running"
-                              ? "bg-green-500/15 text-green-700 dark:text-green-300"
+                              ? "bg-status-running/15 text-status-running"
                               : service.status === "failed"
-                                ? "bg-red-500/15 text-red-700 dark:text-red-300"
+                                ? "bg-status-error/15 text-status-error"
                                 : "bg-muted text-muted-foreground",
                           )}
                         >
@@ -1167,7 +1167,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
         <>
           <Separator className="my-4" />
           <div className="space-y-4 py-4">
-            <div className="text-xs font-medium text-destructive uppercase tracking-wide">
+            <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-status-error">
               Danger Zone
             </div>
             <ArchiveDangerZone

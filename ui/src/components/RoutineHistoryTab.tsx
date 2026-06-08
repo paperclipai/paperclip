@@ -332,10 +332,10 @@ function HistoricalPreviewBanner({
   pending: boolean;
 }) {
   return (
-    <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+    <div className="rounded-md border border-status-warning/30 bg-status-warning/12 px-4 py-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
-          <p className="text-sm font-medium text-amber-200">
+          <p className="text-sm font-medium text-status-warning">
             Viewing revision {revisionNumber} (read-only)
           </p>
           <p className="text-xs text-muted-foreground">
@@ -371,10 +371,10 @@ function ConflictBanner({
     : ["the routine"];
   const fieldsText = formatDirtyFieldList(labels);
   return (
-    <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+    <div className="rounded-md border border-status-warning/30 bg-status-warning/12 px-4 py-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
-          <p className="text-sm font-medium text-amber-200">Unsaved routine edits</p>
+          <p className="text-sm font-medium text-status-warning">Unsaved routine edits</p>
           <p className="text-xs text-muted-foreground">
             You changed {fieldsText} but haven&apos;t saved yet. Save or discard before previewing or
             restoring an older revision.
@@ -393,7 +393,7 @@ function ConflictBanner({
         <ul className="mt-3 space-y-1 text-xs text-muted-foreground">
           {dirtyFields.map((field) => (
             <li key={field.key} className="flex items-center gap-2">
-              <span className="h-1 w-1 rounded-full bg-amber-400" />
+              <span className="h-1 w-1 rounded-full bg-status-warning" />
               {field.label}
             </li>
           ))}
@@ -427,7 +427,7 @@ function RevisionList({
   return (
     <aside className="space-y-1">
       <header className="flex items-center justify-between pb-2">
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        <p className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
           Revisions
         </p>
         <span className="text-[11px] text-muted-foreground">{totalRevisions} total</span>
@@ -440,13 +440,13 @@ function RevisionList({
         const blockedByEdits = isEditDirty && isHistorical;
         const baseClass = "w-full rounded-md border px-3 py-2 text-left transition-colors";
         const stateClass = isHighlighted
-          ? "border-emerald-500/40 bg-emerald-500/10"
+          ? "border-status-success/30 bg-status-success/12"
           : isSelected && isHistorical
-          ? "border-amber-500/40 bg-amber-500/10"
+          ? "border-status-warning/30 bg-status-warning/12"
           : isSelected
           ? "border-border bg-accent/40"
           : blockedByEdits
-          ? "border-amber-500/30 bg-amber-500/5 opacity-70 cursor-not-allowed"
+          ? "border-status-warning/30 bg-status-warning/12 opacity-70 cursor-not-allowed"
           : "border-border/60 hover:bg-accent/40";
         return (
           <button
@@ -465,7 +465,7 @@ function RevisionList({
                 </span>
               )}
               {revision.restoredFromRevisionId && (
-                <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-[10px] uppercase tracking-[0.12em] text-amber-200">
+                <span className="rounded-full border border-status-warning/30 bg-status-warning/12 px-1.5 text-[10px] uppercase tracking-[0.12em] text-status-warning">
                   Restored
                 </span>
               )}
@@ -512,7 +512,7 @@ function RevisionPreview({
   const currentSnapshot = currentRevision?.snapshot.routine ?? null;
   const restoreLabel = isHistorical ? "Restore this revision" : "Restore this revision";
   const cardWrapper = `rounded-md border transition-colors duration-1000 ${
-    highlighted ? "border-emerald-500/40 bg-emerald-500/10" : "border-border"
+    highlighted ? "border-status-success/30 bg-status-success/12" : "border-border"
   }`;
 
   const envSummary = summarizeEnv(snapshot.env ?? null);
@@ -601,17 +601,17 @@ function RevisionPreview({
       </header>
 
       <div className={`${cardWrapper} p-3`}>
-        <p className="pb-2 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        <p className="pb-2 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
           Structured fields
         </p>
         <div className="grid gap-3 md:grid-cols-2 divide-y md:divide-y-0 divide-border">
           {fieldRows.map((row) => (
             <div key={row.key} className="space-y-1 p-2">
-              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{row.label}</p>
+              <p className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">{row.label}</p>
               <p className="text-sm">
                 {row.value || <span className="text-muted-foreground">—</span>}
                 {row.differs && (
-                  <span className="ml-2 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 text-[10px] uppercase tracking-[0.12em] text-amber-200">
+                  <span className="ml-2 rounded-full border border-status-warning/30 bg-status-warning/12 px-1.5 text-[10px] uppercase tracking-[0.12em] text-status-warning">
                     differs from current
                   </span>
                 )}
@@ -622,7 +622,7 @@ function RevisionPreview({
       </div>
 
       <div className={`${cardWrapper} p-3 space-y-2`}>
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        <p className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
           Description
         </p>
         <div className="rounded-md bg-background/40 p-3 text-sm leading-7">
@@ -635,7 +635,7 @@ function RevisionPreview({
       </div>
 
       <div className={`${cardWrapper} p-3 space-y-2`}>
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        <p className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
           Triggers ({triggers.length})
         </p>
         {triggers.length === 0 ? (
@@ -652,7 +652,7 @@ function RevisionPreview({
                   {summarizeTriggerSnapshot(trigger)}
                 </span>
                 <span
-                  className={`ml-auto text-xs ${trigger.enabled ? "text-emerald-400" : "text-muted-foreground"}`}
+                  className={`ml-auto text-xs ${trigger.enabled ? "text-status-success" : "text-muted-foreground"}`}
                 >
                   {trigger.enabled ? "enabled" : "disabled"}
                 </span>
@@ -668,7 +668,7 @@ function RevisionPreview({
 
       {snapshot.variables.length > 0 && (
         <div className={`${cardWrapper} p-3 space-y-2`}>
-          <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+          <p className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
             Variables ({snapshot.variables.length})
           </p>
           <ul className="divide-y divide-border">
@@ -724,22 +724,22 @@ function RestoreConfirmDialog({
         </DialogHeader>
         <ul className="space-y-2 text-sm">
           <li className="flex items-start gap-2">
-            <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
+            <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-status-success" />
             Routine field values, variables, and schedule cron will revert.
           </li>
           {envDiffCounts.total > 0 && (
             <li className="flex items-start gap-2">
-              <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-status-success" />
               Routine secrets will revert: {formatEnvDiffCounts(envDiffCounts)}.
             </li>
           )}
           <li className="flex items-start gap-2">
-            <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
+            <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-status-success" />
             Previous run history is preserved.
           </li>
           {recreatedWebhookLabels.map((label) => (
-            <li key={label} className="flex items-start gap-2 text-amber-200">
-              <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-400" />
+            <li key={label} className="flex items-start gap-2 text-status-warning">
+              <span className="mt-1 inline-block h-1.5 w-1.5 rounded-full bg-status-warning" />
               The webhook trigger {label} will be recreated with a new URL and secret. ValadrienOs will
               show the secret once after restore — copy it before closing.
             </li>
@@ -840,7 +840,7 @@ function RoutineRevisionDiffModal({
         </div>
         <div className="overflow-auto flex-1 space-y-4">
           <section className="space-y-2">
-            <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            <p className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
               Field changes
             </p>
             {fieldChanges.length === 0 ? (
@@ -871,7 +871,7 @@ function RoutineRevisionDiffModal({
             )}
           </section>
           <section className="space-y-2">
-            <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            <p className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
               Description diff
             </p>
             <DiffTable rows={descriptionDiff} />

@@ -90,7 +90,7 @@ export function IssueColumnPicker({
           {!iconOnly && "Columns"}
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-[300px] rounded-xl border-border/70 p-1.5 shadow-xl shadow-black/10">
+      <DropdownMenuContent align="end" className="w-[300px] rounded-xl border-border/70 p-1.5">
         <DropdownMenuLabel className="px-2 pb-1 pt-1.5">
           <div className="space-y-1">
             <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
@@ -169,22 +169,22 @@ export function InboxIssueMetaLeading({
         <span
           className={cn(
             "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 sm:gap-1.5 sm:px-2",
-            "bg-blue-500/10",
+            "bg-status-running/12",
           )}
         >
           <span className="relative flex h-2 w-2">
-            <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-blue-400 opacity-75" />
+            <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-status-running opacity-75" />
             <span
               className={cn(
                 "relative inline-flex h-2 w-2 rounded-full",
-                "bg-blue-500",
+                "bg-status-running",
               )}
             />
           </span>
           <span
             className={cn(
               "hidden text-[11px] font-medium sm:inline",
-              "text-blue-600 dark:text-blue-400",
+              "text-status-running",
             )}
           >
             Live

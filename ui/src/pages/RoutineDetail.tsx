@@ -771,7 +771,7 @@ export function RoutineDetail() {
   const automationLabelClassName = routine.status === "archived"
     ? "text-muted-foreground"
     : automationEnabled
-      ? "text-emerald-400"
+      ? "text-status-success"
       : "text-muted-foreground";
 
   return (
@@ -848,7 +848,7 @@ export function RoutineDetail() {
 
       {/* Secret message banner */}
       {secretMessage && (
-        <div className="rounded-lg border border-blue-500/30 bg-blue-500/5 p-4 space-y-3 text-sm">
+        <div className="rounded-lg border border-status-info/30 bg-status-info/10 p-4 space-y-3 text-sm">
           <div>
             <p className="font-medium">{secretMessage.title}</p>
             <p className="text-xs text-muted-foreground">Save this now. ValadrienOs will not show the secret value again.</p>
@@ -883,10 +883,10 @@ export function RoutineDetail() {
 
       {/* Save conflict banner */}
       {saveConflict && (
-        <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm">
+        <div className="rounded-md border border-status-warning/30 bg-status-warning/10 px-4 py-3 text-sm">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div className="space-y-1">
-              <p className="font-medium text-amber-200">Out of date</p>
+              <p className="font-medium text-status-warning">Out of date</p>
               <p className="text-xs text-muted-foreground">
                 This routine changed while you were editing. Reload to merge the latest revision before
                 saving again.
@@ -912,7 +912,7 @@ export function RoutineDetail() {
       )}
 
       {!routine.assigneeAgentId ? (
-        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-900 dark:text-amber-200">
+        <div className="rounded-lg border border-status-warning/30 bg-status-warning/10 p-4 text-sm text-status-warning">
           Default agent required. This routine can stay as a draft and still run manually, but automation stays paused until you assign a default agent.
         </div>
       ) : null}
@@ -1083,7 +1083,7 @@ export function RoutineDetail() {
       {/* Save bar */}
       <div className="flex items-center justify-between">
         {isEditDirty ? (
-          <span className="text-xs text-amber-600">Unsaved changes</span>
+          <span className="text-xs text-status-warning">Unsaved changes</span>
         ) : (
           <span />
         )}
@@ -1108,7 +1108,7 @@ export function RoutineDetail() {
           <TabsTrigger value="runs" className="gap-1.5">
             <Play className="h-3.5 w-3.5" />
             Runs
-            {hasLiveRun && <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />}
+            {hasLiveRun && <span className="h-2 w-2 rounded-full bg-status-running animate-pulse" />}
           </TabsTrigger>
 <TabsTrigger value="activity" className="gap-1.5">
             <ActivityIcon className="h-3.5 w-3.5" />

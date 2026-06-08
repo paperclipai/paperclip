@@ -189,8 +189,8 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
         </div>
       )}
       {recommendedAction && (
-        <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3.5 py-3">
-          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-amber-700 dark:text-amber-300">
+        <div className="rounded-lg border border-status-warning/30 bg-status-warning/12 px-3.5 py-3">
+          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-status-warning">
             Recommended action
           </p>
           <p className="mt-1 leading-6 text-foreground">{recommendedAction}</p>

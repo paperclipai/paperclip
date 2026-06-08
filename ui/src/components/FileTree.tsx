@@ -55,7 +55,7 @@ const TREE_ROW_HEIGHT_CLASS = "min-h-9";
 
 const fileTreeToneClass: Record<FileTreeTone, string | undefined> = {
   default: undefined,
-  warning: "bg-amber-500/5 text-amber-700 dark:text-amber-300",
+  warning: "bg-status-warning/12 text-status-warning",
   error: "bg-destructive/5 text-destructive",
   muted: "opacity-50",
 };

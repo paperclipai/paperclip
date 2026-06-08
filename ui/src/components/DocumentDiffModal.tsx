@@ -73,8 +73,8 @@ export function DocumentDiffModal({
 
   const lineClassesByKind: Record<DiffRow["kind"], string> = {
     context: "bg-transparent",
-    removed: "bg-red-500/10 text-red-100",
-    added: "bg-green-500/10 text-green-100",
+    removed: "bg-status-error/10 text-status-error",
+    added: "bg-status-success/10 text-status-success",
   };
 
   const markerByKind: Record<DiffRow["kind"], string> = {
@@ -95,7 +95,7 @@ export function DocumentDiffModal({
 
           <div className="flex items-center gap-4 shrink-0">
             <div className="flex items-center gap-2">
-              <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-red-400">Old</span>
+              <span className="rounded-full border border-status-error/30 bg-status-error/12 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-status-error">Old</span>
               <Select
                 value={effectiveLeftId ?? ""}
                 onValueChange={(value) => setLeftRevisionId(value)}
@@ -113,7 +113,7 @@ export function DocumentDiffModal({
               </Select>
             </div>
             <div className="flex items-center gap-2">
-              <span className="rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-green-400">New</span>
+              <span className="rounded-full border border-status-success/30 bg-status-success/12 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-status-success">New</span>
               <Select
                 value={effectiveRightId ?? ""}
                 onValueChange={(value) => setRightRevisionId(value)}

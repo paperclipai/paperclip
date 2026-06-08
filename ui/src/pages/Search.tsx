@@ -457,7 +457,7 @@ function SearchTabContent({
         </div>
         {recentSearches.length > 0 ? (
           <div>
-            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <div className="mb-2 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
               Recent searches
             </div>
             <ul className="flex flex-col divide-y divide-border rounded-md border border-border">

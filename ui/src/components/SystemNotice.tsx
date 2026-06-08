@@ -62,39 +62,39 @@ const TONE_TOKENS: Record<SystemNoticeTone, ToneTokens> = {
   },
   info: {
     container:
-      "border-sky-300/70 bg-sky-50/70 dark:border-sky-500/30 dark:bg-sky-500/10",
-    iconWrap: "bg-sky-100 text-sky-700 dark:bg-sky-500/20 dark:text-sky-200",
+      "border-status-info/30 bg-status-info/12",
+    iconWrap: "bg-status-info/15 text-status-info",
     icon: Info,
-    iconClass: "text-sky-700 dark:text-sky-300",
-    label: "text-sky-800 dark:text-sky-200",
-    divider: "border-sky-300/50 dark:border-sky-500/30",
+    iconClass: "text-status-info",
+    label: "text-status-info",
+    divider: "border-status-info/30",
   },
   success: {
     container:
-      "border-emerald-300/70 bg-emerald-50/70 dark:border-emerald-500/30 dark:bg-emerald-500/10",
-    iconWrap: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-200",
+      "border-status-success/30 bg-status-success/12",
+    iconWrap: "bg-status-success/15 text-status-success",
     icon: CircleCheck,
-    iconClass: "text-emerald-700 dark:text-emerald-300",
-    label: "text-emerald-800 dark:text-emerald-200",
-    divider: "border-emerald-300/50 dark:border-emerald-500/30",
+    iconClass: "text-status-success",
+    label: "text-status-success",
+    divider: "border-status-success/30",
   },
   warning: {
     container:
-      "border-amber-300/70 bg-amber-50/80 dark:border-amber-500/30 dark:bg-amber-500/10",
-    iconWrap: "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200",
+      "border-status-warning/30 bg-status-warning/12",
+    iconWrap: "bg-status-warning/15 text-status-warning",
     icon: TriangleAlert,
-    iconClass: "text-amber-700 dark:text-amber-300",
-    label: "text-amber-900 dark:text-amber-200",
-    divider: "border-amber-300/60 dark:border-amber-500/30",
+    iconClass: "text-status-warning",
+    label: "text-status-warning",
+    divider: "border-status-warning/30",
   },
   danger: {
     container:
-      "border-red-400/60 bg-red-50/80 dark:border-red-500/35 dark:bg-red-500/10",
-    iconWrap: "bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-200",
+      "border-status-error/30 bg-status-error/12",
+    iconWrap: "bg-status-error/15 text-status-error",
     icon: OctagonAlert,
-    iconClass: "text-red-700 dark:text-red-300",
-    label: "text-red-900 dark:text-red-200",
-    divider: "border-red-400/50 dark:border-red-500/30",
+    iconClass: "text-status-error",
+    label: "text-status-error",
+    divider: "border-status-error/30",
   },
 };
 
@@ -236,7 +236,7 @@ export function SystemNotice({
       role="status"
       aria-label={resolvedLabel}
       className={cn(
-        "relative w-full overflow-hidden rounded-lg border text-sm shadow-[0_1px_0_rgba(15,23,42,0.02)]",
+        "relative w-full overflow-hidden rounded-lg border text-sm",
         tokens.container,
         className,
       )}

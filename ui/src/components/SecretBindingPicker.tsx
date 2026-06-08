@@ -45,9 +45,9 @@ function describeSecret(secret: CompanySecret): string {
 function statusTone(status: CompanySecret["status"]): string {
   switch (status) {
     case "active":
-      return "text-emerald-600 dark:text-emerald-400";
+      return "text-status-success";
     case "disabled":
-      return "text-amber-600 dark:text-amber-400";
+      return "text-status-warning";
     case "archived":
       return "text-muted-foreground";
     case "deleted":

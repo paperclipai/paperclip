@@ -138,7 +138,7 @@ export function InstanceAccess() {
                     <div className="truncate text-sm text-muted-foreground">{user.email || user.id}</div>
                   </div>
                   {user.isInstanceAdmin ? (
-                    <ShieldCheck className="h-4 w-4 text-emerald-600" />
+                    <ShieldCheck className="h-4 w-4 text-status-success" />
                   ) : null}
                 </div>
                 <div className="mt-2 text-xs text-muted-foreground">

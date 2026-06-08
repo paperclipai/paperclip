@@ -214,7 +214,7 @@ export function InstanceSettings() {
           {grouped.map((group) => (
             <Card key={group.companyName}>
               <CardContent className="p-0">
-                <div className="border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <div className="border-b px-3 py-2 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
                   {group.companyName}
                 </div>
                 <div className="divide-y">

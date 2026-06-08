@@ -60,16 +60,16 @@ function SuccessfulRunRetryNowControl({
     && (retryNow.data?.outcome === "promoted" || retryNow.data?.outcome === "already_promoted");
 
   return (
-    <div className="mt-2 rounded-md border border-amber-300/70 bg-background/80 p-2 dark:border-amber-500/40 dark:bg-background/40">
+    <div className="mt-2 rounded-md border border-status-warning/40 bg-background/80 p-2 dark:bg-background/40">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0 text-xs leading-5 text-amber-900 dark:text-amber-100">
+        <div className="min-w-0 text-xs leading-5 text-status-warning">
           Corrective wake {scheduleLabel}. Retry now starts the same recovery path immediately.
         </div>
         <Button
           type="button"
           variant="outline"
           size="sm"
-          className="shrink-0 border-amber-300/80 bg-background/80 text-amber-950 shadow-none hover:bg-amber-100 dark:border-amber-500/50 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
+          className="shrink-0 border-status-warning/50 bg-background/80 text-status-warning hover:bg-status-warning/10 dark:bg-background/40 dark:hover:bg-status-warning/15"
           onClick={() => retryNow.mutate()}
           disabled={retryNow.isPending || success}
           data-testid="issue-next-step-retry-now"
@@ -94,7 +94,7 @@ function SuccessfulRunRetryNowControl({
       </div>
       <RetryErrorBand
         error={retryNow.lastError}
-        className="mt-2 border-amber-300/70 bg-amber-100/70 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/15 dark:text-amber-100"
+        className="mt-2 border-status-warning/40 bg-status-warning/10 text-status-warning dark:bg-status-warning/15"
         onRetry={() => {
           retryNow.reset();
           retryNow.mutate();
@@ -183,10 +183,10 @@ export function IssueBlockedNotice({
         key={blocker.id}
         issuePathId={issuePathId}
         to={createIssueDetailPath(issuePathId)}
-        className="inline-flex max-w-full items-center gap-1 rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 font-mono text-xs text-amber-950 transition-colors hover:border-amber-500 hover:bg-amber-100 hover:underline dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
+        className="inline-flex max-w-full items-center gap-1 rounded-md border border-status-warning/40 bg-background/80 px-2 py-1 font-mono text-xs text-status-warning transition-colors hover:border-status-warning hover:bg-status-warning/10 hover:underline dark:bg-background/40 dark:hover:bg-status-warning/15"
       >
         <span>{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
-        <span className="max-w-[18rem] truncate font-sans text-[11px] text-amber-800 dark:text-amber-200">
+        <span className="max-w-[18rem] truncate font-sans text-[11px] text-status-warning/80">
           {blocker.title}
         </span>
         {recoveryAction ? <BlockerRecoveryIndicator action={recoveryAction} /> : null}
@@ -198,22 +198,22 @@ export function IssueBlockedNotice({
     <div
       data-blocker-attention-state={blockerAttention?.state}
       data-successful-run-handoff={showSuccessfulRunHandoff ? "required" : undefined}
-      className="mb-3 rounded-md border border-amber-300/70 bg-amber-50/90 px-3 py-2.5 text-sm text-amber-950 shadow-sm dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100"
+      className="mb-3 rounded-md border border-status-warning/40 bg-status-warning/10 px-3 py-2.5 text-sm text-status-warning"
     >
       <div className="flex items-start gap-2">
-        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" />
         <div className="min-w-0 space-y-1.5">
           {showSuccessfulRunHandoff ? (
             <>
               <p className="font-medium leading-5">This issue still needs a next step.</p>
               <p className="leading-5">
                 A run finished successfully, but this issue is still open in{" "}
-                <code className="rounded bg-amber-100 px-1 py-0.5 text-[12px] dark:bg-amber-400/15">
+                <code className="rounded bg-status-warning/15 px-1 py-0.5 text-[12px]">
                   in_progress
                 </code>{" "}
                 with no clear owner for the next action.
               </p>
-              <ul className="list-disc space-y-1 pl-5 text-xs leading-5 text-amber-900 dark:text-amber-100">
+              <ul className="list-disc space-y-1 pl-5 text-xs leading-5 text-status-warning">
                 <li>Mark it done or cancelled.</li>
                 <li>Send it for review or ask for input.</li>
                 <li>Mark it blocked with a blocker owner.</li>
@@ -223,21 +223,21 @@ export function IssueBlockedNotice({
                 {successfulRunHandoff.sourceRunId && successfulRunHandoff.assigneeAgentId ? (
                   <Link
                     to={`/agents/${successfulRunHandoff.assigneeAgentId}/runs/${successfulRunHandoff.sourceRunId}`}
-                    className="rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 font-mono text-amber-950 hover:border-amber-500 hover:bg-amber-100 hover:underline dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
+                    className="rounded-md border border-status-warning/40 bg-background/80 px-2 py-1 font-mono text-status-warning hover:border-status-warning hover:bg-status-warning/10 hover:underline dark:bg-background/40 dark:hover:bg-status-warning/15"
                   >
                     run {successfulRunHandoff.sourceRunId.slice(0, 8)}
                   </Link>
                 ) : successfulRunHandoff.sourceRunId ? (
-                  <span className="rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 font-mono text-amber-950 dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100">
+                  <span className="rounded-md border border-status-warning/40 bg-background/80 px-2 py-1 font-mono text-status-warning dark:bg-background/40">
                     run {successfulRunHandoff.sourceRunId.slice(0, 8)}
                   </span>
                 ) : null}
-                <span className="rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 text-amber-900 dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100">
+                <span className="rounded-md border border-status-warning/40 bg-background/80 px-2 py-1 text-status-warning dark:bg-background/40">
                   Corrective wake queued for {agentName ?? "the assignee"}
                 </span>
               </div>
               {successfulRunHandoff.detectedProgressSummary ? (
-                <p className="text-xs leading-5 text-amber-800 dark:text-amber-200">
+                <p className="text-xs leading-5 text-status-warning/80">
                   Detected progress: {successfulRunHandoff.detectedProgressSummary}
                 </p>
               ) : null}
@@ -250,7 +250,7 @@ export function IssueBlockedNotice({
             </>
           ) : null}
           {showSuccessfulRunHandoff && (blockers.length > 0 || issueStatus === "blocked") ? (
-            <div className="border-t border-amber-300/60 pt-1.5 dark:border-amber-500/30" />
+            <div className="border-t border-status-warning/30 pt-1.5" />
           ) : null}
           {blockers.length > 0 || issueStatus === "blocked" ? (
             <>
@@ -270,14 +270,14 @@ export function IssueBlockedNotice({
               ) : null}
               {showStalledRow ? (
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                  <span className="text-xs font-medium text-amber-800 dark:text-amber-200">
+                  <span className="text-xs font-medium text-status-warning/80">
                     Stalled in review
                   </span>
                   {stalledLeafBlockers.map(renderBlockerChip)}
                 </div>
               ) : terminalBlockers.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                  <span className="text-xs font-medium text-amber-800 dark:text-amber-200">
+                  <span className="text-xs font-medium text-status-warning/80">
                     Ultimately waiting on
                   </span>
                   {terminalBlockers.map(renderBlockerChip)}
@@ -288,7 +288,7 @@ export function IssueBlockedNotice({
                   data-testid="issue-blocked-notice-parked-row"
                   className="flex flex-wrap items-center gap-1.5 pt-0.5"
                 >
-                  <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-800 dark:text-amber-200">
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-status-warning/80">
                     <Flag className="h-3 w-3" aria-hidden />
                     Blocked by parked work
                   </span>

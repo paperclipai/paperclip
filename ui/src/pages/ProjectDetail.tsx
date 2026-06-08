@@ -129,7 +129,7 @@ function ColorPicker({
         aria-label="Change project color"
       />
       {open && (
-        <div className="absolute top-full left-0 mt-2 p-2 bg-popover border border-border rounded-lg shadow-lg z-50 w-max">
+        <div className="absolute top-full left-0 mt-2 p-2 bg-popover border border-border rounded-lg z-50 w-max">
           <div className="grid grid-cols-5 gap-1.5">
             {PROJECT_COLORS.map((color) => (
               <button
@@ -649,8 +649,8 @@ export function ProjectDetail() {
             className="text-xl font-bold"
           />
           {project.pauseReason === "budget" ? (
-            <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
-              <span className="h-2 w-2 rounded-full bg-red-400" />
+            <div className="inline-flex items-center gap-2 rounded-full border border-status-error/30 bg-status-error/12 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-status-error">
+              <span className="h-2 w-2 rounded-full bg-status-error" />
               Paused by budget hard stop
             </div>
           ) : null}

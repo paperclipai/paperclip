@@ -180,7 +180,7 @@ export function CompanySettings() {
 
       {/* General */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <div className="font-mono text-[10.5px] font-medium text-muted-foreground uppercase tracking-[0.14em]">
           General
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
@@ -209,7 +209,7 @@ export function CompanySettings() {
 
       {/* Appearance */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <div className="font-mono text-[10.5px] font-medium text-muted-foreground uppercase tracking-[0.14em]">
           Appearance
         </div>
         <div className="space-y-4 rounded-md border border-border px-4 py-4">
@@ -314,7 +314,7 @@ export function CompanySettings() {
 
       {/* Hiring */}
       <div className="space-y-4" data-testid="company-settings-team-section">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <div className="font-mono text-[10.5px] font-medium text-muted-foreground uppercase tracking-[0.14em]">
           Hiring
         </div>
         <div className="rounded-md border border-border px-4 py-3">
@@ -330,7 +330,7 @@ export function CompanySettings() {
 
       {/* Import / Export */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        <div className="font-mono text-[10.5px] font-medium text-muted-foreground uppercase tracking-[0.14em]">
           Company Packages
         </div>
         <div className="rounded-md border border-border px-4 py-4">
@@ -365,7 +365,7 @@ export function CompanySettings() {
 
       {/* Danger Zone */}
       <div className="space-y-4">
-        <div className="text-xs font-medium text-destructive uppercase tracking-wide">
+        <div className="font-mono text-[10.5px] font-medium text-status-error uppercase tracking-[0.14em]">
           Danger Zone
         </div>
         <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">

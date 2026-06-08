@@ -438,9 +438,9 @@ function IssueAssigneePausedNotice({ agent }: { agent: Agent | null }) {
         : "It was paused manually.";
 
   return (
-    <div className="mb-3 rounded-md border border-orange-300/70 bg-orange-50/90 px-3 py-2.5 text-sm text-orange-950 shadow-sm dark:border-orange-500/40 dark:bg-orange-500/10 dark:text-orange-100">
+    <div className="mb-3 rounded-md border border-status-warning/30 bg-status-warning/12 px-3 py-2.5 text-sm text-status-warning">
       <div className="flex items-start gap-2">
-        <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-orange-600 dark:text-orange-300" />
+        <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" />
         <p className="min-w-0 leading-5">
           <span className="font-medium">{agent.name}</span> is paused. New runs will not start until the agent is resumed. {pauseDetail}
         </p>
@@ -491,7 +491,7 @@ function IssueChatFallbackThread({
 }) {
   return (
     <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
-      <div className="rounded-xl border border-amber-300/60 bg-amber-50/80 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200">
+      <div className="rounded-xl border border-status-warning/30 bg-status-warning/12 px-4 py-3 text-sm text-status-warning">
         <div className="flex items-start gap-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="space-y-1">
@@ -663,10 +663,10 @@ export function SuccessfulRunHandoffCommentCallout({
   return (
     <div
       className={cn(
-        "rounded-md border px-3 py-2.5 text-sm shadow-sm",
+        "rounded-md border px-3 py-2.5 text-sm",
         escalated
-          ? "border-red-500/35 bg-red-500/10 text-red-950 dark:text-red-100"
-          : "border-amber-300/70 bg-amber-50/90 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100",
+          ? "border-status-error/35 bg-status-error/10 text-status-error"
+          : "border-status-warning/30 bg-status-warning/12 text-status-warning",
       )}
       style={recessed ? { opacity: 0.55 } : undefined}
     >
@@ -674,7 +674,7 @@ export function SuccessfulRunHandoffCommentCallout({
         <AlertTriangle
           className={cn(
             "mt-1 h-4 w-4 shrink-0",
-            escalated ? "text-red-600 dark:text-red-300" : "text-amber-600 dark:text-amber-300",
+            escalated ? "text-status-error" : "text-status-warning",
           )}
         />
         <MarkdownBody className="min-w-0 text-sm leading-6" softBreaks onImageClick={onImageClick}>
@@ -762,17 +762,17 @@ function formatRunStatusLabel(status: string) {
 function runStatusClass(status: string) {
   switch (status) {
     case "succeeded":
-      return "text-green-700 dark:text-green-300";
+      return "text-status-success";
     case "failed":
     case "error":
-      return "text-red-700 dark:text-red-300";
+      return "text-status-error";
     case "timed_out":
-      return "text-orange-700 dark:text-orange-300";
+      return "text-status-warning";
     case "running":
-      return "text-cyan-700 dark:text-cyan-300";
+      return "text-status-running";
     case "queued":
     case "pending":
-      return "text-amber-700 dark:text-amber-300";
+      return "text-status-warning";
     case "cancelled":
       return "text-muted-foreground";
     default:
@@ -877,7 +877,7 @@ function IssueChatChainOfThought({
             <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
           ) : (
             <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/70" />
+              <span className="h-1.5 w-1.5 rounded-full bg-status-success/70" />
             </span>
           )}
           {isActive ? (
@@ -1316,21 +1316,21 @@ function IssueChatUserMessage({
         className={cn(
           "min-w-0 max-w-full overflow-hidden break-all rounded-2xl px-4 py-2.5",
           queued
-            ? "bg-amber-50/80 dark:bg-amber-500/10"
+            ? "bg-status-warning/12"
             : "bg-muted",
           pending && "opacity-80",
         )}
       >
         {queued ? (
           <div className="mb-1.5 flex items-center gap-2">
-            <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
+            <span className="inline-flex items-center rounded-full border border-status-warning/30 bg-status-warning/12 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-status-warning">
               {queueBadgeLabel}
             </span>
             {queueTargetRunId && onInterruptQueued ? (
               <Button
                 size="sm"
                 variant="outline"
-                className="h-6 border-red-300 px-2 text-[11px] text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
+                className="h-6 border-status-error/40 px-2 text-[11px] text-status-error hover:bg-status-error/10"
                 disabled={isInterruptingQueuedRun}
                 onClick={() => void onInterruptQueued(queueTargetRunId)}
               >
@@ -1341,7 +1341,7 @@ function IssueChatUserMessage({
               <Button
                 size="sm"
                 variant="outline"
-                className="h-6 border-amber-300 px-2 text-[11px] text-amber-900 hover:bg-amber-100/80 hover:text-amber-950 dark:border-amber-500/40 dark:text-amber-100 dark:hover:bg-amber-500/10"
+                className="h-6 border-status-warning/40 px-2 text-[11px] text-status-warning hover:bg-status-warning/10"
                 onClick={() => onCancelQueued(commentId)}
               >
                 Cancel
@@ -1535,7 +1535,7 @@ function IssueChatAssistantMessage({
                 </Badge>
               ) : null}
               {isRunning ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
+                <span className="inline-flex items-center gap-1 rounded-full border border-status-running/30 bg-status-running/12 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-status-running">
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Running
                 </span>
@@ -1635,8 +1635,8 @@ function IssueChatAssistantMessage({
                         disabled={isStoppingRun}
                         className={cn(
                           stopRunVariant === "pause"
-                            ? "text-amber-700 focus:text-amber-800 dark:text-amber-300 dark:focus:text-amber-200"
-                            : "text-red-700 focus:text-red-800 dark:text-red-300 dark:focus:text-red-200",
+                            ? "text-status-warning focus:text-status-warning"
+                            : "text-status-error focus:text-status-error",
                         )}
                         onSelect={() => {
                           void onStopRun(runId);
@@ -1756,7 +1756,7 @@ function IssueChatFeedbackButtons({
         className={cn(
           "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors",
           visibleVote === "up"
-            ? "text-green-600 dark:text-green-400"
+            ? "text-status-success"
             : "text-muted-foreground hover:bg-accent hover:text-foreground",
         )}
         title="Helpful"
@@ -1773,7 +1773,7 @@ function IssueChatFeedbackButtons({
             className={cn(
               "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors",
               visibleVote === "down"
-                ? "text-amber-600 dark:text-amber-400"
+                ? "text-status-warning"
                 : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
             title="Needs work"
@@ -2444,7 +2444,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
 
         {statusChange ? (
           <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
-            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            <span className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
               Status
             </span>
             <span className="text-muted-foreground">{humanizeValue(statusChange.from)}</span>
@@ -2455,7 +2455,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
 
         {assigneeChange ? (
           <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
-            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            <span className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
               Assignee
             </span>
             <span className="text-muted-foreground">
@@ -2470,7 +2470,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
 
         {workspaceChange ? (
           <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
-            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            <span className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
               Workspace
             </span>
             <span className="text-muted-foreground">
@@ -3384,7 +3384,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
 
   if (composerDisabledReason) {
     return (
-      <div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+      <div className="rounded-md border border-status-warning/30 bg-status-warning/12 px-3 py-2 text-sm text-status-warning">
         {composerDisabledReason}
       </div>
     );
@@ -3399,7 +3399,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       data-pending-work-mode={pendingWorkMode}
       className={cn(
         "relative rounded-md border border-border/70 bg-background/95 p-[15px] shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]",
-        isPlanning && "border-amber-500/60 bg-amber-50/60 supports-[backdrop-filter]:bg-amber-50/40 dark:border-amber-500/50 dark:bg-amber-500/[0.07] dark:supports-[backdrop-filter]:bg-amber-500/[0.07]",
+        isPlanning && "border-status-warning/50 bg-status-warning/[0.07] supports-[backdrop-filter]:bg-status-warning/[0.07]",
         isDragOver && "border-primary/45 bg-background shadow-[0_-12px_28px_rgba(15,23,42,0.08),0_0_0_1px_hsl(var(--primary)/0.16)]",
       )}
       onDragEnterCapture={handleFileDragEnter}
@@ -3410,9 +3410,9 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       {isDragOver && canAcceptFiles ? (
         <div
           data-testid="issue-chat-composer-drop-overlay"
-          className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-sm border border-dashed border-primary/55 bg-background/75 px-4 py-3 text-center shadow-sm backdrop-blur-[2px] dark:bg-background/65"
+          className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-sm border border-dashed border-primary/55 bg-background/75 px-4 py-3 text-center backdrop-blur-[2px] dark:bg-background/65"
         >
-          <div className="flex max-w-md items-center gap-3 rounded-md bg-background/80 px-3 py-2 text-left shadow-sm ring-1 ring-border/60">
+          <div className="flex max-w-md items-center gap-3 rounded-md bg-background/80 px-3 py-2 text-left ring-1 ring-border/60">
             <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
               <Paperclip className="h-4 w-4" />
             </span>
@@ -3473,7 +3473,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                 {attachment.status === "uploading" ? (
                   <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
                 ) : attachment.status === "attached" ? (
-                  <Check className="h-3.5 w-3.5 shrink-0 text-green-600 dark:text-green-400" />
+                  <Check className="h-3.5 w-3.5 shrink-0 text-status-success" />
                 ) : (
                   <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
                 )}
@@ -3530,7 +3530,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                   data-pending-work-mode={pendingWorkMode}
                   className={cn(
                     "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
-                    isPlanning ? "text-amber-700 dark:text-amber-300" : "text-foreground",
+                    isPlanning ? "text-status-warning" : "text-foreground",
                   )}
                   onClick={() => {
                     setPendingWorkMode((prev) => (prev === "planning" ? "standard" : "planning"));
@@ -3540,7 +3540,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                   {isPlanning ? (
                     <Hammer className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
                   ) : (
-                    <ClipboardList className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden />
+                    <ClipboardList className="h-3.5 w-3.5 shrink-0 text-status-warning" aria-hidden />
                   )}
                   <span>{isPlanning ? "Switch to standard" : "Switch to planning"}</span>
                 </button>
@@ -3555,7 +3555,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
               aria-pressed
               title="Planning mode is on for this submission. Click to switch to Standard."
               onClick={() => setPendingWorkMode("standard")}
-              className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/60 bg-amber-500/15 px-2 py-1 text-xs text-amber-800 transition-colors hover:bg-amber-500/25 dark:border-amber-500/50 dark:bg-amber-500/15 dark:text-amber-200 dark:hover:bg-amber-500/25"
+              className="inline-flex items-center gap-1.5 rounded-md border border-status-warning/50 bg-status-warning/15 px-2 py-1 text-xs text-status-warning transition-colors hover:bg-status-warning/25"
             >
               <ClipboardList className="h-3.5 w-3.5" aria-hidden />
               <span>Planning</span>

@@ -122,7 +122,7 @@ export function ToggleField({
         type="button"
         className={cn(
           "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-          checked ? "bg-green-600" : "bg-muted"
+          checked ? "bg-status-success" : "bg-muted"
         )}
         onClick={() => onChange(!checked)}
       >

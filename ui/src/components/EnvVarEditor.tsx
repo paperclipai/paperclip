@@ -298,7 +298,7 @@ export function EnvVarEditor({
         }
         if (!issues.length) return null;
         return (
-          <p className="text-[11px] text-amber-700 dark:text-amber-400 inline-flex items-start gap-1">
+          <p className="text-[11px] text-status-warning inline-flex items-start gap-1">
             <AlertCircle className="h-3 w-3 mt-0.5 shrink-0" />
             <span>
               {issues.length} secret binding{issues.length === 1 ? "" : "s"} need attention:{" "}

@@ -35,10 +35,10 @@ function MetaRow({
 }) {
   return (
     <div className="grid grid-cols-[10rem_1fr] gap-x-3 gap-y-0 py-1 text-xs sm:grid-cols-[12rem_1fr]">
-      <dt className="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-emerald-900/70 dark:text-emerald-200/70">
+      <dt className="truncate font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-status-success">
         {label}
       </dt>
-      <dd className="min-w-0 break-words text-emerald-950 dark:text-emerald-100">{children}</dd>
+      <dd className="min-w-0 break-words text-status-success">{children}</dd>
     </div>
   );
 }
@@ -63,9 +63,8 @@ export function SourceResolvedFoldCallout({
       aria-label="Source-resolved watchdog fold"
       data-source-resolved-fold
       className={cn(
-        "relative w-full overflow-hidden rounded-lg border text-sm shadow-[0_1px_0_rgba(15,23,42,0.02)]",
-        "border-emerald-300/70 bg-emerald-50/80 text-emerald-950",
-        "dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-100",
+        "relative w-full overflow-hidden rounded-lg border text-sm",
+        "border-status-success/30 bg-status-success/12 text-status-success",
         className,
       )}
     >
@@ -73,15 +72,15 @@ export function SourceResolvedFoldCallout({
         <span
           className={cn(
             "mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md",
-            "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200",
+            "bg-status-success/20 text-status-success",
           )}
           aria-hidden
         >
-          <Sparkles className="h-4 w-4 text-emerald-700 dark:text-emerald-300" />
+          <Sparkles className="h-4 w-4 text-status-success" />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-semibold uppercase tracking-[0.14em]">
-            <span className="text-emerald-900 dark:text-emerald-200">SOURCE-RESOLVED FOLD</span>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em]">
+            <span className="text-status-success">SOURCE-RESOLVED FOLD</span>
             <span className="text-muted-foreground/60" aria-hidden>·</span>
             <span className="font-medium normal-case tracking-normal text-muted-foreground">
               system audit
@@ -103,8 +102,8 @@ export function SourceResolvedFoldCallout({
       <dl
         className={cn(
           "divide-y border-t bg-background/40 px-3 py-2 sm:px-4 dark:bg-background/20",
-          "border-emerald-300/60 dark:border-emerald-500/30",
-          "[&>*]:border-emerald-300/40 dark:[&>*]:border-emerald-500/20",
+          "border-status-success/30",
+          "[&>*]:border-status-success/20",
         )}
       >
         <MetaRow label="Source issue">
@@ -115,18 +114,18 @@ export function SourceResolvedFoldCallout({
             >
               {sourceLabel}
             </Link>
-            <span className="rounded-md border border-emerald-300/60 bg-background/60 px-1.5 py-0.5 text-[11px] font-medium text-emerald-900 dark:border-emerald-500/30 dark:text-emerald-200">
+            <span className="rounded-md border border-status-success/30 bg-background/60 px-1.5 py-0.5 text-[11px] font-medium text-status-success">
               {fold.sourceIssueStatus}
             </span>
           </span>
         </MetaRow>
         <MetaRow label="Same-run evidence">
           <span className="inline-flex flex-wrap items-baseline gap-1.5">
-            <span className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-[11px] text-emerald-900 dark:bg-background/40 dark:text-emerald-100">
+            <span className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-[11px] text-status-success dark:bg-background/40">
               {fold.sameRunEvidenceKind}
             </span>
             <code
-              className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-[11px] text-emerald-900 dark:bg-background/40 dark:text-emerald-100"
+              className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-[11px] text-status-success dark:bg-background/40"
               title={fold.sameRunEvidenceId}
             >
               {evidenceShort}

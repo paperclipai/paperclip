@@ -45,9 +45,9 @@ function orderedWindows(windows: QuotaWindow[]): QuotaWindow[] {
 }
 
 function fillClass(usedPercent: number | null): string {
-  if (usedPercent == null) return "bg-zinc-700";
-  if (usedPercent >= 90) return "bg-red-400";
-  if (usedPercent >= 70) return "bg-amber-400";
+  if (usedPercent == null) return "bg-muted-foreground";
+  if (usedPercent >= 90) return "bg-status-error";
+  if (usedPercent >= 70) return "bg-status-warning";
   return "bg-primary/70";
 }
 
@@ -62,7 +62,7 @@ export function ClaudeSubscriptionPanel({
     <div className="border border-border px-4 py-4">
       <div className="flex items-start justify-between gap-3 border-b border-border pb-3">
         <div className="min-w-0">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+          <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
             Anthropic subscription
           </div>
           <div className="mt-1 text-sm text-muted-foreground">

@@ -813,13 +813,13 @@ export function IssueDocumentsSection({
         <div
           id="document-plan"
           className={cn(
-            "rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 transition-colors duration-1000",
+            "rounded-lg border border-status-warning/30 bg-status-warning/12 p-3 transition-colors duration-1000",
             highlightDocumentKey === "plan" && "border-primary/50 bg-primary/5",
           )}
         >
           <div className="mb-2 flex items-center gap-2">
-            <FileText className="h-4 w-4 text-amber-600" />
-            <span className="rounded-full border border-amber-500/30 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-amber-700 dark:text-amber-300">
+            <FileText className="h-4 w-4 text-status-warning" />
+            <span className="rounded-full border border-status-warning/30 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-status-warning">
               PLAN
             </span>
           </div>
@@ -886,7 +886,7 @@ export function IssueDocumentsSection({
                           size="sm"
                           className={cn(
                             "h-auto px-1.5 py-0 text-[11px] font-normal text-muted-foreground hover:text-foreground",
-                            isHistoricalPreview && "text-amber-300 hover:text-amber-200",
+                            isHistoricalPreview && "text-status-warning hover:text-status-warning",
                           )}
                         >
                           rev {displayedRevisionNumber}
@@ -946,7 +946,7 @@ export function IssueDocumentsSection({
                       size="icon-xs"
                       className={cn(
                         "text-muted-foreground transition-colors",
-                        isLocked && "text-amber-300 hover:text-amber-200",
+                        isLocked && "text-status-warning hover:text-status-warning",
                       )}
                       title={isLocked ? "Unlock document" : "Lock document"}
                       aria-label={isLocked ? `Unlock ${doc.key} document` : `Lock ${doc.key} document`}
@@ -956,7 +956,7 @@ export function IssueDocumentsSection({
                       {isLocked ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
                     </Button>
                   ) : isLocked ? (
-                    <span title="Locked document" aria-label="Locked document" className="inline-flex h-6 w-6 items-center justify-center text-amber-300">
+                    <span title="Locked document" aria-label="Locked document" className="inline-flex h-6 w-6 items-center justify-center text-status-warning">
                       <Lock className="h-3.5 w-3.5" />
                     </span>
                   ) : null}
@@ -1041,10 +1041,10 @@ export function IssueDocumentsSection({
                     : undefined}
                 >
                   {isHistoricalPreview && selectedHistoricalRevision && (
-                    <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-3">
+                    <div className="rounded-md border border-status-warning/30 bg-status-warning/12 px-3 py-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
-                          <p className="text-sm font-medium text-amber-200">
+                          <p className="text-sm font-medium text-status-warning">
                             Viewing revision {selectedHistoricalRevision.revisionNumber}
                           </p>
                           <p className="text-xs text-muted-foreground">
@@ -1078,10 +1078,10 @@ export function IssueDocumentsSection({
                     </div>
                   )}
                   {activeConflict && !isHistoricalPreview && (
-                    <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-3">
+                    <div className="rounded-md border border-status-warning/30 bg-status-warning/12 px-3 py-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
-                          <p className="text-sm font-medium text-amber-200">Out of date</p>
+                          <p className="text-sm font-medium text-status-warning">Out of date</p>
                           <p className="text-xs text-muted-foreground">
                             This document changed while you were editing. Your local draft is preserved and autosave is paused.
                           </p>
@@ -1183,9 +1183,9 @@ export function IssueDocumentsSection({
                     <span
                       className={`text-[11px] transition-opacity duration-150 ${
                         isHistoricalPreview
-                          ? "text-amber-300"
+                          ? "text-status-warning"
                           : activeConflict
-                          ? "text-amber-300"
+                          ? "text-status-warning"
                           : autosaveState === "error"
                             ? "text-destructive"
                             : "text-muted-foreground"

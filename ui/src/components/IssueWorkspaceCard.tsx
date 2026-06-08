@@ -89,7 +89,7 @@ function CopyableInline({ value, label, mono }: { value: string; label?: string;
         onClick={handleCopy}
         title={copied ? "Copied!" : "Copy"}
       >
-        {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+        {copied ? <Check className="h-3 w-3 text-status-success" /> : <Copy className="h-3 w-3" />}
       </button>
     </span>
   );
@@ -146,9 +146,9 @@ function workspaceDetailLink(input: {
 
 function statusBadge(status: string) {
   const colors: Record<string, string> = {
-    active: "bg-green-500/15 text-green-700 dark:text-green-400",
+    active: "bg-status-success/15 text-status-success",
     idle: "bg-muted text-muted-foreground",
-    in_review: "bg-blue-500/15 text-blue-700 dark:text-blue-400",
+    in_review: "bg-status-running/15 text-status-running",
     archived: "bg-muted text-muted-foreground",
   };
   return (

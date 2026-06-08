@@ -252,7 +252,7 @@ export function CloudUpstream() {
       </div>
 
       {notice ? (
-        <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300">
+        <div className="rounded-md border border-status-success/30 bg-status-success/10 px-3 py-2 text-sm text-status-success">
           {notice}
         </div>
       ) : null}
@@ -265,7 +265,7 @@ export function CloudUpstream() {
       <Stepper activeStep={latestRun?.activeStep ?? (preview ? "preview" : connection?.tokenStatus === "connected" ? "scan" : "connect")} />
 
       <section className="space-y-3">
-        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Connection</div>
+        <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Connection</div>
         <div className="rounded-md border border-border px-4 py-4">
           {connection ? (
             <div className="grid gap-3 lg:grid-cols-[1fr_auto] lg:items-start">
@@ -313,7 +313,7 @@ export function CloudUpstream() {
       {preview ? (
         <section className="space-y-3">
           <div className="flex items-center justify-between gap-3">
-            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Preview</div>
+            <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Preview</div>
             <Button
               onClick={() => runMutation.mutate({ connectionId: preview.connectionId, companyId: preview.sourceCompanyId })}
               disabled={runMutation.isPending || !preview.schemaCompatible}
@@ -331,7 +331,7 @@ export function CloudUpstream() {
       {latestRun ? (
         <section className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Progress and finish</div>
+            <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Progress and finish</div>
             <div className="flex flex-wrap gap-2">
               <Button variant="outline" size="sm" onClick={() => downloadRunReport(latestRun)}>
                 <FileJson className="h-4 w-4" />
@@ -401,7 +401,7 @@ export function CloudUpstream() {
 
       {upstreamQuery.data?.runs.length ? (
         <section className="space-y-3">
-          <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <div className="flex items-center gap-2 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
             <History className="h-3.5 w-3.5" />
             History
           </div>
@@ -449,7 +449,7 @@ function Stepper({ activeStep }: { activeStep: CloudUpstreamStep }) {
         return (
           <div key={step.key} className="flex items-center gap-2 text-xs">
             {complete ? (
-              <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+              <CheckCircle2 className="h-4 w-4 text-status-success" />
             ) : (
               <span className={active ? "h-4 w-4 rounded-full border-2 border-primary" : "h-4 w-4 rounded-full border border-border"} />
             )}
@@ -484,7 +484,7 @@ function WarningsPanel({ warnings }: { warnings: CloudUpstreamPreview["warnings"
       <div className="divide-y divide-border">
         {warnings.map((warning) => (
           <div key={warning.code} className="grid gap-2 py-2 sm:grid-cols-[1.25rem_12rem_1fr]">
-            <AlertTriangle className={warning.severity === "blocker" ? "h-4 w-4 text-destructive" : "h-4 w-4 text-amber-600"} />
+            <AlertTriangle className={warning.severity === "blocker" ? "h-4 w-4 text-destructive" : "h-4 w-4 text-status-warning"} />
             <div className="text-sm font-medium">{warning.title}</div>
             <div className="text-sm text-muted-foreground">{warning.detail}</div>
           </div>

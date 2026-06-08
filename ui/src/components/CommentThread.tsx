@@ -225,17 +225,17 @@ function runTimestamp(run: LinkedRunItem) {
 function runStatusClass(status: string) {
   switch (status) {
     case "succeeded":
-      return "text-green-700 dark:text-green-300";
+      return "text-status-success";
     case "failed":
     case "error":
-      return "text-red-700 dark:text-red-300";
+      return "text-status-error";
     case "timed_out":
-      return "text-orange-700 dark:text-orange-300";
+      return "text-status-warning";
     case "running":
-      return "text-cyan-700 dark:text-cyan-300";
+      return "text-status-running";
     case "queued":
     case "pending":
-      return "text-amber-700 dark:text-amber-300";
+      return "text-status-warning";
     case "cancelled":
       return "text-muted-foreground";
     default:
@@ -282,7 +282,7 @@ function CopyMarkdownButton({ text }: { text: string }) {
       className={cn(
         "inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors",
         status === "copied"
-          ? "bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300"
+          ? "bg-status-success/12 text-status-success"
           : status === "failed"
             ? "bg-destructive/10 text-destructive"
             : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
@@ -351,7 +351,7 @@ function CommentCard({
       id={`comment-${comment.id}`}
       className={`border p-3 overflow-hidden min-w-0 rounded-sm transition-colors duration-1000 ${
         isQueued
-          ? "border-amber-300/70 bg-amber-50/70 dark:border-amber-500/40 dark:bg-amber-500/10"
+          ? "border-status-warning/30 bg-status-warning/12"
           : isHighlighted
             ? "border-primary/50 bg-primary/5"
             : "border-border"
@@ -370,7 +370,7 @@ function CommentCard({
         )}
         <span className="flex items-center gap-1.5">
           {isQueued ? (
-            <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
+            <span className="inline-flex items-center rounded-full border border-status-warning/30 bg-status-warning/12 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-status-warning">
               Queued
             </span>
           ) : null}
@@ -967,14 +967,14 @@ export function CommentThread({
       {queuedComments.length > 0 && (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">
+            <h4 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-status-warning">
               Queued Comments ({queuedComments.length})
             </h4>
             {onInterruptQueued && queuedComments[0]?.queueTargetRunId ? (
               <Button
                 size="sm"
                 variant="outline"
-                className="border-red-300 text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
+                className="border-status-error/30 text-status-error hover:bg-status-error/12 hover:text-status-error"
                 disabled={interruptingQueuedRunId === queuedComments[0].queueTargetRunId}
                 onClick={() => void onInterruptQueued(queuedComments[0]!.queueTargetRunId!)}
               >
@@ -999,7 +999,7 @@ export function CommentThread({
       )}
 
       {composerDisabledReason ? (
-        <div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+        <div className="rounded-md border border-status-warning/30 bg-status-warning/12 px-3 py-2 text-sm text-status-warning">
           {composerDisabledReason}
         </div>
       ) : (

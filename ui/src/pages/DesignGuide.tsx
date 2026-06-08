@@ -135,7 +135,7 @@ import { AgentPortrait } from "@/components/AgentPortrait";
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="space-y-4">
-      <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+      <h3 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
         {title}
       </h3>
       <Separator />
@@ -1115,9 +1115,9 @@ export function DesignGuide() {
       <Section title="Progress Bars (Budget)">
         <div className="space-y-3">
           {[
-            { label: "Under budget (40%)", pct: 40, color: "bg-green-400" },
-            { label: "Warning (75%)", pct: 75, color: "bg-yellow-400" },
-            { label: "Over budget (95%)", pct: 95, color: "bg-red-400" },
+            { label: "Under budget (40%)", pct: 40, color: "bg-status-success" },
+            { label: "Warning (75%)", pct: 75, color: "bg-status-warning" },
+            { label: "Over budget (95%)", pct: 95, color: "bg-status-error" },
           ].map(({ label, pct, color }) => (
             <div key={label} className="space-y-1">
               <div className="flex items-center justify-between">

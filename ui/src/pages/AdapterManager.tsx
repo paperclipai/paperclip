@@ -86,17 +86,17 @@ function AdapterRow({
               </Badge>
             )}
             {adapter.overriddenBuiltin && (
-              <Badge variant="secondary" className="text-blue-600 border-blue-400">
+              <Badge variant="secondary" className="text-status-info border-status-info/30">
                 Overrides built-in
               </Badge>
             )}
             {overriddenBy && (
-              <Badge variant="secondary" className="text-blue-600 border-blue-400">
+              <Badge variant="secondary" className="text-status-info border-status-info/30">
                 Overridden by {overriddenBy}
               </Badge>
             )}
             {adapter.disabled && (
-              <Badge variant="secondary" className="text-amber-600 border-amber-400">
+              <Badge variant="secondary" className="text-status-warning border-status-warning/30">
                 {disabledBadgeLabel ?? "Hidden from menus"}
               </Badge>
             )}
@@ -144,7 +144,7 @@ function AdapterRow({
             disabled={isToggling}
             onClick={() => onToggle(adapter.type, !adapter.disabled)}
           >
-            <Power className={cn("h-4 w-4", !adapter.disabled ? "text-green-600" : "text-muted-foreground")} />
+            <Power className={cn("h-4 w-4", !adapter.disabled ? "text-status-success" : "text-muted-foreground")} />
           </Button>
           {canRemove && (
             <Button
@@ -399,7 +399,7 @@ export function AdapterManager() {
         <div className="flex items-center gap-2">
           <Cpu className="h-6 w-6 text-muted-foreground" />
           <h1 className="font-serif text-lg font-medium">Adapters</h1>
-          <Badge variant="outline" className="text-amber-600 border-amber-400">
+          <Badge variant="outline" className="text-status-warning border-status-warning/30">
             Alpha
           </Badge>
         </div>
@@ -511,9 +511,9 @@ export function AdapterManager() {
       </div>
 
       {/* Alpha notice */}
-      <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+      <div className="rounded-lg border border-status-warning/30 bg-status-warning/12 px-4 py-3">
         <div className="flex items-start gap-3">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" />
           <div className="space-y-1 text-sm">
             <p className="font-medium text-foreground">External adapters are alpha.</p>
             <p className="text-muted-foreground">

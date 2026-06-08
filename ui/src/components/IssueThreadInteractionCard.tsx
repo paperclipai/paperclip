@@ -120,25 +120,25 @@ function statusClasses(status: IssueThreadInteraction["status"]) {
     case "accepted":
     case "answered":
       return {
-        shell: "border-emerald-400/70 bg-transparent",
-        badge: "border-emerald-500/60 bg-emerald-500/10 text-emerald-900 dark:bg-emerald-500/15 dark:text-emerald-100",
+        shell: "border-status-success/40 bg-transparent",
+        badge: "border-status-success/30 bg-status-success/12 text-status-success",
       };
     case "rejected":
     case "cancelled":
       return {
-        shell: "border-rose-400/70 bg-transparent",
-        badge: "border-rose-500/60 bg-rose-500/10 text-rose-900 dark:bg-rose-500/15 dark:text-rose-100",
+        shell: "border-status-error/40 bg-transparent",
+        badge: "border-status-error/30 bg-status-error/12 text-status-error",
       };
     case "failed":
     case "expired":
       return {
-        shell: "border-amber-400/70 bg-transparent",
-        badge: "border-amber-500/60 bg-amber-500/10 text-amber-900 dark:bg-amber-500/15 dark:text-amber-100",
+        shell: "border-status-warning/40 bg-transparent",
+        badge: "border-status-warning/30 bg-status-warning/12 text-status-warning",
       };
     default:
       return {
-        shell: "border-sky-500/70 bg-transparent",
-        badge: "border-sky-500/70 bg-sky-500/10 text-sky-900 dark:bg-sky-500/15 dark:text-sky-100",
+        shell: "border-status-info/40 bg-transparent",
+        badge: "border-status-info/30 bg-status-info/12 text-status-info",
       };
   }
 }
@@ -269,13 +269,13 @@ function TaskTreeNode({
           {createdTask?.issueId ? (
             <Link
               to={`/issues/${createdTask.identifier ?? createdTask.issueId}`}
-              className="inline-flex shrink-0 items-center gap-1 rounded-sm border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-900 transition-colors hover:bg-emerald-500/15 dark:text-emerald-100"
+              className="inline-flex shrink-0 items-center gap-1 rounded-sm border border-status-success/30 bg-status-success/12 px-2.5 py-1 text-[11px] font-medium text-status-success transition-colors hover:bg-status-success/20"
             >
               {createdTask.identifier ?? createdTask.issueId.slice(0, 8)}
               <ChevronRight className="h-3 w-3" />
             </Link>
           ) : isSkipped ? (
-            <span className="inline-flex shrink-0 items-center rounded-sm border border-amber-500/60 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-900 dark:text-amber-100">
+            <span className="inline-flex shrink-0 items-center rounded-sm border border-status-warning/30 bg-status-warning/12 px-2.5 py-1 text-[11px] font-medium text-status-warning">
               Skipped
             </span>
           ) : null}
@@ -299,7 +299,7 @@ function TaskTreeNode({
         ) : null}
 
         {hiddenChildCount > 0 ? (
-          <div className="mt-2 flex items-center gap-2 rounded-sm border border-amber-500/60 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-100">
+          <div className="mt-2 flex items-center gap-2 rounded-sm border border-status-warning/30 bg-status-warning/12 px-3 py-2 text-xs text-status-warning">
             <GitBranch className="h-3.5 w-3.5 shrink-0" />
             <span>
               {hiddenChildCount === 1
@@ -476,8 +476,8 @@ function SuggestTasksCard({
       </div>
 
       {interaction.status === "accepted" ? (
-        <div className="rounded-sm border border-emerald-500/60 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-900 dark:text-emerald-100">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700">
+        <div className="rounded-sm border border-status-success/30 bg-status-success/12 px-4 py-3 text-sm text-status-success">
+          <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-status-success">
             Resolution summary
           </div>
           <p className="mt-1 leading-6">
@@ -489,13 +489,13 @@ function SuggestTasksCard({
       ) : null}
 
       {interaction.status === "rejected" ? (
-        <div className="rounded-sm border border-rose-500/60 bg-rose-500/10 px-4 py-3 text-sm text-rose-900 dark:text-rose-100">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-rose-700">
+        <div className="rounded-sm border border-status-error/30 bg-status-error/12 px-4 py-3 text-sm text-status-error">
+          <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-status-error">
             Rejection reason
           </div>
           <p className={cn(
             "mt-1 leading-6",
-            !interaction.result?.rejectionReason && "text-rose-900/75",
+            !interaction.result?.rejectionReason && "text-status-error/75",
           )}>
             {interaction.result?.rejectionReason || "No reason provided."}
           </p>
@@ -610,8 +610,8 @@ function QuestionOptionButton({
       className={cn(
         "w-full rounded-sm border px-4 py-3 text-left transition-colors outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
         selected
-          ? "border-sky-500/80 bg-sky-500/10 text-sky-950 dark:border-sky-400/80 dark:bg-sky-400/15 dark:text-sky-50"
-          : "border-border/70 bg-transparent text-foreground hover:border-sky-500/70 hover:bg-sky-500/10 dark:hover:border-sky-400/70 dark:hover:bg-sky-400/10",
+          ? "border-status-info/60 bg-status-info/12 text-foreground"
+          : "border-border/70 bg-transparent text-foreground hover:border-status-info/50 hover:bg-status-info/12",
       )}
       id={id}
       onClick={onClick}
@@ -619,7 +619,7 @@ function QuestionOptionButton({
       <div
         className={cn(
           "text-sm font-medium",
-          selected ? "text-sky-950 dark:text-sky-50" : "text-foreground",
+          "text-foreground",
         )}
       >
         {label}
@@ -629,7 +629,7 @@ function QuestionOptionButton({
           className={cn(
             "mt-1 text-sm leading-6",
             selected
-              ? "text-sky-900/80 dark:text-sky-100/80"
+              ? "text-foreground/80"
               : "text-muted-foreground",
           )}
         >
@@ -740,7 +740,7 @@ function AskUserQuestionsCard({
           {questions.map((question, index) => (
             <div
               key={question.id}
-              className="rounded-2xl border border-border/70 bg-background/82 p-4 shadow-[0_18px_42px_rgba(15,23,42,0.06)]"
+              className="rounded-2xl border border-border/70 bg-background/82 p-4"
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -827,7 +827,7 @@ function AskUserQuestionsCard({
           </div>
         </div>
       ) : interaction.status === "cancelled" ? (
-        <div className="rounded-2xl border border-rose-300/60 bg-rose-50/85 p-4 text-sm leading-6 text-rose-950 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-100">
+        <div className="rounded-2xl border border-status-error/30 bg-status-error/12 p-4 text-sm leading-6 text-status-error">
           <div className="font-semibold">Question cancelled</div>
           {interaction.result?.cancellationReason ? (
             <p className="mt-1">{interaction.result.cancellationReason}</p>
@@ -864,8 +864,8 @@ function AskUserQuestionsCard({
           })}
 
           {interaction.result?.summaryMarkdown ? (
-            <div className="rounded-2xl border border-emerald-300/60 bg-emerald-50/85 p-4">
-              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700">
+            <div className="rounded-2xl border border-status-success/30 bg-status-success/12 p-4">
+              <div className="mb-2 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-status-success">
                 Submitted summary
               </div>
               <MarkdownBody>{interaction.result.summaryMarkdown}</MarkdownBody>
@@ -918,7 +918,7 @@ function RequestConfirmationTargetChip({
     tone === "default"
       ? "border-border/70 bg-transparent text-foreground"
       : "border-border/60 bg-transparent text-muted-foreground",
-    href && "transition-colors hover:border-sky-500/70 hover:bg-sky-500/10",
+    href && "transition-colors hover:border-status-info/50 hover:bg-status-info/12",
   );
   const content = (
     <>
@@ -968,7 +968,7 @@ function RequestConfirmationResolution({
           <RequestConfirmationTargetChip interaction={interaction} target={target} />
         </div>
         {interaction.result?.reason ? (
-          <blockquote className="rounded-sm border-l-2 border-rose-500/70 bg-rose-500/10 px-3 py-2 text-sm leading-6 text-rose-900 dark:text-rose-100">
+          <blockquote className="rounded-sm border-l-2 border-status-error/40 bg-status-error/12 px-3 py-2 text-sm leading-6 text-status-error">
             {interaction.result.reason}
           </blockquote>
         ) : null}
@@ -980,8 +980,8 @@ function RequestConfirmationResolution({
     const expiredByComment = outcome === "superseded_by_comment";
     const expiredByTargetChange = outcome === "stale_target";
     return (
-      <div className="space-y-3 rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700">
+      <div className="space-y-3 rounded-sm border border-status-warning/30 bg-status-warning/12 px-4 py-3 text-sm text-status-warning">
+        <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-status-warning">
           {expiredByComment ? "Expired by comment" : "Expired by target change"}
         </div>
         <p className="leading-6">
@@ -990,7 +990,7 @@ function RequestConfirmationResolution({
             : "The requested target changed before this confirmation was resolved."}
         </p>
         {expiredByComment && interaction.result?.commentId ? (
-          <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-amber-950 hover:bg-amber-500/15 dark:text-amber-50">
+          <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-status-warning hover:bg-status-warning/15">
             <a href={`#comment-${interaction.result.commentId}`}>Jump to comment</a>
           </Button>
         ) : null}
@@ -1002,7 +1002,7 @@ function RequestConfirmationResolution({
               tone="subtle"
             />
             {staleTarget && target ? (
-              <ChevronRight className="h-3.5 w-3.5 text-amber-700" />
+              <ChevronRight className="h-3.5 w-3.5 text-status-warning" />
             ) : null}
             <RequestConfirmationTargetChip interaction={interaction} target={target} />
           </div>
@@ -1154,7 +1154,7 @@ function RequestConfirmationCard({
                 className={cn(
                   "min-h-24 bg-background text-sm",
                   rejectAttempted && declineReasonInvalid
-                    && "border-rose-500 focus-visible:ring-rose-500/25",
+                    && "border-status-error focus-visible:ring-status-error/25",
                 )}
               />
               {rejectAttempted && declineReasonInvalid ? (

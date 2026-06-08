@@ -104,10 +104,10 @@ function ensureMarkdownPath(p: string): string {
 }
 
 const ACTION_COLORS: Record<string, string> = {
-  create: "text-emerald-500 border-emerald-500/30",
-  update: "text-amber-500 border-amber-500/30",
-  overwrite: "text-red-500 border-red-500/30",
-  replace: "text-red-500 border-red-500/30",
+  create: "text-status-success border-status-success/30",
+  update: "text-status-warning border-status-warning/30",
+  overwrite: "text-status-error border-status-error/30",
+  replace: "text-status-error border-status-error/30",
   skip: "text-muted-foreground border-border",
   none: "text-muted-foreground border-border",
 };
@@ -163,7 +163,7 @@ function renderImportFileExtra(node: FileTreeNode, checked: boolean, renameMap: 
   return (
     <span className="inline-flex items-center gap-1.5 shrink-0">
       {renamedTo && checked && (
-        <span className="text-[10px] text-cyan-500 font-mono truncate max-w-[7rem]" title={renamedTo}>
+        <span className="text-[10px] text-status-info font-mono truncate max-w-[7rem]" title={renamedTo}>
           &rarr; {renamedTo}
         </span>
       )}
@@ -222,7 +222,7 @@ function ImportPreviewPane({
           <div className="min-w-0 flex items-center gap-2">
             <span className="truncate font-mono text-sm">{selectedFile}</span>
             {renamedTo && (
-              <span className="shrink-0 font-mono text-sm text-cyan-500">
+              <span className="shrink-0 font-mono text-sm text-status-info">
                 &rarr; {renamedTo}
               </span>
             )}
@@ -428,7 +428,7 @@ function ConflictResolutionList({
                 className={cn(
                   "flex items-center gap-3 px-4 py-2.5 text-sm",
                   isSkipped && "opacity-40",
-                  isConfirmed && !isSkipped && "bg-emerald-500/5",
+                  isConfirmed && !isSkipped && "bg-status-success/5",
                 )}
               >
                 {/* Skip button on the left */}
@@ -450,8 +450,8 @@ function ConflictResolutionList({
                   isSkipped
                     ? "text-muted-foreground border-border"
                     : isConfirmed
-                      ? "text-emerald-500 border-emerald-500/30"
-                      : "text-amber-500 border-amber-500/30",
+                      ? "text-status-success border-status-success/30"
+                      : "text-status-warning border-status-warning/30",
                 )}>
                   {item.kind}
                 </span>
@@ -467,7 +467,7 @@ function ConflictResolutionList({
                   <>
                     <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground" />
                     {isConfirmed ? (
-                      <span className="min-w-0 flex-1 font-mono text-xs text-emerald-500">
+                      <span className="min-w-0 flex-1 font-mono text-xs text-status-success">
                         {currentName}
                       </span>
                     ) : (
@@ -487,7 +487,7 @@ function ConflictResolutionList({
                     className={cn(
                       "ml-auto shrink-0 rounded-md border px-2.5 py-1 text-xs transition-colors inline-flex items-center gap-1.5",
                       isConfirmed
-                        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-500"
+                        ? "border-status-success/30 bg-status-success/10 text-status-success"
                         : "border-border text-muted-foreground hover:bg-accent/50",
                     )}
                     onClick={() => onToggleConfirm(item.slug)}
@@ -565,7 +565,7 @@ function AdapterPickerList({
                 <div className="flex items-center gap-3 px-4 py-2.5 text-sm">
                   <span className={cn(
                     "shrink-0 rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide",
-                    "text-blue-500 border-blue-500/30",
+                    "text-status-info border-status-info/30",
                   )}>
                     agent
                   </span>
@@ -1252,7 +1252,7 @@ export function CompanyImport() {
                 {selectedCount} / {totalFiles} file{totalFiles === 1 ? "" : "s"} selected
               </span>
               {conflicts.length > 0 && (
-                <span className="text-amber-500">
+                <span className="text-status-warning">
                   {conflicts.length} conflict{conflicts.length === 1 ? "" : "s"}
                 </span>
               )}
@@ -1302,9 +1302,9 @@ export function CompanyImport() {
 
           {/* Warnings */}
           {importPreview.warnings.length > 0 && (
-            <div className="mx-5 mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+            <div className="mx-5 mt-3 rounded-md border border-status-warning/30 bg-status-warning/5 px-4 py-3">
               {importPreview.warnings.map((w) => (
-                <div key={w} className="text-xs text-amber-500">{w}</div>
+                <div key={w} className="text-xs text-status-warning">{w}</div>
               ))}
             </div>
           )}
