@@ -28,6 +28,12 @@ function hasDevServerStatusToken(providedToken: string | undefined) {
   return timingSafeEqual(expected, provided);
 }
 
+export type HealthEmbeddedPostgresSupervisor = {
+  recoverIfUnhealthy(reason: "health" | "probe" | "pool" | "manual"): Promise<void>;
+  resetGaveUp(reason?: string): void;
+  state(): "idle" | "attempting" | "gave_up";
+};
+
 export function healthRoutes(
   db?: Db,
   opts: {
@@ -35,6 +41,7 @@ export function healthRoutes(
     deploymentExposure: DeploymentExposure;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    embeddedPostgresSupervisor?: HealthEmbeddedPostgresSupervisor;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
@@ -43,6 +50,20 @@ export function healthRoutes(
   },
 ) {
   const router = Router();
+
+  router.post("/supervisor/reset", async (req, res) => {
+    const actorType = "actor" in req ? req.actor?.type : null;
+    if (opts.deploymentMode === "authenticated" && actorType !== "board") {
+      res.status(403).json({ error: "board_access_required" });
+      return;
+    }
+    if (!opts.embeddedPostgresSupervisor) {
+      res.status(404).json({ error: "supervisor_unavailable" });
+      return;
+    }
+    opts.embeddedPostgresSupervisor.resetGaveUp("manual");
+    res.status(202).json({ status: "reset_requested" });
+  });
 
   router.post("/dev-server/restart", async (req, res) => {
     const actorType = "actor" in req ? req.actor?.type : null;
@@ -100,6 +121,11 @@ export function healthRoutes(
       await db.execute(sql`SELECT 1`);
     } catch (error) {
       logger.warn({ err: error }, "Health check database probe failed");
+      if (opts.embeddedPostgresSupervisor) {
+        void opts.embeddedPostgresSupervisor.recoverIfUnhealthy("health").catch((err: unknown) => {
+          logger.warn({ err }, "Embedded postgres supervisor recoverIfUnhealthy threw");
+        });
+      }
       res.status(503).json({
         status: "unhealthy",
         version: serverVersion,

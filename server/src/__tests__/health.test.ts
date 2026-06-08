@@ -64,6 +64,70 @@ describe("GET /health", () => {
     });
   });
 
+  it("triggers the embedded postgres supervisor on the 503 path exactly once per request", async () => {
+    const db = {
+      execute: vi.fn().mockRejectedValue(new Error("connect ECONNREFUSED")),
+    } as unknown as Db;
+    const supervisor = {
+      recoverIfUnhealthy: vi.fn().mockResolvedValue(undefined),
+      resetGaveUp: vi.fn(),
+      state: vi.fn().mockReturnValue("idle" as const),
+    };
+    const app = express();
+    app.use(
+      "/health",
+      healthRoutes(db, {
+        deploymentMode: "local_trusted",
+        deploymentExposure: "private",
+        authReady: true,
+        companyDeletionEnabled: true,
+        embeddedPostgresSupervisor: supervisor,
+      }),
+    );
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(503);
+    expect(supervisor.recoverIfUnhealthy).toHaveBeenCalledTimes(1);
+    expect(supervisor.recoverIfUnhealthy).toHaveBeenCalledWith("health");
+  });
+
+  it("exposes the supervisor reset endpoint when a supervisor is wired", async () => {
+    const supervisor = {
+      recoverIfUnhealthy: vi.fn().mockResolvedValue(undefined),
+      resetGaveUp: vi.fn(),
+      state: vi.fn().mockReturnValue("gave_up" as const),
+    };
+    const app = express();
+    app.use(
+      "/health",
+      healthRoutes(undefined, {
+        deploymentMode: "local_trusted",
+        deploymentExposure: "private",
+        authReady: true,
+        companyDeletionEnabled: true,
+        embeddedPostgresSupervisor: supervisor,
+      }),
+    );
+
+    const res = await request(app).post("/health/supervisor/reset");
+
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ status: "reset_requested" });
+    expect(supervisor.resetGaveUp).toHaveBeenCalledTimes(1);
+    expect(supervisor.resetGaveUp).toHaveBeenCalledWith("manual");
+  });
+
+  it("returns 404 from the supervisor reset endpoint when no supervisor is wired", async () => {
+    const app = express();
+    app.use("/health", healthRoutes(undefined));
+
+    const res = await request(app).post("/health/supervisor/reset");
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "supervisor_unavailable" });
+  });
+
   it("redacts detailed metadata for anonymous requests in authenticated mode", async () => {
     const devServerStatus = await import("../dev-server-status.js");
     vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);

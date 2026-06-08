@@ -138,6 +138,7 @@ export async function createApp(
       }): Promise<unknown>;
     };
     databaseBackupService?: InstanceDatabaseBackupService;
+    embeddedPostgresSupervisor?: import("./routes/health.js").HealthEmbeddedPostgresSupervisor;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
@@ -207,6 +208,7 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
+      embeddedPostgresSupervisor: opts.embeddedPostgresSupervisor,
     }),
   );
   api.use(openApiRoutes());
