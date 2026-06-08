@@ -25,7 +25,9 @@ const mocks = vi.hoisted(() => ({
     detail: "deleted",
   })),
   detectClickUpAwaitingHumanBridgeEvents: vi.fn(),
+  detectClickUpAwaitingHumanBridgeEventsAfterMessage: vi.fn(),
   sendAwaitingHumanNotification: vi.fn(),
+  sendAwaitingHumanNotificationReply: vi.fn(),
   logActivity: vi.fn(async () => {}),
 }));
 
@@ -33,7 +35,9 @@ vi.mock("../services/clickup-awaiting-human-transport.js", () => ({
   addClickUpChatMessageReaction: mocks.addClickUpChatMessageReaction,
   deleteClickUpChatMessageReaction: mocks.deleteClickUpChatMessageReaction,
   detectClickUpAwaitingHumanBridgeEvents: mocks.detectClickUpAwaitingHumanBridgeEvents,
+  detectClickUpAwaitingHumanBridgeEventsAfterMessage: mocks.detectClickUpAwaitingHumanBridgeEventsAfterMessage,
   sendAwaitingHumanNotification: mocks.sendAwaitingHumanNotification,
+  sendAwaitingHumanNotificationReply: mocks.sendAwaitingHumanNotificationReply,
 }));
 
 vi.mock("../services/awaiting-human-settings.js", () => ({
@@ -64,16 +68,15 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
-async function insertWaitingWorkflowBridge(
+async function insertWorkflowHandoff(
   db: ReturnType<typeof createDb>,
-  input: { runStatus: string; runError: string | null },
+  input: { runStatus: string; runError: string | null; promptMarkdown?: string },
 ) {
   const companyId = randomUUID();
   const workflowId = randomUUID();
   const runId = randomUUID();
   const phaseId = randomUUID();
   const handoffId = randomUUID();
-  const bridgeId = randomUUID();
 
   await db.insert(companies).values({
     id: companyId,
@@ -116,20 +119,37 @@ async function insertWaitingWorkflowBridge(
     phaseKey: "phase-1",
     kind: "approval",
     status: "pending",
-    promptMarkdown: "Approve Manila?",
+    promptMarkdown: input.promptMarkdown ?? "Approve Manila?",
   });
+
+  return { companyId, workflowId, runId, phaseId, handoffId };
+}
+
+async function insertWaitingWorkflowBridge(
+  db: ReturnType<typeof createDb>,
+  input: {
+    runStatus: string;
+    runError: string | null;
+    externalThreadId?: string | null;
+    externalMessageId?: string;
+  },
+) {
+  const base = await insertWorkflowHandoff(db, input);
+  const bridgeId = randomUUID();
+
   await db.insert(workflowHandoffBridges).values({
     id: bridgeId,
-    companyId,
-    workflowRunId: runId,
-    workflowHandoffId: handoffId,
+    companyId: base.companyId,
+    workflowRunId: base.runId,
+    workflowHandoffId: base.handoffId,
     provider: "clickup",
     status: "waiting_for_human",
-    externalMessageId: "message-1",
+    externalMessageId: input.externalMessageId ?? "message-1",
+    externalThreadId: input.externalThreadId ?? null,
     nextPollAt: new Date(0),
   });
 
-  return { runId, phaseId, handoffId, bridgeId };
+  return { ...base, bridgeId };
 }
 
 describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
@@ -158,6 +178,155 @@ describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
     await tempDb?.cleanup();
   });
 
+  it("creates a workflow thread root and posts the first handoff as a reply", async () => {
+    const { companyId, runId, handoffId } = await insertWorkflowHandoff(db, {
+      runStatus: "awaiting_human",
+      runError: null,
+      promptMarkdown: "Which city should I check?",
+    });
+    mocks.sendAwaitingHumanNotification.mockResolvedValueOnce({
+      status: "sent",
+      channel: "clickup-chat",
+      detail: "sent",
+      externalId: "thread-root-1",
+    });
+    mocks.sendAwaitingHumanNotificationReply.mockResolvedValueOnce({
+      status: "sent",
+      channel: "clickup-chat",
+      detail: "sent",
+      externalId: "question-reply-1",
+    });
+
+    const bridge = await workflowHandoffBridgeService(db).openForHandoff({
+      id: handoffId,
+      companyId,
+      workflowRunId: runId,
+      kind: "response",
+      promptMarkdown: "Which city should I check?",
+    });
+
+    expect(mocks.sendAwaitingHumanNotification).toHaveBeenCalledTimes(1);
+    expect(mocks.sendAwaitingHumanNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notification: expect.objectContaining({
+          title: "Workflow handoff: Weather Lookup",
+          body: expect.stringContaining("Workflow: Weather Lookup"),
+        }),
+      }),
+      expect.objectContaining({ personalToken: "token-123" }),
+    );
+    expect(mocks.sendAwaitingHumanNotificationReply).toHaveBeenCalledWith(
+      "thread-root-1",
+      expect.objectContaining({
+        notification: expect.objectContaining({
+          body: "Which city should I check?",
+        }),
+      }),
+      expect.objectContaining({ personalToken: "token-123" }),
+    );
+    expect(bridge?.externalThreadId).toBe("thread-root-1");
+    expect(bridge?.externalMessageId).toBe("question-reply-1");
+    expect(mocks.addClickUpChatMessageReaction).toHaveBeenCalledWith(
+      "question-reply-1",
+      "brain_is_thinking",
+      expect.objectContaining({ personalToken: "token-123" }),
+    );
+  });
+
+  it("reuses the existing workflow thread for later handoffs in the same run", async () => {
+    const first = await insertWorkflowHandoff(db, {
+      runStatus: "awaiting_human",
+      runError: null,
+    });
+    await db.insert(workflowHandoffBridges).values({
+      id: randomUUID(),
+      companyId: first.companyId,
+      workflowRunId: first.runId,
+      workflowHandoffId: first.handoffId,
+      provider: "clickup",
+      status: "closed",
+      closeOutcome: "responded",
+      externalThreadId: "thread-root-1",
+      externalMessageId: "question-reply-1",
+      closedAt: new Date(),
+    });
+    const secondHandoffId = randomUUID();
+    await db.insert(workflowHandoffs).values({
+      id: secondHandoffId,
+      companyId: first.companyId,
+      workflowRunId: first.runId,
+      phaseKey: "phase-1",
+      kind: "response",
+      status: "pending",
+      promptMarkdown: "Celsius or Fahrenheit?",
+    });
+    mocks.sendAwaitingHumanNotificationReply.mockResolvedValueOnce({
+      status: "sent",
+      channel: "clickup-chat",
+      detail: "sent",
+      externalId: "question-reply-2",
+    });
+
+    const bridge = await workflowHandoffBridgeService(db).openForHandoff({
+      id: secondHandoffId,
+      companyId: first.companyId,
+      workflowRunId: first.runId,
+      kind: "response",
+      promptMarkdown: "Celsius or Fahrenheit?",
+    });
+
+    expect(mocks.sendAwaitingHumanNotification).not.toHaveBeenCalled();
+    expect(mocks.sendAwaitingHumanNotificationReply).toHaveBeenCalledWith(
+      "thread-root-1",
+      expect.anything(),
+      expect.objectContaining({ personalToken: "token-123" }),
+    );
+    expect(bridge?.externalThreadId).toBe("thread-root-1");
+    expect(bridge?.externalMessageId).toBe("question-reply-2");
+  });
+
+  it("polls threaded bridges from the workflow root and resolves replies after the question marker", async () => {
+    const { runId, bridgeId } = await insertWaitingWorkflowBridge(db, {
+      runStatus: "awaiting_human",
+      runError: null,
+      externalThreadId: "thread-root-1",
+      externalMessageId: "question-reply-1",
+    });
+    mocks.detectClickUpAwaitingHumanBridgeEventsAfterMessage.mockResolvedValueOnce({
+      status: "sent",
+      detail: "replies-detected",
+      events: [{
+        kind: "reply",
+        externalEventId: "human-reply-1",
+        externalThreadId: "thread-root-1",
+        externalMessageId: "question-reply-1",
+        body: "Sydney",
+        metadata: { clickupReplyId: "human-reply-1" },
+      }],
+    });
+
+    const result = await workflowHandoffBridgeService(db).pollActiveBridges();
+
+    expect(result.resolved).toBe(1);
+    expect(mocks.detectClickUpAwaitingHumanBridgeEventsAfterMessage).toHaveBeenCalledWith(
+      "thread-root-1",
+      "question-reply-1",
+      expect.objectContaining({ personalToken: "token-123" }),
+    );
+    expect(mocks.detectClickUpAwaitingHumanBridgeEvents).not.toHaveBeenCalled();
+    expect(mocks.addClickUpChatMessageReaction).toHaveBeenCalledWith(
+      "human-reply-1",
+      "white_check_mark",
+      expect.objectContaining({ personalToken: "token-123" }),
+    );
+
+    const [bridge] = await db.select().from(workflowHandoffBridges).where(eq(workflowHandoffBridges.id, bridgeId));
+    expect(bridge?.status).toBe("closed");
+    expect(bridge?.closeOutcome).toBe("responded");
+    const [run] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId));
+    expect(run?.status).toBe("running");
+  });
+
   it("closes terminal run bridges without accepting late replies", async () => {
     const { runId, phaseId, handoffId, bridgeId } = await insertWaitingWorkflowBridge(db, {
       runStatus: "failed",
@@ -179,6 +348,11 @@ describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
     const result = await workflowHandoffBridgeService(db).pollActiveBridges();
 
     expect(result.checked).toBe(1);
+    expect(mocks.detectClickUpAwaitingHumanBridgeEvents).toHaveBeenCalledWith(
+      "message-1",
+      expect.objectContaining({ personalToken: "token-123" }),
+    );
+    expect(mocks.detectClickUpAwaitingHumanBridgeEventsAfterMessage).not.toHaveBeenCalled();
     expect(result.failed).toBe(0);
     expect(result.terminalClosed).toBe(1);
     expect(mocks.addClickUpChatMessageReaction).toHaveBeenCalledWith(

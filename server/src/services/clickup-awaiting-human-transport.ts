@@ -12,6 +12,8 @@ import type { AwaitingHumanBridgePollEvent } from "./awaiting-human-bridge-regis
 import { normalizeClickUpAttachmentTaskId } from "./clickup-awaiting-human-settings-adapter.js";
 
 const CLICKUP_CHAT_MESSAGE_MAX_CHARS = 1_800;
+const CLICKUP_CHAT_REPLY_MESSAGE_MAX_CHARS = 39_000;
+const CLICKUP_CHAT_REPLY_BODY_MAX_CHARS = 38_000;
 const MAX_TITLE_LENGTH = 120;
 const MAX_SUMMARY_LENGTH = 280;
 const MAX_DETAIL_BULLETS = 5;
@@ -57,6 +59,7 @@ export interface ClickUpChatMessageReply {
   parentMessageId: string | null;
   reactionsUrl: string | null;
   content: string | null;
+  dateMs: number | null;
 }
 
 function compactWhitespace(value: string) {
@@ -88,6 +91,19 @@ function formatBodySection(body: string | null | undefined) {
     .slice(0, MAX_DETAIL_BULLETS * 6)
     .map((line) => truncateText(line, MAX_BULLET_LENGTH));
   return trimTotal(limited.join("\n"), 1_000);
+}
+
+function formatFullBodySection(body: string | null | undefined) {
+  if (!body) return null;
+  const lines = body
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter(
+      (line, index, all) =>
+        line.length > 0 || (index > 0 && all[index - 1]?.length > 0),
+    );
+  if (lines.length === 0) return null;
+  return trimTotal(lines.join("\n"), CLICKUP_CHAT_REPLY_BODY_MAX_CHARS);
 }
 
 function readString(value: unknown) {
@@ -222,6 +238,8 @@ type ClickUpReplyMessageResponse = {
   id: string;
   parent_message: string;
   content: string;
+  date?: number | string | null;
+  date_assigned?: number | string | null;
   links: ClickUpReplyMessageLinksResponse;
 };
 
@@ -230,12 +248,45 @@ type ClickUpGetChatMessageRepliesResponse = {
   next_cursor: string;
 };
 
+function readNumericValue(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function readClickUpReplyDate(row: ClickUpReplyMessageResponse) {
+  return readNumericValue(row.date) ?? readNumericValue(row.date_assigned);
+}
+
+function compareClickUpRepliesChronologically(
+  a: ClickUpReplyMessageResponse,
+  b: ClickUpReplyMessageResponse,
+) {
+  const aDate = readClickUpReplyDate(a);
+  const bDate = readClickUpReplyDate(b);
+  if (aDate !== null && bDate !== null && aDate !== bDate) {
+    return aDate - bDate;
+  }
+
+  const aId = readNumericValue(a.id);
+  const bId = readNumericValue(b.id);
+  if (aId !== null && bId !== null && aId !== bId) {
+    return aId - bId;
+  }
+
+  return 0;
+}
+
 function extractReplyRows(payload: ClickUpGetChatMessageRepliesResponse): ClickUpChatMessageReply[] {
-  return payload.data.map((row) => ({
+  return [...payload.data].sort(compareClickUpRepliesChronologically).map((row) => ({
     id: row.id,
     parentMessageId: row.parent_message,
     reactionsUrl: row.links.reactions,
     content: row.content,
+    dateMs: readClickUpReplyDate(row),
   }));
 }
 function formatClickUpUserMention(userId: string | null | undefined) {
@@ -289,9 +340,20 @@ function renderApprovalContextSection(
   return lines.join("\n");
 }
 
-function renderClickUpMessage(notification: AwaitingHumanNotificationPayload, config: ClickUpChatConfig) {
+function renderClickUpMessage(
+  notification: AwaitingHumanNotificationPayload,
+  config: ClickUpChatConfig,
+  options?: {
+    maxChars?: number;
+    preserveBody?: boolean;
+    includeCtaWithBody?: boolean;
+  },
+) {
+  const maxChars = options?.maxChars ?? CLICKUP_CHAT_MESSAGE_MAX_CHARS;
   const title = truncateText(notification.title, MAX_TITLE_LENGTH);
-  const bodySection = formatBodySection(notification.body);
+  const bodySection = options?.preserveBody
+    ? formatFullBodySection(notification.body)
+    : formatBodySection(notification.body);
   const approvalSection = renderApprovalContextSection(notification, config);
   const lines = [`**${title}**`];
 
@@ -333,12 +395,12 @@ function renderClickUpMessage(notification: AwaitingHumanNotificationPayload, co
     }
   }
 
-  if (!bodySection && notification.cta.trim().length > 0) {
+  if ((options?.includeCtaWithBody || !bodySection) && notification.cta.trim().length > 0) {
     lines.push("");
     lines.push(truncateText(notification.cta, 180));
   }
 
-  return trimTotal(lines.join("\n"), CLICKUP_CHAT_MESSAGE_MAX_CHARS);
+  return trimTotal(lines.join("\n"), maxChars);
 }
 
 function renderClickUpTransportTestMessage(
@@ -438,6 +500,80 @@ async function postClickUpChatMessage(
   }
 }
 
+async function postClickUpChatMessageReply(
+  parentMessageId: string,
+  content: string,
+  overrides?: ClickUpAwaitingHumanConfigOverrides,
+): Promise<AwaitingHumanNotificationResult> {
+  const config = readClickUpChatConfig(overrides);
+  if (!config.personalToken) {
+    return {
+      status: "skipped",
+      channel: "clickup-chat",
+      detail: "missing-credential: CLICKUP_PERSONAL_TOKEN",
+    };
+  }
+  if (!config.workspaceId) {
+    return {
+      status: "skipped",
+      channel: "clickup-chat",
+      detail: "missing-target: CLICKUP_WORKSPACE_ID",
+    };
+  }
+
+  const messageId = parentMessageId.trim();
+  if (!messageId) {
+    return {
+      status: "skipped",
+      channel: "clickup-chat",
+      detail: "missing-target: parent-message-id",
+    };
+  }
+
+  try {
+    const response = await fetchText(
+      `https://api.clickup.com/api/v3/workspaces/${encodeURIComponent(config.workspaceId)}/chat/messages/${encodeURIComponent(messageId)}/replies`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: config.personalToken,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          type: "message",
+          content,
+          content_format: "text/md",
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      return {
+        status: "failed",
+        channel: "clickup-chat",
+        detail: `http-error:${response.status}:${truncateText(response.text, 240)}`,
+      };
+    }
+
+    const externalId = response.text.trim().length > 0
+      ? parseClickUpCreateChatMessageResponse(response.text).messageId
+      : null;
+
+    return {
+      status: "sent",
+      channel: "clickup-chat",
+      detail: "sent",
+      externalId,
+    };
+  } catch (error) {
+    return {
+      status: "failed",
+      channel: "clickup-chat",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export async function sendAwaitingHumanNotification(
   input: SendAwaitingHumanNotificationInput,
   overrides?: ClickUpAwaitingHumanConfigOverrides,
@@ -445,6 +581,27 @@ export async function sendAwaitingHumanNotification(
   const config = readClickUpChatConfig(overrides);
   return postClickUpChatMessage(
     renderClickUpMessage(input.notification, config),
+    overrides,
+  );
+}
+
+export async function sendAwaitingHumanNotificationReply(
+  parentMessageId: string,
+  input: SendAwaitingHumanNotificationInput,
+  overrides?: ClickUpAwaitingHumanConfigOverrides,
+): Promise<AwaitingHumanNotificationResult> {
+  const config = readClickUpChatConfig(overrides);
+  return postClickUpChatMessageReply(
+    parentMessageId,
+    renderClickUpMessage(
+      input.notification,
+      config,
+      {
+        maxChars: CLICKUP_CHAT_REPLY_MESSAGE_MAX_CHARS,
+        preserveBody: true,
+        includeCtaWithBody: true,
+      },
+    ),
     overrides,
   );
 }
@@ -919,6 +1076,76 @@ export async function detectClickUpAwaitingHumanBridgeEvents(
     });
   }
 
+  if (events.length > 0) {
+    return { status: "sent", detail: "replies-detected", events };
+  }
+
+  return { status: "sent", detail: "no-replies", events: [] };
+}
+
+export async function detectClickUpAwaitingHumanBridgeEventsAfterMessage(
+  threadMessageId: string,
+  markerMessageId: string,
+  overrides?: ClickUpAwaitingHumanConfigOverrides,
+): Promise<{
+  status: ClickUpApiStatus;
+  detail: string;
+  events: AwaitingHumanBridgePollEvent[];
+}> {
+  const threadId = threadMessageId.trim();
+  const markerId = markerMessageId.trim();
+  if (!threadId) {
+    return { status: "skipped", detail: "missing-thread-message-id", events: [] };
+  }
+  if (!markerId) {
+    return { status: "skipped", detail: "missing-marker-message-id", events: [] };
+  }
+
+  const repliesResult = await getClickUpChatMessageReplies(threadId, overrides);
+  if (repliesResult.status === "failed" || repliesResult.status === "skipped") {
+    return {
+      status: repliesResult.status,
+      detail: repliesResult.detail,
+      events: [],
+    };
+  }
+
+  const events: AwaitingHumanBridgePollEvent[] = [];
+  let markerFound = false;
+  for (const reply of repliesResult.replies) {
+    const replyId = readString(reply.id);
+    if (!replyId) {
+      logger.warn(
+        { messageId: threadId, markerMessageId: markerId, reply },
+        "Skipping ClickUp thread reply without stable reply.id",
+      );
+      continue;
+    }
+    if (replyId === markerId) {
+      markerFound = true;
+      continue;
+    }
+    if (!markerFound) continue;
+
+    const replyBody = readString(reply.content);
+    if (!replyBody) continue;
+    events.push({
+      kind: "reply",
+      externalEventId: replyId,
+      externalThreadId: threadId,
+      externalMessageId: markerId,
+      body: replyBody,
+      metadata: {
+        clickupReplyId: replyId,
+        clickupThreadId: threadId,
+        clickupQuestionMessageId: markerId,
+      },
+    });
+  }
+
+  if (!markerFound) {
+    return { status: "sent", detail: "question-marker-not-found", events: [] };
+  }
   if (events.length > 0) {
     return { status: "sent", detail: "replies-detected", events };
   }

@@ -1,10 +1,11 @@
-import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   workflowHandoffBridges,
   workflowHandoffs,
   workflowRunPhases,
   workflowRuns,
+  workflows,
 } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
@@ -13,8 +14,11 @@ import {
   addClickUpChatMessageReaction,
   deleteClickUpChatMessageReaction,
   detectClickUpAwaitingHumanBridgeEvents,
+  detectClickUpAwaitingHumanBridgeEventsAfterMessage,
   sendAwaitingHumanNotification,
+  sendAwaitingHumanNotificationReply,
 } from "./clickup-awaiting-human-transport.js";
+import type { AwaitingHumanNotificationResult } from "./awaiting-human-notifications.js";
 import type { AwaitingHumanNotificationPayload } from "./awaiting-human-notifications.js";
 
 const POLL_INTERVAL_MS = 60_000;
@@ -42,6 +46,56 @@ function buildHandoffNotification(handoff: {
       : "Reply with your response.",
     labels: ["workflow_handoff", handoff.kind],
   };
+}
+
+function buildWorkflowThreadNotification(input: {
+  workflowTitle: string | null;
+  workflowRunId: string;
+  inputMarkdown: string | null;
+  createdAt: Date | null;
+}): AwaitingHumanNotificationPayload {
+  const title = input.workflowTitle?.trim() || "Workflow";
+  const lines = [
+    `Workflow: ${title}`,
+    `Run ID: ${input.workflowRunId}`,
+  ];
+  if (input.createdAt) {
+    lines.push(`Created: ${input.createdAt.toISOString()}`);
+  }
+  const runInput = input.inputMarkdown?.trim();
+  if (runInput) {
+    lines.push("");
+    lines.push("Input:");
+    lines.push(truncateText(runInput, 800));
+  }
+  return {
+    title: `Workflow handoff: ${title}`,
+    summary: `Human input thread for workflow run ${input.workflowRunId}`,
+    body: lines.join("\n"),
+    link: "",
+    cta: "",
+    labels: ["workflow_handoff", "workflow_thread"],
+  };
+}
+
+function requireClickUpExternalId(
+  result: AwaitingHumanNotificationResult,
+  failurePrefix: string,
+) {
+  if (result.status !== "sent") {
+    throw Object.assign(
+      new Error(`${failurePrefix}: ${result.detail}`),
+      { code: "clickup_send_failed", status: 503 },
+    );
+  }
+  const externalId = result.externalId?.trim();
+  if (!externalId) {
+    throw Object.assign(
+      new Error(`${failurePrefix}: missing-external-id`),
+      { code: "clickup_send_failed", status: 503 },
+    );
+  }
+  return externalId;
 }
 
 async function applyReaction(input: {
@@ -251,6 +305,7 @@ async function resolveHandoffFromBridge(
       resolution,
       provider: bridge.provider,
       externalMessageId: bridge.externalMessageId ?? null,
+      externalThreadId: bridge.externalThreadId ?? null,
     },
   });
   return true;
@@ -295,8 +350,10 @@ export function workflowHandoffBridgeService(db: Db) {
     }
 
     const notification = buildHandoffNotification(handoff);
+    const externalThreadId = await getOrCreateWorkflowThreadId(handoff, overrides);
 
-    const result = await sendAwaitingHumanNotification(
+    const result = await sendAwaitingHumanNotificationReply(
+      externalThreadId,
       {
         companyId: handoff.companyId,
         issueId: handoff.id, // not an issue -- reusing field for context
@@ -306,14 +363,7 @@ export function workflowHandoffBridgeService(db: Db) {
       overrides,
     );
 
-    if (result.status !== "sent") {
-      throw Object.assign(
-        new Error(`Failed to post workflow handoff to ClickUp: ${result.detail}`),
-        { code: "clickup_send_failed", status: 503 },
-      );
-    }
-
-    const externalMessageId = result.externalId ?? null;
+    const externalMessageId = requireClickUpExternalId(result, "Failed to post workflow handoff question to ClickUp");
     const now = new Date();
 
     const [bridge] = await db.insert(workflowHandoffBridges).values({
@@ -323,6 +373,7 @@ export function workflowHandoffBridgeService(db: Db) {
       provider: "clickup",
       status: "waiting_for_human",
       externalMessageId,
+      externalThreadId,
       nextPollAt: new Date(now.getTime() + POLL_INTERVAL_MS),
     }).onConflictDoNothing({
       target: workflowHandoffBridges.workflowHandoffId,
@@ -354,10 +405,81 @@ export function workflowHandoffBridgeService(db: Db) {
         workflowHandoffId: handoff.id,
         provider: "clickup",
         externalMessageId,
+        externalThreadId,
       },
     });
 
     return bridge ?? null;
+  }
+
+  async function getExistingWorkflowThreadId(workflowRunId: string) {
+    const [bridge] = await db
+      .select({ externalThreadId: workflowHandoffBridges.externalThreadId })
+      .from(workflowHandoffBridges)
+      .where(and(
+        eq(workflowHandoffBridges.workflowRunId, workflowRunId),
+        eq(workflowHandoffBridges.provider, "clickup"),
+        isNotNull(workflowHandoffBridges.externalThreadId),
+      ))
+      .orderBy(asc(workflowHandoffBridges.createdAt))
+      .limit(1);
+    return bridge?.externalThreadId?.trim() || null;
+  }
+
+  async function loadWorkflowThreadContext(workflowRunId: string) {
+    const [row] = await db
+      .select({
+        workflowTitle: workflows.title,
+        workflowRunId: workflowRuns.id,
+        inputMarkdown: workflowRuns.inputMarkdown,
+        createdAt: workflowRuns.createdAt,
+      })
+      .from(workflowRuns)
+      .innerJoin(workflows, eq(workflows.id, workflowRuns.workflowId))
+      .where(eq(workflowRuns.id, workflowRunId))
+      .limit(1);
+    return row ?? {
+      workflowTitle: null,
+      workflowRunId,
+      inputMarkdown: null,
+      createdAt: null,
+    };
+  }
+
+  async function getOrCreateWorkflowThreadId(
+    handoff: {
+      id: string;
+      companyId: string;
+      workflowRunId: string;
+    },
+    overrides: { personalToken: string | null; workspaceId: string | null; channelId: string | null; attachmentTaskId: string | null },
+  ) {
+    const existingThreadId = await getExistingWorkflowThreadId(handoff.workflowRunId);
+    if (existingThreadId) return existingThreadId;
+
+    const context = await loadWorkflowThreadContext(handoff.workflowRunId);
+    const result = await sendAwaitingHumanNotification(
+      {
+        companyId: handoff.companyId,
+        issueId: handoff.id, // not an issue -- reusing field for context
+        handoffKind: "ask_user_questions",
+        notification: buildWorkflowThreadNotification(context),
+      },
+      overrides,
+    );
+    return requireClickUpExternalId(result, "Failed to post workflow thread to ClickUp");
+  }
+
+  async function detectBridgeEvents(
+    bridge: typeof workflowHandoffBridges.$inferSelect,
+    messageId: string,
+    overrides: { personalToken: string | null; workspaceId: string | null; channelId: string | null; attachmentTaskId: string | null },
+  ) {
+    const threadId = bridge.externalThreadId?.trim();
+    if (threadId && threadId !== messageId) {
+      return detectClickUpAwaitingHumanBridgeEventsAfterMessage(threadId, messageId, overrides);
+    }
+    return detectClickUpAwaitingHumanBridgeEvents(messageId, overrides);
   }
 
   async function pollActiveBridges() {
@@ -419,7 +541,7 @@ export function workflowHandoffBridgeService(db: Db) {
       if (!run || TERMINAL_WORKFLOW_RUN_STATUSES.includes(run.status)) {
         let detectedTerminal: Awaited<ReturnType<typeof detectClickUpAwaitingHumanBridgeEvents>>;
         try {
-          detectedTerminal = await detectClickUpAwaitingHumanBridgeEvents(messageId, overrides);
+          detectedTerminal = await detectBridgeEvents(bridge, messageId, overrides);
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
           logger.warn({
@@ -492,6 +614,7 @@ export function workflowHandoffBridgeService(db: Db) {
                 workflowHandoffId: bridge.workflowHandoffId,
                 provider: bridge.provider,
                 externalMessageId: bridge.externalMessageId ?? null,
+                externalThreadId: bridge.externalThreadId ?? null,
                 runStatus: run?.status ?? null,
                 runError: run?.error ?? null,
                 closeOutcome,
@@ -543,7 +666,7 @@ export function workflowHandoffBridgeService(db: Db) {
 
       let detected: Awaited<ReturnType<typeof detectClickUpAwaitingHumanBridgeEvents>>;
       try {
-        detected = await detectClickUpAwaitingHumanBridgeEvents(messageId, overrides);
+        detected = await detectBridgeEvents(bridge, messageId, overrides);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         logger.error({
@@ -667,6 +790,7 @@ export function workflowHandoffBridgeService(db: Db) {
               workflowHandoffId: bridge.workflowHandoffId,
               provider: bridge.provider,
               externalMessageId: bridge.externalMessageId ?? null,
+              externalThreadId: bridge.externalThreadId ?? null,
               runStatus: staleRun?.status ?? null,
               runError: staleRun?.error ?? null,
               closeOutcome,
