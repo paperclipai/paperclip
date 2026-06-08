@@ -141,8 +141,10 @@ function hydrateInteraction(
       return {
         ...base,
         kind: "request_confirmation",
-        payload: requestConfirmationPayloadSchema.parse(row.payload),
-        result: row.result ? requestConfirmationResultSchema.parse(row.result) : null,
+        payload: requestConfirmationPayloadSchema.parse(normalizeRequestConfirmationPayloadForHydration(row.payload)),
+        result: row.result
+          ? requestConfirmationResultSchema.parse(normalizeRequestConfirmationResultForHydration(row.result))
+          : null,
       } satisfies RequestConfirmationInteraction;
     case "request_checkbox_confirmation":
       return {
@@ -216,6 +218,96 @@ function isCommentAtOrAfterInteraction(args: {
   const interactionCreatedAtMs = new Date(args.interactionCreatedAt).getTime();
   if (!Number.isFinite(commentCreatedAtMs) || !Number.isFinite(interactionCreatedAtMs)) return false;
   return commentCreatedAtMs >= interactionCreatedAtMs;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function optionalNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function clampTargetText(value: string) {
+  return value.length > 120 ? value.slice(0, 120) : value;
+}
+
+function safeHref(value: unknown): string | null {
+  const href = optionalNonEmptyString(value);
+  if (!href) return null;
+  const lower = href.toLowerCase();
+  if (lower.startsWith("javascript:") || lower.startsWith("data:") || href.startsWith("//")) return null;
+  return href;
+}
+
+function normalizeLiteralVersion(value: unknown): unknown {
+  if (!isRecord(value) || value.version !== "1") return value;
+  return {
+    ...value,
+    version: 1,
+  };
+}
+
+function githubPrTargetFromRecord(target: Record<string, unknown>): RequestConfirmationTarget | null {
+  const metadata = isRecord(target.metadata) ? target.metadata : {};
+  const repository = optionalNonEmptyString(target.repository) ?? optionalNonEmptyString(metadata.repository);
+  const prNumberRaw = target.prNumber ?? metadata.prNumber;
+  const prNumber =
+    typeof prNumberRaw === "number"
+      ? prNumberRaw
+      : typeof prNumberRaw === "string" && prNumberRaw.trim().length > 0
+        ? Number(prNumberRaw)
+        : NaN;
+  if (!repository || !Number.isInteger(prNumber) || prNumber <= 0) return null;
+
+  const headSha = optionalNonEmptyString(target.headSha) ?? optionalNonEmptyString(metadata.headSha);
+  return {
+    type: "custom",
+    key: clampTargetText(`github-pr:${repository}:${prNumber}${headSha ? `:${headSha}` : ""}`),
+    label: clampTargetText(`${repository}#${prNumber}`),
+    href: `https://github.com/${repository}/pull/${prNumber}`,
+  };
+}
+
+function normalizeRequestConfirmationTargetForHydration(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+
+  const githubTarget = githubPrTargetFromRecord(value);
+  if (value.type === "github_pr" && githubTarget) return githubTarget;
+
+  if (value.type !== "custom") return value;
+
+  const href = safeHref(value.href) ?? safeHref(value.url);
+  const key =
+    optionalNonEmptyString(value.key)
+    ?? githubTarget?.key
+    ?? optionalNonEmptyString(value.label)
+    ?? href
+    ?? "legacy-custom-target";
+
+  return {
+    ...value,
+    key: clampTargetText(key),
+    href,
+  };
+}
+
+function normalizeRequestConfirmationPayloadForHydration(value: unknown): unknown {
+  const payload = normalizeLiteralVersion(value);
+  if (!isRecord(payload) || !("target" in payload)) return payload;
+  return {
+    ...payload,
+    target: normalizeRequestConfirmationTargetForHydration(payload.target),
+  };
+}
+
+function normalizeRequestConfirmationResultForHydration(value: unknown): unknown {
+  const result = normalizeLiteralVersion(value);
+  if (!isRecord(result) || !("staleTarget" in result)) return result;
+  return {
+    ...result,
+    staleTarget: normalizeRequestConfirmationTargetForHydration(result.staleTarget),
+  };
 }
 
 function buildTaskCreationOrder(tasks: ReadonlyArray<SuggestTasksInteraction["payload"]["tasks"][number]>) {

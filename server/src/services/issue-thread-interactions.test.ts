@@ -11,15 +11,20 @@ vi.mock("./issues.js", () => ({
 type SelectRow = Record<string, unknown>;
 
 function createSelectChain(rows: SelectRow[]) {
+  const resolveRows = {
+    then(callback: (rows: SelectRow[]) => unknown) {
+      return Promise.resolve(callback(rows));
+    },
+    orderBy() {
+      return Promise.resolve(rows);
+    },
+  };
+
   return {
     from() {
       return {
         where() {
-          return {
-            then(callback: (rows: SelectRow[]) => unknown) {
-              return Promise.resolve(callback(rows));
-            },
-          };
+          return resolveRows;
         },
       };
     },
@@ -135,6 +140,87 @@ describe("issueThreadInteractionService", () => {
     expect(created.id).toBe("interaction-1");
     expect(created.idempotencyKey).toBe("run-1:suggest");
     expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it("lists legacy request confirmations with string versions and GitHub PR targets", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    const existingRow = {
+      id: "interaction-legacy-pr",
+      companyId: "company-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation",
+      status: "expired",
+      continuationPolicy: "wake_assignee_on_accept",
+      idempotencyKey: "confirmation:legacy",
+      sourceCommentId: null,
+      sourceRunId: null,
+      title: "Approve PR #911 external SMS/email activation?",
+      summary: null,
+      createdByAgentId: "agent-1",
+      createdByUserId: null,
+      resolvedByAgentId: null,
+      resolvedByUserId: "local-board",
+      payload: {
+        version: "1",
+        prompt: "Approve merging PR #911?",
+        target: {
+          type: "github_pr",
+          repository: "vivus-tech/music-tracker",
+          prNumber: 911,
+          headSha: "3bdc3fdcfbcdf904c49a560fab27f29238b65032",
+        },
+      },
+      result: {
+        version: "1",
+        outcome: "stale_target",
+        staleTarget: {
+          type: "custom",
+          label: "GitHub PR #911",
+          url: "https://github.com/vivus-tech/music-tracker/pull/911",
+          metadata: {
+            repository: "vivus-tech/music-tracker",
+            prNumber: 911,
+            headSha: "3bdc3fdcfbcdf904c49a560fab27f29238b65032",
+          },
+        },
+      },
+      resolvedAt: new Date("2026-06-07T16:00:00.000Z"),
+      createdAt: new Date("2026-06-07T15:00:00.000Z"),
+      updatedAt: new Date("2026-06-07T16:00:00.000Z"),
+    };
+
+    const db: any = {
+      select: vi.fn(() => createSelectChain([existingRow])),
+      insert: vi.fn(),
+      update: vi.fn(),
+    };
+
+    const listed = await issueThreadInteractionService(db as never).listForIssue(existingRow.issueId);
+
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({
+      id: "interaction-legacy-pr",
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        target: {
+          type: "custom",
+          key: "github-pr:vivus-tech/music-tracker:911:3bdc3fdcfbcdf904c49a560fab27f29238b65032",
+          label: "vivus-tech/music-tracker#911",
+          href: "https://github.com/vivus-tech/music-tracker/pull/911",
+        },
+      },
+      result: {
+        version: 1,
+        staleTarget: {
+          type: "custom",
+          key: "github-pr:vivus-tech/music-tracker:911:3bdc3fdcfbcdf904c49a560fab27f29238b65032",
+          label: "GitHub PR #911",
+          href: "https://github.com/vivus-tech/music-tracker/pull/911",
+        },
+      },
+    });
   });
 
   it("answerQuestions normalizes duplicate option ids and persists answered results", async () => {
