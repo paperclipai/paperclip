@@ -16,6 +16,14 @@ export interface TranscriptParserSource {
   createStdoutParser?: StdoutParserFactory;
 }
 
+/** Minimal agent shape consumed by adapter-config dropdowns (e.g. recovery fallback). */
+export interface AdapterFieldAgentOption {
+  id: string;
+  name: string;
+  adapterType: string | null;
+  status?: string;
+}
+
 export interface AdapterConfigFieldsProps {
   mode: "create" | "edit";
   isCreate: boolean;
@@ -32,6 +40,10 @@ export interface AdapterConfigFieldsProps {
   mark: (group: "adapterConfig", field: string, value: unknown) => void;
   /** Available models for dropdowns */
   models: { id: string; label: string }[];
+  /** Same-company agents available for adapter-config dropdowns (e.g. recovery fallback). */
+  agents?: AdapterFieldAgentOption[];
+  /** Id of the agent being edited; used to exclude self-references in pickers. Undefined in create mode. */
+  selfAgentId?: string;
   /** When true, hides the instructions file path field (e.g. during import where it's set automatically) */
   hideInstructionsFile?: boolean;
 }
