@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildSkillMentionHref } from "@paperclipai/shared";
+import { buildSkillMentionHref, isUuidLike } from "@paperclipai/shared";
 import {
   LOW_TRUST_REVIEW_PRESET,
   applyRunScopedMentionedSkillKeys,
@@ -285,6 +285,21 @@ describe("extractMentionedSkillIdsFromSources", () => {
         `Duplicate mention [/release-changelog](${releaseHref})`,
       ]),
     ).toEqual(["skill-1", "skill-2"]);
+  });
+
+  it("extracts non-UUID skill ids verbatim — callers must filter with isUuidLike before passing to inArray on a UUID column (ZDA-3161)", () => {
+    const validUuid = "9b40e3a0-1234-4abc-89ab-1234567890ab";
+    const validHref = buildSkillMentionHref(validUuid, "valid-skill");
+    const malformedHref = buildSkillMentionHref("not-a-uuid", "broken");
+
+    const extracted = extractMentionedSkillIdsFromSources([
+      `Good [/valid-skill](${validHref})`,
+      `Bad [/broken](${malformedHref})`,
+    ]);
+    expect(extracted).toEqual([validUuid, "not-a-uuid"]);
+
+    const safeForUuidColumn = extracted.filter((skillId) => isUuidLike(skillId));
+    expect(safeForUuidColumn).toEqual([validUuid]);
   });
 });
 

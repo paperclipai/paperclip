@@ -574,7 +574,7 @@ async function resolveRunScopedMentionedSkillKeys(input: {
     issue.title,
     issue.description ?? "",
     ...comments.map((comment) => comment.body),
-  ]);
+  ]).filter((skillId) => isUuidLike(skillId));
   if (mentionedSkillIds.length === 0) return [];
 
   const skillRows = await input.db
