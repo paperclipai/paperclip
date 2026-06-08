@@ -227,6 +227,17 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+const CODEX_PROVIDER_BACKOFF_RETRY_REASON = "codex_provider_backoff";
+const CODEX_PROVIDER_BACKOFF_WAKE_REASON = "codex_provider_backoff";
+const CODEX_PROVIDER_BACKOFF_LOOKBACK_MS = 15 * 60 * 1000;
+const CODEX_PROVIDER_BACKOFF_MIN_FAILURES = 3;
+const CODEX_PROVIDER_BACKOFF_MIN_AGENTS = 2;
+const CODEX_PROVIDER_BACKOFF_DELAYS_MS = [
+  5 * 60 * 1000,
+  10 * 60 * 1000,
+  20 * 60 * 1000,
+  40 * 60 * 1000,
+] as const;
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -315,6 +326,51 @@ function mergeAdapterRecoveryMetadata(input: {
           transientRetryNotBefore: retryNotBefore,
         }
       : {}),
+  };
+}
+
+function isCodexProviderBackoffFailure(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson" | "status">,
+) {
+  if (!UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+    run.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+  )) {
+    return false;
+  }
+  if (readHeartbeatRunErrorFamily(run) === "transient_upstream") return true;
+  if (run.errorCode === "codex_transient_upstream" || run.errorCode === "timeout") return true;
+
+  const message = `${run.errorCode ?? ""}\n${run.error ?? ""}`.trim();
+  return /\b(?:timed out|timeout|transport|chatgpt|high demand|temporary errors|rate[-\s]?limit|too many requests|server overloaded|service unavailable)\b/i.test(
+    message,
+  );
+}
+
+function computeCodexProviderBackoffDelayMs(failureCount: number) {
+  const extraFailures = Math.max(0, failureCount - CODEX_PROVIDER_BACKOFF_MIN_FAILURES);
+  const delayIndex = Math.min(
+    CODEX_PROVIDER_BACKOFF_DELAYS_MS.length - 1,
+    Math.floor(extraFailures / CODEX_PROVIDER_BACKOFF_MIN_FAILURES),
+  );
+  return CODEX_PROVIDER_BACKOFF_DELAYS_MS[delayIndex] ?? CODEX_PROVIDER_BACKOFF_DELAYS_MS[0];
+}
+
+function serializeProviderBackoffGate(input: {
+  adapterType: "codex_local";
+  dueAt: Date;
+  failureCount: number;
+  affectedAgentCount: number;
+  retryNotBefore: Date | null;
+  lookbackMs: number;
+}) {
+  return {
+    adapterType: input.adapterType,
+    reason: CODEX_PROVIDER_BACKOFF_RETRY_REASON,
+    dueAt: input.dueAt.toISOString(),
+    failureCount: input.failureCount,
+    affectedAgentCount: input.affectedAgentCount,
+    retryNotBefore: input.retryNotBefore ? input.retryNotBefore.toISOString() : null,
+    lookbackMs: input.lookbackMs,
   };
 }
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set(["approval_approved"]);
@@ -6853,6 +6909,88 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.reconcileIssueGraphLiveness(opts);
   }
 
+  async function resolveCodexProviderBackoffGate(input: {
+    agent: typeof agents.$inferSelect;
+    source: WakeupOptions["source"];
+    now?: Date;
+  }) {
+    const source = input.source ?? "on_demand";
+    if (input.agent.adapterType !== "codex_local") return null;
+    if (source !== "timer" && source !== "assignment") return null;
+
+    const now = input.now ?? new Date();
+    const cutoff = new Date(now.getTime() - CODEX_PROVIDER_BACKOFF_LOOKBACK_MS);
+    const recentRows = await db
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+        resultJson: heartbeatRuns.resultJson,
+        finishedAt: heartbeatRuns.finishedAt,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.agent.companyId),
+          eq(agents.adapterType, "codex_local"),
+          inArray(heartbeatRuns.status, [...UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES]),
+          gt(heartbeatRuns.finishedAt, cutoff),
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.createdAt))
+      .limit(50);
+
+    const failures = recentRows.filter(isCodexProviderBackoffFailure);
+    const affectedAgentIds = new Set(failures.map((row) => row.agentId));
+    if (
+      failures.length < CODEX_PROVIDER_BACKOFF_MIN_FAILURES ||
+      affectedAgentIds.size < CODEX_PROVIDER_BACKOFF_MIN_AGENTS
+    ) {
+      return null;
+    }
+
+    const delayMs = computeCodexProviderBackoffDelayMs(failures.length);
+    const retryNotBefore = failures
+      .map(readTransientRetryNotBeforeFromRun)
+      .filter((value): value is Date => Boolean(value))
+      .filter((value) => value.getTime() > now.getTime())
+      .sort((left, right) => right.getTime() - left.getTime())[0] ?? null;
+    const dueAt = new Date(Math.max(
+      now.getTime() + delayMs,
+      retryNotBefore?.getTime() ?? 0,
+    ));
+
+    return {
+      adapterType: "codex_local" as const,
+      dueAt,
+      failureCount: failures.length,
+      affectedAgentCount: affectedAgentIds.size,
+      retryNotBefore,
+      lookbackMs: CODEX_PROVIDER_BACKOFF_LOOKBACK_MS,
+    };
+  }
+
+  async function snoozeTimerAfterProviderBackoff(input: {
+    agent: typeof agents.$inferSelect;
+    policy: ReturnType<typeof parseHeartbeatPolicy>;
+    gate: Awaited<ReturnType<typeof resolveCodexProviderBackoffGate>>;
+    now: Date;
+  }) {
+    if (!input.gate) return;
+    const intervalMs = Math.max(1, input.policy.intervalSec) * 1000;
+    const nextBaseline = new Date(Math.max(input.now.getTime(), input.gate.dueAt.getTime() - intervalMs));
+    await db
+      .update(agents)
+      .set({
+        lastHeartbeatAt: nextBaseline,
+        updatedAt: input.now,
+      })
+      .where(eq(agents.id, input.agent.id));
+  }
+
   async function updateRuntimeState(
     agent: typeof agents.$inferSelect,
     run: typeof heartbeatRuns.$inferSelect,
@@ -8843,19 +8981,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await resolveSessionBeforeForWakeup(agent, effectiveTaskKey);
     const continuationAttempt = readContinuationAttempt(enrichedContextSnapshot.livenessContinuationAttempt);
 
-    const writeSkippedRequest = async (skipReason: string) => {
+    const writeSkippedRequest = async (
+      skipReason: string,
+      details?: { payloadOverride?: Record<string, unknown> | null; finishedAt?: Date },
+    ) => {
       await db.insert(agentWakeupRequests).values({
         companyId: agent.companyId,
         agentId,
         source,
         triggerDetail,
         reason: skipReason,
-        payload,
+        payload: details?.payloadOverride ?? payload,
         status: "skipped",
         requestedByActorType: opts.requestedByActorType ?? null,
         requestedByActorId: opts.requestedByActorId ?? null,
         idempotencyKey: opts.idempotencyKey ?? null,
-        finishedAt: new Date(),
+        finishedAt: details?.finishedAt ?? new Date(),
       });
     };
 
@@ -8922,6 +9063,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
+      return null;
+    }
+
+    const providerBackoffCheckedAt = new Date();
+    const providerBackoffGate = await resolveCodexProviderBackoffGate({
+      agent,
+      source,
+      now: providerBackoffCheckedAt,
+    });
+    const providerBackoffPayload = providerBackoffGate
+      ? serializeProviderBackoffGate(providerBackoffGate)
+      : null;
+    if (source === "timer" && providerBackoffGate && providerBackoffPayload) {
+      await writeSkippedRequest(CODEX_PROVIDER_BACKOFF_WAKE_REASON, {
+        payloadOverride: {
+          ...(payload ?? {}),
+          providerBackoff: providerBackoffPayload,
+        },
+        finishedAt: providerBackoffCheckedAt,
+      });
+      await snoozeTimerAfterProviderBackoff({
+        agent,
+        policy,
+        gate: providerBackoffGate,
+        now: providerBackoffCheckedAt,
+      });
       return null;
     }
 
@@ -9329,6 +9496,76 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return { kind: "deferred" as const };
         }
 
+        if (source === "assignment" && providerBackoffGate && providerBackoffPayload) {
+          const backoffContextSnapshot = {
+            ...enrichedContextSnapshot,
+            retryReason: CODEX_PROVIDER_BACKOFF_RETRY_REASON,
+            scheduledRetryAt: providerBackoffGate.dueAt.toISOString(),
+            providerBackoff: providerBackoffPayload,
+          };
+          const backoffWakeupPayload = {
+            ...(payload ?? {}),
+            issueId,
+            originalWakeReason: reason,
+            providerBackoff: providerBackoffPayload,
+          };
+
+          const wakeupRequest = await tx
+            .insert(agentWakeupRequests)
+            .values({
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: CODEX_PROVIDER_BACKOFF_WAKE_REASON,
+              payload: backoffWakeupPayload,
+              status: "queued",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+            })
+            .returning()
+            .then((rows) => rows[0]);
+
+          const scheduledRun = await tx
+            .insert(heartbeatRuns)
+            .values({
+              companyId: agent.companyId,
+              agentId,
+              invocationSource: source,
+              triggerDetail,
+              status: "scheduled_retry",
+              wakeupRequestId: wakeupRequest.id,
+              contextSnapshot: backoffContextSnapshot,
+              sessionIdBefore: sessionBefore,
+              scheduledRetryAt: providerBackoffGate.dueAt,
+              scheduledRetryReason: CODEX_PROVIDER_BACKOFF_RETRY_REASON,
+              continuationAttempt,
+            })
+            .returning()
+            .then((rows) => rows[0]);
+
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              runId: scheduledRun.id,
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: scheduledRun.id,
+              executionAgentNameKey: normalizeAgentNameKey(agent.name),
+              executionLockedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
+
+          return { kind: "scheduled" as const, run: scheduledRun };
+        }
+
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({
@@ -9378,6 +9615,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
+      if (outcome.kind === "scheduled") return outcome.run;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
         return outcome.run;
@@ -9456,6 +9694,65 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         finishedAt: new Date(),
       });
       return mergedRun;
+    }
+
+    if (source === "assignment" && providerBackoffGate && providerBackoffPayload) {
+      const backoffContextSnapshot = {
+        ...enrichedContextSnapshot,
+        retryReason: CODEX_PROVIDER_BACKOFF_RETRY_REASON,
+        scheduledRetryAt: providerBackoffGate.dueAt.toISOString(),
+        providerBackoff: providerBackoffPayload,
+      };
+      const backoffWakeupPayload = {
+        ...(payload ?? {}),
+        originalWakeReason: reason,
+        providerBackoff: providerBackoffPayload,
+      };
+
+      const wakeupRequest = await db
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason: CODEX_PROVIDER_BACKOFF_WAKE_REASON,
+          payload: backoffWakeupPayload,
+          status: "queued",
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey: opts.idempotencyKey ?? null,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const scheduledRun = await db
+        .insert(heartbeatRuns)
+        .values({
+          companyId: agent.companyId,
+          agentId,
+          invocationSource: source,
+          triggerDetail,
+          status: "scheduled_retry",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: backoffContextSnapshot,
+          sessionIdBefore: sessionBefore,
+          scheduledRetryAt: providerBackoffGate.dueAt,
+          scheduledRetryReason: CODEX_PROVIDER_BACKOFF_RETRY_REASON,
+          continuationAttempt,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          runId: scheduledRun.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      return scheduledRun;
     }
 
     const wakeupRequest = await db

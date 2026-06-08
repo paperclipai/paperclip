@@ -130,6 +130,69 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     });
   }
 
+  async function seedCodexProviderBackoffFixture(input: {
+    companyId: string;
+    agentIds: string[];
+    now: Date;
+    retryNotBefore?: Date | null;
+  }) {
+    await db.insert(companies).values({
+      id: input.companyId,
+      name: "Paperclip",
+      issuePrefix: `T${input.companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values(input.agentIds.map((agentId, index) => ({
+      id: agentId,
+      companyId: input.companyId,
+      name: `CodexCoder${index + 1}`,
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 60,
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+      createdAt: input.now,
+      updatedAt: input.now,
+    })));
+
+    await db.insert(heartbeatRuns).values(input.agentIds.map((agentId, index) => {
+      const finishedAt = new Date(input.now.getTime() - (index + 1) * 60_000);
+      return {
+        id: randomUUID(),
+        companyId: input.companyId,
+        agentId,
+        invocationSource: index % 2 === 0 ? "timer" : "assignment",
+        status: "failed",
+        error: "ChatGPT transport timed out",
+        errorCode: "codex_transient_upstream",
+        finishedAt,
+        resultJson: {
+          errorFamily: "transient_upstream",
+          ...(input.retryNotBefore
+            ? {
+                retryNotBefore: input.retryNotBefore.toISOString(),
+                transientRetryNotBefore: input.retryNotBefore.toISOString(),
+              }
+            : {}),
+        },
+        contextSnapshot: {
+          wakeReason: index % 2 === 0 ? "heartbeat_timer" : "issue_assigned",
+        },
+        createdAt: finishedAt,
+        updatedAt: finishedAt,
+      };
+    }));
+  }
+
   async function seedMaxTurnFixture(input?: {
     companyId?: string;
     agentId?: string;
@@ -1282,6 +1345,137 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect((wakeupRequest?.payload as Record<string, unknown> | null)?.transientRetryNotBefore).toBe(
       retryNotBefore.toISOString(),
     );
+  });
+
+  it("skips and snoozes codex timer wakes while the provider backoff circuit is open", async () => {
+    const companyId = randomUUID();
+    const agentIds = [randomUUID(), randomUUID(), randomUUID()];
+    const now = new Date();
+    const retryNotBefore = new Date(now.getTime() + 30 * 60_000);
+
+    await seedCodexProviderBackoffFixture({
+      companyId,
+      agentIds,
+      now,
+      retryNotBefore,
+    });
+
+    const run = await heartbeat.wakeup(agentIds[0], {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      requestedByActorType: "system",
+      requestedByActorId: "heartbeat_scheduler",
+      contextSnapshot: {
+        source: "scheduler",
+        reason: "interval_elapsed",
+      },
+    });
+
+    expect(run).toBeNull();
+
+    const wakeup = await db
+      .select({ reason: agentWakeupRequests.reason, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentIds[0]))
+      .then((rows) => rows.find((row) => row.reason === "codex_provider_backoff") ?? null);
+    expect(wakeup).not.toBeNull();
+    const providerBackoff = (wakeup?.payload as Record<string, unknown> | null)?.providerBackoff as
+      | Record<string, unknown>
+      | undefined;
+    expect(providerBackoff).toMatchObject({
+      adapterType: "codex_local",
+      reason: "codex_provider_backoff",
+      failureCount: 3,
+      affectedAgentCount: 3,
+      retryNotBefore: retryNotBefore.toISOString(),
+    });
+
+    const agent = await db
+      .select({ lastHeartbeatAt: agents.lastHeartbeatAt })
+      .from(agents)
+      .where(eq(agents.id, agentIds[0]))
+      .then((rows) => rows[0] ?? null);
+    const expectedSnoozeBaseline = retryNotBefore.getTime() - 60_000;
+    expect(agent?.lastHeartbeatAt?.getTime()).toBeGreaterThanOrEqual(expectedSnoozeBaseline - 2_000);
+    expect(agent?.lastHeartbeatAt?.getTime()).toBeLessThanOrEqual(expectedSnoozeBaseline + 2_000);
+  });
+
+  it("defers codex assignment wakes as scheduled retries while preserving the issue execution path", async () => {
+    const companyId = randomUUID();
+    const agentIds = [randomUUID(), randomUUID(), randomUUID()];
+    const issueId = randomUUID();
+    const now = new Date();
+    const retryNotBefore = new Date(now.getTime() + 30 * 60_000);
+
+    await seedCodexProviderBackoffFixture({
+      companyId,
+      agentIds,
+      now,
+      retryNotBefore,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Run assigned work",
+      status: "todo",
+      assigneeAgentId: agentIds[0],
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const run = await heartbeat.wakeup(agentIds[0], {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_assigned",
+      },
+      requestedByActorType: "system",
+      requestedByActorId: "issue_assignment",
+    });
+
+    expect(run).not.toBeNull();
+    expect(run?.status).toBe("scheduled_retry");
+    expect(run?.invocationSource).toBe("assignment");
+    expect(run?.scheduledRetryReason).toBe("codex_provider_backoff");
+    expect(run?.scheduledRetryAt?.getTime()).toBe(retryNotBefore.getTime());
+
+    const issue = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBe(run?.id);
+
+    const persistedRun = await db
+      .select({
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run?.id ?? ""))
+      .then((rows) => rows[0] ?? null);
+    const providerBackoff = (persistedRun?.contextSnapshot as Record<string, unknown> | null)?.providerBackoff as
+      | Record<string, unknown>
+      | undefined;
+    expect(providerBackoff).toMatchObject({
+      adapterType: "codex_local",
+      reason: "codex_provider_backoff",
+      failureCount: 3,
+      affectedAgentCount: 3,
+      retryNotBefore: retryNotBefore.toISOString(),
+    });
+
+    const wakeup = await db
+      .select({ reason: agentWakeupRequests.reason, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, persistedRun?.wakeupRequestId ?? ""))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.reason).toBe("codex_provider_backoff");
+    expect((wakeup?.payload as Record<string, unknown> | null)?.originalWakeReason).toBe("issue_assigned");
   });
 
   it("schedules bounded retries for claude_transient_upstream and honors its retry-not-before hint", async () => {
