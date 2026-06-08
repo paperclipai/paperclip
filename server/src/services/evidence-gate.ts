@@ -75,6 +75,7 @@ const ALL_SHAPES: readonly EvidenceShape[] = [
   "ci-green",
   "e2e-script",
   "e2e-run",
+  "migration-output",
 ] as const;
 
 /**
@@ -292,6 +293,26 @@ function detectE2eScript(
   return false;
 }
 
+function detectMigrationOutput(text: string): boolean {
+  const hasMigrationRunnerSignal =
+    /Applied\s+\d+\s+migration/i.test(text) ||
+    /No pending migrations/i.test(text) ||
+    /\d+\s+migration(?:s)?\s+applied/i.test(text) ||
+    /drizzle-kit[\s\S]{0,80}(?:push|migrate|generate)/i.test(text) ||
+    /INFO\s+\[alembic\.runtime/i.test(text) ||
+    /Flyway\s+(?:Community|Pro|Teams)\s+Edition/i.test(text) ||
+    /Liquibase\s+Community/i.test(text);
+  // EXPLAIN / EXPLAIN ANALYZE plan output.
+  if (/\b(?:Seq|Index|Bitmap Heap|Hash|Merge|Nested Loop)\s+(?:Scan|Join)\b/i.test(text)) return true;
+  if (/\bcost=[\d.]+\.\.[\d.]+\s+rows=\d+/i.test(text)) return true;
+  // psql row-count line: "(N rows)" or "(1 row)". This must be paired
+  // with runner output so an incidental SELECT result cannot satisfy the gate.
+  if (hasMigrationRunnerSignal && /\(\d+\s+rows?\)/i.test(text)) return true;
+  // Migration runner banners.
+  if (hasMigrationRunnerSignal) return true;
+  return false;
+}
+
 function detectE2eRun(
   workProducts: EvidenceWorkProductLite[],
   text: string,
@@ -327,6 +348,7 @@ function detectAll(input: {
     "ci-green": detectCiGreen(text),
     "e2e-script": detectE2eScript(text, workProducts),
     "e2e-run": detectE2eRun(workProducts, text),
+    "migration-output": detectMigrationOutput(text),
   };
   const found = ALL_SHAPES.filter((s) => detections[s]);
   return { detections, found };

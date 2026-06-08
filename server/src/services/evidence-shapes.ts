@@ -23,7 +23,8 @@ export type EvidenceShape =
   | "pr-link"
   | "ci-green"
   | "e2e-script"
-  | "e2e-run";
+  | "e2e-run"
+  | "migration-output";
 
 export interface EvidenceRegistryEntry {
   required: EvidenceShape[];
@@ -67,6 +68,12 @@ export const DEFAULT_EVIDENCE_REGISTRY: EvidenceRegistry = {
   },
   pr: {
     required: ["pr-link"],
+  },
+  "db-migration": {
+    required: ["migration-output"],
+  },
+  migration: {
+    required: ["migration-output"],
   },
 };
 

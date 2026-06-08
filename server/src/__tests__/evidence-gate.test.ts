@@ -622,6 +622,7 @@ describe("evaluateEvidence — shapeDetections shape", () => {
         "e2e-run",
         "e2e-script",
         "kubectl-state",
+        "migration-output",
         "pr-link",
         "probe-output",
         "screenshot:1440x900",
@@ -633,5 +634,166 @@ describe("evaluateEvidence — shapeDetections shape", () => {
     for (const v of Object.values(result.shapeDetections)) {
       expect(typeof v).toBe("boolean");
     }
+  });
+});
+
+describe("evaluateEvidence — db-migration label", () => {
+  it("passes when an EXPLAIN ANALYZE plan is pasted in the comment", () => {
+    const body = [
+      "Applied migration 0088_add_index_on_issue_events.sql.",
+      "",
+      "EXPLAIN ANALYZE:",
+      "```",
+      "Index Scan on issue_events  (cost=0.56..8.58 rows=1 width=32)",
+      "  Index Cond: (issue_id = $1)",
+      "Planning Time: 0.123 ms",
+      "Execution Time: 0.045 ms",
+      "```",
+    ].join("\n");
+    const result = evaluateEvidence({
+      issue: {
+        description: "## Done when\n- index exists\n- no seq scan",
+        labels: [{ name: "db-migration" }],
+      },
+      comments: [agentComment(body)],
+      workProducts: [],
+      registry: DEFAULT_EVIDENCE_REGISTRY,
+    });
+    expect(result.verdict).toBe("pass");
+    expect(result.missing).toEqual([]);
+    expect(result.evidenceFound).toContain("migration-output");
+  });
+
+  it("passes for the 'migration' label alias", () => {
+    const body = "Applied 1 migration successfully.\n\n(5 rows)\n";
+    const result = evaluateEvidence({
+      issue: {
+        description: "## Done when\n- migration applied",
+        labels: [{ name: "migration" }],
+      },
+      comments: [agentComment(body)],
+      workProducts: [],
+      registry: DEFAULT_EVIDENCE_REGISTRY,
+    });
+    expect(result.verdict).toBe("pass");
+  });
+
+  it("passes when drizzle-kit push output is pasted", () => {
+    const body = [
+      "Ran schema push:",
+      "```",
+      "drizzle-kit: push completed",
+      "✓ done",
+      "```",
+    ].join("\n");
+    const result = evaluateEvidence({
+      issue: {
+        description: "## Done when\n- schema updated",
+        labels: [{ name: "db-migration" }],
+      },
+      comments: [agentComment(body)],
+      workProducts: [],
+      registry: DEFAULT_EVIDENCE_REGISTRY,
+    });
+    expect(result.verdict).toBe("pass");
+  });
+
+  it("passes when a psql row-count line is paired with migration runner output", () => {
+    const body = [
+      "Applied 1 migration successfully.",
+      "",
+      "Post-migration row count check:",
+      "```sql",
+      "SELECT COUNT(*) FROM issue_events;",
+      " count",
+      "-------",
+      " 98432",
+      "(1 row)",
+      "```",
+    ].join("\n");
+    const result = evaluateEvidence({
+      issue: {
+        description: "## Done when\n- row count verified",
+        labels: [{ name: "db-migration" }],
+      },
+      comments: [agentComment(body)],
+      workProducts: [],
+      registry: DEFAULT_EVIDENCE_REGISTRY,
+    });
+    expect(result.verdict).toBe("pass");
+  });
+
+  it("blocks when agent comment contains only a SELECT row-count with no migration runner output", () => {
+    const result = evaluateEvidence({
+      issue: {
+        description: "## Done when\n- migration applied",
+        labels: [{ name: "db-migration" }],
+      },
+      comments: [
+        agentComment("Verified table exists.\n\nSELECT COUNT(*) FROM foo;\n(7 rows)"),
+      ],
+      workProducts: [],
+      registry: DEFAULT_EVIDENCE_REGISTRY,
+    });
+    expect(result.verdict).toBe("block");
+    expect(result.missing).toEqual(["migration-output"]);
+  });
+
+  it("blocks when agent only pastes raw migration SQL", () => {
+    const body = [
+      "Migration file content:",
+      "```sql",
+      "ALTER TABLE issues ADD COLUMN last_evidence_verdict jsonb;",
+      "CREATE INDEX issue_events_issue_id_idx ON issue_events(issue_id);",
+      "```",
+    ].join("\n");
+    const result = evaluateEvidence({
+      issue: {
+        description: "## Done when\n- migration applied",
+        labels: [{ name: "db-migration" }],
+      },
+      comments: [agentComment(body)],
+      workProducts: [],
+      registry: DEFAULT_EVIDENCE_REGISTRY,
+    });
+    expect(result.verdict).toBe("block");
+    expect(result.missing).toEqual(["migration-output"]);
+  });
+
+  it("blocks when agent only claims the migration ran with no observable output", () => {
+    const result = evaluateEvidence({
+      issue: {
+        description: "## Done when\n- migration applied",
+        labels: [{ name: "db-migration" }],
+      },
+      comments: [agentComment("Migration ran successfully — trust me.")],
+      workProducts: [],
+      registry: DEFAULT_EVIDENCE_REGISTRY,
+    });
+    expect(result.verdict).toBe("block");
+    expect(result.missing).toEqual(["migration-output"]);
+  });
+
+  it("blocks when migration output is in an operator comment (not agent-authored)", () => {
+    const body = "Applied 1 migration.\n\nSELECT COUNT(*): (42 rows)";
+    const result = evaluateEvidence({
+      issue: {
+        description: "## Done when\n- migration applied",
+        labels: [{ name: "db-migration" }],
+      },
+      comments: [operatorComment(body)],
+      workProducts: [],
+      registry: DEFAULT_EVIDENCE_REGISTRY,
+    });
+    expect(result.verdict).toBe("block");
+  });
+
+  it("resolveRequiredShapes: db-migration label returns migration-output required", () => {
+    const { required, unlabeledFallback } = resolveRequiredShapes(
+      { labels: [{ name: "db-migration" }] },
+      DEFAULT_EVIDENCE_REGISTRY,
+    );
+    expect(unlabeledFallback).toBe(false);
+    expect(required).toEqual(["migration-output"]);
   });
 });
