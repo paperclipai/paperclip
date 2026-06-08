@@ -1451,6 +1451,50 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     run: typeof heartbeatRuns.$inferSelect;
     now: Date;
   }) {
+    // Stale-run watchdog TOCTOU guard.
+    // scanSilentActiveRuns() snapshots runs that are `status = 'running'` at query time
+    // and then processes them sequentially. A run can reach a terminal state
+    // (succeeded/failed/cancelled, or `finished_at` stamped while the status write lags)
+    // between the snapshot and this evaluation. The create path below trusts the stale
+    // snapshot (`input.run`) and would file a false "Review silent active run" issue.
+    // Re-read the live row and suppress the evaluation when the run is no longer live.
+    // The read path (`buildRunOutputSilence`) already gates on `status === 'running'`;
+    // this brings the create path in line. Defensive: never let the guard throw out of
+    // the scan loop.
+    try {
+      const [liveRun] = await db
+        .select({ status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId)))
+        .limit(1);
+      if (!liveRun || liveRun.status !== "running" || liveRun.finishedAt != null) {
+        try {
+          await logActivity(db, {
+            companyId: input.run.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: input.run.agentId,
+            runId: input.run.id,
+            action: "heartbeat.output_stale_suppressed_terminal",
+            entityType: "heartbeat_run",
+            entityId: input.run.id,
+            details: {
+              source: "recovery.scan_silent_active_runs",
+              liveStatus: liveRun?.status ?? "missing",
+              finishedAt: liveRun?.finishedAt?.toISOString() ?? null,
+            },
+          });
+        } catch {
+          // best-effort audit log; never block suppression on it
+        }
+        return { kind: "skipped" as const };
+      }
+    } catch (guardError) {
+      logger.warn(
+        { err: guardError, runId: input.run.id },
+        "stale-run terminal guard failed; proceeding with stock evaluation",
+      );
+    }
     const runningAgent = await getAgent(input.run.agentId);
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
