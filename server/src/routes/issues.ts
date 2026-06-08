@@ -1431,46 +1431,6 @@ export function issueRoutes(
     };
   }
 
-  function queueAnnotationCommentWakeup(input: {
-    issue: { id: string; assigneeAgentId: string | null; status: string };
-    actor: { actorType: "user" | "agent"; actorId: string };
-    threadId: string;
-    commentId: string;
-    documentKey: string;
-  }) {
-    const assigneeId = input.issue.assigneeAgentId;
-    const selfComment = input.actor.actorType === "agent" && input.actor.actorId === assigneeId;
-    if (!assigneeId || selfComment || isClosedIssueStatus(input.issue.status)) return;
-    void heartbeat.wakeup(assigneeId, {
-      source: "automation",
-      triggerDetail: "system",
-      reason: "issue_commented",
-      payload: {
-        issueId: input.issue.id,
-        annotationThreadId: input.threadId,
-        annotationCommentId: input.commentId,
-        documentKey: input.documentKey,
-        mutation: "document_annotation_comment",
-      },
-      requestedByActorType: input.actor.actorType,
-      requestedByActorId: input.actor.actorId,
-      contextSnapshot: {
-        issueId: input.issue.id,
-        taskId: input.issue.id,
-        annotationThreadId: input.threadId,
-        annotationCommentId: input.commentId,
-        documentKey: input.documentKey,
-        source: "issue.document.annotation",
-        wakeReason: "issue_commented",
-      },
-    }).catch((err) => logger.warn({
-      err,
-      issueId: input.issue.id,
-      annotationThreadId: input.threadId,
-      annotationCommentId: input.commentId,
-    }, "failed to wake assignee on document annotation comment"));
-  }
-
   async function canonicalizePaperclipArtifactMetadata(input: {
     issue: { id: string; companyId: string };
     metadata: Record<string, unknown> | null | undefined;
@@ -3135,16 +3095,6 @@ export function issueRoutes(
         },
       });
 
-      if (firstComment) {
-        queueAnnotationCommentWakeup({
-          issue,
-          actor,
-          threadId: thread.id,
-          commentId: firstComment.id,
-          documentKey: thread.documentKey,
-        });
-      }
-
       res.status(201).json(thread);
     },
   );
@@ -3225,14 +3175,6 @@ export function issueRoutes(
             currentReferencedIssues: referenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
           }),
         },
-      });
-
-      queueAnnotationCommentWakeup({
-        issue,
-        actor,
-        threadId: comment.threadId,
-        commentId: comment.id,
-        documentKey: keyParsed.data,
       });
 
       res.status(201).json(comment);

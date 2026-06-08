@@ -314,4 +314,48 @@ describe("issue update comment wakeups", () => {
       }),
     );
   });
+
+  it("wakes the assignee on top-level board issue comments", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-3",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "please handle this top-level thread comment",
+    });
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({
+        body: "please handle this top-level thread comment",
+      });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        source: "automation",
+        reason: "issue_commented",
+        payload: expect.objectContaining({
+          issueId: existing.id,
+          commentId: "comment-3",
+          mutation: "comment",
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId: existing.id,
+          taskId: existing.id,
+          commentId: "comment-3",
+          wakeCommentId: "comment-3",
+          wakeReason: "issue_commented",
+          source: "issue.comment",
+        }),
+      }),
+    );
+  });
 });

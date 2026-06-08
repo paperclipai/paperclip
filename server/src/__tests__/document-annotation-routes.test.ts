@@ -12,6 +12,7 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 const mockDocumentService = vi.hoisted(() => ({
   getIssueDocumentByKey: vi.fn(),
+  upsertIssueDocument: vi.fn(),
 }));
 const mockAnnotationService = vi.hoisted(() => ({
   listThreadsForIssueDocument: vi.fn(),
@@ -196,6 +197,15 @@ describe("document annotation routes", () => {
     });
     mockIssueService.assertCheckoutOwner.mockResolvedValue({});
     mockDocumentService.getIssueDocumentByKey.mockResolvedValue(documentPayload);
+    mockDocumentService.upsertIssueDocument.mockResolvedValue({
+      created: false,
+      document: {
+        ...documentPayload,
+        body: "Alpha updated selected text omega",
+        latestRevisionId: "99999999-9999-4999-8999-999999999999",
+        latestRevisionNumber: 2,
+      },
+    });
     mockAnnotationService.listThreadsForIssueDocument.mockImplementation(async (
       _issueId: string,
       _key: string,
@@ -237,7 +247,35 @@ describe("document annotation routes", () => {
     });
   });
 
-  it("creates annotation threads, syncs references, logs activity, and wakes the assignee", async () => {
+  it("updates issue documents without waking the assignee through the issue-comment path", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: issueId,
+      companyId,
+      title: "Document API",
+      status: "in_progress",
+      assigneeAgentId: "99999999-9999-4999-8999-999999999999",
+    });
+
+    const res = await request(await createApp())
+      .put(`/api/issues/${issueId}/documents/plan`)
+      .send({
+        title: "Plan",
+        format: "markdown",
+        body: "Alpha updated selected text omega",
+        changeSummary: "Document feedback only",
+        baseRevisionId: documentPayload.latestRevisionId,
+      })
+      .expect(200);
+
+    expect(res.body.latestRevisionNumber).toBe(2);
+    expect(mockIssueReferenceService.syncDocument).toHaveBeenCalledWith(documentPayload.id);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "issue.document_updated",
+    }));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("creates annotation threads, syncs references, logs activity, and does not wake the assignee", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: issueId,
       companyId,
@@ -261,15 +299,7 @@ describe("document annotation routes", () => {
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "issue.document_annotation_thread_created",
     }));
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "99999999-9999-4999-8999-999999999999",
-      expect.objectContaining({
-        payload: expect.objectContaining({
-          annotationThreadId: annotationThread.id,
-          annotationCommentId: annotationComment.id,
-        }),
-      }),
-    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("rejects agent cross-company annotation reads", async () => {
@@ -278,12 +308,24 @@ describe("document annotation routes", () => {
       .expect(403);
   });
 
-  it("adds annotation comments and resolves threads", async () => {
+  it("adds annotation comments without waking the assignee and resolves threads", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: issueId,
+      companyId,
+      title: "Annotation API",
+      status: "todo",
+      assigneeAgentId: "99999999-9999-4999-8999-999999999999",
+    });
+
     await request(await createApp())
       .post(`/api/issues/${issueId}/documents/plan/annotations/${annotationThread.id}/comments`)
       .send({ body: "Reply with PAP-2" })
       .expect(201);
     expect(mockIssueReferenceService.syncAnnotationComment).toHaveBeenCalledWith(annotationComment.id);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "issue.document_annotation_comment_added",
+    }));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
 
     const resolved = await request(await createApp())
       .patch(`/api/issues/${issueId}/documents/plan/annotations/${annotationThread.id}`)
