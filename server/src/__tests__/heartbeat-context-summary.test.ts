@@ -55,6 +55,51 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(acceptedConfirmation).not.toContain("Make the plan only.");
   });
 
+  it("adds accepted-plan continuation guidance for standard-work issues when the wake is flagged as a plan continuation", () => {
+    const acceptedConfirmation = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-2",
+        identifier: "PAP-415",
+        title: "Implement the fix",
+        workMode: "standard",
+        description: null,
+      },
+      acceptedPlanContinuation: true,
+    });
+
+    expect(acceptedConfirmation).toContain("Accepted plan directive:");
+    expect(acceptedConfirmation).toContain("Create child issues from the approved plan only");
+    expect(acceptedConfirmation).not.toContain("- Work mode: \"planning\"");
+  });
+
+  it("includes confirmed-plan comments in accepted-plan continuation task context", () => {
+    const acceptedConfirmation = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan first",
+        workMode: "planning",
+        description: null,
+      },
+      interaction: {
+        kind: "request_confirmation",
+        status: "accepted",
+      },
+      acceptedPlanComments: [
+        {
+          id: "comment-1",
+          authorType: "user",
+          body: "Please keep the migration backwards compatible.",
+        },
+      ],
+    });
+
+    expect(acceptedConfirmation).toContain("Create child issues from the approved plan only");
+    expect(acceptedConfirmation).toContain("Comments included with the confirmed plan:");
+    expect(acceptedConfirmation).toContain("Comment 1 - user - comment-1:");
+    expect(acceptedConfirmation).toContain("Please keep the migration backwards compatible.");
+  });
+
   it("prefers ordinary comment planning guidance over stale accepted confirmation state", () => {
     const commentWake = buildPaperclipTaskMarkdown({
       issue: {

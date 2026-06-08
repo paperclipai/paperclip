@@ -29,6 +29,15 @@ export function formatNumber(n: number): string {
   return n.toLocaleString("en-US");
 }
 
+/**
+ * Format a project's budget for the projects list view (IA Phase 4 — PAP-60).
+ * Monthly budgets render a `/mo` suffix; lifetime budgets show the bare amount.
+ */
+export function formatProjectBudget(budget: { amountCents: number; windowKind: string }): string {
+  const amount = formatCents(budget.amountCents);
+  return budget.windowKind === "calendar_month_utc" ? `${amount}/mo` : amount;
+}
+
 export function formatDate(date: Date | string): string {
   return new Date(date).toLocaleDateString("en-US", {
     month: "short",

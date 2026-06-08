@@ -75,6 +75,13 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/PAP/company/settings/access")).toBe("members");
     expect(getCompanySettingsTab("/company/settings/invites")).toBe("invites");
     expect(getCompanySettingsTab("/PAP/company/settings/secrets")).toBe("secrets");
+    expect(getCompanySettingsTab("/company/settings/instance/profile")).toBe("instance-profile");
+    expect(getCompanySettingsTab("/PAP/company/settings/instance/general")).toBe("instance-general");
+    expect(getCompanySettingsTab("/company/settings/instance/access")).toBe("instance-access");
+    expect(getCompanySettingsTab("/company/settings/instance/heartbeats")).toBe("instance-heartbeats");
+    expect(getCompanySettingsTab("/company/settings/instance/experimental")).toBe("instance-experimental");
+    expect(getCompanySettingsTab("/PAP/company/settings/instance/plugins/example")).toBe("instance-plugins");
+    expect(getCompanySettingsTab("/company/settings/instance/adapters")).toBe("instance-adapters");
   });
 
   it("renders the active tab and navigates when a different tab is selected", async () => {
@@ -96,6 +103,13 @@ describe("CompanySettingsNav", () => {
           { value: "members", label: "Members" },
           { value: "invites", label: "Invites" },
           { value: "secrets", label: "Secrets" },
+          { value: "instance-profile", label: "Instance profile" },
+          { value: "instance-general", label: "Instance general" },
+          { value: "instance-access", label: "Instance access" },
+          { value: "instance-heartbeats", label: "Instance heartbeats" },
+          { value: "instance-experimental", label: "Instance experimental" },
+          { value: "instance-plugins", label: "Instance plugins" },
+          { value: "instance-adapters", label: "Instance adapters" },
         ],
       }),
     );

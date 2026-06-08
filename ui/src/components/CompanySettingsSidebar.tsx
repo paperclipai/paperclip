@@ -2,25 +2,46 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ArchiveRestore,
   ChevronLeft,
+  Clock3,
   CloudUpload,
+  Cpu,
+  FlaskConical,
   KeyRound,
   MailPlus,
   MonitorCog,
   Puzzle,
   Settings,
+  Shield,
   SlidersHorizontal,
+  UserRoundPen,
   Users,
 } from "lucide-react";
+import type { PluginRecord } from "@paperclipai/shared";
 import { accessApi } from "@/api/access";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
 import { instanceSettingsApi } from "@/api/instanceSettings";
+import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
-import { Link } from "@/lib/router";
+import { Link, NavLink } from "@/lib/router";
+import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
+import { SIDEBAR_SCROLL_RESET_STATE } from "@/lib/navigation-scroll";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { usePluginSlots } from "@/plugins/slots";
 import { SidebarNavItem } from "./SidebarNavItem";
+
+/**
+ * Sandbox-provider-only plugins (e.g. E2B, exe.dev, Modal) have no per-plugin
+ * settings page, so a sidebar entry would lead nowhere useful. Filter them out
+ * here. Plugins that mix a sandbox provider with other contributions still
+ * appear.
+ */
+function isSandboxProviderOnly(plugin: PluginRecord): boolean {
+  const drivers = plugin.manifestJson.environmentDrivers ?? [];
+  if (drivers.length === 0) return false;
+  return drivers.every((d) => d.kind === "sandbox_provider");
+}
 
 export function CompanySettingsSidebar() {
   const { selectedCompany, selectedCompanyId } = useCompany();
@@ -57,8 +78,13 @@ export function CompanySettingsSidebar() {
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
+  const { data: plugins } = useQuery({
+    queryKey: queryKeys.plugins.all,
+    queryFn: () => pluginsApi.list(),
+  });
   const showCloudUpstream = experimentalSettings?.enableCloudSync === true;
   const canManageDataRecovery = boardAccess?.source === "local_implicit" || boardAccess?.isInstanceAdmin;
+  const sidebarPlugins = (plugins ?? []).filter((plugin) => !isSandboxProviderOnly(plugin));
 
   return (
     <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">
@@ -82,6 +108,9 @@ export function CompanySettingsSidebar() {
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
+        <div className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Company settings
+        </div>
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
           <SidebarNavItem
@@ -118,14 +147,78 @@ export function CompanySettingsSidebar() {
             ))}
           <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
           <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
+        </div>
+        <div className="mt-5 px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Instance settings
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`}
+            label="Profile"
+            icon={UserRoundPen}
+            end
+          />
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/general`}
+            label="General"
+            icon={SlidersHorizontal}
+            end
+          />
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/access`}
+            label="Access"
+            icon={Shield}
+            end
+          />
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/heartbeats`}
+            label="Heartbeats"
+            icon={Clock3}
+            end
+          />
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`}
+            label="Experimental"
+            icon={FlaskConical}
+          />
           {canManageDataRecovery ? (
             <SidebarNavItem
-              to={`/instance/settings/data-recovery?companyId=${encodeURIComponent(selectedCompanyId ?? "")}`}
+              to={`${INSTANCE_SETTINGS_PATH_PREFIX}/data-recovery?companyId=${encodeURIComponent(selectedCompanyId ?? "")}`}
               label="Data Recovery"
               icon={ArchiveRestore}
-              end
             />
           ) : null}
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`}
+            label="Plugins"
+            icon={Puzzle}
+          />
+          {sidebarPlugins.length > 0 ? (
+            <div className="ml-4 mt-1 flex flex-col gap-0.5 border-l border-border/70 pl-3">
+              {sidebarPlugins.map((plugin) => (
+                <NavLink
+                  key={plugin.id}
+                  to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins/${plugin.id}`}
+                  state={SIDEBAR_SCROLL_RESET_STATE}
+                  className={({ isActive }) =>
+                    [
+                      "rounded-md px-2 py-1.5 text-xs transition-colors",
+                      isActive
+                        ? "bg-accent text-foreground"
+                        : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                    ].join(" ")
+                  }
+                >
+                  {plugin.manifestJson.displayName ?? plugin.packageName}
+                </NavLink>
+              ))}
+            </div>
+          ) : null}
+          <SidebarNavItem
+            to={`${INSTANCE_SETTINGS_PATH_PREFIX}/adapters`}
+            label="Adapters"
+            icon={Cpu}
+          />
         </div>
       </nav>
     </aside>

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -86,9 +86,8 @@ vi.mock("../components/Identity", () => ({
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 async function flush() {
-  await act(async () => {
-    await Promise.resolve();
-  });
+  await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 async function waitForAssertion(assertion: () => void, attempts = 50) {
@@ -110,7 +109,7 @@ function renderSearch(initialPath: string, container: HTMLDivElement, node?: Rea
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  act(() => {
+  flushSync(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={[initialPath]}>
@@ -170,7 +169,7 @@ describe("Search page", () => {
       scope: "all",
       limit: 20,
       offset: 0,
-      countsByType: { issue: 1, agent: 0, project: 0 },
+      countsByType: { issue: 1, artifact: 0, agent: 0, project: 0 },
       hasMore: false,
       results: [
         {
@@ -228,7 +227,72 @@ describe("Search page", () => {
       expect(container.textContent).toContain("1 result");
     });
 
-    act(() => {
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders artifact search results in the company search surface", async () => {
+    searchApiMock.search.mockResolvedValueOnce({
+      query: "launch brief",
+      normalizedQuery: "launch brief",
+      scope: "artifacts",
+      limit: 20,
+      offset: 0,
+      countsByType: { issue: 0, artifact: 1, agent: 0, project: 0 },
+      hasMore: false,
+      results: [
+        {
+          id: "document:artifact-1",
+          type: "artifact",
+          score: 140,
+          title: "Launch Artifact Brief",
+          href: "/PAP/issues/PAP-42#document-brief",
+          matchedFields: ["artifact"],
+          sourceLabel: "Artifact",
+          snippet: "launch brief preview text",
+          snippets: [
+            {
+              field: "artifact",
+              label: "Artifact",
+              text: "launch brief preview text",
+              highlights: [{ start: 0, end: 6 }],
+            },
+          ],
+          artifact: {
+            id: "document:artifact-1",
+            source: "document",
+            mediaKind: "document",
+            issueId: "issue-42",
+            issueIdentifier: "PAP-42",
+            issueTitle: "Ship launch artifacts",
+            projectId: null,
+            projectName: null,
+            updatedAt: new Date().toISOString(),
+          },
+          updatedAt: new Date().toISOString(),
+          previewImageUrl: null,
+        },
+      ],
+    });
+
+    const { root } = renderSearch("/search?q=launch+brief&scope=artifacts", container);
+
+    await waitForAssertion(() => {
+      expect(searchApiMock.search).toHaveBeenCalledWith("company-1", {
+        q: "launch brief",
+        scope: "artifacts",
+        limit: 20,
+      });
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Launch Artifact Brief");
+      expect(container.textContent).toContain("PAP-42");
+      expect(container.textContent).toContain("launch brief preview text");
+    });
+
+    flushSync(() => {
       root.unmount();
     });
   });
@@ -240,7 +304,7 @@ describe("Search page", () => {
       scope: "all",
       limit: 20,
       offset: 0,
-      countsByType: { issue: 0, agent: 0, project: 0 },
+      countsByType: { issue: 0, artifact: 0, agent: 0, project: 0 },
       hasMore: false,
       results: [],
     });
@@ -250,7 +314,7 @@ describe("Search page", () => {
     const input = container.querySelector('input[aria-label="Search query"]') as HTMLInputElement;
     expect(input).not.toBeNull();
 
-    act(() => {
+    flushSync(() => {
       const nativeSetter = Object.getOwnPropertyDescriptor(
         HTMLInputElement.prototype,
         "value",
@@ -272,7 +336,7 @@ describe("Search page", () => {
       });
     });
 
-    act(() => {
+    flushSync(() => {
       root.unmount();
     });
   });
@@ -284,7 +348,7 @@ describe("Search page", () => {
       scope: "all",
       limit: 20,
       offset: 0,
-      countsByType: { issue: 1, agent: 0, project: 0 },
+      countsByType: { issue: 1, artifact: 0, agent: 0, project: 0 },
       hasMore: false,
       results: [
         {
@@ -326,7 +390,7 @@ describe("Search page", () => {
       expect(navigateMock).toHaveBeenCalledWith("/PAP/issues/PAP-3366", { replace: true });
     });
 
-    act(() => {
+    flushSync(() => {
       root.unmount();
     });
   });
@@ -338,7 +402,7 @@ describe("Search page", () => {
       scope: "comments",
       limit: 20,
       offset: 0,
-      countsByType: { issue: 0, agent: 0, project: 0 },
+      countsByType: { issue: 0, artifact: 0, agent: 0, project: 0 },
       hasMore: false,
       results: [],
     });
@@ -351,7 +415,7 @@ describe("Search page", () => {
       expect(container.textContent).toContain("Search all scopes");
     });
 
-    act(() => {
+    flushSync(() => {
       root.unmount();
     });
   });
