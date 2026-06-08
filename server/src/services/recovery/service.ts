@@ -2603,6 +2603,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       input.issue.companyId,
       input.issue.id,
       input.recoveryCause,
+      // Include assignee so a reassignment resets attempt count and re-allows a fresh wake.
+      input.issue.assigneeAgentId ?? "unassigned",
     ].join(":");
   }
 
@@ -2649,6 +2651,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       ? await getAgent(input.issue.assigneeAgentId)
       : null;
     const now = new Date();
+
+    // Read existing action before upsert so we can compare lastAttemptAt against
+    // issue.lastActivityAt and suppress duplicate non-assignee wakes when nothing changed.
+    const existingAction = await recoveryActionsSvc.getActiveForIssue(input.issue.companyId, input.issue.id);
+    const previousAttemptAt = existingAction?.lastAttemptAt
+      ? new Date(existingAction.lastAttemptAt as Date | string)
+      : null;
+    const hasNewActivitySinceLastAttempt = !previousAttemptAt
+      || input.issue.lastActivityAt > previousAttemptAt;
+
     const action = await recoveryActionsSvc.upsertSourceScoped({
       companyId: input.issue.companyId,
       sourceIssueId: input.issue.id,
@@ -2688,7 +2700,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       lastAttemptAt: now,
     });
 
-    return action;
+    return { action, hasNewActivitySinceLastAttempt };
   }
 
   async function enqueueSourceScopedStrandedRecoveryWake(input: {
@@ -2696,8 +2708,43 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
     recoveryCause: StrandedRecoveryCause;
+    hasNewActivitySinceLastAttempt: boolean;
   }) {
     if (!input.action.ownerAgentId) return;
+    const ownerIsNonAssignee = input.action.ownerAgentId !== input.issue.assigneeAgentId;
+    if (!input.hasNewActivitySinceLastAttempt && ownerIsNonAssignee && input.action.attemptCount > 1) {
+      const assigneeAgentId = input.issue.assigneeAgentId;
+      if (!assigneeAgentId) return;
+      await deps.enqueueWakeup(assigneeAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "source_scoped_recovery_action",
+        idempotencyKey: `source_scoped_recovery_action:${input.action.id}:${input.action.attemptCount}:assignee_fallback`,
+        payload: withRecoveryModelProfileHint({
+          issueId: input.issue.id,
+          sourceIssueId: input.issue.id,
+          recoveryActionId: input.action.id,
+          strandedRunId: input.latestRun?.id ?? null,
+          recoveryCause: input.recoveryCause,
+          suppressedNonAssigneeWake: true,
+        }, "status_only"),
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: withRecoveryModelProfileHint({
+          issueId: input.issue.id,
+          taskId: input.issue.id,
+          wakeReason: "source_scoped_recovery_action",
+          skipIssueComment: true,
+          source: "issue_recovery_action",
+          recoveryActionId: input.action.id,
+          sourceIssueId: input.issue.id,
+          strandedRunId: input.latestRun?.id ?? null,
+          recoveryCause: input.recoveryCause,
+          suppressedNonAssigneeWake: true,
+        }, "status_only"),
+      });
+      return;
+    }
     await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",
       triggerDetail: "system",
@@ -2908,7 +2955,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .limit(1);
       if (!fresh) return null;
 
-      const action = await ensureSourceScopedStrandedRecoveryAction({
+      const { action, hasNewActivitySinceLastAttempt } = await ensureSourceScopedStrandedRecoveryAction({
         issue: fresh,
         previousStatus: input.previousStatus,
         latestRun: input.latestRun,
@@ -2925,6 +2972,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         issue: fresh,
         latestRun: input.latestRun,
         recoveryCause: input.recoveryCause ?? "stranded_assigned_issue",
+        hasNewActivitySinceLastAttempt,
       });
 
       const updated = await issuesSvc.update(input.issue.id, {

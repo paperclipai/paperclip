@@ -4024,4 +4024,183 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  // BLO-8677: suppression of repeated non-assignee (CTO/manager) wakes when
+  // no new issue activity has occurred since the last recovery attempt.
+  describe("source-scoped stranded recovery: non-assignee wake suppression (BLO-8677)", () => {
+    async function seedWithCto(input?: {
+      existingAction?: { lastAttemptAt: Date; attemptCount?: number };
+      issueLastActivityAt?: Date;
+    }) {
+      const fixture = await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "failed",
+        retryReason: "issue_continuation_needed",
+      });
+      const { companyId, agentId, issueId } = fixture;
+
+      const ctoAgentId = randomUUID();
+      await db.insert(agents).values({
+        id: ctoAgentId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      if (input?.existingAction) {
+        await db.insert(issueRecoveryActions).values({
+          companyId,
+          sourceIssueId: issueId,
+          kind: "stranded_assigned_issue",
+          status: "active",
+          ownerType: "agent",
+          ownerAgentId: ctoAgentId,
+          previousOwnerAgentId: agentId,
+          returnOwnerAgentId: agentId,
+          cause: "stranded_assigned_issue",
+          fingerprint: `source_scoped_recovery:${companyId}:${issueId}:stranded_assigned_issue:${agentId}`,
+          evidence: {},
+          nextAction:
+            "Restore a live execution path, fix the runtime/adapter failure, or record an intentional manual resolution.",
+          attemptCount: input.existingAction.attemptCount ?? 1,
+          lastAttemptAt: input.existingAction.lastAttemptAt,
+        });
+      }
+
+      if (input?.issueLastActivityAt !== undefined) {
+        await db.update(issues).set({ lastActivityAt: input.issueLastActivityAt }).where(eq(issues.id, issueId));
+      }
+
+      return { ...fixture, ctoAgentId };
+    }
+
+    async function getRecoveryWakeups(agentId: string) {
+      return db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.reason, "source_scoped_recovery_action"),
+          ),
+        );
+    }
+
+    it("first attempt: always wakes the CTO owner without suppression", async () => {
+      const { agentId, issueId, ctoAgentId } = await seedWithCto();
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result.escalated).toBe(1);
+      expect(result.issueIds).toEqual([issueId]);
+
+      const ctoWakeups = await getRecoveryWakeups(ctoAgentId);
+      expect(ctoWakeups).toHaveLength(1);
+      const ctoPayload = ctoWakeups[0]?.payload as Record<string, unknown> | null;
+      expect(ctoPayload).not.toMatchObject({ suppressedNonAssigneeWake: true });
+
+      const assigneeWakeups = await getRecoveryWakeups(agentId);
+      expect(assigneeWakeups).toHaveLength(0);
+    });
+
+    it("second attempt with no new issue activity: suppresses CTO wake and routes to assignee", async () => {
+      const now = Date.now();
+      const lastAttemptAt = new Date(now - 60_000); // 1 min ago
+      const issueLastActivityAt = new Date(now - 300_000); // 5 min ago (before lastAttemptAt → no new activity)
+
+      const { companyId, agentId, issueId, ctoAgentId } = await seedWithCto({
+        existingAction: { lastAttemptAt },
+        issueLastActivityAt,
+      });
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result.escalated).toBe(1);
+      expect(result.issueIds).toEqual([issueId]);
+
+      const ctoWakeups = await getRecoveryWakeups(ctoAgentId);
+      expect(ctoWakeups).toHaveLength(0);
+
+      const assigneeWakeups = await getRecoveryWakeups(agentId);
+      expect(assigneeWakeups).toHaveLength(1);
+      const assigneePayload = assigneeWakeups[0]?.payload as Record<string, unknown> | null;
+      expect(assigneePayload).toMatchObject({ suppressedNonAssigneeWake: true });
+
+      const action = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(
+          and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId)),
+        )
+        .then((rows) => rows[0] ?? null);
+      expect(action?.attemptCount).toBe(2);
+    });
+
+    it("second attempt with new issue activity since last attempt: allows CTO wake", async () => {
+      const now = Date.now();
+      const lastAttemptAt = new Date(now - 300_000); // 5 min ago
+      const issueLastActivityAt = new Date(now - 60_000); // 1 min ago (after lastAttemptAt → new activity)
+
+      const { agentId, issueId, ctoAgentId } = await seedWithCto({
+        existingAction: { lastAttemptAt },
+        issueLastActivityAt,
+      });
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result.escalated).toBe(1);
+      expect(result.issueIds).toEqual([issueId]);
+
+      const ctoWakeups = await getRecoveryWakeups(ctoAgentId);
+      expect(ctoWakeups).toHaveLength(1);
+      const ctoPayload = ctoWakeups[0]?.payload as Record<string, unknown> | null;
+      expect(ctoPayload).not.toMatchObject({ suppressedNonAssigneeWake: true });
+
+      const assigneeWakeups = await getRecoveryWakeups(agentId);
+      expect(assigneeWakeups).toHaveLength(0);
+    });
+
+    it("owner-is-assignee: no suppression even at high attemptCount and no new activity", async () => {
+      // When no manager/CTO exists, the owner falls back to the assignee itself.
+      // ownerIsNonAssignee is false in that case, so suppression must not fire.
+      const now = Date.now();
+      const lastAttemptAt = new Date(now - 300_000);
+      const issueLastActivityAt = new Date(now - 600_000);
+
+      const fixture = await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "failed",
+        retryReason: "issue_continuation_needed",
+      });
+      const { agentId, issueId, companyId } = fixture;
+
+      await db.insert(issueRecoveryActions).values({
+        companyId,
+        sourceIssueId: issueId,
+        kind: "stranded_assigned_issue",
+        status: "active",
+        ownerType: "agent",
+        ownerAgentId: agentId,
+        previousOwnerAgentId: agentId,
+        returnOwnerAgentId: agentId,
+        cause: "stranded_assigned_issue",
+        fingerprint: `source_scoped_recovery:${companyId}:${issueId}:stranded_assigned_issue:${agentId}`,
+        evidence: {},
+        nextAction: "Restore a live execution path.",
+        attemptCount: 3,
+        lastAttemptAt,
+      });
+      await db.update(issues).set({ lastActivityAt: issueLastActivityAt }).where(eq(issues.id, issueId));
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result.escalated).toBe(1);
+
+      const assigneeWakeups = await getRecoveryWakeups(agentId);
+      expect(assigneeWakeups).toHaveLength(1);
+      const payload = assigneeWakeups[0]?.payload as Record<string, unknown> | null;
+      expect(payload).not.toMatchObject({ suppressedNonAssigneeWake: true });
+    });
+  });
 });
