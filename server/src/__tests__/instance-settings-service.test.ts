@@ -15,6 +15,7 @@ describe("instance settings service", () => {
     })).toEqual({
       enableEnvironments: true,
       enableIsolatedWorkspaces: true,
+      enableStreamlinedLeftNavigation: false,
       enableIssuePlanDecompositions: true,
       enableCloudSync: true,
       autoRestartDevServerWhenIdle: true,

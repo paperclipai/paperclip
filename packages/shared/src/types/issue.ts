@@ -30,6 +30,11 @@ import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 import type { IssueWorkProduct } from "./work-product.js";
+import type {
+  LowTrustReviewPresetPolicy,
+  SourceTrustMetadata,
+  TrustAuthorizationPolicy,
+} from "../trust-policy.js";
 
 export type { IssueWorkMode };
 
@@ -101,6 +106,7 @@ export interface IssueDocumentSummary {
   lockedAt: Date | null;
   lockedByAgentId: string | null;
   lockedByUserId: string | null;
+  sourceTrust?: SourceTrustMetadata | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -443,6 +449,8 @@ export interface IssueExecutionPolicy {
   commentRequired: boolean;
   stages: IssueExecutionStage[];
   monitor?: IssueExecutionMonitorPolicy | null;
+  reviewPreset?: LowTrustReviewPresetPolicy;
+  authorizationPolicy?: TrustAuthorizationPolicy;
 }
 
 export interface IssueExecutionMonitorState {
@@ -539,6 +547,7 @@ export interface Issue {
   completedAt: Date | null;
   cancelledAt: Date | null;
   hiddenAt: Date | null;
+  sourceTrust?: SourceTrustMetadata | null;
   labelIds?: string[];
   labels?: IssueLabel[];
   blockedBy?: IssueRelationIssueSummary[];
@@ -581,6 +590,12 @@ export interface IssueComment {
   body: string;
   presentation: IssueCommentPresentation | null;
   metadata: IssueCommentMetadata | null;
+  deletedAt?: Date | null;
+  deletedByType?: "agent" | "user" | null;
+  deletedByAgentId?: string | null;
+  deletedByUserId?: string | null;
+  deletedByRunId?: string | null;
+  sourceTrust?: SourceTrustMetadata | null;
   followUpRequested?: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -724,6 +739,7 @@ export interface AskUserQuestionsPayload {
 export interface AskUserQuestionsAnswer {
   questionId: string;
   optionIds: string[];
+  otherText?: string | null;
 }
 
 export interface AskUserQuestionsResult {
@@ -772,12 +788,40 @@ export interface RequestConfirmationPayload {
   target?: RequestConfirmationTarget | null;
 }
 
+export interface RequestCheckboxConfirmationOption {
+  id: string;
+  label: string;
+  description?: string | null;
+}
+
+export interface RequestCheckboxConfirmationPayload {
+  version: 1;
+  prompt: string;
+  detailsMarkdown?: string | null;
+  options: RequestCheckboxConfirmationOption[];
+  defaultSelectedOptionIds?: string[];
+  minSelected?: number;
+  maxSelected?: number | null;
+  acceptLabel?: string | null;
+  rejectLabel?: string | null;
+  rejectRequiresReason?: boolean;
+  rejectReasonLabel?: string | null;
+  allowDeclineReason?: boolean;
+  declineReasonPlaceholder?: string | null;
+  supersedeOnUserComment?: boolean;
+  target?: RequestConfirmationTarget | null;
+}
+
 export interface RequestConfirmationResult {
   version: 1;
   outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target";
   reason?: string | null;
   commentId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
+}
+
+export interface RequestCheckboxConfirmationResult extends RequestConfirmationResult {
+  selectedOptionIds?: string[];
 }
 
 export interface IssueThreadInteractionBase extends IssueThreadInteractionActorFields {
@@ -815,20 +859,29 @@ export interface RequestConfirmationInteraction extends IssueThreadInteractionBa
   result?: RequestConfirmationResult | null;
 }
 
+export interface RequestCheckboxConfirmationInteraction extends IssueThreadInteractionBase {
+  kind: "request_checkbox_confirmation";
+  payload: RequestCheckboxConfirmationPayload;
+  result?: RequestCheckboxConfirmationResult | null;
+}
+
 export type IssueThreadInteraction =
   | SuggestTasksInteraction
   | AskUserQuestionsInteraction
-  | RequestConfirmationInteraction;
+  | RequestConfirmationInteraction
+  | RequestCheckboxConfirmationInteraction;
 
 export type IssueThreadInteractionPayload =
   | SuggestTasksPayload
   | AskUserQuestionsPayload
-  | RequestConfirmationPayload;
+  | RequestConfirmationPayload
+  | RequestCheckboxConfirmationPayload;
 
 export type IssueThreadInteractionResult =
   | SuggestTasksResult
   | AskUserQuestionsResult
-  | RequestConfirmationResult;
+  | RequestConfirmationResult
+  | RequestCheckboxConfirmationResult;
 
 export interface IssueAttachment {
   id: string;

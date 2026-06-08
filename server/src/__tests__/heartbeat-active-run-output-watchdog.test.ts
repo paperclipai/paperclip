@@ -73,6 +73,31 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+function errorHasPostgresCode(error: unknown, code: string): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (!current || typeof current !== "object") return false;
+    const record = current as { code?: unknown; cause?: unknown };
+    if (record.code === code) return true;
+    current = record.cause;
+  }
+  return false;
+}
+
+async function truncateCompaniesWithDeadlockRetry(db: ReturnType<typeof createDb>) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
+      return;
+    } catch (error) {
+      if (!errorHasPostgresCode(error, "40P01") || attempt === 4) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+    }
+  }
+}
+
 describeEmbeddedPostgres("active-run output watchdog", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
@@ -91,7 +116,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       if (activeRuns.length === 0) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
+    await truncateCompaniesWithDeadlockRetry(db);
   });
 
   afterAll(async () => {

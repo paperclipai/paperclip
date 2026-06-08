@@ -76,6 +76,9 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
     ...(parsed.cleanupPolicy && typeof parsed.cleanupPolicy === "object" && !Array.isArray(parsed.cleanupPolicy)
       ? { cleanupPolicy: { ...(parsed.cleanupPolicy as Record<string, unknown>) } }
       : {}),
+    ...(parsed.authorizationPolicy && typeof parsed.authorizationPolicy === "object" && !Array.isArray(parsed.authorizationPolicy)
+      ? { authorizationPolicy: { ...(parsed.authorizationPolicy as Record<string, unknown>) } }
+      : {}),
   };
 }
 
