@@ -1891,6 +1891,15 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/routine-triggers/public/{publicId}/runs/{runIssueId}/verdict",
+  tags: ["routines"],
+  summary: "Read a public routine run verdict",
+  request: { params: z.object({ publicId: z.string(), runIssueId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
 // ─── Goals ───────────────────────────────────────────────────────────────────
 
 registry.registerPath({
