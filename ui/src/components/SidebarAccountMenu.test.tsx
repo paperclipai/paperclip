@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -44,6 +43,12 @@ vi.mock("../context/ThemeContext", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+async function act(callback: () => void | Promise<void>) {
+  await callback();
+  await Promise.resolve();
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
+}
+
 async function flushReact() {
   await act(async () => {
     await Promise.resolve();
@@ -85,7 +90,6 @@ describe("SidebarAccountMenu", () => {
         <QueryClientProvider client={queryClient}>
           <SidebarAccountMenu
             deploymentMode="authenticated"
-            instanceSettingsTarget="/instance/settings/general"
             version="1.2.3"
           />
         </QueryClientProvider>,
@@ -106,11 +110,13 @@ describe("SidebarAccountMenu", () => {
     await flushReact();
 
     expect(document.body.textContent).toContain("Edit profile");
+    expect(document.body.textContent).not.toContain("Instance settings");
     expect(document.body.textContent).toContain("Documentation");
     expect(document.body.textContent).toContain("Paperclip v1.2.3");
     expect(document.body.textContent).toContain("jane@example.com");
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
       .toContain("w-[277px]");
+    expect(document.body.querySelector('a[href="/company/settings/instance/profile"]')).not.toBeNull();
 
     await act(async () => {
       root.unmount();

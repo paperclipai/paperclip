@@ -248,7 +248,7 @@ describe("skills CLI commands", () => {
       "http://paperclip.test/api/skills/catalog?kind=bundled&category=software-development&q=github",
       expect.objectContaining({ method: "GET" }),
     );
-    const rendered = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+    const rendered = logSpy.mock.calls.map((call: unknown[]) => String(call[0])).join("\n");
     expect(rendered).toContain("id");
     expect(rendered).toContain("paperclipai:bundled:software-development:github-pr-workflow");
     expect(rendered).toContain("roles");

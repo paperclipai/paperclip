@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildSkillMentionHref } from "@paperclipai/shared";
 import {
+  LOW_TRUST_REVIEW_PRESET,
   applyRunScopedMentionedSkillKeys,
   extractMentionedSkillIdsFromSources,
   resolveExecutionRunAdapterConfig,
@@ -189,12 +190,95 @@ describe("resolveExecutionRunAdapterConfig", () => {
     expect(result.secretManifest).toEqual([]);
     expect(resolveEnvBindings).not.toHaveBeenCalled();
   });
+
+  it("passes low-trust allowed secret binding ids into all runtime secret contexts", async () => {
+    const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
+      config: { env: {} },
+      secretKeys: new Set<string>(),
+      manifest: [],
+    });
+    const resolveEnvBindings = vi.fn().mockResolvedValue({
+      env: {},
+      secretKeys: new Set<string>(),
+      manifest: [],
+    });
+
+    await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      projectId: "project-1",
+      routineId: "routine-1",
+      executionRunConfig: { env: {} },
+      projectEnv: { PROJECT_FLAG: "plain" },
+      routineEnv: { ROUTINE_FLAG: "plain" },
+      trustPreset: {
+        kind: "low_trust_review",
+        preset: LOW_TRUST_REVIEW_PRESET,
+        boundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId: "company-1",
+          issueIds: ["issue-1"],
+          allowedSecretBindingIds: ["binding-1"],
+        },
+        sourcePresets: {},
+      },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime,
+        resolveEnvBindings,
+      } as any,
+    });
+
+    expect(resolveAdapterConfigForRuntime.mock.calls[0]?.[2]).toMatchObject({
+      allowedBindingIds: ["binding-1"],
+    });
+    expect(resolveEnvBindings.mock.calls[0]?.[2]).toMatchObject({
+      allowedBindingIds: ["binding-1"],
+    });
+    expect(resolveEnvBindings.mock.calls[1]?.[2]).toMatchObject({
+      allowedBindingIds: ["binding-1"],
+    });
+  });
+
+  it("rejects inline sensitive env values for low-trust runs", async () => {
+    await expect(resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      executionRunConfig: {
+        env: {
+          OPENAI_API_KEY: "inline-secret",
+        },
+      },
+      projectEnv: null,
+      trustPreset: {
+        kind: "low_trust_review",
+        preset: LOW_TRUST_REVIEW_PRESET,
+        boundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId: "company-1",
+          issueIds: ["issue-1"],
+        },
+        sourcePresets: {},
+      },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn(),
+        resolveEnvBindings: vi.fn(),
+      } as any,
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "low_trust_inline_sensitive_env_denied" },
+    });
+  });
 });
 
 describe("extractMentionedSkillIdsFromSources", () => {
-  it("collects explicit skill mention ids across issue sources", () => {
-    const releaseHref = buildSkillMentionHref("skill-1", "release-changelog");
-    const browserHref = buildSkillMentionHref("skill-2", "agent-browser");
+  it("collects UUID skill mention ids across issue sources", () => {
+    const releaseSkillId = "11111111-1111-4111-8111-111111111111";
+    const browserSkillId = "22222222-2222-4222-8222-222222222222";
+    const releaseHref = buildSkillMentionHref(releaseSkillId, "release-changelog");
+    const browserHref = buildSkillMentionHref(browserSkillId, "agent-browser");
 
     expect(
       extractMentionedSkillIdsFromSources([
@@ -202,7 +286,19 @@ describe("extractMentionedSkillIdsFromSources", () => {
         `And also [/agent-browser](${browserHref})`,
         `Duplicate mention [/release-changelog](${releaseHref})`,
       ]),
-    ).toEqual(["skill-1", "skill-2"]);
+    ).toEqual([releaseSkillId, browserSkillId]);
+  });
+
+  it("ignores legacy non-UUID skill mention ids before runtime database lookup", () => {
+    const validSkillId = "33333333-3333-4333-8333-333333333333";
+    const validHref = buildSkillMentionHref(validSkillId, "greploop");
+    const legacyHref = buildSkillMentionHref("skill-greploop", "greploop");
+
+    expect(
+      extractMentionedSkillIdsFromSources([
+        `Use [/greploop](${legacyHref}) and [/prcheckloop](${validHref})`,
+      ]),
+    ).toEqual([validSkillId]);
   });
 });
 

@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
 import { Link } from "@/lib/router";
 import { useTheme } from "../context/ThemeContext";
+import { useOptionalCompany } from "../context/CompanyContext";
 import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chips";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
@@ -570,12 +571,19 @@ export function MarkdownBody({
   onImageClick,
 }: MarkdownBodyProps) {
   const { theme } = useTheme();
+  // Read company prefixes non-throwingly: MarkdownBody renders in surfaces that
+  // may lack a CompanyProvider. A null context (or no companies yet) leaves
+  // knownPrefixes undefined, which keeps issue auto-linking permissive.
+  const company = useOptionalCompany();
+  const knownPrefixes = company?.companies.length
+    ? company.companies.map((c) => c.issuePrefix)
+    : undefined;
   const remarkPlugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm];
   if (enableWikiLinks) {
     remarkPlugins.push(createRemarkWikiLinks({ wikiLinkRoot, resolveWikiLinkHref }));
   }
   if (linkIssueReferences) {
-    remarkPlugins.push(remarkLinkIssueReferences);
+    remarkPlugins.push([remarkLinkIssueReferences, { knownPrefixes }]);
   }
   if (softBreaks) {
     remarkPlugins.push(remarkSoftBreaks);

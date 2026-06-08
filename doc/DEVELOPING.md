@@ -212,6 +212,32 @@ Configure storage provider/settings:
 pnpm paperclipai configure --section storage
 ```
 
+## Agent Artifact Uploads
+
+When an agent generates a file that a board user or reviewer should inspect,
+attach it to the issue before marking the task complete. Do not rely on a local
+workspace path as the only access path.
+
+Use the helper bundled with the Paperclip skill from the repo root:
+
+```sh
+skills/paperclip/scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
+  --title "Demo video render" \
+  --summary "MP4 render for board review"
+```
+
+For WebM output:
+
+```sh
+skills/paperclip/scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
+  --title "Walkthrough video" \
+  --summary "WebM walkthrough render"
+```
+
+The helper uploads the file as an issue attachment, creates an artifact work
+product by default, and prints markdown links for the final issue comment. See
+`doc/AGENT-ARTIFACTS.md` for the full completion pattern and direct API shape.
+
 ## Default Agent Workspaces
 
 When a local agent run has no resolved project/session workspace, Paperclip falls back to an agent home workspace under the instance root:
@@ -475,6 +501,38 @@ executable script). The build contract is documented in
 CI runs `pnpm --filter @paperclipai/skills-catalog validate` and the package's
 vitest suite, so always regenerate the manifest in the same commit as the
 catalog change.
+
+## App-Shipped Teams Catalog
+
+The team catalog package mirrors the skills catalog workflow for
+agentcompanies/v1 team packages:
+
+```text
+packages/teams-catalog/
+  catalog/
+    bundled/<category>/<slug>/TEAM.md
+    optional/<category>/<slug>/TEAM.md
+  generated/catalog.json
+  scripts/
+    build-catalog-manifest.ts
+    validate-catalog.ts
+```
+
+Validate without writing the manifest:
+
+```sh
+pnpm --filter @paperclipai/teams-catalog validate
+```
+
+Regenerate `generated/catalog.json` after editing catalog team files:
+
+```sh
+pnpm --filter @paperclipai/teams-catalog build:manifest
+```
+
+Team install/preview APIs enforce source policy. External skill sources require
+explicit approval flags, and local-path skill sources are development-only
+unless `allowLocalPathSources` is set by the caller.
 
 ## Quick Health Checks
 

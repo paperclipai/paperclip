@@ -5,8 +5,10 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { agentsApi } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
+import { issuesApi } from "../api/issues";
+import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
-import { AGENT_ROLES, type AdapterEnvironmentTestResult } from "@paperclipai/shared";
+import { AGENT_ROLES, type AdapterEnvironmentTestResult, type AgentPermissions } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -28,6 +30,8 @@ import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { isValidAdapterType } from "../adapters/metadata";
 import { ReportsToPicker } from "../components/ReportsToPicker";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
+import { TrustPresetSection } from "../components/TrustPresetSection";
+import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
@@ -68,6 +72,9 @@ export function NewAgent() {
   const [role, setRole] = useState("general");
   const [reportsTo, setReportsTo] = useState<string | null>(null);
   const [configValues, setConfigValues] = useState<CreateConfigValues>(defaultCreateValues);
+  const [permissions, setPermissions] = useState<Partial<AgentPermissions>>(
+    buildPermissionsForTrustPreset(null, "standard"),
+  );
   const [selectedSkillKeys, setSelectedSkillKeys] = useState<string[]>([]);
   const [roleOpen, setRoleOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -91,6 +98,22 @@ export function NewAgent() {
     queryKey: queryKeys.companySkills.list(selectedCompanyId ?? ""),
     queryFn: () => companySkillsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
+  });
+
+  const lowTrustSelected = getTrustPreset(permissions) === "low_trust_review";
+
+  const { data: boundaryProjects, isLoading: boundaryProjectsLoading } = useQuery({
+    queryKey: selectedCompanyId ? queryKeys.projects.list(selectedCompanyId) : ["projects", "__low-trust-disabled"],
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId && lowTrustSelected),
+  });
+
+  const { data: boundaryIssues, isLoading: boundaryIssuesLoading } = useQuery({
+    queryKey: selectedCompanyId
+      ? [...queryKeys.issues.list(selectedCompanyId), "low-trust-boundary-candidates"]
+      : ["issues", "__low-trust-disabled"],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { limit: 100, sortField: "updated", sortDir: "desc" }),
+    enabled: Boolean(selectedCompanyId && lowTrustSelected),
   });
 
   const isFirstAgent = !agents || agents.length === 0;
@@ -156,6 +179,7 @@ export function NewAgent() {
         selectedSkillKeys,
         configValues,
         adapterConfig: buildAdapterConfig(),
+        permissions,
       }),
     );
   }
@@ -253,6 +277,24 @@ export function NewAgent() {
             value={reportsTo}
             onChange={setReportsTo}
             disabled={isFirstAgent}
+          />
+        </div>
+
+        <div className="border-t border-border px-4 py-4">
+          <TrustPresetSection
+            permissions={permissions}
+            onChange={setPermissions}
+            disabled={createAgent.isPending}
+            companyId={selectedCompanyId}
+            projectCandidates={(boundaryProjects ?? []).map((project) => ({
+              id: project.id,
+              label: project.name,
+            }))}
+            issueCandidates={(boundaryIssues ?? []).map((issue) => ({
+              id: issue.id,
+              label: `${issue.identifier ?? issue.id.slice(0, 8)} · ${issue.title}`,
+            }))}
+            candidatesLoading={boundaryProjectsLoading || boundaryIssuesLoading}
           />
         </div>
 

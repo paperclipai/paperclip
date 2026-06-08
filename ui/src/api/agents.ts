@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AgentPermissions,
   AgentDetail,
   AgentInstructionsBundle,
   AgentInstructionsFileDetail,
@@ -12,6 +13,7 @@ import type {
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
+  ClearAgentErrorResponse,
 } from "@paperclipai/shared";
 import type {
   AdapterModelProfileDefinition,
@@ -67,6 +69,8 @@ export interface AgentHireResponse {
 export interface AgentPermissionUpdate {
   canCreateAgents: boolean;
   canAssignTasks: boolean;
+  trustPreset?: AgentPermissions["trustPreset"];
+  authorizationPolicy?: AgentPermissions["authorizationPolicy"];
 }
 
 export interface AgentWakeRequest {
@@ -162,6 +166,8 @@ export const agentsApi = {
     ),
   pause: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/pause"), {}),
   resume: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/resume"), {}),
+  clearError: (id: string, companyId?: string) =>
+    api.post<ClearAgentErrorResponse>(agentPath(id, companyId, "/clear-error"), {}),
   approve: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/approve"), {}),
   terminate: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/terminate"), {}),
   remove: (id: string, companyId?: string) => api.delete<{ ok: true }>(agentPath(id, companyId)),
