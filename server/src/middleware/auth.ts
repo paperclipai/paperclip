@@ -96,6 +96,22 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         }
       }
       if (runIdHeader) req.actor.runId = runIdHeader;
+      // In local_trusted mode, reject write requests that carry no Authorization
+      // header and no browser-style Origin/Referer. This prevents API clients
+      // (agents, curl, scripts) that accidentally omit their Authorization header
+      // from having mutations silently attributed to the local-board user instead
+      // of receiving a clear 401. Browser-originated writes from the board UI
+      // carry an Origin header and are unaffected.
+      if (
+        opts.deploymentMode === "local_trusted" &&
+        req.actor.source === "local_implicit" &&
+        (req.method === "POST" || req.method === "PATCH" || req.method === "PUT" || req.method === "DELETE") &&
+        !req.header("origin") &&
+        !req.header("referer")
+      ) {
+        _res.status(401).json({ error: "Unauthorized", message: "Write requests require an Authorization header." });
+        return;
+      }
       next();
       return;
     }
