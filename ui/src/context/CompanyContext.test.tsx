@@ -22,6 +22,13 @@ vi.mock("../api/companies", () => ({
   companiesApi: mockCompaniesApi,
 }));
 
+// CompanyProvider's company list query is gated on useAuthedDataEnabled(), which
+// reads /api/health. In local_trusted mode no session is required, so the gate
+// opens and the list loads — matching this suite's pre-gate behaviour.
+vi.mock("@/api/health", () => ({
+  healthApi: { get: vi.fn().mockResolvedValue({ status: "ok", deploymentMode: "local_trusted" }) },
+}));
+
 const activeCompany = { id: "company-1" };
 const secondActiveCompany = { id: "company-2" };
 const archivedCompany = { id: "archived-company" };

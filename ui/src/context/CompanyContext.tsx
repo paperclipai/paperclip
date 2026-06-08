@@ -12,6 +12,7 @@ import type { Company } from "@valadrien-os/shared";
 import { companiesApi } from "../api/companies";
 import { companiesListQueryOptions, type CompanyListResult } from "../api/companies-query";
 import { queryKeys } from "../lib/queryKeys";
+import { useAuthedDataEnabled } from "@/hooks/useAuthedDataEnabled";
 import type { CompanySelectionSource } from "../lib/company-selection";
 type CompanySelectionOptions = { source?: CompanySelectionSource };
 
@@ -69,7 +70,12 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   const [selectedCompanyId, setSelectedCompanyIdState] = useState<string | null>(null);
 
   const { data: companiesResult = { companies: [], unauthorized: false }, isLoading, error } =
-    useQuery<CompanyListResult>(companiesListQueryOptions);
+    useQuery<CompanyListResult>({
+      ...companiesListQueryOptions,
+      // Don't fetch the company list until authenticated (or in local_trusted
+      // mode). Keeps the unauthenticated /auth page from firing /api/companies.
+      enabled: useAuthedDataEnabled(),
+    });
   const companies = companiesResult.companies;
   const companyListUnauthorized = companiesResult.unauthorized;
   const sidebarCompanies = useMemo(
