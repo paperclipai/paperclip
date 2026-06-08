@@ -5620,7 +5620,6 @@ export function issueService(db: Db) {
           .update(issues)
           .set({
             status: "todo",
-            assigneeAgentId: null,
             checkoutRunId: null,
             executionRunId: null,
             executionAgentNameKey: null,
@@ -5660,6 +5659,7 @@ export function issueService(db: Db) {
         };
         if (options.clearAssignee) {
           patch.assigneeAgentId = null;
+          patch.assigneeUserId = null;
         }
 
         const updated = await tx

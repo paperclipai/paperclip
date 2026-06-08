@@ -206,7 +206,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       .then((rows) => rows[0]);
     expect(row).toEqual({
       status: "todo",
-      assigneeAgentId: null,
+      assigneeAgentId: agentId,
       checkoutRunId: null,
       executionRunId: null,
       executionLockedAt: null,
@@ -342,6 +342,37 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       assigneeAgentId: otherAgentId,
       checkoutRunId: currentRunId,
       executionRunId: currentRunId,
+    });
+  });
+
+  it("clears a user assignee only on explicit admin force-release", async () => {
+    const { companyId, failedRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "User-owned stale lock",
+      status: "todo",
+      priority: "high",
+      assigneeUserId: "owner-user",
+      checkoutRunId: null,
+      executionRunId: failedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(boardActor(companyId)))
+      .post(`/api/issues/${issueId}/admin/force-release?clearAssignee=true`)
+      .send();
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.issue).toMatchObject({
+      id: issueId,
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
     });
   });
 });
