@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { companies, createDb, workflowRunPhases, workflowRuns, workflows } from "@paperclipai/db";
+import { companies, createDb, workflowHandoffs, workflowRunPhases, workflowRuns, workflows } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -57,6 +57,10 @@ const mockPrepareInstrumentedWorkflowRuntime = vi.hoisted(() => vi.fn(async (inp
   analysis: input.analysis,
 })));
 const mockCollectWorkflowRuntimeArtifacts = vi.hoisted(() => vi.fn(async () => []));
+const mockCloseResolvedHandoff = vi.hoisted(() => vi.fn(async () => null));
+const mockWorkflowHandoffBridgeService = vi.hoisted(() => vi.fn(() => ({
+  closeResolvedHandoff: mockCloseResolvedHandoff,
+})));
 
 vi.mock("../storage/index.js", () => ({
   getStorageService: mockGetStorageService,
@@ -70,6 +74,10 @@ vi.mock("../services/workflows-runtime.js", () => ({
   analyzeWorkflowProject: mockAnalyzeWorkflowProject,
   prepareInstrumentedWorkflowRuntime: mockPrepareInstrumentedWorkflowRuntime,
   collectWorkflowRuntimeArtifacts: mockCollectWorkflowRuntimeArtifacts,
+}));
+
+vi.mock("../services/workflow-handoff-bridge.js", () => ({
+  workflowHandoffBridgeService: mockWorkflowHandoffBridgeService,
 }));
 
 vi.mock("../workflow-run-jwt.js", () => ({
@@ -102,6 +110,7 @@ describeEmbeddedPostgres("workflowService.runManual", () => {
   });
 
   afterEach(async () => {
+    await db.delete(workflowHandoffs);
     await db.delete(workflowRunPhases);
     await db.delete(workflowRuns);
     await db.delete(workflows);
@@ -157,6 +166,56 @@ describeEmbeddedPostgres("workflowService.runManual", () => {
     const phases = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, run.id));
     expect(phases).toHaveLength(1);
     expect(phases[0]?.phaseKey).toBe("phase-1");
+  });
+
+  it("closes active phases when the ADK invocation exits", async () => {
+    const companyId = randomUUID();
+    const workflowId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(workflows).values({
+      id: workflowId,
+      companyId,
+      title: "Brief generator",
+      status: "active",
+      runnerType: "google_adk",
+      runnerConfig: { agentPath: "/tmp/agent.py" },
+      pipelineDefinition: { entrypoint: "agent.py", generatedAt: new Date(0).toISOString(), phases: [] },
+      pipelineSourceHash: null,
+    });
+
+    mockInvokeGoogleAdk.mockImplementationOnce(async (input: { runId: string }) => {
+      await db.update(workflowRunPhases).set({
+        status: "running",
+        updatedAt: new Date(),
+      }).where(eq(workflowRunPhases.workflowRunId, input.runId));
+      return {
+        summary: "done",
+        resultJson: { ok: true },
+        errorMessage: null,
+        provider: "google",
+        model: "gemini",
+        usage: null,
+      };
+    });
+
+    const svc = workflowService(db);
+    const run = await svc.runManual(workflowId, { inputMarkdown: "generate" });
+
+    await vi.waitFor(async () => {
+      const updated = await db.select().from(workflowRuns).where(eq(workflowRuns.id, run.id)).then((rows) => rows[0] ?? null);
+      expect(updated?.status).toBe("succeeded");
+    }, 10_000);
+
+    const [phase] = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, run.id));
+    expect(phase?.status).toBe("succeeded");
+    expect(phase?.finishedAt).toBeInstanceOf(Date);
   });
 
   it("does not let late phase events overwrite a terminal run status", async () => {
@@ -304,5 +363,69 @@ describeEmbeddedPostgres("workflowService.runManual", () => {
     expect(doneRun?.status).toBe("succeeded");
     const [donePhase] = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, doneRunId));
     expect(donePhase?.status).toBe("succeeded");
+  });
+
+  it("closes an active ClickUp bridge when a handoff is resolved directly", async () => {
+    const companyId = randomUUID();
+    const workflowId = randomUUID();
+    const runId = randomUUID();
+    const handoffId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(workflows).values({
+      id: workflowId,
+      companyId,
+      title: "Brief generator",
+      status: "active",
+      runnerType: "google_adk",
+      runnerConfig: { agentPath: "/tmp/agent.py" },
+      pipelineDefinition: { entrypoint: "agent.py", generatedAt: new Date(0).toISOString(), phases: [] },
+      pipelineSourceHash: null,
+    });
+    await db.insert(workflowRuns).values({
+      id: runId,
+      companyId,
+      workflowId,
+      status: "awaiting_human",
+      inputMarkdown: "generate",
+    });
+    await db.insert(workflowRunPhases).values({
+      companyId,
+      workflowRunId: runId,
+      phaseKey: "phase-1",
+      label: "Phase 1",
+      kind: "phase",
+      ordinal: 0,
+      status: "awaiting_human",
+    });
+    await db.insert(workflowHandoffs).values({
+      id: handoffId,
+      companyId,
+      workflowRunId: runId,
+      phaseKey: "phase-1",
+      kind: "approval",
+      status: "pending",
+      promptMarkdown: "Approve?",
+    });
+
+    const resolved = await workflowService(db).resolveHandoff(
+      handoffId,
+      "approved",
+      { userId: "board" },
+      { responseMarkdown: "Approve" },
+    );
+
+    expect(resolved?.status).toBe("approved");
+    expect(mockCloseResolvedHandoff).toHaveBeenCalledWith(handoffId, "approved");
+
+    const [run] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId));
+    expect(run?.status).toBe("running");
+    const [phase] = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, runId));
+    expect(phase?.status).toBe("running");
   });
 });

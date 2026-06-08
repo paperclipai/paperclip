@@ -247,6 +247,30 @@ describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
     expect(bridge?.nextPollAt).toBeNull();
   });
 
+  it("closes active bridges after direct handoff resolution", async () => {
+    const { bridgeId, handoffId } = await insertWaitingWorkflowBridge(db, {
+      runStatus: "running",
+      runError: null,
+    });
+
+    const bridge = await workflowHandoffBridgeService(db).closeResolvedHandoff(handoffId, "approved");
+
+    expect(bridge?.id).toBe(bridgeId);
+    expect(bridge?.status).toBe("closed");
+    expect(bridge?.closeOutcome).toBe("approved");
+    expect(bridge?.nextPollAt).toBeNull();
+    expect(mocks.deleteClickUpChatMessageReaction).toHaveBeenCalledWith(
+      "message-1",
+      "brain_is_thinking",
+      expect.objectContaining({ personalToken: "token-123" }),
+    );
+    expect(mocks.addClickUpChatMessageReaction).toHaveBeenCalledWith(
+      "message-1",
+      "white_check_mark",
+      expect.objectContaining({ personalToken: "token-123" }),
+    );
+  });
+
   it("continues polling terminal bridges when terminal cleanup logging fails", async () => {
     const first = await insertWaitingWorkflowBridge(db, {
       runStatus: "failed",

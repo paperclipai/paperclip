@@ -732,9 +732,28 @@ export function workflowHandoffBridgeService(db: Db) {
     return bridge ?? null;
   }
 
+  async function closeResolvedHandoff(
+    workflowHandoffId: string,
+    outcome: "responded" | "approved" | "rejected",
+  ) {
+    const bridge = await getActiveBridge(workflowHandoffId);
+    if (!bridge) return null;
+
+    const config = await settings.resolveClickUpRuntimeConfig(bridge.companyId);
+    const overrides = {
+      personalToken: config.personalToken,
+      workspaceId: config.workspaceId,
+      channelId: config.channelId,
+      attachmentTaskId: config.attachmentTaskId,
+    };
+    await closeBridgeRow(db, bridge, outcome, overrides);
+    return getBridgeForHandoff(workflowHandoffId);
+  }
+
   return {
     openForHandoff,
     pollActiveBridges,
+    closeResolvedHandoff,
     getActiveBridge,
     getBridgeForHandoff,
   };
