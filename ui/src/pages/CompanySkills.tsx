@@ -437,8 +437,9 @@ function SkillList({
           <div key={skill.id} className="border-b border-border">
             <div
               className={cn(
-                "group grid grid-cols-[minmax(0,1fr)_2.25rem] items-center gap-x-1 px-3 py-1.5 hover:bg-accent/30",
-                skill.id === selectedSkillId && "text-foreground",
+                "group relative grid grid-cols-[minmax(0,1fr)_2.25rem] items-center gap-x-1 px-3 py-1.5 hover:bg-accent/30",
+                skill.id === selectedSkillId &&
+                  "bg-primary/10 text-foreground before:absolute before:left-0 before:top-1 before:bottom-1 before:w-[2px] before:rounded-full before:bg-primary",
               )}
             >
               <Link
@@ -674,7 +675,7 @@ function SkillPane({
             </div>
           </div>
           <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
-            <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Used by</span>
+            <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Used by</span>
             {usedBy.length === 0 ? (
               <span className="text-muted-foreground">No agents attached</span>
             ) : (
@@ -683,7 +684,7 @@ function SkillPane({
                   <Link
                     key={agent.id}
                     to={`/agents/${agent.urlKey}/skills`}
-                    className="group rounded-md border border-transparent p-2 no-underline hover:border-border hover:bg-accent/40"
+                    className="group rounded-[3px] border border-border p-2 no-underline transition-colors hover:border-primary/40 hover:bg-accent/40"
                   >
                     <Identity name={agent.name} size="sm" />
                   </Link>
@@ -1189,8 +1190,8 @@ export function CompanySkills() {
           <div className="border-b border-border px-4 py-3">
             <div className="flex items-center justify-between gap-2">
               <div>
-                <h1 className="text-base font-semibold">Skills</h1>
-                <p className="text-xs text-muted-foreground">
+                <h1 className="font-serif text-lg font-medium">Skills</h1>
+                <p className="font-mono text-[11px] text-muted-foreground">
                   {skillsQuery.data?.length ?? 0} available
                 </p>
               </div>
