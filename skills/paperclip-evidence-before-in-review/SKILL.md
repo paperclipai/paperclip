@@ -135,9 +135,10 @@ $ curl https://www.blockcast.network/blog/making-traffic-federation-easier | gre
 
 #### `migration-output`
 
-Paste **observable output** from the migration run — not a prose claim. Any one of the following satisfies the shape:
+Paste **observable output** from the migration run — not a prose claim. Exactly three evidence paths satisfy the gate:
 
-**Migration runner banner** (drizzle-kit, Flyway, Liquibase, Alembic, or similar):
+**1. Migration runner banner** (drizzle-kit, Flyway, Liquibase, Alembic, or similar):
+
 ```
 $ npx drizzle-kit push
 [✓] Applied 1 migration
@@ -151,26 +152,35 @@ Successfully applied 1 migration (execution time 00:00.123s)
 INFO  [alembic.runtime.migration] Running upgrade abc123 -> def456, add_users_table
 ```
 
-**psql result after running the migration SQL**:
-```sql
-ALTER TABLE
-(1 row)
-```
-The `(N rows)` or `(N row)` psql suffix triggers the detector.
+**2. EXPLAIN / EXPLAIN ANALYZE plan output** (for index/query correctness checks):
 
-**EXPLAIN ANALYZE output** (for migration correctness checks):
 ```
 Seq Scan on users  (cost=0.00..42.00 rows=1000 width=64)
 ```
+```
+Index Scan on issue_events  (cost=0.56..8.58 rows=1 width=32)
+  Index Cond: (issue_id = $1)
+Planning Time: 0.123 ms  Execution Time: 0.045 ms
+```
 
-**Inline DDL in a fenced code block**:
-```sql
-ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT '';
-CREATE UNIQUE INDEX users_email_idx ON users(email);
+**3. psql row-count PAIRED with runner output:**
+
+The `(N rows)` / `(1 row)` psql suffix satisfies the gate **only when migration runner output also appears in the same comment**. A bare row-count from a standalone SELECT is not enough.
+
+```
+Applied 1 migration successfully.
+
+SELECT COUNT(*) FROM issue_events;
+ count
+-------
+ 98432
+(1 row)
 ```
 
 **Common mistakes:**
 - "Migration applied successfully" prose with no runner output — gate can't detect this.
+- Pasting only the migration SQL DDL (`ALTER TABLE …`, `CREATE INDEX …`) — raw SQL is **not** runner output and **blocks** the gate.
+- Posting `(N rows)` without runner output in the same comment — the detector requires a runner signal alongside the row-count.
 - A screenshot of a migration tool's UI — gate scans comment text, not images.
 - Posting migration output in the issue description rather than a comment — gate only scans agent-authored comments.
 
