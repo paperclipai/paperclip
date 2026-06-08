@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { ActivityEvent, Agent } from "@valadrien-os/shared";
 import { activityApi } from "../api/activity";
@@ -43,6 +43,32 @@ function activityEntityTitle(event: ActivityEvent) {
   return null;
 }
 
+// Group events into a dated blotter: Today / Yesterday / "Month D[, YYYY]".
+function dayLabel(d: Date, now: Date): string {
+  const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((startOf(now) - startOf(d)) / 86_400_000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Yesterday";
+  return d.toLocaleDateString(undefined, {
+    month: "long",
+    day: "numeric",
+    ...(d.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}),
+  });
+}
+
+function groupByDay(events: ActivityEvent[]): Array<{ label: string; events: ActivityEvent[] }> {
+  const now = new Date();
+  const map = new Map<string, ActivityEvent[]>();
+  const order: string[] = [];
+  for (const e of events) {
+    const label = dayLabel(new Date(e.createdAt), now);
+    const bucket = map.get(label);
+    if (bucket) bucket.push(e);
+    else { map.set(label, [e]); order.push(label); }
+  }
+  return order.map((label) => ({ label, events: map.get(label)! }));
+}
+
 export function Activity() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -56,7 +82,48 @@ export function Activity() {
     queryKey: [...queryKeys.activity(selectedCompanyId!), { limit: ACTIVITY_PAGE_LIMIT }],
     queryFn: () => activityApi.list(selectedCompanyId!, { limit: ACTIVITY_PAGE_LIMIT }),
     enabled: !!selectedCompanyId,
+    refetchInterval: 15_000,
   });
+
+  // Live arrival: flash newly-arrived events (the tape stays alive).
+  const [animatedIds, setAnimatedIds] = useState<Set<string>>(new Set());
+  const seenRef = useRef<Set<string>>(new Set());
+  const hydratedRef = useRef(false);
+  const timersRef = useRef<number[]>([]);
+
+  useEffect(() => {
+    for (const t of timersRef.current) window.clearTimeout(t);
+    timersRef.current = [];
+    seenRef.current = new Set();
+    hydratedRef.current = false;
+    setAnimatedIds(new Set());
+  }, [selectedCompanyId]);
+
+  useEffect(() => {
+    if (!data || data.length === 0) return;
+    const seen = seenRef.current;
+    const ids = data.map((e) => e.id);
+    if (!hydratedRef.current) {
+      for (const id of ids) seen.add(id);
+      hydratedRef.current = true;
+      return;
+    }
+    const newIds = ids.filter((id) => !seen.has(id));
+    for (const id of ids) seen.add(id);
+    if (newIds.length === 0) return;
+    setAnimatedIds((prev) => new Set([...prev, ...newIds]));
+    const timer = window.setTimeout(() => {
+      setAnimatedIds((prev) => {
+        const next = new Set(prev);
+        for (const id of newIds) next.delete(id);
+        return next;
+      });
+      timersRef.current = timersRef.current.filter((t) => t !== timer);
+    }, 980);
+    timersRef.current.push(timer);
+  }, [data]);
+
+  useEffect(() => () => { for (const t of timersRef.current) window.clearTimeout(t); }, []);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -123,9 +190,19 @@ export function Activity() {
         <div>
           <h1 className="font-serif text-2xl font-medium tracking-tight">Activity</h1>
           {data && data.length > 0 && (
-            <p className="mt-1.5 text-[12.5px] text-muted-foreground">
-              <span className="font-mono text-foreground">{data.length}</span> recent event{data.length === 1 ? "" : "s"}
-            </p>
+            <div className="mt-1.5 flex items-center gap-2 text-[12.5px] text-muted-foreground">
+              <span className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-status-running">
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-status-running opacity-70" />
+                  <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-status-running" />
+                </span>
+                Live
+              </span>
+              <span className="text-muted-foreground/50">·</span>
+              <span>
+                <span className="font-mono text-foreground">{data.length}</span> recent event{data.length === 1 ? "" : "s"}
+              </span>
+            </div>
           )}
         </div>
         <Select value={filter} onValueChange={setFilter}>
@@ -150,16 +227,27 @@ export function Activity() {
       )}
 
       {filtered && filtered.length > 0 && (
-        <div className="border border-border divide-y divide-border">
-          {filtered.map((event) => (
-            <ActivityRow
-              key={event.id}
-              event={event}
-              agentMap={agentMap}
-              userProfileMap={userProfileMap}
-              entityNameMap={entityNameMap}
-              entityTitleMap={entityTitleMap}
-            />
+        <div className="space-y-5">
+          {groupByDay(filtered).map((group) => (
+            <div key={group.label}>
+              <div className="mb-2 flex items-center gap-3 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground/70">
+                {group.label}
+                <span className="h-px flex-1 bg-border/70" />
+              </div>
+              <div className="border border-border divide-y divide-border">
+                {group.events.map((event) => (
+                  <ActivityRow
+                    key={event.id}
+                    event={event}
+                    agentMap={agentMap}
+                    userProfileMap={userProfileMap}
+                    entityNameMap={entityNameMap}
+                    entityTitleMap={entityTitleMap}
+                    className={animatedIds.has(event.id) ? "activity-row-enter" : undefined}
+                  />
+                ))}
+              </div>
+            </div>
           ))}
         </div>
       )}
