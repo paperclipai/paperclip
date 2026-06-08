@@ -28,11 +28,28 @@ if ("serviceWorker" in navigator) {
   });
 }
 
+// HTTP statuses that are never transient: retrying just re-fires the same
+// failure. The unauthenticated /auth page is the worst case — boot-time queries
+// (e.g. GET /api/adapters) 401/403 and, under react-query's default 3-retry
+// policy, storm the server 4x each. Auth/permission/client errors fail once;
+// only genuinely transient errors (5xx, network) get a small bounded retry.
+const NON_RETRYABLE_STATUS = new Set([400, 401, 403, 404, 405, 409, 422]);
+
+function shouldRetryQuery(failureCount: number, error: unknown): boolean {
+  const status = (error as { status?: unknown } | null | undefined)?.status;
+  if (typeof status === "number" && NON_RETRYABLE_STATUS.has(status)) return false;
+  return failureCount < 2;
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 30_000,
       refetchOnWindowFocus: true,
+      retry: shouldRetryQuery,
+    },
+    mutations: {
+      retry: false,
     },
   },
 });
