@@ -676,6 +676,72 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("keeps a manually delegated source issue assigned to the delegate when stranded recovery escalates again", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ status: "blocked", assigneeAgentId: managerId, assigneeUserId: null })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const activeAction = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      previousOwnerAgentId: managerId,
+      returnOwnerAgentId: managerId,
+      cause: "stranded_assigned_issue",
+      fingerprint: "stranded-assigned:manual-delegation",
+      evidence: { latestIssueStatus: "blocked" },
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    await db
+      .update(issues)
+      .set({ status: "in_progress", assigneeAgentId: coderId, assigneeUserId: null })
+      .where(eq(issues.id, sourceIssueId));
+    await recoveryActionSvc.resolveActiveForIssue({
+      companyId,
+      sourceIssueId,
+      actionId: activeAction.id,
+      status: "cancelled",
+      outcome: "cancelled",
+      resolutionNote: "Recovery action became stale because the source issue was manually delegated back to an agent.",
+    });
+
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+
+    const [delegatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const escalated = await recovery.escalateStrandedAssignedIssue({
+      issue: delegatedIssue!,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter failed",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      },
+      comment: "Automatic continuation recovery failed.",
+    });
+
+    expect(escalated).toMatchObject({
+      id: sourceIssueId,
+      status: "blocked",
+      assigneeAgentId: coderId,
+    });
+
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: coderId,
+    });
+  });
+
   it("folds stale recovery during read projection after the source issue reaches done", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const recoveryActionSvc = issueRecoveryActionService(db);
