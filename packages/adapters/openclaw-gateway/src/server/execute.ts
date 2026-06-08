@@ -1141,9 +1141,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   delete agentParams.text;
   agentParams.paperclip = paperclipPayload;
 
+  // Wake-dispatcher routing identifier.
+  //
+  // The openclaw_gateway multiplexes many Paperclip agents onto a single
+  // OpenClaw control plane. Each outbound wake MUST be tagged with the
+  // assignee's openclaw routing id so the gateway lands it in the assignee's
+  // session (not the company default / first session).
+  //
+  // Resolution order (first non-empty wins):
+  //   1. `agentParams.agentId` set by payloadTemplate (explicit per-wake override)
+  //   2. `ctx.config.agentId` (per-agent adapterConfig — the source of truth
+  //      because Paperclip agent slug != openclaw agent id in general)
+  //
+  // When neither is set we log a LOUD warning instead of silently falling
+  // through to the gateway default. See WIS-25 for the production bug this
+  // guard exists to prevent.
   const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
     agentParams.agentId = configuredAgentId;
+  }
+  // Mirror the resolved routing id into the gateway's auth header so the
+  // control-plane router routes by assignee, not the company default. The
+  // header is only injected when not already explicitly set.
+  const resolvedRoutingAgentId = nonEmpty(agentParams.agentId) ?? configuredAgentId;
+  if (resolvedRoutingAgentId && !headerMapHasIgnoreCase(headers, "x-openclaw-agent-id")) {
+    headers["x-openclaw-agent-id"] = resolvedRoutingAgentId;
+  }
+  if (!resolvedRoutingAgentId) {
+    await ctx.onLog(
+      "stderr",
+      `[openclaw-gateway] WARNING: outbound wake for agent id=${ctx.agent.id} name=${ctx.agent.name} has no routing agentId. ` +
+        `The wake will fall through to the gateway's default agent. ` +
+        `Set adapterConfig.agentId (and headers['x-openclaw-agent-id']) to the openclaw agent id this Paperclip agent maps to. ` +
+        `See WIS-25.\n`,
+    );
   }
 
   if (typeof agentParams.timeout !== "number") {
