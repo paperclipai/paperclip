@@ -608,7 +608,7 @@ const MODULES = [
   {
     icon: CheckSquare,
     k: "Work OS",
-    d: "Issues, routines, goals, approvals — humans and agents in one orchestration layer.",
+    d: "Tasks, routines, goals, approvals — humans and agents in one orchestration layer.",
     span: "lg:col-span-1",
   },
 ];
@@ -664,7 +664,7 @@ const FAQS = [
   },
   {
     q: "Is this a marketing tool or a dev tool?",
-    a: "Both, fused. AGNB's full growth stack (campaigns, pipeline, content, revenue) and an agent orchestration layer (issues, routines, goals, approvals) live in one surface — and cross-pollinate: an agent can run a campaign, a routine can ship a PR.",
+    a: "Both, fused. AGNB's full growth stack (campaigns, pipeline, content, revenue) and an agent orchestration layer (tasks, routines, goals, approvals) live in one surface — and cross-pollinate: an agent can run a campaign, a routine can ship a PR.",
   },
   {
     q: "What does the human actually do?",

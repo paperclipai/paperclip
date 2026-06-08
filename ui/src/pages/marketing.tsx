@@ -299,7 +299,7 @@ export function GovernancePage() {
       <Faqs items={[
         { q: "Can an agent spend money on its own?", a: "No. Budgets are hard caps enforced by the CFO, and anything that actually spends is gated. Agents stop at 100% utilization automatically." },
         { q: "Will agents email my customers without approval?", a: "Not unless you explicitly enable it. Outreach and replies are drafted into an approval queue; external send is off by default and flag-gated." },
-        { q: "How do I audit what happened?", a: "Every agent run, tool call, and decision is logged and linked to the issue and goal that triggered it. Nothing is hidden." },
+        { q: "How do I audit what happened?", a: "Every agent run, tool call, and decision is logged and linked to the task and goal that triggered it. Nothing is hidden." },
         { q: "Can I stop everything at once?", a: "Yes. Pause the whole company with a single switch; resume when you're ready." },
       ]} />
       <CtaRow />
@@ -397,7 +397,7 @@ export function DocsPage() {
         <div className="space-y-4">
           {[
             ["The cockpit", "Campaigns, pipeline, content, mentions, and revenue — every growth surface in one login, backed by the /api/agnb API."],
-            ["The agent layer", "Goals, projects, issues, routines, and approvals. Agents are hired into projects and driven by routines (cron) and a heartbeat."],
+            ["The agent layer", "Goals, projects, tasks, routines, and approvals. Agents are hired into projects and driven by routines (cron) and a heartbeat."],
             ["The jobs", "35 scheduled workers handle the deterministic grind — syncing, draining, drafting, ranking, reconciling — and feed the cockpit."],
             ["The crossover", "An agent can run a campaign; a routine can ship a PR. The growth stack and the orchestration layer share one surface."],
           ].map(([t, d]) => (
