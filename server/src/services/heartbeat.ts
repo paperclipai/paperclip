@@ -6859,6 +6859,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.scanSilentActiveRuns(opts);
   }
 
+  async function clearStaleExecutionRunIds(opts?: { now?: Date; companyId?: string }) {
+    return recovery.clearStaleExecutionRunIds(opts);
+  }
+
   async function reconcileProductivityReviews(opts?: { now?: Date; companyId?: string }) {
     return productivityReviews.reconcileProductivityReviews(opts);
   }
@@ -10189,6 +10193,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reconcileIssueGraphLiveness,
 
     scanSilentActiveRuns,
+
+    clearStaleExecutionRunIds,
 
     reconcileProductivityReviews,
 

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -720,6 +720,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  const MAX_STALE_RUN_EVALUATIONS_PER_RUN = 3;
+  const STALE_EXECUTION_RUN_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+
   async function findOpenStaleRunEvaluation(companyId: string, runId: string) {
     const [row] = await db
       .select({
@@ -742,6 +745,44 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       )
       .limit(1);
     return row ?? null;
+  }
+
+  async function findAnyClosedStaleRunEvaluation(companyId: string, runId: string) {
+    const [row] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1);
+    return row ?? null;
+  }
+
+  async function countStaleRunEvaluations(companyId: string, runId: string) {
+    const [row] = await db
+      .select({ total: count() })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+        ),
+      );
+    return row?.total ?? 0;
   }
 
   async function buildRunOutputSilence(
@@ -1347,6 +1388,117 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return true;
   }
 
+  async function autoFoldStaleRunWithClosedEvaluation(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    runningAgent: typeof agents.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect | null;
+    closedEvaluation: { id: string; identifier: string | null; status: string; updatedAt: Date };
+    silenceAgeMs: number | null;
+    now: Date;
+  }) {
+    const cleanup = await cleanupSourceResolvedRunProcess({ run: input.run, runningAgent: input.runningAgent });
+    const resultJson = {
+      ...parseObject(input.run.resultJson),
+      autoFoldClosedEvaluation: {
+        closedEvaluationId: input.closedEvaluation.id,
+        closedEvaluationIdentifier: input.closedEvaluation.identifier,
+        closedEvaluationStatus: input.closedEvaluation.status,
+        closedAt: input.closedEvaluation.updatedAt.toISOString(),
+        silenceAgeMs: input.silenceAgeMs,
+        cleanup,
+      },
+    };
+
+    const finalizedRun = await db.transaction(async (tx) => {
+      const [updatedRun] = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          finishedAt: input.now,
+          error: null,
+          errorCode: null,
+          resultJson,
+          updatedAt: input.now,
+        })
+        .where(
+          and(
+            eq(heartbeatRuns.id, input.run.id),
+            eq(heartbeatRuns.companyId, input.run.companyId),
+            eq(heartbeatRuns.status, "running"),
+          ),
+        )
+        .returning();
+      if (!updatedRun) return null;
+
+      if (input.run.wakeupRequestId) {
+        await tx
+          .update(agentWakeupRequests)
+          .set({ status: "cancelled", finishedAt: input.now, error: null, updatedAt: input.now })
+          .where(
+            and(
+              eq(agentWakeupRequests.id, input.run.wakeupRequestId),
+              eq(agentWakeupRequests.companyId, input.run.companyId),
+            ),
+          );
+      }
+
+      if (input.sourceIssue) {
+        await tx
+          .update(issues)
+          .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: input.now })
+          .where(
+            and(
+              eq(issues.id, input.sourceIssue.id),
+              eq(issues.companyId, input.run.companyId),
+              eq(issues.executionRunId, input.run.id),
+            ),
+          );
+      }
+
+      return updatedRun;
+    });
+
+    if (!finalizedRun) return { kind: "skipped" as const };
+
+    if (input.sourceIssue && !isTerminalIssueStatus(input.sourceIssue.status)) {
+      await issuesSvc.addComment(
+        input.sourceIssue.id,
+        [
+          "Stale active run auto-folded: a prior watchdog evaluation was already closed.",
+          "",
+          `- Closed evaluation: ${input.closedEvaluation.identifier ?? input.closedEvaluation.id} (\`${input.closedEvaluation.status}\` at ${input.closedEvaluation.updatedAt.toISOString()})`,
+          `- Run: \`${input.run.id}\``,
+          `- Silent for: ${formatDuration(input.silenceAgeMs)}`,
+          "- Run cancelled automatically. No new evaluation issue created.",
+          "- If this issue still needs attention, please re-assign or mark it blocked explicitly.",
+        ].join("\n"),
+        { runId: input.run.id },
+      );
+    }
+
+    await logActivity(db, {
+      companyId: input.run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: input.run.agentId,
+      runId: input.run.id,
+      action: "heartbeat.output_stale_auto_folded",
+      entityType: "heartbeat_run",
+      entityId: input.run.id,
+      details: {
+        source: "recovery.scan_silent_active_runs",
+        closedEvaluationId: input.closedEvaluation.id,
+        closedEvaluationStatus: input.closedEvaluation.status,
+        sourceIssueId: input.sourceIssue?.id ?? null,
+        silenceAgeMs: input.silenceAgeMs,
+        cleanup,
+      },
+    });
+
+    await finalizeAgentAfterSourceResolvedRun(finalizedRun, "cancelled");
+    return { kind: "auto_folded" as const };
+  }
+
   async function createOrUpdateStaleRunEvaluation(input: {
     run: typeof heartbeatRuns.$inferSelect;
     now: Date;
@@ -1431,6 +1583,71 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
       }
       return { kind: "existing" as const, evaluationIssueId: existing.id };
+    }
+
+    // Option A: a prior evaluation was already closed — auto-fold the run instead of creating a new issue.
+    // Skip auto-fold when a watchdog "continue"/"snooze" decision was recorded: that means the owner
+    // deliberately set up a rearm cycle and expects fresh evaluations after the quiet window expires.
+    const closedEvaluation = await findAnyClosedStaleRunEvaluation(input.run.companyId, input.run.id);
+    if (closedEvaluation) {
+      const hasContinueDecision = await db
+        .select({ id: heartbeatRunWatchdogDecisions.id })
+        .from(heartbeatRunWatchdogDecisions)
+        .where(
+          and(
+            eq(heartbeatRunWatchdogDecisions.companyId, input.run.companyId),
+            eq(heartbeatRunWatchdogDecisions.runId, input.run.id),
+            inArray(heartbeatRunWatchdogDecisions.decision, ["continue", "snooze"]),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows.length > 0);
+      if (!hasContinueDecision) {
+        return autoFoldStaleRunWithClosedEvaluation({
+          run: input.run,
+          runningAgent,
+          sourceIssue,
+          closedEvaluation,
+          silenceAgeMs: silenceAgeMsForRun(input.run, input.now),
+          now: input.now,
+        });
+      }
+    }
+
+    // Option B: cap — if we already have too many evaluation issues for this run, escalate via comment instead
+    const evalCount = await countStaleRunEvaluations(input.run.companyId, input.run.id);
+    if (evalCount >= MAX_STALE_RUN_EVALUATIONS_PER_RUN) {
+      if (sourceIssue && !isTerminalIssueStatus(sourceIssue.status)) {
+        await issuesSvc.addComment(
+          sourceIssue.id,
+          [
+            `Stale-run evaluation cap reached (${evalCount}/${MAX_STALE_RUN_EVALUATIONS_PER_RUN}). No further evaluation issues will be created.`,
+            "",
+            `- Run: \`${input.run.id}\``,
+            `- Silent for: ${formatDuration(evidence.silenceAgeMs)}`,
+            "- Manual intervention required: a board operator or manager must cancel this run or close the prior evaluation issues.",
+          ].join("\n"),
+          { runId: input.run.id },
+        );
+      }
+      await logActivity(db, {
+        companyId: input.run.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: input.run.agentId,
+        runId: input.run.id,
+        action: "heartbeat.output_stale_eval_cap_reached",
+        entityType: "heartbeat_run",
+        entityId: input.run.id,
+        details: {
+          source: "recovery.scan_silent_active_runs",
+          evalCount,
+          maxEvalCount: MAX_STALE_RUN_EVALUATIONS_PER_RUN,
+          sourceIssueId: sourceIssue?.id ?? null,
+          silenceAgeMs: evidence.silenceAgeMs,
+        },
+      });
+      return { kind: "cap_reached" as const };
     }
 
     const ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
@@ -1539,6 +1756,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       existing: 0,
       escalated: 0,
       folded: 0,
+      autoFolded: 0,
+      capReached: 0,
       snoozed: 0,
       skipped: 0,
       evaluationIssueIds: [] as string[],
@@ -1554,6 +1773,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       else if (outcome.kind === "existing") result.existing += 1;
       else if (outcome.kind === "escalated") result.escalated += 1;
       else if (outcome.kind === "folded") result.folded += 1;
+      else if (outcome.kind === "auto_folded") result.autoFolded += 1;
+      else if (outcome.kind === "cap_reached") result.capReached += 1;
       else result.skipped += 1;
       if ("evaluationIssueId" in outcome && outcome.evaluationIssueId) {
         result.evaluationIssueIds.push(outcome.evaluationIssueId);
@@ -3443,6 +3664,78 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Math.max(1, Math.floor(asNumber(raw, fallback)));
   }
 
+  async function clearStaleExecutionRunIds(opts?: { now?: Date; companyId?: string }) {
+    const now = opts?.now ?? new Date();
+    const staleBefore = new Date(now.getTime() - STALE_EXECUTION_RUN_TTL_MS);
+    const candidates = await db
+      .select({
+        issueId: issues.id,
+        issueCompanyId: issues.companyId,
+        issueIdentifier: issues.identifier,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+        runStatus: heartbeatRuns.status,
+        runUpdatedAt: heartbeatRuns.updatedAt,
+      })
+      .from(issues)
+      .innerJoin(heartbeatRuns, eq(issues.executionRunId, heartbeatRuns.id))
+      .where(
+        and(
+          opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
+          isNull(issues.hiddenAt),
+          lt(issues.executionLockedAt, staleBefore),
+          inArray(heartbeatRuns.status, [
+            ...UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES,
+            "succeeded",
+          ]),
+        ),
+      )
+      .limit(50);
+
+    let cleared = 0;
+    let skipped = 0;
+
+    for (const candidate of candidates) {
+      const [updated] = await db
+        .update(issues)
+        .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: now })
+        .where(
+          and(
+            eq(issues.id, candidate.issueId),
+            eq(issues.companyId, candidate.issueCompanyId),
+            eq(issues.executionRunId, candidate.executionRunId!),
+          ),
+        )
+        .returning({ id: issues.id });
+
+      if (updated) {
+        cleared += 1;
+        await logActivity(db, {
+          companyId: candidate.issueCompanyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: null,
+          runId: null,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: candidate.issueId,
+          details: {
+            source: "recovery.clear_stale_execution_run_ids",
+            identifier: candidate.issueIdentifier,
+            clearedExecutionRunId: candidate.executionRunId,
+            runStatus: candidate.runStatus,
+            executionLockedAt: candidate.executionLockedAt?.toISOString() ?? null,
+            staleTtlMs: STALE_EXECUTION_RUN_TTL_MS,
+          },
+        });
+      } else {
+        skipped += 1;
+      }
+    }
+
+    return { cleared, skipped, scanned: candidates.length };
+  }
+
   return {
     buildRunOutputSilence,
     escalateStrandedRecoveryIssueInPlace,
@@ -3453,5 +3746,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileIssueGraphLiveness,
     readRecoveryTimerIntervalMs,
+    clearStaleExecutionRunIds,
   };
 }

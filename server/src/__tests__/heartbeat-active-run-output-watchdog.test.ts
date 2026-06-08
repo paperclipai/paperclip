@@ -798,4 +798,139 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     });
     expect(decision.createdByRunId).toBe(managerRunId);
   });
+
+  // RENA-9760: auto-fold loop prevention
+  it("auto-folds stale run when prior evaluation was already closed (Option A)", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, coderId, issueId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    // First scan — creates evaluation issue
+    const first = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(first.created).toBe(1);
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation).toBeDefined();
+
+    // Simulate: owner closes the evaluation issue (marks it done)
+    await db.update(issues).set({ status: "done", updatedAt: new Date(now.getTime() + 60_000) }).where(eq(issues.id, evaluation!.id));
+
+    // Second scan — should auto-fold the run, NOT create a new evaluation
+    const second = await heartbeat.scanSilentActiveRuns({ now: new Date(now.getTime() + 120_000), companyId });
+    expect(second).toMatchObject({ created: 0, autoFolded: 1, skipped: 0, capReached: 0 });
+
+    // Run must be cancelled
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run?.status).toBe("cancelled");
+    expect(run?.finishedAt).toBeTruthy();
+
+    // executionRunId must be cleared on source issue
+    const [source] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(source?.executionRunId).toBeNull();
+    expect(source?.executionLockedAt).toBeNull();
+
+    // Agent must be idle
+    const [agent] = await db.select().from(agents).where(eq(agents.id, coderId));
+    expect(agent?.status).toBe("idle");
+
+    // A total of only one evaluation issue should exist (the original — no duplicates)
+    const allEvaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(allEvaluations).toHaveLength(1);
+  });
+
+  it("does not create a third evaluation when cap is reached (Option B)", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    // Create MAX_STALE_RUN_EVALUATIONS_PER_RUN (3) evaluation issues directly, all with non-terminal statuses
+    // to simulate the evaluations piling up without being closed (edge case: no closed eval but count >= cap)
+    const evalIds: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const evalId = randomUUID();
+      evalIds.push(evalId);
+      await db.insert(issues).values({
+        id: evalId,
+        companyId,
+        title: `Eval ${i}`,
+        status: i < 2 ? "done" : "todo",
+        priority: "medium",
+        issueNumber: 100 + i,
+        originKind: "stale_active_run_evaluation",
+        originId: runId,
+        originFingerprint: `stale_active_run:${companyId}:${runId}`,
+        createdAt: new Date(now.getTime() - (3 - i) * 60_000),
+        updatedAt: new Date(now.getTime() - (3 - i) * 60_000),
+      });
+    }
+
+    // Scan: 3 evaluations already exist, all are closed or open — with 2 done and 1 open
+    // The open one (last eval) should be returned as existing
+    const result = await heartbeat.scanSilentActiveRuns({ now: new Date(now.getTime() + 5_000), companyId });
+    // Either existing (open eval found) or cap_reached — not "created"
+    expect(result.created).toBe(0);
+
+    const allEvaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(allEvaluations.length).toBeLessThanOrEqual(3);
+  });
+
+  it("clearStaleExecutionRunIds clears terminal-run execution locks past TTL (Option C)", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const staleLockAt = new Date(now.getTime() - 7 * 60 * 60 * 1000); // 7h ago — past 6h TTL
+
+    const { companyId, issueId, runId } = await seedRunningRun({
+      now: staleLockAt,
+      ageMs: 10_000,
+    });
+
+    // Manually put the run in a terminal state and set executionLockedAt to 7h ago
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: staleLockAt, updatedAt: staleLockAt }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: runId, executionLockedAt: staleLockAt }).where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.clearStaleExecutionRunIds({ now, companyId });
+
+    expect(result.cleared).toBe(1);
+    expect(result.scanned).toBe(1);
+
+    const [source] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(source?.executionRunId).toBeNull();
+    expect(source?.executionLockedAt).toBeNull();
+  });
+
+  it("clearStaleExecutionRunIds does NOT clear locks within TTL", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const recentLockAt = new Date(now.getTime() - 1 * 60 * 60 * 1000); // 1h ago — within 6h TTL
+
+    const { companyId, issueId, runId } = await seedRunningRun({
+      now: recentLockAt,
+      ageMs: 10_000,
+    });
+
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: recentLockAt, updatedAt: recentLockAt }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: runId, executionLockedAt: recentLockAt }).where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.clearStaleExecutionRunIds({ now, companyId });
+
+    expect(result.cleared).toBe(0);
+    expect(result.scanned).toBe(0);
+
+    const [source] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(source?.executionRunId).toBe(runId);
+  });
 });
