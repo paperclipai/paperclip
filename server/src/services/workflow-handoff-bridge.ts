@@ -298,16 +298,31 @@ async function resolveHandoffFromBridge(
     actorId: "workflow_handoff_bridge",
     action: "workflow.handoff.bridge_resolved",
     entityType: "workflow_run",
-    entityId: bridge.workflowRunId,
-    details: {
+  try {
+    await logActivity(db, {
+      companyId: bridge.companyId,
+      actorType: "system",
+      actorId: "workflow_handoff_bridge",
+      action: "workflow.handoff.bridge_resolved",
+      entityType: "workflow_run",
+      entityId: bridge.workflowRunId,
+      details: {
+        bridgeId: bridge.id,
+        workflowHandoffId: bridge.workflowHandoffId,
+        resolution,
+        provider: bridge.provider,
+        externalMessageId: bridge.externalMessageId ?? null,
+        externalThreadId: bridge.externalThreadId ?? null,
+      },
+    });
+  } catch (error) {
+    logger.warn({
+      err: error,
       bridgeId: bridge.id,
+      companyId: bridge.companyId,
       workflowHandoffId: bridge.workflowHandoffId,
-      resolution,
-      provider: bridge.provider,
-      externalMessageId: bridge.externalMessageId ?? null,
-      externalThreadId: bridge.externalThreadId ?? null,
-    },
-  });
+    }, "workflow handoff bridge: failed to log handoff resolution");
+  }
   return true;
 }
 
