@@ -404,6 +404,35 @@
   }
 }
 
+/* Agent heartbeat capsule motion (PAP-75).
+   `hb-pulse` marks a running agent (live); `hb-blink` marks a broken agent
+   (error). The blink alternates the fill between brand red and the page
+   background so the capsule reads as a faltering heartbeat. */
+@keyframes hb-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes hb-blink {
+  0%, 49.9% { background-color: #DC2626; }
+  50%, 100% { background-color: var(--background); }
+}
+
+.hb-pulse {
+  animation: hb-pulse 1.6s ease-in-out infinite;
+}
+
+.hb-blink {
+  animation: hb-blink 1.2s step-end infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hb-pulse,
+  .hb-blink {
+    animation: none;
+  }
+}
+
 /* MDXEditor theme integration */
 .paperclip-mdxeditor-scope,
 .paperclip-mdxeditor {

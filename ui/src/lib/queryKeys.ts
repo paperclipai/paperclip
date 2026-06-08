@@ -17,6 +17,14 @@ export const queryKeys = {
     catalogFile: (catalogRef: string, relativePath: string) =>
       ["company-skills", "catalog", "file", catalogRef, relativePath] as const,
   },
+  teamCatalog: {
+    catalog: (filters: { kind?: string; category?: string; q?: string } = {}) =>
+      ["team-catalog", "catalog", filters.kind ?? "__all-kinds__", filters.category ?? "__all-categories__", filters.q ?? ""] as const,
+    catalogDetail: (catalogRef: string) => ["team-catalog", "catalog", "detail", catalogRef] as const,
+    catalogFile: (catalogRef: string, relativePath: string) =>
+      ["team-catalog", "catalog", "file", catalogRef, relativePath] as const,
+    installed: (companyId: string) => ["team-catalog", "installed", companyId] as const,
+  },
   agents: {
     list: (companyId: string) => ["agents", companyId] as const,
     detail: (id: string) => ["agents", "detail", id] as const,
@@ -67,6 +75,7 @@ export const queryKeys = {
         ? (["issues", "cost-summary", issueId, "exclude-root"] as const)
         : (["issues", "cost-summary", issueId] as const),
     attachments: (issueId: string) => ["issues", "attachments", issueId] as const,
+    attachmentPreview: (attachmentId: string) => ["issues", "attachment-preview", attachmentId] as const,
     documents: (issueId: string) => ["issues", "documents", issueId] as const,
     document: (issueId: string, key: string) => ["issues", "document", issueId, key] as const,
     documentRevisions: (issueId: string, key: string) => ["issues", "document-revisions", issueId, key] as const,
@@ -106,6 +115,23 @@ export const queryKeys = {
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,
     detail: (id: string) => ["goals", "detail", id] as const,
+  },
+  artifacts: {
+    list: (
+      companyId: string,
+      kind?: string,
+      q?: string,
+      groupBy?: string,
+      groupIssueId?: string,
+    ) =>
+      [
+        "artifacts",
+        companyId,
+        kind ?? "all",
+        q ?? "",
+        groupBy ?? "none",
+        groupIssueId ?? "",
+      ] as const,
   },
   budgets: {
     overview: (companyId: string) => ["budgets", "overview", companyId] as const,

@@ -79,6 +79,8 @@ export {
   companySkillFileUpdateSchema,
   catalogSkillKindSchema,
   catalogSkillFileSchema,
+  catalogSkillGitHubSourceSchema,
+  catalogSkillSourceSchema,
   catalogSkillSchema,
   catalogSkillListQuerySchema,
   catalogSkillFileDetailSchema,
@@ -95,6 +97,27 @@ export {
   type CompanySkillInstallUpdate,
   type CompanySkillReset,
 } from "./company-skill.js";
+export {
+  catalogTeamKindSchema,
+  catalogTeamTrustLevelSchema,
+  catalogTeamCompatibilitySchema,
+  catalogTeamFileKindSchema,
+  catalogTeamSkillRequirementTypeSchema,
+  catalogTeamSkillRequirementSchema,
+  catalogTeamEnvInputSummarySchema,
+  catalogTeamSourceRefSchema,
+  catalogTeamFileSchema,
+  catalogTeamSchema,
+  catalogTeamListQuerySchema,
+  catalogTeamFileDetailSchema,
+  catalogTeamSourcePolicySchema,
+  catalogTeamPreviewSchema,
+  catalogTeamInstallSchema,
+  catalogTeamSkillPreparationSchema,
+  type CatalogTeamListQuery,
+  type CatalogTeamPreview,
+  type CatalogTeamInstall,
+} from "./teams-catalog.js";
 export {
   agentSkillStateSchema,
   agentSkillSyncModeSchema,
@@ -122,6 +145,19 @@ export {
   type CompanyPortabilityPreview,
   type CompanyPortabilityImport,
 } from "./company-portability.js";
+
+export {
+  trustPresetSchema,
+  lowTrustBoundarySchema,
+  lowTrustReviewPresetPolicySchema,
+  trustAuthorizationPolicySchema,
+  sourceTrustArtifactKindSchema,
+  sourceTrustMetadataSchema,
+  type TrustPresetInput,
+  type LowTrustBoundaryInput,
+  type TrustAuthorizationPolicyInput,
+  type SourceTrustMetadataInput,
+} from "./trust-policy.js";
 
 export {
   createAgentSchema,
@@ -225,6 +261,9 @@ export {
   requestConfirmationTargetSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
+  requestCheckboxConfirmationOptionSchema,
+  requestCheckboxConfirmationPayloadSchema,
+  requestCheckboxConfirmationResultSchema,
   createIssueThreadInteractionSchema,
   acceptIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
@@ -282,12 +321,27 @@ export {
 export {
   createIssueWorkProductSchema,
   updateIssueWorkProductSchema,
+  attachmentArtifactWorkProductMetadataSchema,
   issueWorkProductTypeSchema,
   issueWorkProductStatusSchema,
   issueWorkProductReviewStateSchema,
   type CreateIssueWorkProduct,
   type UpdateIssueWorkProduct,
 } from "./work-product.js";
+
+export {
+  COMPANY_ARTIFACTS_DEFAULT_LIMIT,
+  COMPANY_ARTIFACTS_MAX_LIMIT,
+  COMPANY_ARTIFACTS_MAX_QUERY_LENGTH,
+  companyArtifactGroupBySchema,
+  companyArtifactGroupSchema,
+  companyArtifactMediaKindSchema,
+  companyArtifactSchema,
+  companyArtifactSourceSchema,
+  companyArtifactsQuerySchema,
+  companyArtifactsResponseSchema,
+  type CompanyArtifactsQuery,
+} from "./artifact.js";
 
 export {
   executionWorkspaceConfigSchema,
@@ -402,6 +456,7 @@ export {
   boardCliAuthAccessLevelSchema,
   createCliAuthChallengeSchema,
   resolveCliAuthChallengeSchema,
+  createBoardApiKeySchema,
   currentUserProfileSchema,
   authSessionSchema,
   updateCurrentUserProfileSchema,
@@ -420,6 +475,7 @@ export {
   type BoardCliAuthAccessLevel,
   type CreateCliAuthChallenge,
   type ResolveCliAuthChallenge,
+  type CreateBoardApiKey,
   type CurrentUserProfile,
   type AuthSession,
   type UpdateCurrentUserProfile,

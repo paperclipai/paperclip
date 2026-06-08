@@ -47,6 +47,17 @@ export function assertAgnbAccess(req: Request) {
   assertBoardOrgAccess(req);
 }
 
+export function assertBoardOrAgent(req: Request) {
+  if (req.actor.type === "agent") {
+    return;
+  }
+  if (req.actor.type === "board") {
+    assertBoardOrgAccess(req);
+    return;
+  }
+  throw forbidden("Board or agent access required");
+}
+
 export function assertInstanceAdmin(req: Request) {
   assertBoard(req);
   if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {

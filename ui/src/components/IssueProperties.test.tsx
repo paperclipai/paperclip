@@ -294,6 +294,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
     leadAgentId: null,
     targetDate: null,
     color: "#6366f1",
+    icon: null,
     env: null,
     pauseReason: null,
     pausedAt: null,
@@ -394,11 +395,11 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    expect(container.textContent).toContain("Sub-issues");
-    expect(container.textContent).toContain("Add sub-issue");
+    expect(container.textContent).toContain("Sub-tasks");
+    expect(container.textContent).toContain("Add sub-task");
 
     const addButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Add sub-issue"));
+      .find((button) => button.textContent?.includes("Add sub-task"));
     expect(addButton).not.toBeUndefined();
 
     await act(async () => {
@@ -466,7 +467,7 @@ describe("IssueProperties", () => {
     expect(blockerLink?.textContent).toContain("PAP-2");
     expect(blockerLink?.closest("button")).toBeNull();
     expect(container.textContent).toContain("Add blocker");
-    expect(container.querySelector('input[placeholder="Search issues..."]')).toBeNull();
+    expect(container.querySelector('input[placeholder="Search tasks..."]')).toBeNull();
 
     const addButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Add blocker"));
@@ -477,7 +478,7 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    expect(container.querySelector('input[placeholder="Search issues..."]')).not.toBeNull();
+    expect(container.querySelector('input[placeholder="Search tasks..."]')).not.toBeNull();
 
     const candidateButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("PAP-3 New blocker"));
@@ -518,7 +519,7 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    const searchInput = container.querySelector('input[aria-label="Search issues to add as blockers"]') as HTMLInputElement | null;
+    const searchInput = container.querySelector('input[aria-label="Search tasks to add as blockers"]') as HTMLInputElement | null;
     expect(searchInput).not.toBeNull();
 
     await act(async () => {
@@ -585,7 +586,7 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    expect(document.body.textContent).toContain("Remove PAP-2: Existing blocker as a blocker for this issue.");
+    expect(document.body.textContent).toContain("Remove PAP-2: Existing blocker as a blocker for this task.");
     const confirmButton = Array.from(document.body.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Remove blocker"));
     expect(confirmButton).not.toBeUndefined();

@@ -10,7 +10,7 @@ import {
 } from "@paperclipai/shared";
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { executionWorkspaceService, logActivity, workspaceOperationService } from "../services/index.js";
+import { accessService, executionWorkspaceService, logActivity, workspaceOperationService } from "../services/index.js";
 import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
@@ -36,11 +36,35 @@ const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 export function executionWorkspaceRoutes(db: Db) {
   const router = Router();
   const svc = executionWorkspaceService(db);
+  const access = accessService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
+
+  async function assertExecutionWorkspaceReadAllowed(req: Request, res: Response, companyId: string) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId },
+    });
+    if (decision.allowed) return true;
+    res.status(403).json({ error: "Execution workspaces are outside this actor's authorization boundary" });
+    return false;
+  }
+
+  async function assertRuntimeManageAllowed(req: Request, res: Response, companyId: string) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "runtime:manage",
+      resource: { type: "company", companyId },
+    });
+    if (decision.allowed) return true;
+    res.status(403).json({ error: "Runtime service control is outside this actor's authorization boundary" });
+    return false;
+  }
 
   router.get("/companies/:companyId/execution-workspaces", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (!(await assertExecutionWorkspaceReadAllowed(req, res, companyId))) return;
     const filters = {
       projectId: req.query.projectId as string | undefined,
       projectWorkspaceId: req.query.projectWorkspaceId as string | undefined,
@@ -62,6 +86,7 @@ export function executionWorkspaceRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, workspace.companyId);
+    if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     res.json(workspace);
   });
 
@@ -73,6 +98,7 @@ export function executionWorkspaceRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, workspace.companyId);
+    if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     const readiness = await svc.getCloseReadiness(id);
     if (!readiness) {
       res.status(404).json({ error: "Execution workspace not found" });
@@ -89,6 +115,7 @@ export function executionWorkspaceRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, workspace.companyId);
+    if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     const operations = await workspaceOperationsSvc.listForExecutionWorkspace(id);
     res.json(operations);
   });
@@ -107,6 +134,7 @@ export function executionWorkspaceRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
 
     await assertCanManageExecutionWorkspaceRuntimeServices(db, req, {
       companyId: existing.companyId,
@@ -447,6 +475,7 @@ export function executionWorkspaceRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectExecutionWorkspaceCommandPaths({

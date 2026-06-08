@@ -1,6 +1,6 @@
 {
-  "id": "9b0adb50-f338-43c3-81a4-ec1a667a1733",
-  "prevId": "8b20879c-4a71-4a03-adb8-d1567d5540a3",
+  "id": "2f165122-98b4-4284-809a-e12a1a13d7d6",
+  "prevId": "2dd0146f-4431-4a57-a2b3-90b52957e903",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1328,12 +1328,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'{}'::jsonb"
-        },
-        "instructions_bundle_content": {
-          "name": "instructions_bundle_content",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "default_environment_id": {
           "name": "default_environment_id",
@@ -5660,6 +5654,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "issue_comment_id": {
+          "name": "issue_comment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -5747,6 +5747,21 @@
             },
             {
               "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "document_annotation_comments_issue_comment_idx": {
+          "name": "document_annotation_comments_issue_comment_idx",
+          "columns": [
+            {
+              "expression": "issue_comment_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -5846,6 +5861,19 @@
           "tableTo": "heartbeat_runs",
           "columnsFrom": [
             "created_by_run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "document_annotation_comments_issue_comment_id_issue_comments_id_fk": {
+          "name": "document_annotation_comments_issue_comment_id_issue_comments_id_fk",
+          "tableFrom": "document_annotation_comments",
+          "tableTo": "issue_comments",
+          "columnsFrom": [
+            "issue_comment_id"
           ],
           "columnsTo": [
             "id"
@@ -10362,6 +10390,36 @@
           "primaryKey": false,
           "notNull": false
         },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_by_type": {
+          "name": "deleted_by_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_by_agent_id": {
+          "name": "deleted_by_agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_by_user_id": {
+          "name": "deleted_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_by_run_id": {
+          "name": "deleted_by_run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -10531,6 +10589,32 @@
           "tableTo": "heartbeat_runs",
           "columnsFrom": [
             "created_by_run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "issue_comments_deleted_by_agent_id_agents_id_fk": {
+          "name": "issue_comments_deleted_by_agent_id_agents_id_fk",
+          "tableFrom": "issue_comments",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "deleted_by_agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "issue_comments_deleted_by_run_id_heartbeat_runs_id_fk": {
+          "name": "issue_comments_deleted_by_run_id_heartbeat_runs_id_fk",
+          "tableFrom": "issue_comments",
+          "tableTo": "heartbeat_runs",
+          "columnsFrom": [
+            "deleted_by_run_id"
           ],
           "columnsTo": [
             "id"

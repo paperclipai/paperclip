@@ -685,7 +685,7 @@ describe("MarkdownEditor", () => {
   }
 
   async function openMentionMenuFor(
-    handleChange: ReturnType<typeof vi.fn>,
+    handleChange: ReturnType<typeof vi.fn<(value: string) => void>>,
     mentions = [
       {
         id: "project:project-123",

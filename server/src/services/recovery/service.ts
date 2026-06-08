@@ -36,6 +36,7 @@ import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { issueService } from "../issues.js";
+import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
@@ -102,7 +103,10 @@ type LatestIssueRun = Pick<
 > | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
-type StrandedRecoveryCause = "stranded_assigned_issue" | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
+type StrandedRecoveryCause =
+  | "stranded_assigned_issue"
+  | "workspace_validation_failed"
+  | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
 
 type SuccessfulRunHandoffRecoveryEvidence = {
   sourceRunId: string | null;
@@ -324,10 +328,6 @@ function unwrapDatabaseConflictError(error: unknown) {
   };
 }
 
-function isAgentInvokable(agent: typeof agents.$inferSelect | null | undefined) {
-  return Boolean(agent && !["paused", "terminated", "pending_approval"].includes(agent.status));
-}
-
 function isStrandedIssueRecoveryIssue(issue: Pick<typeof issues.$inferSelect, "originKind">) {
   return isStrandedIssueRecoveryOriginKind(issue.originKind);
 }
@@ -461,6 +461,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   async function getAgent(agentId: string) {
     return db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0] ?? null);
+  }
+
+  async function isAgentInvokable(agent: typeof agents.$inferSelect | null | undefined) {
+    return (await evaluateAgentInvokabilityFromDb(db, agent)).invokable;
   }
 
   async function getLatestIssueRun(companyId: string, issueId: string): Promise<LatestIssueRun> {
@@ -694,7 +698,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
       const creatorAgent = await getAgent(creatorAgentId);
-      if (!creatorAgent || creatorAgent.companyId !== candidate.companyId || !isAgentInvokable(creatorAgent)) {
+      if (!creatorAgent || creatorAgent.companyId !== candidate.companyId || !(await isAgentInvokable(creatorAgent))) {
         skipped += 1;
         continue;
       }
@@ -1246,7 +1250,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         issueId: input.sourceIssue?.id ?? null,
         projectId: input.sourceIssue?.projectId ?? null,
       });
-      if (isAgentInvokable(candidate) && !budgetBlock) return candidate.id;
+      if ((await isAgentInvokable(candidate)) && !budgetBlock) return candidate.id;
     }
 
     return null;
@@ -1869,7 +1873,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         issueId: issue.id,
         projectId: issue.projectId,
       });
-      if (isAgentInvokable(candidate) && !budgetBlock) return candidate.id;
+      if ((await isAgentInvokable(candidate)) && !budgetBlock) return candidate.id;
     }
 
     return null;
@@ -2036,6 +2040,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   function strandedRecoveryActionKind(cause: StrandedRecoveryCause) {
     return cause === SUCCESSFUL_RUN_MISSING_STATE_REASON
       ? "missing_disposition" as const
+      : cause === "workspace_validation_failed"
+        ? "workspace_validation" as const
       : "stranded_assigned_issue" as const;
   }
 
@@ -2109,8 +2115,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }),
       nextAction: recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
         ? "Choose and record a valid issue disposition without copying transcript content."
+        : recoveryCause === "workspace_validation_failed"
+          ? "Repair the source issue workspace link, project workspace cwd, or git checkout before resuming adapter execution."
         : "Restore a live execution path, fix the runtime/adapter failure, or record an intentional manual resolution.",
-      wakePolicy: ownerAgentId
+      wakePolicy: recoveryCause === "workspace_validation_failed"
+        ? {
+          type: "manual_repair_required",
+          reason: "workspace_validation_failed",
+          ownerAgentId,
+        }
+        : ownerAgentId
         ? {
           type: "wake_owner",
           reason: "source_scoped_recovery_action",
@@ -2134,6 +2148,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     latestRun: LatestIssueRun;
     recoveryCause: StrandedRecoveryCause;
   }) {
+    if (input.recoveryCause === "workspace_validation_failed") return;
     if (!input.action.ownerAgentId) return;
     await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",
@@ -2337,7 +2352,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         "- Next action: a board operator should assign an invokable recovery owner, fix the agent/runtime state, or record an intentional manual resolution.",
       ].join("\n");
 
-    if (recoveryAction.attemptCount === 1) {
+    const shouldPostEscalationComment =
+      recoveryAction.attemptCount === 1 ||
+      input.recoveryCause === "workspace_validation_failed";
+    if (shouldPostEscalationComment) {
       const escalationCommentMarker = `Recovery action: \`${recoveryAction.id}\``;
 
       const hasEscalationComment = await db
@@ -2388,6 +2406,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         previousStatus: input.previousStatus,
         source: input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
           ? "recovery.reconcile_successful_run_handoff_missing_state"
+          : input.recoveryCause === "workspace_validation_failed"
+            ? "recovery.reconcile_workspace_validation_failed"
           : "recovery.reconcile_stranded_assigned_issue",
         recoveryCause: input.recoveryCause ?? "stranded_assigned_issue",
         latestRunId: input.latestRun?.id ?? null,
@@ -2467,7 +2487,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       const agent = await getAgent(agentId);
-      if (!agent || agent.companyId !== issue.companyId || !isAgentInvokable(agent)) {
+      if (!agent || agent.companyId !== issue.companyId || !(await isAgentInvokable(agent))) {
         result.skipped += 1;
         continue;
       }

@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { Router, type Request } from "express";
+import { and, count as countFn, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { agents as agentsTable } from "@paperclipai/db";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
+  companyArtifactsQuerySchema,
   companyPortabilityExportSchema,
   companyPortabilityImportSchema,
   companyPortabilityPreviewSchema,
@@ -19,6 +22,7 @@ import {
   accessService,
   agentService,
   budgetService,
+  companyArtifactsService,
   companyPortabilityService,
   companyService,
   feedbackService,
@@ -35,6 +39,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const portability = companyPortabilityService(db, storage);
   const access = accessService(db);
   const budgets = budgetService(db);
+  const artifacts = companyArtifactsService(db, storage);
   const feedback = feedbackService(db);
   const importJobs = new Map<string, ImportJobRecord>();
   const importJobTerminalRetentionMs = 5 * 60 * 1000;
@@ -121,6 +126,13 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     res.status(400).json({
       error: "Missing companyId in path. Use /api/companies/{companyId}/issues.",
     });
+  });
+
+  router.get("/:companyId/artifacts", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const query = companyArtifactsQuerySchema.parse(req.query);
+    res.json(await artifacts.list(companyId, query));
   });
 
   router.get("/:companyId", async (req, res) => {
@@ -366,22 +378,46 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       }
     }
 
-    const company = await svc.update(companyId, body);
+    const transitionsToArchived =
+      body.status === "archived" && existingCompany.status !== "archived";
+    const transitionsArchivedToActive =
+      body.status === "active" && existingCompany.status === "archived";
+    let transitionsPausedToActiveWithArchivePausedAgents = false;
+    if (body.status === "active" && existingCompany.status === "paused") {
+      const [archivedPausedCount] = await db
+        .select({ value: countFn() })
+        .from(agentsTable)
+        .where(and(
+          eq(agentsTable.companyId, companyId),
+          eq(agentsTable.status, "paused"),
+          eq(agentsTable.pauseReason, "company_archived"),
+        ));
+      transitionsPausedToActiveWithArchivePausedAgents =
+        Number(archivedPausedCount?.value ?? 0) > 0;
+    }
+    const lifecycleEventEmittedByService =
+      transitionsToArchived ||
+      transitionsArchivedToActive ||
+      transitionsPausedToActiveWithArchivePausedAgents;
+
+    const company = await svc.update(companyId, body, actor);
     if (!company) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "company.updated",
-      entityType: "company",
-      entityId: companyId,
-      details: body,
-    });
+    if (!lifecycleEventEmittedByService) {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.updated",
+        entityType: "company",
+        entityId: companyId,
+        details: body,
+      });
+    }
     res.json(company);
   });
 
@@ -412,19 +448,11 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const company = await svc.archive(companyId);
+    const company = await svc.archive(companyId, getActorInfo(req));
     if (!company) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    await logActivity(db, {
-      companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
-      action: "company.archived",
-      entityType: "company",
-      entityId: companyId,
-    });
     res.json(company);
   });
 

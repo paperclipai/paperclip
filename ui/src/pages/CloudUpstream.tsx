@@ -220,7 +220,10 @@ export function CloudUpstream() {
         </div>
         <div className="rounded-md border border-border px-4 py-4 text-sm text-muted-foreground">
           Cloud sync is disabled. Enable it in{" "}
-          <Link className="text-primary underline-offset-2 hover:underline" to="/instance/settings/experimental">
+          <Link
+            className="text-primary underline-offset-2 hover:underline"
+            to="/company/settings/instance/experimental"
+          >
             Instance Settings
           </Link>{" "}
           to show upstream connection and push tools.

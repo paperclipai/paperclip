@@ -44,7 +44,6 @@ import {
   copyCatalogSkillFile,
   getCatalogPackageMetadata,
   getCatalogSkillOrThrow,
-  readCatalogSkillFile,
   resolveCatalogSkillReference,
 } from "./skills-catalog.js";
 import {
@@ -138,6 +137,36 @@ type ParsedSkillImportSource = {
   originalSkillsShUrl: string | null;
   warnings: string[];
 };
+
+const EXTERNAL_SKILL_SOURCE_TYPES = new Set<CompanySkillSourceType>(["github", "skills_sh", "url"]);
+
+function isPinnedCommitRef(value: string | null | undefined) {
+  return Boolean(value && /^[0-9a-f]{40}$/i.test(value.trim()));
+}
+
+function assertImportedSkillSourceAllowed(skill: ImportedSkill) {
+  if (!EXTERNAL_SKILL_SOURCE_TYPES.has(skill.sourceType)) return;
+  if (skill.trustLevel === "scripts_executables") {
+    throw unprocessable(
+      `External skill source "${skill.slug}" contains executable scripts and cannot be imported.`,
+      {
+        sourceType: skill.sourceType,
+        trustLevel: skill.trustLevel,
+        reason: "scripts_executables_blocked",
+      },
+    );
+  }
+  if ((skill.sourceType === "github" || skill.sourceType === "skills_sh") && !isPinnedCommitRef(skill.sourceRef)) {
+    throw unprocessable(
+      `External skill source "${skill.slug}" must resolve to a pinned Git commit before import.`,
+      {
+        sourceType: skill.sourceType,
+        trustLevel: skill.trustLevel,
+        reason: "unpinned_external_source",
+      },
+    );
+  }
+}
 
 type SkillSourceMeta = {
   skillKey?: string;
@@ -2452,7 +2481,7 @@ export function companySkillService(db: Db) {
         buildSkillRuntimeName(catalogSkill.key, skill.slug),
       );
       await copySkillDirectory(originSnapshotLocator, materializedDir);
-      const markdown = (await readCatalogSkillFile(catalogSkill.id, catalogSkill.entrypoint)).content;
+      const markdown = await fs.readFile(path.join(originSnapshotLocator, catalogSkill.entrypoint), "utf8");
       const nextMetadata = buildCatalogSkillMetadata(catalogSkill, skill, originSnapshotLocator);
       const nextValues = {
         name: catalogSkill.name,
@@ -2942,6 +2971,7 @@ export function companySkillService(db: Db) {
       catalogKind: catalogSkill.kind,
       catalogCategory: catalogSkill.category,
       catalogPath: catalogSkill.path,
+      catalogSource: catalogSkill.source ?? null,
       packageName: packageMetadata.packageName,
       packageVersion: packageMetadata.packageVersion,
       originHash: catalogSkill.contentHash,
@@ -2956,11 +2986,36 @@ export function companySkillService(db: Db) {
     if (catalogSkill.compatibility !== "compatible") {
       throw unprocessable(`Catalog skill ${catalogSkill.id} is not compatible.`);
     }
-    if (catalogSkill.trustLevel === "scripts_executables") {
-      throw unprocessable(
-        "Catalog skill contains executable scripts and cannot be force-installed until security review semantics allow it.",
-      );
-    }
+  }
+
+  async function auditCatalogSkillSnapshot(
+    companyId: string,
+    catalogSkill: CatalogSkill,
+    slug: string,
+    sourceDir: string,
+  ) {
+    return auditInstalledSkillBytes({
+      id: randomUUID(),
+      companyId,
+      key: catalogSkill.key,
+      slug,
+      name: catalogSkill.name,
+      description: catalogSkill.description,
+      markdown: "",
+      sourceType: "catalog",
+      sourceLocator: sourceDir,
+      sourceRef: catalogSkill.contentHash,
+      trustLevel: catalogSkill.trustLevel,
+      compatibility: catalogSkill.compatibility,
+      fileInventory: catalogSkill.files.map((entry) => ({ path: entry.path, kind: entry.kind })),
+      metadata: {
+        sourceKind: "catalog",
+        catalogId: catalogSkill.id,
+        originHash: catalogSkill.contentHash,
+      },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
   }
 
   async function installFromCatalog(
@@ -3021,9 +3076,31 @@ export function companySkillService(db: Db) {
       }
     }
 
-    const materializedDir = await materializeCatalogManifestSkillFiles(companyId, catalogSkill, slug);
-    const originSnapshotLocator = await materializeCatalogOriginSnapshot(companyId, catalogSkill, slug);
-    const markdown = (await readCatalogSkillFile(catalogSkill.id, catalogSkill.entrypoint)).content;
+    let materializedDir: string | null = null;
+    let originSnapshotLocator: string | null = null;
+    let candidateMaterializedDir: string | null = null;
+    try {
+      originSnapshotLocator = await materializeCatalogOriginSnapshot(companyId, catalogSkill, slug);
+      const candidateAudit = await auditCatalogSkillSnapshot(companyId, catalogSkill, slug, originSnapshotLocator);
+      if (candidateAudit.verdict === "fail") {
+        throw unprocessable("Catalog install is blocked by hard-stop audit findings.", {
+          updateHoldReason: "audit_hard_stop",
+          audit: candidateAudit,
+        });
+      }
+      candidateMaterializedDir = await materializeCatalogManifestSkillFiles(companyId, catalogSkill, slug);
+      materializedDir = candidateMaterializedDir;
+    } catch (error) {
+      if (candidateMaterializedDir) {
+        await fs.rm(candidateMaterializedDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+      if (originSnapshotLocator) await fs.rm(originSnapshotLocator, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
+    if (!materializedDir || !originSnapshotLocator) {
+      throw unprocessable("Catalog install did not materialize pinned files.");
+    }
+    const markdown = await fs.readFile(path.join(originSnapshotLocator, catalogSkill.entrypoint), "utf8");
     const metadata = buildCatalogSkillMetadata(catalogSkill, existingByKey, originSnapshotLocator);
     const values = {
       companyId,
@@ -3285,6 +3362,7 @@ export function companySkillService(db: Db) {
   async function upsertImportedSkills(companyId: string, imported: ImportedSkill[]): Promise<CompanySkill[]> {
     const out: CompanySkill[] = [];
     for (const skill of imported) {
+      assertImportedSkillSourceAllowed(skill);
       const existing = await getByKey(companyId, skill.key);
       const existingMeta = existing ? getSkillMeta(existing) : {};
       const incomingMeta = skill.metadata && isPlainRecord(skill.metadata) ? skill.metadata : {};
