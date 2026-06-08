@@ -9,6 +9,7 @@ const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const peerAgentId = "44444444-4444-4444-8444-444444444444";
 const ownerRunId = "55555555-5555-4555-8555-555555555555";
 const recoveryActionId = "77777777-7777-4777-8777-777777777777";
+const opsAgentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -413,11 +414,13 @@ describe("agent issue mutation checkout ownership", () => {
     mockAgentService.getById.mockImplementation(async (id: string) => {
       if (id === ownerAgentId) return makeAgent(ownerAgentId);
       if (id === peerAgentId) return makeAgent(peerAgentId);
+      if (id === opsAgentId) return makeAgent(opsAgentId, { role: "general" });
       return null;
     });
     mockAgentService.list.mockResolvedValue([
       makeAgent(ownerAgentId),
       makeAgent(peerAgentId),
+      makeAgent(opsAgentId, { role: "general" }),
     ]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: null });
     mockCompanyService.getById.mockResolvedValue({ id: companyId, issuePrefix: "PAP" });
@@ -910,6 +913,118 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status).toBe(200);
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("allows assignment-authorized agents to repair stale in_review ownership to the typed reviewer", async () => {
+    const reviewStageId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const reviewIssue = makeIssue({
+      status: "in_review",
+      assigneeAgentId: ownerAgentId,
+      assigneeUserId: null,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [
+          {
+            id: reviewStageId,
+            type: "review",
+            approvalsNeeded: 1,
+            participants: [
+              { id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", type: "agent", agentId: peerAgentId, userId: null },
+            ],
+          },
+        ],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: reviewStageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: peerAgentId, userId: null },
+        returnAssignee: { type: "agent", agentId: ownerAgentId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: null,
+      },
+    });
+    mockIssueService.getById.mockResolvedValue(reviewIssue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...reviewIssue,
+      ...patch,
+    }));
+    mockAgentService.resolveByReference.mockResolvedValueOnce({
+      ambiguous: false,
+      agent: makeAgent(peerAgentId),
+    });
+
+    const res = await request(await createApp(peerActor({ agentId: opsAgentId })))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        assigneeAgentId: peerAgentId,
+        comment: "Repairing stale review ownership to the active reviewer.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "tasks:assign",
+      resource: expect.objectContaining({
+        type: "issue",
+        issueId,
+        assigneeAgentId: peerAgentId,
+        assigneeUserId: null,
+      }),
+    }));
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "in_review",
+        assigneeAgentId: peerAgentId,
+        assigneeUserId: null,
+        executionState: expect.objectContaining({
+          status: "pending",
+          currentParticipant: expect.objectContaining({ type: "agent", agentId: peerAgentId }),
+        }),
+      }),
+    );
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Repairing stale review ownership to the active reviewer.",
+      expect.any(Object),
+      expect.any(Object),
+    );
+  });
+
+  it("rejects agent attempts to take over a human-owned in_review issue", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        status: "in_review",
+        assigneeAgentId: null,
+        assigneeUserId: "local-board",
+        executionState: {
+          status: "pending",
+          currentStageId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "user", userId: "local-board", agentId: null },
+          returnAssignee: { type: "agent", agentId: ownerAgentId, userId: null },
+          reviewRequest: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+          monitor: null,
+        },
+      }),
+    );
+
+    const res = await request(await createApp(peerActor({ agentId: opsAgentId })))
+      .patch(`/api/issues/${issueId}`)
+      .send({ assigneeAgentId: peerAgentId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent cannot reassign a human-owned issue");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it.each([
