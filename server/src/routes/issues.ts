@@ -88,6 +88,7 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+import { recoveryService } from "../services/recovery/service.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -956,6 +957,9 @@ export function issueRoutes(
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
+  const recoverySvc = recoveryService(db, {
+    enqueueWakeup: (agentId, opts) => heartbeat.wakeup(agentId, opts),
+  });
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
@@ -5602,6 +5606,31 @@ export function issueRoutes(
               childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
             },
           });
+        }
+      }
+
+      // Eager fold: when an issue becomes terminal, immediately fold any active run
+      // that has same-run evidence of setting this status, rather than waiting for
+      // the 1h watchdog scan.
+      if (becameTerminal) {
+        const activeRun = await resolveActiveIssueRun(issue);
+        if (activeRun) {
+          const foldResult = await recoverySvc.foldTerminalIssueRunEager({
+            run: activeRun,
+            sourceIssue: issue,
+          }).catch((err) => {
+            logger.warn(
+              { err, issueId: issue.id, runId: activeRun.id },
+              "failed to eagerly fold terminal issue run",
+            );
+            return { kind: "skipped" as const, reason: "error" };
+          });
+          if (foldResult.kind === "folded") {
+            logger.info(
+              { issueId: issue.id, runId: activeRun.id, finalRunStatus: foldResult.finalRunStatus },
+              "eagerly folded terminal issue run",
+            );
+          }
         }
       }
 

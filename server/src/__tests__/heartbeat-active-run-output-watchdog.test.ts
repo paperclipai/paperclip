@@ -823,4 +823,185 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     });
     expect(decision.createdByRunId).toBe(managerRunId);
   });
+
+  it("eagerly folds run when issue transitions to done with same-run evidence", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, coderId, issueId, runId } = await seedRunningRun({
+      now,
+      ageMs: 10 * 60 * 1000, // 10 minutes, well below 1h watchdog threshold
+      withOutput: true,
+      sourceStatus: "in_progress", // Still in progress initially
+    });
+
+    // Verify run is running and issue is in progress
+    const [runBefore] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(runBefore?.status).toBe("running");
+    const [issueBefore] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issueBefore?.status).toBe("in_progress");
+    expect(issueBefore?.executionRunId).toBe(runId);
+
+    // Agent updates issue to done with same-run activity evidence
+    const terminalEvidenceAt = new Date(now.getTime() + 1000);
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: coderId,
+      agentId: coderId,
+      runId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: {
+        status: "done",
+        _previous: { status: "in_progress" },
+      },
+      createdAt: terminalEvidenceAt,
+    });
+    await db
+      .update(issues)
+      .set({ status: "done", completedAt: terminalEvidenceAt, updatedAt: terminalEvidenceAt })
+      .where(eq(issues.id, issueId));
+
+    // Trigger eager fold
+    const recovery = recoveryService(db, {
+      enqueueWakeup: async () => null,
+    });
+    const [issueAfter] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const [runStillRunning] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const foldResult = await recovery.foldTerminalIssueRunEager({
+      run: runStillRunning!,
+      sourceIssue: issueAfter!,
+    });
+
+    // Verify run was folded to succeeded immediately
+    expect(foldResult.kind).toBe("folded");
+    expect(foldResult).toMatchObject({
+      kind: "folded",
+      finalRunStatus: "succeeded",
+    });
+
+    const [runAfter] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(runAfter?.status).toBe("succeeded");
+    expect(runAfter?.finishedAt).toBeTruthy();
+    expect(runAfter?.resultJson).toMatchObject({
+      sourceResolvedWatchdogFold: {
+        sourceIssueId: issueId,
+        sourceIssueStatus: "done",
+        sameRunEvidenceKind: "activity",
+      },
+    });
+
+    // Verify issue execution metadata was cleared
+    const [issueFinal] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issueFinal?.executionRunId).toBeNull();
+    expect(issueFinal?.executionAgentNameKey).toBeNull();
+    expect(issueFinal?.executionLockedAt).toBeNull();
+
+    // Verify activity log was created
+    const foldActivity = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.action, "heartbeat.folded"),
+          eq(activityLog.entityId, runId),
+        ),
+      );
+    expect(foldActivity).toHaveLength(1);
+    expect(foldActivity[0]?.details).toMatchObject({
+      source: "eager_terminal_fold",
+      sourceIssueStatus: "done",
+      finalRunStatus: "succeeded",
+    });
+  });
+
+  it("eagerly folds run when issue transitions to cancelled with same-run evidence", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, coderId, issueId, runId } = await seedRunningRun({
+      now,
+      ageMs: 5 * 60 * 1000, // 5 minutes
+      withOutput: true,
+      sourceStatus: "in_progress",
+    });
+
+    // Agent updates issue to cancelled with same-run activity evidence
+    const terminalEvidenceAt = new Date(now.getTime() + 1000);
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: coderId,
+      agentId: coderId,
+      runId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: {
+        status: "cancelled",
+        _previous: { status: "in_progress" },
+      },
+      createdAt: terminalEvidenceAt,
+    });
+    await db
+      .update(issues)
+      .set({ status: "cancelled", cancelledAt: terminalEvidenceAt, updatedAt: terminalEvidenceAt })
+      .where(eq(issues.id, issueId));
+
+    // Trigger eager fold
+    const recovery = recoveryService(db, {
+      enqueueWakeup: async () => null,
+    });
+    const [issueAfter] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const [runStillRunning] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const foldResult = await recovery.foldTerminalIssueRunEager({
+      run: runStillRunning!,
+      sourceIssue: issueAfter!,
+    });
+
+    // Verify run was folded to cancelled immediately
+    expect(foldResult.kind).toBe("folded");
+    expect(foldResult).toMatchObject({
+      kind: "folded",
+      finalRunStatus: "cancelled",
+    });
+
+    const [runAfter] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(runAfter?.status).toBe("cancelled");
+    expect(runAfter?.finishedAt).toBeTruthy();
+  });
+
+  it("skips eager fold when no same-run evidence exists", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId, runId } = await seedRunningRun({
+      now,
+      ageMs: 5 * 60 * 1000,
+      withOutput: true,
+      sourceStatus: "in_progress",
+    });
+
+    // Update issue to done WITHOUT same-run activity evidence
+    await db
+      .update(issues)
+      .set({ status: "done", completedAt: now, updatedAt: now })
+      .where(eq(issues.id, issueId));
+
+    // Trigger eager fold attempt
+    const recovery = recoveryService(db, {
+      enqueueWakeup: async () => null,
+    });
+    const [issueAfter] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const [runStillRunning] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const foldResult = await recovery.foldTerminalIssueRunEager({
+      run: runStillRunning!,
+      sourceIssue: issueAfter!,
+    });
+
+    // Verify fold was skipped (no evidence)
+    expect(foldResult.kind).toBe("skipped");
+    expect(foldResult.reason).toBe("no_evidence");
+
+    // Verify run is still running
+    const [runAfter] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(runAfter?.status).toBe("running");
+  });
 });

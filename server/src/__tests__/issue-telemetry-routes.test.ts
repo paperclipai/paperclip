@@ -58,6 +58,7 @@ function registerModuleMocks() {
     heartbeatService: () => ({
       wakeup: vi.fn(async () => undefined),
       reportRunActivity: vi.fn(async () => undefined),
+      getActiveRunForAgent: vi.fn(async () => null),
     }),
     instanceSettingsService: () => ({}),
     issueApprovalService: () => ({}),
