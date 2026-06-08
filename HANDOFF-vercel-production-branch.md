@@ -1,5 +1,10 @@
 # Handoff → runtime/infra session: set Vercel Production Branch (push-to-deploy is not wired)
 
+> **✅ RESOLVED 2026-06-07** — Production Branch set to `rebrand/valadrien-os` in
+> Settings → Environments → Production → Branch Tracking. Push-to-deploy is now wired:
+> a push to the branch builds `target: production` and auto-aliases `os.valadrien.dev`.
+> `vercel promote` is retired. This commit is the first production build from HEAD.
+
 **From:** design/UI session · **Updated:** 2026-06-07 · **Priority:** HIGH — production is currently un-updatable
 
 ## TL;DR
