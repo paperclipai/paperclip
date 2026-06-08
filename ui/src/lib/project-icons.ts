@@ -42,7 +42,10 @@ import {
 } from "lucide-react";
 import { PROJECT_ICON_NAMES, type ProjectIconName } from "@paperclipai/shared";
 
+import { AGENT_ICONS } from "./agent-icons";
+
 export const PROJECT_ICONS: Record<ProjectIconName, LucideIcon> = {
+  ...AGENT_ICONS,
   folder: Folder,
   rocket: Rocket,
   code: Code,
