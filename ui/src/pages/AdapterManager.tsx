@@ -11,6 +11,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { adaptersApi } from "@/api/adapters";
 import type { AdapterInfo } from "@/api/adapters";
+import { instanceSettingsApi } from "@/api/instanceSettings";
 import { getAdapterLabel } from "@/adapters/adapter-display-registry";
 import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
@@ -50,6 +51,10 @@ function AdapterRow({
   toggleTitleDisabled,
   /** Custom label for the disabled badge (defaults to "Hidden from menus"). */
   disabledBadgeLabel,
+  /** Currently-configured instance default model id for this adapter. */
+  defaultModel,
+  /** Persist a new default model id ("" clears it → adapter's built-in default). */
+  onSetDefaultModel,
 }: {
   adapter: AdapterInfo;
   canRemove: boolean;
@@ -65,6 +70,8 @@ function AdapterRow({
   toggleTitleEnabled?: string;
   toggleTitleDisabled?: string;
   disabledBadgeLabel?: string;
+  defaultModel?: string;
+  onSetDefaultModel?: (type: string, modelId: string) => void;
 }) {
   return (
     <li>
@@ -108,6 +115,21 @@ function AdapterRow({
             )}
             {" · "}{adapter.modelsCount} models
           </p>
+          {onSetDefaultModel && adapter.models && adapter.models.length > 0 ? (
+            <div className="mt-2 flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">Default model</span>
+              <select
+                className="rounded-md border border-border bg-transparent px-2 py-1 text-xs outline-none"
+                value={defaultModel ?? ""}
+                onChange={(e) => onSetDefaultModel(adapter.type, e.target.value)}
+              >
+                <option value="">Adapter default</option>
+                {adapter.models.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))}
+              </select>
+            </div>
+          ) : null}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {onReinstall && (
@@ -275,6 +297,28 @@ export function AdapterManager() {
   const { data: adapters, isLoading } = useQuery({
     queryKey: queryKeys.adapters.all,
     queryFn: () => adaptersApi.list(),
+  });
+
+  const { data: generalSettings } = useQuery({
+    queryKey: ["instance-settings", "general"] as const,
+    queryFn: () => instanceSettingsApi.getGeneral(),
+  });
+  const defaultModels = generalSettings?.adapterDefaultModels ?? {};
+
+  const setDefaultModelMutation = useMutation({
+    mutationFn: ({ type, modelId }: { type: string; modelId: string }) => {
+      const next: Record<string, string> = { ...(generalSettings?.adapterDefaultModels ?? {}) };
+      if (modelId) next[type] = modelId;
+      else delete next[type];
+      return instanceSettingsApi.updateGeneral({ adapterDefaultModels: next });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["instance-settings", "general"] });
+      pushToast({ title: "Default model updated", body: "Applies to newly-created agents.", tone: "success" });
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "Failed to set default model", body: err.message, tone: "error" });
+    },
   });
 
   const invalidate = () => {
@@ -572,6 +616,8 @@ export function AdapterManager() {
                   toggleTitleDisabled={isBuiltinOverride ? "Pause external override" : undefined}
                   toggleTitleEnabled={isBuiltinOverride ? "Resume external override" : undefined}
                   disabledBadgeLabel={isBuiltinOverride ? "Override paused" : undefined}
+                  defaultModel={defaultModels[adapter.type]}
+                  onSetDefaultModel={(type, modelId) => setDefaultModelMutation.mutate({ type, modelId })}
                 />
               );
             })}
@@ -598,6 +644,8 @@ export function AdapterManager() {
                 onToggle={(type, disabled) => toggleMutation.mutate({ type, disabled })}
                 onRemove={() => {}}
                 isToggling={isMutating}
+                defaultModel={defaultModels[adapter.type]}
+                onSetDefaultModel={(type, modelId) => setDefaultModelMutation.mutate({ type, modelId })}
               />
             ))}
             {overriddenBuiltins.map((virtual) => (

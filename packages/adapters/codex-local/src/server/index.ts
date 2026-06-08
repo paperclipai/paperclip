@@ -13,6 +13,9 @@ export {
   fetchWithTimeout,
   codexHomeDir,
 } from "./quota.js";
+export { refreshCodexToken, codexJwtExpiryMs } from "./codex-oauth.js";
+export type { CodexTokenResult } from "./codex-oauth.js";
+export { writePoolAccountCodexHome } from "./codex-home.js";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 
 function readNonEmptyString(value: unknown): string | null {

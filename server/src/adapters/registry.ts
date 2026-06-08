@@ -48,6 +48,11 @@ import {
   modelProfiles as codexModelProfiles,
 } from "@paperclipai/adapter-codex-local";
 import {
+  execute as autoRotationExecute,
+  testEnvironment as autoRotationTestEnvironment,
+  resolveAutoRotationProvider,
+} from "./auto-rotation.js";
+import {
   execute as cursorExecute,
   listCursorSkills,
   syncCursorSkills,
@@ -307,6 +312,47 @@ const codexLocalAdapter: ServerAdapterModule = {
   getQuotaWindows: codexGetQuotaWindows,
 };
 
+const autoRotationAdapter: ServerAdapterModule = {
+  type: "auto_rotation",
+  execute: autoRotationExecute,
+  testEnvironment: autoRotationTestEnvironment,
+  // Skills are shared Paperclip markdown (provider-agnostic); reuse Claude's for
+  // the config UI. Runtime injection is handled by the delegated sub-adapter.
+  listSkills: listClaudeSkills,
+  syncSkills: syncClaudeSkills,
+  // No own codec: sessions are namespaced "auto_rotation:<provider>" and resolved
+  // to the underlying provider's codec by getAdapterSessionCodec.
+  models: dedupeAdapterModels([
+    ...prefixAdapterModelLabels(claudeModels, "Claude"),
+    ...prefixAdapterModelLabels(codexModels, "Codex"),
+  ]),
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  // Resolve the CLI install/detect spec for whichever provider this run will
+  // execute as (seed winner, else the configured preference).
+  getRuntimeCommandSpec: (config) =>
+    resolveAutoRotationProvider(config) === "codex"
+      ? buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex")
+      : buildNpmRuntimeCommandSpec(config, "claude", "@anthropic-ai/claude-code"),
+  agentConfigurationDoc: `# auto_rotation agent configuration
+
+Adapter: auto_rotation
+
+Rotates across the COMBINED Claude pool + Codex pool + local default account,
+running whichever provider's CLI matches the best-available account each run.
+
+Config holds BOTH provider sub-configs:
+- preferredProvider ("claude" | "codex", optional): used when no pool account is active
+- claude (object, optional): claude_local config (command/model/effort/…)
+- codex (object, optional): codex_local config (command/model/modelReasoningEffort/…)
+
+Shared operational fields (timeoutSec, graceSec, env, extraArgs) may be set at the
+top level and are inherited by whichever provider runs.
+`,
+};
+
 const cursorLocalAdapter: ServerAdapterModule = {
   type: "cursor",
   execute: cursorExecute,
@@ -511,6 +557,7 @@ const pausedOverrides = new Set<string>();
 function registerBuiltInAdapters() {
   for (const adapter of [
     acpxLocalAdapter,
+    autoRotationAdapter,
     claudeLocalAdapter,
     codexLocalAdapter,
     openCodeLocalAdapter,

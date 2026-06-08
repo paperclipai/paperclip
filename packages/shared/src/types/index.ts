@@ -373,12 +373,17 @@ export type {
 export type { QuotaWindow, ProviderQuotaResult } from "./quota.js";
 export {
   POOL_ACCOUNT_TYPE,
+  POOL_ACCOUNT_TYPES,
+  POOL_PROVIDERS,
+  poolProviderFromType,
 } from "./account-pool.js";
 export type {
+  PoolProvider,
   RotationReason,
   PoolAccount,
   AccountWithHealth,
   PoolState,
+  AutoRotationPreview,
   AccountPoolListResponse,
   AddPoolAccountRequest,
   OauthStartResponse,

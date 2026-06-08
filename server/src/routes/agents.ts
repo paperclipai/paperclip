@@ -990,8 +990,14 @@ export function agentRoutes(
   function applyCreateDefaultsByAdapterType(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
+    defaultModels: Record<string, string> = {},
   ): Record<string, unknown> {
     const next = { ...adapterConfig };
+    // Instance-level default model (Settings → Adapters) applies to ANY adapter
+    // type and takes precedence over the adapter's built-in fallback below.
+    if (adapterType && !asNonEmptyString(next.model) && asNonEmptyString(defaultModels[adapterType])) {
+      next.model = defaultModels[adapterType];
+    }
     if (adapterType === "acpx_local") {
       if (!asNonEmptyString(next.agent)) {
         next.agent = DEFAULT_ACPX_LOCAL_AGENT;
@@ -1964,6 +1970,7 @@ export function agentRoutes(
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       hireInput.adapterType,
       rawHireAdapterConfig,
+      (await instanceSettings.getGeneral()).adapterDefaultModels,
     );
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
@@ -2150,6 +2157,7 @@ export function agentRoutes(
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       createInput.adapterType,
       rawCreateAdapterConfig,
+      (await instanceSettings.getGeneral()).adapterDefaultModels,
     );
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
@@ -2625,6 +2633,7 @@ export function agentRoutes(
       const effectiveAdapterConfig = applyCreateDefaultsByAdapterType(
         requestedAdapterType,
         rawEffectiveAdapterConfig,
+        (await instanceSettings.getGeneral()).adapterDefaultModels,
       );
       const normalizedEffectiveAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
         companyId: existing.companyId,

@@ -24,6 +24,8 @@ export interface InstanceGeneralSettings {
   keyboardShortcuts: boolean;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
+  /** per-adapter default model id applied to newly-created agents (adapterType → modelId) */
+  adapterDefaultModels: Record<string, string>;
 }
 
 export interface InstanceExperimentalSettings {

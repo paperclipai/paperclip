@@ -103,6 +103,60 @@ export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise
   await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
 }
 
+/**
+ * Deterministic per-account Codex home for an active POOLED account, keyed by
+ * company + account so two accounts resolve to two distinct homes. Mirrors
+ * claude-local's `resolvePoolAccountSeedDir`.
+ */
+export function resolvePoolAccountCodexHomeDir(
+  env: NodeJS.ProcessEnv,
+  companyId: string,
+  accountId: string,
+): string {
+  const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+    homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
+    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+    env,
+  });
+  return path.resolve(instanceRoot, "companies", companyId, "pool-accounts", accountId, "codex-home");
+}
+
+/**
+ * Materialize a pooled account's decrypted `auth.json` into its per-account
+ * Codex home and return that directory (for use as `CODEX_HOME`). The non-auth
+ * config files (config.json/config.toml/instructions.md) are seeded from the
+ * shared `~/.codex` so behaviour matches the default login; only `auth.json` is
+ * sourced from the pooled account. This is the Codex twin of claude-local's
+ * `materializePoolAccountCredentialSource`.
+ */
+export async function writePoolAccountCodexHome(
+  env: NodeJS.ProcessEnv,
+  companyId: string,
+  accountId: string,
+  authJson: string,
+): Promise<string> {
+  const home = resolvePoolAccountCodexHomeDir(env, companyId, accountId);
+  await fs.mkdir(home, { recursive: true });
+
+  // Seed non-credential config from the shared home (best-effort, copy-once).
+  const sourceHome = resolveSharedCodexHomeDir(env);
+  if (path.resolve(sourceHome) !== path.resolve(home)) {
+    for (const name of COPIED_SHARED_FILES) {
+      const source = path.join(sourceHome, name);
+      if (!(await pathExists(source))) continue;
+      await ensureCopiedFile(path.join(home, name), source);
+    }
+  }
+
+  // Write the pooled credentials as a real file (never a symlink) so it always
+  // reflects the latest decrypted/refreshed blob.
+  const authPath = path.join(home, "auth.json");
+  const staging = `${authPath}.tmp-${process.pid}-${process.hrtime.bigint()}`;
+  await fs.writeFile(staging, authJson, { mode: 0o600 });
+  await fs.rename(staging, authPath);
+  return home;
+}
+
 export async function prepareManagedCodexHome(
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],

@@ -31,6 +31,9 @@ export const instanceGeneralSettingsSchema = z.object({
     DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   ),
   backupRetention: backupRetentionPolicySchema.default(DEFAULT_BACKUP_RETENTION),
+  // Per-adapter default model id applied to newly-created agents (adapterType → modelId).
+  // Empty / unset → the adapter's own built-in default (or the CLI default).
+  adapterDefaultModels: z.record(z.string(), z.string()).default({}),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.partial();

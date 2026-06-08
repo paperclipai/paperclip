@@ -66,13 +66,19 @@ import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
-import { POOL_ACCOUNT_TYPE } from "@paperclipai/shared/types/account-pool";
+import { POOL_ACCOUNT_TYPES, poolProviderFromType } from "@paperclipai/shared/types/account-pool";
+import type { PoolProvider } from "@paperclipai/shared/types/account-pool";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
-import { DEFAULT_ACCOUNT_ID, ensureFreshPoolToken, getPoolState, listPoolAccounts } from "./account-pool.js";
-import { accountPoolBalancer } from "./account-pool-balancer.js";
+import {
+  DEFAULT_ACCOUNT_ID,
+  ensureFreshPoolToken,
+  getPoolState,
+  listPoolAccounts,
+} from "./account-pool.js";
+import { accountPoolBalancer, previewCombinedBest } from "./account-pool-balancer.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
@@ -351,21 +357,27 @@ type RuntimeConfigSecretResolver = Pick<
  * WHICH account's credentials to seed. Backward-compat: returns null when no
  * pool is configured / no active account, so seeding falls back to ~/.claude.
  */
-type PoolAccountSeed = { accountId: string; credentialsJson: string };
+type PoolAccountSeed = { provider: PoolProvider; accountId: string | null; credentialsJson: string | null };
 
-async function resolveActivePoolAccountSeed(input: {
+/**
+ * Resolve the active pooled account for a SINGLE provider (claude_local /
+ * codex_local). Returns the decrypted seed when a pool account is active for that
+ * provider, else null (→ on-disk default fallback inside the adapter).
+ */
+async function resolvePoolAccountSeed(input: {
   db: Db;
   companyId: string;
+  provider: PoolProvider;
 }): Promise<PoolAccountSeed | null> {
   const stateRow = await input.db
     .select({ activeAccountId: accountPoolState.activeAccountId })
     .from(accountPoolState)
-    .where(eq(accountPoolState.companyId, input.companyId))
+    .where(and(eq(accountPoolState.companyId, input.companyId), eq(accountPoolState.provider, input.provider)))
     .then((rows) => rows[0] ?? null);
   const activeAccountId = stateRow?.activeAccountId ?? null;
   if (!activeAccountId) return null;
 
-  // Confirm the active secret is actually a pool account in this company.
+  // Confirm the active secret is actually a pool account of this provider.
   const secretRow = await input.db
     .select({
       id: companySecrets.id,
@@ -380,19 +392,50 @@ async function resolveActivePoolAccountSeed(input: {
     !secretRow ||
     secretRow.companyId !== input.companyId ||
     secretRow.status !== "active" ||
-    secretRow.providerMetadata?.poolType !== POOL_ACCOUNT_TYPE
+    secretRow.providerMetadata?.poolType !== POOL_ACCOUNT_TYPES[input.provider]
   ) {
     return null;
   }
 
   // Refresh-before-seed: rotate the token if it's near expiry so the agent run
   // never starts with an expired OAuth access token. Returns the current blob.
-  const fresh = await ensureFreshPoolToken(input.db, input.companyId, activeAccountId);
+  const fresh = await ensureFreshPoolToken(input.db, input.companyId, activeAccountId, input.provider);
   const credentialsJson = fresh.credentialsJson;
   if (typeof credentialsJson !== "string" || credentialsJson.trim().length === 0) {
     return null;
   }
-  return { accountId: activeAccountId, credentialsJson };
+  return { provider: input.provider, accountId: activeAccountId, credentialsJson };
+}
+
+/**
+ * Resolve the globally-best account for an `auto_rotation` agent across BOTH the
+ * Claude and Codex pools + each provider's local default, using CACHED health
+ * snapshots (no live probe — the cron keeps them fresh). Honors per-provider STOP
+ * switches: a stopped provider contributes only its currently-pinned account.
+ *
+ * Returns the winner's provider + decrypted seed (or {accountId:null,
+ * credentialsJson:null} when a provider's default wins), or null when nothing
+ * usable is known yet (→ adapter falls back to its preferred provider on disk).
+ */
+async function resolveCombinedBestSeed(input: {
+  db: Db;
+  companyId: string;
+}): Promise<PoolAccountSeed | null> {
+  // Candidate selection (across both pools + defaults, honoring STOP switches and
+  // the per-provider defaultRotationEnabled flag) lives in the balancer so the UI
+  // can preview the same pick without decrypting tokens. Here we only decrypt the
+  // winner.
+  const best = await previewCombinedBest(input.db, input.companyId);
+  if (!best) return null;
+
+  if (best.isDefault || best.accountId === null) {
+    return { provider: best.provider, accountId: null, credentialsJson: null };
+  }
+  const fresh = await ensureFreshPoolToken(input.db, input.companyId, best.accountId, best.provider);
+  if (typeof fresh.credentialsJson !== "string" || fresh.credentialsJson.trim().length === 0) {
+    return null;
+  }
+  return { provider: best.provider, accountId: best.accountId, credentialsJson: fresh.credentialsJson };
 }
 
 function isPaperclipRuntimeEnvKey(key: string) {
@@ -2429,7 +2472,12 @@ const defaultSessionCodec: AdapterSessionCodec = {
 };
 
 function getAdapterSessionCodec(adapterType: string) {
-  const adapter = getServerAdapter(adapterType);
+  // auto_rotation sessions are namespaced "auto_rotation:<provider>"; resolve the
+  // codec of the underlying provider adapter so params decode with the right CLI.
+  const resolved = adapterType.startsWith("auto_rotation:")
+    ? (adapterType.endsWith(":codex") ? "codex_local" : "claude_local")
+    : adapterType;
+  const adapter = getServerAdapter(resolved);
   return adapter.sessionCodec ?? defaultSessionCodec;
 }
 
@@ -7046,7 +7094,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
-    const sessionCodec = getAdapterSessionCodec(agent.adapterType);
+    // Account Pool & Rotation: resolve the active pooled account up-front so the
+    // EFFECTIVE provider is known before we read/codec the session. Per-adapter
+    // binding: claude_local → Claude pool, codex_local → Codex pool, auto_rotation
+    // → global best across Claude + Codex + local default. Resolved here (not at
+    // runtimeConfig build) because the session is keyed by the effective adapter
+    // type so an auto_rotation provider switch never resumes the wrong CLI.
+    let poolAccountSeed: PoolAccountSeed | null = null;
+    let poolSeedProvider: PoolProvider | null = null;
+    if (
+      agent.adapterType === "claude_local" ||
+      agent.adapterType === "codex_local" ||
+      agent.adapterType === "auto_rotation"
+    ) {
+      try {
+        poolAccountSeed =
+          agent.adapterType === "auto_rotation"
+            ? await resolveCombinedBestSeed({ db, companyId: agent.companyId })
+            : await resolvePoolAccountSeed({
+                db,
+                companyId: agent.companyId,
+                provider: agent.adapterType === "codex_local" ? "codex" : "claude",
+              });
+        if (poolAccountSeed) poolSeedProvider = poolAccountSeed.provider;
+      } catch (err) {
+        // Non-fatal: fall back to the on-disk default credentials.
+        logger.warn(
+          { err, companyId: agent.companyId, agentId: agent.id, runId: run.id },
+          "failed to resolve active pool account; falling back to shared on-disk credentials",
+        );
+      }
+    }
+    // Effective adapter type for session/codec scoping. For auto_rotation we key
+    // sessions per provider so a Claude↔Codex switch never resumes the wrong CLI.
+    const effectiveAdapterType: string =
+      agent.adapterType === "auto_rotation" && poolSeedProvider
+        ? `auto_rotation:${poolSeedProvider}`
+        : agent.adapterType;
+    const sessionCodec = getAdapterSessionCodec(effectiveAdapterType);
     const issueId = readNonEmptyString(context.issueId);
     let issueContext = issueId ? await getIssueExecutionContext(agent.companyId, issueId) : null;
     const issueDependencyReadiness = issueId
@@ -7122,7 +7207,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       isolatedWorkspacesEnabled,
     );
     const taskSession = taskKey
-      ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
+      ? await getTaskSession(agent.companyId, agent.id, effectiveAdapterType, taskKey)
       : null;
     const resetTaskSession = shouldResetTaskSessionForWake(context);
     const sessionResetReason = describeSessionResetReason(context);
@@ -7348,33 +7433,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
-    // Account Pool & Rotation (Slice 3): thread the active pooled account's
-    // decrypted credentials down to the claude-local adapter so it seeds the
-    // right `.credentials.json` (Spec D4 — extend the seed source, not the env).
-    if (agent.adapterType === "claude_local") {
-      try {
-        const poolAccountSeed = await resolveActivePoolAccountSeed({
-          db,
-          companyId: agent.companyId,
-        });
-        if (poolAccountSeed) {
-          runtimeConfig = {
-            ...runtimeConfig,
-            paperclipPoolAccount: poolAccountSeed,
-          } as typeof runtimeConfig & { paperclipPoolAccount: PoolAccountSeed };
-        }
-      } catch (err) {
-        // Non-fatal: fall back to shared ~/.claude credentials.
-        logger.warn(
-          {
-            err,
-            companyId: agent.companyId,
-            agentId: agent.id,
-            runId: run.id,
-          },
-          "failed to resolve active pool account; falling back to shared Claude credentials",
-        );
-      }
+    // Attach the pool account resolved up-front (above) so the adapter seeds the
+    // right credential file (Spec D4 — extend the seed source, not the env).
+    if (poolAccountSeed) {
+      runtimeConfig = {
+        ...runtimeConfig,
+        paperclipPoolAccount: poolAccountSeed,
+      } as typeof runtimeConfig & { paperclipPoolAccount: PoolAccountSeed };
     }
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
       companyId: agent.companyId,
@@ -8227,22 +8292,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
           }
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
-          // Account Pool — REACTIVE rotation: when a claude_local run fails on a
-          // real quota cap (the transient contract carries a reset time only for
+          // Account Pool — REACTIVE rotation: when a pooled run fails on a real
+          // quota cap (the transient contract carries a reset time only for
           // usage-limit-reached errors, not generic 503/overload), rotate the
           // team off the capped account so the bounded retry below runs on a
-          // healthy one. Best-effort + guarded; never breaks run completion.
+          // healthy one. The provider rotated is the one this run executed as
+          // (poolSeedProvider for auto_rotation; the adapter's fixed provider
+          // otherwise). Best-effort + guarded; never breaks run completion.
           const transientContract = readTransientRecoveryContractFromRun(livenessRun);
-          if (agent.adapterType === "claude_local" && transientContract?.retryNotBefore) {
+          const reactiveProvider: PoolProvider | null =
+            agent.adapterType === "claude_local"
+              ? "claude"
+              : agent.adapterType === "codex_local"
+                ? "codex"
+                : agent.adapterType === "auto_rotation"
+                  ? poolSeedProvider
+                  : null;
+          if (reactiveProvider && transientContract?.retryNotBefore) {
             try {
-              const poolAccounts = await listPoolAccounts(db, agent.companyId);
+              const poolAccounts = await listPoolAccounts(db, agent.companyId, reactiveProvider);
               if (poolAccounts.length > 0) {
-                const poolState = await getPoolState(db, agent.companyId);
+                const poolState = await getPoolState(db, agent.companyId, reactiveProvider);
                 const cappedId = poolState?.activeAccountId ?? DEFAULT_ACCOUNT_ID;
                 await accountPoolBalancer(db).rotateOnCap(
                   agent.companyId,
                   cappedId,
                   new Date(transientContract.retryNotBefore),
+                  reactiveProvider,
                 );
               }
             } catch (err) {
@@ -8273,13 +8349,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {
               taskKey,
-              adapterType: agent.adapterType,
+              adapterType: effectiveAdapterType,
             });
           } else {
             await upsertTaskSession({
               companyId: agent.companyId,
               agentId: agent.id,
-              adapterType: agent.adapterType,
+              adapterType: effectiveAdapterType,
               taskKey,
               sessionParamsJson: nextSessionState.params,
               sessionDisplayId: nextSessionState.displayId,
@@ -8357,7 +8433,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await upsertTaskSession({
             companyId: agent.companyId,
             agentId: agent.id,
-            adapterType: agent.adapterType,
+            adapterType: effectiveAdapterType,
             taskKey,
             sessionParamsJson: previousSessionParams,
             sessionDisplayId: previousSessionDisplayId,
@@ -9939,7 +10015,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const clearedTaskSessions = await clearTaskSessions(
         agent.companyId,
         agent.id,
-        taskKey ? { taskKey, adapterType: agent.adapterType } : undefined,
+        // auto_rotation keys sessions per provider ("auto_rotation:claude"/":codex");
+        // omit the adapterType filter so a manual reset clears every provider variant.
+        taskKey
+          ? agent.adapterType === "auto_rotation"
+            ? { taskKey }
+            : { taskKey, adapterType: agent.adapterType }
+          : undefined,
       );
       const runtimePatch: Partial<typeof agentRuntimeState.$inferInsert> = {
         sessionId: null,

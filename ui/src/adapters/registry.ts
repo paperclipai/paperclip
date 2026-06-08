@@ -1,5 +1,6 @@
 import type { UIAdapterModule } from "./types";
 import { acpxLocalUIAdapter } from "./acpx-local";
+import { autoRotationUIAdapter } from "./auto-rotation";
 import { claudeLocalUIAdapter } from "./claude-local";
 import { codexLocalUIAdapter } from "./codex-local";
 import { cursorCloudUIAdapter } from "./cursor-cloud";
@@ -53,6 +54,7 @@ setDynamicParserResultNotifier(notifyAdapterChange);
 function registerBuiltInUIAdapters() {
   for (const adapter of [
     acpxLocalUIAdapter,
+    autoRotationUIAdapter,
     claudeLocalUIAdapter,
     codexLocalUIAdapter,
     cursorCloudUIAdapter,

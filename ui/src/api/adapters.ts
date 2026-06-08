@@ -17,6 +17,8 @@ export interface AdapterInfo {
   label: string;
   source: "builtin" | "external";
   modelsCount: number;
+  /** available model ids/labels (for default-model selection) */
+  models?: { id: string; label: string }[];
   loaded: boolean;
   disabled: boolean;
   capabilities: AdapterCapabilities;

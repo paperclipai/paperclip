@@ -61,6 +61,12 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     experimental: true,
     hideFromVisualSelection: true,
   },
+  auto_rotation: {
+    label: "Auto rotation",
+    description: "Rotates across Claude + Codex pools + local default, picking the best-available account each run",
+    icon: Cpu,
+    recommended: true,
+  },
   claude_local: {
     label: "Claude Code",
     description: "Local Claude agent",

@@ -661,16 +661,24 @@ export type {
   PluginWebhookDeliveryRecord,
   QuotaWindow,
   ProviderQuotaResult,
+  PoolProvider,
   RotationReason,
   PoolAccount,
   AccountWithHealth,
   PoolState,
+  AutoRotationPreview,
   AccountPoolListResponse,
   AddPoolAccountRequest,
   OauthStartResponse,
   OauthCompleteRequest,
 } from "./types/index.js";
-export { COMPANY_SEARCH_SCOPES, POOL_ACCOUNT_TYPE } from "./types/index.js";
+export {
+  COMPANY_SEARCH_SCOPES,
+  POOL_ACCOUNT_TYPE,
+  POOL_ACCOUNT_TYPES,
+  POOL_PROVIDERS,
+  poolProviderFromType,
+} from "./types/index.js";
 export {
   ISSUE_REFERENCE_IDENTIFIER_RE,
   buildIssueReferenceHref,

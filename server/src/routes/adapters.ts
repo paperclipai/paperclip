@@ -74,6 +74,8 @@ interface AdapterInfo {
   label: string;
   source: "builtin" | "external";
   modelsCount: number;
+  /** available model ids/labels for this adapter (for default-model selection) */
+  models: { id: string; label: string }[];
   loaded: boolean;
   disabled: boolean;
   capabilities: AdapterCapabilities;
@@ -131,6 +133,7 @@ function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterP
     label: adapter.type, // ServerAdapterModule doesn't have a separate "label" field; type serves as label
     source: externalRecord ? "external" : "builtin",
     modelsCount: (adapter.models ?? []).length,
+    models: (adapter.models ?? []).map((m) => ({ id: m.id, label: m.label })),
     loaded: true, // If it's in the registry, it's loaded
     disabled: disabledSet.has(adapter.type),
     capabilities: buildAdapterCapabilities(adapter),

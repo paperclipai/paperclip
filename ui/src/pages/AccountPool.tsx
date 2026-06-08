@@ -11,7 +11,7 @@ import {
   ShieldAlert,
   Trash2,
 } from "lucide-react";
-import type { AccountWithHealth, PoolState, QuotaWindow } from "@paperclipai/shared";
+import type { AccountWithHealth, PoolProvider, PoolState, QuotaWindow } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import {
   Dialog,
@@ -116,9 +117,28 @@ function AccountCard(props: {
   removable: boolean;
   onRemove: (account: AccountWithHealth) => void;
   removeDisabled: boolean;
+  showRotationToggle: boolean;
+  onToggleRotation: (account: AccountWithHealth, enabled: boolean) => void;
+  rotationToggleDisabled: boolean;
+  /** checkbox label; defaults to "Include in auto-rotation" */
+  rotationToggleLabel?: string;
+  /** optional one-line clarifier shown under the checkbox */
+  rotationToggleHint?: string;
 }) {
-  const { account, isActive, removable, onRemove, removeDisabled } = props;
+  const {
+    account,
+    isActive,
+    removable,
+    onRemove,
+    removeDisabled,
+    showRotationToggle,
+    onToggleRotation,
+    rotationToggleDisabled,
+    rotationToggleLabel = "Include in auto-rotation",
+    rotationToggleHint,
+  } = props;
   const windows = uniqueWindows(account.windows);
+  const rotationEnabled = account.rotationEnabled !== false;
 
   return (
     <div
@@ -145,6 +165,21 @@ function AccountCard(props: {
           <p className="mt-0.5 truncate text-xs text-muted-foreground">
             {account.email ?? account.key}
           </p>
+          {showRotationToggle ? (
+            <div className="mt-2 flex flex-col gap-0.5">
+              <label className="flex w-fit cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+                <Checkbox
+                  checked={rotationEnabled}
+                  disabled={rotationToggleDisabled}
+                  onCheckedChange={(checked) => onToggleRotation(account, checked === true)}
+                />
+                {rotationToggleLabel}
+              </label>
+              {rotationToggleHint ? (
+                <p className="pl-6 text-[11px] text-muted-foreground/80">{rotationToggleHint}</p>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         {removable ? (
           <Button
@@ -191,6 +226,7 @@ export function AccountPool() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
 
+  const [provider, setProvider] = useState<PoolProvider>("claude");
   const [addOpen, setAddOpen] = useState(false);
   const [addName, setAddName] = useState("");
   const [addCredentials, setAddCredentials] = useState("");
@@ -207,22 +243,35 @@ export function AccountPool() {
 
   const poolQuery = useQuery({
     queryKey: selectedCompanyId
-      ? queryKeys.accountPool.list(selectedCompanyId)
+      ? ([...queryKeys.accountPool.list(selectedCompanyId), provider] as const)
       : (["account-pool", "__disabled__"] as const),
-    queryFn: () => accountPoolApi.list(selectedCompanyId!),
+    queryFn: () => accountPoolApi.list(selectedCompanyId!, provider),
     enabled: Boolean(selectedCompanyId),
     refetchInterval: POLL_INTERVAL_MS,
   });
 
+  // Which pool the shared `auto_rotation` adapter is currently riding (across
+  // both providers). Provider-agnostic, so it polls once regardless of the tab.
+  const autoRotationQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? (["account-pool", "auto-rotation-state", selectedCompanyId] as const)
+      : (["account-pool", "auto-rotation-state", "__disabled__"] as const),
+    queryFn: () => accountPoolApi.autoRotationPreview(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+    refetchInterval: POLL_INTERVAL_MS,
+  });
+  const autoRotationProvider = autoRotationQuery.data?.provider ?? null;
+
   function invalidatePool() {
     if (selectedCompanyId) {
+      // prefix match invalidates every provider variant of the list key
       queryClient.invalidateQueries({ queryKey: queryKeys.accountPool.list(selectedCompanyId) });
     }
   }
 
   const addMutation = useMutation({
     mutationFn: () =>
-      accountPoolApi.add(selectedCompanyId!, { name: addName.trim(), credentialsJson: addCredentials }),
+      accountPoolApi.add(selectedCompanyId!, { name: addName.trim(), credentialsJson: addCredentials, provider }),
     onSuccess: () => {
       setAddOpen(false);
       setAddName("");
@@ -294,11 +343,11 @@ export function AccountPool() {
   });
 
   const refreshMutation = useMutation({
-    mutationFn: () => accountPoolApi.refresh(selectedCompanyId!),
+    mutationFn: () => accountPoolApi.refresh(selectedCompanyId!, provider),
     onSuccess: (data) => {
       // write the freshly-probed list (incl. default) straight into the cache
       if (selectedCompanyId) {
-        queryClient.setQueryData(queryKeys.accountPool.list(selectedCompanyId), data);
+        queryClient.setQueryData([...queryKeys.accountPool.list(selectedCompanyId), provider], data);
       }
       const erroredCount = data.accounts.filter((a) => a.error).length;
       pushToast({
@@ -318,7 +367,7 @@ export function AccountPool() {
 
   const stopMutation = useMutation({
     mutationFn: (next: boolean) =>
-      next ? accountPoolApi.engageStop(selectedCompanyId!) : accountPoolApi.releaseStop(selectedCompanyId!),
+      next ? accountPoolApi.engageStop(selectedCompanyId!, provider) : accountPoolApi.releaseStop(selectedCompanyId!, provider),
     onSuccess: (_data, next) => {
       invalidatePool();
       pushToast({
@@ -329,6 +378,23 @@ export function AccountPool() {
     onError: (error) => {
       pushToast({
         title: "Failed to update STOP switch",
+        body: error instanceof ApiError ? error.message : undefined,
+        tone: "error",
+      });
+    },
+  });
+
+  const rotationMutation = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      accountPoolApi.setRotationEnabled(selectedCompanyId!, id, enabled, provider),
+    onSuccess: (data) => {
+      if (selectedCompanyId) {
+        queryClient.setQueryData([...queryKeys.accountPool.list(selectedCompanyId), provider], data);
+      }
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Failed to update rotation setting",
         body: error instanceof ApiError ? error.message : undefined,
         tone: "error",
       });
@@ -405,6 +471,35 @@ export function AccountPool() {
         </div>
       </header>
 
+      {/* Provider tabs — each provider has its own pool + STOP switch */}
+      <div className="flex w-fit items-center gap-1 rounded-md border border-border bg-muted/30 p-1">
+        {(["claude", "codex"] as const).map((p) => (
+          <button
+            key={p}
+            type="button"
+            onClick={() => setProvider(p)}
+            className={cn(
+              "flex items-center gap-1.5 rounded px-3 py-1.5 text-sm font-medium transition-colors",
+              provider === p
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {p === "claude" ? "Claude" : "Codex"}
+            {autoRotationProvider === p ? (
+              <Badge
+                variant="outline"
+                className="border-green-600/50 px-1.5 py-0 text-[10px] font-medium text-green-700 dark:text-green-500"
+                title="The shared auto_rotation adapter is currently riding this pool"
+              >
+                <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-green-600" />
+                Rotation Active
+              </Badge>
+            ) : null}
+          </button>
+        ))}
+      </div>
+
       {/* STOP switch + last rotation */}
       <div className="flex flex-col gap-3 rounded-md border border-border bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-start gap-2">
@@ -463,6 +558,17 @@ export function AccountPool() {
                   removable={!isDefault}
                   onRemove={setRemoveTarget}
                   removeDisabled={removeMutation.isPending}
+                  showRotationToggle
+                  rotationToggleLabel={
+                    isDefault ? "Let auto-rotation use this machine's login" : "Include in auto-rotation"
+                  }
+                  rotationToggleHint={
+                    isDefault
+                      ? "Only affects auto_rotation's cross-pool pick — claude_local / codex_local always fall back to this login."
+                      : undefined
+                  }
+                  onToggleRotation={(acc, enabled) => rotationMutation.mutate({ id: acc.id, enabled })}
+                  rotationToggleDisabled={rotationMutation.isPending}
                 />
               );
             })}
@@ -480,13 +586,45 @@ export function AccountPool() {
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Add a Claude account</DialogTitle>
+            <DialogTitle>{provider === "codex" ? "Add a Codex account" : "Add a Claude account"}</DialogTitle>
             <DialogDescription>
-              Generate a login link, open it in a browser signed into the account you want to pool,
-              then paste the code it shows back here. Stored encrypted in the company secret store.
+              {provider === "codex"
+                ? "Run `codex login` on a machine signed into the account you want to pool, then paste the contents of ~/.codex/auth.json here. Stored encrypted in the company secret store."
+                : "Generate a login link, open it in a browser signed into the account you want to pool, then paste the code it shows back here. Stored encrypted in the company secret store."}
             </DialogDescription>
           </DialogHeader>
 
+          {/* Codex: paste auth.json directly (no in-app OAuth) */}
+          {provider === "codex" ? (
+            <div className="flex flex-col gap-3">
+              <Input
+                value={addName}
+                onChange={(event) => setAddName(event.target.value)}
+                placeholder="Account name (e.g. Codex #1)"
+              />
+              <Textarea
+                value={addCredentials}
+                onChange={(event) => setAddCredentials(event.target.value)}
+                placeholder='{"tokens":{"access_token":"...","refresh_token":"...","account_id":"..."}}'
+                rows={7}
+                className="font-mono text-xs"
+              />
+              <Button onClick={submitAdd} disabled={addMutation.isPending}>
+                {addMutation.isPending ? (
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="mr-1.5 h-4 w-4" />
+                )}
+                Add Codex account
+              </Button>
+              {addError ? (
+                <p className="flex items-center gap-1 text-xs text-destructive">
+                  <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                  {addError}
+                </p>
+              ) : null}
+            </div>
+          ) : (
           <div className="flex flex-col gap-4">
             {/* Step 1: get the login link */}
             {!oauth ? (
@@ -586,6 +724,7 @@ export function AccountPool() {
               </p>
             ) : null}
           </div>
+          )}
 
           <DialogFooter>
             <Button
@@ -595,7 +734,7 @@ export function AccountPool() {
             >
               Cancel
             </Button>
-            {oauth ? (
+            {provider === "claude" && oauth ? (
               <Button
                 onClick={() => oauthCompleteMutation.mutate()}
                 disabled={!pastedCode.trim() || oauthCompleteMutation.isPending}

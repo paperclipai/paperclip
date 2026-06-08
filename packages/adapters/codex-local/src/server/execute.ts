@@ -44,7 +44,7 @@ import {
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
 } from "./parse.js";
-import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
+import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir, writePoolAccountCodexHome } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -176,6 +176,26 @@ type CodexTransientFallbackMode =
   | "safer_invocation"
   | "fresh_session"
   | "fresh_session_safer_invocation";
+
+interface PoolAccountSeedInput {
+  accountId: string;
+  credentialsJson: string;
+}
+
+/**
+ * Read the active pooled account (if any) off the runtime config. Heartbeat
+ * attaches `config.paperclipPoolAccount = { accountId, credentialsJson }` after
+ * reading account_pool_state + decrypting the secret. Returns null when no pool
+ * account is active so behaviour is identical to a non-pooled company.
+ */
+function parsePoolAccountSeed(value: unknown): PoolAccountSeedInput | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const accountId = typeof record.accountId === "string" ? record.accountId.trim() : "";
+  const credentialsJson = typeof record.credentialsJson === "string" ? record.credentialsJson : "";
+  if (!accountId || credentialsJson.trim().length === 0) return null;
+  return { accountId, credentialsJson };
+}
 
 function readCodexTransientFallbackMode(context: Record<string, unknown>): CodexTransientFallbackMode | null {
   const value = asString(context.codexTransientFallbackMode, "").trim();
@@ -339,14 +359,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0
       ? envConfig.OPENAI_API_KEY.trim()
       : null;
+  // Account Pool: heartbeat attaches the active pooled Codex account's decrypted
+  // auth.json as `config.paperclipPoolAccount = { accountId, credentialsJson }`.
+  // For local execution we materialize it into a per-account CODEX_HOME so the
+  // codex CLI authenticates as the pooled account instead of the shared ~/.codex.
+  // Absent / remote / explicit CODEX_HOME → unchanged behaviour.
+  const poolAccountSeed = parsePoolAccountSeed(config.paperclipPoolAccount);
+  const poolAccountCodexHome =
+    poolAccountSeed && !configuredCodexHome && !executionTargetIsRemote
+      ? await writePoolAccountCodexHome(
+          process.env,
+          agent.companyId,
+          poolAccountSeed.accountId,
+          poolAccountSeed.credentialsJson,
+        )
+      : null;
+  if (poolAccountCodexHome) {
+    await onLog(
+      "stdout",
+      `[paperclip] Using pool account Codex home "${poolAccountCodexHome}" for local execution.\n`,
+    );
+  }
   const preparedManagedCodexHome =
-    configuredCodexHome
+    configuredCodexHome || poolAccountCodexHome
       ? null
       : await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
           apiKey: configuredOpenAiApiKey,
         });
   const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
-  const effectiveCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
+  const effectiveCodexHome = configuredCodexHome ?? poolAccountCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
   await fs.mkdir(effectiveCodexHome, { recursive: true });
   // Inject skills into the same CODEX_HOME that Codex will actually run with
   // (managed home in the default case, or an explicit override from adapter config).
@@ -682,7 +723,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       forceSaferInvocation ? { ...config, fastMode: false } : config,
       {
         resumeSessionId,
-        skipGitRepoCheck: executionTargetIsSandbox,
+        // Always skip Codex's git-repo trust check: Paperclip runs headless in
+        // managed workspaces (which may not be git repos) and already bypasses
+        // approvals/sandbox, so the interactive trust prompt can never be
+        // answered. Without this, runs in a non-git/untrusted cwd fail with
+        // "Not inside a trusted directory and --skip-git-repo-check was not specified".
+        skipGitRepoCheck: true,
       },
     );
     const args = execArgs.args;

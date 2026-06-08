@@ -223,6 +223,28 @@ function normalizeCodexUsedPercent(rawPct: number | null | undefined): number | 
   return Math.min(100, Math.round(rawPct < 1 ? rawPct * 100 : rawPct));
 }
 
+const WHAM_REAUTH_ERROR_CODES = new Set(["token_invalidated", "token_expired", "token_revoked"]);
+
+/**
+ * The WHAM API returns a JSON error body distinguishing a dead session
+ * (`token_invalidated`/`token_expired`) from other failures. Surface that
+ * distinction so operators know to re-run `codex login` instead of assuming
+ * a transient probe glitch.
+ */
+async function describeWhamFailure(resp: Response): Promise<string> {
+  try {
+    const body = (await resp.json()) as { error?: { code?: string; message?: string } };
+    const code = body?.error?.code;
+    if (code && WHAM_REAUTH_ERROR_CODES.has(code)) {
+      return " — Codex session has expired or was revoked; re-authenticate (run `codex login` and re-add the account to the pool)";
+    }
+    if (body?.error?.message) return ` (${body.error.message})`;
+  } catch {
+    // body wasn't JSON or already consumed — fall back to the bare status
+  }
+  return "";
+}
+
 export async function fetchCodexQuota(
   token: string,
   accountId: string | null,
@@ -233,7 +255,9 @@ export async function fetchCodexQuota(
   if (accountId) headers["ChatGPT-Account-Id"] = accountId;
 
   const resp = await fetchWithTimeout("https://chatgpt.com/backend-api/wham/usage", { headers });
-  if (!resp.ok) throw new Error(`chatgpt wham api returned ${resp.status}`);
+  if (!resp.ok) {
+    throw new Error(`chatgpt wham api returned ${resp.status}${await describeWhamFailure(resp)}`);
+  }
   const body = (await resp.json()) as WhamUsageResponse;
   const windows: QuotaWindow[] = [];
 

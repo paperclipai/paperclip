@@ -29,6 +29,17 @@ services:
     env_file:
       - .env.prod
     container_name: paperclip-server
+    # Ubuntu 24.04+ kernels enforce kernel.apparmor_restrict_unprivileged_userns=1, and the
+    # docker-default AppArmor + seccomp profiles block the unshare/mount/pivot_root calls
+    # Codex's bundled bubblewrap needs to build its sandbox namespace
+    # ("bwrap: No permissions to create a new namespace" / "pivot_root: Operation not
+    # permitted"). All three of these are required together — verified empirically; any
+    # one missing still fails — for codex_local/auto_rotation runs to work.
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor=unconfined
+      - seccomp=unconfined
     restart: unless-stopped
     environment:
       HOST: "0.0.0.0"
@@ -48,6 +59,7 @@ services:
     volumes:
       - ../db-data/paperclip-data:/paperclip
       - /var/run/docker.sock:/var/run/docker.sock
+      - /data/dev/tunb/workspaces/:/workspaces
     ports:
       - "3100:3100"
     depends_on:

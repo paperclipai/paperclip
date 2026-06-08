@@ -484,7 +484,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     executionTargetIsRemote &&
     adapterExecutionTargetUsesManagedHome(executionTarget) &&
     !hasExplicitClaudeConfigDir;
-  const claudeConfigSeedDir = useManagedRemoteClaudeConfig
+  // For local execution with an active pool account, also prepare the config seed
+  // so the pool account credentials reach the claude process via CLAUDE_CONFIG_DIR.
+  const useLocalPoolAccountConfigSeed =
+    !executionTargetIsRemote &&
+    poolAccountSeed !== null &&
+    !hasExplicitClaudeConfigDir;
+  const claudeConfigSeedDir = (useManagedRemoteClaudeConfig || useLocalPoolAccountConfigSeed)
     ? await prepareClaudeConfigSeed(process.env, onLog, agent.companyId, poolAccountSeed)
     : null;
   const preparedExecutionTargetRuntime = executionTargetIsRemote
@@ -582,6 +588,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         graceSec,
         onLog,
       },
+    );
+  }
+  // Local pool account seeding: point CLAUDE_CONFIG_DIR at the prepared seed snapshot
+  // so the agent process uses the pool account's credentials instead of ~/.claude.
+  if (useLocalPoolAccountConfigSeed && claudeConfigSeedDir) {
+    env.CLAUDE_CONFIG_DIR = claudeConfigSeedDir;
+    loggedEnv.CLAUDE_CONFIG_DIR = claudeConfigSeedDir;
+    await onLog(
+      "stdout",
+      `[paperclip] Using pool account config seed "${claudeConfigSeedDir}" for local execution.\n`,
     );
   }
   let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;

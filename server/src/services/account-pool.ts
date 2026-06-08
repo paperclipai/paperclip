@@ -1,9 +1,10 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { accountPoolState, companySecrets } from "@paperclipai/db";
-import { POOL_ACCOUNT_TYPE } from "@paperclipai/shared";
-import type { PoolAccount, PoolState, QuotaWindow, RotationReason } from "@paperclipai/shared";
+import { POOL_ACCOUNT_TYPES, poolProviderFromType } from "@paperclipai/shared";
+import type { PoolAccount, PoolProvider, PoolState, QuotaWindow, RotationReason } from "@paperclipai/shared";
 import { readClaudeCredentialFile, writeClaudeCredentialFile } from "@paperclipai/adapter-claude-local/server";
+import { refreshCodexToken, codexJwtExpiryMs } from "@paperclipai/adapter-codex-local/server";
 import { secretService } from "./secrets.js";
 import { refreshToken as oauthRefreshToken } from "./claude-oauth.js";
 
@@ -30,11 +31,46 @@ export const DEFAULT_ACCOUNT_ID = "__default__";
 type CompanySecretRow = typeof companySecrets.$inferSelect;
 type AccountPoolStateRow = typeof accountPoolState.$inferSelect;
 
-/** narrowing guard: is this secret row a pool account? */
-function isPoolAccount(row: CompanySecretRow): boolean {
+/**
+ * narrowing guard: is this secret row a pool account? When `provider` is given,
+ * it must match that provider's pool type; otherwise any pool account matches.
+ */
+function isPoolAccount(row: CompanySecretRow, provider?: PoolProvider): boolean {
   const meta = row.providerMetadata;
   if (!meta || typeof meta !== "object") return false;
-  return (meta as Record<string, unknown>).poolType === POOL_ACCOUNT_TYPE;
+  const poolType = (meta as Record<string, unknown>).poolType;
+  if (provider) return poolType === POOL_ACCOUNT_TYPES[provider];
+  return poolProviderFromType(poolType) !== null;
+}
+
+/** Resolve the provider a pool-account row belongs to, or null when not a pool account. */
+export function poolAccountProvider(row: CompanySecretRow): PoolProvider | null {
+  const meta = row.providerMetadata;
+  if (!meta || typeof meta !== "object") return null;
+  return poolProviderFromType((meta as Record<string, unknown>).poolType);
+}
+
+/**
+ * Whether a pool account participates in auto-rotation. Default true — only an
+ * explicit `providerMetadata.rotationEnabled === false` excludes it. The operator
+ * toggles this via the pool UI tick.
+ */
+export function accountRotationEnabled(row: CompanySecretRow): boolean {
+  const meta = row.providerMetadata;
+  if (!meta || typeof meta !== "object") return true;
+  return (meta as Record<string, unknown>).rotationEnabled !== false;
+}
+
+/** Set the rotation-participation flag for a pool account (jsonb merge, no new secret version). */
+export async function setAccountRotationEnabled(db: Db, accountId: string, enabled: boolean): Promise<void> {
+  const patch = JSON.stringify({ rotationEnabled: enabled });
+  await db
+    .update(companySecrets)
+    .set({
+      providerMetadata: sql`COALESCE(${companySecrets.providerMetadata}, '{}'::jsonb) || ${patch}::jsonb`,
+      updatedAt: new Date(),
+    })
+    .where(eq(companySecrets.id, accountId));
 }
 
 /** project a company_secrets row to the shared PoolAccount contract */
@@ -50,12 +86,14 @@ function toPoolAccount(row: CompanySecretRow): PoolAccount {
 function toPoolState(row: AccountPoolStateRow): PoolState {
   return {
     companyId: row.companyId,
+    provider: (row.provider as PoolProvider) ?? "claude",
     activeAccountId: row.activeAccountId,
     prevAccountId: row.prevAccountId,
     reason: row.reason as RotationReason,
     assignedAt: row.assignedAt.toISOString(),
     rotationStopped: row.rotationStopped,
     stopReason: row.stopReason,
+    defaultRotationEnabled: row.defaultRotationEnabled,
   };
 }
 
@@ -66,21 +104,21 @@ function toPoolState(row: AccountPoolStateRow): PoolState {
  * portable across the providerMetadata shape rather than relying on a
  * jsonb path expression here.
  */
-export async function listPoolAccounts(db: Db, companyId: string): Promise<PoolAccount[]> {
+export async function listPoolAccounts(db: Db, companyId: string, provider?: PoolProvider): Promise<PoolAccount[]> {
   const rows = await db
     .select()
     .from(companySecrets)
     .where(and(eq(companySecrets.companyId, companyId), isNull(companySecrets.deletedAt)));
-  return rows.filter(isPoolAccount).map(toPoolAccount);
+  return rows.filter((row) => isPoolAccount(row, provider)).map(toPoolAccount);
 }
 
 /** Full pool-account rows (with providerMetadata) — for reading poolHealth snapshots. */
-export async function listPoolAccountRows(db: Db, companyId: string): Promise<CompanySecretRow[]> {
+export async function listPoolAccountRows(db: Db, companyId: string, provider?: PoolProvider): Promise<CompanySecretRow[]> {
   const rows = await db
     .select()
     .from(companySecrets)
     .where(and(eq(companySecrets.companyId, companyId), isNull(companySecrets.deletedAt)));
-  return rows.filter(isPoolAccount);
+  return rows.filter((row) => isPoolAccount(row, provider));
 }
 
 /** Resolve a single pool account row (with full secret metadata) by id. */
@@ -98,19 +136,19 @@ export async function getPoolAccountRow(
   return row;
 }
 
-/** Current load-balancer state for a company, or null when never assigned. */
-export async function getPoolState(db: Db, companyId: string): Promise<PoolState | null> {
+/** Current load-balancer state for a company+provider, or null when never assigned. */
+export async function getPoolState(db: Db, companyId: string, provider: PoolProvider): Promise<PoolState | null> {
   const row = await db
     .select()
     .from(accountPoolState)
-    .where(eq(accountPoolState.companyId, companyId))
+    .where(and(eq(accountPoolState.companyId, companyId), eq(accountPoolState.provider, provider)))
     .then((rows) => rows[0] ?? null);
   return row ? toPoolState(row) : null;
 }
 
 /**
- * Upsert the active account for a company. Idempotent on `companyId`
- * (enforced by the unique index `account_pool_state_company_uq`).
+ * Upsert the active account for a company+provider. Idempotent on
+ * `(companyId, provider)` (enforced by `account_pool_state_company_provider_uq`).
  *
  * When the active account changes the caller should pass `prevAccountId`
  * (the account being rotated away from) and `reason: "rotation"` so the
@@ -120,6 +158,7 @@ export async function setActiveAccount(
   db: Db,
   input: {
     companyId: string;
+    provider: PoolProvider;
     activeAccountId: string | null;
     prevAccountId?: string | null;
     reason: RotationReason;
@@ -131,6 +170,7 @@ export async function setActiveAccount(
     .insert(accountPoolState)
     .values({
       companyId: input.companyId,
+      provider: input.provider,
       activeAccountId: input.activeAccountId,
       prevAccountId: input.prevAccountId ?? null,
       reason: input.reason,
@@ -138,7 +178,7 @@ export async function setActiveAccount(
       updatedAt: now,
     })
     .onConflictDoUpdate({
-      target: accountPoolState.companyId,
+      target: [accountPoolState.companyId, accountPoolState.provider],
       set: {
         activeAccountId: input.activeAccountId,
         prevAccountId: input.prevAccountId ?? null,
@@ -279,12 +319,13 @@ export function readPoolAccountHealth(providerMetadata: unknown): PoolAccountHea
 export async function saveDefaultAccountHealth(
   db: Db,
   companyId: string,
+  provider: PoolProvider,
   probe: PoolAccountProbe,
 ): Promise<void> {
   const existing = await db
     .select({ defaultHealth: accountPoolState.defaultHealth })
     .from(accountPoolState)
-    .where(eq(accountPoolState.companyId, companyId))
+    .where(and(eq(accountPoolState.companyId, companyId), eq(accountPoolState.provider, provider)))
     .then((rows) => rows[0] ?? null);
   const prev = readPoolAccountHealth(existing?.defaultHealth) ?? defaultSnapshot();
 
@@ -319,22 +360,23 @@ export async function saveDefaultAccountHealth(
   const now = new Date();
   await db
     .insert(accountPoolState)
-    .values({ companyId, reason: "initial", defaultHealth: { poolHealth: next }, updatedAt: now })
+    .values({ companyId, provider, reason: "initial", defaultHealth: { poolHealth: next }, updatedAt: now })
     .onConflictDoUpdate({
-      target: accountPoolState.companyId,
+      target: [accountPoolState.companyId, accountPoolState.provider],
       set: { defaultHealth: { poolHealth: next }, updatedAt: now },
     });
 }
 
-/** Read the company's DEFAULT account health snapshot, or null when never probed. */
+/** Read the company's DEFAULT account health snapshot for a provider, or null when never probed. */
 export async function getDefaultAccountHealth(
   db: Db,
   companyId: string,
+  provider: PoolProvider,
 ): Promise<PoolAccountHealthSnapshot | null> {
   const row = await db
     .select({ defaultHealth: accountPoolState.defaultHealth })
     .from(accountPoolState)
-    .where(eq(accountPoolState.companyId, companyId))
+    .where(and(eq(accountPoolState.companyId, companyId), eq(accountPoolState.provider, provider)))
     .then((rows) => rows[0] ?? null);
   return readPoolAccountHealth(row?.defaultHealth);
 }
@@ -370,21 +412,21 @@ export async function markPoolAccountCapped(db: Db, accountId: string, untilIso:
     .where(eq(companySecrets.id, accountId));
 }
 
-/** Mark the DEFAULT (local) account capped until `untilIso`. */
-export async function markDefaultAccountCapped(db: Db, companyId: string, untilIso: string | null): Promise<void> {
+/** Mark the DEFAULT (local) account for a provider capped until `untilIso`. */
+export async function markDefaultAccountCapped(db: Db, companyId: string, provider: PoolProvider, untilIso: string | null): Promise<void> {
   const existing = await db
     .select({ defaultHealth: accountPoolState.defaultHealth })
     .from(accountPoolState)
-    .where(eq(accountPoolState.companyId, companyId))
+    .where(and(eq(accountPoolState.companyId, companyId), eq(accountPoolState.provider, provider)))
     .then((rows) => rows[0] ?? null);
   const prev = readPoolAccountHealth(existing?.defaultHealth) ?? defaultSnapshot();
   const next: PoolAccountHealthSnapshot = { ...prev, capped: true, resetsAt: untilIso };
   const now = new Date();
   await db
     .insert(accountPoolState)
-    .values({ companyId, reason: "initial", defaultHealth: { poolHealth: next }, updatedAt: now })
+    .values({ companyId, provider, reason: "initial", defaultHealth: { poolHealth: next }, updatedAt: now })
     .onConflictDoUpdate({
-      target: accountPoolState.companyId,
+      target: [accountPoolState.companyId, accountPoolState.provider],
       set: { defaultHealth: { poolHealth: next }, updatedAt: now },
     });
 }
@@ -401,25 +443,46 @@ export interface FreshPoolToken {
   error: string | null;
 }
 
+/** Token material returned by a fresh-token resolve, plus the account id of a pooled account. */
+export interface FreshProviderToken extends FreshPoolToken {
+  /** ChatGPT account id (Codex only); null for Claude. */
+  accountId: string | null;
+}
+
 /**
- * Return a non-expired access token for a pooled OAuth account, refreshing via
- * the stored refresh_token when the access token is near/over expiry (Claude
- * OAuth tokens last ~8h). On refresh the secret value is rotated (new version)
- * so the fresh token persists. Best-effort: any failure falls back to the
- * existing token/blob so a transient refresh error never breaks a run.
+ * Provider-aware entry point: return a non-expired access token (and the current,
+ * possibly-refreshed credentials blob) for a pooled account. Dispatches to the
+ * Claude or Codex refresh path. Best-effort throughout — any failure falls back
+ * to the existing token/blob so a transient refresh error never breaks a run.
  */
 export async function ensureFreshPoolToken(
   db: Db,
   companyId: string,
   accountId: string,
-): Promise<FreshPoolToken> {
+  provider: PoolProvider = "claude",
+): Promise<FreshProviderToken> {
+  return provider === "codex"
+    ? ensureFreshCodexPoolToken(db, companyId, accountId)
+    : ensureFreshClaudePoolToken(db, companyId, accountId);
+}
+
+/**
+ * Claude pooled OAuth account refresh-on-use. Refreshes via the stored
+ * refresh_token when the access token is near/over expiry (~8h tokens) and
+ * rotates the secret so the fresh token persists.
+ */
+export async function ensureFreshClaudePoolToken(
+  db: Db,
+  companyId: string,
+  accountId: string,
+): Promise<FreshProviderToken> {
   const svc = secretService(db);
   const blob = await svc.resolveSecretValue(companyId, accountId, "latest");
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(blob) as Record<string, unknown>;
   } catch {
-    return { accessToken: null, credentialsJson: blob, refreshed: false, error: "invalid credentials json" };
+    return { accessToken: null, credentialsJson: blob, refreshed: false, error: "invalid credentials json", accountId: null };
   }
   const oauth = (parsed.claudeAiOauth ?? {}) as Record<string, unknown>;
   const accessToken = typeof oauth.accessToken === "string" ? oauth.accessToken : null;
@@ -428,7 +491,7 @@ export async function ensureFreshPoolToken(
 
   const needsRefresh = !!refreshTok && expiresAt != null && expiresAt - Date.now() < TOKEN_REFRESH_BUFFER_MS;
   if (!needsRefresh) {
-    return { accessToken, credentialsJson: blob, refreshed: false, error: null };
+    return { accessToken, credentialsJson: blob, refreshed: false, error: null, accountId: null };
   }
 
   try {
@@ -445,10 +508,69 @@ export async function ensureFreshPoolToken(
       },
     });
     await svc.rotate(accountId, { value: nextBlob });
-    return { accessToken: fresh.accessToken, credentialsJson: nextBlob, refreshed: true, error: null };
+    return { accessToken: fresh.accessToken, credentialsJson: nextBlob, refreshed: true, error: null, accountId: null };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { accessToken, credentialsJson: blob, refreshed: false, error: message };
+    return { accessToken, credentialsJson: blob, refreshed: false, error: message, accountId: null };
+  }
+}
+
+/**
+ * Codex pooled account refresh-on-use. The stored blob is a `~/.codex/auth.json`
+ * (`{ tokens: { access_token, refresh_token, id_token, account_id }, last_refresh }`
+ * or an `{ OPENAI_API_KEY }` API-key blob). Expiry is derived from the JWT `exp`
+ * claim (the blob has no explicit expiresAt). On refresh the blob is rewritten and
+ * the secret rotated. Best-effort: failure returns the existing token + an error,
+ * so the balancer marks the account errored and rotates away (spec R4).
+ */
+export async function ensureFreshCodexPoolToken(
+  db: Db,
+  companyId: string,
+  accountId: string,
+): Promise<FreshProviderToken> {
+  const svc = secretService(db);
+  const blob = await svc.resolveSecretValue(companyId, accountId, "latest");
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(blob) as Record<string, unknown>;
+  } catch {
+    return { accessToken: null, credentialsJson: blob, refreshed: false, error: "invalid auth.json", accountId: null };
+  }
+  const tokens = (parsed.tokens ?? {}) as Record<string, unknown>;
+  const accessToken = typeof tokens.access_token === "string" ? tokens.access_token : null;
+  const refreshTok = typeof tokens.refresh_token === "string" ? tokens.refresh_token : null;
+  const idToken = typeof tokens.id_token === "string" ? tokens.id_token : null;
+  const chatgptAccountId = typeof tokens.account_id === "string" ? tokens.account_id : null;
+
+  // API-key-only blob (no OAuth tokens) — nothing to refresh; usable as-is.
+  if (!accessToken && typeof parsed.OPENAI_API_KEY === "string") {
+    return { accessToken: parsed.OPENAI_API_KEY, credentialsJson: blob, refreshed: false, error: null, accountId: chatgptAccountId };
+  }
+
+  const expiresAt = codexJwtExpiryMs(idToken) ?? codexJwtExpiryMs(accessToken);
+  const needsRefresh = !!refreshTok && expiresAt != null && expiresAt - Date.now() < TOKEN_REFRESH_BUFFER_MS;
+  if (!needsRefresh) {
+    return { accessToken, credentialsJson: blob, refreshed: false, error: null, accountId: chatgptAccountId };
+  }
+
+  try {
+    const fresh = await refreshCodexToken(refreshTok);
+    const nextBlob = JSON.stringify({
+      ...parsed,
+      tokens: {
+        ...tokens,
+        access_token: fresh.accessToken,
+        refresh_token: fresh.refreshToken ?? refreshTok,
+        id_token: fresh.idToken ?? idToken,
+        account_id: chatgptAccountId,
+      },
+      last_refresh: new Date().toISOString(),
+    });
+    await svc.rotate(accountId, { value: nextBlob });
+    return { accessToken: fresh.accessToken, credentialsJson: nextBlob, refreshed: true, error: null, accountId: chatgptAccountId };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { accessToken, credentialsJson: blob, refreshed: false, error: message, accountId: chatgptAccountId };
   }
 }
 
@@ -517,38 +639,71 @@ export async function ensureFreshLocalToken(): Promise<FreshLocalToken> {
   }
 }
 
-/** Read the global STOP switch (D3) for a company. Defaults to not-stopped. */
+/** Read the STOP switch (D3) for a company+provider. Defaults to not-stopped. */
 export async function getStopSwitch(
   db: Db,
   companyId: string,
+  provider: PoolProvider,
 ): Promise<{ stopped: boolean; reason: string | null }> {
-  const state = await getPoolState(db, companyId);
+  const state = await getPoolState(db, companyId, provider);
   return { stopped: state?.rotationStopped ?? false, reason: state?.stopReason ?? null };
 }
 
 /**
- * Engage / release the global STOP switch. Creates the pool-state row if it
- * does not exist yet so the operator can pre-arm the switch before any
- * rotation has happened.
+ * Engage / release the STOP switch for a company+provider. Creates the
+ * pool-state row if it does not exist yet so the operator can pre-arm the switch
+ * before any rotation has happened.
  */
 export async function setStopSwitch(
   db: Db,
-  input: { companyId: string; stopped: boolean; reason?: string | null },
+  input: { companyId: string; provider: PoolProvider; stopped: boolean; reason?: string | null },
 ): Promise<PoolState> {
   const now = new Date();
   const [row] = await db
     .insert(accountPoolState)
     .values({
       companyId: input.companyId,
+      provider: input.provider,
       rotationStopped: input.stopped,
       stopReason: input.stopped ? input.reason ?? null : null,
       updatedAt: now,
     })
     .onConflictDoUpdate({
-      target: accountPoolState.companyId,
+      target: [accountPoolState.companyId, accountPoolState.provider],
       set: {
         rotationStopped: input.stopped,
         stopReason: input.stopped ? input.reason ?? null : null,
+        updatedAt: now,
+      },
+    })
+    .returning();
+  return toPoolState(row);
+}
+
+/**
+ * Toggle whether `auto_rotation` may fall back to the machine's local/default
+ * login for a company+provider. Upserts the pool-state row (so the operator can
+ * pre-arm the switch before any rotation). This flag is consumed ONLY by the
+ * combined-best pick (resolveCombinedBestSeed); the per-provider balancer always
+ * keeps the local default as its last-resort fallback.
+ */
+export async function setDefaultRotationEnabled(
+  db: Db,
+  input: { companyId: string; provider: PoolProvider; enabled: boolean },
+): Promise<PoolState> {
+  const now = new Date();
+  const [row] = await db
+    .insert(accountPoolState)
+    .values({
+      companyId: input.companyId,
+      provider: input.provider,
+      defaultRotationEnabled: input.enabled,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: [accountPoolState.companyId, accountPoolState.provider],
+      set: {
+        defaultRotationEnabled: input.enabled,
         updatedAt: now,
       },
     })
