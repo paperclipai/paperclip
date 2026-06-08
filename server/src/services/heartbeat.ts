@@ -7487,6 +7487,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.reconcileIssueGraphLiveness(opts);
   }
 
+  async function sweepOutOfBandDispositions(opts?: { now?: Date }) {
+    return recovery.sweepOutOfBandDispositions(opts);
+  }
+
   async function updateRuntimeState(
     agent: typeof agents.$inferSelect,
     run: typeof heartbeatRuns.$inferSelect,
@@ -11050,6 +11054,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     scanSilentActiveRuns,
 
     reconcileProductivityReviews,
+
+    sweepOutOfBandDispositions,
 
     buildRunOutputSilence,
 
