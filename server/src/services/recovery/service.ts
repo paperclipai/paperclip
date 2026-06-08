@@ -748,7 +748,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(routineTriggers.companyId, companyId),
           eq(routineTriggers.kind, "schedule"),
           eq(routineTriggers.enabled, true),
-          gt(routineTriggers.nextRunAt, new Date()),
+          sql`${routineTriggers.nextRunAt} > now()`,
           eq(routines.status, "active"),
           eq(routines.parentIssueId, issueId),
         ),

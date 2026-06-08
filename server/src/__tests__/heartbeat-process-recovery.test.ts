@@ -731,7 +731,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       enabled: input.enabled ?? true,
       cronExpression: "0 9 * * 1",
       timezone: "Europe/Prague",
-      nextRunAt: input.nextRunAt === undefined ? new Date("2026-03-23T08:00:00.000Z") : input.nextRunAt,
+      nextRunAt: input.nextRunAt === undefined ? new Date(Date.now() + 60 * 60 * 1000) : input.nextRunAt,
     });
   }
 
@@ -2709,6 +2709,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     { name: "archived routine", routine: { status: "archived" as const } },
     { name: "disabled trigger", routine: { enabled: false } },
     { name: "missing next run", routine: { nextRunAt: null } },
+    { name: "stale next run", routine: { nextRunAt: new Date(Date.now() - 60 * 60 * 1000) } },
   ])("still recovers stranded hubs when the scheduled routine is not active: $name", async ({ routine }) => {
     const { companyId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
