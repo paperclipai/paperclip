@@ -17,6 +17,18 @@ describe("runtime API discovery", () => {
     ).toBe("https://paperclip.example.com");
   });
 
+  it("can prefer the bind host for loopback-local runtime callbacks", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: "https://paperclipmbp.kingfisher-halibut.ts.net",
+        allowedHostnames: ["paperclipmbp.kingfisher-halibut.ts.net"],
+        bindHost: "127.0.0.1",
+        port: 3100,
+        preferBindHost: true,
+      }),
+    ).toBe("http://127.0.0.1:3100");
+  });
+
   it("builds ordered callback candidates from explicit, allowed, bind, and interface hosts", () => {
     expect(
       buildRuntimeApiCandidateUrls({

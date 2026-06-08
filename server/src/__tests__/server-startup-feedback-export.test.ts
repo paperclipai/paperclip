@@ -91,6 +91,28 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function createEmptyDrizzleMock() {
+  const makeEmptyQuery = () => {
+    const rows: unknown[] = [];
+    const promise = Promise.resolve(rows);
+    return {
+      where: vi.fn(() => Promise.resolve(rows)),
+      then: promise.then.bind(promise),
+      catch: promise.catch.bind(promise),
+      finally: promise.finally.bind(promise),
+    };
+  };
+
+  return {
+    select: vi.fn(() => ({
+      from: vi.fn(() => makeEmptyQuery()),
+    })),
+    insert: vi.fn(() => ({
+      values: vi.fn(async () => undefined),
+    })),
+  };
+}
+
 vi.mock("node:http", () => ({
   createServer: vi.fn(() => fakeServer),
 }));
@@ -374,5 +396,26 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     expect(started.listenPort).toBe(3110);
     expect(started.apiUrl).toBe("https://paperclip.example");
     expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("https://paperclip.example");
+  });
+
+  it("uses loopback as the local trusted runtime API URL even with public hostnames configured", async () => {
+    process.env.PAPERCLIP_API_URL = "https://paperclipmbp.kingfisher-halibut.ts.net";
+    createDbMock.mockReturnValueOnce(createEmptyDrizzleMock() as never);
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({
+      deploymentMode: "local_trusted",
+      deploymentExposure: "private",
+      bind: "loopback",
+      host: "127.0.0.1",
+      allowedHostnames: ["paperclipmbp.kingfisher-halibut.ts.net"],
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "https://paperclipmbp.kingfisher-halibut.ts.net",
+    }));
+
+    const started = await startServer();
+
+    expect(started.apiUrl).toBe("https://paperclipmbp.kingfisher-halibut.ts.net");
+    expect(process.env.PAPERCLIP_API_URL).toBe("https://paperclipmbp.kingfisher-halibut.ts.net");
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:3210");
+    expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")[0]).toBe("http://127.0.0.1:3210");
   });
 });
