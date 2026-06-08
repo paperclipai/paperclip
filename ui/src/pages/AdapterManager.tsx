@@ -398,7 +398,7 @@ export function AdapterManager() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Cpu className="h-6 w-6 text-muted-foreground" />
-          <h1 className="font-serif text-xl font-medium">Adapters</h1>
+          <h1 className="font-serif text-lg font-medium">Adapters</h1>
           <Badge variant="outline" className="text-amber-600 border-amber-400">
             Alpha
           </Badge>

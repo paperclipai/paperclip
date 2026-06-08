@@ -163,7 +163,7 @@ export function PluginManager() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Puzzle className="h-6 w-6 text-muted-foreground" />
-          <h1 className="font-serif text-xl font-medium">Plugin Manager</h1>
+          <h1 className="font-serif text-lg font-medium">Plugin Manager</h1>
         </div>
         
         <Dialog open={installDialogOpen} onOpenChange={setInstallDialogOpen}>
