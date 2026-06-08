@@ -338,6 +338,9 @@ export type IssueReferenceSourceKind = (typeof ISSUE_REFERENCE_SOURCE_KINDS)[num
 export const DOCUMENT_ANNOTATION_THREAD_STATUSES = ["open", "resolved"] as const;
 export type DocumentAnnotationThreadStatus = (typeof DOCUMENT_ANNOTATION_THREAD_STATUSES)[number];
 
+export const DOCUMENT_REVIEW_THREAD_STATUSES = ["open", "resolved"] as const;
+export type DocumentReviewThreadStatus = (typeof DOCUMENT_REVIEW_THREAD_STATUSES)[number];
+
 export const DOCUMENT_ANNOTATION_ANCHOR_STATES = ["active", "stale", "orphaned"] as const;
 export type DocumentAnnotationAnchorState = (typeof DOCUMENT_ANNOTATION_ANCHOR_STATES)[number];
 
@@ -350,6 +353,56 @@ export const DOCUMENT_ANNOTATION_ANCHOR_CONFIDENCES = [
 ] as const;
 export type DocumentAnnotationAnchorConfidence =
   (typeof DOCUMENT_ANNOTATION_ANCHOR_CONFIDENCES)[number];
+
+export const DOCUMENT_SUGGESTION_KINDS = ["insertion", "deletion", "substitution"] as const;
+export type DocumentSuggestionKind = (typeof DOCUMENT_SUGGESTION_KINDS)[number];
+
+export const DOCUMENT_SUGGESTION_INSERT_POSITIONS = ["before", "after"] as const;
+export type DocumentSuggestionInsertPosition = (typeof DOCUMENT_SUGGESTION_INSERT_POSITIONS)[number];
+
+// `resolved` = handled outside review / no longer applies — distinct from
+// `rejected` (an explicit disagreement) so the audit trail keeps the two apart.
+export const DOCUMENT_SUGGESTION_STATUSES = ["pending", "accepted", "rejected", "resolved"] as const;
+export type DocumentSuggestionStatus = (typeof DOCUMENT_SUGGESTION_STATUSES)[number];
+
+export const DOCUMENT_STATUSES = ["draft", "in_review", "approved", "archived"] as const;
+export type DocumentStatus = (typeof DOCUMENT_STATUSES)[number];
+
+export const DOCUMENT_TYPES = ["plan", "spec", "brief", "report", "other"] as const;
+export type DocumentType = (typeof DOCUMENT_TYPES)[number];
+
+/**
+ * Categorical {@link DocumentType} values an issue-document key can map onto.
+ * Excludes the catch-all `other`, which is the fallback for any unmatched key.
+ */
+const ISSUE_DOCUMENT_KEY_TYPE_MAP: Record<string, DocumentType> = {
+  plan: "plan",
+  spec: "spec",
+  brief: "brief",
+  report: "report",
+};
+
+/**
+ * Derive the categorical {@link DocumentType} for an auto-generated issue
+ * document from its key (e.g. `plan` → `plan`). Locked-document fallback keys
+ * carry a numeric suffix (`plan-2`), so that is stripped before matching.
+ * Anything that doesn't match a known category falls back to `other`.
+ */
+export function documentTypeForIssueDocumentKey(key: string): DocumentType {
+  const base = key.trim().toLowerCase().replace(/-[0-9]+$/, "");
+  return ISSUE_DOCUMENT_KEY_TYPE_MAP[base] ?? "other";
+}
+
+export const DOCUMENT_LINK_TARGET_TYPES = [
+  "issue",
+  "project",
+  "goal",
+  "run",
+  "work_product",
+  "approval",
+  "agent",
+] as const;
+export type DocumentLinkTargetType = (typeof DOCUMENT_LINK_TARGET_TYPES)[number];
 
 export const ISSUE_EXECUTION_POLICY_MODES = ["normal", "auto"] as const;
 export type IssueExecutionPolicyMode = (typeof ISSUE_EXECUTION_POLICY_MODES)[number];

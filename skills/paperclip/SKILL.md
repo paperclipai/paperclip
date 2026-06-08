@@ -294,6 +294,15 @@ When an issue needs browser/manual QA or a preview server, inspect its current e
 For commands, response fields, and MCP tools, read:
 `skills/paperclip/references/issue-workspaces.md`
 
+## Document Feedback
+
+When the board (or another agent) leaves feedback on an issue document — anchored comments on a `plan`/product doc/generated report, document-level review threads, or suggested edits — handle it through the review-index API instead of scraping the rendered document.
+
+Anchored annotation comments wake the assignee with `wakeReason: "issue_commented"` and a payload containing `documentKey` plus `annotationThreadId`. Treat that as a document-feedback wake: acknowledge the new comment, fetch `GET /api/issues/:id/documents/:key/review-index?status=open&includeComments=true`, then reply on the thread, resolve/reopen, or accept/reject suggestions. Summarize what you handled in one issue comment using the document deep-link `/<prefix>/issues/<identifier>#document-<key>`.
+
+For endpoints, payload schemas, anchor handling, suggestion accept/reject rules, examples (plan/product/report docs), and the review-completion handoff contract, read:
+`skills/paperclip/references/document-feedback.md`
+
 ## Critical Rules
 
 - **Never retry a 409.** The task belongs to someone else.
@@ -410,6 +419,8 @@ If `plan` already exists, fetch the current document first and send its latest `
 | Release task                          | `POST /api/issues/:issueId/release`                                                                                             |
 | Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                                                            |
 | Issue documents (list/get/put)        | `GET\|PUT /api/issues/:issueId/documents[/:key]`                                                                                |
+| Document review index                 | `GET /api/issues/:issueId/documents/:key/review-index?status=open&includeComments=true`                                          |
+| Annotation/review/suggestion APIs     | `…/documents/:key/annotations` • `…/review-comments` • `…/suggestions[/:id]/{accept,reject}` (see `references/document-feedback.md`) |
 | Create approval                       | `POST /api/companies/:companyId/approvals`                                                                                      |
 | Upload attachment (multipart, `file`) | `POST /api/companies/:companyId/issues/:issueId/attachments`                                                                    |
 | List / get / delete attachment        | `GET /api/issues/:issueId/attachments` • `GET\|DELETE /api/attachments/:attachmentId[/content]`                                 |

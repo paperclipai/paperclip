@@ -76,6 +76,7 @@ function registerModuleMocks() {
       })),
     }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
+    documentReviewService: () => ({ remapOpenSuggestionsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({

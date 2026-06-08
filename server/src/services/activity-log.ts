@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog } from "@paperclipai/db";
+import { activityLog, heartbeatRuns } from "@paperclipai/db";
 import { PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { publishLiveEvent } from "./live-events.js";
@@ -62,6 +63,21 @@ export interface LogActivityInput {
   details?: Record<string, unknown> | null;
 }
 
+// activity_log.run_id is FK-constrained to heartbeat_runs. An agent presents its live
+// run-id, which may not be recorded in this server's DB (e.g. a worktree dev environment
+// whose DB never saw the run). Persisting a missing run-id raises a FK violation and turns
+// every agent-token write that logs activity into a 500. Resolve provenance to null when
+// the run is unknown; in real deployments the run exists and the value is unchanged.
+async function persistableActivityRunId(db: Db, runId: string | null | undefined): Promise<string | null> {
+  if (!runId) return null;
+  const run = await db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, runId))
+    .then((rows) => rows[0] ?? null);
+  return run ? runId : null;
+}
+
 export async function logActivity(db: Db, input: LogActivityInput) {
   const currentUserRedactionOptions = {
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
@@ -70,6 +86,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = sanitizedDetails
     ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
     : null;
+  const runId = await persistableActivityRunId(db, input.runId);
   await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
@@ -78,7 +95,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId,
     details: redactedDetails,
   });
 

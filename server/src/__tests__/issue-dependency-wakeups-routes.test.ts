@@ -28,6 +28,7 @@ vi.mock("../services/index.js", () => ({
     getById: vi.fn(),
   }),
   documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
+  documentReviewService: () => ({ remapOpenSuggestionsForDocument: async () => [] }),
   documentService: () => ({
     getIssueDocumentPayload: vi.fn(async () => ({})),
   }),

@@ -71,6 +71,9 @@ import {
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueAttachmentsSection } from "../components/IssueAttachmentsSection";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
+import { IssueDocumentsTab } from "../components/IssueDocumentsTab";
+import { useIssueLinkedDocuments } from "../hooks/useIssueLinkedDocuments";
+import { hasOpenDocumentFeedback } from "../components/documents/DocumentFeedbackCounts";
 import { IssuePlanDecompositionsSection } from "../components/IssuePlanDecompositionsSection";
 import { IssueOutputSection } from "../components/issue-output/IssueOutputSection";
 import { isImageAttachment } from "../lib/issue-attachments";
@@ -131,6 +134,7 @@ import {
   Copy,
   Eye,
   EyeOff,
+  FileText,
   Flag,
   Hexagon,
   ListTree,
@@ -1568,6 +1572,14 @@ export function IssueDetail() {
     for (const a of agents ?? []) map.set(a.id, a);
     return map;
   }, [agents]);
+  const { documents: linkedDocuments } = useIssueLinkedDocuments(issue?.companyId, issue?.id ?? "", {
+    enabled: Boolean(issue?.id),
+  });
+  const linkedDocumentCount = linkedDocuments.length;
+  const hasOpenLinkedDocFeedback = useMemo(
+    () => linkedDocuments.some((doc) => hasOpenDocumentFeedback(doc.feedbackCounts)),
+    [linkedDocuments],
+  );
   const userProfileMap = useMemo(
     () => buildCompanyUserProfileMap(companyMembers?.users),
     [companyMembers?.users],
@@ -4010,6 +4022,21 @@ export function IssueDetail() {
             <ActivityIcon className="h-3.5 w-3.5" />
             Activity
           </TabsTrigger>
+          <TabsTrigger value="documents" className="gap-1.5">
+            <FileText className="h-3.5 w-3.5" />
+            Documents
+            {linkedDocumentCount > 0 ? (
+              <span className="ml-0.5 rounded-full bg-muted px-1.5 text-[10px] tabular-nums leading-4 text-muted-foreground">
+                {linkedDocumentCount}
+              </span>
+            ) : null}
+            {hasOpenLinkedDocFeedback ? (
+              <span
+                className="h-1.5 w-1.5 rounded-full bg-amber-500"
+                aria-label="Open feedback on linked documents"
+              />
+            ) : null}
+          </TabsTrigger>
           <TabsTrigger value="related-work" className="gap-1.5">
             <ListTree className="h-3.5 w-3.5" />
             Related work
@@ -4120,6 +4147,17 @@ export function IssueDetail() {
               }}
               onCheckMonitorNow={() => checkIssueMonitorNow.mutate()}
               checkingMonitorNow={checkIssueMonitorNow.isPending}
+            />
+          ) : null}
+        </TabsContent>
+
+        <TabsContent value="documents">
+          {detailTab === "documents" ? (
+            <IssueDocumentsTab
+              issueId={issue.id}
+              companyId={issue.companyId}
+              issueIdentifier={issue.identifier}
+              agentMap={agentMap}
             />
           ) : null}
         </TabsContent>

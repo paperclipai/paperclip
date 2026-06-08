@@ -95,6 +95,14 @@ export interface IssueDocumentSummary {
   key: string;
   title: string | null;
   format: DocumentFormat;
+  status?: import("../constants.js").DocumentStatus;
+  documentType?: import("../constants.js").DocumentType;
+  summary?: string | null;
+  ownerAgentId?: string | null;
+  ownerUserId?: string | null;
+  archivedAt?: Date | null;
+  archivedByAgentId?: string | null;
+  archivedByUserId?: string | null;
   latestRevisionId: string | null;
   latestRevisionNumber: number;
   createdByAgentId: string | null;

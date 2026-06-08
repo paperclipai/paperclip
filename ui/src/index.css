@@ -93,6 +93,12 @@
   --paperclip-doc-annotation-highlight-focused: #fde047;
   --paperclip-doc-annotation-highlight-stale: #fef08a;
   --paperclip-doc-annotation-highlight-resolved: #fef9c3;
+  /* Suggested-edit (CriticMarkup-style) treatments — see PAP-10520 ux-spec §5.4. */
+  --paperclip-doc-suggestion-insert-bg: oklch(0.93 0.08 145);
+  --paperclip-doc-suggestion-insert-fg: oklch(0.3 0.12 145);
+  --paperclip-doc-suggestion-delete-bg: oklch(0.93 0.08 27);
+  --paperclip-doc-suggestion-delete-fg: oklch(0.3 0.2 27);
+  --paperclip-doc-annotation-stale-underline: oklch(0.55 0.18 50);
 }
 
 .dark {
@@ -144,6 +150,12 @@
   --paperclip-doc-annotation-highlight-focused: #ca8a04;
   --paperclip-doc-annotation-highlight-stale: #854d0e;
   --paperclip-doc-annotation-highlight-resolved: #713f12;
+  /* Dark-mode suggestion treatments: drop L to ~0.30, keep chroma. */
+  --paperclip-doc-suggestion-insert-bg: oklch(0.3 0.08 145);
+  --paperclip-doc-suggestion-insert-fg: oklch(0.9 0.1 145);
+  --paperclip-doc-suggestion-delete-bg: oklch(0.3 0.09 27);
+  --paperclip-doc-suggestion-delete-fg: oklch(0.9 0.12 27);
+  --paperclip-doc-annotation-stale-underline: oklch(0.7 0.16 50);
 }
 
 ::highlight(paperclip-doc-annotation-open) {

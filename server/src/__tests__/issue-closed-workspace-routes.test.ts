@@ -82,6 +82,7 @@ function registerServiceMocks() {
       getById: vi.fn(async () => null),
     }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
+    documentReviewService: () => ({ remapOpenSuggestionsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     feedbackService: () => ({

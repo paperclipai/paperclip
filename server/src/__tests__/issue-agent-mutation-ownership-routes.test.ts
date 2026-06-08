@@ -100,6 +100,7 @@ function registerRouteMocks() {
 
   vi.doMock("../services/documents.js", () => ({
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
+    documentReviewService: () => ({ remapOpenSuggestionsForDocument: async () => [] }),
     documentService: () => mockDocumentService,
   }));
 
@@ -123,6 +124,7 @@ function registerRouteMocks() {
     clampIssueListLimit: (value: number) => Math.min(Math.max(value, 1), 500),
     companyService: () => mockCompanyService,
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
+    documentReviewService: () => ({ remapOpenSuggestionsForDocument: async () => [] }),
     documentService: () => mockDocumentService,
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({

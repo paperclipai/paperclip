@@ -694,6 +694,34 @@
       "when": 1780534200000,
       "tag": "0098_project_icon",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1780794000000,
+      "tag": "0099_document_management_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1780794300000,
+      "tag": "0100_document_review_backend",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1780794600000,
+      "tag": "0101_document_suggestion_resolved_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1780794900000,
+      "tag": "0102_backfill_document_type_from_issue_key",
+      "breakpoints": true
     }
   ]
 }

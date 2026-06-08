@@ -128,6 +128,7 @@ vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
+  documentReviewService: () => ({ remapOpenSuggestionsForDocument: async () => [] }),
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
   feedbackService: () => mockFeedbackService,

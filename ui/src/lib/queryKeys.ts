@@ -116,6 +116,16 @@ export const queryKeys = {
     list: (companyId: string) => ["goals", companyId] as const,
     detail: (id: string) => ["goals", "detail", id] as const,
   },
+  documents: {
+    list: (companyId: string, filters: Record<string, unknown> = {}) =>
+      ["documents", companyId, filters] as const,
+    detail: (companyId: string, documentId: string) =>
+      ["documents", "detail", companyId, documentId] as const,
+    backlinks: (companyId: string, documentId: string) =>
+      ["documents", "backlinks", companyId, documentId] as const,
+    reviewIndex: (issueId: string, key: string) =>
+      ["documents", "review-index", issueId, key] as const,
+  },
   artifacts: {
     list: (
       companyId: string,

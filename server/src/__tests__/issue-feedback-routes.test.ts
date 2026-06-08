@@ -88,6 +88,7 @@ function registerModuleMocks() {
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
+    documentReviewService: () => ({ remapOpenSuggestionsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => mockExecutionWorkspaceService,
     goalService: () => ({}),

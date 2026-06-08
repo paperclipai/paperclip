@@ -99,6 +99,7 @@ function registerModuleMocks() {
     accessService: () => mockAccessService,
     agentService: () => ({ getById: vi.fn(async () => null) }),
     documentAnnotationService: () => mockDocumentAnnotationService,
+    documentReviewService: () => ({ remapOpenSuggestionsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => mockFeedbackService,

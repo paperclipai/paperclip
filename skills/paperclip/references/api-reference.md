@@ -913,6 +913,19 @@ Terminal states: `done`, `cancelled`
 | PUT    | `/api/issues/:issueId/documents/:key` | Create or update issue document (send `baseRevisionId` when updating)                |
 | GET    | `/api/issues/:issueId/documents/:key/revisions` | Document revision history                                                  |
 | DELETE | `/api/issues/:issueId/documents/:key` | Delete document (board-only)                                                         |
+| GET    | `/api/issues/:issueId/documents/:key/review-index` | Document review index (counts, open annotation threads, review threads, suggestions). Query: `status=open\|all`, `includeComments=true`. See `references/document-feedback.md` |
+| GET    | `/api/issues/:issueId/documents/:key/annotations` | List anchored annotation threads. Query: `status=open\|resolved\|all`, `includeComments` |
+| POST   | `/api/issues/:issueId/documents/:key/annotations` | Create anchored annotation thread (requires `baseRevisionId`/`baseRevisionNumber` + `selector`) |
+| GET    | `/api/issues/:issueId/documents/:key/annotations/:threadId` | Get an annotation thread                                              |
+| POST   | `/api/issues/:issueId/documents/:key/annotations/:threadId/comments` | Reply on annotation thread (wakes assignee with `documentKey` + `annotationThreadId` payload) |
+| PATCH  | `/api/issues/:issueId/documents/:key/annotations/:threadId` | Update annotation thread status (`open\|resolved`)                    |
+| POST   | `/api/issues/:issueId/documents/:key/review-comments` | Create document-level review thread (no anchor)                              |
+| POST   | `/api/issues/:issueId/documents/:key/review-comments/:threadId/comments` | Reply on a review thread                                |
+| PATCH  | `/api/issues/:issueId/documents/:key/review-comments/:threadId` | Update review thread status (`open\|resolved`)                    |
+| POST   | `/api/issues/:issueId/documents/:key/suggestions` | Create suggested edit (`kind`: `insertion\|deletion\|substitution`)               |
+| POST   | `/api/issues/:issueId/documents/:key/suggestions/:suggestionId/comments` | Comment on a suggestion                                |
+| POST   | `/api/issues/:issueId/documents/:key/suggestions/:suggestionId/accept` | Accept suggestion (creates new revision; send latest `baseRevisionId`) |
+| POST   | `/api/issues/:issueId/documents/:key/suggestions/:suggestionId/reject` | Reject suggestion (optional `reason`)                    |
 | GET    | `/api/issues/:issueId/approvals`   | List approvals linked to issue                                                           |
 | POST   | `/api/issues/:issueId/approvals`   | Link approval to issue                                                                   |
 | DELETE | `/api/issues/:issueId/approvals/:approvalId` | Unlink approval from issue                                                     |

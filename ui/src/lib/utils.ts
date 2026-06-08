@@ -7,6 +7,18 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/**
+ * Best-effort detection of an Apple platform (macOS / iOS) so hotkey hints can
+ * show `⌘` instead of `Ctrl`. Prefers the modern UA-Client-Hints `platform`
+ * field and falls back to `navigator.platform`. SSR-safe (returns false).
+ */
+export function isApplePlatform(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const uaPlatform = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform;
+  const platform = uaPlatform || navigator.platform || "";
+  return /mac|iphone|ipad|ipod/i.test(platform);
+}
+
 export function asObject(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>

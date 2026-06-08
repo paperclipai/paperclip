@@ -122,6 +122,7 @@ function registerModuleMocks() {
     agentService: () => ({ getById: vi.fn(), list: vi.fn(async () => []) }),
     companyService: () => ({ getById: vi.fn(async () => ({ id: companyId, attachmentMaxBytes: 10_000_000 })) }),
     documentAnnotationService: () => mockAnnotationService,
+    documentReviewService: () => ({ remapOpenSuggestionsForDocument: async () => [] }),
     documentService: () => mockDocumentService,
     environmentService: () => ({}),
     executionWorkspaceService: () => ({}),

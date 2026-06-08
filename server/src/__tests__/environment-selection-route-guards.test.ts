@@ -91,6 +91,7 @@ vi.mock("../services/index.js", () => ({
   }),
   documentService: () => ({}),
   documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
+  documentReviewService: () => ({ remapOpenSuggestionsForDocument: async () => [] }),
   routineService: () => ({}),
   workProductService: () => ({}),
 }));

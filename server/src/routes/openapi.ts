@@ -25,6 +25,9 @@ import {
   updateIssueWorkProductSchema,
   upsertIssueDocumentSchema,
   restoreIssueDocumentRevisionSchema,
+  companyDocumentListQuerySchema,
+  createDocumentLinkSchema,
+  updateDocumentMetadataSchema,
   upsertIssueFeedbackVoteSchema,
   // Project
   createProjectSchema,
@@ -116,6 +119,15 @@ import {
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
   updateDocumentAnnotationThreadSchema,
+  // Document review
+  createDocumentReviewThreadSchema,
+  createDocumentReviewCommentSchema,
+  updateDocumentReviewThreadSchema,
+  createDocumentSuggestionSchema,
+  createDocumentSuggestionCommentSchema,
+  acceptDocumentSuggestionSchema,
+  rejectDocumentSuggestionSchema,
+  resolveDocumentSuggestionSchema,
   // Issue recovery and decomposition
   createAcceptedPlanDecompositionSchema,
   resolveIssueRecoveryActionSchema,
@@ -602,6 +614,10 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/labels",
   "POST /api/issues/{id}/documents/{key}/annotations",
   "POST /api/issues/{id}/documents/{key}/annotations/{threadId}/comments",
+  "POST /api/issues/{id}/documents/{key}/review-comments",
+  "POST /api/issues/{id}/documents/{key}/review-comments/{threadId}/comments",
+  "POST /api/issues/{id}/documents/{key}/suggestions",
+  "POST /api/issues/{id}/documents/{key}/suggestions/{suggestionId}/comments",
   "POST /api/issues/{id}/work-products",
   "POST /api/issues/{id}/low-trust/promotions",
   "POST /api/issues/{id}/approvals",
@@ -1420,6 +1436,83 @@ registry.registerPath({
   summary: "List issue documents",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/documents",
+  tags: ["documents"],
+  summary: "List company documents",
+  request: {
+    params: z.object({ companyId: z.string().uuid() }),
+    query: companyDocumentListQuerySchema,
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/projects/{projectId}/documents",
+  tags: ["documents"],
+  summary: "List project-linked documents",
+  request: {
+    params: z.object({ projectId: z.string().uuid() }),
+    query: companyDocumentListQuerySchema.partial({ projectId: true }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/documents/{documentId}",
+  tags: ["documents"],
+  summary: "Get a company document",
+  request: { params: z.object({ companyId: z.string().uuid(), documentId: z.string().uuid() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/companies/{companyId}/documents/{documentId}",
+  tags: ["documents"],
+  summary: "Update document metadata",
+  request: {
+    params: z.object({ companyId: z.string().uuid(), documentId: z.string().uuid() }),
+    body: jsonBody(updateDocumentMetadataSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/documents/{documentId}/backlinks",
+  tags: ["documents"],
+  summary: "List document backlinks",
+  request: { params: z.object({ companyId: z.string().uuid(), documentId: z.string().uuid() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/documents/{documentId}/links",
+  tags: ["documents"],
+  summary: "Create or update a document link",
+  request: {
+    params: z.object({ companyId: z.string().uuid(), documentId: z.string().uuid() }),
+    body: jsonBody(createDocumentLinkSchema),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/documents/{documentId}/links/{linkId}",
+  tags: ["documents"],
+  summary: "Delete a document link",
+  request: {
+    params: z.object({ companyId: z.string().uuid(), documentId: z.string().uuid(), linkId: z.string().uuid() }),
+  },
+  responses: { 204: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registry.registerPath({
@@ -4300,6 +4393,81 @@ registerCurrentRoute({
   tags: ["issues"],
   summary: "Update a document annotation thread",
   body: updateDocumentAnnotationThreadSchema,
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/issues/{id}/documents/{key}/review-index",
+  tags: ["issues"],
+  summary: "Get the document review index",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/documents/{key}/review-comments",
+  tags: ["issues"],
+  summary: "Create a document review thread",
+  body: createDocumentReviewThreadSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/documents/{key}/review-comments/{threadId}/comments",
+  tags: ["issues"],
+  summary: "Add a document review comment",
+  body: createDocumentReviewCommentSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/issues/{id}/documents/{key}/review-comments/{threadId}",
+  tags: ["issues"],
+  summary: "Update a document review thread",
+  body: updateDocumentReviewThreadSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/documents/{key}/suggestions",
+  tags: ["issues"],
+  summary: "Create a document suggestion",
+  body: createDocumentSuggestionSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/documents/{key}/suggestions/{suggestionId}/comments",
+  tags: ["issues"],
+  summary: "Add a document suggestion comment",
+  body: createDocumentSuggestionCommentSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/documents/{key}/suggestions/{suggestionId}/reject",
+  tags: ["issues"],
+  summary: "Reject a document suggestion",
+  body: rejectDocumentSuggestionSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/documents/{key}/suggestions/{suggestionId}/resolve",
+  tags: ["issues"],
+  summary: "Resolve a document suggestion",
+  body: resolveDocumentSuggestionSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/documents/{key}/suggestions/{suggestionId}/accept",
+  tags: ["issues"],
+  summary: "Accept a document suggestion",
+  body: acceptDocumentSuggestionSchema,
 });
 
 registerCurrentRoute({

@@ -20,6 +20,7 @@ import {
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
+  acceptDocumentSuggestionSchema,
   acceptIssueThreadInteractionSchema,
   attachmentArtifactWorkProductMetadataSchema,
   cancelIssueThreadInteractionSchema,
@@ -32,6 +33,10 @@ import {
   checkoutIssueSchema,
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
+  createDocumentReviewCommentSchema,
+  createDocumentReviewThreadSchema,
+  createDocumentSuggestionCommentSchema,
+  createDocumentSuggestionSchema,
   createChildIssueSchema,
   createIssueSchema,
   resolveCreateIssueStatusDefault,
@@ -43,11 +48,14 @@ import {
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  rejectDocumentSuggestionSchema,
+  resolveDocumentSuggestionSchema,
   rejectIssueThreadInteractionSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
   updateIssueWorkProductSchema,
   updateDocumentAnnotationThreadSchema,
+  updateDocumentReviewThreadSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
@@ -83,6 +91,7 @@ import {
   clampIssueListLimit,
   documentService,
   documentAnnotationService,
+  documentReviewService,
   logActivity,
   projectService,
   routineService,
@@ -960,6 +969,7 @@ export function issueRoutes(
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
   const documentAnnotationsSvc = documentAnnotationService(db);
+  const documentReviewsSvc = documentReviewService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
   const routinesSvc = routineService(db, {
@@ -3228,6 +3238,460 @@ export function issueRoutes(
     },
   );
 
+  router.get("/issues/:id/documents/:key/review-index", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    if (!keyParsed.success) {
+      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+      return;
+    }
+    const index = await documentReviewsSvc.getReviewIndex(issue.id, keyParsed.data, {
+      status: req.query.status === "all" ? "all" : "open",
+      includeComments: parseBooleanQuery(req.query.includeComments),
+    });
+    res.json(index);
+  });
+
+  router.post(
+    "/issues/:id/documents/:key/review-comments",
+    validate(createDocumentReviewThreadSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      if (!keyParsed.success) {
+        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        return;
+      }
+      const { actor, annotationActor } = annotationActorInput(req);
+      const thread = await documentReviewsSvc.createReviewThread(issue.id, keyParsed.data, req.body, annotationActor);
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_review_thread_created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          documentKey: thread.documentKey,
+          documentId: thread.documentId,
+          threadId: thread.id,
+          commentId: thread.comments[0]?.id ?? null,
+        },
+      });
+      res.status(201).json(thread);
+    },
+  );
+
+  router.post(
+    "/issues/:id/documents/:key/review-comments/:threadId/comments",
+    validate(createDocumentReviewCommentSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      if (!keyParsed.success) {
+        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        return;
+      }
+      const { actor, annotationActor } = annotationActorInput(req);
+      const comment = await documentReviewsSvc.addReviewComment(
+        issue.id,
+        keyParsed.data,
+        req.params.threadId as string,
+        req.body,
+        annotationActor,
+      );
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_review_comment_added",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          documentKey: keyParsed.data,
+          threadId: comment.threadId,
+          commentId: comment.id,
+          bodySnippet: comment.body.slice(0, 120),
+        },
+      });
+      res.status(201).json(comment);
+    },
+  );
+
+  router.patch(
+    "/issues/:id/documents/:key/review-comments/:threadId",
+    validate(updateDocumentReviewThreadSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      if (!keyParsed.success) {
+        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        return;
+      }
+      const { actor, annotationActor } = annotationActorInput(req);
+      const thread = await documentReviewsSvc.updateReviewThread(
+        issue.id,
+        keyParsed.data,
+        req.params.threadId as string,
+        req.body,
+        annotationActor,
+      );
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: thread.status === "resolved"
+          ? "issue.document_review_thread_resolved"
+          : "issue.document_review_thread_reopened",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          documentKey: thread.documentKey,
+          documentId: thread.documentId,
+          threadId: thread.id,
+          status: thread.status,
+        },
+      });
+      res.json(thread);
+    },
+  );
+
+  router.post(
+    "/issues/:id/documents/:key/suggestions",
+    validate(createDocumentSuggestionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      if (!keyParsed.success) {
+        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        return;
+      }
+      const { actor, annotationActor } = annotationActorInput(req);
+      const suggestion = await documentReviewsSvc.createSuggestion(issue.id, keyParsed.data, req.body, annotationActor);
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_suggestion_created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          documentKey: suggestion.documentKey,
+          documentId: suggestion.documentId,
+          suggestionId: suggestion.id,
+          kind: suggestion.kind,
+          revisionNumber: suggestion.currentRevisionNumber,
+          quote: suggestion.selectedText.slice(0, 240),
+        },
+      });
+      res.status(201).json(suggestion);
+    },
+  );
+
+  router.post(
+    "/issues/:id/documents/:key/suggestions/:suggestionId/comments",
+    validate(createDocumentSuggestionCommentSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      if (!keyParsed.success) {
+        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        return;
+      }
+      const { actor, annotationActor } = annotationActorInput(req);
+      const comment = await documentReviewsSvc.addSuggestionComment(
+        issue.id,
+        keyParsed.data,
+        req.params.suggestionId as string,
+        req.body,
+        annotationActor,
+      );
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_suggestion_comment_added",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          documentKey: keyParsed.data,
+          suggestionId: comment.suggestionId,
+          commentId: comment.id,
+          bodySnippet: comment.body.slice(0, 120),
+        },
+      });
+      res.status(201).json(comment);
+    },
+  );
+
+  router.post(
+    "/issues/:id/documents/:key/suggestions/:suggestionId/reject",
+    validate(rejectDocumentSuggestionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      if (!keyParsed.success) {
+        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        return;
+      }
+      const { actor, annotationActor } = annotationActorInput(req);
+      const suggestion = await documentReviewsSvc.rejectSuggestion(
+        issue.id,
+        keyParsed.data,
+        req.params.suggestionId as string,
+        req.body,
+        annotationActor,
+      );
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_suggestion_rejected",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          documentKey: suggestion.documentKey,
+          documentId: suggestion.documentId,
+          suggestionId: suggestion.id,
+          kind: suggestion.kind,
+          reason: req.body.reason ?? null,
+        },
+      });
+      res.json(suggestion);
+    },
+  );
+
+  router.post(
+    "/issues/:id/documents/:key/suggestions/:suggestionId/resolve",
+    validate(resolveDocumentSuggestionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      if (!keyParsed.success) {
+        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        return;
+      }
+      const { actor, annotationActor } = annotationActorInput(req);
+      const suggestion = await documentReviewsSvc.resolveSuggestion(
+        issue.id,
+        keyParsed.data,
+        req.params.suggestionId as string,
+        req.body,
+        annotationActor,
+      );
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_suggestion_resolved",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          documentKey: suggestion.documentKey,
+          documentId: suggestion.documentId,
+          suggestionId: suggestion.id,
+          kind: suggestion.kind,
+          note: req.body.note ?? null,
+        },
+      });
+      res.json(suggestion);
+    },
+  );
+
+  router.post(
+    "/issues/:id/documents/:key/suggestions/:suggestionId/accept",
+    validate(acceptDocumentSuggestionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      if (!keyParsed.success) {
+        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const result = await documentReviewsSvc.acceptSuggestion(
+        issue.id,
+        keyParsed.data,
+        req.params.suggestionId as string,
+        req.body,
+        {
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+          runId: actor.runId,
+        },
+      );
+      await issueReferencesSvc.syncDocument(result.document.id);
+      const remappedAnnotations = await documentAnnotationsSvc.remapOpenThreadsForDocument({
+        issueId: issue.id,
+        key: result.document.key,
+        documentId: result.document.id,
+        nextRevisionId: result.document.latestRevisionId,
+        nextRevisionNumber: result.document.latestRevisionNumber,
+        nextBody: result.document.body,
+      });
+      const remappedSuggestions = await documentReviewsSvc.remapOpenSuggestionsForDocument({
+        issueId: issue.id,
+        key: result.document.key,
+        documentId: result.document.id,
+        nextRevisionId: result.document.latestRevisionId,
+        nextRevisionNumber: result.document.latestRevisionNumber,
+        nextBody: result.document.body,
+      });
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_suggestion_accepted",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          documentKey: result.document.key,
+          documentId: result.document.id,
+          suggestionId: result.suggestion.id,
+          kind: result.suggestion.kind,
+          acceptedRevisionId: result.revision.id,
+          revisionNumber: result.revision.revisionNumber,
+        },
+      });
+
+      for (const remap of remappedAnnotations) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.document_annotation_remapped",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            key: result.document.key,
+            documentId: result.document.id,
+            threadId: remap.thread.id,
+            revisionNumber: result.document.latestRevisionNumber,
+            anchorState: remap.thread.anchorState,
+            anchorConfidence: remap.thread.anchorConfidence,
+            snapshotId: remap.snapshot.id,
+          },
+        });
+      }
+      for (const remap of remappedSuggestions) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.document_suggestion_remapped",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            key: result.document.key,
+            documentId: result.document.id,
+            suggestionId: remap.suggestion.id,
+            revisionNumber: result.document.latestRevisionNumber,
+            anchorState: remap.suggestion.anchorState,
+            anchorConfidence: remap.suggestion.anchorConfidence,
+            snapshotId: remap.snapshot.id,
+          },
+        });
+      }
+
+      await revalidateActiveSourceRecoveryAfterCommittedWrite({
+        issue,
+        trigger: "document",
+        actor,
+        documentChanged: true,
+      });
+
+      res.json(result);
+    },
+  );
+
   router.put("/issues/:id/documents/:key", validate(upsertIssueDocumentSchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -3277,6 +3741,16 @@ export function issueRoutes(
         nextRevisionNumber: doc.latestRevisionNumber,
         nextBody: doc.body,
       });
+    const remappedSuggestions = result.created
+      ? []
+      : await documentReviewsSvc.remapOpenSuggestionsForDocument({
+        issueId: issue.id,
+        key: doc.key,
+        documentId: doc.id,
+        nextRevisionId: doc.latestRevisionId,
+        nextRevisionNumber: doc.latestRevisionNumber,
+        nextBody: doc.body,
+      });
 
     await logActivity(db, {
       companyId: issue.companyId,
@@ -3319,6 +3793,27 @@ export function issueRoutes(
           revisionNumber: doc.latestRevisionNumber,
           anchorState: remap.thread.anchorState,
           anchorConfidence: remap.thread.anchorConfidence,
+          snapshotId: remap.snapshot.id,
+        },
+      });
+    }
+    for (const remap of remappedSuggestions) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_suggestion_remapped",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          key: doc.key,
+          documentId: doc.id,
+          suggestionId: remap.suggestion.id,
+          revisionNumber: doc.latestRevisionNumber,
+          anchorState: remap.suggestion.anchorState,
+          anchorConfidence: remap.suggestion.anchorConfidence,
           snapshotId: remap.snapshot.id,
         },
       });
@@ -3503,6 +3998,14 @@ export function issueRoutes(
         nextRevisionNumber: result.document.latestRevisionNumber,
         nextBody: result.document.body,
       });
+      const remappedSuggestions = await documentReviewsSvc.remapOpenSuggestionsForDocument({
+        issueId: issue.id,
+        key: result.document.key,
+        documentId: result.document.id,
+        nextRevisionId: result.document.latestRevisionId,
+        nextRevisionNumber: result.document.latestRevisionNumber,
+        nextBody: result.document.body,
+      });
 
       await logActivity(db, {
         companyId: issue.companyId,
@@ -3546,6 +4049,27 @@ export function issueRoutes(
             revisionNumber: result.document.latestRevisionNumber,
             anchorState: remap.thread.anchorState,
             anchorConfidence: remap.thread.anchorConfidence,
+            snapshotId: remap.snapshot.id,
+          },
+        });
+      }
+      for (const remap of remappedSuggestions) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.document_suggestion_remapped",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            key: result.document.key,
+            documentId: result.document.id,
+            suggestionId: remap.suggestion.id,
+            revisionNumber: result.document.latestRevisionNumber,
+            anchorState: remap.suggestion.anchorState,
+            anchorConfidence: remap.suggestion.anchorConfidence,
             snapshotId: remap.snapshot.id,
           },
         });

@@ -48,6 +48,18 @@ export interface AnnotationLayerProps {
    * pending anchor for the keyboard shortcut path.
    */
   captureSelectionRequestId?: number;
+  /**
+   * Optional override for the floating selection toolbar contents. When provided,
+   * it replaces the built-in "Comment" button so callers (e.g. the document
+   * detail view) can offer richer actions like "Suggest edit" while reusing the
+   * layer's caret-anchored positioning. `addComment` runs the same flow the
+   * default button does; `clear` drops the pending selection.
+   */
+  renderSelectionToolbar?: (args: {
+    anchor: PendingAnchor;
+    addComment: () => void;
+    clear: () => void;
+  }) => React.ReactNode;
 }
 
 interface HighlightRect {
@@ -203,6 +215,7 @@ export function DocumentAnnotationLayer({
   newCommentDisabledReason = null,
   hideResolved = true,
   captureSelectionRequestId,
+  renderSelectionToolbar,
 }: AnnotationLayerProps) {
   const [highlightRects, setHighlightRects] = useState<HighlightRect[]>([]);
   const [toolbarPosition, setToolbarPosition] = useState<ToolbarPosition | null>(null);
@@ -492,20 +505,28 @@ export function DocumentAnnotationLayer({
               style={{ top: toolbarPosition.top, left: toolbarPosition.left }}
               onMouseDown={(event) => event.preventDefault()}
             >
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className="h-7 gap-1 px-2 text-xs"
-                onClick={handleAddComment}
-                disabled={newCommentDisabled}
-                title={newCommentDisabled
-                  ? newCommentDisabledReason ?? undefined
-                  : "Add comment on selection (⌘⇧M)"}
-              >
-                <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden="true" />
-                Comment
-              </Button>
+              {renderSelectionToolbar ? (
+                renderSelectionToolbar({
+                  anchor: pendingAnchor,
+                  addComment: handleAddComment,
+                  clear: () => onPendingAnchorChange(null),
+                })
+              ) : (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 gap-1 px-2 text-xs"
+                  onClick={handleAddComment}
+                  disabled={newCommentDisabled}
+                  title={newCommentDisabled
+                    ? newCommentDisabledReason ?? undefined
+                    : "Add comment on selection (⌘⇧M)"}
+                >
+                  <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden="true" />
+                  Comment
+                </Button>
+              )}
             </div>
           ) : null}
         </div>

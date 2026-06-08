@@ -46,6 +46,7 @@ vi.mock("../services/index.js", () => ({
     getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
   }),
   documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
+  documentReviewService: () => ({ remapOpenSuggestionsForDocument: async () => [] }),
   documentService: () => ({
     getIssueDocumentPayload: vi.fn(async () => ({})),
   }),

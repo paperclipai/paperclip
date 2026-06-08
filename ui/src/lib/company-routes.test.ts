@@ -65,6 +65,20 @@ describe("company routes", () => {
     );
   });
 
+  // Regression for PAP-10569: document deep-links (`/documents/<id>?from=issue:<key>`)
+  // and the library nav must keep the company prefix so they resolve under
+  // `/:companyPrefix` instead of 404-ing on the unprefixed catch-all.
+  it("treats /documents as a board route that needs a company prefix", () => {
+    expect(isBoardPathWithoutPrefix("/documents")).toBe(true);
+    expect(isBoardPathWithoutPrefix("/documents/doc-123")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/documents/doc-123")).toBeNull();
+    expect(applyCompanyPrefix("/documents", "PAP")).toBe("/PAP/documents");
+    expect(applyCompanyPrefix("/documents/doc-123?from=issue:plan", "PAP")).toBe(
+      "/PAP/documents/doc-123?from=issue:plan",
+    );
+    expect(toCompanyRelativePath("/PAP/documents/doc-123")).toBe("/documents/doc-123");
+  });
+
   it("treats /artifacts as a board route that needs a company prefix", () => {
     expect(isBoardPathWithoutPrefix("/artifacts")).toBe(true);
     expect(extractCompanyPrefixFromPath("/artifacts")).toBeNull();

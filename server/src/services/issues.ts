@@ -3679,6 +3679,22 @@ export function issueService(db: Db) {
     return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
   }
 
+  // The checkout run-id columns (issues.checkout_run_id / execution_run_id) carry a
+  // foreign key to heartbeat_runs. An agent presents its live X-Paperclip-Run-Id, which
+  // may not be recorded in this server's DB (e.g. a worktree dev environment whose DB
+  // never saw the run). Persisting that run-id would raise a FK violation and surface as a
+  // 500. Resolve the value to null when the run is unknown so the assigned agent still
+  // gains/keeps ownership instead of crashing. In real deployments the run exists, so this
+  // returns the run-id unchanged.
+  async function persistableLockRunId(runId: string): Promise<string | null> {
+    const run = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    return run ? runId : null;
+  }
+
   async function adoptStaleCheckoutRun(input: {
     issueId: string;
     actorAgentId: string;
@@ -3689,11 +3705,12 @@ export function issueService(db: Db) {
     if (!stale) return null;
 
     const now = new Date();
+    const lockRunId = await persistableLockRunId(input.actorRunId);
     const adopted = await db
       .update(issues)
       .set({
-        checkoutRunId: input.actorRunId,
-        executionRunId: input.actorRunId,
+        checkoutRunId: lockRunId,
+        executionRunId: lockRunId,
         executionLockedAt: now,
         updatedAt: now,
       })
@@ -3723,11 +3740,12 @@ export function issueService(db: Db) {
     actorRunId: string;
   }) {
     const now = new Date();
+    const lockRunId = await persistableLockRunId(input.actorRunId);
     const adopted = await db
       .update(issues)
       .set({
-        checkoutRunId: input.actorRunId,
-        executionRunId: input.actorRunId,
+        checkoutRunId: lockRunId,
+        executionRunId: lockRunId,
         executionLockedAt: now,
         updatedAt: now,
       })

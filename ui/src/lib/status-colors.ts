@@ -78,6 +78,11 @@ export const statusBadge: Record<string, string> = {
   blocked: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   done: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
   cancelled: "bg-muted text-muted-foreground",
+
+  // Document statuses — draft (blue) → in_review (violet) → approved (green)
+  // → archived (neutral). `in_review`, `approved`, and `archived` reuse hues
+  // defined above; only `draft` is document-specific.
+  draft: "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300",
 };
 
 export const statusBadgeDefault = "bg-muted text-muted-foreground";

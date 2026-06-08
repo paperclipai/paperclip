@@ -9,11 +9,13 @@ import type {
   Issue,
   IssueDocument,
 } from "@paperclipai/shared";
-import { isSystemIssueDocumentKey } from "@paperclipai/shared";
-import { useLocation } from "@/lib/router";
+import { buildDocumentReferenceHref, isSystemIssueDocumentKey } from "@paperclipai/shared";
+import { Link, useLocation } from "@/lib/router";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
+import { useIssueLinkedDocuments } from "../hooks/useIssueLinkedDocuments";
+import { DocumentFeedbackCounts } from "./documents/DocumentFeedbackCounts";
 import { deriveDocumentRevisionState } from "../lib/document-revisions";
 import type { CompanyUserProfile } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
@@ -35,7 +37,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Check, ChevronDown, ChevronRight, Copy, Diff, Download, FilePenLine, FileText, Lock, MoreHorizontal, Plus, Trash2, Unlock, X } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, Diff, Download, ExternalLink, FilePenLine, FileText, Lock, MoreHorizontal, Plus, Trash2, Unlock, X } from "lucide-react";
 import { DocumentDiffModal } from "./DocumentDiffModal";
 import { SourceTrustBadge } from "./SourceTrustBadge";
 
@@ -218,6 +220,10 @@ export function IssueDocumentsSection({
     queryKey: queryKeys.issues.documents(issue.id),
     queryFn: () => issuesApi.listDocuments(issue.id),
   });
+
+  // Company-document summaries for this issue carry feedback counts (open comments
+  // / pending suggestions) keyed by the same id as the inline issue document.
+  const { byId: linkedDocumentById } = useIssueLinkedDocuments(issue.companyId, issue.id);
 
   const { data: activeDocumentRevisions, isFetching: isFetchingDocumentRevisions } = useQuery({
     queryKey: revisionMenuOpenKey
@@ -1000,10 +1006,25 @@ export function IssueDocumentsSection({
                         onToggle={() => toggleAnnotationPanel(doc.key)}
                       />
                     ) : null}
+                    <DocumentFeedbackCounts counts={linkedDocumentById.get(doc.id)?.feedbackCounts} />
                   </div>
                   {showTitle && <p className="mt-2 text-sm font-medium">{displayedTitle}</p>}
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
+                  <Button
+                    asChild
+                    variant="ghost"
+                    size="icon-xs"
+                    className="text-muted-foreground transition-colors"
+                    title="Open in Documents"
+                  >
+                    <Link
+                      to={buildDocumentReferenceHref(doc.id, doc.key)}
+                      aria-label={`Open ${doc.key} in Documents`}
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </Link>
+                  </Button>
                   {canManageDocumentLocks ? (
                     <Button
                       variant="ghost"

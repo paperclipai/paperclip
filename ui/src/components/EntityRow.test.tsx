@@ -46,4 +46,24 @@ describe("EntityRow", () => {
     const markup = renderToStaticMarkup(<EntityRow title="Alpha" />);
     expect(markup).toContain("min-w-0 flex-1");
   });
+
+  it("stacks title/meta/trailing below sm when responsive", () => {
+    const markup = renderToStaticMarkup(
+      <EntityRow
+        title="Alpha"
+        responsive
+        meta={<span data-testid="meta-cell">draft</span>}
+        trailing={<span data-testid="trailing-cell">2h</span>}
+      />,
+    );
+
+    // inner wrapper stacks on mobile and reflows to a row at sm+
+    expect(markup).toContain("flex flex-col gap-1.5 sm:flex-row");
+    // the spacer that pins trailing right only exists at sm+ (no empty line on mobile)
+    expect(markup).toContain("hidden sm:block sm:flex-1");
+    // leading column top-aligns while stacked
+    expect(markup).toContain("items-start sm:items-center");
+    expect(markup).toContain("meta-cell");
+    expect(markup).toContain("trailing-cell");
+  });
 });

@@ -49,6 +49,7 @@ vi.mock("../services/index.js", () => ({
     })),
   }),
   documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
+  documentReviewService: () => ({ remapOpenSuggestionsForDocument: async () => [] }),
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
   feedbackService: () => ({
@@ -118,6 +119,7 @@ function registerModuleMocks() {
       })),
     }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
+    documentReviewService: () => ({ remapOpenSuggestionsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({

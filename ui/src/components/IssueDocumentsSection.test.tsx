@@ -40,6 +40,11 @@ vi.mock("../hooks/useAutosaveIndicator", () => ({
 
 vi.mock("@/lib/router", () => ({
   useLocation: () => ({ hash: "" }),
+  Link: ({ to, children, ...props }: { to: unknown; children?: unknown } & ComponentProps<"a">) => (
+    <a href={typeof to === "string" ? to : undefined} {...props}>
+      {children as ComponentProps<"a">["children"]}
+    </a>
+  ),
 }));
 
 vi.mock("./MarkdownBody", () => ({

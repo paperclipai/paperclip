@@ -57,6 +57,17 @@ export {
   type UpdateResourceMembership,
 } from "./resource-memberships.js";
 export {
+  companyDocumentListQuerySchema,
+  createDocumentLinkSchema,
+  documentLinkTargetTypeSchema,
+  documentStatusSchema,
+  documentTypeSchema,
+  updateDocumentMetadataSchema,
+  type CompanyDocumentListQuery,
+  type CreateDocumentLink,
+  type UpdateDocumentMetadata,
+} from "./document.js";
+export {
   companySkillSourceTypeSchema,
   companySkillTrustLevelSchema,
   companySkillCompatibilitySchema,
@@ -217,6 +228,29 @@ export {
   type CreateDocumentAnnotationThread,
   type UpdateDocumentAnnotationThread,
 } from "./document-annotation.js";
+
+export {
+  acceptDocumentSuggestionSchema,
+  createDocumentReviewCommentSchema,
+  createDocumentReviewThreadSchema,
+  createDocumentSuggestionCommentSchema,
+  createDocumentSuggestionSchema,
+  documentReviewThreadStatusSchema,
+  documentSuggestionInsertPositionSchema,
+  documentSuggestionKindSchema,
+  documentSuggestionStatusSchema,
+  rejectDocumentSuggestionSchema,
+  resolveDocumentSuggestionSchema,
+  updateDocumentReviewThreadSchema,
+  type AcceptDocumentSuggestion,
+  type CreateDocumentReviewComment,
+  type CreateDocumentReviewThread,
+  type CreateDocumentSuggestion,
+  type CreateDocumentSuggestionComment,
+  type RejectDocumentSuggestion,
+  type ResolveDocumentSuggestion,
+  type UpdateDocumentReviewThread,
+} from "./document-review.js";
 
 export {
   createIssueSchema,

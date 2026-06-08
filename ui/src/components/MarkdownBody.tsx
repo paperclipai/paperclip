@@ -1,6 +1,7 @@
 import { isValidElement, useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Check, Copy, ExternalLink, Github, WrapText } from "lucide-react";
+import { Check, Copy, ExternalLink, FileText, Github, WrapText } from "lucide-react";
+import { parseDocumentReferenceHref } from "@paperclipai/shared";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
@@ -9,6 +10,7 @@ import { useTheme } from "../context/ThemeContext";
 import { useOptionalCompany } from "../context/CompanyContext";
 import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chips";
 import { issuesApi } from "../api/issues";
+import { documentsApi } from "../api/documents";
 import { queryKeys } from "../lib/queryKeys";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
@@ -63,6 +65,56 @@ function MarkdownIssueLink({
       {status ? (
         <StatusIcon status={status} className="mr-1 h-3 w-3 align-[-0.125em]" />
       ) : null}
+      {children}
+    </Link>
+  );
+}
+
+/**
+ * Cross-issue document mention chip. Renders a reference to `/<co>/documents/<id>`
+ * using the `chip-match-document-*` token family. Hovering surfaces the document
+ * title, status, and feedback counts via a composed tooltip.
+ */
+function MarkdownDocumentLink({
+  href,
+  documentId,
+  children,
+}: {
+  href: string;
+  documentId: string;
+  children: ReactNode;
+}) {
+  const company = useOptionalCompany();
+  const companyId = company?.selectedCompanyId ?? null;
+  const { data } = useQuery({
+    queryKey: queryKeys.documents.detail(companyId ?? "", documentId),
+    queryFn: () => documentsApi.get(companyId!, documentId),
+    enabled: Boolean(companyId),
+    staleTime: 60_000,
+  });
+
+  const title = data?.title ?? null;
+  const status = data?.status ?? null;
+  const counts = data?.feedbackCounts ?? null;
+  const openComments = counts ? counts.openComments + counts.openReviewThreads : 0;
+  const pendingSuggestions = counts?.pendingSuggestions ?? 0;
+  const tooltip = [
+    title ?? "Document",
+    status ? `· ${status.replace(/_/g, " ")}` : null,
+    openComments > 0 ? `· 💬 ${openComments}` : null,
+    pendingSuggestions > 0 ? `· ✎ ${pendingSuggestions}` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return (
+    <Link
+      to={href}
+      data-mention-kind="document"
+      title={tooltip}
+      className="inline-flex items-center gap-1 rounded-full border px-2 py-px align-[-0.125em] text-[0.85em] font-medium leading-none no-underline bg-[var(--chip-match-document-bg)] text-[var(--chip-match-document-fg)] border-[var(--chip-match-document-border)]"
+    >
+      <FileText className="h-3 w-3" aria-hidden="true" />
       {children}
     </Link>
   );
@@ -655,6 +707,17 @@ export function MarkdownBody({
           <MarkdownIssueLink issuePathId={issueRef.issuePathId}>
             {linkChildren}
           </MarkdownIssueLink>
+        );
+      }
+
+      // Only internal references (e.g. `/PAP/documents/<id>`) become document chips;
+      // external links that happen to contain `/documents/` are left as plain links.
+      const documentRef = href && href.startsWith("/") ? parseDocumentReferenceHref(href) : null;
+      if (documentRef && href) {
+        return (
+          <MarkdownDocumentLink href={href} documentId={documentRef.documentId}>
+            {linkChildren}
+          </MarkdownDocumentLink>
         );
       }
 

@@ -169,6 +169,32 @@ export type {
   DocumentTextRange,
   UpdateDocumentAnnotationThreadRequest,
 } from "./document-annotation.js";
+export type {
+  CompanyDocument,
+  CompanyDocumentSummary,
+  DocumentBacklink,
+  DocumentFeedbackCounts,
+  DocumentLink,
+} from "./document.js";
+export type {
+  AcceptDocumentSuggestionRequest,
+  CreateDocumentReviewCommentRequest,
+  CreateDocumentReviewThreadRequest,
+  CreateDocumentSuggestionCommentRequest,
+  CreateDocumentSuggestionRequest,
+  DocumentReviewComment,
+  DocumentReviewIndex,
+  DocumentReviewIndexCounts,
+  DocumentReviewThread,
+  DocumentReviewThreadWithComments,
+  DocumentSuggestion,
+  DocumentSuggestionAnchorRemapSnapshot,
+  DocumentSuggestionComment,
+  DocumentSuggestionWithComments,
+  RejectDocumentSuggestionRequest,
+  ResolveDocumentSuggestionRequest,
+  UpdateDocumentReviewThreadRequest,
+} from "./document-review.js";
 export type { Project, ProjectBudgetSummary, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
 export type {
   CompanySearchHighlight,
