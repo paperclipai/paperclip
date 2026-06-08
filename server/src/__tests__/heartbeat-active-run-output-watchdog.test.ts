@@ -392,9 +392,9 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(event?.message).toContain("Source-resolved watchdog fold");
   });
 
-  it("still escalates terminal source issues without same-run terminal evidence", async () => {
+  it("skips terminal source issues without same-run terminal evidence and emits an orphan-run detection", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
-    const { companyId, runId } = await seedRunningRun({
+    const { companyId, issueId, runId } = await seedRunningRun({
       now,
       ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
       sourceStatus: "done",
@@ -403,18 +403,84 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
     const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
 
-    expect(result).toMatchObject({ created: 1, folded: 0 });
-    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect(run?.status).toBe("running");
-    const [evaluation] = await db
+    expect(result).toMatchObject({ created: 0, folded: 0, skipped: 1 });
+    const evaluations = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
-    expect(evaluation?.originId).toBe(runId);
-    expect(evaluation?.parentId).toBeNull();
+    expect(evaluations).toHaveLength(0);
+
+    const [detection] = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.action, "heartbeat.output_stale_orphan_run_detected"),
+        ),
+      );
+    expect(detection).toBeTruthy();
+    expect(detection?.details).toMatchObject({
+      sourceIssueId: issueId,
+      sourceIssueStatus: "done",
+      runId,
+      reason: "terminal_source_no_same_run_evidence",
+    });
   });
 
-  it("still escalates when a same-run comment is followed by another actor marking the source done", async () => {
+  it("skips silent-run evaluation creation when a prior evaluation for the same run was already disposed", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, managerId, runId, issuePrefix } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const priorEvaluationId = randomUUID();
+    await db.insert(issues).values({
+      id: priorEvaluationId,
+      companyId,
+      title: "Prior silent-run evaluation already closed",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: managerId,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+      originKind: "stale_active_run_evaluation",
+      originId: runId,
+      originRunId: runId,
+      originFingerprint: `stale_active_run:${companyId}:${runId}`,
+      completedAt: new Date(now.getTime() - 30 * 60 * 1000),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ created: 0, existing: 0, skipped: 1 });
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(1);
+    expect(evaluations[0]?.id).toBe(priorEvaluationId);
+
+    const [dedup] = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.action, "heartbeat.output_stale_dedup_skipped"),
+        ),
+      );
+    expect(dedup).toBeTruthy();
+    expect(dedup?.details).toMatchObject({
+      priorEvaluationIssueId: priorEvaluationId,
+      priorEvaluationStatus: "done",
+      runId,
+      reason: "prior_evaluation_terminal",
+    });
+  });
+
+  it("skips with orphan-run detection when a same-run comment is followed by another actor marking the source done", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const { companyId, issueId, runId, issuePrefix } = await seedRunningRun({
       now,
@@ -447,15 +513,28 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
     const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
 
-    expect(result).toMatchObject({ created: 1, folded: 0 });
-    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect(run?.status).toBe("running");
-    const [evaluation] = await db
+    expect(result).toMatchObject({ created: 0, folded: 0, skipped: 1 });
+    const evaluations = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
-    expect(evaluation?.originId).toBe(runId);
-    expect(evaluation?.parentId).toBeNull();
+    expect(evaluations).toHaveLength(0);
+
+    const [detection] = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.action, "heartbeat.output_stale_orphan_run_detected"),
+        ),
+      );
+    expect(detection?.details).toMatchObject({
+      sourceIssueId: issueId,
+      sourceIssueStatus: "done",
+      runId,
+      reason: "terminal_source_no_same_run_evidence",
+    });
   });
 
   it("folds existing evaluation and active watchdog recovery action idempotently", async () => {

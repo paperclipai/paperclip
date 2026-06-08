@@ -844,6 +844,43 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  async function findHistoricalStaleRunEvaluation(companyId: string, runId: string) {
+    const [row] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issues.createdAt))
+      .limit(1);
+    return row ?? null;
+  }
+
+  async function hasContinueWatchdogDecisionForRun(companyId: string, runId: string) {
+    const [row] = await db
+      .select({ id: heartbeatRunWatchdogDecisions.id })
+      .from(heartbeatRunWatchdogDecisions)
+      .where(
+        and(
+          eq(heartbeatRunWatchdogDecisions.companyId, companyId),
+          eq(heartbeatRunWatchdogDecisions.runId, runId),
+          eq(heartbeatRunWatchdogDecisions.decision, "continue"),
+        ),
+      )
+      .limit(1);
+    return Boolean(row);
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -1475,6 +1512,35 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
       return { kind: "skipped" as const };
     }
+    if (!existing) {
+      const historical = await findHistoricalStaleRunEvaluation(input.run.companyId, input.run.id);
+      if (historical && isTerminalIssueStatus(historical.status)) {
+        const continueOptIn = await hasContinueWatchdogDecisionForRun(input.run.companyId, input.run.id);
+        if (!continueOptIn) {
+          await logActivity(db, {
+            companyId: input.run.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: input.run.agentId,
+            runId: input.run.id,
+            action: "heartbeat.output_stale_dedup_skipped",
+            entityType: "heartbeat_run",
+            entityId: input.run.id,
+            details: {
+              source: "recovery.scan_silent_active_runs",
+              reason: "prior_evaluation_terminal",
+              priorEvaluationIssueId: historical.id,
+              priorEvaluationIdentifier: historical.identifier,
+              priorEvaluationStatus: historical.status,
+              sourceIssueId: sourceIssue?.id ?? null,
+              sourceIssueStatus: sourceIssue?.status ?? null,
+              runId: input.run.id,
+            },
+          });
+          return { kind: "skipped" as const };
+        }
+      }
+    }
     const silenceStartedAt = silenceStartedAtForRun(input.run);
     if (sourceIssue && isTerminalIssueStatus(sourceIssue.status)) {
       const terminalEvidence = await latestSameRunSourceTerminalEvidence({
@@ -1493,6 +1559,32 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           silenceAgeMs: silenceAgeMsForRun(input.run, input.now),
           now: input.now,
         });
+      }
+      if (!existing) {
+        const cleanup = await cleanupSourceResolvedRunProcess({ run: input.run, runningAgent });
+        await logActivity(db, {
+          companyId: input.run.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: input.run.agentId,
+          runId: input.run.id,
+          action: "heartbeat.output_stale_orphan_run_detected",
+          entityType: "heartbeat_run",
+          entityId: input.run.id,
+          details: {
+            source: "recovery.scan_silent_active_runs",
+            reason: "terminal_source_no_same_run_evidence",
+            sourceIssueId: sourceIssue.id,
+            sourceIssueIdentifier: sourceIssue.identifier,
+            sourceIssueStatus: sourceIssue.status,
+            runId: input.run.id,
+            processPid: input.run.processPid ?? null,
+            processGroupId: input.run.processGroupId ?? null,
+            silenceAgeMs: silenceAgeMsForRun(input.run, input.now),
+            cleanup,
+          },
+        });
+        return { kind: "skipped" as const };
       }
     }
     const prefix = await getCompanyIssuePrefix(input.run.companyId);
