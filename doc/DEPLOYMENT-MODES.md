@@ -61,6 +61,24 @@ Paperclip now treats **bind** as a separate concern from auth:
 - stricter deployment checks and failures in doctor
 - recommended bind is `loopback` behind a reverse proxy; direct `lan/custom` is advanced
 
+### Trusted reverse-proxy email bridge
+
+Hosted deployments that put Paperclip behind a separate trusted OAuth proxy can set
+`PAPERCLIP_TRUST_PROXY_AUTH_EMAIL` to a comma-separated allowlist of human email
+addresses. When this variable is non-empty, authenticated mode accepts the proxy
+identity headers currently emitted by common OAuth proxy stacks
+(`X-Auth-Request-Email` and compatibility aliases such as `X-Forwarded-Email`)
+only when the normalized email is in that allowlist, then maps the request to a
+session-compatible board actor.
+
+This is a source-level compatibility bridge for private trusted-ingress
+deployments. It is not a substitute for the public hardening controls: every
+browser-facing proxy path must strip user-supplied identity headers before
+injecting its own, and future hardening should narrow this to one canonical
+header plus trusted-ingress validation/shared secret and multi-value rejection.
+Keep this variable unset unless Paperclip is reachable only through such a
+trusted proxy.
+
 ## 4. Onboarding UX Contract
 
 Default onboarding remains interactive and flagless:
