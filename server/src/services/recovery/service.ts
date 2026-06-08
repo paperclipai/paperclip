@@ -1451,6 +1451,44 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     run: typeof heartbeatRuns.$inferSelect;
     now: Date;
   }) {
+    // TOCTOU guard: scanSilentActiveRuns() snapshots up to 100 runs that were
+    // status='running' at query time, then processes them sequentially. A run can
+    // reach a terminal state (succeeded/failed/cancelled/timed_out, or finishedAt
+    // set) *during* that loop, so the snapshot in input.run is stale by the time we
+    // get here. Without this guard the create path trusts the stale snapshot and
+    // files a false "Review silent active run" issue against a run that has already
+    // completed cleanly. Re-read the live row and skip when the run is no longer
+    // live. Defensive: never let this guard throw out of the scan.
+    try {
+      const [liveRun] = await db
+        .select({ status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId)))
+        .limit(1);
+      if (!liveRun || liveRun.status !== "running" || liveRun.finishedAt != null) {
+        await logActivity(db, {
+          companyId: input.run.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: input.run.agentId,
+          runId: input.run.id,
+          action: "heartbeat.output_stale_suppressed_terminal",
+          entityType: "heartbeat_run",
+          entityId: input.run.id,
+          details: {
+            source: "recovery.scan_silent_active_runs",
+            reason: "run_terminal_at_evaluation",
+            liveStatus: liveRun?.status ?? "missing",
+            finishedAt: liveRun?.finishedAt?.toISOString() ?? null,
+          },
+        }).catch(() => {
+          /* logging is best-effort; suppression must still proceed */
+        });
+        return { kind: "skipped" as const };
+      }
+    } catch (error) {
+      logger.warn({ err: error, runId: input.run.id }, "stale-run terminal guard failed; proceeding with stock behavior");
+    }
     const runningAgent = await getAgent(input.run.agentId);
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
