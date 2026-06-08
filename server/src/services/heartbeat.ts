@@ -3262,7 +3262,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           eq(routineTriggers.companyId, companyId),
           eq(routineTriggers.kind, "schedule"),
           eq(routineTriggers.enabled, true),
-          sql`${routineTriggers.nextRunAt} is not null`,
+          sql`${routineTriggers.nextRunAt} > now()`,
           eq(routines.status, "active"),
           eq(routines.parentIssueId, issueId),
         ),

@@ -466,7 +466,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       enabled: true,
       cronExpression: "0 9 * * 1",
       timezone: "Europe/Prague",
-      nextRunAt: new Date("2026-03-23T08:00:00.000Z"),
+      nextRunAt: new Date(Date.now() + 60 * 60 * 1000),
     });
 
     const systemWake = await heartbeat.wakeup(agentId, {
@@ -541,6 +541,83 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         .then((rows) => rows[0] ?? null);
       return ["succeeded", "failed", "cancelled", "timed_out"].includes(run?.status ?? "");
     }, 5_000);
+  });
+
+  it("does not park routine hubs when the scheduled next run is stale", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const routineId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Weekly science hub",
+      status: "backlog",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      parentIssueId: issueId,
+      title: "Weekly science loop",
+      status: "active",
+      priority: "medium",
+    });
+    await db.insert(routineTriggers).values({
+      id: randomUUID(),
+      companyId,
+      routineId,
+      kind: "schedule",
+      enabled: true,
+      cronExpression: "0 9 * * 1",
+      timezone: "Europe/Prague",
+      nextRunAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    const systemWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: { issueId },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      contextSnapshot: { issueId, wakeReason: "issue_blockers_resolved" },
+    });
+    expect(systemWake).not.toBeNull();
+
+    await waitForCondition(async () => mockAdapterExecute.mock.calls.length >= 1, 5_000);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+
+    const skippedWake = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.reason, "routine_backlog_parked"))
+      .then((rows) => rows[0] ?? null);
+    expect(skippedWake).toBeNull();
   });
 
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
