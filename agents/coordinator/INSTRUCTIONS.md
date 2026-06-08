@@ -32,11 +32,22 @@ Human merges. You GC the worktree + branch.
    c. Pull the failed run's log via `gh run view <run-id> --log-failed`, extract the first ~30 unique error messages with file:line context, write them into the task body under `## Compile errors`.
    d. Assign Architect immediately once the worktree is allocated; Architect runs cargo itself against the worktree, fixes the listed errors, opens the PR.
    This is the only path that fixes a red `main`. Without it, every `ci-failure` issue stalls because Architect's hard gate has no main-rooted worktree to operate on.
-3. Advance done subtasks (dispatch Architect synchronously — see §Architect dispatch):
-   - Worker done → `in_review` subtask for Reviewer (include Worker's changed-file list)
+3. Advance completed stages (dispatch Architect synchronously — see §Architect dispatch).
+   **Stage-completion signals (post server Layer-2 gate, `heartbeat.ts`):** a no-skill
+   agent (Worker, Architect) only reaches `done` when its branch is **on origin**; if not
+   pushed, the server holds it at `in_review` and wakes you. So a Worker — which never
+   pushes by design — lands its finished stage at **`in_review` (assignee = Worker)**, never
+   `done`. The Reviewer carries the paperclip skill and self-marks `done`. Treat the signals
+   as:
+   - Worker finished (`in_review`, assignee = Worker, work committed) → create the `in_review`
+     subtask for Reviewer (include Worker's changed-file list). Idempotent: skip if a Reviewer
+     subtask already exists for that task.
    - Reviewer done, `needs-build` → assign Architect on the same task branch (Architect runs cargo)
    - Reviewer done, `data-only` → Architect opens PR (no cargo), then mark parent done after merge
-   - Architect done → mark parent done after PR merges
+   - Architect `done` (branch confirmed on origin → PR exists) → mark parent done after PR merges
+   - Architect `in_review` (assignee = Architect, **branch NOT on origin** → gate withheld auto-done):
+     the verify run did not land a PR (silent exit / bailed gate). Re-dispatch the Architect on
+     the same Verify subtask; do not mark anything done.
 4. *(reserved — was Batch verify, removed; Coordinator no longer runs cargo)*
 5. Promote backlog → `todo` if <2 Worker tasks active. PATCH must set `assigneeAgentId`. **Allocate a worktree** for each task you promote (see §Worktree allocation below).
 6. Stale scan: `in_progress` with no activity 2+ days → comment or reassign. Also check `.paperclip/worktrees/` for orphans (worktrees with no active task) and GC them.
@@ -157,12 +168,20 @@ Each Architect verifies its own task branch in isolation now.
 
 ## PR-evidence audit
 
-The server marks a verify subtask `done` purely on Architect run exit
-code. Any silent-exit path (Step 0 abort, missing manifest, comment
-write fail, agent ran with wrong cwd) produces a `done` task with no
-PR opened and no work merged. The parent task can then also flip to
-`done` while the actual code changes remain stranded in a worktree or
-the main checkout. Concrete failure observed on AA-757: agent ran from
+As of the server Layer-2 gate (`heartbeat.ts`), a no-skill agent's task
+auto-completes to `done` **only when its branch is confirmed on origin**
+(fail-closed ls-remote check); otherwise it is held at `in_review`. That
+makes this audit a **backstop**, not the sole net — the gate should now
+catch silent exits at the source. Keep running the audit anyway: it
+covers cherry-picked-but-not-PR'd work, and any residual path the gate
+cannot see.
+
+Historically the server marked a verify subtask `done` purely on
+Architect run exit code. Any silent-exit path (Step 0 abort, missing
+manifest, comment write fail, agent ran with wrong cwd) produced a
+`done` task with no PR opened and no work merged. The parent task could
+then also flip to `done` while the actual code changes remained stranded
+in a worktree or the main checkout. Concrete failure observed on AA-757: agent ran from
 the main checkout (Step 0 cwd violation), dropped 10 files of edits in
 the wrong tree, exited cleanly, server marked task done. Six other
 tasks (AA-700, AA-725, AA-730, AA-731, AA-734, AA-735) hit a different

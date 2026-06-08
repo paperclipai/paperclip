@@ -2979,79 +2979,109 @@ export function heartbeatService(db: Db) {
           if (!agentHasPaperclipSkill) {
             const existingIssue = await issuesSvc.getById(issueId);
             if (existingIssue && existingIssue.status !== "done" && existingIssue.status !== "cancelled") {
-              // Layer-2 anti-masquerade gate (build agents only). A Claude run
-              // that bails on a failed cargo/rebase gate still exits 0, so
-              // run-success is NOT proof the Architect opened a PR. Before
-              // auto-completing an agent whose job is to land code on a remote
-              // branch, require that the branch was actually pushed. Scoped to
-              // role === "architect" because Workers legitimately never push
-              // (their handoff is the Reviewer, not a PR), and Reviewers carry
-              // the paperclip skill so they never reach this block.
-              // Fail CLOSED only on a *confirmed* missing ref (ls-remote exit
-              // 2): leave the task in_review for re-dispatch instead of letting
-              // it masquerade as done. Fail OPEN on any other git error — the
-              // Coordinator's PR-evidence audit is a second backstop.
-              let allowAutoDone = true;
-              if (
-                agent.role === "architect" &&
-                executionWorkspace.strategy === "git_worktree" &&
-                executionWorkspace.branchName &&
-                executionWorkspace.worktreePath
-              ) {
-                try {
-                  await execFile(
-                    "git",
-                    [
-                      "-C",
-                      executionWorkspace.worktreePath,
-                      "ls-remote",
-                      "--exit-code",
-                      "--heads",
-                      "origin",
-                      executionWorkspace.branchName,
-                    ],
-                    { timeout: 30_000 },
-                  );
-                } catch (err: unknown) {
-                  const exitCode = (err as { code?: number }).code;
-                  if (exitCode === 2) {
-                    allowAutoDone = false;
-                    logger.warn(
-                      { issueId, agentId: agent.id, runId: run.id, branch: executionWorkspace.branchName },
-                      "Layer-2 masquerade guard: architect run succeeded but task branch is not on origin (no PR landed) — withholding auto-done, leaving in_review for re-dispatch",
-                    );
-                  } else {
-                    logger.warn(
-                      { err, issueId, agentId: agent.id, branch: executionWorkspace.branchName },
-                      "Layer-2 masquerade guard: ls-remote errored (not a missing-ref) — failing open; Coordinator PR-evidence audit will backstop",
-                    );
-                  }
-                }
+              // Layer-2 anti-masquerade gate (build agents only). Reviewers carry
+              // the paperclip skill and self-manage status, so they never reach
+              // this block — only the no-skill Workers and the Architect do.
+              //
+              // A Claude run that bails on a failed cargo/rebase/push gate still
+              // exits 0, so run-success is NOT proof the work landed. The only
+              // server-checkable proof that a no-skill agent's work left the
+              // worktree is its branch appearing on origin (which happens only
+              // once a PR is pushed). Invariant (AA-1497 / AA-1498): a no-skill
+              // task may auto-complete to `done` ONLY when its branch is on
+              // origin. Otherwise the run was at best an intermediate stage
+              // (a Worker commits locally and never pushes — by design) or a
+              // failed landing (the Architect bailed before pushing); either way
+              // the task is held at `in_review`, never `done`, and the parent /
+              // Coordinator is woken to advance or re-dispatch. That keeps the
+              // legitimate Worker→Reviewer→Architect handoff intact (the wake
+              // dispatches the next stage) while making the Coordinator
+              // PR-evidence audit a backstop rather than the sole net.
+              //
+              // FAIL CLOSED: `branchOnOrigin` is true ONLY on a positive
+              // ls-remote confirmation (exit 0). A missing ref (exit 2) or ANY
+              // other git error withholds `done`. A withheld task that actually
+              // landed is self-correcting — re-dispatch is idempotent and the
+              // next run confirms the branch — whereas a masqueraded `done` is
+              // silent work loss. The prior gate was scoped to
+              // role === "architect" with a hard git_worktree precondition and
+              // failed OPEN on non-exit-2 errors, so Worker completions (AA-1497)
+              // and project_primary Architect runs (AA-1498) slipped through to
+              // an unconditional `done`.
+              const branchToCheck =
+                executionWorkspace.branchName ?? `task/${existingIssue.identifier}`;
+              const repoForLsRemote = executionWorkspace.worktreePath ?? executionWorkspace.cwd;
+              let branchOnOrigin = false;
+              try {
+                await execFile(
+                  "git",
+                  ["-C", repoForLsRemote, "ls-remote", "--exit-code", "--heads", "origin", branchToCheck],
+                  { timeout: 30_000 },
+                );
+                branchOnOrigin = true;
+              } catch (err: unknown) {
+                const exitCode = (err as { code?: number }).code;
+                logger.warn(
+                  { issueId, agentId: agent.id, role: agent.role, runId: run.id, branch: branchToCheck, exitCode },
+                  exitCode === 2
+                    ? "Layer-2 masquerade guard: task branch is not on origin (no PR landed) — withholding auto-done, holding in_review for re-dispatch"
+                    : "Layer-2 masquerade guard: could not confirm task branch on origin (git error) — failing closed, holding in_review",
+                );
               }
-              if (!allowAutoDone) {
-                // Skip auto-done and pipeline advancement: the work never left
-                // the worktree. The task stays in its current (in_review) status.
-              } else {
-              await issuesSvc.update(issueId, { status: "done" });
-              logger.info(
-                { issueId, agentId: agent.id, runId: run.id },
-                "auto-marked task done for agent without paperclip skill",
-              );
-              // Wake parent task's assignee (pipeline advancement)
+
+              if (branchOnOrigin) {
+                await issuesSvc.update(issueId, { status: "done" });
+                logger.info(
+                  { issueId, agentId: agent.id, runId: run.id, branch: branchToCheck },
+                  "auto-marked task done for agent without paperclip skill (branch confirmed on origin)",
+                );
+              } else if (existingIssue.status !== "in_review") {
+                // Surface committed-but-unlanded work as in_review so the
+                // Coordinator advances the pipeline (or re-dispatches). Never
+                // leave it `in_progress` (looks hung) or flip it `done`
+                // (silent strand).
+                await issuesSvc.update(issueId, { status: "in_review" });
+                logger.info(
+                  { issueId, agentId: agent.id, runId: run.id, branch: branchToCheck },
+                  "held task at in_review for agent without paperclip skill (branch not on origin — awaiting next stage / re-dispatch)",
+                );
+              }
+
+              // Wake the next mover so the pipeline advances regardless of
+              // whether this stage landed: the parent's assignee if this is a
+              // subtask, otherwise the company Coordinator for a top-level task
+              // (which has no parent to roll up into).
+              let wakeTargetAgentId: string | null = null;
               if (existingIssue.parentId) {
                 const parentIssue = await issuesSvc.getById(existingIssue.parentId);
-                if (parentIssue?.assigneeAgentId) {
-                  await enqueueWakeup(parentIssue.assigneeAgentId, {
-                    source: "automation",
-                    triggerDetail: "callback",
-                    reason: "subtask_completed",
-                    payload: { issueId: parentIssue.id, completedSubtaskId: issueId },
-                    contextSnapshot: { issueId: parentIssue.id, completedSubtaskId: issueId, source: "subtask.completed" },
-                  }).catch((err: unknown) =>
-                    logger.warn({ err, issueId, parentId: existingIssue.parentId }, "failed to wake parent on auto-done"),
-                  );
-                }
+                wakeTargetAgentId = parentIssue?.assigneeAgentId ?? null;
+              } else {
+                wakeTargetAgentId = await db
+                  .select({ id: agents.id })
+                  .from(agents)
+                  .where(and(eq(agents.companyId, agent.companyId), eq(agents.role, "coordinator")))
+                  .limit(1)
+                  .then((rows) => rows[0]?.id ?? null);
               }
+              if (wakeTargetAgentId) {
+                const wakePivotId = existingIssue.parentId ?? issueId;
+                await enqueueWakeup(wakeTargetAgentId, {
+                  source: "automation",
+                  triggerDetail: "callback",
+                  reason: "subtask_completed",
+                  payload: { issueId: wakePivotId, completedSubtaskId: issueId, branchOnOrigin },
+                  contextSnapshot: {
+                    issueId: wakePivotId,
+                    completedSubtaskId: issueId,
+                    source: "subtask.completed",
+                    branchOnOrigin,
+                  },
+                }).catch((err: unknown) =>
+                  logger.warn(
+                    { err, issueId, parentId: existingIssue.parentId, wakeTargetAgentId },
+                    "failed to wake next mover on stage completion",
+                  ),
+                );
               }
             }
 
