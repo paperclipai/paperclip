@@ -101,6 +101,19 @@ function run(command, args, cwd) {
   });
 }
 
+function runInstall(installArgs, pkgDir) {
+  try {
+    run("pnpm", installArgs, pkgDir);
+  } catch (err) {
+    // pnpm 11 exits with ERR_PNPM_IGNORED_BUILDS when transitive dependencies
+    // (e.g. esbuild via vitest) have install scripts that aren't pre-approved.
+    // --ignore-workspace bypasses workspace-level allowBuilds settings, so we
+    // must approve them imperatively after the first blocked install attempt.
+    run("pnpm", ["approve-builds", "--all"], pkgDir);
+    run("pnpm", installArgs, pkgDir);
+  }
+}
+
 function main() {
   const workspaceEntries = parseWorkspaceEntries(readFileSync(workspacePath, "utf8"));
   const standalonePackages = listPublicPackages()
@@ -118,9 +131,12 @@ function main() {
     const packageLockfilePath = path.join(pkgDir, "pnpm-lock.yaml");
 
     console.log(`  Preparing standalone package ${pkg.name} (${pkg.dir})`);
-    if (existsSync(nodeModulesDir)) {
-      rmSync(nodeModulesDir, { force: true, recursive: true });
-    }
+    // Note: we intentionally do NOT remove node_modules before installing.
+    // pnpm 11 exits non-zero with ERR_PNPM_IGNORED_BUILDS for packages whose
+    // install scripts (e.g. esbuild binary download) are blocked by the default
+    // policy when --ignore-workspace bypasses workspace-level allowBuilds config.
+    // Keeping an existing installation avoids the fresh-install trigger while
+    // still allowing pnpm to update any changed dependencies.
 
     const installArgs = existsSync(packageLockfilePath)
       ? ["install", "--ignore-workspace", "--frozen-lockfile"]
@@ -131,7 +147,7 @@ function main() {
         // Standalone packages intentionally avoid committed lockfile churn in the repo.
       ];
 
-    run("pnpm", installArgs, pkgDir);
+    runInstall(installArgs, pkgDir);
 
     if (pkgJson.scripts?.build) {
       run("pnpm", ["run", "build"], pkgDir);

@@ -12,3 +12,8 @@ packages:
   - server
   - ui
   - cli
+
+# esbuild is a transitive dependency of vitest in standalone sandbox provider packages.
+# pnpm 11 requires explicit opt-in for packages that run install scripts.
+onlyBuiltDependencies:
+  - esbuild

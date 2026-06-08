@@ -970,7 +970,7 @@ export function routineService(
       .then((rows) => rows[0]?.issues ?? null);
     if (executionBoundIssue) return executionBoundIssue;
 
-    return executor
+    const contextBoundIssue = await executor
       .select()
       .from(issues)
       .innerJoin(
@@ -994,6 +994,28 @@ export function routineService(
       .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
       .limit(1)
       .then((rows) => rows[0]?.issues ?? null);
+    if (contextBoundIssue) return contextBoundIssue;
+
+    // An unresolved routine execution issue can temporarily have no live run bound
+    // to it, for example when a retry was cancelled or deferred while the assignee
+    // stayed busy elsewhere. skip_if_active/coalesce_if_active should still reuse
+    // that open issue instead of creating a duplicate execution issue.
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, originKind),
+          eq(issues.originId, originId),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          ...(fingerprintCondition ? [fingerprintCondition] : []),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
   }
 
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
