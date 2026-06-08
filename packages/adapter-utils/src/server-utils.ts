@@ -115,19 +115,20 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "",
   "Execution contract:",
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
-  "- Leave durable progress in comments, documents, or work products, then update the issue to a clear final disposition before ending the heartbeat.",
   "- Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
-  "- Final disposition checklist: mark `done` when complete; use `in_review` only with a real reviewer, approval, interaction, or monitor path; use `blocked` only with first-class blockers or a named unblock owner/action; create delegated follow-up issues with blockers when another agent owns the next step; keep `in_progress` only when a live continuation path exists.",
+  "- Leave durable progress and end the heartbeat in a clear final disposition: `done` when complete, `in_review` only with a real reviewer or waiting path, `blocked` only with a named unblock owner/action, and keep `in_progress` only when a live continuation path exists.",
   "- Prefer the smallest verification that proves the change; do not default to full workspace typecheck/build/test on every heartbeat unless the task scope warrants it.",
   "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
   "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
-  "- Create child issues directly when you know what needs to be done; use issue-thread interactions when the board/user must choose suggested tasks, answer structured questions, or confirm a proposal.",
-  "- To ask for that input, create an interaction on the current issue with POST /api/issues/{issueId}/interactions using kind suggest_tasks, ask_user_questions, or request_confirmation. Use continuationPolicy wake_assignee when you need to resume after a response; for request_confirmation this resumes only after acceptance.",
-  "- When you intentionally restart follow-up work on a completed assigned issue, include structured `resume: true` with the POST /api/issues/{issueId}/comments or PATCH /api/issues/{issueId} comment payload. Generic agent comments on closed issues are inert by default.",
-  "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
+  "- Create child issues directly when you know what needs to be done. Otherwise use POST /api/issues/{issueId}/interactions with kind suggest_tasks, ask_user_questions, or request_confirmation; use continuationPolicy wake_assignee when you need to resume after a response.",
+  "- When you intentionally restart follow-up work on a completed assigned issue, include structured `resume: true` with the POST /api/issues/{issueId}/comments or PATCH /api/issues/{issueId} comment payload.",
+  "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
 ].join("\n");
+
+const SCOPED_WAKE_EXECUTION_CONTRACT =
+  "Execution contract: take concrete action in this heartbeat when the issue is actionable; leave durable progress; finish in `done`, `in_review`, or `blocked`, and keep `in_progress` only with a real continuation path. Use child issues instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not liveness.";
 
 export interface PaperclipSkillEntry {
   key: string;
@@ -678,6 +679,7 @@ export function renderPaperclipWakePrompt(
   if (!normalized) return "";
   const resumedSession = options.resumedSession === true;
   const executionStage = normalized.executionStage;
+  const hasWakeComments = normalized.comments.length > 0;
   const principalLabel = (principal: PaperclipWakeExecutionPrincipal | null) => {
     if (!principal || !principal.type) return "unknown";
     if (principal.type === "agent") return principal.agentId ? `agent ${principal.agentId}` : "agent";
@@ -692,8 +694,9 @@ export function renderPaperclipWakePrompt(
         "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
         "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
         "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
+        "Proactive execution standard: if the task is underspecified, record the missing assumption or success condition in your first issue comment and take the safest concrete next step. If you discover follow-up work outside the current scope, create the child issue or issue-thread interaction before you exit instead of leaving only a passive note.",
         "",
-        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+        SCOPED_WAKE_EXECUTION_CONTRACT,
         "",
         `- reason: ${normalized.reason ?? "unknown"}`,
         `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
@@ -705,12 +708,11 @@ export function renderPaperclipWakePrompt(
         "## Paperclip Wake Payload",
         "",
         "Treat this wake payload as the highest-priority change for the current heartbeat.",
-        "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
-        "Before generic repo exploration or boilerplate heartbeat updates, acknowledge the latest comment and explain how it changes your next action.",
-        "Use this inline wake data first before refetching the issue thread.",
+        "This heartbeat is scoped to the issue below. Use this inline wake data first and do not switch issues until you have handled it.",
         "Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch.",
+        "Proactive execution standard: if the task is underspecified, record the missing assumption or success condition in your first issue comment and take the safest concrete next step. If you discover follow-up work outside the current scope, create the child issue or issue-thread interaction before you exit instead of leaving only a passive note.",
         "",
-        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+        SCOPED_WAKE_EXECUTION_CONTRACT,
         "",
         `- reason: ${normalized.reason ?? "unknown"}`,
         `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
@@ -718,6 +720,14 @@ export function renderPaperclipWakePrompt(
         `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
         `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
       ];
+
+  if (!resumedSession && hasWakeComments) {
+    lines.splice(
+      4,
+      0,
+      "Before generic repo exploration or boilerplate heartbeat updates, acknowledge the latest comment and explain how it changes your next action.",
+    );
+  }
 
   if (normalized.issue?.status) {
     lines.push(`- issue status: ${normalized.issue.status}`);
@@ -729,7 +739,6 @@ export function renderPaperclipWakePrompt(
     lines.push(`- issue priority: ${normalized.issue.priority}`);
   }
   if (normalized.issue?.workMode === "planning") {
-    const hasWakeComments = normalized.comments.length > 0;
     const acceptedPlanContinuation =
       !hasWakeComments &&
       normalized.interactionKind === "request_confirmation" && normalized.interactionStatus === "accepted";

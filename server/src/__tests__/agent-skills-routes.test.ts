@@ -681,7 +681,7 @@ describe.sequential("agent skill routes", () => {
           adapterType: "claude_local",
         }),
         expect.objectContaining({
-          "AGENTS.md": expect.stringMatching(/Start actionable work in the same heartbeat\.[\s\S]*Keep the work moving until it is done\./),
+          "AGENTS.md": expect.stringMatching(/## Wake Checklist[\s\S]*Start actionable work in the same heartbeat\.[\s\S]*Keep the work moving until it is done\./),
         }),
         { entryFile: "AGENTS.md", replaceExisting: false },
       );
@@ -696,6 +696,20 @@ describe.sequential("agent skill routes", () => {
         expect.any(Object),
         expect.objectContaining({
           "AGENTS.md": expect.stringContaining("confirmation:{issueId}:plan:{revisionId}"),
+        }),
+        expect.any(Object),
+      );
+      expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          "AGENTS.md": expect.stringContaining("para-memory-files"),
+        }),
+        expect.any(Object),
+      );
+      expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          "AGENTS.md": expect.stringContaining("turning ambiguous requests into the next concrete owned action"),
         }),
         expect.any(Object),
       );
