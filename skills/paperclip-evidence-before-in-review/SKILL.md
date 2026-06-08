@@ -37,6 +37,7 @@ Look at the `labels` array. The label name(s) tell you which evidence shapes the
 | `backend` | `test-output` + `checklist:done-when` |
 | `infra` | `kubectl-state` + `probe-output` |
 | `cms-data-op` | `url-probe` |
+| `db-migration`, `migration` | `migration-output` |
 | `pr` | `pr-link` |
 | (no label or unrecognized) | `checklist:done-when` (weak default — verdict will be `warn`, not `block`) |
 
@@ -131,6 +132,47 @@ A `curl https://…` invocation. Lighter than `probe-output` — used for `cms-d
 $ curl https://www.blockcast.network/blog/making-traffic-federation-easier | grep -c 'blog-lede'
 1
 ```
+
+#### `migration-output`
+
+Paste **observable output** from the migration run — not a prose claim. Any one of the following satisfies the shape:
+
+**Migration runner banner** (drizzle-kit, Flyway, Liquibase, Alembic, or similar):
+```
+$ npx drizzle-kit push
+[✓] Applied 1 migration
+```
+```
+Flyway Community Edition 10.x
+Database: jdbc:postgresql://...
+Successfully applied 1 migration (execution time 00:00.123s)
+```
+```
+INFO  [alembic.runtime.migration] Running upgrade abc123 -> def456, add_users_table
+```
+
+**psql result after running the migration SQL**:
+```sql
+ALTER TABLE
+(1 row)
+```
+The `(N rows)` or `(N row)` psql suffix triggers the detector.
+
+**EXPLAIN ANALYZE output** (for migration correctness checks):
+```
+Seq Scan on users  (cost=0.00..42.00 rows=1000 width=64)
+```
+
+**Inline DDL in a fenced code block**:
+```sql
+ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX users_email_idx ON users(email);
+```
+
+**Common mistakes:**
+- "Migration applied successfully" prose with no runner output — gate can't detect this.
+- A screenshot of a migration tool's UI — gate scans comment text, not images.
+- Posting migration output in the issue description rather than a comment — gate only scans agent-authored comments.
 
 #### `pr-link`
 
