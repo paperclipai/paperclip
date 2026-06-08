@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { adaptersApi, type AdapterCapabilities } from "@/api/adapters";
 import { queryKeys } from "@/lib/queryKeys";
+import { useAuthedDataEnabled } from "@/hooks/useAuthedDataEnabled";
 
 const ALL_FALSE: AdapterCapabilities = {
   supportsInstructionsBundle: false,
@@ -40,6 +41,9 @@ export function useAdapterCapabilities(): (type: string) => AdapterCapabilities 
     queryKey: queryKeys.adapters.all,
     queryFn: () => adaptersApi.list(),
     staleTime: 5 * 60 * 1000,
+    // Gate on auth so the unauthenticated /auth page fires no /api/adapters call.
+    // Until data loads, callers fall back to KNOWN_DEFAULTS below.
+    enabled: useAuthedDataEnabled(),
   });
 
   const capMap = useMemo(() => {

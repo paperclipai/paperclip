@@ -4,6 +4,7 @@ import { adaptersApi } from "@/api/adapters";
 import { setDisabledAdapterTypes } from "@/adapters/disabled-store";
 import { syncExternalAdapters } from "@/adapters/registry";
 import { queryKeys } from "@/lib/queryKeys";
+import { useAuthedDataEnabled } from "@/hooks/useAuthedDataEnabled";
 
 /**
  * Fetch adapters and keep the disabled-adapter store + UI adapter registry
@@ -21,6 +22,9 @@ export function useDisabledAdaptersSync(): Set<string> {
     queryKey: queryKeys.adapters.all,
     queryFn: () => adaptersApi.list(),
     staleTime: 5 * 60 * 1000,
+    // Don't fetch adapters until we're authenticated (or in local_trusted mode).
+    // Keeps the unauthenticated /auth page from firing authed /api/adapters calls.
+    enabled: useAuthedDataEnabled(),
   });
 
   // Eagerly register external adapter types in the UI registry so that
