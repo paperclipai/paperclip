@@ -4535,3 +4535,84 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(record?.childIssues.every((child) => typeof child.title === "string")).toBe(true);
   });
 });
+
+describeEmbeddedPostgres("issueService.list priority filter", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let companyId!: string;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-priority-filter-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedIssues() {
+    companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      issuePrefix: `PRI${companyId.replace(/-/g, "").slice(0, 4).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      { id: randomUUID(), companyId, title: "Critical issue", status: "blocked", priority: "critical" },
+      { id: randomUUID(), companyId, title: "High issue", status: "blocked", priority: "high" },
+      { id: randomUUID(), companyId, title: "Medium issue", status: "todo", priority: "medium" },
+      { id: randomUUID(), companyId, title: "Low issue", status: "todo", priority: "low" },
+    ]);
+  }
+
+  it("filters to a single priority", async () => {
+    await seedIssues();
+    const result = await svc.list(companyId, { priority: "medium" });
+    expect(result).toHaveLength(1);
+    expect(result[0].priority).toBe("medium");
+  });
+
+  it("filters to multiple comma-separated priorities", async () => {
+    await seedIssues();
+    const result = await svc.list(companyId, { priority: "critical,high" });
+    expect(result).toHaveLength(2);
+    const priorities = result.map((i) => i.priority).sort();
+    expect(priorities).toEqual(["critical", "high"]);
+  });
+
+  it("combines priority and status filters correctly", async () => {
+    await seedIssues();
+    const result = await svc.list(companyId, { status: "blocked", priority: "critical,high" });
+    expect(result).toHaveLength(2);
+    for (const issue of result) {
+      expect(issue.status).toBe("blocked");
+      expect(["critical", "high"]).toContain(issue.priority);
+    }
+  });
+
+  it("returns no results when priority matches nothing", async () => {
+    await seedIssues();
+    const result = await svc.list(companyId, { status: "blocked", priority: "low" });
+    expect(result).toHaveLength(0);
+  });
+});
