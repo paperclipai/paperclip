@@ -5,7 +5,7 @@ import { agentsApi, type OrgNode } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { agentUrl } from "../lib/utils";
+import { agentUrl, cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -158,15 +158,16 @@ function touchCenter(a: React.Touch, b: React.Touch, container: HTMLDivElement):
 
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 
+// GLASSHOUSE status tokens (CSS vars resolve fine as inline backgroundColor).
 const statusDotColor: Record<string, string> = {
-  running: "#22d3ee",
-  active: "#4ade80",
-  paused: "#facc15",
-  idle: "#facc15",
-  error: "#f87171",
-  terminated: "#a3a3a3",
+  running: "var(--status-running)",
+  active: "var(--status-success)",
+  paused: "var(--status-warning)",
+  idle: "var(--muted-foreground)",
+  error: "var(--status-error)",
+  terminated: "var(--muted-foreground)",
 };
-const defaultDotColor = "#a3a3a3";
+const defaultDotColor = "var(--muted-foreground)";
 
 // ── Main component ──────────────────────────────────────────────────────
 
@@ -201,6 +202,20 @@ export function OrgChart() {
   const layout = useMemo(() => layoutForest(orgTree ?? []), [orgTree]);
   const allNodes = useMemo(() => flattenLayout(layout), [layout]);
   const edges = useMemo(() => collectEdges(layout), [layout]);
+
+  // Masthead summary + reduced-motion (collab-wire opt-out).
+  const orgStats = useMemo(
+    () => ({
+      total: allNodes.length,
+      levels: new Set(allNodes.map((n) => n.y)).size,
+      working: allNodes.filter((n) => n.status === "running").length,
+    }),
+    [allNodes],
+  );
+  const reduceMotion = useMemo(
+    () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    [],
+  );
 
   // Compute SVG bounds
   const bounds = useMemo(() => {
@@ -442,24 +457,45 @@ export function OrgChart() {
 
   return (
     <div className="flex h-[calc(100dvh-9rem)] min-h-[420px] flex-col md:h-full md:min-h-0">
-      <div className="mb-2 flex shrink-0 flex-wrap items-center justify-start gap-2">
-        <Link to="/company/import">
-          <Button variant="outline" size="sm">
-            <Upload className="mr-1.5 h-3.5 w-3.5" />
-            Import company
-          </Button>
-        </Link>
-        <Link to="/company/export">
-          <Button variant="outline" size="sm">
-            <Download className="mr-1.5 h-3.5 w-3.5" />
-            Export company
-          </Button>
-        </Link>
+      <div className="mb-3 flex shrink-0 flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="font-serif text-2xl font-medium tracking-tight">Org</h1>
+          {orgStats.total > 0 && (
+            <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-muted-foreground">
+              <span><span className="font-mono text-foreground">{orgStats.total}</span> agents</span>
+              <span className="text-muted-foreground/50">·</span>
+              <span><span className="font-mono text-foreground">{orgStats.levels}</span> levels</span>
+              {orgStats.working > 0 && (
+                <>
+                  <span className="text-muted-foreground/50">·</span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="h-1.5 w-1.5 rounded-full bg-status-running" />
+                    <span className="font-mono text-foreground">{orgStats.working}</span> working
+                  </span>
+                </>
+              )}
+            </p>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Link to="/company/import">
+            <Button variant="outline" size="sm">
+              <Upload className="mr-1.5 h-3.5 w-3.5" />
+              Import company
+            </Button>
+          </Link>
+          <Link to="/company/export">
+            <Button variant="outline" size="sm">
+              <Download className="mr-1.5 h-3.5 w-3.5" />
+              Export company
+            </Button>
+          </Link>
+        </div>
       </div>
       <div
         ref={containerRef}
         data-testid="org-chart-viewport"
-        className="w-full flex-1 min-h-0 overflow-hidden relative bg-muted/20 border border-border rounded-lg"
+        className="w-full flex-1 min-h-0 overflow-hidden relative bg-muted/20 border border-border rounded-[3px]"
         style={{
           cursor: dragging ? "grabbing" : "grab",
           touchAction: "none",
@@ -528,21 +564,30 @@ export function OrgChart() {
           }}
         >
           <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
-            {edges.map(({ parent, child }) => {
+            {edges.map(({ parent, child }, i) => {
               const x1 = parent.x + CARD_W / 2;
               const y1 = parent.y + CARD_H;
               const x2 = child.x + CARD_W / 2;
               const y2 = child.y;
               const midY = (y1 + y2) / 2;
+              const d = `M ${x1} ${y1} L ${x1} ${midY} L ${x2} ${midY} L ${x2} ${y2}`;
 
               return (
-                <path
-                  key={`${parent.id}-${child.id}`}
-                  d={`M ${x1} ${y1} L ${x1} ${midY} L ${x2} ${midY} L ${x2} ${y2}`}
-                  fill="none"
-                  stroke="var(--border)"
-                  strokeWidth={1.5}
-                />
+                <g key={`${parent.id}-${child.id}`}>
+                  <path d={d} fill="none" stroke="var(--border)" strokeWidth={1.5} />
+                  {/* collab-wire: a live signal flows parent → child, each on its own
+                      cadence (DESIGN.md). Honors prefers-reduced-motion. */}
+                  {!reduceMotion && (
+                    <circle r={2.6} fill="var(--status-running)" opacity={0.85}>
+                      <animateMotion
+                        dur="2.8s"
+                        begin={`${(i % 7) * 0.42}s`}
+                        repeatCount="indefinite"
+                        path={d}
+                      />
+                    </circle>
+                  )}
+                </g>
               );
             })}
           </g>
@@ -565,7 +610,10 @@ export function OrgChart() {
               <div
                 key={node.id}
                 data-org-card
-                className="absolute bg-card border border-border rounded-lg shadow-sm hover:shadow-md hover:border-foreground/20 transition-[box-shadow,border-color] duration-150 cursor-pointer select-none"
+                className={cn(
+                  "absolute bg-card border border-border rounded-[3px] hover:border-primary/45 transition-colors duration-150 cursor-pointer select-none",
+                  node.status === "running" && "border-l-2 border-l-primary",
+                )}
                 style={{
                   left: node.x,
                   top: node.y,
@@ -583,11 +631,14 @@ export function OrgChart() {
                 <div className="flex items-center px-4 py-3 gap-3">
                   {/* Agent icon + status dot */}
                   <div className="relative shrink-0">
-                    <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center">
+                    <div className="w-9 h-9 rounded-[3px] border border-border bg-background flex items-center justify-center">
                       <AgentIcon icon={agent?.icon} className="h-4.5 w-4.5 text-foreground/70" />
                     </div>
                     <span
-                      className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-card"
+                      className={cn(
+                        "absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-card",
+                        node.status === "running" && "animate-pulse",
+                      )}
                       style={{ backgroundColor: dotColor }}
                     />
                   </div>
