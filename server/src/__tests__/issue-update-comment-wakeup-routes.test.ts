@@ -269,7 +269,7 @@ describe("issue update comment wakeups", () => {
     );
   });
 
-  it("does not wake the assignee on comment-only issue updates", async () => {
+  it("wakes the assignee on comment-only issue updates", async () => {
     const existing = makeIssue({
       assigneeAgentId: ASSIGNEE_AGENT_ID,
       assigneeUserId: null,
@@ -292,10 +292,26 @@ describe("issue update comment wakeups", () => {
       });
 
     expect(res.status).toBe(200);
-    await vi.waitFor(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalledWith(
-      existing.companyId,
-      "please revise this",
-    ));
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        source: "automation",
+        reason: "issue_commented",
+        payload: expect.objectContaining({
+          issueId: existing.id,
+          commentId: "comment-2",
+          mutation: "comment",
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId: existing.id,
+          taskId: existing.id,
+          commentId: "comment-2",
+          wakeCommentId: "comment-2",
+          wakeReason: "issue_commented",
+          source: "issue.comment",
+        }),
+      }),
+    );
   });
 });

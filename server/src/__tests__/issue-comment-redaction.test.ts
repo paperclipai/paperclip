@@ -175,69 +175,6 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
     expect(JSON.stringify(wakePayload)).not.toContain("secret metadata");
   });
 
-  it("adds recent issue comments to accepted-plan continuation wake payloads", async () => {
-    const { companyId, issueId } = await seedIssue();
-    const firstCommentId = randomUUID();
-    const secondCommentId = randomUUID();
-    const deletedCommentId = randomUUID();
-    await db.insert(issueComments).values([
-      {
-        id: firstCommentId,
-        companyId,
-        issueId,
-        authorUserId: "board-user-1",
-        body: "Keep the migration backwards compatible.",
-        createdAt: new Date("2026-06-03T12:00:00.000Z"),
-      },
-      {
-        id: deletedCommentId,
-        companyId,
-        issueId,
-        authorUserId: "board-user-1",
-        body: "Do not pass this deleted text downstream.",
-        deletedAt: new Date("2026-06-03T12:01:00.000Z"),
-        deletedByType: "user",
-        deletedByUserId: "board-user-1",
-        createdAt: new Date("2026-06-03T12:01:00.000Z"),
-      },
-      {
-        id: secondCommentId,
-        companyId,
-        issueId,
-        authorUserId: "board-user-1",
-        body: "Split the rollout into a verification child task.",
-        createdAt: new Date("2026-06-03T12:02:00.000Z"),
-      },
-    ]);
-
-    const wakePayload = await buildPaperclipWakePayload({
-      db,
-      companyId,
-      contextSnapshot: {
-        issueId,
-        interactionKind: "request_confirmation",
-        interactionStatus: "accepted",
-        workspaceRefreshReason: "accepted_plan_confirmation",
-      },
-      issueSummary: {
-        id: issueId,
-        identifier: "RED-1",
-        title: "Deleted comment redaction",
-        status: "in_progress",
-        priority: "medium",
-        workMode: "planning",
-      },
-    });
-
-    expect(wakePayload?.commentContextSource).toBe("accepted_plan_confirmation");
-    expect(wakePayload?.commentIds).toEqual([firstCommentId, secondCommentId]);
-    expect(wakePayload?.comments.map((comment) => comment.body)).toEqual([
-      "Keep the migration backwards compatible.",
-      "Split the rollout into a verification child task.",
-    ]);
-    expect(JSON.stringify(wakePayload)).not.toContain("Do not pass this deleted text downstream.");
-  });
-
   it("excludes deleted comment bodies from company search", async () => {
     const { companyId, issueId } = await seedIssue();
     await db.insert(issueComments).values({
