@@ -11,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { cn } from "@/lib/utils";
 
 export type RoutineListProjectSummary = {
   name: string;
@@ -91,6 +92,14 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
   const agent = routine.assigneeAgentId ? agentById.get(routine.assigneeAgentId) ?? null : null;
   const isDraft = !isArchived && !routine.assigneeAgentId;
   const runDisabled = runningRoutineId === routine.id || isArchived || disableRunNow;
+  // Living status: on = teal pulse, paused = grey, draft = amber, archived = muted.
+  const dotColor = isArchived
+    ? "bg-muted-foreground/40"
+    : isDraft
+      ? "bg-status-warning"
+      : enabled
+        ? "bg-status-running"
+        : "bg-muted-foreground/50";
 
   return (
     <Link
@@ -99,9 +108,13 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
     >
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex flex-wrap items-center gap-2">
+          <span
+            className={cn("h-2 w-2 shrink-0 rounded-full", dotColor, enabled && "animate-pulse")}
+            title={isArchived ? "Archived" : isDraft ? "Draft" : enabled ? "On" : "Paused"}
+          />
           <span className="truncate text-sm font-medium">{routine.title}</span>
           {(isArchived || routine.status === "paused" || isDraft) ? (
-            <span className="text-xs text-muted-foreground">
+            <span className="rounded-[3px] border border-border px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.1em] text-muted-foreground">
               {isArchived ? "archived" : isDraft ? "draft" : "paused"}
             </span>
           ) : null}
@@ -121,7 +134,7 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
             {agent?.icon ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0" /> : null}
             <span>{routine.assigneeAgentId ? (agent?.name ?? "Unknown agent") : "No default agent"}</span>
           </span>
-          <span>
+          <span className="font-mono tabular-nums">
             {formatLastRunTimestamp(routine.lastRun?.triggeredAt)}
             {routine.lastRun ? ` · ${formatRoutineRunStatus(routine.lastRun.status)}` : ""}
           </span>
@@ -152,7 +165,7 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
             disabled={isStatusPending || isArchived || disableToggle}
             aria-label={enabled ? `Disable ${routine.title}` : `Enable ${routine.title}`}
           />
-          <span className="w-12 text-xs text-muted-foreground">
+          <span className={cn("w-12 text-xs", enabled ? "text-status-running" : "text-muted-foreground")}>
             {isArchived ? "Archived" : isDraft ? "Draft" : enabled ? "On" : "Off"}
           </span>
         </div>

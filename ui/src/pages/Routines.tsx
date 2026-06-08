@@ -486,6 +486,17 @@ export function Routines() {
     return <PageSkeleton variant="issues-list" />;
   }
 
+  const routineSummary = (() => {
+    let on = 0, paused = 0, draft = 0;
+    for (const r of routines ?? []) {
+      if (r.status === "archived") continue;
+      if (!r.assigneeAgentId) draft++;
+      else if (r.status === "active") on++;
+      else paused++;
+    }
+    return { on, paused, draft };
+  })();
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -515,8 +526,22 @@ export function Routines() {
         />
         <TabsContent value="routines" className="space-y-4">
           <div className="flex items-center justify-between gap-3">
-            <p className="text-sm text-muted-foreground">
-              {(routines ?? []).length} routine{(routines ?? []).length === 1 ? "" : "s"}
+            <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-muted-foreground">
+              <span>
+                <span className="font-mono text-foreground">{(routines ?? []).length}</span> routine{(routines ?? []).length === 1 ? "" : "s"}
+              </span>
+              {[
+                { n: routineSummary.on, label: "on", dot: "bg-status-running" },
+                { n: routineSummary.paused, label: "paused", dot: "bg-muted-foreground/50" },
+                { n: routineSummary.draft, label: "draft", dot: "bg-status-warning" },
+              ]
+                .filter((s) => s.n > 0)
+                .map((s) => (
+                  <span key={s.label} className="inline-flex items-center gap-1.5">
+                    <span className={`h-1.5 w-1.5 rounded-full ${s.dot}`} />
+                    <span className="font-mono font-medium text-foreground">{s.n}</span> {s.label}
+                  </span>
+                ))}
             </p>
             <div className="flex items-center gap-1">
               <Popover>
@@ -881,7 +906,7 @@ export function Routines() {
               />
             </div>
           ) : (
-            <div className="rounded-lg border border-border">
+            <div className="border border-border">
               {routineGroups.map((group) => (
                 <Collapsible
                   key={group.key}
@@ -898,11 +923,11 @@ export function Routines() {
                     <div className="flex items-center gap-2 border-b border-border px-3 py-2">
                       <CollapsibleTrigger className="flex items-center gap-1.5">
                         <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]>&]:rotate-90" />
-                        <span className="text-sm font-semibold uppercase tracking-wide">
+                        <span className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
                           {group.label}
                         </span>
                       </CollapsibleTrigger>
-                      <span className="text-xs text-muted-foreground">
+                      <span className="font-mono text-[11px] text-muted-foreground">
                         {group.items.length}
                       </span>
                     </div>
