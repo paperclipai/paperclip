@@ -143,13 +143,33 @@ function makeOperationalIssue() {
   };
 }
 
+function makeImplementationIssue() {
+  return {
+    ...makeOperationalIssue(),
+    identifier: "PAP-123",
+    title: "Fix OAuth proxy request header",
+    description: "Implement the proxy code path and merge the PR after QA passes.",
+  };
+}
+
 describe("issue operational completion guard routes", () => {
+  let currentIssue: ReturnType<typeof makeOperationalIssue>;
+
   beforeEach(() => {
     vi.clearAllMocks();
-    mockIssueService.getById.mockResolvedValue(makeOperationalIssue());
+    currentIssue = makeOperationalIssue();
+    mockIssueService.getById.mockImplementation(async () => currentIssue);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeOperationalIssue(),
+      ...currentIssue,
       ...patch,
+    }));
+    mockIssueService.addComment.mockImplementation(async (_id: string, body: string) => ({
+      id: "comment-1",
+      issueId: currentIssue.id,
+      body,
+      authorAgentId: null,
+      authorUserId: "local-board",
+      createdAt: new Date(),
     }));
     mockIssueService.listComments.mockResolvedValue([
       {
@@ -174,8 +194,59 @@ describe("issue operational completion guard routes", () => {
 
     expect(res.status).toBe(422);
     expect(res.body.error).toBe(
+      "Operational/manual-run issue requires an explicit runtime completion evidence comment to transition to done.",
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects merge-only completion comments for operational runtime-evidence issues", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        status: "done",
+        comment: "Post-merge reconciliation: linked GitHub PR #898 is merged. Marking issue done.",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe(
       "Operational/manual-run issue requires explicit runtime completion evidence; merge-only PR evidence cannot mark it done.",
     );
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows operational done transitions when the comment includes runtime evidence", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        status: "done",
+        comment:
+          "Phase-3 dry-run completed successfully. Green report and SARIF artifact attached; Phase-4 passive/recon run completed.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "done" }),
+    );
+  });
+
+  it("does not load recent comments for normal implementation issue done transitions", async () => {
+    currentIssue = makeImplementationIssue();
+    const app = await createApp();
+
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.listComments).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "done" }),
+    );
   });
 });

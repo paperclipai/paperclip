@@ -30,8 +30,7 @@ describe("assessOperationalCompletionEvidenceGate", () => {
 
     expect(assessment).toEqual({
       allowed: false,
-      reason:
-        "Operational/manual-run issue requires explicit runtime completion evidence; merge-only PR evidence cannot mark it done.",
+      reason: "Operational/manual-run issue requires an explicit runtime completion evidence comment to transition to done.",
     });
   });
 
@@ -47,6 +46,26 @@ describe("assessOperationalCompletionEvidenceGate", () => {
         },
       ],
       completionCommentBody: null,
+    });
+
+    expect(assessment).toEqual({
+      allowed: false,
+      reason: "Operational/manual-run issue requires an explicit runtime completion evidence comment to transition to done.",
+    });
+  });
+
+  it("rejects vague done transitions when recent comments contain merge-only reconciliation evidence", () => {
+    const assessment = assessOperationalCompletionEvidenceGate({
+      issue: {
+        title: "Pentest Swarm operational run",
+        description: "Operational execution issue. Requires runtime report/SARIF evidence before done.",
+      },
+      recentComments: [
+        {
+          body: "Post-merge reconciliation: linked GitHub PR #898 is merged.",
+        },
+      ],
+      completionCommentBody: "Done.",
     });
 
     expect(assessment).toEqual({
@@ -89,5 +108,22 @@ describe("assessOperationalCompletionEvidenceGate", () => {
     });
 
     expect(assessment).toEqual({ allowed: true });
+  });
+
+  it("identifies operational runtime-evidence issues before loading recent comments", async () => {
+    const { isOperationalCompletionEvidenceIssue } = await import("./operational-completion-guard.js");
+
+    expect(
+      isOperationalCompletionEvidenceIssue({
+        title: "Pentest Swarm operational run",
+        description: "Operational execution issue. Requires runtime report/SARIF evidence before done.",
+      }),
+    ).toBe(true);
+    expect(
+      isOperationalCompletionEvidenceIssue({
+        title: "Fix OAuth proxy request header",
+        description: "Implement the proxy code path and merge the PR after QA passes.",
+      }),
+    ).toBe(false);
   });
 });

@@ -27,22 +27,34 @@ function compactText(parts: Array<string | null | undefined>) {
   return parts.filter((part): part is string => typeof part === "string" && part.trim().length > 0).join("\n");
 }
 
+export function isOperationalCompletionEvidenceIssue(issue: CompletionGuardIssue) {
+  return OPERATIONAL_GATE_PATTERN.test(compactText([issue.title, issue.description]));
+}
+
 export function assessOperationalCompletionEvidenceGate(input: {
   issue: CompletionGuardIssue;
   recentComments: readonly CompletionGuardComment[];
   completionCommentBody?: string | null;
 }): OperationalCompletionEvidenceGateAssessment {
-  const issueText = compactText([input.issue.title, input.issue.description]);
-  if (!OPERATIONAL_GATE_PATTERN.test(issueText)) return { allowed: true };
+  if (!isOperationalCompletionEvidenceIssue(input.issue)) return { allowed: true };
 
   const completionText = compactText([input.completionCommentBody]);
   if (completionText && RUNTIME_COMPLETION_EVIDENCE_PATTERN.test(completionText)) return { allowed: true };
 
+  if (!completionText) {
+    return {
+      allowed: false,
+      reason: "Operational/manual-run issue requires an explicit runtime completion evidence comment to transition to done.",
+    };
+  }
+
   const recentThreadText = compactText(input.recentComments.slice(0, 12).map((comment) => comment.body));
-  const hasMergeOnlyEvidence = MERGE_ONLY_RECONCILIATION_PATTERN.test(completionText);
+  const hasMergeOnlyEvidence =
+    MERGE_ONLY_RECONCILIATION_PATTERN.test(completionText) ||
+    MERGE_ONLY_RECONCILIATION_PATTERN.test(recentThreadText);
   const hasMissingRuntimeEvidence = MISSING_RUNTIME_EVIDENCE_PATTERN.test(recentThreadText);
 
-  if (!completionText || hasMergeOnlyEvidence || hasMissingRuntimeEvidence) {
+  if (hasMergeOnlyEvidence || hasMissingRuntimeEvidence) {
     return {
       allowed: false,
       reason:
