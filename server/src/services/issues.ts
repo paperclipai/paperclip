@@ -3758,7 +3758,7 @@ export function issueService(db: Db) {
         sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
       );
       const issue = await tx
-        .select({ executionRunId: issues.executionRunId })
+        .select({ executionRunId: issues.executionRunId, executionLockedAt: issues.executionLockedAt })
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
@@ -3772,7 +3772,12 @@ export function issueService(db: Db) {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, issue.executionRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) {
+        const TTL_MS = 30 * 60 * 1000; // 30 minutes
+        const lockAge = Date.now() - issue.executionLockedAt!.getTime();
+        if (lockAge < TTL_MS) return false; // active lock within TTL — do not expire
+        // lock is expired — fall through to the clear below
+      }
 
       const updated = await tx
         .update(issues)

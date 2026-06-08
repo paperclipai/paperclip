@@ -3736,7 +3736,7 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedIssueWithRun(status: string | null) {
+  async function seedIssueWithRun(status: string | null, opts: { lockedAt?: Date } = {}) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -3777,10 +3777,10 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       assigneeAgentId: agentId,
       executionRunId: runId,
       executionAgentNameKey: runId ? "codexcoder" : null,
-      executionLockedAt: runId ? new Date() : null,
+      executionLockedAt: runId ? (opts.lockedAt ?? new Date()) : null,
     });
 
-    return { issueId, runId };
+    return { issueId, runId, companyId, agentId };
   }
 
   it("clears execution locks owned by terminal runs", async () => {
@@ -3834,6 +3834,60 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0]);
     expect(row).toEqual({ executionRunId: null, executionLockedAt: null });
+  });
+
+  it("clears expired locks held by non-terminal runs (TTL > 30 min)", async () => {
+    const expiredAt = new Date(Date.now() - 31 * 60 * 1000);
+    const { issueId } = await seedIssueWithRun("running", { lockedAt: expiredAt });
+
+    await expect(svc.clearExecutionRunIfTerminal(issueId)).resolves.toBe(true);
+
+    const row = await db
+      .select({
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+  });
+
+  it("clears execution locks when the run row is missing", async () => {
+    // Seed an issue with a real run, then bypass the FK to point it at a non-existent run.
+    // The FK is onDelete: "set null", so direct delete would null the column; we use
+    // session_replication_role to produce the orphaned-reference state instead.
+    const { issueId } = await seedIssueWithRun("running");
+    const orphanRunId = randomUUID();
+
+    await db.execute(sql`set session_replication_role = 'replica'`);
+    await db
+      .update(issues)
+      .set({ executionRunId: orphanRunId })
+      .where(eq(issues.id, issueId));
+    await db.execute(sql`set session_replication_role = 'origin'`);
+
+    await expect(svc.clearExecutionRunIfTerminal(issueId)).resolves.toBe(true);
+
+    const row = await db
+      .select({
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
   });
 });
 
