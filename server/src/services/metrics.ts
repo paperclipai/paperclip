@@ -21,6 +21,7 @@
 import { Counter, Registry, collectDefaultMetrics } from "prom-client";
 
 export const CONCURRENT_RUN_BLOCKED_METRIC = "claude_k8s_concurrent_run_blocked_total";
+export const HEARTBEAT_RUN_FAILED_METRIC = "paperclip_heartbeat_run_failed_total";
 
 /**
  * Bounded `reason` allow-list (mirrors the adapter-lane reasons defined in
@@ -38,6 +39,30 @@ export const UNKNOWN_AGENT_ID = "unknown";
 
 const knownReasonSet: ReadonlySet<string> = new Set(KNOWN_BLOCKED_REASONS);
 
+/**
+ * Bounded `invocation_source` allow-list for `paperclip_heartbeat_run_failed_total`.
+ * Anything outside this set collapses to "other".
+ */
+export const KNOWN_INVOCATION_SOURCES = [
+  "github_pr_opened",
+  "github_pr_synchronize",
+  "github_pr_review_submitted",
+  "transient_failure_retry",
+  "capacity_blocked_retry",
+  "issue_assigned",
+  "issue_commented",
+] as const;
+
+export const UNKNOWN_INVOCATION_SOURCE = "other";
+
+const knownInvocationSourceSet: ReadonlySet<string> = new Set(KNOWN_INVOCATION_SOURCES);
+
+export function normalizeInvocationSource(source: string | null | undefined): string {
+  return typeof source === "string" && knownInvocationSourceSet.has(source)
+    ? source
+    : UNKNOWN_INVOCATION_SOURCE;
+}
+
 export function normalizeReason(reason: string | null | undefined): string {
   return typeof reason === "string" && knownReasonSet.has(reason) ? reason : UNKNOWN_REASON;
 }
@@ -54,9 +79,14 @@ export function normalizeAgentId(
 
 let registry: Registry | null = null;
 let concurrentRunBlocked: Counter<"agent_id" | "reason"> | null = null;
+let heartbeatRunFailed: Counter<"adapter" | "error_code" | "invocation_source"> | null = null;
 
-function ensureRegistry(): { registry: Registry; counter: Counter<"agent_id" | "reason"> } {
-  if (!registry || !concurrentRunBlocked) {
+function ensureRegistry(): {
+  registry: Registry;
+  counter: Counter<"agent_id" | "reason">;
+  failedCounter: Counter<"adapter" | "error_code" | "invocation_source">;
+} {
+  if (!registry || !concurrentRunBlocked || !heartbeatRunFailed) {
     registry = new Registry();
     concurrentRunBlocked = new Counter({
       name: CONCURRENT_RUN_BLOCKED_METRIC,
@@ -66,11 +96,20 @@ function ensureRegistry(): { registry: Registry; counter: Counter<"agent_id" | "
       labelNames: ["agent_id", "reason"],
       registers: [registry],
     });
+    heartbeatRunFailed = new Counter({
+      name: HEARTBEAT_RUN_FAILED_METRIC,
+      help:
+        "Count of heartbeat runs that reached terminal status 'failed', labeled by adapter type, "
+        + "error_code, and invocation_source (wake reason). Used to compute webhook-driven "
+        + "PR-review failure rate (BLO-7457 / BLO-9147). Cardinality bounded by allow-lists.",
+      labelNames: ["adapter", "error_code", "invocation_source"],
+      registers: [registry],
+    });
     // Process/runtime metrics make the scrape target carry meaningful data even
     // before any refusal is reported (manual-verification check #3 on BLO-8328).
     collectDefaultMetrics({ register: registry });
   }
-  return { registry, counter: concurrentRunBlocked };
+  return { registry, counter: concurrentRunBlocked, failedCounter: heartbeatRunFailed };
 }
 
 export function getMetricsRegistry(): Registry {
@@ -99,6 +138,35 @@ export function recordConcurrentRunBlocked(
   return labels;
 }
 
+export interface RecordHeartbeatRunFailedInput {
+  /** Agent adapter type (e.g. "claude_k8s", "claude_local"). */
+  adapter: string | null | undefined;
+  /** Finalized error code on the heartbeat_runs row. */
+  errorCode: string | null | undefined;
+  /**
+   * Wake reason from the run's contextSnapshot (normalized to the allow-list).
+   * Maps to `invocation_source` label.
+   */
+  invocationSource: string | null | undefined;
+}
+
+/**
+ * Increment `paperclip_heartbeat_run_failed_total`. Call once per run that
+ * reaches terminal status "failed" in the liveness loop. Returns the
+ * normalized labels emitted (useful for logging/tests).
+ */
+export function recordHeartbeatRunFailed(
+  input: RecordHeartbeatRunFailedInput,
+): { adapter: string; error_code: string; invocation_source: string } {
+  const labels = {
+    adapter: typeof input.adapter === "string" && input.adapter.length > 0 ? input.adapter : "unknown",
+    error_code: typeof input.errorCode === "string" && input.errorCode.length > 0 ? input.errorCode : "unknown",
+    invocation_source: normalizeInvocationSource(input.invocationSource),
+  };
+  ensureRegistry().failedCounter.inc(labels);
+  return labels;
+}
+
 export async function renderMetrics(): Promise<{ contentType: string; body: string }> {
   const reg = getMetricsRegistry();
   return { contentType: reg.contentType, body: await reg.metrics() };
@@ -108,4 +176,5 @@ export async function renderMetrics(): Promise<{ contentType: string; body: stri
 export function __resetMetricsForTest(): void {
   registry = null;
   concurrentRunBlocked = null;
+  heartbeatRunFailed = null;
 }

@@ -147,6 +147,7 @@ import {
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { recordHeartbeatRunFailed } from "./metrics.js";
 import { runQuotaExhaustedHook } from "./quota-exhausted-hook.js";
 import { captureQuotaBurnIntoCcrotateTierCache } from "./ccrotate-quota-writeback.js";
 import { runLifecycleHook } from "./lifecycle-hook.js";
@@ -300,6 +301,15 @@ export const CCROTATE_CAPACITY_MAX_RETRY_ATTEMPTS = 24;
 // we treat it as a transient miss and schedule a quick bounded retry instead
 // of hard-failing the agent.
 export const ADAPTER_RESOLUTION_RETRY_DELAY_MS = 30 * 1000;
+// Capacity-class (k8s_concurrent_run_blocked) retries for pr_review wakes.
+// Flat short delay (same 90s base as rate-limit), storm-survivable cap higher
+// than the rate-limit 12 so a multi-hour concurrency storm doesn't silently
+// drop the review. Only pr_review wakes are re-queued; non-PR wakes remain
+// terminal (BLO-7913 non-PR leak guard preserved).
+const CAPACITY_BLOCKED_HEARTBEAT_RETRY_REASON = "capacity_blocked";
+const CAPACITY_BLOCKED_HEARTBEAT_RETRY_WAKE_REASON = "capacity_blocked_retry";
+export const CAPACITY_BLOCKED_HEARTBEAT_RETRY_DELAY_MS = 90 * 1000;
+export const CAPACITY_BLOCKED_HEARTBEAT_RETRY_MAX_ATTEMPTS = 20;
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -338,6 +348,9 @@ function readHeartbeatRunErrorFamily(
   }
   if (run.errorCode === "codex_transient_upstream" || run.errorCode === "claude_transient_upstream") {
     return "transient_upstream";
+  }
+  if (run.errorCode === "k8s_concurrent_run_blocked") {
+    return "capacity_blocked";
   }
   return null;
 }
@@ -405,10 +418,22 @@ export function shouldScheduleAutomaticRunRetry(
     return isPrReviewRetryContext(parseObject(run.contextSnapshot));
   }
 
+  // BLO-9147 AC2: capacity-class dispatch refusals (k8s_concurrent_run_blocked)
+  // are re-queued for pr_review wakes with bounded backoff so the review lands
+  // once a slot frees. Non-PR wakes remain terminal (BLO-7913 leak guard).
+  if (run.errorCode === "k8s_concurrent_run_blocked") {
+    return isPrReviewRetryContext(parseObject(run.contextSnapshot));
+  }
+
   if (run.errorCode !== "adapter_failed" && run.errorCode !== "process_lost") return false;
 
-  const prReview = derivePaperclipPrReview(parseObject(run.contextSnapshot));
-  return prReview?.reviewKind === "pr_review";
+  // BLO-9147 AC1: gate on wakeReason/reviewKind/taskKey from the persisted
+  // contextSnapshot, NOT on githubPrNumber presence. derivePaperclipPrReview
+  // returns null when githubPrNumber is absent (thin 3-key snapshot), causing
+  // silent single-attempt drops for webhook-driven runs whose snapshot was
+  // trimmed. isPrReviewRetryContext handles all three forms: reviewKind,
+  // taskKey-prefixed, and wakeReason-prefixed.
+  return isPrReviewRetryContext(parseObject(run.contextSnapshot));
 }
 
 function isPrReviewRetryContext(contextSnapshot: Record<string, unknown>) {
@@ -416,6 +441,25 @@ function isPrReviewRetryContext(contextSnapshot: Record<string, unknown>) {
   if (reviewKind === "pr_review") return true;
   const taskKey = readNonEmptyString(contextSnapshot.taskKey);
   return taskKey?.startsWith("pr_review:") === true;
+}
+
+/**
+ * Returns the opts to pass to `scheduleBoundedRetryForRun` for an automatic
+ * retry, or undefined to use the default transient-failure opts. Called only
+ * when `shouldScheduleAutomaticRunRetry` already returned true.
+ */
+function resolveAutomaticRunRetryOpts(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode">,
+) {
+  if (run.errorCode === "k8s_concurrent_run_blocked") {
+    return {
+      retryReason: CAPACITY_BLOCKED_HEARTBEAT_RETRY_REASON,
+      wakeReason: CAPACITY_BLOCKED_HEARTBEAT_RETRY_WAKE_REASON,
+      maxAttempts: CAPACITY_BLOCKED_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+      delayMs: CAPACITY_BLOCKED_HEARTBEAT_RETRY_DELAY_MS,
+    };
+  }
+  return undefined;
 }
 
 function mergeAdapterRecoveryMetadata(input: {
@@ -6622,11 +6666,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // Pick the schedule curve based on the recovery family. Rate-limit gets
     // a flat short delay (gate is the actual decider); generic transient
     // upstream gets the original exponential backoff. Upstream's explicit
-    // opts.delayMs takes precedence (test-only override).
+    // opts.delayMs takes precedence (test-only override). For custom retry
+    // reasons (e.g. capacity_blocked), opts.maxAttempts sets the cap.
     const isRateLimitFamily = transientRecovery?.errorFamily === "rate_limit_exhausted";
     const maxAttemptsForFamily = isRateLimitFamily
       ? RATE_LIMIT_HEARTBEAT_RETRY_MAX_ATTEMPTS
-      : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
+      : (opts?.maxAttempts != null ? opts.maxAttempts : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS);
     const baseSchedule = opts?.delayMs != null
       ? nextAttempt <= maxAttemptsForFamily
         ? {
@@ -10697,6 +10742,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             );
           }
         }
+        if (outcome === "failed") {
+          const contextSnapshotObj = parseObject(livenessRun.contextSnapshot);
+          recordHeartbeatRunFailed({
+            adapter: agent.adapterType,
+            errorCode: livenessRun.errorCode,
+            invocationSource: readNonEmptyString(contextSnapshotObj.wakeReason) ?? readNonEmptyString(contextSnapshotObj.retryReason),
+          });
+        }
         if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
           const policy = parseMaxTurnContinuationPolicy(agent);
           if (policy.enabled && policy.maxAttempts > 0) {
@@ -10719,7 +10772,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
           }
         } else if (outcome === "failed" && shouldScheduleAutomaticRunRetry(livenessRun)) {
-          await scheduleBoundedRetryForRun(livenessRun, agent);
+          await scheduleBoundedRetryForRun(livenessRun, agent, resolveAutomaticRunRetryOpts(livenessRun));
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);

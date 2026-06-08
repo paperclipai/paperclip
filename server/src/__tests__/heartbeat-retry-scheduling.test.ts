@@ -16,6 +16,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import {
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
+  CAPACITY_BLOCKED_HEARTBEAT_RETRY_MAX_ATTEMPTS,
   heartbeatService,
   shouldScheduleAutomaticRunRetry,
 } from "../services/heartbeat.js";
@@ -500,6 +501,104 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         },
       }),
     ).toBe(false);
+  });
+
+  // BLO-9147 AC1 — thin-snapshot adapter_failed retry gate
+  it("BLO-9147 AC1: retries adapter_failed on pr_review run with thin snapshot (no githubPrNumber)", () => {
+    // The persisted contextSnapshot only carries reviewKind (no githubPrNumber).
+    // derivePaperclipPrReview would return null; isPrReviewRetryContext must match.
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "adapter_failed",
+        resultJson: {},
+        contextSnapshot: { wakeReason: "github_pr_opened", reviewKind: "pr_review" },
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "process_lost",
+        resultJson: {},
+        contextSnapshot: { reviewKind: "pr_review" },
+      }),
+    ).toBe(true);
+
+    // taskKey-only snapshot (trimmed to 3 keys, BLO-7457 form)
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "adapter_failed",
+        resultJson: {},
+        contextSnapshot: { taskKey: "pr_review:Blockcast/ally:888" },
+      }),
+    ).toBe(true);
+  });
+
+  it("BLO-9147 AC1: does not retry adapter_failed on non-PR wakes even with thin snapshot", () => {
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "adapter_failed",
+        resultJson: {},
+        contextSnapshot: { issueId: randomUUID(), wakeReason: "issue_assigned" },
+      }),
+    ).toBe(false);
+
+    // taskKey that does not start with "pr_review:"
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "adapter_failed",
+        resultJson: {},
+        contextSnapshot: { taskKey: "issue:somecompany:123" },
+      }),
+    ).toBe(false);
+  });
+
+  // BLO-9147 AC2 — k8s_concurrent_run_blocked retry gate
+  it("BLO-9147 AC2: retries k8s_concurrent_run_blocked on pr_review wake", () => {
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "k8s_concurrent_run_blocked",
+        resultJson: {},
+        contextSnapshot: { wakeReason: "github_pr_opened", reviewKind: "pr_review", githubPrNumber: 42 },
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "k8s_concurrent_run_blocked",
+        resultJson: {},
+        contextSnapshot: { reviewKind: "pr_review" },
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "k8s_concurrent_run_blocked",
+        resultJson: {},
+        contextSnapshot: { taskKey: "pr_review:Blockcast/ally:100" },
+      }),
+    ).toBe(true);
+  });
+
+  it("BLO-9147 AC2: does NOT retry k8s_concurrent_run_blocked on non-PR wakes (BLO-7913 guard)", () => {
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "k8s_concurrent_run_blocked",
+        resultJson: {},
+        contextSnapshot: { issueId: randomUUID(), wakeReason: "issue_assigned" },
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldScheduleAutomaticRunRetry({
+        errorCode: "k8s_concurrent_run_blocked",
+        resultJson: {},
+        contextSnapshot: {},
+      }),
+    ).toBe(false);
+  });
+
+  it("BLO-9147 AC2: CAPACITY_BLOCKED_HEARTBEAT_RETRY_MAX_ATTEMPTS exceeds rate-limit cap (12)", () => {
+    expect(CAPACITY_BLOCKED_HEARTBEAT_RETRY_MAX_ATTEMPTS).toBeGreaterThan(12);
   });
 
   it("does not defer a new assignee behind the previous assignee's scheduled retry", async () => {
