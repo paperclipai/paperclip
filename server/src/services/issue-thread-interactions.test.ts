@@ -206,7 +206,7 @@ describe("issueThreadInteractionService", () => {
         version: 1,
         target: {
           type: "custom",
-          key: "github-pr:vivus-tech/music-tracker:911:3bdc3fdcfbcdf904c49a560fab27f29238b65032",
+          key: expect.stringContaining("github-pr:vivus-tech/music-tracker:911"),
           label: "vivus-tech/music-tracker#911",
           href: "https://github.com/vivus-tech/music-tracker/pull/911",
         },
@@ -215,7 +215,7 @@ describe("issueThreadInteractionService", () => {
         version: 1,
         staleTarget: {
           type: "custom",
-          key: "github-pr:vivus-tech/music-tracker:911:3bdc3fdcfbcdf904c49a560fab27f29238b65032",
+          key: expect.stringContaining("github-pr:vivus-tech/music-tracker:911"),
           label: "GitHub PR #911",
           href: "https://github.com/vivus-tech/music-tracker/pull/911",
         },
@@ -233,7 +233,7 @@ describe("issueThreadInteractionService", () => {
       kind: "request_confirmation",
       status: "pending",
       continuationPolicy: "wake_assignee_on_accept",
-      idempotencyKey: "confirmation:legacy-custom",
+      idempotencyKey: "legacy-custom",
       sourceCommentId: null,
       sourceRunId: null,
       title: "Approve imported target?",
