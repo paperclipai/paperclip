@@ -2239,6 +2239,63 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
   });
 
+  // Regression test for FIX-89:
+  // The stranded-issue recovery owner used to be resolved via assignee.reportsTo
+  // first, which created an infinite reassign loop when the assignee's manager
+  // was also the issue creator (the creator agent would receive the recovery
+  // wake and reassign back to the original assignee, repeating forever).
+  // Recovery should now target the current assignee directly; the manager /
+  // creator chain remains as fallback for the cases below.
+  it("targets the current assignee for stranded recovery even when the assignee's manager is the issue creator", async () => {
+    const { companyId, agentId: assigneeAgentId, runId, issueId } =
+      await seedStrandedIssueFixture({
+        status: "todo",
+        runStatus: "failed",
+        retryReason: "assignment_recovery",
+        runErrorCode: "process_lost",
+      });
+
+    const ceoAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: ceoAgentId,
+      companyId,
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db
+      .update(agents)
+      .set({ reportsTo: ceoAgentId })
+      .where(eq(agents.id, assigneeAgentId));
+    await db
+      .update(issues)
+      .set({ createdByAgentId: ceoAgentId })
+      .where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    // expectSourceScopedStrandedRecoveryAction asserts ownerAgentId, previousOwnerAgentId,
+    // and returnOwnerAgentId all equal the agentId argument. The fix means all three
+    // converge on the assignee — not on the assignee's manager.
+    const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId: assigneeAgentId,
+      issueId,
+      runId,
+      previousStatus: "todo",
+      retryReason: "assignment_recovery",
+    });
+    expect(recoveryAction.ownerAgentId).not.toBe(ceoAgentId);
+  });
+
   it("blocks an already stranded recovery issue without creating a recovery child", async () => {
     const { companyId, issueId } = await seedStrandedIssueFixture({
       status: "todo",
