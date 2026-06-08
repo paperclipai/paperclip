@@ -8407,7 +8407,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const sessionResetReason = describeSessionResetReason(context);
     const taskSessionForRun = resetTaskSession ? null : taskSession;
     const explicitResumeSessionParams = normalizeResumeParamsForAdapter(
-      agent.adapterType,
+      executionAdapterType,
       sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
     );
     const explicitResumeSessionDisplayId = truncateDisplayId(
@@ -8417,11 +8417,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
     const previousSessionParams =
       explicitResumeSessionParams ??
-      (isCanonicalSessionIdForAdapter(agent.adapterType, explicitResumeSessionDisplayId)
+      (isCanonicalSessionIdForAdapter(executionAdapterType, explicitResumeSessionDisplayId)
         ? { sessionId: explicitResumeSessionDisplayId }
         : null) ??
       normalizeResumeParamsForAdapter(
-        agent.adapterType,
+        executionAdapterType,
         sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
       );
     // TWX-336: adapter config comes from the failover-resolved executionAgent, not the
@@ -8627,7 +8627,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
       resolveWorkspace: () =>
         resolveWorkspaceForRun(
-          agent,
+          executionAgent,
           context,
           previousSessionParams,
           { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
@@ -9051,7 +9051,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     const runtimeSessionFallback = taskKey || resetTaskSession
       ? null
-      : isCanonicalSessionIdForAdapter(agent.adapterType, runtime.sessionId)
+      : isCanonicalSessionIdForAdapter(executionAdapterType, runtime.sessionId)
         ? runtime.sessionId
         : null;
     const runtimeSessionDisplayId = truncateDisplayId(
@@ -9061,10 +9061,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         readNonEmptyString(runtimeSessionParams?.sessionId) ??
         runtimeSessionFallback,
     );
-    let previousSessionDisplayId = requiresCanonicalSessionIds(agent.adapterType)
+    let previousSessionDisplayId = requiresCanonicalSessionIds(executionAdapterType)
       ? truncateDisplayId(
           readNonEmptyString(previousSessionParams?.sessionId) ??
-            (isCanonicalSessionIdForAdapter(agent.adapterType, runtimeSessionDisplayId) ? runtimeSessionDisplayId : null) ??
+            (isCanonicalSessionIdForAdapter(executionAdapterType, runtimeSessionDisplayId) ? runtimeSessionDisplayId : null) ??
             runtimeSessionFallback,
         )
       : runtimeSessionDisplayId;
@@ -9506,7 +9506,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const nextSessionState = resolveNextSessionState({
-        adapterType: agent.adapterType,
+        adapterType: executionAdapterType,
         codec: sessionCodec,
         adapterResult,
         outcome,
