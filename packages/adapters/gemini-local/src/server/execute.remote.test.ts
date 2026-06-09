@@ -320,4 +320,153 @@ describe("gemini remote execution", () => {
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
     expect(runChildProcess).not.toHaveBeenCalled();
   });
+
+  it("starts a fresh session instead of resuming when the prior run was paused mid-execution", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-paused-resume-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-paused-resume/workspace";
+    await mkdir(workspaceDir, { recursive: true });
+
+    const result = await execute({
+      runId: "run-paused-resume",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Gemini Builder",
+        adapterType: "gemini_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "session-123",
+        sessionParams: {
+          sessionId: "session-123",
+          cwd: managedRemoteWorkspace,
+          remoteExecution: {
+            transport: "ssh",
+            host: "127.0.0.1",
+            port: 2222,
+            username: "fixture",
+            remoteCwd: managedRemoteWorkspace,
+          },
+        },
+        sessionDisplayId: "session-123",
+        taskKey: null,
+      },
+      config: {
+        command: "gemini",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+        // The heartbeat sets this when resuming a run that was paused/terminated
+        // mid-execution; the adapter must not resume the wedged session.
+        resumedFromPausedRun: true,
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    expect(call?.[2]).not.toContain("--resume");
+    expect(call?.[2]).not.toContain("session-123");
+    // The fresh run's own session id is persisted, never the wedged one.
+    expect(result.sessionParams).toMatchObject({ sessionId: "gemini-session-1" });
+    expect(result.sessionId).toBe("gemini-session-1");
+  });
+
+  it("does not re-adopt the paused run's stale session id when the fresh run emits none", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-paused-nofallback-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-paused-nofallback/workspace";
+    await mkdir(workspaceDir, { recursive: true });
+
+    // Fresh run that emits no session id of its own.
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: [
+        JSON.stringify({ type: "message", role: "assistant", content: "done" }),
+        JSON.stringify({
+          type: "result",
+          status: "success",
+          stats: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+        }),
+      ].join("\n"),
+      stderr: "",
+      pid: 321,
+      startedAt: new Date().toISOString(),
+    });
+
+    const result = await execute({
+      runId: "run-paused-nofallback",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Gemini Builder",
+        adapterType: "gemini_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "session-123",
+        sessionParams: {
+          sessionId: "session-123",
+          cwd: managedRemoteWorkspace,
+          remoteExecution: {
+            transport: "ssh",
+            host: "127.0.0.1",
+            port: 2222,
+            username: "fixture",
+            remoteCwd: managedRemoteWorkspace,
+          },
+        },
+        sessionDisplayId: "session-123",
+        taskKey: null,
+      },
+      config: {
+        command: "gemini",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+        resumedFromPausedRun: true,
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    expect(call?.[2]).not.toContain("--resume");
+    expect(result.sessionId ?? null).toBeNull();
+    expect(result.sessionParams ?? null).toBeNull();
+    expect(result.clearSession).toBe(true);
+  });
 });

@@ -7,6 +7,7 @@ import {
   assertGitSensitiveAdapterWorkspaceValid,
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
+  resumeRunWasInterruptedMidExecution,
   deriveTaskKeyWithHeartbeatFallback,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
@@ -930,6 +931,31 @@ describe("comment wake batching", () => {
     expect(merged.commentId).toBe("comment-2");
     expect(merged.wakeCommentId).toBe("comment-2");
     expect(merged.paperclipWake).toBeUndefined();
+  });
+});
+
+describe("resumeRunWasInterruptedMidExecution", () => {
+  it("flags runs paused or terminated mid-execution", () => {
+    expect(resumeRunWasInterruptedMidExecution("paused")).toBe(true);
+    expect(resumeRunWasInterruptedMidExecution("terminated")).toBe(true);
+    expect(resumeRunWasInterruptedMidExecution("PAUSED")).toBe(true);
+    expect(resumeRunWasInterruptedMidExecution("  paused  ")).toBe(true);
+  });
+
+  it("does not flag cleanly finished or normal runs", () => {
+    for (const status of [
+      "succeeded",
+      "completed",
+      "failed",
+      "running",
+      "queued",
+      "skipped",
+      null,
+      undefined,
+      "",
+    ]) {
+      expect(resumeRunWasInterruptedMidExecution(status)).toBe(false);
+    }
   });
 });
 

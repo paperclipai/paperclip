@@ -409,21 +409,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
   const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+  // When the run we are resuming was paused or terminated mid-execution, its
+  // prior Gemini session was cut off mid-turn and is potentially wedged (stale
+  // run context/auth that surfaces as 401/500 and hallucinated routes). Start a
+  // fresh session instead of resuming the wedged one. Healthy resumes (e.g. the
+  // successful-run handoff) do not set this flag and keep their session.
+  const resumedFromPausedRun = asBoolean(context.resumedFromPausedRun, false);
   const canResumeSession =
     runtimeSessionId.length > 0 &&
+    !resumedFromPausedRun &&
     (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
     adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
   const sessionId = canResumeSession ? runtimeSessionId : null;
-  if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
-    await onLog(
-      "stdout",
-      `[paperclip] Gemini session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
-    );
-  } else if (runtimeSessionId && !canResumeSession) {
-    await onLog(
-      "stdout",
-      `[paperclip] Gemini session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
-    );
+  if (runtimeSessionId && !canResumeSession) {
+    if (resumedFromPausedRun) {
+      await onLog(
+        "stdout",
+        `[paperclip] Gemini session "${runtimeSessionId}" belonged to a run that was paused or terminated mid-execution; starting a fresh session instead of resuming the potentially wedged one.\n`,
+      );
+    } else if (executionTargetIsRemote) {
+      await onLog(
+        "stdout",
+        `[paperclip] Gemini session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
+      );
+    } else {
+      await onLog(
+        "stdout",
+        `[paperclip] Gemini session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
+      );
+    }
   }
 
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
@@ -562,7 +576,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       parsed: ReturnType<typeof parseGeminiJsonl>;
     },
     clearSessionOnMissingSession = false,
-    isRetry = false,
+    forceFreshSession = false,
   ): AdapterExecutionResult => {
     const authMeta = detectGeminiAuthRequired({
       parsed: attempt.parsed.resultEvent,
@@ -597,8 +611,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       attempt.proc.exitCode,
     );
 
-    // On retry, don't fall back to old session ID — the old session was stale
-    const canFallbackToRuntimeSession = !isRetry;
+    // When we deliberately abandoned the prior session — a resume retry after an
+    // unknown-session error, or a fresh start because the resumed run was paused
+    // mid-execution — don't fall back to the old session id; it was stale.
+    const canFallbackToRuntimeSession = !forceFreshSession;
     const resolvedSessionId = attempt.parsed.sessionId
       ?? (canFallbackToRuntimeSession ? (runtimeSessionId ?? runtime.sessionId ?? null) : null);
     const resolvedSessionParams = resolvedSessionId
@@ -649,6 +665,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
+  // We had a session id but deliberately did not resume it because the run we
+  // are resuming was paused/terminated mid-execution (see `resumedFromPausedRun`
+  // above). The initial attempt therefore already ran fresh; make sure we never
+  // re-adopt the abandoned, potentially wedged session id if it emits none.
+  const startedFreshAfterPause = resumedFromPausedRun && runtimeSessionId.length > 0;
   try {
     const initial = await runAttempt(sessionId);
     if (
@@ -663,6 +684,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
       const retry = await runAttempt(null);
       return toResult(retry, true, true);
+    }
+
+    if (startedFreshAfterPause) {
+      return toResult(initial, true, true);
     }
 
     return toResult(initial);

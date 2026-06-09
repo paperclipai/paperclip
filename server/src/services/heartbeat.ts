@@ -1747,6 +1747,33 @@ type ResumeSessionRow = {
   lastRunId: string | null;
 };
 
+/**
+ * Heartbeat run statuses that indicate the prior run was interrupted *during*
+ * execution (paused or killed mid-turn) rather than finishing cleanly.
+ *
+ * When a sessioned adapter resumes one of these runs, the underlying agent
+ * session can be wedged: it was cut off mid-turn and its cached run context
+ * (including now-stale run auth) no longer reflects the fresh resumed run,
+ * which has surfaced as 401/500 failures and hallucinated API routes on resume.
+ * Adapters use this signal to start a fresh session instead of resuming the
+ * wedged one. Cleanly-finished runs (e.g. "succeeded"/"completed", as used by
+ * the successful-run handoff) are intentionally excluded so healthy resumes
+ * keep their session continuity.
+ */
+export const INTERRUPTED_MID_RUN_RESUME_STATUSES = new Set<string>([
+  "paused",
+  "terminated",
+]);
+
+export function resumeRunWasInterruptedMidExecution(
+  status: string | null | undefined,
+): boolean {
+  return (
+    typeof status === "string" &&
+    INTERRUPTED_MID_RUN_RESUME_STATUSES.has(status.trim().toLowerCase())
+  );
+}
+
 export function buildExplicitResumeSessionOverride(input: {
   adapterType?: string | null;
   resumeFromRunId: string;
@@ -4146,6 +4173,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resumeRun = await db
       .select({
         id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         resultJson: heartbeatRuns.resultJson,
         sessionIdBefore: heartbeatRuns.sessionIdBefore,
@@ -4190,6 +4218,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       taskId: readNonEmptyString(resumeContext.taskId) ?? readNonEmptyString(resumeContext.issueId),
       sessionDisplayId: sessionOverride.sessionDisplayId,
       sessionParams: sessionOverride.sessionParams,
+      resumedFromPausedRun: resumeRunWasInterruptedMidExecution(resumeRun.status),
     };
   }
 
@@ -9842,6 +9871,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         enrichedContextSnapshot.taskKey = explicitResumeSession.taskKey;
       }
       issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueId;
+    }
+    // Signal a fresh-session start to sessioned adapters when resuming a run that
+    // was interrupted mid-execution; clear any value carried forward from the
+    // source context so healthy resumes/normal wakes are never affected.
+    if (explicitResumeSession?.resumedFromPausedRun) {
+      enrichedContextSnapshot.resumedFromPausedRun = true;
+    } else {
+      delete enrichedContextSnapshot.resumedFromPausedRun;
     }
     const effectiveTaskKey = readNonEmptyString(enrichedContextSnapshot.taskKey) ?? taskKey;
     const sessionBefore =
