@@ -29,6 +29,15 @@ export function formatNumber(n: number): string {
   return n.toLocaleString("en-US");
 }
 
+/**
+ * Format a project's budget for the projects list view (IA Phase 4 — PAP-60).
+ * Monthly budgets render a `/mo` suffix; lifetime budgets show the bare amount.
+ */
+export function formatProjectBudget(budget: { amountCents: number; windowKind: string }): string {
+  const amount = formatCents(budget.amountCents);
+  return budget.windowKind === "calendar_month_utc" ? `${amount}/mo` : amount;
+}
+
 export function formatDate(date: Date | string): string {
   return new Date(date).toLocaleDateString("en-US", {
     month: "short",
@@ -73,6 +82,24 @@ export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
+}
+
+/** Humanize a millisecond duration into a compact `1h 2m`, `45m 12s`, `12s` string. */
+export function formatDurationMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "0s";
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours < 24) {
+    return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+  }
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
 }
 
 /** Map a raw provider slug to a display-friendly name. */

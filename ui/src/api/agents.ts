@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AgentPermissions,
   AgentDetail,
   AgentInstructionsBundle,
   AgentInstructionsFileDetail,
@@ -12,6 +13,7 @@ import type {
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
+  ClearAgentErrorResponse,
 } from "@paperclipai/shared";
 import type {
   AdapterModelProfileDefinition,
@@ -67,6 +69,17 @@ export interface AgentHireResponse {
 export interface AgentPermissionUpdate {
   canCreateAgents: boolean;
   canAssignTasks: boolean;
+  trustPreset?: AgentPermissions["trustPreset"];
+  authorizationPolicy?: AgentPermissions["authorizationPolicy"];
+}
+
+export interface AgentWakeRequest {
+  source?: "timer" | "assignment" | "on_demand" | "automation";
+  triggerDetail?: "manual" | "ping" | "callback" | "system";
+  reason?: string | null;
+  payload?: Record<string, unknown> | null;
+  idempotencyKey?: string | null;
+  forceFreshSession?: boolean;
 }
 
 function withCompanyScope(path: string, companyId?: string) {
@@ -153,6 +166,8 @@ export const agentsApi = {
     ),
   pause: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/pause"), {}),
   resume: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/resume"), {}),
+  clearError: (id: string, companyId?: string) =>
+    api.post<ClearAgentErrorResponse>(agentPath(id, companyId, "/clear-error"), {}),
   approve: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/approve"), {}),
   terminate: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/terminate"), {}),
   remove: (id: string, companyId?: string) => api.delete<{ ok: true }>(agentPath(id, companyId)),
@@ -204,16 +219,11 @@ export const agentsApi = {
       `/companies/${companyId}/adapters/${type}/test-environment`,
       data,
     ),
-  invoke: (id: string, companyId?: string) => api.post<HeartbeatRun>(agentPath(id, companyId, "/heartbeat/invoke"), {}),
+  invoke: (id: string, companyId?: string, data: AgentWakeRequest = {}) =>
+    api.post<HeartbeatRun>(agentPath(id, companyId, "/heartbeat/invoke"), data),
   wakeup: (
     id: string,
-    data: {
-      source?: "timer" | "assignment" | "on_demand" | "automation";
-      triggerDetail?: "manual" | "ping" | "callback" | "system";
-      reason?: string | null;
-      payload?: Record<string, unknown> | null;
-      idempotencyKey?: string | null;
-    },
+    data: AgentWakeRequest,
     companyId?: string,
   ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
   loginWithClaude: (id: string, companyId?: string) =>
