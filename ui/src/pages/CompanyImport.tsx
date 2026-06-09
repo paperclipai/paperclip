@@ -79,6 +79,15 @@ function buildActionMap(preview: CompanyPortabilityPreviewResult): Map<string, s
     }
   }
 
+  for (const wp of preview.plan.workflowPlans ?? []) {
+    const wf = manifest.workflows?.find((w) => w.title === wp.title);
+    if (wf) {
+      const slugBase = wf.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "workflow";
+      const path = `workflows/${slugBase}/WORKFLOW.yaml`;
+      map.set(path, wp.action);
+    }
+  }
+
   for (const skill of manifest.skills) {
     const path = ensureMarkdownPath(skill.path);
     map.set(path, "create");
@@ -730,7 +739,7 @@ export function CompanyImport() {
       if (!source) throw new Error("No source configured.");
       return companiesApi.importPreview({
         source,
-        include: { company: true, agents: true, projects: true, issues: true },
+        include: { company: true, agents: true, projects: true, issues: true, workflows: true },
         target:
           targetMode === "new"
             ? { mode: "new_company", newCompanyName: newCompanyName || null }
@@ -834,7 +843,7 @@ export function CompanyImport() {
       if (!source) throw new Error("No source configured.");
       return companiesApi.importBundle({
         source,
-        include: { company: true, agents: true, projects: true, issues: true },
+        include: { company: true, agents: true, projects: true, issues: true, workflows: true },
         target:
           targetMode === "new"
             ? { mode: "new_company", newCompanyName: newCompanyName || null }

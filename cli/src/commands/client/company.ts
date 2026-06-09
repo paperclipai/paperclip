@@ -84,6 +84,7 @@ const DEFAULT_EXPORT_INCLUDE: CompanyPortabilityInclude = {
   projects: false,
   issues: false,
   skills: false,
+  workflows: false,
 };
 
 const DEFAULT_IMPORT_INCLUDE: CompanyPortabilityInclude = {
@@ -92,6 +93,7 @@ const DEFAULT_IMPORT_INCLUDE: CompanyPortabilityInclude = {
   projects: true,
   issues: true,
   skills: true,
+  workflows: true,
 };
 
 const IMPORT_INCLUDE_OPTIONS: Array<{
@@ -104,6 +106,7 @@ const IMPORT_INCLUDE_OPTIONS: Array<{
   { value: "issues", label: "Tasks", hint: "tasks and recurring routines" },
   { value: "agents", label: "Agents", hint: "agent records and org structure" },
   { value: "skills", label: "Skills", hint: "company skill packages and references" },
+  { value: "workflows", label: "Workflows", hint: "workflow definitions" },
 ];
 
 const IMPORT_PREVIEW_SAMPLE_LIMIT = 6;
@@ -165,9 +168,10 @@ function parseInclude(
     projects: values.includes("projects"),
     issues: values.includes("issues") || values.includes("tasks"),
     skills: values.includes("skills"),
+    workflows: values.includes("workflows"),
   };
-  if (!include.company && !include.agents && !include.projects && !include.issues && !include.skills) {
-    throw new Error("Invalid --include value. Use one or more of: company,agents,projects,issues,tasks,skills");
+  if (!include.company && !include.agents && !include.projects && !include.issues && !include.skills && !include.workflows) {
+    throw new Error("Invalid --include value. Use one or more of: company,agents,projects,issues,tasks,skills,workflows");
   }
   return include;
 }

@@ -24,6 +24,7 @@ import type {
   CompanyPortabilityIssueRoutineManifestEntry,
   CompanyPortabilityIssueRoutineTriggerManifestEntry,
   CompanyPortabilityIssueManifestEntry,
+  CompanyPortabilityWorkflowManifestEntry,
   CompanyPortabilitySidebarOrder,
   CompanyPortabilitySkillManifestEntry,
   CompanySkill,
@@ -66,6 +67,7 @@ import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
 import { secretService } from "./secrets.js";
+import { workflowService } from "./workflows.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
@@ -118,6 +120,7 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
   projects: false,
   issues: false,
   skills: false,
+  workflows: false,
 };
 
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
@@ -1318,6 +1321,7 @@ function normalizeInclude(input?: Partial<CompanyPortabilityInclude>): CompanyPo
     projects: input?.projects ?? DEFAULT_INCLUDE.projects,
     issues: input?.issues ?? DEFAULT_INCLUDE.issues,
     skills: input?.skills ?? DEFAULT_INCLUDE.skills,
+    workflows: input?.workflows ?? DEFAULT_INCLUDE.workflows,
   };
 }
 
@@ -1984,6 +1988,7 @@ function applySelectedFilesToSource(source: ResolvedSource, selectedFiles?: stri
     projects: filtered.manifest.projects.length > 0,
     issues: filtered.manifest.issues.length > 0,
     skills: filtered.manifest.skills.length > 0,
+    workflows: filtered.manifest.workflows.length > 0,
   };
 
   return filtered;
@@ -2449,13 +2454,17 @@ function buildManifestFromPackageFiles(
   const discoveredSkillPaths = Object.keys(normalizedFiles).filter(
     (entry) => entry.endsWith("/SKILL.md") || entry === "SKILL.md",
   );
+  const discoveredWorkflowPaths = Object.keys(normalizedFiles).filter(
+    (entry) => entry.endsWith("/WORKFLOW.yaml") || entry === "WORKFLOW.yaml",
+  );
   const agentPaths = Array.from(new Set([...referencedAgentPaths, ...discoveredAgentPaths])).sort();
   const projectPaths = Array.from(new Set([...referencedProjectPaths, ...discoveredProjectPaths])).sort();
   const taskPaths = Array.from(new Set([...referencedTaskPaths, ...discoveredTaskPaths])).sort();
   const skillPaths = Array.from(new Set([...referencedSkillPaths, ...discoveredSkillPaths])).sort();
+  const workflowPaths = discoveredWorkflowPaths.sort();
 
   const manifest: CompanyPortabilityManifest = {
-    schemaVersion: 5,
+    schemaVersion: 6,
     generatedAt: new Date().toISOString(),
     source: opts?.sourceLabel ?? null,
     includes: {
@@ -2464,6 +2473,7 @@ function buildManifestFromPackageFiles(
       projects: projectPaths.length > 0,
       issues: taskPaths.length > 0,
       skills: skillPaths.length > 0,
+      workflows: workflowPaths.length > 0,
     },
     company: {
       path: resolvedCompanyPath,
@@ -2493,6 +2503,7 @@ function buildManifestFromPackageFiles(
     skills: [],
     projects: [],
     issues: [],
+    workflows: [],
     envInputs: [],
   };
 
@@ -2731,6 +2742,30 @@ function buildManifestFromPackageFiles(
     }
   }
 
+  for (const workflowPath of workflowPaths) {
+    const yamlRaw = readPortableTextFile(normalizedFiles, workflowPath);
+    if (typeof yamlRaw !== "string") {
+      warnings.push(`Referenced workflow file is missing from package: ${workflowPath}`);
+      continue;
+    }
+    const parsed = parseYamlFile(yamlRaw) as Record<string, unknown>;
+    const title = asString(parsed.title);
+    const adkPath = asString(parsed.adkPath);
+    if (!title || !adkPath) {
+      warnings.push(`Skipping workflow at ${workflowPath}: missing required fields title or adkPath.`);
+      continue;
+    }
+    const entry: CompanyPortabilityWorkflowManifestEntry = {
+      title,
+      description: asString(parsed.description) ?? null,
+      adkPath,
+      workingDirectory: asString(parsed.workingDirectory) ?? null,
+      command: asString(parsed.command) ?? null,
+      model: asString(parsed.model) ?? null,
+    };
+    manifest.workflows.push(entry);
+  }
+
   manifest.envInputs = dedupeEnvInputs(manifest.envInputs);
   return {
     manifest,
@@ -2806,6 +2841,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   const issues = issueService(db);
   const companySkills = companySkillService(db);
   const secrets = secretService(db);
+  const workflows = workflowService(db);
   const strictSecretsMode = process.env.BIZBOX_SECRETS_STRICT_MODE === "true";
 
   function assertKnownImportAdapterType(type: string | null | undefined): string {
@@ -3555,6 +3591,34 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       paperclipRoutinesOut[taskSlug] = isPlainRecord(extension) ? extension : {};
     }
 
+    if (include.workflows) {
+      const allWorkflows = await workflows.list(companyId);
+      for (const wf of allWorkflows) {
+        const runnerConfig = (wf.runnerConfig as Record<string, unknown> | null) ?? {};
+        const adkPath = typeof runnerConfig.agentPath === "string" ? runnerConfig.agentPath : "";
+        if (!adkPath) {
+          warnings.push(`Skipping workflow "${wf.title}" from export: missing agentPath in runnerConfig.`);
+          continue;
+        }
+        const slugBase = (wf.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")) || "workflow";
+        let workflowPath = `workflows/${slugBase}/WORKFLOW.yaml`;
+        let counter = 2;
+        while (workflowPath in files) {
+          workflowPath = `workflows/${slugBase}-${counter}/WORKFLOW.yaml`;
+          counter++;
+        }
+        const workflowEntry: Record<string, unknown> = { title: wf.title, adkPath };
+        if (wf.description) workflowEntry.description = wf.description;
+        const cwd = typeof runnerConfig.cwd === "string" ? runnerConfig.cwd : null;
+        if (cwd) workflowEntry.workingDirectory = cwd;
+        const command = typeof runnerConfig.command === "string" ? runnerConfig.command : null;
+        if (command) workflowEntry.command = command;
+        const model = typeof runnerConfig.model === "string" ? runnerConfig.model : null;
+        if (model) workflowEntry.model = model;
+        files[workflowPath] = buildYamlFile(workflowEntry);
+      }
+    }
+
     const paperclipExtensionPath = ".paperclip.yaml";
     const paperclipAgents = Object.fromEntries(
       Object.entries(paperclipAgentsOut).filter(([, value]) => isPlainRecord(value) && Object.keys(value).length > 0),
@@ -3602,6 +3666,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       projects: resolved.manifest.projects.length > 0,
       issues: resolved.manifest.issues.length > 0,
       skills: resolved.manifest.skills.length > 0,
+      workflows: resolved.manifest.workflows.length > 0,
     };
     resolved.manifest.envInputs = dedupeEnvInputs(envInputs);
     resolved.warnings.unshift(...warnings);
@@ -3636,6 +3701,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       projects: resolved.manifest.projects.length > 0,
       issues: resolved.manifest.issues.length > 0,
       skills: resolved.manifest.skills.length > 0,
+      workflows: resolved.manifest.workflows.length > 0,
     };
     resolved.manifest.envInputs = dedupeEnvInputs(envInputs);
     resolved.warnings.unshift(...warnings);
@@ -3681,6 +3747,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         skills: exported.manifest.skills.length,
         projects: exported.manifest.projects.length,
         issues: exported.manifest.issues.length,
+        workflows: exported.manifest.workflows.length,
       },
     };
   }
@@ -3699,6 +3766,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       projects: requestedInclude.projects && manifest.projects.length > 0,
       issues: requestedInclude.issues && manifest.issues.length > 0,
       skills: requestedInclude.skills && manifest.skills.length > 0,
+      workflows: requestedInclude.workflows && manifest.workflows.length > 0,
     };
     const collisionStrategy = input.collisionStrategy ?? DEFAULT_COLLISION_STRATEGY;
     if (mode === "agent_safe" && collisionStrategy === "replace") {
@@ -3832,8 +3900,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const existingSlugs = new Set<string>();
     const projectPlans: CompanyPortabilityPreviewResult["plan"]["projectPlans"] = [];
     const issuePlans: CompanyPortabilityPreviewResult["plan"]["issuePlans"] = [];
+    const workflowPlans: CompanyPortabilityPreviewResult["plan"]["workflowPlans"] = [];
     const existingProjectSlugToProject = new Map<string, { id: string; name: string }>();
     const existingProjectSlugs = new Set<string>();
+    const existingWorkflowTitleToId = new Map<string, string>();
 
     if (input.target.mode === "existing_company") {
       const existingAgents = await agents.list(input.target.companyId);
@@ -3862,6 +3932,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             warnings.push(`Existing skill "${skill.slug}" (${skill.key}) will be overwritten by import.`);
           }
         }
+      }
+
+      const existingWorkflowRows = include.workflows ? await workflows.list(input.target.companyId) : [];
+      for (const wf of existingWorkflowRows) {
+        existingWorkflowTitleToId.set(wf.title, wf.id);
       }
     }
 
@@ -4003,6 +4078,39 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       }
     }
 
+    if (include.workflows) {
+      for (const manifestWorkflow of manifest.workflows) {
+        const existingId = existingWorkflowTitleToId.get(manifestWorkflow.title) ?? null;
+        if (!existingId) {
+          workflowPlans.push({
+            title: manifestWorkflow.title,
+            action: "create",
+            plannedTitle: manifestWorkflow.title,
+            existingWorkflowId: null,
+            reason: null,
+          });
+        } else if (collisionStrategy === "skip") {
+          workflowPlans.push({
+            title: manifestWorkflow.title,
+            action: "skip",
+            plannedTitle: manifestWorkflow.title,
+            existingWorkflowId: existingId,
+            reason: "Existing workflow with the same title matched; skip strategy.",
+          });
+        } else {
+          workflowPlans.push({
+            title: manifestWorkflow.title,
+            action: "update",
+            plannedTitle: manifestWorkflow.title,
+            existingWorkflowId: existingId,
+            reason: collisionStrategy === "replace"
+              ? "Existing workflow with the same title will be overwritten."
+              : "Existing workflow with the same title matched; rename not applicable, will update.",
+          });
+        }
+      }
+    }
+
     const preview: CompanyPortabilityPreviewResult = {
       include,
       targetCompanyId,
@@ -4018,6 +4126,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         agentPlans,
         projectPlans,
         issuePlans,
+        workflowPlans,
       },
       manifest,
       files: source.files,
@@ -4191,6 +4300,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     const resultAgents: CompanyPortabilityImportResult["agents"] = [];
     const resultProjects: CompanyPortabilityImportResult["projects"] = [];
+    const resultWorkflows: CompanyPortabilityImportResult["workflows"] = [];
     const importedSlugToAgentId = new Map<string, string>();
     const existingSlugToAgentId = new Map<string, string>();
     const agentStatusById = new Map<string, string | null | undefined>();
@@ -4622,6 +4732,68 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       }
     }
 
+    if (include.workflows) {
+      for (const wp of plan.preview.plan.workflowPlans) {
+        const manifestWorkflow = sourceManifest.workflows.find((wf) => wf.title === wp.title);
+        if (!manifestWorkflow) continue;
+
+        const runnerConfig = {
+          agentPath: manifestWorkflow.adkPath,
+          ...(manifestWorkflow.workingDirectory ? { cwd: manifestWorkflow.workingDirectory } : {}),
+          ...(manifestWorkflow.command ? { command: manifestWorkflow.command } : {}),
+          ...(manifestWorkflow.model ? { model: manifestWorkflow.model } : {}),
+        };
+
+        if (wp.action === "skip") {
+          resultWorkflows.push({
+            title: wp.title,
+            id: wp.existingWorkflowId,
+            action: "skipped",
+            reason: wp.reason,
+          });
+          continue;
+        }
+
+        if (wp.action === "update" && wp.existingWorkflowId) {
+          const updated = await workflows.update(
+            wp.existingWorkflowId,
+            {
+              title: manifestWorkflow.title,
+              description: manifestWorkflow.description ?? null,
+              runnerConfig,
+            },
+            { userId: actorUserId ?? null },
+          );
+          resultWorkflows.push({
+            title: wp.title,
+            id: wp.existingWorkflowId,
+            action: "updated",
+            reason: wp.reason,
+          });
+          void updated; // used for side effect
+          continue;
+        }
+
+        const created = await workflows.create(
+          targetCompany.id,
+          {
+            title: manifestWorkflow.title,
+            description: manifestWorkflow.description ?? null,
+            status: "active" as const,
+            runnerType: "google_adk" as const,
+            runnerConfig,
+          },
+          { userId: actorUserId ?? null },
+        );
+        resultWorkflows.push({
+          title: wp.title,
+          id: created.id,
+          action: "created",
+          reason: null,
+        });
+      }
+    }
+
     return {
       company: {
         id: targetCompany.id,
@@ -4630,6 +4802,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       },
       agents: resultAgents,
       projects: resultProjects,
+      workflows: resultWorkflows,
       envInputs: sourceManifest.envInputs ?? [],
       warnings,
     };

@@ -119,6 +119,7 @@ describe("renderCompanyImportPreview", () => {
         projects: true,
         issues: true,
         skills: true,
+        workflows: false,
       },
       targetCompanyId: "company-123",
       targetCompanyName: "Imported Co",
@@ -141,6 +142,7 @@ describe("renderCompanyImportPreview", () => {
         issuePlans: [
           { slug: "kickoff", action: "create", plannedTitle: "Kickoff", reason: null },
         ],
+        workflowPlans: [],
       },
       manifest: {
         schemaVersion: 1,
@@ -155,6 +157,7 @@ describe("renderCompanyImportPreview", () => {
           projects: true,
           issues: true,
           skills: true,
+          workflows: false,
         },
         company: {
           path: "COMPANY.md",
@@ -246,6 +249,7 @@ describe("renderCompanyImportPreview", () => {
             metadata: null,
           },
         ],
+        workflows: [],
         envInputs: [
           {
             key: "OPENAI_API_KEY",
@@ -316,6 +320,7 @@ describe("renderCompanyImportResult", () => {
           { slug: "ops", id: "project-2", action: "updated", name: "Operations", reason: "replace strategy" },
           { slug: "archive", id: null, action: "skipped", name: "Archive", reason: "skip strategy" },
         ],
+        workflows: [],
         envInputs: [],
         warnings: ["Review API keys"],
       },
@@ -346,6 +351,7 @@ describe("import selection catalog", () => {
         projects: true,
         issues: true,
         skills: true,
+        workflows: false,
       },
       targetCompanyId: "company-123",
       targetCompanyName: "Imported Co",
@@ -356,6 +362,7 @@ describe("import selection catalog", () => {
         agentPlans: [],
         projectPlans: [],
         issuePlans: [],
+        workflowPlans: [],
       },
       manifest: {
         schemaVersion: 1,
@@ -370,6 +377,7 @@ describe("import selection catalog", () => {
           projects: true,
           issues: true,
           skills: true,
+          workflows: false,
         },
         company: {
           path: "COMPANY.md",
@@ -461,6 +469,7 @@ describe("import selection catalog", () => {
             metadata: null,
           },
         ],
+        workflows: [],
         envInputs: [],
       },
       files: {
@@ -519,6 +528,7 @@ describe("default adapter overrides", () => {
         projects: false,
         issues: false,
         skills: false,
+        workflows: false,
       },
       targetCompanyId: null,
       targetCompanyName: null,
@@ -529,6 +539,7 @@ describe("default adapter overrides", () => {
         agentPlans: [],
         projectPlans: [],
         issuePlans: [],
+        workflowPlans: [],
       },
       manifest: {
         schemaVersion: 1,
@@ -540,6 +551,7 @@ describe("default adapter overrides", () => {
           projects: false,
           issues: false,
           skills: false,
+          workflows: false,
         },
         company: null,
         sidebar: null,
@@ -582,6 +594,7 @@ describe("default adapter overrides", () => {
         skills: [],
         projects: [],
         issues: [],
+        workflows: [],
         envInputs: [],
       },
       files: {},

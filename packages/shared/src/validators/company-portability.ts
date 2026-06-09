@@ -8,6 +8,7 @@ export const portabilityIncludeSchema = z
     projects: z.boolean().optional(),
     issues: z.boolean().optional(),
     skills: z.boolean().optional(),
+    workflows: z.boolean().optional(),
   })
   .partial();
 
@@ -150,6 +151,15 @@ export const portabilityIssueManifestEntrySchema = z.object({
   metadata: z.record(z.unknown()).nullable(),
 });
 
+export const portabilityWorkflowManifestEntrySchema = z.object({
+  title: z.string().min(1).max(200),
+  description: z.string().nullable().optional(),
+  adkPath: z.string().min(1),
+  workingDirectory: z.string().nullable().optional(),
+  command: z.string().nullable().optional(),
+  model: z.string().nullable().optional(),
+});
+
 export const portabilityManifestSchema = z.object({
   schemaVersion: z.number().int().positive(),
   generatedAt: z.string().datetime(),
@@ -165,6 +175,7 @@ export const portabilityManifestSchema = z.object({
     projects: z.boolean(),
     issues: z.boolean(),
     skills: z.boolean(),
+    workflows: z.boolean().optional().default(false),
   }),
   company: portabilityCompanyManifestEntrySchema.nullable(),
   sidebar: portabilitySidebarOrderSchema.nullable(),
@@ -172,6 +183,7 @@ export const portabilityManifestSchema = z.object({
   skills: z.array(portabilitySkillManifestEntrySchema).default([]),
   projects: z.array(portabilityProjectManifestEntrySchema).default([]),
   issues: z.array(portabilityIssueManifestEntrySchema).default([]),
+  workflows: z.array(portabilityWorkflowManifestEntrySchema).default([]),
   envInputs: z.array(portabilityEnvInputSchema).default([]),
 });
 

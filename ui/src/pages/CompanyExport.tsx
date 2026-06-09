@@ -437,6 +437,8 @@ function generateReadmeFromSelection(
   if (projects.length > 0) counts.push(["Projects", projects.length]);
   if (skills.length > 0) counts.push(["Skills", skills.length]);
   if (tasks.length > 0) counts.push(["Tasks", tasks.length]);
+  const workflows = manifest.workflows ?? [];
+  if (workflows.length > 0) counts.push(["Workflows", workflows.length]);
 
   if (counts.length > 0) {
     lines.push("| Content | Count |");
@@ -680,7 +682,7 @@ export function CompanyExport() {
   const exportPreviewMutation = useMutation({
     mutationFn: () =>
       companiesApi.exportPreview(selectedCompanyId!, {
-        include: { company: true, agents: true, projects: true, issues: true },
+        include: { company: true, agents: true, projects: true, issues: true, workflows: true },
         sidebarOrder,
       }),
     onSuccess: (result) => {
@@ -728,7 +730,7 @@ export function CompanyExport() {
   const downloadMutation = useMutation({
     mutationFn: () =>
       companiesApi.exportBundle(selectedCompanyId!, {
-        include: { company: true, agents: true, projects: true, issues: true },
+        include: { company: true, agents: true, projects: true, issues: true, workflows: true },
         selectedFiles: Array.from(checkedFiles).sort(),
         sidebarOrder,
       }),
