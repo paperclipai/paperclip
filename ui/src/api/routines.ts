@@ -3,6 +3,7 @@ import type {
   Routine,
   RoutineDetail,
   RoutineListItem,
+  RoutineRevision,
   RoutineRun,
   RoutineRunSummary,
   RoutineTrigger,
@@ -21,6 +22,18 @@ export interface RotateRoutineTriggerResponse {
   secretMaterial: RoutineTriggerSecretMaterial;
 }
 
+export interface RestoreRoutineRevisionSecretMaterial extends RoutineTriggerSecretMaterial {
+  triggerId: string;
+}
+
+export interface RestoreRoutineRevisionResponse {
+  routine: Routine;
+  revision: RoutineRevision;
+  restoredFromRevisionId: string;
+  restoredFromRevisionNumber: number;
+  secretMaterials: RestoreRoutineRevisionSecretMaterial[];
+}
+
 export const routinesApi = {
   list: (companyId: string, filters?: { projectId?: string | null }) => {
     const params = new URLSearchParams();
@@ -32,6 +45,16 @@ export const routinesApi = {
     api.post<Routine>(`/companies/${companyId}/routines`, data),
   get: (id: string) => api.get<RoutineDetail>(`/routines/${id}`),
   update: (id: string, data: Record<string, unknown>) => api.patch<Routine>(`/routines/${id}`, data),
+  listRevisions: (id: string) => api.get<RoutineRevision[]>(`/routines/${id}/revisions`),
+  restoreRevision: (
+    id: string,
+    revisionId: string,
+    body: { changeSummary?: string | null } = {},
+  ) =>
+    api.post<RestoreRoutineRevisionResponse>(
+      `/routines/${id}/revisions/${revisionId}/restore`,
+      body,
+    ),
   listRuns: (id: string, limit: number = 50) => api.get<RoutineRunSummary[]>(`/routines/${id}/runs?limit=${limit}`),
   createTrigger: (id: string, data: Record<string, unknown>) =>
     api.post<RoutineTriggerResponse>(`/routines/${id}/triggers`, data),

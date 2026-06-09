@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { act } from "react";
-import type { ReactNode } from "react";
+import type { KeyboardEventHandler, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -46,8 +46,12 @@ vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => sidebarState,
 }));
 
+const navigateState = vi.hoisted(() => ({
+  navigate: vi.fn(),
+}));
+
 vi.mock("@/lib/router", () => ({
-  useNavigate: () => vi.fn(),
+  useNavigate: () => navigateState.navigate,
 }));
 
 vi.mock("../api/issues", () => ({
@@ -73,15 +77,18 @@ vi.mock("@/components/ui/command", () => ({
   CommandInput: ({
     value,
     onValueChange,
+    onKeyDown,
   }: {
     value: string;
     onValueChange: (value: string) => void;
+    onKeyDown?: KeyboardEventHandler<HTMLInputElement>;
   }) => (
     <div>
       <input
         aria-label="Command search"
         value={value}
         onChange={(event) => onValueChange(event.currentTarget.value)}
+        onKeyDown={onKeyDown}
       />
       <button type="button" aria-label="Set query" onClick={() => onValueChange("pull/3303")} />
     </div>
@@ -89,10 +96,16 @@ vi.mock("@/components/ui/command", () => ({
   CommandItem: ({
     children,
     onSelect,
+    "data-testid": testId,
   }: {
     children: ReactNode;
     onSelect?: () => void;
-  }) => <button onClick={onSelect}>{children}</button>,
+    "data-testid"?: string;
+  }) => (
+    <button data-testid={testId} onClick={onSelect}>
+      {children}
+    </button>
+  ),
   CommandList: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   CommandSeparator: () => <hr />,
 }));
@@ -153,6 +166,7 @@ describe("CommandPalette", () => {
     mockIssuesApi.list.mockReset();
     mockAgentsApi.list.mockReset();
     mockProjectsApi.list.mockReset();
+    navigateState.navigate.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
     mockAgentsApi.list.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([]);
@@ -182,6 +196,80 @@ describe("CommandPalette", () => {
         limit: 10,
         includeRoutineExecutions: true,
       });
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("offers a Search-all command when the query is non-empty and routes Enter to /search when no issues match", async () => {
+    mockIssuesApi.list.mockResolvedValue([]);
+    const { root } = renderWithQueryClient(<CommandPalette />, container);
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+    });
+
+    const input = container.querySelector('input[aria-label="Command search"]') as HTMLInputElement;
+    expect(input).not.toBeNull();
+
+    act(() => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      nativeSetter.call(input, "auth flake");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      const searchAllButton = container.querySelector(
+        'button[data-testid="command-search-all"]',
+      ) as HTMLButtonElement | null;
+      expect(searchAllButton).not.toBeNull();
+      expect(searchAllButton!.textContent).toContain("auth flake");
+    });
+
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(navigateState.navigate).toHaveBeenCalledWith("/search?q=auth%20flake");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("navigates to /search when the user clicks the Search-all command", async () => {
+    mockIssuesApi.list.mockResolvedValue([]);
+    const { root } = renderWithQueryClient(<CommandPalette />, container);
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+    });
+
+    const input = container.querySelector('input[aria-label="Command search"]') as HTMLInputElement;
+    act(() => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      nativeSetter.call(input, "deflake");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    let searchAllButton: HTMLButtonElement | null = null;
+    await waitForAssertion(() => {
+      searchAllButton = container.querySelector(
+        'button[data-testid="command-search-all"]',
+      ) as HTMLButtonElement | null;
+      expect(searchAllButton).not.toBeNull();
+    });
+
+    act(() => {
+      searchAllButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(navigateState.navigate).toHaveBeenCalledWith("/search?q=deflake");
     });
 
     act(() => {

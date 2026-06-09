@@ -72,6 +72,13 @@ pnpm dev --bind lan
 ```
 
 This runs dev as `authenticated/private` with a private-network bind preset.
+On a fresh authenticated/private instance, open the app, sign in or create an
+account, and use the setup screen to claim the first instance admin from the
+browser. The CLI fallback remains:
+
+```sh
+pnpm paperclipai auth bootstrap-ceo
+```
 
 For Tailscale-only reachability on a detected tailnet address:
 
@@ -157,6 +164,27 @@ See `doc/DOCKER.md` for API key wiring (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`) 
 
 For a separate review-oriented container that keeps `codex`/`claude` login state in Docker volumes and checks out PRs into an isolated scratch workspace, see `doc/UNTRUSTED-PR-REVIEW.md`.
 
+## Local Instance Layout
+
+Every local install keeps runtime state directly under the selected instance root:
+
+```text
+~/.paperclip/instances/default/                  # instance root
+  config.json                                    # runtime config
+  .env                                           # instance env file
+  db/                                            # embedded PostgreSQL data
+  data/
+    storage/                                     # local_disk uploads
+    backups/                                     # automatic DB backups
+  logs/
+  secrets/master.key                             # local_encrypted master key
+  workspaces/<agent-id>/                         # default agent workspaces
+  projects/                                      # project execution workspaces
+  companies/<company-id>/codex-home/             # per-company codex_local home
+```
+
+`PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID` override the home root and instance id respectively. `paperclipai onboard` echoes the resolved values in its banner (`Local home: <home> | instance: <id> | config: <path>`) so you can confirm where state will land before continuing.
+
 ## Database in Dev (Auto-Handled)
 
 For local development, leave `DATABASE_URL` unset.
@@ -164,7 +192,7 @@ The server will automatically use embedded PostgreSQL and persist data at:
 
 - `~/.paperclip/instances/default/db`
 
-Override home and instance:
+Override home or instance:
 
 ```sh
 PAPERCLIP_HOME=/custom/path PAPERCLIP_INSTANCE_ID=dev pnpm paperclipai run
@@ -183,6 +211,32 @@ Configure storage provider/settings:
 ```sh
 pnpm paperclipai configure --section storage
 ```
+
+## Agent Artifact Uploads
+
+When an agent generates a file that a board user or reviewer should inspect,
+attach it to the issue before marking the task complete. Do not rely on a local
+workspace path as the only access path.
+
+Use the helper bundled with the Paperclip skill from the repo root:
+
+```sh
+skills/paperclip/scripts/paperclip-upload-artifact.sh dist/demo.mp4 \
+  --title "Demo video render" \
+  --summary "MP4 render for board review"
+```
+
+For WebM output:
+
+```sh
+skills/paperclip/scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
+  --title "Walkthrough video" \
+  --summary "WebM walkthrough render"
+```
+
+The helper uploads the file as an issue attachment, creates an artifact work
+product by default, and prints markdown links for the final issue comment. See
+`doc/AGENT-ARTIFACTS.md` for the full completion pattern and direct API shape.
 
 ## Default Agent Workspaces
 
@@ -280,7 +334,7 @@ paperclipai worktree init --from-data-dir ~/.paperclip
 paperclipai worktree init --force
 ```
 
-Repair an already-created repo-managed worktree and reseed its isolated instance from the main default install:
+Repair an already-created repo-managed worktree and reseed its isolated instance from the main default install. Point `--from-config` at the instance config:
 
 ```sh
 cd /path/to/paperclip/.paperclip/worktrees/PAP-884-ai-commits-component
@@ -392,6 +446,94 @@ eval "$(pnpm paperclipai worktree env)"
 
 For project execution worktrees, Paperclip can also run a project-defined provision command after it creates or reuses an isolated git worktree. Configure this on the project's execution workspace policy (`workspaceStrategy.provisionCommand`). The command runs inside the derived worktree and receives `PAPERCLIP_WORKSPACE_*`, `PAPERCLIP_PROJECT_ID`, `PAPERCLIP_AGENT_ID`, and `PAPERCLIP_ISSUE_*` environment variables so each repo can bootstrap itself however it wants.
 
+## App-Shipped Skills Catalog
+
+The Paperclip app ships a curated catalog of company skills out of the box. The
+catalog is a workspace package at `packages/skills-catalog`:
+
+```text
+packages/skills-catalog/
+  catalog/
+    bundled/<category>/<slug>/SKILL.md   # recommended defaults
+    optional/<category>/<slug>/SKILL.md  # role/domain-specific
+  generated/catalog.json                  # checked-in manifest
+  scripts/
+    build-catalog-manifest.ts             # regenerate generated/catalog.json
+    validate-catalog.ts                   # validation only
+  src/                                    # builder + types consumed by server/CLI
+```
+
+Server and CLI import the generated manifest; they do not crawl repository
+paths at request time. Root `skills/` remains reserved for Paperclip runtime
+skills and is not part of the catalog.
+
+Validate the catalog without writing the manifest:
+
+```sh
+pnpm --filter @paperclipai/skills-catalog validate
+```
+
+Regenerate `generated/catalog.json` after editing any catalog `SKILL.md`,
+frontmatter, file inventory, category, or slug:
+
+```sh
+pnpm --filter @paperclipai/skills-catalog build:manifest
+```
+
+The package's `build` script runs `build:manifest` and then `tsc`; tests live
+under `pnpm --filter @paperclipai/skills-catalog test`. Validation fails when:
+
+- a catalog entry is not under `catalog/bundled/<category>/<slug>` or
+  `catalog/optional/<category>/<slug>`
+- `SKILL.md` is missing or the frontmatter `name`/`description` is empty
+- the frontmatter `key` disagrees with the generated canonical key
+- two catalog entries share an `id`, `key`, or `slug`
+- file inventory contains absolute paths, `..`, broken symlinks, or files
+  outside the skill directory
+- the regenerated manifest differs from the checked-in
+  `generated/catalog.json`
+
+Trust level is derived from inventory: `markdown_only` (markdown + references
+only), `assets` (other non-script files), or `scripts_executables` (any
+executable script). The build contract is documented in
+`doc/plans/2026-05-26-skills-cli-catalog-contract.md`.
+
+CI runs `pnpm --filter @paperclipai/skills-catalog validate` and the package's
+vitest suite, so always regenerate the manifest in the same commit as the
+catalog change.
+
+## App-Shipped Teams Catalog
+
+The team catalog package mirrors the skills catalog workflow for
+agentcompanies/v1 team packages:
+
+```text
+packages/teams-catalog/
+  catalog/
+    bundled/<category>/<slug>/TEAM.md
+    optional/<category>/<slug>/TEAM.md
+  generated/catalog.json
+  scripts/
+    build-catalog-manifest.ts
+    validate-catalog.ts
+```
+
+Validate without writing the manifest:
+
+```sh
+pnpm --filter @paperclipai/teams-catalog validate
+```
+
+Regenerate `generated/catalog.json` after editing catalog team files:
+
+```sh
+pnpm --filter @paperclipai/teams-catalog build:manifest
+```
+
+Team install/preview APIs enforce source policy. External skill sources require
+explicit approval flags, and local-path skill sources are development-only
+unless `allowLocalPathSources` is set by the caller.
+
 ## Quick Health Checks
 
 In another terminal:
@@ -462,6 +604,7 @@ Agent env vars now support secret references. By default, secret values are stor
 - Default local key path: `~/.paperclip/instances/default/secrets/master.key`
 - Override key material directly: `PAPERCLIP_SECRETS_MASTER_KEY`
 - Override key file path: `PAPERCLIP_SECRETS_MASTER_KEY_FILE`
+- Back up the key file and database together; either one alone is not enough to restore local encrypted secrets.
 
 Strict mode (recommended outside local trusted machines):
 
@@ -470,12 +613,20 @@ PAPERCLIP_SECRETS_STRICT_MODE=true
 ```
 
 When strict mode is enabled, sensitive env keys (for example `*_API_KEY`, `*_TOKEN`, `*_SECRET`) must use secret references instead of inline plain values.
+Authenticated deployments default strict mode on unless explicitly overridden.
 
 CLI configuration support:
 
 - `pnpm paperclipai onboard` writes a default `secrets` config section (`local_encrypted`, strict mode off, key file path set) and creates a local key file when needed.
 - `pnpm paperclipai configure --section secrets` lets you update provider/strict mode/key path and creates the local key file when needed.
-- `pnpm paperclipai doctor` validates secrets adapter configuration and can create a missing local key file with `--repair`.
+- `pnpm paperclipai doctor` validates secrets adapter configuration, can create a missing local key file with `--repair`, and reports missing AWS Secrets Manager bootstrap env when that provider is selected.
+- Provider health is available at `GET /api/companies/:companyId/secret-providers/health` and reports local key permission warnings plus backup guidance.
+
+Per-company provider vaults are configured in the board UI under
+`Company Settings → Secrets → Provider vaults`, backed by
+`/api/companies/{companyId}/secret-provider-configs`. The CLI does not own
+vault lifecycle today. See `docs/deploy/secrets.md` (`Provider Vaults` section)
+for the operator model.
 
 Migration helper for existing inline env secrets:
 
@@ -524,9 +675,11 @@ pnpm paperclipai dashboard get
 
 See full command reference in `doc/CLI.md`.
 
-## OpenClaw Invite Onboarding Endpoints
+## Agent Invite Onboarding Endpoints
 
 Agent-oriented invite onboarding now exposes machine-readable API docs:
+
+The board UI generates agent onboarding prompts from the add-agent modal (`+` in the agent sidebar), so agent onboarding sits with the rest of agent creation rather than company member invite settings.
 
 - `GET /api/invites/:token` returns invite summary plus onboarding and skills index links.
 - `GET /api/invites/:token/onboarding` returns onboarding manifest details (registration endpoint, claim endpoint template, skill install hints).
@@ -545,7 +698,7 @@ pnpm smoke:openclaw-join
 What it validates:
 
 - invite creation for agent-only join
-- agent join request using `adapterType=openclaw`
+- agent join request using `adapterType=openclaw_gateway`
 - board approval + one-time API key claim semantics
 - callback delivery on wakeup to a dockerized OpenClaw-style webhook receiver
 

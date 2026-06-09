@@ -6,16 +6,20 @@ import { describe, expect, it } from "vitest";
 import {
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
+  buildPersistentSkillSnapshot,
+  buildRuntimeMountedSkillSnapshot,
   buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   filterPreparedAgentQmdEnvOverrides,
   materializePaperclipSkillCopy,
   prepareAgentQmdEnvironment,
+  refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
   runningProcesses,
   runChildProcess,
   sanitizeSshRemoteEnv,
   shapePaperclipWorkspaceEnvForExecution,
+  rewriteWorkspaceCwdEnvVarsForExecution,
   stringifyPaperclipWakePayload,
 } from "./server-utils.js";
 
@@ -111,13 +115,15 @@ describe("buildInvocationEnvForLogs", () => {
     const loggedEnv = buildInvocationEnvForLogs(
       { SAFE_VALUE: "visible" },
       {
-        resolvedCommand: "env OPENAI_API_KEY=*** custom-acp --token ghp_exampleSecret1234567890",
+        resolvedCommand:
+          "env OPENAI_API_KEY=sk-live-example PAPERCLIP_API_KEY='paperclip-quoted-secret' custom-acp --paperclip-api-key=paperclip-flag-secret --token ghp_example_secret",
       },
     );
 
     expect(loggedEnv.SAFE_VALUE).toBe("visible");
-    expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toContain("custom-acp --token ***REDACTED***");
-    expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).not.toContain("ghp_exampleSecret1234567890");
+    expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(
+      "env OPENAI_API_KEY=***REDACTED*** PAPERCLIP_API_KEY='***REDACTED***' custom-acp --paperclip-api-key=***REDACTED*** --token ***REDACTED***",
+    );
   });
 });
 
@@ -258,6 +264,186 @@ describe("materializePaperclipSkillCopy", () => {
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("adapter skill snapshots", () => {
+  const requiredEntry = {
+    key: "paperclipai/paperclip/paperclip",
+    runtimeName: "paperclip",
+    source: "/runtime/paperclip",
+    required: true,
+    requiredReason: "Required for Paperclip heartbeats.",
+  };
+  const optionalEntry = {
+    key: "company/ascii-heart",
+    runtimeName: "ascii-heart",
+    source: "/runtime/ascii-heart",
+  };
+
+  it("reports runtime-mounted adapters as configured or missing without install state", () => {
+    const snapshot = buildRuntimeMountedSkillSnapshot({
+      adapterType: "codex_local",
+      availableEntries: [requiredEntry],
+      desiredSkills: [requiredEntry.key, "missing-skill"],
+      configuredDetail: "Mounted on next run.",
+    });
+
+    expect(snapshot).toMatchObject({
+      supported: true,
+      mode: "ephemeral",
+      desiredSkills: [requiredEntry.key, "missing-skill"],
+    });
+    expect(snapshot.entries).toEqual([
+      expect.objectContaining({
+        key: "missing-skill",
+        state: "missing",
+        origin: "external_unknown",
+        desired: true,
+      }),
+      expect.objectContaining({
+        key: requiredEntry.key,
+        state: "configured",
+        origin: "paperclip_required",
+        required: true,
+        detail: "Mounted on next run.",
+      }),
+    ]);
+  });
+
+  it("reports source-missing company runtime skills without orphan warnings", () => {
+    const snapshot = buildRuntimeMountedSkillSnapshot({
+      adapterType: "codex_local",
+      availableEntries: [{
+        key: "company/example/reflection-coach",
+        runtimeName: "reflection-coach--abc123",
+        source: "/paperclip/skills/example/__runtime__/reflection-coach--abc123",
+        sourceStatus: "missing",
+        missingDetail: "Company skill exists, but its local source is missing.",
+      }],
+      desiredSkills: ["company/example/reflection-coach"],
+      configuredDetail: "Mounted on next run.",
+    });
+
+    expect(snapshot.warnings).toEqual([]);
+    expect(snapshot.entries).toEqual([
+      expect.objectContaining({
+        key: "company/example/reflection-coach",
+        state: "missing",
+        origin: "company_managed",
+        sourcePath: null,
+        detail: "Company skill exists, but its local source is missing.",
+      }),
+    ]);
+  });
+
+  it("keeps unsupported runtime-mounted adapters in tracked-only state", () => {
+    const snapshot = buildRuntimeMountedSkillSnapshot({
+      adapterType: "acpx_local",
+      availableEntries: [requiredEntry],
+      desiredSkills: [requiredEntry.key],
+      configuredDetail: "Mounted on next run.",
+      mode: "unsupported",
+      unsupportedDetail: "Tracked only.",
+    });
+
+    expect(snapshot.supported).toBe(false);
+    expect(snapshot.mode).toBe("unsupported");
+    expect(snapshot.entries).toContainEqual(expect.objectContaining({
+      key: requiredEntry.key,
+      desired: true,
+      state: "available",
+      detail: "Tracked only.",
+    }));
+  });
+
+  it("can surface read-only external skills for runtime-mounted adapters", () => {
+    const snapshot = buildRuntimeMountedSkillSnapshot({
+      adapterType: "claude_local",
+      availableEntries: [requiredEntry],
+      desiredSkills: [requiredEntry.key],
+      configuredDetail: "Mounted on next run.",
+      externalInstalled: new Map([
+        ["crack-python", { targetPath: "/home/me/.claude/skills/crack-python", kind: "directory" }],
+      ]),
+      externalLocationLabel: "~/.claude/skills",
+      externalDetail: "Installed outside Paperclip management in the Claude skills home.",
+    });
+
+    expect(snapshot.entries).toContainEqual(expect.objectContaining({
+      key: "crack-python",
+      runtimeName: "crack-python",
+      state: "external",
+      managed: false,
+      origin: "user_installed",
+      locationLabel: "~/.claude/skills",
+      readOnly: true,
+    }));
+  });
+
+  it("reports persistent adapter installed, stale, external, and missing states", () => {
+    const snapshot = buildPersistentSkillSnapshot({
+      adapterType: "cursor",
+      availableEntries: [requiredEntry, optionalEntry],
+      desiredSkills: [requiredEntry.key, "missing-skill"],
+      installed: new Map([
+        ["paperclip", { targetPath: "/runtime/paperclip", kind: "symlink" }],
+        ["ascii-heart", { targetPath: "/other/ascii-heart", kind: "directory" }],
+        ["old-managed", { targetPath: "/runtime/old-managed", kind: "symlink" }],
+      ]),
+      skillsHome: "/home/me/.cursor/skills",
+      locationLabel: "~/.cursor/skills",
+      installedDetail: "Installed in the Cursor skills home.",
+      missingDetail: "Configured but not linked.",
+      externalConflictDetail: "Name occupied externally.",
+      externalDetail: "Installed outside Paperclip management.",
+    });
+
+    expect(snapshot.mode).toBe("persistent");
+    expect(snapshot.entries).toContainEqual(expect.objectContaining({
+      key: requiredEntry.key,
+      state: "installed",
+      managed: true,
+      origin: "paperclip_required",
+    }));
+    expect(snapshot.entries).toContainEqual(expect.objectContaining({
+      key: optionalEntry.key,
+      state: "external",
+      managed: false,
+      detail: "Installed outside Paperclip management.",
+    }));
+    expect(snapshot.entries).toContainEqual(expect.objectContaining({
+      key: "missing-skill",
+      state: "missing",
+      origin: "external_unknown",
+    }));
+    expect(snapshot.entries).toContainEqual(expect.objectContaining({
+      key: "old-managed",
+      state: "external",
+      origin: "user_installed",
+    }));
+  });
+
+  it("reports stale managed persistent skills when Paperclip owns an undesired available skill", () => {
+    const snapshot = buildPersistentSkillSnapshot({
+      adapterType: "cursor",
+      availableEntries: [optionalEntry],
+      desiredSkills: [],
+      installed: new Map([
+        ["ascii-heart", { targetPath: "/runtime/ascii-heart", kind: "symlink" }],
+      ]),
+      skillsHome: "/home/me/.cursor/skills",
+      missingDetail: "Configured but not linked.",
+      externalConflictDetail: "Name occupied externally.",
+      externalDetail: "Installed outside Paperclip management.",
+    });
+
+    expect(snapshot.entries).toContainEqual(expect.objectContaining({
+      key: optionalEntry.key,
+      desired: false,
+      state: "stale",
+      managed: true,
+    }));
   });
 });
 
@@ -477,6 +663,9 @@ describe("renderPaperclipWakePrompt", () => {
   it("keeps the default local-agent prompt action-oriented", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Start actionable work in this heartbeat");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("do not stop at a plan");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("clear final disposition");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("evidence, not valid liveness paths by themselves");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("keep `in_progress` only when a live continuation path exists");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Prefer the smallest verification that proves the change");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Use child issues");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("instead of polling agents, sessions, or processes");
@@ -510,8 +699,162 @@ describe("renderPaperclipWakePrompt", () => {
 
     expect(prompt).toContain("## Paperclip Wake Payload");
     expect(prompt).toContain("Execution contract: take concrete action in this heartbeat");
-    expect(prompt).toContain("use child issues instead of polling");
-    expect(prompt).toContain("mark blocked work with the unblock owner/action");
+    expect(prompt).toContain("clear final disposition");
+    expect(prompt).toContain("evidence, not valid liveness paths by themselves");
+    expect(prompt).toContain("Use child issues for long or parallel delegated work instead of polling");
+    expect(prompt).toContain("named unblock owner/action");
+  });
+
+  it("preserves Chinese, Japanese, and Hindi issue and comment text in scoped wake prompts", () => {
+    const title = "验证中文任务";
+    const commentBody = [
+      "请用中文回复。",
+      "日本語: 次の手順を書いてください。",
+      "हिन्दी: कृपया स्थिति बताएं।",
+    ].join("\n");
+    const payload = {
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-9452",
+        title,
+        status: "in_progress",
+        workMode: "standard",
+      },
+      commentIds: ["comment-1"],
+      latestCommentId: "comment-1",
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [
+        {
+          id: "comment-1",
+          body: commentBody,
+          author: { type: "user", id: "board-user-1" },
+          createdAt: "2026-05-15T16:30:00.000Z",
+        },
+      ],
+      fallbackFetchNeeded: false,
+    };
+
+    const serialized = stringifyPaperclipWakePayload(payload);
+    expect(serialized).toContain(title);
+    expect(serialized).toContain("日本語");
+    expect(serialized).toContain("हिन्दी");
+    expect(JSON.parse(serialized ?? "{}")).toMatchObject({
+      issue: { title },
+      comments: [{ body: commentBody }],
+    });
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain(`- issue: PAP-9452 ${title}`);
+    expect(prompt).toContain(commentBody);
+  });
+
+  it("renders planning-mode directives for assignment and comment wakes", () => {
+    const assignmentPrompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan first",
+        status: "in_progress",
+        workMode: "planning",
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(assignmentPrompt).toContain("- issue work mode: planning");
+    expect(assignmentPrompt).toContain("Make the plan only. Do not write code or perform implementation work.");
+
+    const commentPrompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan first",
+        status: "in_progress",
+        workMode: "planning",
+      },
+      commentIds: ["comment-1"],
+      latestCommentId: "comment-1",
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{ id: "comment-1", body: "Revise the plan" }],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(commentPrompt).toContain("Update the plan only. Do not write code or perform implementation work.");
+  });
+
+  it("does not render stale accepted-plan continuation guidance for later planning comment wakes", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan first",
+        status: "in_progress",
+        workMode: "planning",
+      },
+      interactionKind: "request_confirmation",
+      interactionStatus: "accepted",
+      commentIds: ["comment-1"],
+      latestCommentId: "comment-1",
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{ id: "comment-1", body: "Revise the plan" }],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("Update the plan only. Do not write code or perform implementation work.");
+    expect(prompt).not.toContain("accepted-plan continuation");
+    expect(prompt).not.toContain("Create child issues from the approved plan only");
+  });
+
+  it("renders accepted-plan continuation guidance for planning issues", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan first",
+        status: "in_progress",
+        workMode: "planning",
+      },
+      interactionKind: "request_confirmation",
+      interactionStatus: "accepted",
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("accepted-plan continuation");
+    expect(prompt).toContain("Create child issues from the approved plan only");
+    expect(prompt).toContain("may create child implementation issues");
+    expect(prompt).toContain("must not start implementation work on the planning issue itself");
+  });
+
+  it("keeps accepted-plan guidance when stale comment ids have no loaded comments", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan first",
+        status: "in_progress",
+        workMode: "planning",
+      },
+      interactionKind: "request_confirmation",
+      interactionStatus: "accepted",
+      commentIds: ["stale-comment-1"],
+      latestCommentId: "stale-comment-1",
+      commentWindow: { requestedCount: 1, includedCount: 0, missingCount: 1 },
+      comments: [],
+      fallbackFetchNeeded: true,
+    });
+
+    expect(prompt).toContain("accepted-plan continuation");
+    expect(prompt).toContain("Create child issues from the approved plan only");
+    expect(prompt).not.toContain("Update the plan only");
   });
 
   it("renders dependency-blocked interaction guidance", () => {
@@ -753,6 +1096,119 @@ describe("shapePaperclipWorkspaceEnvForExecution", () => {
       workspaceWorktreePath: "/tmp/worktree",
       workspaceHints,
     });
+  });
+});
+
+describe("rewriteWorkspaceCwdEnvVarsForExecution", () => {
+  it("rewrites custom *_WORKSPACE_CWD env vars for remote execution", () => {
+    const env = rewriteWorkspaceCwdEnvVarsForExecution({
+      workspaceCwd: "/host/workspace",
+      executionCwd: "/remote/workspace",
+      executionTargetIsRemote: true,
+      env: {
+        QA_PROJECT_WORKSPACE_CWD: "/host/workspace",
+        RANDOM_WORKSPACE_CWD: "/host/workspace",
+        OTHER_ENV: "/host/workspace",
+      },
+    });
+
+    expect(env).toEqual({
+      QA_PROJECT_WORKSPACE_CWD: "/remote/workspace",
+      RANDOM_WORKSPACE_CWD: "/remote/workspace",
+      OTHER_ENV: "/host/workspace",
+    });
+  });
+
+  it("does not rewrite matching values for local execution", () => {
+    const env = rewriteWorkspaceCwdEnvVarsForExecution({
+      workspaceCwd: "/host/workspace",
+      executionCwd: "/remote/workspace",
+      executionTargetIsRemote: false,
+      env: {
+        QA_PROJECT_WORKSPACE_CWD: "/host/workspace",
+        RANDOM_WORKSPACE_CWD_TOKEN: "/host/workspace",
+      },
+    });
+
+    expect(env).toEqual({
+      QA_PROJECT_WORKSPACE_CWD: "/host/workspace",
+      RANDOM_WORKSPACE_CWD_TOKEN: "/host/workspace",
+    });
+  });
+
+  it("only rewrites matching *_WORKSPACE_CWD string values", () => {
+    const env = rewriteWorkspaceCwdEnvVarsForExecution({
+      workspaceCwd: "/host/workspace",
+      executionCwd: "/remote/workspace",
+      executionTargetIsRemote: true,
+      env: {
+        MATCHING_WORKSPACE_CWD: "/host/workspace/.",
+        DIFFERENT_WORKSPACE_CWD: "/host/other-workspace",
+        BLANK_WORKSPACE_CWD: "   ",
+        NON_STRING_WORKSPACE_CWD: 42,
+      },
+    });
+
+    expect(env).toEqual({
+      MATCHING_WORKSPACE_CWD: "/remote/workspace",
+      DIFFERENT_WORKSPACE_CWD: "/host/other-workspace",
+      BLANK_WORKSPACE_CWD: "   ",
+    });
+  });
+});
+
+describe("refreshPaperclipWorkspaceEnvForExecution", () => {
+  it("rewrites Paperclip workspace env to the prepared remote runtime cwd", () => {
+    const env: Record<string, string> = {
+      PAPERCLIP_WORKSPACE_CWD: "/remote/workspace",
+      PAPERCLIP_WORKSPACE_WORKTREE_PATH: "/host/worktree",
+      PAPERCLIP_WORKSPACES_JSON: JSON.stringify([
+        { workspaceId: "workspace-1", cwd: "/remote/workspace" },
+        { workspaceId: "workspace-2", cwd: "/tmp/other" },
+      ]),
+      QA_PROJECT_WORKSPACE_CWD: "/remote/workspace",
+    };
+
+    const shaped = refreshPaperclipWorkspaceEnvForExecution({
+      env,
+      envConfig: {
+        QA_PROJECT_WORKSPACE_CWD: "/host/workspace",
+      },
+      workspaceCwd: "/host/workspace",
+      workspaceWorktreePath: "/host/worktree",
+      workspaceHints: [
+        { workspaceId: "workspace-1", cwd: "/host/workspace" },
+        { workspaceId: "workspace-2", cwd: "/tmp/other" },
+      ],
+      executionTargetIsRemote: true,
+      executionCwd: "/remote/workspace/.paperclip-runtime/runs/run-1/workspace",
+    });
+
+    expect(shaped).toEqual({
+      workspaceCwd: "/remote/workspace/.paperclip-runtime/runs/run-1/workspace",
+      workspaceWorktreePath: null,
+      workspaceHints: [
+        {
+          workspaceId: "workspace-1",
+          cwd: "/remote/workspace/.paperclip-runtime/runs/run-1/workspace",
+        },
+        {
+          workspaceId: "workspace-2",
+        },
+      ],
+    });
+    expect(env.PAPERCLIP_WORKSPACE_CWD).toBe("/remote/workspace/.paperclip-runtime/runs/run-1/workspace");
+    expect(env.PAPERCLIP_WORKSPACE_WORKTREE_PATH).toBeUndefined();
+    expect(env.QA_PROJECT_WORKSPACE_CWD).toBe("/remote/workspace/.paperclip-runtime/runs/run-1/workspace");
+    expect(JSON.parse(env.PAPERCLIP_WORKSPACES_JSON ?? "[]")).toEqual([
+      {
+        workspaceId: "workspace-1",
+        cwd: "/remote/workspace/.paperclip-runtime/runs/run-1/workspace",
+      },
+      {
+        workspaceId: "workspace-2",
+      },
+    ]);
   });
 });
 

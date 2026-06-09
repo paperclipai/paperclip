@@ -3,14 +3,17 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { prepareCommandManagedRuntime } from "./command-managed-runtime.js";
 import {
+  authorizeSandboxCallbackBridgeRequestWithRoutes,
+  createCommandManagedSandboxCallbackBridgeQueueClient,
   createFileSystemSandboxCallbackBridgeQueueClient,
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
   sandboxCallbackBridgeDirectories,
+  syncSandboxCallbackBridgeEntrypoint,
   startSandboxCallbackBridgeServer,
   startSandboxCallbackBridgeWorker,
 } from "./sandbox-callback-bridge.js";
@@ -43,7 +46,7 @@ describe("sandbox callback bridge", () => {
         if (
           input.stdin != null &&
           (input.command === "sh" || input.command === "bash") &&
-          args[0] === "-lc" &&
+          (args[0] === "-c" || args[0] === "-lc") &&
           typeof args[1] === "string"
         ) {
           env.PAPERCLIP_TEST_STDIN = input.stdin;
@@ -419,6 +422,145 @@ describe("sandbox callback bridge", () => {
     );
   });
 
+  it("handles SSH queue polling failures without emitting an unhandled rejection", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-ssh-failure-"));
+    cleanupDirs.push(rootDir);
+
+    const queueDir = path.posix.join(rootDir, "queue");
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    try {
+      const worker = await startSandboxCallbackBridgeWorker({
+        client: {
+          makeDir: async () => {},
+          listJsonFiles: async () => {
+            throw new Error(
+              "list /remote/.paperclip-runtime/gemini/paperclip-bridge/queue/requests failed with exit code 255: kex_exchange_identification: read: Connection reset by peer",
+            );
+          },
+          readTextFile: async () => {
+            throw new Error("unexpected readTextFile");
+          },
+          writeTextFile: async () => {
+            throw new Error("unexpected writeTextFile");
+          },
+          rename: async () => {
+            throw new Error("unexpected rename");
+          },
+          remove: async () => {},
+        },
+        queueDir,
+        authorizeRequest: async () => null,
+        handleRequest: async () => ({
+          status: 200,
+          body: "ok",
+        }),
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await worker.stop();
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
+  });
+
+  it("serializes remote response writes so stop does not recreate a late orphaned response", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-response-lock-"));
+    cleanupDirs.push(rootDir);
+
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "bridge response lock test\n", "utf8");
+
+    const runner = createExecRunner();
+    const bridgeAsset = await createSandboxCallbackBridgeAsset();
+    cleanupFns.push(bridgeAsset.cleanup);
+    const prepared = await prepareCommandManagedRuntime({
+      runner,
+      spec: {
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+      },
+      adapterKey: "codex",
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [{ key: "bridge", localDir: bridgeAsset.localDir }],
+    });
+
+    const queueDir = path.posix.join(prepared.runtimeRootDir, "paperclip-bridge");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const seenRequestIds: string[] = [];
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: createCommandManagedSandboxCallbackBridgeQueueClient({
+        runner,
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+      }),
+      queueDir,
+      authorizeRequest: async () => null,
+      handleRequest: async (request) => {
+        seenRequestIds.push(request.id);
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        return {
+          status: 200,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ok: true, id: request.id }),
+        };
+      },
+    });
+    cleanupFns.push(async () => {
+      await worker.stop();
+    });
+
+    const bridge = await startSandboxCallbackBridgeServer({
+      runner,
+      remoteCwd: remoteWorkspaceDir,
+      assetRemoteDir: prepared.assetDirs.bridge,
+      queueDir,
+      bridgeToken,
+      timeoutMs: 30_000,
+    });
+    cleanupFns.push(async () => {
+      await bridge.stop();
+    });
+
+    const responsePromise = fetch(`${bridge.baseUrl}/api/agents/me`, {
+      headers: {
+        authorization: `Bearer ${bridgeToken}`,
+      },
+    });
+
+    for (let attempt = 0; attempt < 50 && seenRequestIds.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    expect(seenRequestIds).toHaveLength(1);
+    await worker.stop({ drainTimeoutMs: 10 });
+
+    const response = await responsePromise;
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "Bridge worker stopped before request could be handled.",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    await expect(readdir(directories.responsesDir)).resolves.toEqual([]);
+    await expect(
+      readdir(directories.responsesDir).then((entries) =>
+        entries.filter((entry) => entry.endsWith(".tmp") || entry.includes(".paperclip-write.lock")),
+      ),
+    ).resolves.toEqual([]);
+  });
+
   it("rejects non-JSON request bodies and full queues at the bridge server", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-server-guards-"));
     cleanupDirs.push(rootDir);
@@ -612,5 +754,230 @@ describe("sandbox callback bridge", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: expect.stringMatching(/JSON|Unexpected|Unterminated/i),
     });
+  });
+
+  it("reuses an already-uploaded bridge entrypoint when the remote file hash matches", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-sync-"));
+    cleanupDirs.push(rootDir);
+
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const remoteAssetDir = path.posix.join(
+      remoteWorkspaceDir,
+      ".paperclip-runtime",
+      "codex",
+      "paperclip-bridge",
+      "server",
+    );
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+
+    const bridgeAsset = await createSandboxCallbackBridgeAsset();
+    cleanupFns.push(bridgeAsset.cleanup);
+    const originalSource = await readFile(bridgeAsset.entrypoint, "utf8");
+    const expandedSource = `${originalSource}\n// bridge payload padding\n`;
+    await writeFile(bridgeAsset.entrypoint, expandedSource, "utf8");
+
+    const runner = createExecRunner();
+
+    const first = await syncSandboxCallbackBridgeEntrypoint({
+      runner,
+      remoteCwd: remoteWorkspaceDir,
+      assetRemoteDir: remoteAssetDir,
+      bridgeAsset,
+      timeoutMs: 30_000,
+    });
+    const second = await syncSandboxCallbackBridgeEntrypoint({
+      runner,
+      remoteCwd: remoteWorkspaceDir,
+      assetRemoteDir: remoteAssetDir,
+      bridgeAsset,
+      timeoutMs: 30_000,
+    });
+
+    expect(first.uploaded).toBe(true);
+    expect(second.uploaded).toBe(false);
+    await expect(readFile(path.posix.join(remoteAssetDir, "paperclip-bridge-server.mjs"), "utf8")).resolves.toBe(expandedSource);
+    await expect(
+      readdir(remoteAssetDir).then((entries) =>
+        entries.filter(
+          (entry) =>
+            entry.endsWith(".paperclip-upload.b64") ||
+            entry.endsWith(".partial") ||
+            entry === ".paperclip-bridge-upload.lock",
+        ),
+      ),
+    ).resolves.toEqual([]);
+  });
+
+  it("rejects a corrupted bridge entrypoint upload without committing a torn remote file", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-sync-corrupt-"));
+    cleanupDirs.push(rootDir);
+
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const remoteAssetDir = path.posix.join(
+      remoteWorkspaceDir,
+      ".paperclip-runtime",
+      "codex",
+      "paperclip-bridge",
+      "server",
+    );
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+
+    const bridgeAsset = await createSandboxCallbackBridgeAsset();
+    cleanupFns.push(bridgeAsset.cleanup);
+    const runner = {
+      execute: async (input: {
+        command: string;
+        args?: string[];
+        cwd?: string;
+        env?: Record<string, string>;
+        stdin?: string;
+        timeoutMs?: number;
+      }) =>
+        await createExecRunner().execute({
+          ...input,
+          stdin: input.stdin != null ? "" : input.stdin,
+        }),
+    };
+
+    await expect(
+      syncSandboxCallbackBridgeEntrypoint({
+        runner,
+        remoteCwd: remoteWorkspaceDir,
+        assetRemoteDir: remoteAssetDir,
+        bridgeAsset,
+        timeoutMs: 30_000,
+      }),
+    ).rejects.toThrow(/sha mismatch/i);
+
+    await expect(readFile(path.posix.join(remoteAssetDir, "paperclip-bridge-server.mjs"), "utf8")).rejects.toThrow();
+    await expect(
+      readdir(remoteAssetDir).then((entries) =>
+        entries.filter(
+          (entry) =>
+            entry.endsWith(".paperclip-upload.b64") ||
+            entry.endsWith(".partial") ||
+            entry === ".paperclip-bridge-upload.lock",
+        ),
+      ),
+    ).resolves.toEqual([]);
+  });
+
+  it("permits the documented heartbeat surface and denies unrelated routes", () => {
+    const allowed: Array<{ method: string; path: string }> = [
+      { method: "GET", path: "/api/agents/me" },
+      { method: "GET", path: "/api/agents/me/inbox-lite" },
+      { method: "GET", path: "/api/agents/me/inbox/mine" },
+      { method: "GET", path: "/api/agents/agent-1" },
+      { method: "GET", path: "/api/agents/agent-1/skills" },
+      { method: "POST", path: "/api/agents/agent-1/skills/sync" },
+      { method: "PATCH", path: "/api/agents/agent-1/instructions-path" },
+      { method: "GET", path: "/api/companies/co-1" },
+      { method: "GET", path: "/api/companies/co-1/dashboard" },
+      { method: "GET", path: "/api/companies/co-1/agents" },
+      { method: "GET", path: "/api/companies/co-1/issues" },
+      { method: "GET", path: "/api/companies/co-1/projects" },
+      { method: "GET", path: "/api/companies/co-1/goals" },
+      { method: "GET", path: "/api/companies/co-1/org" },
+      { method: "GET", path: "/api/companies/co-1/approvals" },
+      { method: "GET", path: "/api/companies/co-1/routines" },
+      { method: "GET", path: "/api/companies/co-1/skills" },
+      { method: "GET", path: "/api/projects/proj-1" },
+      { method: "GET", path: "/api/goals/goal-1" },
+      { method: "GET", path: "/api/issues/issue-1" },
+      { method: "GET", path: "/api/issues/issue-1/heartbeat-context" },
+      { method: "GET", path: "/api/issues/issue-1/comments" },
+      { method: "GET", path: "/api/issues/issue-1/comments/c-1" },
+      { method: "POST", path: "/api/issues/issue-1/comments" },
+      { method: "GET", path: "/api/issues/issue-1/documents" },
+      { method: "GET", path: "/api/issues/issue-1/documents/plan" },
+      { method: "GET", path: "/api/issues/issue-1/documents/plan/revisions" },
+      { method: "PUT", path: "/api/issues/issue-1/documents/plan" },
+      { method: "POST", path: "/api/issues/issue-1/checkout" },
+      { method: "POST", path: "/api/issues/issue-1/release" },
+      { method: "PATCH", path: "/api/issues/issue-1" },
+      { method: "GET", path: "/api/issues/issue-1/approvals" },
+      { method: "GET", path: "/api/issues/issue-1/interactions" },
+      { method: "GET", path: "/api/issues/issue-1/interactions/inter-1" },
+      { method: "POST", path: "/api/issues/issue-1/interactions" },
+      { method: "POST", path: "/api/issues/issue-1/interactions/inter-1/accept" },
+      { method: "POST", path: "/api/issues/issue-1/interactions/inter-1/reject" },
+      { method: "POST", path: "/api/issues/issue-1/interactions/inter-1/respond" },
+      { method: "POST", path: "/api/companies/co-1/issues" },
+      { method: "GET", path: "/api/approvals/ap-1" },
+      { method: "GET", path: "/api/approvals/ap-1/issues" },
+      { method: "GET", path: "/api/approvals/ap-1/comments" },
+      { method: "POST", path: "/api/approvals/ap-1/comments" },
+      { method: "POST", path: "/api/companies/co-1/approvals" },
+      { method: "GET", path: "/api/execution-workspaces/ws-1" },
+      { method: "POST", path: "/api/execution-workspaces/ws-1/runtime-services/start" },
+      { method: "POST", path: "/api/execution-workspaces/ws-1/runtime-services/stop" },
+      { method: "POST", path: "/api/execution-workspaces/ws-1/runtime-services/restart" },
+      { method: "GET", path: "/api/routines/r-1" },
+      { method: "GET", path: "/api/routines/r-1/runs" },
+      { method: "POST", path: "/api/companies/co-1/routines" },
+      { method: "PATCH", path: "/api/routines/r-1" },
+      { method: "POST", path: "/api/routines/r-1/run" },
+      { method: "POST", path: "/api/routines/r-1/triggers" },
+      { method: "PATCH", path: "/api/routine-triggers/t-1" },
+      { method: "DELETE", path: "/api/routine-triggers/t-1" },
+    ];
+    for (const request of allowed) {
+      expect(authorizeSandboxCallbackBridgeRequestWithRoutes(request)).toBeNull();
+    }
+
+    const denied: Array<{ method: string; path: string }> = [
+      { method: "DELETE", path: "/api/secrets" },
+      // Pin the runtime-services regex to start/stop/restart only — anything
+      // else (delete, reset, wipe, etc.) must stay denied even if the API
+      // grows new actions later.
+      { method: "POST", path: "/api/execution-workspaces/ws-1/runtime-services/delete" },
+      { method: "POST", path: "/api/companies/co-1/agents" },
+      { method: "POST", path: "/api/agents/agent-1/pause" },
+      { method: "POST", path: "/api/agents/agent-1/terminate" },
+      { method: "POST", path: "/api/agents/agent-1/keys" },
+      { method: "POST", path: "/api/companies/co-1/exports" },
+      { method: "POST", path: "/api/companies/co-1/imports/apply" },
+      { method: "POST", path: "/api/companies/co-1/archive" },
+      { method: "DELETE", path: "/api/issues/issue-1/documents/plan" },
+      { method: "DELETE", path: "/api/issues/issue-1/approvals/ap-1" },
+      { method: "POST", path: "/api/approvals/ap-1/approve" },
+      { method: "POST", path: "/api/approvals/ap-1/reject" },
+      { method: "POST", path: "/api/companies/co-1/logo" },
+      { method: "GET", path: "/api/companies/co-1/secrets" },
+      { method: "PATCH", path: "/api/secrets/secret-1" },
+    ];
+    for (const request of denied) {
+      expect(authorizeSandboxCallbackBridgeRequestWithRoutes(request)).toBe(
+        `Route not allowed: ${request.method} ${request.path}`,
+      );
+    }
+  });
+
+  it("marks command-managed bridge operations with the bridge execution channel", async () => {
+    const runner = {
+      execute: vi.fn(async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+      runner,
+      remoteCwd: "/workspace",
+      timeoutMs: 30_000,
+    });
+
+    await client.makeDir("/workspace/.paperclip-runtime/codex/paperclip-bridge/queue");
+
+    expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
+      env: {
+        PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
+      },
+    }));
   });
 });

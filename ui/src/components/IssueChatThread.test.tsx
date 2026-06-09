@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, createRef, forwardRef, useImperativeHandle, useState } from "react";
+import { flushSync } from "react-dom";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
@@ -32,6 +33,14 @@ import type {
   IssueChatLinkedRun,
   IssueChatTranscriptEntry,
 } from "../lib/issue-chat-messages";
+
+function flushAct<T>(callback: () => T): T {
+  let result: T | undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  return result as T;
+}
 
 function hasSmoothScrollBehavior(arg: unknown) {
   return typeof arg === "object"
@@ -340,6 +349,137 @@ describe("IssueChatThread", () => {
     expect(viewport).not.toBeNull();
     expect(viewport?.className).not.toContain("overflow-y-auto");
     expect(viewport?.className).not.toContain("max-h-[70vh]");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders footer content inside the thread viewport before the bottom anchor", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+            footer={<div>Sibling footer</div>}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const viewport = container.querySelector('[data-testid="thread-viewport"]');
+    const footer = container.querySelector('[data-testid="issue-chat-thread-footer"]');
+    expect(viewport).not.toBeNull();
+    expect(footer).not.toBeNull();
+    expect(footer?.textContent).toBe("Sibling footer");
+    expect(footer?.parentElement).toBe(viewport);
+    expect(footer?.nextElementSibling?.textContent).toBe("");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders the composer in planning mode when the issue is in planning mode", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            issueWorkMode="planning"
+            onWorkModeChange={() => {}}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const composer = container.querySelector('[data-testid="issue-chat-composer"]');
+    expect(composer).not.toBeNull();
+    expect(composer?.getAttribute("data-pending-work-mode")).toBe("planning");
+    expect(composer?.className).toContain("amber");
+
+    const toggle = container.querySelector(
+      '[data-testid="issue-chat-composer-work-mode-toggle"]',
+    );
+    expect(toggle).not.toBeNull();
+    expect(toggle?.getAttribute("data-pending-work-mode")).toBe("planning");
+    expect(toggle?.textContent).toContain("Planning");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides the planning chip on a standard issue and exposes the toggle through the menu", () => {
+    const root = createRoot(container);
+    const onWorkModeChange = vi.fn();
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            issueWorkMode="standard"
+            onWorkModeChange={onWorkModeChange}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(
+      container.querySelector('[data-testid="issue-chat-composer-work-mode-toggle"]'),
+    ).toBeNull();
+    const composer = container.querySelector('[data-testid="issue-chat-composer"]');
+    expect(composer?.getAttribute("data-pending-work-mode")).toBe("standard");
+    expect(composer?.className).not.toContain("amber");
+
+    const menuTrigger = container.querySelector(
+      '[data-testid="issue-chat-composer-work-mode-menu"]',
+    ) as HTMLButtonElement | null;
+    expect(menuTrigger).not.toBeNull();
+    act(() => {
+      menuTrigger?.click();
+    });
+
+    const menuItem = document.querySelector(
+      '[data-testid="issue-chat-composer-work-mode-menu-toggle"]',
+    ) as HTMLButtonElement | null;
+    expect(menuItem).not.toBeNull();
+    expect(menuItem?.textContent).toContain("Switch to planning");
+
+    act(() => {
+      menuItem?.click();
+    });
+
+    expect(onWorkModeChange).not.toHaveBeenCalled();
+    expect(composer?.getAttribute("data-pending-work-mode")).toBe("planning");
+    expect(composer?.className).toContain("amber");
+
+    const visibleChip = container.querySelector(
+      '[data-testid="issue-chat-composer-work-mode-toggle"]',
+    );
+    expect(visibleChip).not.toBeNull();
+    expect(visibleChip?.textContent).toContain("Planning");
 
     act(() => {
       root.unmount();
@@ -836,6 +976,9 @@ describe("IssueChatThread", () => {
       authorAgentId: "agent-perf-codex",
       authorUserId: null,
       body: "Older loaded comment",
+      authorType: "agent" as const,
+      presentation: null,
+      metadata: null,
       createdAt: new Date("2026-04-06T12:00:00.000Z"),
       updatedAt: new Date("2026-04-06T12:00:00.000Z"),
     };
@@ -1056,6 +1199,9 @@ describe("IssueChatThread", () => {
       authorAgentId: "agent-1",
       authorUserId: null,
       body: "Agent summary with **markdown**",
+      authorType: "agent" as const,
+      presentation: null,
+      metadata: null,
       createdAt: new Date("2026-04-06T12:00:00.000Z"),
       updatedAt: new Date("2026-04-06T12:00:00.000Z"),
     }];
@@ -1121,6 +1267,168 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("confirms and invokes delete only for the current user's normal comments", async () => {
+    const root = createRoot(container);
+    const onDeleteComment = vi.fn(async () => {});
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[
+              {
+                id: "comment-owned",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: null,
+                authorUserId: "user-board",
+                body: "Delete me",
+                authorType: "user",
+                presentation: null,
+                metadata: null,
+                createdAt: new Date("2026-04-06T12:00:00.000Z"),
+                updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+              },
+              {
+                id: "comment-other",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: null,
+                authorUserId: "user-other",
+                body: "Do not delete",
+                authorType: "user",
+                presentation: null,
+                metadata: null,
+                createdAt: new Date("2026-04-06T12:01:00.000Z"),
+                updatedAt: new Date("2026-04-06T12:01:00.000Z"),
+              },
+            ]}
+            currentUserId="user-board"
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            onDeleteComment={onDeleteComment}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const deleteButtons = Array.from(container.querySelectorAll("button[aria-label='Delete comment']"));
+    expect(deleteButtons).toHaveLength(1);
+
+    await act(async () => {
+      deleteButtons[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(document.body.textContent).toContain("Delete comment?");
+    const confirmButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent === "Delete comment");
+    expect(confirmButton).toBeTruthy();
+
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onDeleteComment).toHaveBeenCalledWith("comment-owned");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders deleted comments as tombstones without the original body", () => {
+    const root = createRoot(container);
+
+    flushAct(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[{
+              id: "comment-deleted",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-board",
+              body: "Sensitive deleted body",
+              authorType: "user",
+              presentation: null,
+              metadata: null,
+              deletedAt: new Date("2026-04-06T12:05:00.000Z"),
+              deletedByType: "user",
+              deletedByUserId: "user-board",
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:05:00.000Z"),
+            }]}
+            currentUserId="user-board"
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            onDeleteComment={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("You deleted this comment");
+    expect(container.textContent).not.toContain("Sensitive deleted body");
+    expect(container.querySelector("button[aria-label='Delete comment']")).toBeNull();
+    expect(container.querySelector("button[aria-label='Copy message']")).toBeNull();
+
+    flushAct(() => {
+      root.unmount();
+    });
+  });
+
+  it("clears a deleted comment deep-link hash instead of highlighting it", () => {
+    const root = createRoot(container);
+    const replaceStateSpy = vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
+
+    flushAct(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/issues/PAP-1#comment-comment-deleted"]}>
+          <IssueChatThread
+            comments={[{
+              id: "comment-deleted",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-board",
+              body: "Sensitive deleted body",
+              authorType: "user",
+              presentation: null,
+              metadata: null,
+              deletedAt: new Date("2026-04-06T12:05:00.000Z"),
+              deletedByType: "user",
+              deletedByUserId: "user-board",
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:05:00.000Z"),
+            }]}
+            currentUserId="user-board"
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(replaceStateSpy).toHaveBeenCalledWith(null, "", "/issues/PAP-1");
+
+    replaceStateSpy.mockRestore();
+    flushAct(() => {
+      root.unmount();
+    });
+  });
+
   it("shows explicit follow-up badges and event copy", () => {
     const root = createRoot(container);
 
@@ -1135,6 +1443,9 @@ describe("IssueChatThread", () => {
               authorAgentId: null,
               authorUserId: "local-board",
               body: "Please continue validation.",
+              authorType: "user",
+              presentation: null,
+              metadata: null,
               followUpRequested: true,
               createdAt: new Date("2026-03-11T10:00:00.000Z"),
               updatedAt: new Date("2026-03-11T10:00:00.000Z"),
@@ -1195,7 +1506,7 @@ describe("IssueChatThread", () => {
       );
     });
 
-    expect(container.textContent).toContain("Work on this issue is blocked by the linked issue");
+    expect(container.textContent).toContain("Work on this task is blocked by the linked task");
     expect(container.textContent).toContain("Comments still wake the assignee for questions or triage");
     expect(container.textContent).toContain("PAP-1723");
     expect(container.textContent).toContain("QA the install flow");
@@ -1487,6 +1798,70 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("submits Other text for pending question interactions", async () => {
+    const root = createRoot(container);
+    const onSubmitInteractionAnswers = vi.fn(async () => undefined);
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            interactions={[createQuestionInteraction()]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const otherButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Other"),
+    );
+    expect(otherButton).toBeTruthy();
+
+    await act(async () => {
+      otherButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement | null;
+    expect(textarea).toBeTruthy();
+
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(textarea, "Phase 1 plus docs");
+      textarea!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const submitButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Submit answers"),
+    );
+
+    await act(async () => {
+      submitButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onSubmitInteractionAnswers).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "interaction-question-1",
+        kind: "ask_user_questions",
+      }),
+      [{ questionId: "scope", optionIds: [], otherText: "Phase 1 plus docs" }],
+    );
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("invokes the cancel callback for pending question interactions", async () => {
     const root = createRoot(container);
     const onCancelInteraction = vi.fn(async () => undefined);
@@ -1588,6 +1963,9 @@ describe("IssueChatThread", () => {
               authorAgentId: "agent-1",
               authorUserId: null,
               body: "Agent summary",
+              authorType: "agent",
+              presentation: null,
+              metadata: null,
               createdAt: new Date("2026-04-06T12:00:00.000Z"),
               updatedAt: new Date("2026-04-06T12:00:00.000Z"),
             }]}
@@ -1624,6 +2002,9 @@ describe("IssueChatThread", () => {
               authorAgentId: null,
               authorUserId: "user-1",
               body: "Need a quick update",
+              authorType: "user",
+              presentation: null,
+              metadata: null,
               queueState: "queued",
               queueReason: "hold",
               createdAt: new Date("2026-04-06T12:00:00.000Z"),
@@ -1653,6 +2034,9 @@ describe("IssueChatThread", () => {
               authorAgentId: null,
               authorUserId: "user-1",
               body: "Queue behind active run",
+              authorType: "user",
+              presentation: null,
+              metadata: null,
               queueState: "queued",
               queueReason: "active_run",
               createdAt: new Date("2026-04-06T12:01:00.000Z"),
@@ -1820,7 +2204,7 @@ describe("IssueChatThread", () => {
     expect(container.querySelector('[data-testid="issue-chat-composer-drop-overlay"]')).not.toBeNull();
     expect(container.textContent).toContain("Drop to upload");
     expect(container.textContent).toContain("Images insert into the reply");
-    expect(container.textContent).toContain("Other files are added to this issue");
+    expect(container.textContent).toContain("Other files are added to this task");
     expect(composer?.className).toContain("border-primary/45");
 
     act(() => {
@@ -1876,7 +2260,7 @@ describe("IssueChatThread", () => {
     const attachmentList = container.querySelector('[data-testid="issue-chat-composer-attachments"]');
     expect(attachmentList).not.toBeNull();
     expect(container.textContent).toContain("report.pdf");
-    expect(container.textContent).toContain("Attached to issue");
+    expect(container.textContent).toContain("Attached to task");
 
     await act(async () => {
       root.unmount();
@@ -1976,7 +2360,7 @@ describe("IssueChatThread", () => {
     expect(attachmentList).not.toBeNull();
     expect(attachmentList?.className).toContain("mb-3");
     expect(container.textContent).toContain("report.pdf");
-    expect(container.textContent).toContain("Attached to issue");
+    expect(container.textContent).toContain("Attached to task");
 
     await act(async () => {
       root.unmount();
@@ -1997,6 +2381,9 @@ describe("IssueChatThread", () => {
               authorAgentId: null,
               authorUserId: "user-1",
               body: "hello",
+              authorType: "user",
+              presentation: null,
+              metadata: null,
               createdAt: new Date("2026-04-22T12:00:00.000Z"),
               updatedAt: new Date("2026-04-22T12:00:00.000Z"),
             }]}

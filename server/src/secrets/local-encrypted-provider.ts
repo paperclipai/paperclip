@@ -1,7 +1,14 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync, existsSync, chmodSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { SecretProviderModule, StoredSecretVersionMaterial } from "./types.js";
+import { resolveDefaultSecretsKeyFilePath } from "../home-paths.js";
+import type {
+  PreparedSecretVersion,
+  SecretProviderHealthCheck,
+  SecretProviderModule,
+  SecretProviderValidationResult,
+  StoredSecretVersionMaterial,
+} from "./types.js";
 import { badRequest } from "../errors.js";
 
 interface LocalEncryptedMaterial extends StoredSecretVersionMaterial {
@@ -14,7 +21,7 @@ interface LocalEncryptedMaterial extends StoredSecretVersionMaterial {
 function resolveMasterKeyFilePath() {
   const fromEnv = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
   if (fromEnv && fromEnv.trim().length > 0) return path.resolve(fromEnv.trim());
-  return path.resolve(process.cwd(), "data/secrets/master.key");
+  return resolveDefaultSecretsKeyFilePath();
 }
 
 function decodeMasterKey(raw: string): Buffer | null {
@@ -52,6 +59,7 @@ function loadOrCreateMasterKey(): Buffer {
 
   const keyPath = resolveMasterKeyFilePath();
   if (existsSync(keyPath)) {
+    enforceKeyFilePermissionsBestEffort(keyPath);
     const raw = readFileSync(keyPath, "utf8");
     const decoded = decodeMasterKey(raw);
     if (!decoded) {
@@ -72,8 +80,116 @@ function loadOrCreateMasterKey(): Buffer {
   return generated;
 }
 
+function enforceKeyFilePermissionsBestEffort(keyPath: string) {
+  try {
+    const mode = statSync(keyPath).mode & 0o777;
+    if ((mode & 0o077) !== 0) {
+      chmodSync(keyPath, 0o600);
+    }
+  } catch {
+    // best effort only; health checks surface persistent permission problems.
+  }
+}
+
 function sha256Hex(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function prepareManagedVersion(value: string): PreparedSecretVersion {
+  const masterKey = loadOrCreateMasterKey();
+  const valueSha256 = sha256Hex(value);
+  return {
+    material: encryptValue(masterKey, value),
+    valueSha256,
+    fingerprintSha256: valueSha256,
+    externalRef: null,
+  };
+}
+
+async function inspectLocalEncryptedHealth(): Promise<SecretProviderHealthCheck> {
+  const envKeyRaw = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+  if (envKeyRaw && envKeyRaw.trim().length > 0) {
+    if (!decodeMasterKey(envKeyRaw)) {
+      return {
+        provider: "local_encrypted",
+        status: "error",
+        message:
+          "PAPERCLIP_SECRETS_MASTER_KEY is invalid; expected 32-byte base64, 64-char hex, or raw 32-char string",
+      };
+    }
+    return {
+      provider: "local_encrypted",
+      status: "ok",
+      message: "Local encrypted provider is using PAPERCLIP_SECRETS_MASTER_KEY",
+      backupGuidance: [
+        "Back up the configured master key separately from the database.",
+        "A restore needs both the database metadata and the same master key.",
+      ],
+      details: { keySource: "env" },
+    };
+  }
+
+  const keyPath = resolveMasterKeyFilePath();
+  if (!existsSync(keyPath)) {
+    return {
+      provider: "local_encrypted",
+      status: "warn",
+      message: `Secrets key file does not exist yet: ${keyPath}`,
+      warnings: ["The first managed secret write will create this key file with 0600 permissions."],
+      backupGuidance: [
+        "Back up the key file together with database backups.",
+        "The database alone cannot restore local encrypted secret values.",
+      ],
+      details: { keySource: "file", keyFilePath: keyPath },
+    };
+  }
+
+  let mode: number | null = null;
+  try {
+    mode = statSync(keyPath).mode & 0o777;
+  } catch (err) {
+    return {
+      provider: "local_encrypted",
+      status: "error",
+      message: `Could not stat secrets key file: ${err instanceof Error ? err.message : String(err)}`,
+      details: { keySource: "file", keyFilePath: keyPath },
+    };
+  }
+
+  try {
+    const raw = readFileSync(keyPath, "utf8");
+    if (!decodeMasterKey(raw)) {
+      return {
+        provider: "local_encrypted",
+        status: "error",
+        message: `Invalid key material in ${keyPath}`,
+        details: { keySource: "file", keyFilePath: keyPath },
+      };
+    }
+  } catch (err) {
+    return {
+      provider: "local_encrypted",
+      status: "error",
+      message: `Could not read secrets key file: ${err instanceof Error ? err.message : String(err)}`,
+      details: { keySource: "file", keyFilePath: keyPath },
+    };
+  }
+
+  const warnings =
+    mode !== null && (mode & 0o077) !== 0
+      ? [`Secrets key file permissions are ${mode.toString(8)}; run chmod 600 ${keyPath}`]
+      : [];
+  return {
+    provider: "local_encrypted",
+    status: warnings.length > 0 ? "warn" : "ok",
+    message: `Local encrypted provider configured with key file ${keyPath}`,
+    warnings,
+    backupGuidance: [
+      "Back up the key file together with database backups.",
+      "The database alone cannot restore local encrypted secret values.",
+    ],
+    details: { keySource: "file", keyFilePath: keyPath },
+  };
 }
 
 function encryptValue(masterKey: Buffer, value: string): LocalEncryptedMaterial {
@@ -115,21 +231,45 @@ function asLocalEncryptedMaterial(value: StoredSecretVersionMaterial): LocalEncr
 
 export const localEncryptedProvider: SecretProviderModule = {
   id: "local_encrypted",
-  descriptor: {
-    id: "local_encrypted",
-    label: "Local encrypted (default)",
-    requiresExternalRef: false,
+  descriptor() {
+    return {
+      id: "local_encrypted",
+      label: "Local encrypted (default)",
+      requiresExternalRef: false,
+      supportsManagedValues: true,
+      supportsExternalReferences: false,
+      configured: true,
+    };
+  },
+  async validateConfig(input): Promise<SecretProviderValidationResult> {
+    const warnings: string[] = [];
+    if (input?.deploymentMode === "authenticated" && input.strictMode !== true) {
+      warnings.push("Strict secret mode should be enabled for authenticated deployments");
+    }
+    const health = await inspectLocalEncryptedHealth();
+    if (health.status === "error") {
+      throw badRequest(health.message);
+    }
+    warnings.push(...(health.warnings ?? []));
+    return { ok: true, warnings };
+  },
+  async createSecret(input) {
+    return prepareManagedVersion(input.value);
   },
   async createVersion(input) {
-    const masterKey = loadOrCreateMasterKey();
-    return {
-      material: encryptValue(masterKey, input.value),
-      valueSha256: sha256Hex(input.value),
-      externalRef: null,
-    };
+    return prepareManagedVersion(input.value);
+  },
+  async linkExternalSecret() {
+    throw badRequest("local_encrypted does not support external reference secrets");
   },
   async resolveVersion(input) {
     const masterKey = loadOrCreateMasterKey();
     return decryptValue(masterKey, asLocalEncryptedMaterial(input.material));
+  },
+  async deleteOrArchive() {
+    // Secret metadata deletion is handled in Paperclip DB; the local key is shared and must remain.
+  },
+  async healthCheck() {
+    return inspectLocalEncryptedHealth();
   },
 };

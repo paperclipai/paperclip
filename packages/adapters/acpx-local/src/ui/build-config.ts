@@ -5,6 +5,7 @@ import {
   DEFAULT_ACPX_LOCAL_NON_INTERACTIVE_PERMISSIONS,
   DEFAULT_ACPX_LOCAL_PERMISSION_MODE,
   DEFAULT_ACPX_LOCAL_TIMEOUT_SEC,
+  DEFAULT_ACPX_LOCAL_WARM_HANDLE_IDLE_MS,
 } from "../index.js";
 
 function parseCommaArgs(value: string): string[] {
@@ -80,13 +81,15 @@ function readNumber(value: unknown, fallback: number): number {
 
 export function buildAcpxLocalConfig(v: CreateConfigValues): Record<string, unknown> {
   const schemaValues = v.adapterSchemaValues ?? {};
+  const agent = String(schemaValues.agent || DEFAULT_ACPX_LOCAL_AGENT);
   const ac: Record<string, unknown> = {
-    agent: schemaValues.agent || DEFAULT_ACPX_LOCAL_AGENT,
+    agent,
     mode: schemaValues.mode || DEFAULT_ACPX_LOCAL_MODE,
     permissionMode: schemaValues.permissionMode || DEFAULT_ACPX_LOCAL_PERMISSION_MODE,
     nonInteractivePermissions:
       schemaValues.nonInteractivePermissions || DEFAULT_ACPX_LOCAL_NON_INTERACTIVE_PERMISSIONS,
     timeoutSec: readNumber(schemaValues.timeoutSec, DEFAULT_ACPX_LOCAL_TIMEOUT_SEC),
+    warmHandleIdleMs: readNumber(schemaValues.warmHandleIdleMs, DEFAULT_ACPX_LOCAL_WARM_HANDLE_IDLE_MS),
   };
 
   for (const key of [
@@ -105,6 +108,11 @@ export function buildAcpxLocalConfig(v: CreateConfigValues): Record<string, unkn
   if (!ac.instructionsFilePath && v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
   if (!ac.promptTemplate && v.promptTemplate) ac.promptTemplate = v.promptTemplate;
   if (!ac.bootstrapPromptTemplate && v.bootstrapPrompt) ac.bootstrapPromptTemplate = v.bootstrapPrompt;
+  if (v.model?.trim()) ac.model = v.model.trim();
+  if (v.thinkingEffort) {
+    ac[agent === "codex" ? "modelReasoningEffort" : "effort"] = v.thinkingEffort;
+  }
+  if (schemaValues.fastMode === true) ac.fastMode = true;
 
   const env = parseEnvBindings(v.envBindings);
   const legacy = parseEnvVars(v.envVars);

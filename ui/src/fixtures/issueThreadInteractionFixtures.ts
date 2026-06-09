@@ -6,6 +6,7 @@ import type {
 import type { IssueTimelineEvent } from "../lib/issue-timeline-events";
 import type {
   AskUserQuestionsInteraction,
+  RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
   SuggestTasksInteraction,
 } from "../lib/issue-thread-interactions";
@@ -23,9 +24,12 @@ function createComment(overrides: Partial<IssueChatComment>): IssueChatComment {
     id: "comment-default",
     companyId: issueThreadInteractionFixtureMeta.companyId,
     issueId: issueThreadInteractionFixtureMeta.issueId,
+    authorType: overrides.authorAgentId ? "agent" : "user",
     authorAgentId: null,
     authorUserId: issueThreadInteractionFixtureMeta.currentUserId,
     body: "",
+    presentation: null,
+    metadata: null,
     createdAt,
     updatedAt: overrides.updatedAt ?? createdAt,
     ...overrides,
@@ -215,6 +219,65 @@ function createRequestConfirmationInteraction(
         revisionId: "11111111-1111-4111-8111-111111111111",
         revisionNumber: 3,
       },
+    },
+    result: null,
+    ...overrides,
+  };
+}
+
+function createRequestCheckboxConfirmationInteraction(
+  overrides: Partial<RequestCheckboxConfirmationInteraction>,
+): RequestCheckboxConfirmationInteraction {
+  return {
+    id: "interaction-checkbox-default",
+    companyId: issueThreadInteractionFixtureMeta.companyId,
+    issueId: issueThreadInteractionFixtureMeta.issueId,
+    kind: "request_checkbox_confirmation",
+    title: "Choose the stale drafts to delete",
+    summary:
+      "The agent found several stale draft documents and needs the board to confirm exactly which ones to remove.",
+    status: "pending",
+    continuationPolicy: "wake_assignee",
+    createdByAgentId: "agent-codex",
+    createdByUserId: null,
+    resolvedByAgentId: null,
+    resolvedByUserId: null,
+    createdAt: new Date("2026-04-20T14:46:00.000Z"),
+    updatedAt: new Date("2026-04-20T14:46:00.000Z"),
+    resolvedAt: null,
+    payload: {
+      version: 1,
+      prompt: "Check the draft documents you want me to delete.",
+      detailsMarkdown:
+        "Only the checked items will be deleted. Leave an item unchecked to keep it for now.",
+      options: [
+        {
+          id: "draft-march-report",
+          label: "Old draft report",
+          description: "Created by QA during the March test pass.",
+        },
+        {
+          id: "draft-spec-v1",
+          label: "Spec v1 (superseded)",
+          description: "Replaced by the approved v2 specification.",
+        },
+        {
+          id: "draft-scratch-notes",
+          label: "Scratch notes",
+          description: "Unstructured notes from the kickoff call.",
+        },
+        {
+          id: "draft-import-sample",
+          label: "Import sample fixture",
+          description: "Temporary fixture used while wiring the importer.",
+        },
+      ],
+      defaultSelectedOptionIds: [],
+      minSelected: 0,
+      maxSelected: null,
+      acceptLabel: "Delete selected",
+      rejectLabel: "Request changes",
+      rejectRequiresReason: false,
     },
     result: null,
     ...overrides,
@@ -461,6 +524,145 @@ export const failedRequestConfirmationInteraction = createRequestConfirmationInt
   status: "failed",
   updatedAt: new Date("2026-04-20T14:42:00.000Z"),
 });
+
+export const pendingRequestCheckboxConfirmationInteraction =
+  createRequestCheckboxConfirmationInteraction({});
+
+export const boundedRequestCheckboxConfirmationInteraction =
+  createRequestCheckboxConfirmationInteraction({
+    id: "interaction-checkbox-bounded",
+    title: "Pick the regions to deploy first",
+    summary: "Choose between two and three regions for the Phase 1 rollout.",
+    payload: {
+      version: 1,
+      prompt: "Which regions should we deploy to initially?",
+      detailsMarkdown: "Select at least 2 and at most 3 regions.",
+      options: [
+        { id: "us-west", label: "US West (Oregon)", description: "Lowest latency for our primary user base." },
+        { id: "us-east", label: "US East (Virginia)", description: "Redundancy and east coast coverage." },
+        { id: "eu-west", label: "EU West (Ireland)", description: "GDPR compliance and European users." },
+        { id: "ap-southeast", label: "AP Southeast (Singapore)", description: "Asia-Pacific expansion." },
+      ],
+      defaultSelectedOptionIds: ["us-west", "us-east"],
+      minSelected: 2,
+      maxSelected: 3,
+      acceptLabel: "Confirm regions",
+      rejectLabel: "Reconsider",
+      rejectRequiresReason: true,
+      rejectReasonLabel: "What should change about the region set?",
+    },
+  });
+
+export const acceptedRequestCheckboxConfirmationInteraction =
+  createRequestCheckboxConfirmationInteraction({
+    id: "interaction-checkbox-accepted",
+    status: "accepted",
+    resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+    resolvedAt: new Date("2026-04-20T14:49:00.000Z"),
+    updatedAt: new Date("2026-04-20T14:49:00.000Z"),
+    result: {
+      version: 1,
+      outcome: "accepted",
+      selectedOptionIds: ["draft-march-report", "draft-spec-v1"],
+    },
+  });
+
+const manyOptionList = Array.from({ length: 100 }, (_, index) => {
+  const number = index + 1;
+  return {
+    id: `record-${number}`,
+    label: `Customer record #${number}`,
+    description: number % 4 === 0
+      ? "Flagged as a possible duplicate during the last import."
+      : undefined,
+  };
+});
+
+export const manyOptionsRequestCheckboxConfirmationInteraction =
+  createRequestCheckboxConfirmationInteraction({
+    id: "interaction-checkbox-many",
+    title: "Select the customer records to archive",
+    summary: "The cleanup job found 100 stale customer records. Confirm which ones to archive.",
+    payload: {
+      version: 1,
+      prompt: "Check every customer record you want archived.",
+      detailsMarkdown: "The list scrolls. Use Select all / Clear selection to move quickly.",
+      options: manyOptionList,
+      defaultSelectedOptionIds: [],
+      minSelected: 0,
+      maxSelected: null,
+      acceptLabel: "Archive selected",
+      rejectLabel: "Request changes",
+      rejectRequiresReason: false,
+    },
+  });
+
+export const acceptedManyRequestCheckboxConfirmationInteraction =
+  createRequestCheckboxConfirmationInteraction({
+    id: "interaction-checkbox-many-accepted",
+    status: "accepted",
+    title: "Select the customer records to archive",
+    resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+    resolvedAt: new Date("2026-04-20T14:52:00.000Z"),
+    updatedAt: new Date("2026-04-20T14:52:00.000Z"),
+    payload: manyOptionsRequestCheckboxConfirmationInteraction.payload,
+    result: {
+      version: 1,
+      outcome: "accepted",
+      selectedOptionIds: manyOptionList.slice(0, 42).map((option) => option.id),
+    },
+  });
+
+export const rejectedRequestCheckboxConfirmationInteraction =
+  createRequestCheckboxConfirmationInteraction({
+    id: "interaction-checkbox-rejected",
+    status: "rejected",
+    resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+    resolvedAt: new Date("2026-04-20T14:50:00.000Z"),
+    updatedAt: new Date("2026-04-20T14:50:00.000Z"),
+    result: {
+      version: 1,
+      outcome: "rejected",
+      reason: "Don't delete anything yet — let me confirm with the data owner first.",
+    },
+  });
+
+export const staleTargetRequestCheckboxConfirmationInteraction =
+  createRequestCheckboxConfirmationInteraction({
+    id: "interaction-checkbox-stale",
+    status: "expired",
+    resolvedByAgentId: "agent-codex",
+    resolvedAt: new Date("2026-04-20T14:51:00.000Z"),
+    updatedAt: new Date("2026-04-20T14:51:00.000Z"),
+    payload: {
+      version: 1,
+      prompt: "Check the draft documents you want me to delete.",
+      acceptLabel: "Delete selected",
+      rejectLabel: "Request changes",
+      options: [
+        { id: "draft-march-report", label: "Old draft report" },
+        { id: "draft-spec-v1", label: "Spec v1 (superseded)" },
+      ],
+      target: {
+        type: "issue_document",
+        issueId: issueThreadInteractionFixtureMeta.issueId,
+        key: "plan",
+        revisionId: "44444444-4444-4444-8444-444444444444",
+        revisionNumber: 4,
+      },
+    },
+    result: {
+      version: 1,
+      outcome: "stale_target",
+      staleTarget: {
+        type: "issue_document",
+        issueId: issueThreadInteractionFixtureMeta.issueId,
+        key: "plan",
+        revisionId: "11111111-1111-4111-8111-111111111111",
+        revisionNumber: 3,
+      },
+    },
+  });
 
 export const issueThreadInteractionComments: IssueChatComment[] = [
   createComment({
