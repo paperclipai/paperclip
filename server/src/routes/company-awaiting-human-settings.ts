@@ -77,8 +77,14 @@ export function companyAwaitingHumanSettingsRoutes(db: Db) {
 
     const body = req.body as {
       provider?: "clickup" | null;
-      providerConfig?: { workspaceId: string | null; channelId: string | null } | null;
+      providerConfig?: {
+        workspaceId: string | null;
+        channelId: string | null;
+        primaryReviewerUserId?: string | null;
+        secondaryReviewerUserId?: string | null;
+      } | null;
       clickupPersonalToken?: string | null;
+      connectionTestMode?: "channel" | "reviewers";
     };
     const actor = getActorInfo(req);
     const stored = await settings.getStored(companyId);
@@ -103,19 +109,75 @@ export function companyAwaitingHumanSettingsRoutes(db: Db) {
       channelId: body.providerConfig !== undefined
         ? body.providerConfig?.channelId ?? null
         : storedConfig?.channelId ?? null,
+      primaryReviewerUserId: body.providerConfig !== undefined
+        ? body.providerConfig?.primaryReviewerUserId ?? null
+        : storedConfig?.primaryReviewerUserId ?? null,
+      secondaryReviewerUserId: body.providerConfig !== undefined
+        ? body.providerConfig?.secondaryReviewerUserId ?? null
+        : storedConfig?.secondaryReviewerUserId ?? null,
     };
 
+    const connectionTestMode = body.connectionTestMode ?? "channel";
+    const reviewerMentions = connectionTestMode === "reviewers"
+      ? [
+        {
+          label: "Primary reviewer",
+          userId: runtimeOverrides.primaryReviewerUserId,
+        },
+        {
+          label: "Secondary reviewer",
+          userId: runtimeOverrides.secondaryReviewerUserId,
+        },
+      ]
+      : [];
+    const hasReviewerMentionTarget = reviewerMentions.some((mention) => trimNullable(mention.userId));
+    if (connectionTestMode === "reviewers" && !hasReviewerMentionTarget) {
+      const skippedResult = {
+        status: "skipped" as const,
+        channel: "clickup-chat" as const,
+        detail: "missing-target: primary and secondary reviewer user IDs are not configured",
+      };
+      const redactedBody = "clickupPersonalToken" in body && body.clickupPersonalToken != null
+        ? { ...body, clickupPersonalToken: "[REDACTED]" }
+        : body;
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.awaiting_human_settings.connection_tested",
+        entityType: "company",
+        entityId: companyId,
+        details: {
+          ...redactedBody,
+          result: skippedResult,
+        },
+      });
+      res.json(skippedResult);
+      return;
+    }
+
     const result = await sendClickUpTransportTestMessage({
-      title: `${company.name} ClickUp bridge connection test`,
-      summary: "Bizbox completed a bridge transport test for ClickUp.",
-      body: "The configured bridge successfully delivered a test payload to the target ClickUp channel.",
+      title: connectionTestMode === "reviewers"
+        ? `${company.name} ClickUp reviewer mention test`
+        : `${company.name} ClickUp bridge connection test`,
+      summary: connectionTestMode === "reviewers"
+        ? "Bizbox completed a reviewer mention test for ClickUp."
+        : "Bizbox completed a bridge transport test for ClickUp.",
+      body: connectionTestMode === "reviewers"
+        ? "The configured bridge successfully delivered a reviewer mention test payload to the target ClickUp channel."
+        : "The configured bridge successfully delivered a test payload to the target ClickUp channel.",
       link: new URL(`/${company.issuePrefix}/company/settings/awaiting-human`, process.env.BIZBOX_API_URL ?? "http://localhost:3100").toString(),
       cta: "No action is required.",
+      reviewerMentions,
     }, runtimeOverrides);
     const publicResult = result.status === "sent"
       ? {
         ...result,
-        detail: `ClickUp bridge connection test succeeded. Message delivered to configured channel${result.externalId ? ` (message ${result.externalId})` : ""}.`,
+        detail: connectionTestMode === "reviewers"
+          ? `ClickUp reviewer mention test succeeded. Message delivered to configured channel${result.externalId ? ` (message ${result.externalId})` : ""}.`
+          : `ClickUp bridge connection test succeeded. Message delivered to configured channel${result.externalId ? ` (message ${result.externalId})` : ""}.`,
       }
       : result;
 

@@ -6,7 +6,7 @@ import path from "node:path";
 import { createServer } from "node:http";
 import { and, asc, eq } from "drizzle-orm";
 import { WebSocketServer } from "ws";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   agentWakeupRequests,
@@ -18,6 +18,27 @@ import {
   issueComments,
   issues,
 } from "@paperclipai/db";
+vi.mock("@paperclipai/adapter-google-adk/server", () => ({
+  execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+  testEnvironment: async () => ({
+    adapterType: "google_adk",
+    status: "pass",
+    checks: [],
+    testedAt: new Date(0).toISOString(),
+  }),
+}));
+vi.mock("@paperclipai/adapter-google-adk", () => ({
+  agentConfigurationDoc: "",
+  models: [],
+}));
+vi.mock("../otel.js", () => ({
+  recordComment: vi.fn(),
+  recordIssueStatusChanged: vi.fn(),
+  recordRunStatus: vi.fn(),
+}));
+vi.mock("../telemetry.js", () => ({
+  getTelemetryClient: vi.fn(() => null),
+}));
 import { heartbeatService } from "../services/heartbeat.ts";
 
 function extractStructuredWakePayload(message: unknown): Record<string, unknown> | null {
@@ -236,8 +257,11 @@ describe("heartbeat comment wake batching", () => {
   let db!: ReturnType<typeof createDb>;
   let instance: EmbeddedPostgresInstance | null = null;
   let dataDir = "";
+  let previousBindEnv: string | undefined;
 
   beforeAll(async () => {
+    previousBindEnv = process.env.BIZBOX_BIND;
+    process.env.BIZBOX_BIND = "loopback";
     const started = await startTempDatabase();
     db = createDb(started.connectionString);
     instance = started.instance;
@@ -245,6 +269,11 @@ describe("heartbeat comment wake batching", () => {
   }, 45_000);
 
   afterAll(async () => {
+    if (previousBindEnv === undefined) {
+      delete process.env.BIZBOX_BIND;
+    } else {
+      process.env.BIZBOX_BIND = previousBindEnv;
+    }
     await closeDbClient(db);
     await instance?.stop();
     if (dataDir) {
@@ -679,6 +708,7 @@ describe("heartbeat comment wake batching", () => {
       });
 
       await heartbeat.cancelRun(firstRun!.id);
+      gateway.releaseFirstWait();
 
       await waitFor(() => gateway.getAgentPayloads().length === 2);
       const promotedPayload = gateway.getAgentPayloads()[1] ?? {};
@@ -697,7 +727,6 @@ describe("heartbeat comment wake batching", () => {
       });
       expect(String(promotedPayload.message ?? "")).toContain("Queued follow-up");
 
-      gateway.releaseFirstWait();
       await waitFor(async () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
         return runs.length === 2 && runs.every((run) => ["cancelled", "succeeded"].includes(run.status));

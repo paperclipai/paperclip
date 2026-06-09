@@ -1,6 +1,5 @@
-import express from "express";
-import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { companyAwaitingHumanSettingsRoutes } from "../routes/company-awaiting-human-settings.js";
 
 const mockCompanyService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -35,7 +34,6 @@ const mockAwaitingHumanSettingsService = vi.hoisted(() => ({
   get: vi.fn(),
   update: vi.fn(),
   resolveProvider: vi.fn(),
-  resolveClickUpRuntimeConfig: vi.fn(),
   getStored: vi.fn(),
 }));
 
@@ -60,57 +58,92 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
 }));
 
+vi.mock("../routes/builder.js", () => ({
+  companyBuilderRoutes: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+}));
+
 vi.mock("../services/clickup-awaiting-human-transport.js", () => ({
   sendClickUpTransportTestMessage: mockSendClickUpTransportTestMessage,
 }));
 
-async function createApp() {
-  const [{ companyRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/companies.js")>("../routes/companies.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
-  const app = express();
-  app.use(express.json());
-  app.use((req, _res, next) => {
-    (req as any).actor = {
+type MockResponse = {
+  statusCode: number;
+  body: unknown;
+  status(code: number): MockResponse;
+  json(payload: unknown): MockResponse;
+};
+
+function createMockResponse(): MockResponse {
+  return {
+    statusCode: 200,
+    body: undefined,
+    status(code: number) {
+      this.statusCode = code;
+      return this;
+    },
+    json(payload: unknown) {
+      this.body = payload;
+      return this;
+    },
+  };
+}
+
+async function runConnectionTestRoute(body: unknown) {
+  const router = companyAwaitingHumanSettingsRoutes({} as any);
+  const routeLayer = router.stack.find(
+    (layer: any) => layer.route?.path === "/connection-test" && layer.route?.methods?.post,
+  );
+  if (!routeLayer?.route?.stack?.length) {
+    throw new Error("connection-test route not found");
+  }
+  const [validateMiddleware, connectionTestHandler] = routeLayer.route.stack.map((layer: any) => layer.handle);
+  const req: any = {
+    body,
+    params: { companyId: "company-1" },
+    actor: {
       type: "board",
       userId: "user-1",
       source: "local_implicit",
-    };
-    next();
-  });
-  app.use("/api/companies", companyRoutes({} as any));
-  app.use(errorHandler);
-  return app;
+    },
+  };
+  const res = createMockResponse();
+
+  try {
+    validateMiddleware(req, res, () => undefined);
+    await connectionTestHandler(req, res, () => undefined);
+    return res;
+  } catch (error) {
+    const { errorHandler } = await vi.importActual<typeof import("../middleware/index.js")>(
+      "../middleware/index.js",
+    );
+    const errorRes = createMockResponse();
+    errorHandler(error as Error, req, errorRes as any, () => undefined);
+    return errorRes;
+  }
 }
 
 describe("PATCH /api/companies/:companyId/awaiting-human-settings", () => {
   beforeEach(() => {
     vi.resetModules();
-    vi.doUnmock("../routes/companies.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     vi.resetAllMocks();
   });
 
   it("rejects invalid payloads before company lookup runs", async () => {
-    const app = await createApp();
+    const res = await runConnectionTestRoute({
+      enabled: true,
+      provider: "clickup",
+      providerConfig: {
+        workspaceId: 123,
+        channelId: "channel-1",
+        primaryReviewerUserId: null,
+        secondaryReviewerUserId: null,
+      },
+    });
 
-    const res = await request(app)
-      .patch("/api/companies/company-1/awaiting-human-settings")
-      .send({
-        enabled: true,
-        provider: "clickup",
-        providerConfig: {
-          workspaceId: 123,
-          channelId: "channel-1",
-          primaryReviewerUserId: null,
-          secondaryReviewerUserId: null,
-        },
-      });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe("Validation error");
+    expect(res.statusCode).toBe(400);
+    expect((res.body as { error?: string } | undefined)?.error).toBe("Validation error");
     expect(mockCompanyService.getById).not.toHaveBeenCalled();
     expect(mockAwaitingHumanSettingsService.update).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
@@ -129,44 +162,94 @@ describe("PATCH /api/companies/:companyId/awaiting-human-settings", () => {
       externalId: "message-1",
     });
 
-    const app = await createApp();
+    const res = await runConnectionTestRoute({
+      provider: "clickup",
+      providerConfig: {
+        workspaceId: "workspace-1",
+        channelId: "channel-1",
+        primaryReviewerUserId: null,
+        secondaryReviewerUserId: null,
+      },
+      clickupPersonalToken: "token-123",
+    });
 
-    const res = await request(app)
-      .post("/api/companies/company-1/awaiting-human-settings/connection-test")
-      .send({
-        provider: "clickup",
-        providerConfig: {
-          workspaceId: "workspace-1",
-          channelId: "channel-1",
-          primaryReviewerUserId: null,
-          secondaryReviewerUserId: null,
-        },
-        clickupPersonalToken: "token-123",
-      });
-
-    expect(res.status).toBe(200);
+    expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({
       status: "sent",
       channel: "clickup-chat",
       detail: "ClickUp bridge connection test succeeded. Message delivered to configured channel (message message-1).",
       externalId: "message-1",
     });
+    const [transportPayload, transportOverrides] = mockSendClickUpTransportTestMessage.mock.calls[0] ?? [];
+    expect(transportPayload).toMatchObject({
+      title: "Bizbox ClickUp bridge connection test",
+      summary: "Bizbox completed a bridge transport test for ClickUp.",
+      body: "The configured bridge successfully delivered a test payload to the target ClickUp channel.",
+      link: "http://localhost:3100/CITAAAA/company/settings/awaiting-human",
+      cta: "No action is required.",
+      reviewerMentions: [],
+    });
+    expect(transportOverrides).toEqual({
+      personalToken: "token-123",
+      workspaceId: "workspace-1",
+      channelId: "channel-1",
+      primaryReviewerUserId: null,
+      secondaryReviewerUserId: null,
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.awaiting_human_settings.connection_tested",
+    }));
+  });
+
+  it("sends reviewer mention test message when requested", async () => {
+    mockCompanyService.getById.mockResolvedValueOnce({
+      id: "company-1",
+      name: "Bizbox",
+    });
+    mockSendClickUpTransportTestMessage.mockResolvedValueOnce({
+      status: "sent",
+      channel: "clickup-chat",
+      detail: "sent",
+      externalId: "message-2",
+    });
+
+    const res = await runConnectionTestRoute({
+      provider: "clickup",
+      connectionTestMode: "reviewers",
+      providerConfig: {
+        workspaceId: "workspace-1",
+        channelId: "channel-1",
+        primaryReviewerUserId: "primary-user-id",
+        secondaryReviewerUserId: "secondary-user-id",
+      },
+      clickupPersonalToken: "token-123",
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      status: "sent",
+      channel: "clickup-chat",
+      detail: "ClickUp reviewer mention test succeeded. Message delivered to configured channel (message message-2).",
+      externalId: "message-2",
+    });
     expect(mockSendClickUpTransportTestMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: "Bizbox ClickUp bridge connection test",
-        summary: "Bizbox completed a bridge transport test for ClickUp.",
-        body: "The configured bridge successfully delivered a test payload to the target ClickUp channel.",
-        link: "http://localhost:3100/CITAAAA/company/settings/awaiting-human",
+        title: "Bizbox ClickUp reviewer mention test",
+        summary: "Bizbox completed a reviewer mention test for ClickUp.",
+        body: "The configured bridge successfully delivered a reviewer mention test payload to the target ClickUp channel.",
         cta: "No action is required.",
+        reviewerMentions: [
+          { label: "Primary reviewer", userId: "primary-user-id" },
+          { label: "Secondary reviewer", userId: "secondary-user-id" },
+        ],
       }),
       {
         personalToken: "token-123",
         workspaceId: "workspace-1",
         channelId: "channel-1",
+        primaryReviewerUserId: "primary-user-id",
+        secondaryReviewerUserId: "secondary-user-id",
       },
     );
-    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      action: "company.awaiting_human_settings.connection_tested",
-    }));
   });
 });

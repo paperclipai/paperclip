@@ -25,6 +25,10 @@ export interface ClickUpTransportTestNotification {
   link: string;
   body?: string | null;
   cta?: string | null;
+  reviewerMentions?: Array<{
+    label: string;
+    userId: string | null | undefined;
+  }>;
 }
 
 type ClickUpChatConfig = {
@@ -352,6 +356,21 @@ function renderClickUpTransportTestMessage(
   if (bodySection) {
     lines.push("");
     lines.push(bodySection);
+  }
+
+  if (notification.reviewerMentions?.length) {
+    const hasConfiguredReviewerMention = notification.reviewerMentions.some(
+      (mention) => formatClickUpUserMention(mention.userId) !== null,
+    );
+    if (hasConfiguredReviewerMention) {
+      const mentionLines = notification.reviewerMentions.map((mention) => {
+        const userMention = formatClickUpUserMention(mention.userId);
+        return `${mention.label}: ${userMention ?? "not configured"}`;
+      });
+      lines.push("");
+      lines.push("Reviewer mention test:");
+      lines.push(...mentionLines);
+    }
   }
 
   if (notification.cta?.trim()) {

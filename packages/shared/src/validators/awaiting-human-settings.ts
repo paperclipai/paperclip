@@ -25,6 +25,7 @@ export const patchCompanyAwaitingHumanSettingsSchema = z.object({
   provider: awaitingHumanProviderSchema.nullable().optional(),
   providerConfig: clickupAwaitingHumanProviderConfigSchema.nullable().optional(),
   clickupPersonalToken: z.string().min(1).optional().nullable(),
+  connectionTestMode: z.enum(["channel", "reviewers"]).optional(),
 }).superRefine((value, ctx) => {
   if (value.provider === null && value.providerConfig != null) {
     ctx.addIssue({
