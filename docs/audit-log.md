@@ -155,3 +155,25 @@ Reproducible, even on the lightest endpoint (`/api/health`), so the stall is in 
 4. **(Carried) bundle diet** — route-split `App.tsx` (still 53 static imports, `index` 2.06MB raw) + lazy the editor. Helps first-paint and parse; does not fix the cold-boot hang. Lower priority than 1–3.
 
 **Verdict:** Overall YELLOW, with a **RED reliability defect** (cold-boot hang) that owns the login/nav lag the user still feels. Unauthenticated loading and warm performance are now good. Opening a GitHub issue for the cold-boot hang (RED). Read-only audit; no code changed.
+
+### Addendum — cold-init root cause pinpointed (import-graph trace) + logout test
+Followed up on the cold-boot hang with a module-scope import trace from the function entry (`api/index.mjs` → `server/dist/index.js` → `startServer`). Config note: `fluid: true` and a warmer cron (`/api/health` every 3 min) are **already in place** (`vercel.json`), yet boots still hang — because the warmer itself can land on a hanging cold boot. Function: single entry `api/index.mjs`, memory 3008, maxDuration 300.
+
+**The `boot-timing: module-import` cost is dominated by `@zed-industries/codex-acp` (~165MB) evaluated at module scope on every cold boot.** Eager chain (all static, no dynamic-import boundary):
+```
+server/src/index.ts:28 → app.ts:42 (adapterRoutes)
+ → routes/adapters.ts:32 (registry)
+ → adapters/registry.ts:19  import {execute} from "@valadrien-os/adapter-acpx-local/server"
+ → packages/adapters/acpx-local/src/server/execute.ts:44  import "acpx/runtime"
+ → @zed-industries/codex-acp  (~165MB)
+```
+`registry.ts` eagerly imports every builtin adapter's `execute` (claude-local, codex-local, cursor-local, acpx-local, …) just to wire HTTP routes.
+
+**Corrections to my earlier suspicion (rec 1b above):**
+- `sqlite3` and `@anthropic-ai/claude-agent-sdk` are **NOT** in the server cold path — disregard. The culprit is `codex-acp` via `acpx-local`.
+- `@embedded-postgres` (`index.ts:397`) and `sharp` are **correctly lazy** (dynamic `import()`).
+- DB connect is **inside** `startServer()` (`index.ts:374–376`), not module scope — so the hang is dependency *evaluation*, not a boot-time DB connect.
+
+**Cleanest fix:** lazy-load adapter `execute` implementations (`routes/adapters.ts`/`registry.ts` should `await import("@valadrien-os/adapter-*/server")` on first use, keeping only type-only imports eager), or split the registry into eager-metadata + lazy-runtime modules. Removes ~165MB of module eval from every cold boot. Logged to issue #7785 (with the precise chain).
+
+**Logout live-test — BLOCKED (skipped: couldn't re-authenticate).** Mid-audit the headless session dropped to `/auth` (the cold-boot `get-session` 401-bounce), and re-importing Chrome cookies returned 0 cookies (likely Chrome's encrypted cookie store locked while Chrome is open, and/or the session token had rotated/invalidated). Could not drive a real logout. What is known: warm `/api/auth/sign-out` = 0.20s; logout shares the same cold-boot path; and the spontaneous session-drop is itself evidence of auth fragility under cold boots. To test cleanly next time: a dedicated test account (isolated session) or close Chrome before cookie import.
