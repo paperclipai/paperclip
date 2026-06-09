@@ -28,10 +28,9 @@
  * - The host handler itself does not cache resolved values. Each call goes
  *   through the secret provider to honour rotation.
  * - Company isolation: the acting company is taken exclusively from the
- *   invocation scope; plugins cannot self-declare a company ID. Any error
- *   after UUID-format validation is masked as `InvalidSecretRefError` so
- *   a plugin cannot use the error message to oracle whether a UUID belongs
- *   to another company.
+ *   invocation scope; plugins cannot self-declare a company ID. 404 and 422
+ *   errors are both masked as `InvalidSecretRefError` so plugins cannot
+ *   oracle whether a UUID belongs to another company.
  *
  * @see PLUGIN_SPEC.md §22 — Secrets
  * @see host-client-factory.ts — capability gating
@@ -39,11 +38,14 @@
  */
 
 import type { Db } from "@paperclipai/db";
+import type { WorkerHostCallContext } from "@paperclipai/plugin-sdk";
 import {
   collectSecretRefPaths,
   isUuidSecretRef,
   readConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
+import { secretService } from "./secrets.js";
+import { HttpError } from "../errors.js";
 
 /**
  * Exported for the plugin-config-upload route which blocks new config saves
@@ -139,35 +141,17 @@ export interface PluginSecretsResolveParams {
 }
 
 /**
- * Minimal invocation context passed from `host-client-factory` to the handler.
- * Mirrors `WorkerHostCallContext` from the SDK without importing it.
- */
-export interface PluginCallContext {
-  invocationScope?: { companyId: string } | null;
-  invalidInvocationScope?: boolean;
-}
-
-/**
  * Options for creating the plugin secrets handler.
  */
 export interface PluginSecretsHandlerOptions {
-  /** Database connection (kept for future per-plugin policy checks). */
+  /** Database connection. */
   db: Db;
   /**
    * The plugin ID using this handler.
-   * Used for rate-limiting and logging only; never included in error payloads.
+   * Used for logging context only; never included in error payloads
+   * that reach the plugin worker.
    */
   pluginId: string;
-  /**
-   * Delegate that resolves a secret by company + UUID, enforcing company
-   * ownership and recording an access event. Provided by `buildHostServices`
-   * so the plugin handler does not duplicate the secrets-service internals.
-   */
-  resolveSecretValue: (
-    companyId: string,
-    secretId: string,
-    version: number | "latest",
-  ) => Promise<string>;
 }
 
 /**
@@ -178,13 +162,12 @@ export interface PluginSecretsService {
    * Resolve a secret reference to its current plaintext value.
    *
    * @param params - Contains the `secretRef` (UUID of the secret)
-   * @param context - Invocation context carrying the acting company scope
+   * @param context - Worker call context carrying the acting company scope
    * @returns The resolved secret value
-   * @throws {InvalidSecretRefError} For any failure after UUID-format validation
-   *   (missing scope, wrong company, unknown secret, provider error).
-   *   All post-UUID errors are masked so plugins cannot oracle cross-company ownership.
+   * @throws {Error} with name `InvalidSecretRefError` if the secret is not
+   *   found, cross-company, or the ref is invalid (same shape — no oracle)
    */
-  resolve(params: PluginSecretsResolveParams, context?: PluginCallContext): Promise<string>;
+  resolve(params: PluginSecretsResolveParams, context?: WorkerHostCallContext): Promise<string>;
 }
 
 /**
@@ -192,15 +175,18 @@ export interface PluginSecretsService {
  *
  * @example
  * ```ts
- * const svc = secretService(db);
- * const secretsHandler = createPluginSecretsHandler({
- *   db,
+ * const secretsHandler = createPluginSecretsHandler({ db, pluginId });
+ * const handlers = createHostClientHandlers({
  *   pluginId,
- *   resolveSecretValue: svc.resolveSecretValue.bind(svc),
+ *   capabilities: manifest.capabilities,
+ *   services: {
+ *     secrets: secretsHandler,
+ *     // ...
+ *   },
  * });
  * ```
  *
- * @param options - Database connection, plugin identity, and resolve delegate
+ * @param options - Database connection and plugin identity
  * @returns A `PluginSecretsService` suitable for `HostServices.secrets`
  */
 /** Simple sliding-window rate limiter for secret resolution attempts. */
@@ -223,13 +209,13 @@ function createRateLimiter(maxAttempts: number, windowMs: number) {
 export function createPluginSecretsHandler(
   options: PluginSecretsHandlerOptions,
 ): PluginSecretsService {
-  const { pluginId, resolveSecretValue } = options;
+  const { db, pluginId } = options;
 
   // Rate limit: max 30 resolution attempts per plugin per minute
   const rateLimiter = createRateLimiter(30, 60_000);
 
   return {
-    async resolve(params: PluginSecretsResolveParams, context?: PluginCallContext): Promise<string> {
+    async resolve(params: PluginSecretsResolveParams, context?: WorkerHostCallContext): Promise<string> {
       const { secretRef } = params;
 
       // ---------------------------------------------------------------
@@ -255,32 +241,27 @@ export function createPluginSecretsHandler(
       }
 
       // ---------------------------------------------------------------
-      // 2. Require a valid invocation scope — fail closed if missing or
-      //    corrupted. The company ID must come from the invocation scope
-      //    (set by the dispatcher); plugins cannot self-declare it.
+      // 2. Require an acting company scope (per-invocation)
       // ---------------------------------------------------------------
-      const actingCompanyId =
-        !context?.invalidInvocationScope && typeof context?.invocationScope?.companyId === "string"
-          ? context.invocationScope.companyId.trim()
-          : null;
-
+      const actingCompanyId = context?.invocationScope?.companyId;
       if (!actingCompanyId) {
-        // Mask as invalid ref: no company scope leaks cross-company information.
+        // No company scope — treat as not-found; do not reveal why
         throw invalidSecretRef(trimmedRef);
       }
 
       // ---------------------------------------------------------------
-      // 3. Resolve — ownership is enforced by resolveSecretValue
-      //    (throws if secret.companyId !== actingCompanyId). All provider
-      //    and ownership errors are masked as InvalidSecretRefError so
-      //    plugins cannot oracle cross-company UUID membership.
+      // 3. Resolve via the secret provider, enforcing ownership
+      //    Map ownership/not-found errors to InvalidSecretRefError so
+      //    callers cannot distinguish "doesn't exist" from "belongs to
+      //    another company" (PLUGIN_SPEC §22 — no cross-company oracle).
       // ---------------------------------------------------------------
       try {
-        return await resolveSecretValue(actingCompanyId, trimmedRef, "latest");
-      } catch {
-        // Never surface the real error to the worker — it may reveal
-        // whether the UUID exists in another company.
-        throw invalidSecretRef(trimmedRef);
+        return await secretService(db).resolveSecretValue(actingCompanyId, trimmedRef, "latest");
+      } catch (err) {
+        if (err instanceof HttpError && (err.status === 404 || err.status === 422)) {
+          throw invalidSecretRef(trimmedRef);
+        }
+        throw err;
       }
     },
   };
