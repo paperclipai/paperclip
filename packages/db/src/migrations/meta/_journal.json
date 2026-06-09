@@ -631,6 +631,69 @@
       "when": 1779129600000,
       "tag": "0089_cloud_upstreams",
       "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1779573019125,
+      "tag": "0090_resource_memberships",
+      "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1778810394522,
+      "tag": "0091_old_swarm",
+      "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1779999768200,
+      "tag": "0092_mighty_puma",
+      "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1780040470886,
+      "tag": "0093_giant_green_goblin",
+      "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1780533900000,
+      "tag": "0094_backfill_archived_company_agent_pauses",
+      "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1780507597454,
+      "tag": "0095_issue_comment_tombstones",
+      "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1780507597455,
+      "tag": "0096_document_annotation_issue_comment_links",
+      "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1780534000000,
+      "tag": "0097_low_trust_source_trust",
+      "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1780534200000,
+      "tag": "0098_project_icon",
+      "breakpoints": true
     }
   ]
 }

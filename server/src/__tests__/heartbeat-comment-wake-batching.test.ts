@@ -442,12 +442,18 @@ describe("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
 
       await waitFor(() => gateway.getAgentPayloads().length === 2);
+      const secondPayload = gateway.getAgentPayloads()[1] ?? {};
+      const secondRunId = typeof secondPayload.idempotencyKey === "string" ? secondPayload.idempotencyKey : null;
+      if (!secondRunId) {
+        throw new Error("Expected forwarded gateway payload to include an idempotencyKey run id");
+      }
+
       await waitFor(async () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+        const statusesByRunId = new Map(runs.map((run) => [run.id, run.status]));
+        return statusesByRunId.get(firstRun!.id) === "succeeded" && statusesByRunId.get(secondRunId) === "succeeded";
       }, 90_000);
 
-      const secondPayload = gateway.getAgentPayloads()[1] ?? {};
       expect(secondPayload.paperclip).toMatchObject({
         wake: {
           commentIds: [comment2.id, comment3.id],

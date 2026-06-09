@@ -1,0 +1,72 @@
+name: commitperclip PR Review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+# Always runs from base branch context — never executes PR code.
+# pull_request_target gives access to secrets for untrusted fork PRs.
+
+permissions:
+  pull-requests: write
+  security-events: write
+  checks: write
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout base branch (never PR code)
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: master
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          base-ref: ${{ github.event.pull_request.base.sha }}
+          head-ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '20'
+
+      - name: Generate commitperclip token
+        id: token
+        run: |
+          TOKEN=$(node .github/scripts/get-bot-token.mjs)
+          echo "::add-mask::$TOKEN"
+          echo "value=$TOKEN" >> $GITHUB_OUTPUT
+        env:
+          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+
+      - name: Run quality gates
+        id: quality
+        if: github.event.pull_request.user.login != 'dependabot[bot]'
+        run: node .github/scripts/run-quality-gates.mjs
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.value }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+
+      - name: Run security gates
+        run: node .github/scripts/check-pr-security.mjs
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.value }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+
+      - name: Fail if quality gates failed
+        if: >-
+          github.event.pull_request.user.login != 'dependabot[bot]' &&
+          steps.quality.outcome == 'failure'
+        run: |
+          echo "One or more quality gates failed. See commitperclip comment on the PR for details."
+          exit 1

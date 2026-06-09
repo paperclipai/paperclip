@@ -371,10 +371,10 @@ function AcceptInvitePreview({
         <h3 className="text-lg font-semibold text-zinc-100">Accept company invite</h3>
         <p className="mt-1 text-sm text-zinc-400">
           {autoAccept
-            ? "Submitting your join request for Acme Robotics."
+            ? "Granting your access to Acme Robotics."
             : isCurrentMember
               ? "This account already belongs to Acme Robotics."
-              : "This will submit or complete your join request for Acme Robotics."}
+              : "This will grant or complete your access to Acme Robotics."}
         </p>
       </div>
       {error ? <p className="text-xs text-red-400">{error}</p> : null}
@@ -572,7 +572,7 @@ function CompanyInvitesPreview() {
           </fieldset>
 
           <div className="rounded-xl border border-border px-4 py-3 text-sm text-muted-foreground">
-            Each invite link is single-use. The first successful use consumes the link and creates or reuses the matching join request before approval.
+            Each invite link is single-use. Human invitees get the selected role immediately after sign-in; agent invites still create a join request for approval.
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
