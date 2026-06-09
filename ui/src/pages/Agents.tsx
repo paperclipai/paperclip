@@ -278,12 +278,15 @@ export function Agents() {
                 leftAccent={
                   // The signature heartbeat spine on the box's left edge — each
                   // agent beats on its own cadence so the roster shimmers arrhythmically.
-                  <HeartbeatSpine
-                    state={liveState}
-                    beat={2.1 + (agentIndex % 5) * 0.28}
-                    delay={(agentIndex % 7) * 0.36}
-                    className="absolute inset-y-0 left-0"
-                  />
+                  // Wrapper carries the absolute positioning (the spine's own base
+                  // CSS is position:relative, which would override an `absolute` class).
+                  <span className="pointer-events-none absolute inset-y-0 left-0 flex">
+                    <HeartbeatSpine
+                      state={liveState}
+                      beat={2.1 + (agentIndex % 5) * 0.28}
+                      delay={(agentIndex % 7) * 0.36}
+                    />
+                  </span>
                 }
                 leading={
                   <AgentPortrait
@@ -391,13 +394,15 @@ function OrgTreeNode({
         to={agent ? agentUrl(agent) : `/agents/${node.id}`}
         className={cn("relative flex items-center gap-3 px-3 py-2 hover:bg-accent/30 transition-colors w-full text-left no-underline text-inherit", agent?.pausedAt && tab !== "paused" && "opacity-50")}
       >
-        {/* The signature heartbeat spine on the box's left edge. */}
-        <HeartbeatSpine
-          state={agentLiveState(node.status)}
-          beat={2.1 + (seed % 5) * 0.28}
-          delay={(seed % 7) * 0.36}
-          className="absolute inset-y-0 left-0"
-        />
+        {/* The signature heartbeat spine on the box's left edge (wrapper carries the
+            absolute positioning; the spine's base CSS is position:relative). */}
+        <span className="pointer-events-none absolute inset-y-0 left-0 flex">
+          <HeartbeatSpine
+            state={agentLiveState(node.status)}
+            beat={2.1 + (seed % 5) * 0.28}
+            delay={(seed % 7) * 0.36}
+          />
+        </span>
         <AgentPortrait
           src={null}
           name={node.name}
