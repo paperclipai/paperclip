@@ -17,6 +17,17 @@ import {
   feedbackVotes,
   issueThreadInteractions,
   issueInboxArchives,
+  documentAnnotationComments,
+  issueDocuments,
+  issueWorkProducts,
+  issueAttachments,
+  issueApprovals,
+  issueRecoveryActions,
+  issuePlanDecompositions,
+  issueReferenceMentions,
+  inboxDismissals,
+  issueExecutionDecisions,
+  issueRelations,
 } from "@paperclipai/db";
 import {
   deriveProjectUrlKey,
@@ -884,6 +895,26 @@ export function projectService(db: Db) {
           await tx.delete(feedbackVotes).where(inArray(feedbackVotes.issueId, issueIds));
           await tx.delete(issueThreadInteractions).where(inArray(issueThreadInteractions.issueId, issueIds));
           await tx.delete(issueInboxArchives).where(inArray(issueInboxArchives.issueId, issueIds));
+          // Additional issue-child tables (companies.ts is the source of truth for ordering)
+          await tx.delete(documentAnnotationComments).where(inArray(documentAnnotationComments.issueId, issueIds));
+          await tx.delete(issueDocuments).where(inArray(issueDocuments.issueId, issueIds));
+          await tx.delete(issueWorkProducts).where(inArray(issueWorkProducts.issueId, issueIds));
+          await tx.delete(issueAttachments).where(inArray(issueAttachments.issueId, issueIds));
+          await tx.delete(issueApprovals).where(inArray(issueApprovals.issueId, issueIds));
+          // issueRecoveryActions uses sourceIssueId (FK to issues)
+          await tx.delete(issueRecoveryActions).where(inArray(issueRecoveryActions.sourceIssueId, issueIds));
+          // issuePlanDecompositions uses sourceIssueId (FK to issues)
+          await tx.delete(issuePlanDecompositions).where(inArray(issuePlanDecompositions.sourceIssueId, issueIds));
+          // issueReferenceMentions uses sourceIssueId and targetIssueId (both FK to issues)
+          await tx.delete(issueReferenceMentions).where(
+            or(
+              inArray(issueReferenceMentions.sourceIssueId, issueIds),
+              inArray(issueReferenceMentions.targetIssueId, issueIds),
+            ),
+          );
+          // inboxDismissals has no issue reference — skip (deleted at company level)
+          await tx.delete(issueExecutionDecisions).where(inArray(issueExecutionDecisions.issueId, issueIds));
+          await tx.delete(issueRelations).where(inArray(issueRelations.issueId, issueIds));
         }
         // Cost/finance events — reference project and/or issues (FK without cascade)
         await tx.delete(costEvents).where(

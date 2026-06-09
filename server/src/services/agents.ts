@@ -23,6 +23,7 @@ import {
   goals,
   routines,
   issueThreadInteractions,
+  budgetIncidents,
 } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -623,6 +624,12 @@ export function agentService(db: Db) {
           ),
         );
         await tx.delete(approvals).where(eq(approvals.requestedByAgentId, id));
+        await tx.delete(budgetIncidents).where(
+          inArray(
+            budgetIncidents.approvalId,
+            tx.select({ id: approvals.id }).from(approvals).where(eq(approvals.requestedByAgentId, id)),
+          ),
+        );
         await tx.delete(joinRequests).where(eq(joinRequests.createdAgentId, id));
         await tx.delete(assets).where(eq(assets.createdByAgentId, id));
         await tx.delete(goals).where(eq(goals.ownerAgentId, id));
