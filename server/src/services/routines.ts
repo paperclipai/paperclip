@@ -2346,7 +2346,10 @@ export function routineService(
             and(
               eq(routineTriggers.id, row.trigger.id),
               eq(routineTriggers.enabled, true),
-              eq(routineTriggers.nextRunAt, row.trigger.nextRunAt),
+              // Truncate both sides to milliseconds: Postgres timestamptz keeps microseconds but
+              // JS Date is ms-resolution, so an exact-equality claim silently matches 0 rows when
+              // next_run_at carries sub-millisecond digits (e.g. a hand-written now()).
+              sql`date_trunc('milliseconds', ${routineTriggers.nextRunAt}) = date_trunc('milliseconds', ${row.trigger.nextRunAt}::timestamptz)`,
             ),
           )
           .returning({ id: routineTriggers.id })
