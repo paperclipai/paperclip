@@ -593,7 +593,7 @@ export async function listOpenIssues(
       issues(
         filter: {
           team: { id: { eq: $teamId } }
-          state: { type: { nin: ["completed", "cancelled"] } }
+          state: { type: { nin: ["completed", "canceled", "cancelled"] } }
         }
         first: 50
         after: $after
@@ -628,31 +628,52 @@ export interface LinearProject {
   targetDate: string | null;
 }
 
+interface LinearProjectsPage {
+  pageInfo: { hasNextPage: boolean; endCursor: string | null };
+  nodes: LinearProject[];
+}
+
 export async function listProjects(
   fetch: LinearFetch,
   token: string,
   teamId?: string,
 ): Promise<LinearProject[]> {
+  const projects: LinearProject[] = [];
+  let after: string | null = null;
+
   if (teamId) {
-    const data = await gql<{
-      team: { projects: { nodes: LinearProject[] } };
-    }>(fetch, token, `
-      query ListTeamProjects($teamId: String!) {
+    do {
+      const data: { team: { projects: LinearProjectsPage } } = await gql(fetch, token, `
+      query ListTeamProjects($teamId: String!, $after: String) {
         team(id: $teamId) {
-          projects { nodes { id name description state startDate targetDate } }
+          projects(first: 100, after: $after) {
+            pageInfo { hasNextPage endCursor }
+            nodes { id name description state startDate targetDate }
+          }
         }
       }
-    `, { teamId });
-    return data.team.projects.nodes;
+    `, { teamId, after });
+      projects.push(...data.team.projects.nodes);
+      after = data.team.projects.pageInfo.hasNextPage ? data.team.projects.pageInfo.endCursor : null;
+    } while (after);
+
+    return projects;
   }
-  const data = await gql<{
-    projects: { nodes: LinearProject[] };
-  }>(fetch, token, `
-    query ListProjects {
-      projects { nodes { id name description state startDate targetDate } }
+
+  do {
+    const data: { projects: LinearProjectsPage } = await gql(fetch, token, `
+    query ListProjects($after: String) {
+      projects(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { id name description state startDate targetDate }
+      }
     }
-  `);
-  return data.projects.nodes;
+  `, { after });
+    projects.push(...data.projects.nodes);
+    after = data.projects.pageInfo.hasNextPage ? data.projects.pageInfo.endCursor : null;
+  } while (after);
+
+  return projects;
 }
 
 export async function createProject(

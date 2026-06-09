@@ -407,7 +407,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
                   id
                   key
                   issueCount
-                  issues(filter: { state: { type: { nin: ["completed", "cancelled"] } } }, first: 250) {
+                  issues(filter: { state: { type: { nin: ["completed", "canceled", "cancelled"] } } }, first: 250) {
                     nodes { id }
                   }
                 }
@@ -583,11 +583,11 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
           }> } };
         };
         const linearStatusMap: Record<string, string> = {
-          "Planned": "backlog", "Backlog": "backlog",
-          "In Progress": "active", "Started": "active",
+          "Planned": "planned", "Backlog": "backlog",
+          "In Progress": "in_progress", "Started": "in_progress",
           "Completed": "completed", "Done": "completed",
           "Canceled": "cancelled", "Cancelled": "cancelled",
-          "Paused": "paused",
+          "Paused": "backlog",
         };
         for (const lp of projData.data?.projects?.nodes ?? []) {
           const [existing] = await db
@@ -639,7 +639,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
       };
       const statusMap: Record<string, string> = {
         backlog: "backlog", unstarted: "todo", started: "in_progress",
-        completed: "done", cancelled: "cancelled",
+        completed: "done", canceled: "cancelled", cancelled: "cancelled",
       };
 
       while (hasMore) {
@@ -649,7 +649,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
           body: JSON.stringify({
             query: `query($teamId: ID!, $after: String) {
               issues(
-                filter: { team: { id: { eq: $teamId } }, state: { type: { nin: ["completed", "cancelled"] } } }
+                filter: { team: { id: { eq: $teamId } }, state: { type: { nin: ["completed", "canceled", "cancelled"] } } }
                 first: 50
                 after: $after
                 orderBy: updatedAt
@@ -988,11 +988,11 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
           }> } };
         };
         const linearStatusMap: Record<string, string> = {
-          "Planned": "backlog", "Backlog": "backlog",
-          "In Progress": "active", "Started": "active",
+          "Planned": "planned", "Backlog": "backlog",
+          "In Progress": "in_progress", "Started": "in_progress",
           "Completed": "completed", "Done": "completed",
           "Canceled": "cancelled", "Cancelled": "cancelled",
-          "Paused": "paused",
+          "Paused": "backlog",
         };
         for (const lp of projData.data?.projects?.nodes ?? []) {
           const [existing] = await db
@@ -1034,7 +1034,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
 
       const statusMap: Record<string, string> = {
         backlog: "backlog", unstarted: "todo", started: "in_progress",
-        completed: "done", cancelled: "cancelled",
+        completed: "done", canceled: "cancelled", cancelled: "cancelled",
       };
       const priorityMap: Record<number, string> = {
         0: "low", 1: "critical", 2: "high", 3: "medium", 4: "low",
@@ -1483,7 +1483,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
       if (type === "Issue" && action === "update") {
         const statusMap: Record<string, string> = {
           backlog: "backlog", unstarted: "todo", started: "in_progress",
-          completed: "done", cancelled: "cancelled",
+          completed: "done", canceled: "cancelled", cancelled: "cancelled",
         };
         const priorityMap: Record<number, string> = {
           0: "low", 1: "critical", 2: "high", 3: "medium", 4: "low",
@@ -1597,7 +1597,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
           if (!existing) {
             const statusMap: Record<string, string> = {
               backlog: "backlog", unstarted: "todo", started: "in_progress",
-              completed: "done", cancelled: "cancelled",
+              completed: "done", canceled: "cancelled", cancelled: "cancelled",
             };
             const priorityMap: Record<number, string> = {
               0: "low", 1: "critical", 2: "high", 3: "medium", 4: "low",
@@ -1730,11 +1730,11 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
 
         if (projectName) {
           const linearStatusMap: Record<string, string> = {
-            "Planned": "backlog", "Backlog": "backlog",
-            "In Progress": "active", "Started": "active",
+            "Planned": "planned", "Backlog": "backlog",
+            "In Progress": "in_progress", "Started": "in_progress",
             "Completed": "completed", "Done": "completed",
             "Canceled": "cancelled", "Cancelled": "cancelled",
-            "Paused": "paused",
+            "Paused": "backlog",
           };
           const status = projectState ? (linearStatusMap[projectState] ?? "backlog") : undefined;
 

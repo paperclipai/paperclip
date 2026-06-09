@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
-import type { PluginContext, PluginWebhookInput } from "@paperclipai/plugin-sdk";
+import type { Issue, PluginContext, PluginWebhookInput } from "@paperclipai/plugin-sdk";
 
 // Goal type with `targetDate` — added in paperclipai/shared post-2026-04-26
 // (BLO-584). Cast at the boundary until the SDK ships the updated type.
@@ -283,6 +283,121 @@ async function resolvePaperclipUserIdForEmail(
     ctx.logger.warn(`Failed to resolve user by email ${normalized}: ${err}`);
     return undefined;
   }
+}
+
+const ISSUE_TITLE_INDEX_PAGE_SIZE = 200;
+
+async function listExistingIssuesByExactTitle(
+  ctx: PluginContext,
+  companyId: string,
+): Promise<Map<string, Issue[]>> {
+  const byTitle = new Map<string, Issue[]>();
+  let offset = 0;
+
+  while (true) {
+    const page = await ctx.issues.list({
+      companyId,
+      limit: ISSUE_TITLE_INDEX_PAGE_SIZE,
+      offset,
+    });
+    if (page.length === 0) break;
+
+    for (const issue of page) {
+      const title = issue.title?.trim();
+      if (!title) continue;
+      const bucket = byTitle.get(title) ?? [];
+      bucket.push(issue);
+      byTitle.set(title, bucket);
+    }
+
+    if (page.length < ISSUE_TITLE_INDEX_PAGE_SIZE) break;
+    offset += page.length;
+  }
+
+  return byTitle;
+}
+
+async function findUnlinkedExactTitleIssue(
+  ctx: PluginContext,
+  candidates: Issue[] | undefined,
+  claimedIssueIds: Set<string>,
+  preferredProjectId: string | null,
+): Promise<Issue | null> {
+  if (!candidates?.length) return null;
+  const ordered = [...candidates].sort((a, b) => {
+    const aProjectMatch = preferredProjectId && a.projectId === preferredProjectId ? 0 : 1;
+    const bProjectMatch = preferredProjectId && b.projectId === preferredProjectId ? 0 : 1;
+    if (aProjectMatch !== bProjectMatch) return aProjectMatch - bProjectMatch;
+    const aOpen = a.status === "cancelled" || a.status === "done" ? 1 : 0;
+    const bOpen = b.status === "cancelled" || b.status === "done" ? 1 : 0;
+    return aOpen - bOpen;
+  });
+
+  for (const issue of ordered) {
+    if (claimedIssueIds.has(issue.id)) continue;
+    const existingLink = await sync.getLink(ctx, issue.id);
+    if (!existingLink) return issue;
+  }
+  return null;
+}
+
+async function updateExistingPaperclipIssueFromLinear(
+  ctx: PluginContext,
+  issue: Issue,
+  companyId: string,
+  params: {
+    linearIssue: linear.LinearIssue;
+    description?: string;
+    priority: Issue["priority"];
+    status: Issue["status"];
+    projectId: string | null;
+    labelIds: string[];
+    assigneeUserId?: string;
+  },
+): Promise<void> {
+  const patch: Record<string, unknown> = {
+    title: params.linearIssue.title,
+    priority: params.priority,
+    status: params.status,
+    originKind: ORIGIN_KIND_SELF,
+    originId: params.linearIssue.id,
+  };
+  if (params.description !== undefined) patch.description = params.description;
+  if (params.projectId && issue.projectId !== params.projectId) patch.projectId = params.projectId;
+  if (params.labelIds.length > 0) patch.labelIds = params.labelIds;
+  if (!issue.assigneeUserId && params.assigneeUserId) patch.assigneeUserId = params.assigneeUserId;
+
+  try {
+    await ctx.issues.update(issue.id, patch as Parameters<typeof ctx.issues.update>[1], companyId);
+  } catch (err) {
+    if (!("projectId" in patch)) throw err;
+    const { projectId: _projectId, ...withoutProject } = patch;
+    await ctx.issues.update(
+      issue.id,
+      withoutProject as Parameters<typeof ctx.issues.update>[1],
+      companyId,
+    );
+    ctx.logger.warn(
+      `Linear import relinked ${params.linearIssue.identifier} but could not move Paperclip issue ${issue.identifier ?? issue.id} to the Linear project: ${err}`,
+    );
+  }
+}
+
+async function createPluginLinkForExistingPaperclipIssue(
+  ctx: PluginContext,
+  issue: Issue,
+  companyId: string,
+  linearIssue: linear.LinearIssue,
+): Promise<void> {
+  await sync.createLink(ctx, {
+    paperclipIssueId: issue.id,
+    paperclipCompanyId: companyId,
+    linearIssueId: linearIssue.id,
+    linearIdentifier: linearIssue.identifier,
+    linearUrl: linearIssue.url,
+    linearStateType: linearIssue.state.type,
+    syncDirection: "bidirectional",
+  });
 }
 
 
@@ -774,10 +889,46 @@ const plugin = definePlugin({
       };
       const statusMap: Record<string, string> = {
         backlog: "backlog", unstarted: "todo", started: "in_progress",
-        completed: "done", cancelled: "cancelled",
+        completed: "done", canceled: "cancelled", cancelled: "cancelled",
       };
       const priority = priorityMap[linearIssue.priority] ?? "medium";
       const status = statusMap[linearIssue.state.type] ?? "backlog";
+      const assigneeUserId = await resolvePaperclipUserIdForEmail(ctx, linearIssue.assignee?.email);
+      const projectId = await resolveProjectIdForLinearIssue(
+        ctx,
+        linearIssue.project,
+        linearIssue.identifier,
+      );
+      const workspaceSlug = await resolveLinearWorkspaceSlug(ctx, linearIssue.url);
+      const description = linearIssue.description
+        ? linkifyBareLinearIssueRefs(linearIssue.description, workspaceSlug)
+        : undefined;
+
+      const hostLinkedIssue = await ctx.issues.getByLinearIssueId({
+        linearIssueId: linearIssue.id,
+        companyId,
+      });
+      if (hostLinkedIssue) {
+        await updateExistingPaperclipIssueFromLinear(ctx, hostLinkedIssue, companyId, {
+          linearIssue,
+          description,
+          priority: priority as Issue["priority"],
+          status: status as Issue["status"],
+          projectId,
+          labelIds: [],
+          assigneeUserId,
+        });
+        await createPluginLinkForExistingPaperclipIssue(ctx, hostLinkedIssue, companyId, linearIssue);
+        return {
+          ok: true,
+          imported: false,
+          relinked: true,
+          paperclipIssueId: hostLinkedIssue.id,
+          identifier: linearIssue.identifier,
+          url: linearIssue.url,
+          alreadyImported: true,
+        };
+      }
 
       // Dedup by (originKind, originId) — skip if Paperclip already has an
       // issue tagged with this Linear issue id. Same (companyId, originKind,
@@ -790,20 +941,20 @@ const plugin = definePlugin({
       });
       if (existingByOrigin.length > 0) {
         const existing = existingByOrigin[0]!;
-        // Backfill on re-import: if the existing Paperclip issue has no
-        // human assignee but Linear now has one whose email maps to a
-        // Paperclip user, set it. Lets a re-trigger of the import act as
-        // a one-shot backfill without needing a separate action.
-        const existingAssigneeUserId = (existing as unknown as { assigneeUserId?: string | null }).assigneeUserId;
-        if (!existingAssigneeUserId && linearIssue.assignee?.email) {
-          const userId = await resolvePaperclipUserIdForEmail(ctx, linearIssue.assignee.email);
-          if (userId) {
-            await ctx.issues.update(existing.id, { assigneeUserId: userId }, companyId);
-          }
-        }
+        await updateExistingPaperclipIssueFromLinear(ctx, existing, companyId, {
+          linearIssue,
+          description,
+          priority: priority as Issue["priority"],
+          status: status as Issue["status"],
+          projectId,
+          labelIds: [],
+          assigneeUserId,
+        });
+        await createPluginLinkForExistingPaperclipIssue(ctx, existing, companyId, linearIssue);
         return {
           ok: true,
           imported: false,
+          relinked: true,
           paperclipIssueId: existing.id,
           identifier: linearIssue.identifier,
           url: linearIssue.url,
@@ -811,16 +962,34 @@ const plugin = definePlugin({
         };
       }
 
-      const assigneeUserId = await resolvePaperclipUserIdForEmail(ctx, linearIssue.assignee?.email);
-      const projectId = await resolveProjectIdForLinearIssue(
+      const exactTitleIndex = await listExistingIssuesByExactTitle(ctx, companyId);
+      const exactTitleIssue = await findUnlinkedExactTitleIssue(
         ctx,
-        linearIssue.project,
-        linearIssue.identifier,
+        exactTitleIndex.get(linearIssue.title.trim()),
+        new Set(),
+        projectId,
       );
-      const workspaceSlug = await resolveLinearWorkspaceSlug(ctx, linearIssue.url);
-      const description = linearIssue.description
-        ? linkifyBareLinearIssueRefs(linearIssue.description, workspaceSlug)
-        : undefined;
+      if (exactTitleIssue) {
+        await updateExistingPaperclipIssueFromLinear(ctx, exactTitleIssue, companyId, {
+          linearIssue,
+          description,
+          priority: priority as Issue["priority"],
+          status: status as Issue["status"],
+          projectId,
+          labelIds: [],
+          assigneeUserId,
+        });
+        await createPluginLinkForExistingPaperclipIssue(ctx, exactTitleIssue, companyId, linearIssue);
+        return {
+          ok: true,
+          imported: false,
+          relinked: true,
+          paperclipIssueId: exactTitleIssue.id,
+          identifier: linearIssue.identifier,
+          url: linearIssue.url,
+          alreadyImported: false,
+        };
+      }
 
       const created = await ctx.issues.create({
         companyId,
@@ -1586,7 +1755,7 @@ async function handleWebhookEvent(
 
       const statusMap: Record<string, string> = {
         backlog: "backlog", unstarted: "todo", started: "in_progress",
-        completed: "done", cancelled: "cancelled",
+        completed: "done", canceled: "cancelled", cancelled: "cancelled",
       };
       const priorityMap: Record<number, string> = {
         0: "low", 1: "critical", 2: "high", 3: "medium", 4: "low",
@@ -2161,11 +2330,11 @@ async function runImport(ctx: PluginContext): Promise<{
   }
 
   const linearStatusMap: Record<string, string> = {
-    planned: "backlog", backlog: "backlog",
-    started: "active", "in progress": "active",
+    planned: "planned", backlog: "backlog",
+    started: "in_progress", "in progress": "in_progress",
     completed: "completed", done: "completed",
     canceled: "cancelled", cancelled: "cancelled",
-    paused: "paused",
+    paused: "backlog",
   };
 
   for (const lp of linearProjects) {
@@ -2248,6 +2417,13 @@ async function runImport(ctx: PluginContext): Promise<{
 
   // ---- Phase 3: Import issues ----
   ctx.logger.info("Import phase: importing issues");
+  let existingIssueTitleIndex = new Map<string, Issue[]>();
+  try {
+    existingIssueTitleIndex = await listExistingIssuesByExactTitle(ctx, companyId);
+  } catch (err) {
+    ctx.logger.warn(`Linear import could not prefetch Paperclip issues for title-based relinking: ${err}`);
+  }
+  const claimedIssueIds = new Set<string>();
   let imported = 0;
   let skipped = 0;
   let cursor: string | undefined;
@@ -2271,7 +2447,7 @@ async function runImport(ctx: PluginContext): Promise<{
 
       const statusMap: Record<string, string> = {
         backlog: "backlog", unstarted: "todo", started: "in_progress",
-        completed: "done", cancelled: "cancelled",
+        completed: "done", canceled: "cancelled", cancelled: "cancelled",
       };
       const status = statusMap[linearIssue.state.type] ?? "backlog";
 
@@ -2305,8 +2481,34 @@ async function runImport(ctx: PluginContext): Promise<{
       const description = linearIssue.description
         ? linkifyBareLinearIssueRefs(linearIssue.description, workspaceSlug)
         : undefined;
+      const assigneeUserId = await resolvePaperclipUserIdForEmail(ctx, linearIssue.assignee?.email);
 
       try {
+        // Host-side link dedup mirrors the webhook create path: if the host
+        // already has a linear_issue_links row but plugin state is missing,
+        // rebuild the plugin link and update the existing Paperclip row
+        // instead of minting another issue.
+        const hostLinkedIssue = await ctx.issues.getByLinearIssueId({
+          linearIssueId: linearIssue.id,
+          companyId,
+        });
+        if (hostLinkedIssue) {
+          await updateExistingPaperclipIssueFromLinear(ctx, hostLinkedIssue, companyId, {
+            linearIssue,
+            description,
+            priority: priority as Issue["priority"],
+            status: status as Issue["status"],
+            projectId,
+            labelIds: issueLabelIds,
+            assigneeUserId,
+          });
+          await createPluginLinkForExistingPaperclipIssue(ctx, hostLinkedIssue, companyId, linearIssue);
+          claimedIssueIds.add(hostLinkedIssue.id);
+          skipped++;
+          ctx.logger.info(`Relinked ${linearIssue.identifier} to existing host-linked Paperclip issue ${hostLinkedIssue.identifier ?? hostLinkedIssue.id}`);
+          continue;
+        }
+
         // Idempotency: the bulk-import path can rerun against the same Linear
         // workspace. Skip Paperclip rows that already point at this Linear id.
         const existingByOrigin = await ctx.issues.list({
@@ -2316,23 +2518,44 @@ async function runImport(ctx: PluginContext): Promise<{
           limit: 1,
         });
         if (existingByOrigin.length > 0) {
-          // Bulk-import re-runs are the natural moment to backfill
-          // assigneeUserId for previously-imported issues that had no
-          // resolved human assignee. One update per pre-existing row
-          // whose Linear assignee email maps to a known Paperclip user.
           const existing = existingByOrigin[0]!;
-          const existingAssigneeUserId = (existing as unknown as { assigneeUserId?: string | null }).assigneeUserId;
-          if (!existingAssigneeUserId && linearIssue.assignee?.email) {
-            const userId = await resolvePaperclipUserIdForEmail(ctx, linearIssue.assignee.email);
-            if (userId) {
-              await ctx.issues.update(existing.id, { assigneeUserId: userId }, companyId);
-            }
-          }
+          await updateExistingPaperclipIssueFromLinear(ctx, existing, companyId, {
+            linearIssue,
+            description,
+            priority: priority as Issue["priority"],
+            status: status as Issue["status"],
+            projectId,
+            labelIds: issueLabelIds,
+            assigneeUserId,
+          });
+          await createPluginLinkForExistingPaperclipIssue(ctx, existing, companyId, linearIssue);
+          claimedIssueIds.add(existing.id);
           skipped++;
           continue;
         }
 
-        const assigneeUserId = await resolvePaperclipUserIdForEmail(ctx, linearIssue.assignee?.email);
+        const exactTitleIssue = await findUnlinkedExactTitleIssue(
+          ctx,
+          existingIssueTitleIndex.get(linearIssue.title.trim()),
+          claimedIssueIds,
+          projectId,
+        );
+        if (exactTitleIssue) {
+          await updateExistingPaperclipIssueFromLinear(ctx, exactTitleIssue, companyId, {
+            linearIssue,
+            description,
+            priority: priority as Issue["priority"],
+            status: status as Issue["status"],
+            projectId,
+            labelIds: issueLabelIds,
+            assigneeUserId,
+          });
+          await createPluginLinkForExistingPaperclipIssue(ctx, exactTitleIssue, companyId, linearIssue);
+          claimedIssueIds.add(exactTitleIssue.id);
+          skipped++;
+          ctx.logger.info(`Relinked ${linearIssue.identifier} to exact-title Paperclip issue ${exactTitleIssue.identifier ?? exactTitleIssue.id}`);
+          continue;
+        }
 
         const created = await ctx.issues.create({
           companyId,
@@ -2509,6 +2732,17 @@ async function runProjectSync(
 ): Promise<{ synced: number; created: number; errors: number; skippedDrift: number; skippedCreate: number }> {
   const fetch = ctx.http.fetch.bind(ctx.http);
   const linearProjects = await linear.listProjects(fetch, token, teamId);
+  const existingProjectsByName = new Map<string, { id: string; name: string }>();
+  try {
+    const existingProjects = await ctx.projects.list({ companyId });
+    for (const project of existingProjects) {
+      if (!existingProjectsByName.has(project.name)) {
+        existingProjectsByName.set(project.name, { id: project.id, name: project.name });
+      }
+    }
+  } catch (err) {
+    ctx.logger.warn(`Project sync could not prefetch Paperclip projects for name-based relinking: ${err}`);
+  }
 
   // ctx.projects.create / .update were added after the published SDK that
   // most plugin installs pin to. Try the typed client first; if it's missing
@@ -2559,6 +2793,32 @@ async function runProjectSync(
           description: lp.description ?? null,
           state: lp.state,
         });
+        synced++;
+        continue;
+      }
+
+      const existingByName = existingProjectsByName.get(lp.name);
+      if (existingByName) {
+        await sync.createProjectLink(ctx, {
+          paperclipProjectId: existingByName.id,
+          paperclipCompanyId: companyId,
+          linearProjectId: lp.id,
+          linearProjectName: lp.name,
+          linearState: lp.state ?? "planned",
+          syncDirection: "bidirectional",
+        });
+
+        if (!supportsUpdate) {
+          skippedDrift++;
+          continue;
+        }
+
+        const status = sync.linearProjectStateToPaperclip(lp.state?.toLowerCase() ?? "planned");
+        await projectsUpdate!(existingByName.id, {
+          name: lp.name,
+          description: lp.description ?? undefined,
+          status,
+        }, companyId);
         synced++;
         continue;
       }
@@ -2755,7 +3015,7 @@ async function pushGoalToLinear(
       try {
         const teamId = await getTeamId(ctx);
         const states = await linear.getWorkflowStates(fetch, token, teamId);
-        const cancelledStateId = states.find((s) => s.type === "cancelled")?.id;
+        const cancelledStateId = states.find((s) => s.type === "canceled" || s.type === "cancelled")?.id;
         if (cancelledStateId) {
           await linear.updateIssue(fetch, token, oldLinearIssueId, {
             stateId: cancelledStateId,

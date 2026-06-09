@@ -123,6 +123,7 @@ async function updateLink(ctx: PluginContext, link: IssueLink): Promise<void> {
 function linearStateToPaperclipStatus(stateType: string): IssueStatus {
   switch (stateType) {
     case "completed": return "done";
+    case "canceled":
     case "cancelled": return "cancelled";
     case "started": return "in_progress";
     default: return "backlog";
@@ -132,7 +133,7 @@ function linearStateToPaperclipStatus(stateType: string): IssueStatus {
 function paperclipStatusToLinearStateType(status: string): string {
   switch (status) {
     case "done": return "completed";
-    case "cancelled": return "cancelled";
+    case "cancelled": return "canceled";
     case "in_progress": return "started";
     default: return "unstarted";
   }

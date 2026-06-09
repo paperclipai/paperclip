@@ -1727,6 +1727,195 @@ describe("paperclip-plugin-linear", () => {
       await expect(harness.runJob(JOB_KEYS.periodicSync)).resolves.not.toThrow();
     });
 
+    it("relinks an existing Paperclip project by name before creating a mirror", async () => {
+      const linearModule = await import("../src/linear.js");
+      vi.mocked(linearModule.listProjects).mockResolvedValueOnce([
+        {
+          id: "lin-project-1",
+          name: "Supply Portal — Backend API & DB",
+          description: "Canonical Linear project",
+          state: "started",
+          startDate: null,
+          targetDate: null,
+        },
+      ]);
+      syncModule.linearProjectStateToPaperclip.mockReturnValue("in_progress");
+
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+
+      vi.spyOn(harness.ctx.projects, "list").mockResolvedValueOnce([
+        {
+          id: "paperclip-project-1",
+          companyId: "comp-1",
+          name: "Supply Portal — Backend API & DB",
+          description: null,
+          status: "cancelled",
+        } as never,
+      ]);
+      const updateProject = vi.spyOn(harness.ctx.projects, "update").mockResolvedValue({} as never);
+      const createProject = vi.spyOn(harness.ctx.projects, "create").mockResolvedValue({ id: "new-project" } as never);
+
+      await harness.runJob(JOB_KEYS.periodicSync);
+
+      expect(syncModule.createProjectLink).toHaveBeenCalledWith(
+        harness.ctx,
+        expect.objectContaining({
+          paperclipProjectId: "paperclip-project-1",
+          linearProjectId: "lin-project-1",
+          linearProjectName: "Supply Portal — Backend API & DB",
+        }),
+      );
+      expect(updateProject).toHaveBeenCalledWith(
+        "paperclip-project-1",
+        expect.objectContaining({
+          description: "Canonical Linear project",
+          name: "Supply Portal — Backend API & DB",
+          status: "in_progress",
+        }),
+        "comp-1",
+      );
+      expect(createProject).not.toHaveBeenCalled();
+    });
+
+    it("bulk import relinks a host-linked Paperclip issue before creating a duplicate", async () => {
+      const linearModule = await import("../src/linear.js");
+      const linearIssue = {
+        id: "lin-issue-host-linked",
+        identifier: "BLO-2955",
+        title: "Supply Portal backend register endpoint",
+        description: "Canonical Linear description",
+        state: { name: "In Progress", type: "started" },
+        priority: 2,
+        url: "https://linear.app/blockc/issue/BLO-2955/supply-portal-backend-register-endpoint",
+        assignee: null,
+        labels: { nodes: [] },
+        project: null,
+        createdAt: "2026-06-01T00:00:00.000Z",
+        updatedAt: "2026-06-09T00:00:00.000Z",
+      };
+      vi.mocked(linearModule.listOpenIssues).mockResolvedValueOnce({
+        issues: [linearIssue],
+        hasNextPage: false,
+        endCursor: null,
+      });
+
+      harness.seed({
+        issues: [
+          {
+            id: "paperclip-host-linked",
+            companyId: "comp-1",
+            identifier: "BLO-3216",
+            title: "Old title",
+            status: "backlog",
+            priority: "low",
+            originKind: "manual",
+            originId: null,
+          } as never,
+        ],
+        linearIssueLinks: [
+          {
+            companyId: "comp-1",
+            linearIssueId: "lin-issue-host-linked",
+            paperclipIssueId: "paperclip-host-linked",
+          },
+        ],
+      });
+      const createIssue = vi.spyOn(harness.ctx.issues, "create");
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+
+      await harness.performAction(ACTION_KEYS.triggerImport, { companyId: "comp-1" });
+
+      expect(createIssue).not.toHaveBeenCalled();
+      expect(syncModule.createLink).toHaveBeenCalledWith(
+        harness.ctx,
+        expect.objectContaining({
+          paperclipIssueId: "paperclip-host-linked",
+          linearIssueId: "lin-issue-host-linked",
+          linearIdentifier: "BLO-2955",
+        }),
+      );
+      const updated = await harness.ctx.issues.get("paperclip-host-linked", "comp-1");
+      expect(updated).toMatchObject({
+        title: "Supply Portal backend register endpoint",
+        status: "in_progress",
+        priority: "high",
+        originKind: "plugin:paperclip-plugin-linear",
+        originId: "lin-issue-host-linked",
+      });
+    });
+
+    it("bulk import relinks an exact-title Paperclip issue before creating a mirror", async () => {
+      const linearModule = await import("../src/linear.js");
+      const linearIssue = {
+        id: "lin-issue-title-match",
+        identifier: "BLO-2960",
+        title: "Supply Portal backend SIWS auth",
+        description: null,
+        state: { name: "Backlog", type: "backlog" },
+        priority: 3,
+        url: "https://linear.app/blockc/issue/BLO-2960/supply-portal-backend-siws-auth",
+        assignee: null,
+        labels: { nodes: [] },
+        project: null,
+        createdAt: "2026-06-01T00:00:00.000Z",
+        updatedAt: "2026-06-09T00:00:00.000Z",
+      };
+      vi.mocked(linearModule.listOpenIssues).mockResolvedValueOnce({
+        issues: [linearIssue],
+        hasNextPage: false,
+        endCursor: null,
+      });
+
+      harness.seed({
+        issues: [
+          {
+            id: "paperclip-title-match",
+            companyId: "comp-1",
+            identifier: "BLO-3222",
+            title: "Supply Portal backend SIWS auth",
+            status: "cancelled",
+            priority: "low",
+            originKind: "manual",
+            originId: null,
+          } as never,
+        ],
+      });
+      const createIssue = vi.spyOn(harness.ctx.issues, "create");
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+
+      await harness.performAction(ACTION_KEYS.triggerImport, { companyId: "comp-1" });
+
+      expect(createIssue).not.toHaveBeenCalled();
+      expect(syncModule.createLink).toHaveBeenCalledWith(
+        harness.ctx,
+        expect.objectContaining({
+          paperclipIssueId: "paperclip-title-match",
+          linearIssueId: "lin-issue-title-match",
+          linearIdentifier: "BLO-2960",
+        }),
+      );
+      const updated = await harness.ctx.issues.get("paperclip-title-match", "comp-1");
+      expect(updated).toMatchObject({
+        status: "backlog",
+        priority: "medium",
+        originKind: "plugin:paperclip-plugin-linear",
+        originId: "lin-issue-title-match",
+      });
+    });
+
     it("registers initial-import job", async () => {
       await harness.ctx.state.set(
         { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
