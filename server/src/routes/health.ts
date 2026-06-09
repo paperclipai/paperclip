@@ -3,7 +3,7 @@ import { Router } from "express";
 import type { Db } from "@valadrien-os/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, instanceUserRoles, invites } from "@valadrien-os/db";
-import type { DeploymentExposure, DeploymentMode } from "@valadrien-os/shared";
+import type { DeploymentExposure, DeploymentMode, StorageProvider } from "@valadrien-os/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
 import { logger } from "../middleware/logger.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -35,6 +35,7 @@ export function healthRoutes(
     deploymentExposure: DeploymentExposure;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    storageProvider?: StorageProvider;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
@@ -42,6 +43,13 @@ export function healthRoutes(
     companyDeletionEnabled: true,
   },
 ) {
+  // Active object-storage backend. `local_disk` does NOT persist on Vercel
+  // serverless (ephemeral, per-instance FS) → uploads can't be served back; `s3`
+  // (Supabase Storage) is the persistent backend. Reported so we can confirm the
+  // provider is live after flipping the VALADRIEN_OS_STORAGE_* env. Config-only —
+  // no storage I/O on the (hot, cold-boot-sensitive) health path.
+  const storageProvider: StorageProvider = opts.storageProvider ?? "local_disk";
+  const storage = { provider: storageProvider, persistent: storageProvider !== "local_disk" };
   const router = Router();
 
   router.post("/dev-server/restart", async (req, res) => {
@@ -164,6 +172,7 @@ export function healthRoutes(
         bootstrapStatus,
         bootstrapInviteActive,
         googleAuthEnabled,
+        storage,
         ...(devServer ? { devServer } : {}),
       });
       return;
@@ -178,6 +187,7 @@ export function healthRoutes(
       bootstrapStatus,
       bootstrapInviteActive,
       googleAuthEnabled,
+      storage,
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },

@@ -21,6 +21,11 @@ export type HealthStatus = {
   bootstrapStatus?: "ready" | "bootstrap_pending";
   bootstrapInviteActive?: boolean;
   googleAuthEnabled?: boolean;
+  storage?: {
+    provider: "local_disk" | "s3";
+    // false for local_disk on serverless (ephemeral FS — uploads can't persist/serve).
+    persistent: boolean;
+  };
   features?: {
     companyDeletionEnabled?: boolean;
   };
