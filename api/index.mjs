@@ -48,12 +48,17 @@ function respondBootingHealth(res) {
     process.env.VALADRIEN_OS_DEPLOYMENT_MODE === "authenticated" ? "authenticated" : "local_trusted";
   const googleAuthEnabled =
     Boolean(process.env.GOOGLE_CLIENT_ID?.trim()) && Boolean(process.env.GOOGLE_CLIENT_SECRET?.trim());
+  // Storage provider is env-derived, so we can report it even on a cold/booting
+  // instance (before startServer builds the StorageService) — confirms the
+  // VALADRIEN_OS_STORAGE_PROVIDER flip landed on this deployment.
+  const storageProvider = process.env.VALADRIEN_OS_STORAGE_PROVIDER === "s3" ? "s3" : "local_disk";
+  const storage = { provider: storageProvider, persistent: storageProvider !== "local_disk" };
   res.statusCode = 200;
   res.setHeader("content-type", "application/json; charset=utf-8");
   res.setHeader("cache-control", "no-store");
   // Mirror the unauthenticated health shape so the SPA's CloudAccessGate keeps working
   // mid-boot (it reads deploymentMode); bootstrapStatus is omitted (needs the DB).
-  res.end(JSON.stringify({ status: "ok", deploymentMode, googleAuthEnabled, booting: true }));
+  res.end(JSON.stringify({ status: "ok", deploymentMode, googleAuthEnabled, storage, booting: true }));
 }
 
 // Vercel Node handler. Liveness must never hang on boot: answer /api/health straight
