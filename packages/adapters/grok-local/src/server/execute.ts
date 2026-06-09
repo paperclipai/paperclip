@@ -43,6 +43,16 @@ import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+const DEFAULT_GROK_OUTPUT_IDLE_TIMEOUT_SEC = 10 * 60;
+const MAX_OUTPUT_IDLE_TIMEOUT_SEC = 24 * 60 * 60;
+
+function resolveOutputIdleTimeoutSec(raw: unknown): number {
+  const numeric = asNumber(raw, Number.NaN);
+  if (!Number.isFinite(numeric) || numeric < 0) return DEFAULT_GROK_OUTPUT_IDLE_TIMEOUT_SEC;
+  const clamped = Math.min(Math.floor(numeric), MAX_OUTPUT_IDLE_TIMEOUT_SEC);
+  return Math.max(0, clamped);
+}
+
 function firstNonEmptyLine(text: string): string {
   return (
     text
@@ -300,6 +310,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       asNumber(config.timeoutSec, 0),
     );
     const graceSec = asNumber(config.graceSec, 20);
+    const outputIdleTimeoutSec = resolveOutputIdleTimeoutSec(config.outputIdleTimeoutSec);
     await ensureAdapterExecutionTargetRuntimeCommandInstalled({
       runId,
       target: executionTarget,
@@ -471,6 +482,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         env,
         timeoutSec,
         graceSec,
+        outputIdleTimeoutSec,
         onSpawn,
         onLog,
       });
@@ -486,6 +498,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           exitCode: number | null;
           signal: string | null;
           timedOut: boolean;
+          timeoutReason?: "wall" | "output_idle" | null;
           stdout: string;
           stderr: string;
         };
@@ -499,7 +512,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
-          errorMessage: `Timed out after ${timeoutSec}s`,
+          errorMessage:
+            attempt.proc.timeoutReason === "output_idle"
+              ? `No Grok output for ${outputIdleTimeoutSec}s`
+              : `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
         };
       }
