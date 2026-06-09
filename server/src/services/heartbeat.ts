@@ -1582,6 +1582,65 @@ function mergeModelProfileRunMetadata(
   };
 }
 
+function unsupportedModelProfileErrorMessage(input: {
+  adapterType: string | null;
+  modelProfile: ModelProfileApplication;
+}): string {
+  const requested = input.modelProfile.requested ?? "unknown";
+  const reason = input.modelProfile.fallbackReason ?? "adapter_profile_not_supported";
+  const adapter = input.adapterType ?? "unknown";
+  if (reason === "agent_runtime_profile_disabled") {
+    return (
+      `Requested model profile "${requested}" is disabled for this agent ` +
+      `(adapter=${adapter}). Re-enable it under the agent's runtime profile settings, ` +
+      `or use an adapter that supports the profile.`
+    );
+  }
+  if (reason === "adapter_profile_resolution_failed") {
+    return (
+      `Failed to resolve model profiles for adapter "${adapter}" while handling ` +
+      `requested profile "${requested}". Aborting instead of running a no-op.`
+    );
+  }
+  return (
+    `Adapter "${adapter}" does not support model profile "${requested}". ` +
+    `Aborting instead of running a no-op fallback that would record 0 tokens. ` +
+    `Use an adapter that advertises the profile, or remove the profile request.`
+  );
+}
+
+export function buildUnsupportedModelProfileAdapterResult(input: {
+  adapterType: string | null;
+  modelProfile: ModelProfileApplication;
+}): AdapterExecutionResult {
+  const errorMessage = unsupportedModelProfileErrorMessage(input);
+  const metadata = modelProfileRunMetadata(input.modelProfile);
+  return {
+    exitCode: 1,
+    signal: null,
+    timedOut: false,
+    errorMessage,
+    errorCode: "model_profile_not_supported",
+    errorMeta: metadata ? { modelProfile: metadata } : undefined,
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+    },
+    sessionId: null,
+    sessionParams: null,
+    sessionDisplayId: null,
+    provider: null,
+    biller: null,
+    model: null,
+    billingType: null,
+    costUsd: null,
+    resultJson: metadata ? { modelProfile: metadata } : null,
+    summary: errorMessage,
+    clearSession: false,
+  };
+}
+
 export function summarizeHeartbeatRunContextSnapshot(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> | null {
@@ -8759,6 +8818,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
 
       let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
+      if (modelProfileApplication.fallbackReason) {
+        const unsupportedResult = buildUnsupportedModelProfileAdapterResult({
+          adapterType: agent.adapterType,
+          modelProfile: modelProfileApplication,
+        });
+        await onLog(
+          "stderr",
+          `[paperclip] ${unsupportedResult.errorMessage}\n`,
+        );
+        await recordWorkspaceFinalize("failed", {
+          errorMessage: unsupportedResult.errorMessage ?? null,
+        });
+        await appendRunEvent(currentRun, seq++, {
+          eventType: "adapter.invoke",
+          stream: "system",
+          level: "error",
+          message: "model profile fallback rejected; skipping adapter execution",
+          payload: {
+            adapterType: agent.adapterType,
+            ...(unsupportedResult.errorMeta ?? {}),
+          },
+        });
+        adapterResult = unsupportedResult;
+      } else {
       try {
         adapterResult = await adapter.execute({
           runId: run.id,
@@ -8809,6 +8892,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           );
         }
         throw adapterErr;
+      }
       }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
