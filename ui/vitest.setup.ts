@@ -1,3 +1,11 @@
+import { i18n } from "@/i18n";
+
+// Force English locale for deterministic test results.
+// Without this, DEFAULT_LOCALE="ru" makes t() return Russian strings
+// while tests assert English text.
+i18n.changeLanguage("en");
+(i18n.options as Record<string, unknown>).fallbackLng = false;
+
 const storageEntries = new Map<string, string>();
 
 function installStorageMock(target: Record<string, unknown>) {
