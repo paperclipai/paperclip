@@ -531,6 +531,59 @@ describe("buildIssueChatMessages", () => {
     });
   });
 
+  it("renders newest-first and pins pending confirmations to the top", () => {
+    const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "CodexCoder")]]);
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment(),
+        createComment({
+          id: "comment-2",
+          authorAgentId: "agent-1",
+          authorUserId: null,
+          body: "I made the change.",
+          createdAt: new Date("2026-04-06T12:03:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:03:00.000Z"),
+          runId: "run-1",
+          runAgentId: "agent-1",
+        }),
+      ],
+      interactions: [
+        // Pending confirmation — must pin to the very top regardless of time.
+        createRequestConfirmation(),
+        // Resolved confirmation — not pinned; sorts by time like any other row.
+        createRequestConfirmation({
+          id: "confirmation-2",
+          status: "accepted",
+          createdAt: new Date("2026-04-06T11:58:00.000Z"),
+          updatedAt: new Date("2026-04-06T11:58:00.000Z"),
+        }),
+      ],
+      timelineEvents: [
+        {
+          id: "event-1",
+          createdAt: new Date("2026-04-06T11:59:00.000Z"),
+          actorType: "user",
+          actorId: "user-1",
+          statusChange: { from: "done", to: "todo" },
+        },
+      ],
+      linkedRuns: [],
+      liveRuns: [],
+      agentMap,
+      currentUserId: "user-1",
+      newestFirst: true,
+    });
+
+    expect(messages.map((message) => `${message.role}:${message.id}`)).toEqual([
+      // Pinned pending confirmation first, then everything newest -> oldest.
+      "system:interaction:confirmation-1",
+      "assistant:comment-2",
+      "user:comment-1",
+      "system:activity:event-1",
+      "system:interaction:confirmation-2",
+    ]);
+  });
+
   it("merges thread interactions into the same chronological feed as comments and runs", () => {
     const messages = buildIssueChatMessages({
       comments: [

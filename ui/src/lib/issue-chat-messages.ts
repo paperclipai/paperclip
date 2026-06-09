@@ -87,6 +87,10 @@ type MessageWithOrder = {
   createdAtMs: number;
   order: number;
   message: ThreadMessage;
+  // When true (and the feed is rendered newest-first), this item is pinned to
+  // the very top of the thread regardless of its timestamp — used for pending
+  // confirmation requests that await the user's action.
+  pinned?: boolean;
 };
 
 type SortBoundaryItem = {
@@ -897,6 +901,10 @@ export function buildIssueChatMessages(args: {
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
+  // Render the feed newest-first (top to bottom). Pending confirmation requests
+  // are pinned above everything else. Defaults to false (chronological) so the
+  // embedded run-output view keeps its natural oldest-first reading order.
+  newestFirst?: boolean;
 }) {
   const {
     comments,
@@ -914,6 +922,7 @@ export function buildIssueChatMessages(args: {
     agentMap,
     currentUserId,
     userLabelMap,
+    newestFirst = false,
   } = args;
 
   const orderedMessages: MessageWithOrder[] = [];
@@ -941,6 +950,9 @@ export function buildIssueChatMessages(args: {
     orderedMessages.push({
       createdAtMs: handoffAtMs ?? createdAtMs,
       order: 2,
+      // Pending confirmation requests await the user's action — pin them to the
+      // top of the newest-first feed so they are never buried below the history.
+      pinned: interaction.kind === "request_confirmation" && interaction.status === "pending",
       message: createInteractionMessage(interaction),
     });
   }
@@ -993,6 +1005,16 @@ export function buildIssueChatMessages(args: {
 
   return orderedMessages
     .sort((a, b) => {
+      if (newestFirst) {
+        // Pinned items (pending confirmations) float to the very top.
+        const aPinned = a.pinned ? 1 : 0;
+        const bPinned = b.pinned ? 1 : 0;
+        if (aPinned !== bPinned) return bPinned - aPinned;
+        // Everything else is newest-first (top to bottom).
+        if (a.createdAtMs !== b.createdAtMs) return b.createdAtMs - a.createdAtMs;
+        if (a.order !== b.order) return a.order - b.order;
+        return b.message.id.localeCompare(a.message.id);
+      }
       if (a.createdAtMs !== b.createdAtMs) return a.createdAtMs - b.createdAtMs;
       if (a.order !== b.order) return a.order - b.order;
       return a.message.id.localeCompare(b.message.id);
