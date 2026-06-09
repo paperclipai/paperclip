@@ -1383,6 +1383,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       "- Preserve artifacts, branch state, and useful output before cancellation.",
       "- Cancel or recover through the explicit run recovery controls when authorized.",
       "- Close this issue as a false positive only after recording the reason.",
+      "",
+      "## Recovery Hint",
+      "",
+      "**To resolve:** Call `POST /api/issues/{stuckIssueId}/force-release` from your agent to clear the stale execution lock.",
     ].join("\n");
   }
 

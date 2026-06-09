@@ -3795,8 +3795,60 @@ export function issueService(db: Db) {
     });
   }
 
+  async function clearStaleExecutionLock(issueId: string): Promise<{
+    cleared: boolean;
+    previousExecutionRunId: string | null;
+    previousCheckoutRunId: string | null;
+    clearedExecutionRunId: boolean;
+    clearedCheckoutRunId: boolean;
+  } | null> {
+    return db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
+      );
+      const issue = await tx
+        .select({
+          id: issues.id,
+          executionRunId: issues.executionRunId,
+          checkoutRunId: issues.checkoutRunId,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) return null;
+
+      let clearedExecutionRunId = false;
+      let clearedCheckoutRunId = false;
+
+      if (issue.executionRunId) {
+        const isStale = await isTerminalOrMissingHeartbeatRun(issue.executionRunId);
+        if (isStale) {
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: null,
+              executionAgentNameKey: null,
+              executionLockedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(issues.id, issueId));
+          clearedExecutionRunId = true;
+        }
+      }
+
+      return {
+        cleared: true,
+        previousExecutionRunId: issue.executionRunId,
+        previousCheckoutRunId: issue.checkoutRunId,
+        clearedExecutionRunId,
+        clearedCheckoutRunId,
+      };
+    });
+  }
+
   return {
     clearExecutionRunIfTerminal,
+    clearStaleExecutionLock,
 
     list: async (companyId: string, filters?: IssueFilters) => {
       if (filters?.attention === "blocked") {
@@ -5599,6 +5651,53 @@ export function issueService(db: Db) {
       const [enriched] = await withIssueLabels(db, [updated]);
       return enriched;
     },
+
+    forceRelease: async (id: string, options: { clearAssignee?: boolean } = {}) =>
+      db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
+        );
+        const existing = await tx
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            assigneeAgentId: issues.assigneeAgentId,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!existing) return null;
+
+        const patch: Partial<typeof issues.$inferInsert> = {
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        };
+        if (options.clearAssignee) {
+          patch.assigneeAgentId = null;
+        }
+
+        const updated = await tx
+          .update(issues)
+          .set(patch)
+          .where(eq(issues.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+
+        const [enriched] = await withIssueLabels(tx, [updated]);
+        return {
+          issue: enriched,
+          previous: {
+            checkoutRunId: existing.checkoutRunId,
+            executionRunId: existing.executionRunId,
+          },
+        };
+      }),
 
     adminForceRelease: async (id: string, options: { clearAssignee?: boolean } = {}) =>
       db.transaction(async (tx) => {
