@@ -62,8 +62,7 @@ describe("PF-4 describeSessionResetReason", () => {
     const reason = describeSessionResetReason({
       wakeReason: "heartbeat_timer",
     });
-    expect(reason).toContain("heartbeat_timer");
-    expect(reason).toMatch(/timer-driven|fresh/i);
+    expect(reason).toBe("wake reason is heartbeat_timer (timer-driven wake starts fresh)");
   });
 
   it("returns the existing reasons for the existing reset triggers", () => {
