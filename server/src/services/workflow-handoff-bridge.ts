@@ -685,21 +685,25 @@ export function workflowHandoffBridgeService(db: Db) {
           workflowHandoffId: bridge.workflowHandoffId,
           messageId,
         }, "workflow handoff bridge: ClickUp poll failed");
-        await db.update(workflowHandoffBridges).set({
-          lastError: detail,
-          lastPolledAt: now,
-          nextPollAt: new Date(now.getTime() + POLL_FAILURE_BACKOFF_MS),
-          updatedAt: now,
-        }).where(eq(workflowHandoffBridges.id, bridge.id));
-        await logActivity(db, {
-          companyId: bridge.companyId,
-          actorType: "system",
-          actorId: "workflow_handoff_bridge",
-          action: "workflow.handoff.bridge_poll_failed",
-          entityType: "workflow_run",
-          entityId: bridge.workflowRunId,
-          details: { bridgeId: bridge.id, workflowHandoffId: bridge.workflowHandoffId, detail },
-        });
+        await tryRecordBridgePollFailure(db, bridge, now, detail);
+        try {
+          await logActivity(db, {
+            companyId: bridge.companyId,
+            actorType: "system",
+            actorId: "workflow_handoff_bridge",
+            action: "workflow.handoff.bridge_poll_failed",
+            entityType: "workflow_run",
+            entityId: bridge.workflowRunId,
+            details: { bridgeId: bridge.id, workflowHandoffId: bridge.workflowHandoffId, detail },
+          });
+        } catch (activityError) {
+          logger.warn({
+            err: activityError,
+            bridgeId: bridge.id,
+            companyId: bridge.companyId,
+            workflowHandoffId: bridge.workflowHandoffId,
+          }, "workflow handoff bridge: failed to log active bridge poll failure");
+        }
         summary.failed += 1;
         continue;
       }

@@ -327,6 +327,30 @@ describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
     expect(run?.status).toBe("running");
   });
 
+  it("records missing threaded question markers as poll failures", async () => {
+    const { bridgeId } = await insertWaitingWorkflowBridge(db, {
+      runStatus: "awaiting_human",
+      runError: null,
+      externalThreadId: "thread-root-1",
+      externalMessageId: "question-reply-1",
+    });
+    mocks.detectClickUpAwaitingHumanBridgeEventsAfterMessage.mockResolvedValueOnce({
+      status: "failed",
+      detail: "question-marker-not-found",
+      events: [],
+    });
+
+    const result = await workflowHandoffBridgeService(db).pollActiveBridges();
+
+    expect(result.failed).toBe(1);
+    expect(result.noSignal).toBe(0);
+
+    const [bridge] = await db.select().from(workflowHandoffBridges).where(eq(workflowHandoffBridges.id, bridgeId));
+    expect(bridge?.status).toBe("waiting_for_human");
+    expect(bridge?.lastError).toBe("question-marker-not-found");
+    expect(bridge?.nextPollAt?.getTime()).toBeGreaterThan(Date.now());
+  });
+
   it("still resolves accepted replies when resolution activity logging fails", async () => {
     const { runId, bridgeId } = await insertWaitingWorkflowBridge(db, {
       runStatus: "awaiting_human",
@@ -510,6 +534,37 @@ describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
     const [secondBridge] = await db.select().from(workflowHandoffBridges).where(eq(workflowHandoffBridges.id, second.bridgeId));
     expect(firstBridge?.status).toBe("closed");
     expect(secondBridge?.status).toBe("closed");
+  });
+
+  it("continues polling active bridges when poll-failure logging fails", async () => {
+    const first = await insertWaitingWorkflowBridge(db, {
+      runStatus: "awaiting_human",
+      runError: null,
+    });
+    const second = await insertWaitingWorkflowBridge(db, {
+      runStatus: "awaiting_human",
+      runError: null,
+    });
+
+    mocks.detectClickUpAwaitingHumanBridgeEvents
+      .mockRejectedValueOnce(new Error("ClickUp timeout"))
+      .mockResolvedValueOnce({
+        status: "sent",
+        detail: "no-replies",
+        events: [],
+      });
+    mocks.logActivity.mockRejectedValueOnce(new Error("activity log unavailable"));
+
+    const result = await workflowHandoffBridgeService(db).pollActiveBridges();
+
+    expect(result.checked).toBe(2);
+    expect(result.failed).toBe(1);
+    expect(result.noSignal).toBe(1);
+
+    const [firstBridge] = await db.select().from(workflowHandoffBridges).where(eq(workflowHandoffBridges.id, first.bridgeId));
+    const [secondBridge] = await db.select().from(workflowHandoffBridges).where(eq(workflowHandoffBridges.id, second.bridgeId));
+    expect(firstBridge?.lastError).toBe("ClickUp timeout");
+    expect(secondBridge?.lastError).toBeNull();
   });
 
   it("rejects replies if the workflow becomes terminal after polling even when closure logging fails", async () => {

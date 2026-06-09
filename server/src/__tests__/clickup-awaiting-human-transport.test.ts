@@ -703,7 +703,7 @@ describe("detectClickUpAwaitingHumanBridgeEventsAfterMessage", () => {
     );
 
     expect(result).toEqual({
-      status: "sent",
+      status: "failed",
       detail: "question-marker-not-found",
       events: [],
     });

@@ -1144,7 +1144,7 @@ export async function detectClickUpAwaitingHumanBridgeEventsAfterMessage(
   }
 
   if (!markerFound) {
-    return { status: "sent", detail: "question-marker-not-found", events: [] };
+    return { status: "failed", detail: "question-marker-not-found", events: [] };
   }
   if (events.length > 0) {
     return { status: "sent", detail: "replies-detected", events };
