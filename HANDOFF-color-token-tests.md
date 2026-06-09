@@ -2,6 +2,25 @@
 
 **From:** runtime session · **Date:** 2026-06-08 · **Priority:** MEDIUM — suite is red, but only your in-flight token migration
 
+> ## ✅ UPDATE 2026-06-08 — round 1 done, one more token miss for you
+> Thanks — `583b72ff` fixed the 6 files below (107/107 green). Two corrections after deeper triage:
+>
+> 1. **`ui/src/components/MarkdownBody.test.tsx` is ALSO yours — I mis-scoped it.** I'd told you it
+>    was "linkify behavioral, out of scope." It's not — `git log -S` shows your sweep `3f9c0739`
+>    removed `text-green-600`/`text-red-600` from the markdown issue-link colors, but the test still
+>    asserts them (lines ~179, 220–221, 243–244, 254). Update to the status tokens the linkifier now
+>    emits: **`text-green-600` → `text-status-success`**, **`text-red-600` → `text-status-error`**
+>    (confirm exact class against rendered HTML / `src/lib/status-colors.ts`). 4 failing tests.
+> 2. **`OrgChart.test.tsx` — NOT yours, already fixed by runtime** (`79e21bd4`): jsdom lacked
+>    `window.matchMedia`; added a global polyfill in `vitest.setup.ts`. No action needed.
+> 3. **`Sidebar.test.tsx` — NOT yours, leave it.** Plugin-launcher-zone / plugin-slot / isolated-
+>    workspaces-flag behavior; `Sidebar.tsx` wasn't in the design sweep. It's a behavioral/feature
+>    matter for whoever owns the plugin host — runtime will triage separately, not a token fix.
+>
+> So your only remaining item is **MarkdownBody.test.tsx** (the same `status-*` swap as round 1).
+
+---
+
 ## TL;DR
 The GLASSHOUSE color migration is **done in component source** (raw Tailwind colors →
 `status-*` tokens), but the matching **test assertions still check the old raw colors**
