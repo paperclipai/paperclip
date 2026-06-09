@@ -1384,6 +1384,22 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  function isAgentBlockedCorrectionForActiveExecutionStage(
+    req: Request,
+    issue: { status: string; executionState?: unknown },
+  ) {
+    if (req.actor.type !== "agent" || !req.actor.agentId) return false;
+    if ((req.body as { status?: unknown }).status !== "blocked") return false;
+    if (issue.status !== "in_review") return false;
+    const executionState = parseIssueExecutionState(issue.executionState);
+    if (executionState?.status !== "pending") return false;
+    const actor = { type: "agent" as const, agentId: req.actor.agentId, userId: null };
+    return (
+      executionPrincipalsEqual(executionState.currentParticipant, actor) ||
+      executionPrincipalsEqual(executionState.returnAssignee, actor)
+    );
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
@@ -1396,6 +1412,9 @@ export function issueRoutes(
       return false;
     }
     if (issue.assigneeAgentId === null) {
+      return true;
+    }
+    if (isAgentBlockedCorrectionForActiveExecutionStage(req, issue)) {
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
