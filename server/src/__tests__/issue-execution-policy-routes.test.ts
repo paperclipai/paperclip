@@ -710,6 +710,23 @@ describe("issue execution policy routes", () => {
       expect(updateCall.executionState).toBeNull();
     });
 
+    it("rejects blocked correction payloads with unrelated issue mutations", async () => {
+      const issue = makeInReviewIssue({ assigneeAgentId: reviewerAgentId });
+      mockIssueService.getById.mockResolvedValue(issue);
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: implementerAgentId,
+        companyId: "company-1",
+        runId: "run-blo-9316-extra-fields",
+      }))
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ status: "blocked", title: "pwned" });
+
+      expect(res.status).toBe(403);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
     it("rejects an unrelated agent so blocked correction does not bypass issue ownership broadly", async () => {
       const issue = makeInReviewIssue({ assigneeAgentId: reviewerAgentId });
       mockIssueService.getById.mockResolvedValue(issue);

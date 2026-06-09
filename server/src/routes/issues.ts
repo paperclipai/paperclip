@@ -1384,12 +1384,20 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  function isBlockedCorrectionPatchBody(body: unknown) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+    const patch = body as Record<string, unknown>;
+    const allowedKeys = new Set(["status", "comment"]);
+    if (!Object.keys(patch).every((key) => allowedKeys.has(key))) return false;
+    return patch.status === "blocked";
+  }
+
   function isAgentBlockedCorrectionForActiveExecutionStage(
     req: Request,
     issue: { status: string; executionState?: unknown },
   ) {
     if (req.actor.type !== "agent" || !req.actor.agentId) return false;
-    if ((req.body as { status?: unknown }).status !== "blocked") return false;
+    if (!isBlockedCorrectionPatchBody(req.body)) return false;
     if (issue.status !== "in_review") return false;
     const executionState = parseIssueExecutionState(issue.executionState);
     if (executionState?.status !== "pending") return false;
@@ -1404,6 +1412,7 @@ export function issueRoutes(
     req: Request,
     res: Response,
     issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null; executionState?: unknown },
+    options: { allowBlockedCorrection?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1414,7 +1423,7 @@ export function issueRoutes(
     if (issue.assigneeAgentId === null) {
       return true;
     }
-    if (isAgentBlockedCorrectionForActiveExecutionStage(req, issue)) {
+    if (options.allowBlockedCorrection && isAgentBlockedCorrectionForActiveExecutionStage(req, issue)) {
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
@@ -4003,7 +4012,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, { allowBlockedCorrection: true }))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
