@@ -75,6 +75,7 @@ import { redactSensitiveText } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
+import { ghFetch, gitHubApiBase } from "./github-fetch.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
@@ -100,6 +101,14 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
 const DELETED_ISSUE_COMMENT_BODY = "";
+const REPO_BACKED_TERMINAL_GATE_CODE = "repo_backed_terminal_state_gate_failed";
+const TERMINAL_GATE_NON_CODE_DELIVERABLES = new Set([
+  "decision",
+  "diagnostic",
+  "report",
+  "artifact",
+  "investigation",
+]);
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -5537,6 +5546,10 @@ export function issueService(db: Db) {
         issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
       const nextExecutionWorkspaceId =
         issueData.executionWorkspaceId !== undefined ? issueData.executionWorkspaceId : existing.executionWorkspaceId;
+      const nextExecutionState =
+        issueData.executionState !== undefined ? issueData.executionState : existing.executionState;
+      const nextDescription =
+        issueData.description !== undefined ? issueData.description : existing.description;
       const nextExecutionWorkspacePreference =
         issueData.executionWorkspacePreference !== undefined
           ? issueData.executionWorkspacePreference

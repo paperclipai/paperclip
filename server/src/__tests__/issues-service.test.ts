@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { asc, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import {
   activityLog,
@@ -17,10 +17,12 @@ import {
   issueComments,
   issueInboxArchives,
   issueDocuments,
+  issueLabels,
   issuePlanDecompositions,
   issueRelations,
   issueThreadInteractions,
   issues,
+  labels,
   projectWorkspaces,
   projects,
   workspaceOperations,
