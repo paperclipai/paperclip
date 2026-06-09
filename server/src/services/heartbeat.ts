@@ -246,6 +246,11 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+export const USAGE_LIMIT_HEARTBEAT_RETRY_DELAY_MS = 5 * 60 * 60 * 1000;
+export const USAGE_LIMIT_HEARTBEAT_RETRY_REASON = "usage_limit";
+export const USAGE_LIMIT_HEARTBEAT_RETRY_WAKE_REASON = "usage_limit_retry";
+export const USAGE_LIMIT_HEARTBEAT_RETRY_MAX_ATTEMPTS = 3;
+const USAGE_LIMIT_ERROR_RE = /\byou['’]?ve hit your usage limit\b/i;
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 // Keep this in sync with local adapters that require a git workspace before launch.
@@ -339,6 +344,42 @@ function readTransientRecoveryContractFromRun(
         retryNotBefore: readTransientRetryNotBeforeFromRun(run),
       }
     : null;
+}
+
+export function isUsageLimitErrorText(value: unknown) {
+  return typeof value === "string" && USAGE_LIMIT_ERROR_RE.test(value);
+}
+
+export function isUsageLimitHeartbeatRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson"> | null | undefined,
+) {
+  if (!run) return false;
+  const resultJson = parseObject(run.resultJson);
+  const candidates = [
+    run.error,
+    run.errorCode,
+    resultJson.error,
+    resultJson.message,
+    resultJson.summary,
+    resultJson.result,
+    resultJson.stdout,
+    resultJson.stderr,
+  ];
+  return candidates.some((value) => isUsageLimitErrorText(value));
+}
+
+export function computeUsageLimitHeartbeatRetrySchedule(attempt: number, now = new Date()) {
+  if (!Number.isInteger(attempt) || attempt <= 0 || attempt > USAGE_LIMIT_HEARTBEAT_RETRY_MAX_ATTEMPTS) {
+    return null;
+  }
+  const delayMs = USAGE_LIMIT_HEARTBEAT_RETRY_DELAY_MS;
+  return {
+    attempt,
+    baseDelayMs: delayMs,
+    delayMs,
+    dueAt: new Date(now.getTime() + delayMs),
+    maxAttempts: USAGE_LIMIT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+  };
 }
 
 function mergeAdapterRecoveryMetadata(input: {
@@ -5947,7 +5988,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         : null
       : nextAttempt <= maxAttempts
-        ? computeBoundedTransientHeartbeatRetrySchedule(nextAttempt, now, opts?.random)
+        ? retryReason === USAGE_LIMIT_HEARTBEAT_RETRY_REASON
+          ? computeUsageLimitHeartbeatRetrySchedule(nextAttempt, now)
+          : computeBoundedTransientHeartbeatRetrySchedule(nextAttempt, now, opts?.random)
         : null;
     const transientRecovery =
       retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
@@ -6346,6 +6389,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
       },
     });
+
+    if (issueId && retryReason === USAGE_LIMIT_HEARTBEAT_RETRY_REASON) {
+      const retryAt = schedule.dueAt.toISOString();
+      await issuesSvc.addComment(issueId, [
+        "Paperclip detected `You've hit your usage limit` in the agent run.",
+        "",
+        `Status: waiting for automatic retry ${schedule.attempt}/${schedule.maxAttempts}.`,
+        `Next action: the task will be retried after the expected limit reset window at ${retryAt}.`,
+      ].join("\n"), { agentId: agent.id, runId: run.id }).catch((err) => {
+        logger.warn({ err, runId: run.id, issueId }, "failed to add usage limit retry issue comment");
+      });
+    }
 
     return {
       outcome: "scheduled" as const,
@@ -9042,6 +9097,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
+        } else if (outcome === "failed" && isUsageLimitHeartbeatRun(livenessRun)) {
+          await scheduleBoundedRetryForRun(livenessRun, agent, {
+            retryReason: USAGE_LIMIT_HEARTBEAT_RETRY_REASON,
+            wakeReason: USAGE_LIMIT_HEARTBEAT_RETRY_WAKE_REASON,
+            maxAttempts: USAGE_LIMIT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+          });
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
@@ -9186,6 +9247,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
         const livenessRun = await classifyAndPersistRunLiveness(failedRun) ?? failedRun;
         await refreshContinuationSummaryForRun(livenessRun, agent);
+        if (isUsageLimitHeartbeatRun(livenessRun)) {
+          await scheduleBoundedRetryForRun(livenessRun, agent, {
+            retryReason: USAGE_LIMIT_HEARTBEAT_RETRY_REASON,
+            wakeReason: USAGE_LIMIT_HEARTBEAT_RETRY_WAKE_REASON,
+            maxAttempts: USAGE_LIMIT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+          });
+        }
         if (!isWorkspaceValidationFailedRun(livenessRun)) {
           await finalizeIssueCommentPolicy(livenessRun, agent);
         }
@@ -9251,6 +9319,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             const failedAgent = setupFailureAgent ?? await getAgent(run.agentId).catch(() => null);
             if (failedAgent) {
               await refreshContinuationSummaryForRun(livenessRun, failedAgent).catch(() => undefined);
+              if (isUsageLimitHeartbeatRun(livenessRun)) {
+                await scheduleBoundedRetryForRun(livenessRun, failedAgent, {
+                  retryReason: USAGE_LIMIT_HEARTBEAT_RETRY_REASON,
+                  wakeReason: USAGE_LIMIT_HEARTBEAT_RETRY_WAKE_REASON,
+                  maxAttempts: USAGE_LIMIT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+                }).catch((scheduleErr) => {
+                  logger.warn({ err: scheduleErr, runId: livenessRun.id }, "failed to schedule usage limit retry after setup failure");
+                });
+              }
               if (!isWorkspaceValidationFailedRun(livenessRun)) {
                 await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
               }
