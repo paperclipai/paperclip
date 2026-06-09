@@ -2161,11 +2161,11 @@ async function runImport(ctx: PluginContext): Promise<{
   }
 
   const linearStatusMap: Record<string, string> = {
-    planned: "backlog", backlog: "backlog",
-    started: "active", "in progress": "active",
+    planned: "planned", backlog: "backlog",
+    started: "in_progress", "in progress": "in_progress",
     completed: "completed", done: "completed",
     canceled: "cancelled", cancelled: "cancelled",
-    paused: "paused",
+    paused: "backlog",
   };
 
   for (const lp of linearProjects) {
@@ -2509,6 +2509,17 @@ async function runProjectSync(
 ): Promise<{ synced: number; created: number; errors: number; skippedDrift: number; skippedCreate: number }> {
   const fetch = ctx.http.fetch.bind(ctx.http);
   const linearProjects = await linear.listProjects(fetch, token, teamId);
+  const existingProjectsByName = new Map<string, { id: string; name: string }>();
+  try {
+    const existingProjects = await ctx.projects.list({ companyId });
+    for (const project of existingProjects) {
+      if (!existingProjectsByName.has(project.name)) {
+        existingProjectsByName.set(project.name, { id: project.id, name: project.name });
+      }
+    }
+  } catch (err) {
+    ctx.logger.warn(`Project sync could not prefetch Paperclip projects for name-based relinking: ${err}`);
+  }
 
   // ctx.projects.create / .update were added after the published SDK that
   // most plugin installs pin to. Try the typed client first; if it's missing
@@ -2559,6 +2570,32 @@ async function runProjectSync(
           description: lp.description ?? null,
           state: lp.state,
         });
+        synced++;
+        continue;
+      }
+
+      const existingByName = existingProjectsByName.get(lp.name);
+      if (existingByName) {
+        await sync.createProjectLink(ctx, {
+          paperclipProjectId: existingByName.id,
+          paperclipCompanyId: companyId,
+          linearProjectId: lp.id,
+          linearProjectName: lp.name,
+          linearState: lp.state ?? "planned",
+          syncDirection: "bidirectional",
+        });
+
+        if (!supportsUpdate) {
+          skippedDrift++;
+          continue;
+        }
+
+        const status = sync.linearProjectStateToPaperclip(lp.state?.toLowerCase() ?? "planned");
+        await projectsUpdate!(existingByName.id, {
+          name: lp.name,
+          description: lp.description ?? undefined,
+          status,
+        }, companyId);
         synced++;
         continue;
       }

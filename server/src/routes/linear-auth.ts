@@ -583,11 +583,11 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
           }> } };
         };
         const linearStatusMap: Record<string, string> = {
-          "Planned": "backlog", "Backlog": "backlog",
-          "In Progress": "active", "Started": "active",
+          "Planned": "planned", "Backlog": "backlog",
+          "In Progress": "in_progress", "Started": "in_progress",
           "Completed": "completed", "Done": "completed",
           "Canceled": "cancelled", "Cancelled": "cancelled",
-          "Paused": "paused",
+          "Paused": "backlog",
         };
         for (const lp of projData.data?.projects?.nodes ?? []) {
           const [existing] = await db
@@ -988,11 +988,11 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
           }> } };
         };
         const linearStatusMap: Record<string, string> = {
-          "Planned": "backlog", "Backlog": "backlog",
-          "In Progress": "active", "Started": "active",
+          "Planned": "planned", "Backlog": "backlog",
+          "In Progress": "in_progress", "Started": "in_progress",
           "Completed": "completed", "Done": "completed",
           "Canceled": "cancelled", "Cancelled": "cancelled",
-          "Paused": "paused",
+          "Paused": "backlog",
         };
         for (const lp of projData.data?.projects?.nodes ?? []) {
           const [existing] = await db
@@ -1730,11 +1730,11 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
 
         if (projectName) {
           const linearStatusMap: Record<string, string> = {
-            "Planned": "backlog", "Backlog": "backlog",
-            "In Progress": "active", "Started": "active",
+            "Planned": "planned", "Backlog": "backlog",
+            "In Progress": "in_progress", "Started": "in_progress",
             "Completed": "completed", "Done": "completed",
             "Canceled": "cancelled", "Cancelled": "cancelled",
-            "Paused": "paused",
+            "Paused": "backlog",
           };
           const status = projectState ? (linearStatusMap[projectState] ?? "backlog") : undefined;
 

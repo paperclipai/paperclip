@@ -1727,6 +1727,63 @@ describe("paperclip-plugin-linear", () => {
       await expect(harness.runJob(JOB_KEYS.periodicSync)).resolves.not.toThrow();
     });
 
+    it("relinks an existing Paperclip project by name before creating a mirror", async () => {
+      const linearModule = await import("../src/linear.js");
+      vi.mocked(linearModule.listProjects).mockResolvedValueOnce([
+        {
+          id: "lin-project-1",
+          name: "Supply Portal — Backend API & DB",
+          description: "Canonical Linear project",
+          state: "started",
+          startDate: null,
+          targetDate: null,
+        },
+      ]);
+      syncModule.linearProjectStateToPaperclip.mockReturnValue("in_progress");
+
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+
+      vi.spyOn(harness.ctx.projects, "list").mockResolvedValueOnce([
+        {
+          id: "paperclip-project-1",
+          companyId: "comp-1",
+          name: "Supply Portal — Backend API & DB",
+          description: null,
+          status: "cancelled",
+        } as never,
+      ]);
+      const updateProject = vi.spyOn(harness.ctx.projects, "update").mockResolvedValue({} as never);
+      const createProject = vi.spyOn(harness.ctx.projects, "create").mockResolvedValue({ id: "new-project" } as never);
+
+      await harness.runJob(JOB_KEYS.periodicSync);
+
+      expect(syncModule.createProjectLink).toHaveBeenCalledWith(
+        harness.ctx,
+        expect.objectContaining({
+          paperclipProjectId: "paperclip-project-1",
+          linearProjectId: "lin-project-1",
+          linearProjectName: "Supply Portal — Backend API & DB",
+        }),
+      );
+      expect(updateProject).toHaveBeenCalledWith(
+        "paperclip-project-1",
+        expect.objectContaining({
+          description: "Canonical Linear project",
+          name: "Supply Portal — Backend API & DB",
+          status: "in_progress",
+        }),
+        "comp-1",
+      );
+      expect(createProject).not.toHaveBeenCalled();
+    });
+
     it("registers initial-import job", async () => {
       await harness.ctx.state.set(
         { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
