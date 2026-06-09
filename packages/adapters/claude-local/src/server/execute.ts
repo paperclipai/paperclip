@@ -627,6 +627,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
   } else if (
     runtimeSessionId &&
+    isValidUuid &&
     runtimeSessionCwd.length > 0 &&
     path.resolve(runtimeSessionCwd) !== path.resolve(effectiveExecutionCwd)
   ) {
@@ -634,7 +635,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       "stdout",
       `[paperclip] Claude session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
     );
-  } else if (runtimeSessionId && !canResumeSession) {
+  } else if (runtimeSessionId && isValidUuid && !canResumeSession) {
     await onLog(
       "stdout",
       `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
