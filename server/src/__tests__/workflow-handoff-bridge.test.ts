@@ -512,7 +512,7 @@ describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
     expect(secondBridge?.status).toBe("closed");
   });
 
-  it("rejects replies if the workflow becomes terminal after polling", async () => {
+  it("rejects replies if the workflow becomes terminal after polling even when closure logging fails", async () => {
     const { runId, handoffId, bridgeId } = await insertWaitingWorkflowBridge(db, {
       runStatus: "awaiting_human",
       runError: null,
@@ -537,6 +537,7 @@ describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
         }],
       };
     });
+    mocks.logActivity.mockRejectedValueOnce(new Error("activity log unavailable"));
 
     const result = await workflowHandoffBridgeService(db).pollActiveBridges();
 
@@ -559,6 +560,10 @@ describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
       "white_check_mark",
       expect.anything(),
     );
+    expect(mocks.logActivity).toHaveBeenCalledTimes(1);
+    expect(mocks.logActivity).toHaveBeenCalledWith(db, expect.objectContaining({
+      action: "workflow.handoff.bridge_closed_terminal",
+    }));
 
     const [handoff] = await db.select().from(workflowHandoffs).where(eq(workflowHandoffs.id, handoffId));
     expect(handoff?.status).toBe("cancelled");

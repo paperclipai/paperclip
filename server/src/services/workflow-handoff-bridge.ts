@@ -787,24 +787,33 @@ export function workflowHandoffBridgeService(db: Db) {
               ? "failed"
               : "cancelled";
           await closeBridgeRow(db, bridge, closeOutcome, overrides);
-          await logActivity(db, {
-            companyId: bridge.companyId,
-            actorType: "system",
-            actorId: "workflow_handoff_bridge",
-            action: "workflow.handoff.bridge_closed_terminal",
-            entityType: "workflow_run",
-            entityId: bridge.workflowRunId,
-            details: {
+          try {
+            await logActivity(db, {
+              companyId: bridge.companyId,
+              actorType: "system",
+              actorId: "workflow_handoff_bridge",
+              action: "workflow.handoff.bridge_closed_terminal",
+              entityType: "workflow_run",
+              entityId: bridge.workflowRunId,
+              details: {
+                bridgeId: bridge.id,
+                workflowHandoffId: bridge.workflowHandoffId,
+                provider: bridge.provider,
+                externalMessageId: bridge.externalMessageId ?? null,
+                externalThreadId: bridge.externalThreadId ?? null,
+                runStatus: staleRun?.status ?? null,
+                runError: staleRun?.error ?? null,
+                closeOutcome,
+              },
+            });
+          } catch (error) {
+            logger.warn({
+              err: error,
               bridgeId: bridge.id,
+              companyId: bridge.companyId,
               workflowHandoffId: bridge.workflowHandoffId,
-              provider: bridge.provider,
-              externalMessageId: bridge.externalMessageId ?? null,
-              externalThreadId: bridge.externalThreadId ?? null,
-              runStatus: staleRun?.status ?? null,
-              runError: staleRun?.error ?? null,
-              closeOutcome,
-            },
-          });
+            }, "workflow handoff bridge: failed to log stale-run bridge closure");
+          }
           summary.terminalClosed += 1;
           continue;
         }
