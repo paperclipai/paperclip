@@ -22,6 +22,21 @@ export interface IssueLink {
   lastCommentSyncAt: string | null;
 }
 
+export type ProjectDriftSyncResult = "updated" | "unchanged" | "unavailable" | "failed";
+
+export function isHostWriteUnavailableError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes("missing, expired, or unknown invocation scope")
+    || message.includes("not allowed to perform")
+    || message.includes("CapabilityDeniedError")
+    || message.includes("InvocationScopeDeniedError");
+}
+
+export function isPaperclipIssueNotFoundError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes("Issue not found");
+}
+
 function linkStateKey(paperclipIssueId: string): string {
   return `${STATE_KEYS.linkPrefix}${paperclipIssueId}`;
 }
@@ -408,8 +423,8 @@ export async function syncProjectFromLinear(
   ctx: PluginContext,
   link: ProjectLink,
   linearProject: { id: string; name: string; description: string | null; state: string },
-): Promise<void> {
-  if (link.syncDirection === "paperclip-to-linear") return;
+): Promise<ProjectDriftSyncResult> {
+  if (link.syncDirection === "paperclip-to-linear") return "unchanged";
 
   const patch: Record<string, unknown> = {};
 
@@ -428,7 +443,7 @@ export async function syncProjectFromLinear(
     link.lastLinearState = newState;
   }
 
-  if (Object.keys(patch).length === 0) return;
+  if (Object.keys(patch).length === 0) return "unchanged";
 
   // Try the typed client first; fall back to ctx.rpc.call (newer SDK escape
   // hatch) so this works on plugin installs whose pinned SDK predates the
@@ -452,13 +467,13 @@ export async function syncProjectFromLinear(
         `Skipping project drift for ${link.linearProjectName ?? link.paperclipProjectId}: ` +
           `installed plugin SDK exposes neither ctx.projects.update nor ctx.rpc.call.`,
       );
-      return;
+      return "unavailable";
     }
   } catch (err) {
     ctx.logger.warn(
       `Failed to sync Linear project drift to Paperclip: ${err}`,
     );
-    return;
+    return isHostWriteUnavailableError(err) ? "unavailable" : "failed";
   }
 
   await updateProjectLink(ctx, link);
@@ -466,6 +481,7 @@ export async function syncProjectFromLinear(
   ctx.logger.info(
     `Synced Linear project -> Paperclip (${Object.keys(patch).join(", ")})`,
   );
+  return "updated";
 }
 
 export async function syncProjectToLinear(

@@ -98,6 +98,8 @@ const syncModule = vi.hoisted(() => ({
   syncFromLinear: vi.fn().mockResolvedValue(undefined),
   syncProjectToLinear: vi.fn().mockResolvedValue(undefined),
   syncProjectFromLinear: vi.fn().mockResolvedValue(undefined),
+  isHostWriteUnavailableError: vi.fn().mockImplementation((err: unknown) => String(err).includes("missing, expired, or unknown invocation scope")),
+  isPaperclipIssueNotFoundError: vi.fn().mockImplementation((err: unknown) => String(err).includes("Issue not found")),
   bridgeCommentToLinear: vi.fn().mockResolvedValue(undefined),
   paperclipProjectStateToLinear: vi.fn().mockReturnValue("planned"),
   linearProjectStateToPaperclip: vi.fn().mockReturnValue("backlog"),
@@ -135,6 +137,8 @@ describe("paperclip-plugin-linear", () => {
     syncModule.syncFromLinear.mockResolvedValue(undefined);
     syncModule.syncProjectToLinear.mockResolvedValue(undefined);
     syncModule.syncProjectFromLinear.mockResolvedValue(undefined);
+    syncModule.isHostWriteUnavailableError.mockImplementation((err: unknown) => String(err).includes("missing, expired, or unknown invocation scope"));
+    syncModule.isPaperclipIssueNotFoundError.mockImplementation((err: unknown) => String(err).includes("Issue not found"));
     syncModule.bridgeCommentToLinear.mockResolvedValue(undefined);
     syncModule.paperclipProjectStateToLinear.mockReturnValue("planned");
     syncModule.linearProjectStateToPaperclip.mockReturnValue("backlog");
@@ -1996,6 +2000,94 @@ describe("paperclip-plugin-linear", () => {
       expect(syncModule.getLinkByLinear).not.toHaveBeenCalled();
       expect(syncModule.syncFromLinear).toHaveBeenCalledWith(harness.ctx, linkOne, linearOne);
       expect(syncModule.syncFromLinear).toHaveBeenCalledWith(harness.ctx, linkTwo, linearTwo);
+    });
+
+    it("removes stale persisted links when the Paperclip issue is gone", async () => {
+      const { listIssuesByIds } = await import("../src/linear.js");
+      const link = {
+        paperclipIssueId: "pc-missing",
+        paperclipCompanyId: "comp-1",
+        linearIssueId: "lin-stale",
+        linearIdentifier: "LUC-404",
+        linearUrl: "https://linear.app/lucitra/issue/LUC-404",
+        syncDirection: "bidirectional" as const,
+        lastSyncAt: "2026-06-09T00:00:00.000Z",
+        lastLinearStateType: "started",
+        lastCommentSyncAt: null,
+      };
+      const linearIssue = {
+        id: "lin-stale",
+        identifier: "LUC-404",
+        title: "Gone in Paperclip",
+        description: null,
+        state: { name: "In Progress", type: "started" },
+        priority: 3,
+        url: "https://linear.app/lucitra/issue/LUC-404",
+        assignee: null,
+        labels: { nodes: [] },
+        project: null,
+        createdAt: "2026-06-09T00:00:00.000Z",
+        updatedAt: "2026-06-09T00:00:00.000Z",
+      };
+
+      vi.mocked(listIssuesByIds).mockResolvedValueOnce([linearIssue]);
+      syncModule.syncFromLinear.mockRejectedValueOnce(new Error("Issue not found"));
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: `${STATE_KEYS.linkPrefix}${link.paperclipIssueId}` },
+        link,
+      );
+
+      await expect(harness.runJob(JOB_KEYS.periodicSync)).resolves.not.toThrow();
+
+      expect(syncModule.removeLink).toHaveBeenCalledWith(harness.ctx, "pc-missing");
+    });
+
+    it("backs off project drift updates after invocation-scope denial", async () => {
+      const { listProjects } = await import("../src/linear.js");
+      vi.mocked(listProjects).mockResolvedValueOnce([
+        {
+          id: "lin-proj-1",
+          name: "Project one",
+          description: null,
+          state: "started",
+          url: "https://linear.app/lucitra/project/project-one",
+        },
+        {
+          id: "lin-proj-2",
+          name: "Project two",
+          description: null,
+          state: "planned",
+          url: "https://linear.app/lucitra/project/project-two",
+        },
+      ]);
+      syncModule.getProjectLinkByLinear.mockImplementation(async (_ctx: unknown, linearProjectId: string) => ({
+        paperclipProjectId: linearProjectId === "lin-proj-1" ? "pc-proj-1" : "pc-proj-2",
+        paperclipCompanyId: "comp-1",
+        linearProjectId,
+        linearProjectName: linearProjectId === "lin-proj-1" ? "Project one" : "Project two",
+        lastLinearState: "planned",
+        syncDirection: "bidirectional",
+        lastSyncAt: "2026-06-09T00:00:00.000Z",
+      }));
+      syncModule.syncProjectFromLinear.mockResolvedValueOnce("unavailable");
+
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+
+      await expect(harness.runJob(JOB_KEYS.periodicSync)).resolves.not.toThrow();
+
+      expect(syncModule.syncProjectFromLinear).toHaveBeenCalledTimes(1);
+      expect(syncModule.getProjectLinkByLinear).toHaveBeenCalledTimes(2);
     });
 
     it("registers initial-import job", async () => {

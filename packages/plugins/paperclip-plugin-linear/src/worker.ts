@@ -2695,6 +2695,13 @@ async function runFullSync(ctx: PluginContext): Promise<{
           await sync.syncFromLinear(ctx, link, linearIssue);
           synced++;
         } catch (err) {
+          if (sync.isPaperclipIssueNotFoundError(err)) {
+            await sync.removeLink(ctx, link.paperclipIssueId);
+            ctx.logger.info(
+              `Removed stale Linear link for ${link.linearIdentifier}: Paperclip issue ${link.paperclipIssueId} was not found`,
+            );
+            continue;
+          }
           ctx.logger.warn(`Sync failed for ${linearIssue.identifier}: ${err}`);
           errors++;
         }
@@ -2801,8 +2808,8 @@ async function runProjectSync(
       ? (input: { companyId: string; name: string; description?: string; status?: string }) =>
           rpcCall<{ id: string }>("projects.create", input)
       : null;
-  const supportsUpdate = projectsUpdate !== null;
-  const supportsCreate = projectsCreate !== null;
+  let supportsUpdate = projectsUpdate !== null;
+  let supportsCreate = projectsCreate !== null;
 
   let synced = 0;
   let created = 0;
@@ -2822,12 +2829,22 @@ async function runProjectSync(
           skippedDrift++;
           continue;
         }
-        await sync.syncProjectFromLinear(ctx, existing, {
+        const result = await sync.syncProjectFromLinear(ctx, existing, {
           id: lp.id,
           name: lp.name,
           description: lp.description ?? null,
           state: lp.state,
         });
+        if (result === "unavailable") {
+          supportsUpdate = false;
+          skippedDrift++;
+          ctx.logger.warn("Project drift sync unavailable for this invocation; skipping remaining project updates");
+          continue;
+        }
+        if (result === "failed") {
+          errors++;
+          continue;
+        }
         synced++;
         continue;
       }
@@ -2867,12 +2884,23 @@ async function runProjectSync(
       // (matches the create-webhook behavior so the catch-up path is
       // symmetric with live events).
       const status = sync.linearProjectStateToPaperclip(lp.state?.toLowerCase() ?? "planned");
-      const createdProj = await projectsCreate!({
-        companyId,
-        name: lp.name,
-        description: lp.description ?? undefined,
-        status,
-      });
+      let createdProj: { id: string };
+      try {
+        createdProj = await projectsCreate!({
+          companyId,
+          name: lp.name,
+          description: lp.description ?? undefined,
+          status,
+        });
+      } catch (err) {
+        if (sync.isHostWriteUnavailableError(err)) {
+          supportsCreate = false;
+          skippedCreate++;
+          ctx.logger.warn("Project create sync unavailable for this invocation; skipping remaining project creates");
+          continue;
+        }
+        throw err;
+      }
       await sync.createProjectLink(ctx, {
         paperclipProjectId: createdProj.id,
         paperclipCompanyId: companyId,
