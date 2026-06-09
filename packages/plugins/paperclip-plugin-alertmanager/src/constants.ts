@@ -1,5 +1,6 @@
 import type {
   AlertmanagerPluginConfig,
+  OwnerMap,
   PaperclipPriority,
 } from "./types.js";
 
@@ -27,6 +28,13 @@ export const DEFAULT_SEVERITY_TO_PRIORITY: Record<string, PaperclipPriority> = {
   critical: "critical",
   warning: "high",
   info: "medium",
+};
+
+/** Default owner routes shipped with the bundled Blockcast Alertmanager plugin. */
+export const DEFAULT_OWNER_MAP: OwnerMap = {
+  class: {
+    paperclip_claude_k8s: "support@blockcast.net",
+  },
 };
 
 /** Fallback priority when severity is unknown / unmapped. */
@@ -80,7 +88,7 @@ export const DEFAULT_CONFIG: AlertmanagerPluginConfig = {
   acceptOnlyLabels: {},
   severityToPriority: DEFAULT_SEVERITY_TO_PRIORITY,
   autoCloseOnResolve: false,
-  ownerMap: {},
+  ownerMap: DEFAULT_OWNER_MAP,
 };
 
 /**

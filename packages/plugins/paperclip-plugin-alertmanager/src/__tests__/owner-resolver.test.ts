@@ -4,7 +4,7 @@ import {
   resolveOwnerEmail,
   resolveOwnerUserId,
 } from "../owner-resolver.js";
-import { STATE_KEYS } from "../constants.js";
+import { DEFAULT_OWNER_MAP, STATE_KEYS } from "../constants.js";
 import type { AlertmanagerAlert, OwnerMap } from "../types.js";
 
 const alert = (overrides: Partial<AlertmanagerAlert> = {}): AlertmanagerAlert => ({
@@ -80,6 +80,22 @@ describe("resolveOwnerEmail — pure resolution chain", () => {
     };
     expect(resolveOwnerEmail(a, ownerMap)).toEqual({
       email: "alice@example.com",
+      agentId: null,
+      source: "owner-map",
+    });
+  });
+
+  it("ships a durable default route for paperclip claude_k8s alert class", () => {
+    const a = alert({
+      labels: {
+        alertname: "ClaudeK8sConcurrentRunBlockedRate",
+        severity: "warning",
+        class: "paperclip_claude_k8s",
+      },
+    });
+
+    expect(resolveOwnerEmail(a, DEFAULT_OWNER_MAP)).toEqual({
+      email: "support@blockcast.net",
       agentId: null,
       source: "owner-map",
     });

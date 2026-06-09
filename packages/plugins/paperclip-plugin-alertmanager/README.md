@@ -77,10 +77,18 @@ severityToPriority:
   info:     medium
 autoCloseOnResolve: false
 ownerMap:
+  class:
+    paperclip_claude_k8s: support@blockcast.net
   team:
     platform:   alice@blockcast.net
     networking: ned@blockcast.net
 ```
+
+The bundled Blockcast plugin ships `class.paperclip_claude_k8s -> support@blockcast.net`
+as a default route so `ClaudeK8sConcurrentRunBlockedRate` alerts remain owned after
+a fresh deploy or plugin reinstall. Instance config is merged on top, so operators
+can override that route or add more routes in the settings UI without losing the
+default.
 
 ### Owner resolution chain (§7.7)
 
