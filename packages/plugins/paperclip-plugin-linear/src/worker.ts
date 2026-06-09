@@ -2625,6 +2625,7 @@ async function runImport(ctx: PluginContext): Promise<{
 
 const LINEAR_LINK_SYNC_PAGE_SIZE = 100;
 const LINEAR_ISSUE_SYNC_BATCH_SIZE = 50;
+const LINEAR_LINK_SYNC_MAX_ENTRIES_PER_RUN = 100;
 
 function isIssueLink(value: unknown): value is sync.IssueLink {
   if (typeof value !== "object" || value === null) return false;
@@ -2640,12 +2641,15 @@ function isIssueLink(value: unknown): value is sync.IssueLink {
 async function runFullSync(ctx: PluginContext): Promise<{
   synced: number;
   errors: number;
+  scanned: number;
+  complete: boolean;
+  nextOffset: number;
 }> {
   let token: string;
   try {
     token = await resolveToken(ctx);
   } catch {
-    return { synced: 0, errors: 0 };
+    return { synced: 0, errors: 0, scanned: 0, complete: true, nextOffset: 0 };
   }
 
   const fetch = ctx.http.fetch.bind(ctx.http);
@@ -2653,20 +2657,32 @@ async function runFullSync(ctx: PluginContext): Promise<{
   let synced = 0;
   let errors = 0;
   let scanned = 0;
-  let offset = 0;
+  let entriesScanned = 0;
+  const cursorKey = { scopeKind: "instance" as const, stateKey: STATE_KEYS.periodicLinkSyncOffset };
+  const storedOffset = Number(await ctx.state.get(cursorKey));
+  let offset = Number.isFinite(storedOffset) && storedOffset > 0 ? Math.trunc(storedOffset) : 0;
+  let complete = false;
 
-  while (true) {
+  while (entriesScanned < LINEAR_LINK_SYNC_MAX_ENTRIES_PER_RUN) {
+    const remaining = LINEAR_LINK_SYNC_MAX_ENTRIES_PER_RUN - entriesScanned;
     const page = await ctx.state.list({
       scopeKind: "instance",
       namespace: "default",
       stateKeyPrefix: STATE_KEYS.linkPrefix,
-      limit: LINEAR_LINK_SYNC_PAGE_SIZE,
+      limit: Math.min(LINEAR_LINK_SYNC_PAGE_SIZE, remaining),
       offset,
     });
+    if (page.entries.length === 0) {
+      offset = 0;
+      complete = true;
+      break;
+    }
+
     const links = page.entries
       .map((entry) => entry.value)
       .filter(isIssueLink);
     scanned += links.length;
+    entriesScanned += page.entries.length;
 
     for (let index = 0; index < links.length; index += LINEAR_ISSUE_SYNC_BATCH_SIZE) {
       const batch = links.slice(index, index + LINEAR_ISSUE_SYNC_BATCH_SIZE);
@@ -2708,8 +2724,21 @@ async function runFullSync(ctx: PluginContext): Promise<{
       }
     }
 
-    if (!page.hasMore) break;
-    offset += LINEAR_LINK_SYNC_PAGE_SIZE;
+    offset += page.entries.length;
+    if (!page.hasMore) {
+      offset = 0;
+      complete = true;
+      break;
+    }
+  }
+
+  await ctx.state.set(cursorKey, offset);
+
+  if (!complete) {
+    ctx.logger.info(
+      `Full sync paused: ${synced} synced from ${scanned} linked issues, ${errors} errors, next offset ${offset}`,
+    );
+    return { synced, errors, scanned, complete, nextOffset: offset };
   }
 
   ctx.logger.info(`Full sync complete: ${synced} synced from ${scanned} linked issues, ${errors} errors`);
@@ -2753,7 +2782,7 @@ async function runFullSync(ctx: PluginContext): Promise<{
     ctx.logger.warn(`Project sync pass failed: ${err}`);
   }
 
-  return { synced, errors };
+  return { synced, errors, scanned, complete, nextOffset: offset };
 }
 
 /**

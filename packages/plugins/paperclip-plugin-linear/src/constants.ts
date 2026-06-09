@@ -82,6 +82,7 @@ export const STATE_KEYS = {
   connected: "connected",
   projectLinkPrefix: "project-link:",
   projectLinearPrefix: "project-linear:",
+  periodicLinkSyncOffset: "periodic-sync-link-offset",
   goalLinkPrefix: "goal-link:",
   goalLinearPrefix: "goal-linear:",
   /** Cached Linear project id used as the bucket for synced goals (fallback when initiatives unsupported). */

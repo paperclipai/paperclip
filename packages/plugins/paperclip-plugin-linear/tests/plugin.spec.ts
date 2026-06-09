@@ -2002,6 +2002,97 @@ describe("paperclip-plugin-linear", () => {
       expect(syncModule.syncFromLinear).toHaveBeenCalledWith(harness.ctx, linkTwo, linearTwo);
     });
 
+    it("bounds periodic linked issue sync and resumes from the stored cursor", async () => {
+      const { listIssuesByIds, listProjects } = await import("../src/linear.js");
+      const issueCount = 125;
+      const makeLink = (index: number) => {
+        const padded = String(index).padStart(3, "0");
+        return {
+          paperclipIssueId: `pc-${padded}`,
+          paperclipCompanyId: "comp-1",
+          linearIssueId: `lin-${padded}`,
+          linearIdentifier: `LUC-${index + 1}`,
+          linearUrl: `https://linear.app/lucitra/issue/LUC-${index + 1}`,
+          syncDirection: "bidirectional" as const,
+          lastSyncAt: "2026-06-09T00:00:00.000Z",
+          lastLinearStateType: "started",
+          lastCommentSyncAt: null,
+        };
+      };
+      const makeLinearIssue = (id: string) => {
+        const index = Number(id.slice("lin-".length));
+        return {
+          id,
+          identifier: `LUC-${index + 1}`,
+          title: `Linked ${index + 1}`,
+          description: null,
+          state: { name: "In Progress", type: "started" },
+          priority: 3,
+          url: `https://linear.app/lucitra/issue/LUC-${index + 1}`,
+          assignee: null,
+          labels: { nodes: [] },
+          project: null,
+          createdAt: "2026-06-09T00:00:00.000Z",
+          updatedAt: "2026-06-09T00:00:00.000Z",
+        };
+      };
+
+      vi.mocked(listIssuesByIds).mockImplementation(async (_fetch, _token, ids) => ids.map(makeLinearIssue));
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+      for (let index = 0; index < issueCount; index++) {
+        const link = makeLink(index);
+        await harness.ctx.state.set(
+          { scopeKind: "instance", stateKey: `${STATE_KEYS.linkPrefix}${link.paperclipIssueId}` },
+          link,
+        );
+      }
+
+      const first = await harness.performAction<{
+        synced: number;
+        errors: number;
+        scanned: number;
+        complete: boolean;
+        nextOffset: number;
+      }>(ACTION_KEYS.triggerSync);
+
+      expect(first).toMatchObject({
+        synced: 100,
+        errors: 0,
+        scanned: 100,
+        complete: false,
+        nextOffset: 100,
+      });
+      expect(syncModule.syncFromLinear).toHaveBeenCalledTimes(100);
+      expect(harness.getState({ scopeKind: "instance", stateKey: STATE_KEYS.periodicLinkSyncOffset })).toBe(100);
+      expect(listProjects).not.toHaveBeenCalled();
+
+      const second = await harness.performAction<{
+        synced: number;
+        errors: number;
+        scanned: number;
+        complete: boolean;
+        nextOffset: number;
+      }>(ACTION_KEYS.triggerSync);
+
+      expect(second).toMatchObject({
+        synced: 25,
+        errors: 0,
+        scanned: 25,
+        complete: true,
+        nextOffset: 0,
+      });
+      expect(syncModule.syncFromLinear).toHaveBeenCalledTimes(125);
+      expect(harness.getState({ scopeKind: "instance", stateKey: STATE_KEYS.periodicLinkSyncOffset })).toBe(0);
+      expect(listProjects).toHaveBeenCalledTimes(1);
+    });
+
     it("removes stale persisted links when the Paperclip issue is gone", async () => {
       const { listIssuesByIds } = await import("../src/linear.js");
       const link = {
