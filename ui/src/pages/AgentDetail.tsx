@@ -313,11 +313,53 @@ function asNonEmptyString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function asFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+type InputContextContributor = {
+  key: string;
+  label: string;
+  source: string;
+  chars: number;
+  estimatedTokens: number;
+};
+
+function readInputContextAttribution(payload: Record<string, unknown>): Record<string, unknown> | null {
+  return asRecord(payload.inputContextAttribution);
+}
+
+function readInputContextContributors(attribution: Record<string, unknown> | null): InputContextContributor[] {
+  const contributors = Array.isArray(attribution?.contributors) ? attribution.contributors : [];
+  return contributors
+    .map((value) => {
+      const row = asRecord(value);
+      if (!row) return null;
+      const key = asNonEmptyString(row.key);
+      const label = asNonEmptyString(row.label);
+      const source = asNonEmptyString(row.source) ?? "unknown";
+      const chars = asFiniteNumber(row.chars) ?? 0;
+      const estimatedTokens = asFiniteNumber(row.estimatedTokens) ?? 0;
+      if (!key || !label) return null;
+      return {
+        key,
+        label,
+        source,
+        chars,
+        estimatedTokens,
+      };
+    })
+    .filter((value): value is InputContextContributor => value !== null)
+    .filter((value) => value.chars > 0 || value.estimatedTokens > 0);
+}
+
 export function RunInvocationCard({
   payload,
+  run,
   censorUsernameInLogs,
 }: {
   payload: Record<string, unknown>;
+  run?: HeartbeatRun;
   censorUsernameInLogs: boolean;
 }) {
   const rawCommandLine = [
@@ -336,6 +378,21 @@ export function RunInvocationCard({
     || payload.prompt !== undefined
     || payload.context !== undefined
     || payload.env !== undefined;
+  const attribution = readInputContextAttribution(payload);
+  const contributorRows = readInputContextContributors(attribution);
+  const promptEstimatedTokens = asFiniteNumber(attribution?.promptEstimatedTokens);
+  const promptChars = asFiniteNumber(attribution?.promptChars);
+  const usage = asRecord(run?.usageJson ?? null);
+  const rawInputTokens =
+    usageNumber(usage, "rawInputTokens", "inputTokens", "input_tokens");
+  const carriedContextTokens =
+    rawInputTokens > 0 && promptEstimatedTokens !== null
+      ? Math.max(0, rawInputTokens - promptEstimatedTokens)
+      : 0;
+  const hasAttribution =
+    contributorRows.length > 0
+    || promptEstimatedTokens !== null
+    || rawInputTokens > 0;
 
   return (
     <div className="rounded-lg border border-border bg-background/60 p-3 space-y-2">
@@ -345,6 +402,38 @@ export function RunInvocationCard({
       )}
       {typeof payload.cwd === "string" && (
         <div className="text-xs break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{payload.cwd}</span></div>
+      )}
+      {hasAttribution && (
+        <div className="rounded-md border border-border/70 bg-background/70 p-2">
+          <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+            {rawInputTokens > 0 && (
+              <span>Raw input <span className="font-mono text-foreground">{formatTokens(rawInputTokens)}</span></span>
+            )}
+            {promptEstimatedTokens !== null && (
+              <span>Prompt estimate <span className="font-mono text-foreground">{formatTokens(promptEstimatedTokens)}</span></span>
+            )}
+            {carriedContextTokens > 0 && (
+              <span>Session/tools/native <span className="font-mono text-foreground">{formatTokens(carriedContextTokens)}</span></span>
+            )}
+            {promptChars !== null && (
+              <span>{promptChars.toLocaleString("en-US")} chars</span>
+            )}
+          </div>
+          {contributorRows.length > 0 && (
+            <div className="grid gap-1 text-[11px]">
+              {contributorRows.map((row) => (
+                <div
+                  key={row.key}
+                  className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2"
+                >
+                  <span className="truncate text-muted-foreground">{row.label}</span>
+                  <span className="font-mono tabular-nums">{formatTokens(row.estimatedTokens)}</span>
+                  <span className="font-mono tabular-nums text-muted-foreground">{row.chars.toLocaleString("en-US")}c</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
       {hasAdvancedDetails && (
         <Collapsible>
@@ -4004,7 +4093,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         censorUsernameInLogs={censorUsernameInLogs}
       />
       {adapterInvokePayload && (
-        <RunInvocationCard payload={adapterInvokePayload} censorUsernameInLogs={censorUsernameInLogs} />
+        <RunInvocationCard payload={adapterInvokePayload} run={run} censorUsernameInLogs={censorUsernameInLogs} />
       )}
 
       <div className="flex items-center justify-between">

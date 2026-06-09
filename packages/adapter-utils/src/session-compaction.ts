@@ -36,6 +36,13 @@ const ADAPTER_MANAGED_SESSION_POLICY: SessionCompactionPolicy = {
   maxSessionAgeHours: 0,
 };
 
+const CODEX_SESSION_GUARDRAIL_POLICY: SessionCompactionPolicy = {
+  enabled: true,
+  maxSessionRuns: 0,
+  maxRawInputTokens: DEFAULT_SESSION_COMPACTION_POLICY.maxRawInputTokens,
+  maxSessionAgeHours: 0,
+};
+
 export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
   "acpx_local",
   "claude_local",
@@ -62,7 +69,7 @@ export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement
   codex_local: {
     supportsSessionResume: true,
     nativeContextManagement: "confirmed",
-    defaultSessionCompaction: ADAPTER_MANAGED_SESSION_POLICY,
+    defaultSessionCompaction: CODEX_SESSION_GUARDRAIL_POLICY,
   },
   cursor_cloud: {
     supportsSessionResume: true,

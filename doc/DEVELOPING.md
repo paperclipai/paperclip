@@ -258,6 +258,8 @@ If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs f
 
 Local adapters require their corresponding CLI/session setup on the machine running Paperclip. External adapters are installed through the adapter/plugin flow and should not require hardcoded imports in `server/` or `ui/`.
 
+Codex local sessions use Codex native context management, but Paperclip still enforces a raw-input guardrail: by default a saved `codex_local` session is rotated before the next heartbeat once the latest run reports at least 2,000,000 raw input tokens. Override this per agent through `runtimeConfig.heartbeat.sessionCompaction.maxRawInputTokens`; set it to `0` only when intentionally disabling the guardrail. Run detail invocation metadata shows prompt contributor estimates and the residual raw-input portion attributable to resumed session history, previous tool output, or native context state.
+
 ## Worktree-local Instances
 
 When developing from multiple git worktrees, do not point two Paperclip servers at the same embedded PostgreSQL data directory.

@@ -4110,6 +4110,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       input.continuationSummaryBody
         ? `- Issue continuation summary: ${input.continuationSummaryBody.slice(0, 1_500)}`
         : "",
+      "- Context recovery: start with /api/issues/{issueId}/heartbeat-context and targeted comment APIs; use full issue/thread reads only when compact context is insufficient.",
       "Continue from the current task state. Rebuild only the minimum context you need.",
     ]
       .filter(Boolean)

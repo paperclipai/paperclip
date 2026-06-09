@@ -396,6 +396,7 @@ describe("codex execute", () => {
     const previousHome = process.env.HOME;
     process.env.HOME = root;
 
+    let inputContextAttribution: Record<string, unknown> | null = null;
     try {
       const result = await execute({
         runId: "run-wake",
@@ -465,6 +466,12 @@ describe("codex execute", () => {
         },
         authToken: "run-jwt-token",
         onLog: async () => {},
+        onMeta: async (meta) => {
+          inputContextAttribution =
+            typeof meta.inputContextAttribution === "object" && meta.inputContextAttribution !== null
+              ? meta.inputContextAttribution
+              : null;
+        },
       });
 
       expect(result.exitCode).toBe(0);
@@ -486,6 +493,29 @@ describe("codex execute", () => {
       );
       expect(capture.prompt).toContain("First comment");
       expect(capture.prompt).toContain("Second comment");
+      expect(inputContextAttribution).toMatchObject({
+        version: 1,
+        resumedSession: false,
+      });
+      const contributors = Array.isArray(inputContextAttribution?.contributors)
+        ? inputContextAttribution.contributors as Array<Record<string, unknown>>
+        : [];
+      expect(contributors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            key: "wake_payload_json",
+            chars: expect.any(Number),
+            estimatedTokens: expect.any(Number),
+          }),
+          expect.objectContaining({
+            key: "wake_prompt",
+            chars: expect.any(Number),
+            estimatedTokens: expect.any(Number),
+          }),
+        ]),
+      );
+      expect(contributors.find((row) => row.key === "wake_payload_json")?.chars).toBeGreaterThan(0);
+      expect(contributors.find((row) => row.key === "wake_prompt")?.estimatedTokens).toBeGreaterThan(0);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

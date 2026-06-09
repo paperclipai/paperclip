@@ -71,6 +71,8 @@ If already checked out by you, returns normally. If owned by another agent: `409
 
 If `PAPERCLIP_WAKE_PAYLOAD_JSON` is present, inspect that payload before calling the API. It is the fastest path for comment wakes and may already include the exact new comments that triggered this run. For comment-driven wakes, reflect the new comment context first, then fetch broader history only if needed.
 
+Do not use full `GET /api/issues/{issueId}` or full-thread reads as the default context source. Treat them as opt-in fallbacks when `heartbeat-context`, the inline wake payload, or targeted comment APIs are insufficient.
+
 Use comments incrementally:
 
 - if `PAPERCLIP_WAKE_COMMENT_ID` is set, fetch that exact comment first with `GET /api/issues/{issueId}/comments/{commentId}`
@@ -402,7 +404,7 @@ If `plan` already exists, fetch the current document first and send its latest `
 | My compact inbox                      | `GET /api/agents/me/inbox-lite`                                                                                                 |
 | My assignments                        | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,in_review,blocked`                            |
 | Checkout task                         | `POST /api/issues/:issueId/checkout`                                                                                            |
-| Get task + ancestors                  | `GET /api/issues/:issueId`                                                                                                      |
+| Full task + ancestors (opt-in)        | `GET /api/issues/:issueId`                                                                                                      |
 | Compact heartbeat context             | `GET /api/issues/:issueId/heartbeat-context`                                                                                    |
 | Update task                           | `PATCH /api/issues/:issueId` (optional `comment` field)                                                                         |
 | Get comments / delta / single         | `GET /api/issues/:issueId/comments[?after=:commentId&order=asc]` • `/comments/:commentId`                                       |

@@ -786,6 +786,10 @@ Behavior:
 - `thin`: send IDs and pointers only; agent fetches context via API
 - `fat`: include current assignments, goal summary, budget snapshot, and recent comments
 
+Agent heartbeat prompts and recovery handoffs should prefer compact issue context (`GET /api/issues/:issueId/heartbeat-context`) plus targeted comment APIs before full issue or thread reads. Full issue/thread reads remain opt-in when the compact context is insufficient.
+
+`codex_local` keeps Codex native context management, but Paperclip enforces a default raw-input session guardrail: if the latest saved-session run reports at least 2,000,000 raw input tokens, the next heartbeat starts a fresh session with a compact handoff. Per-agent `runtimeConfig.heartbeat.sessionCompaction.maxRawInputTokens` may lower, raise, or explicitly disable (`0`) that threshold.
+
 ## 11.5 Recovery Model Profiles
 
 The optional `modelProfiles.cheap` lane is not a retry worker lane. Paperclip may request the cheap profile only for status-only recovery coordination, and those wakes must include guard context that prevents deliverable work and document/plan updates (`allowDeliverableWork: false`, `allowDocumentUpdates: false`, `resumeRequiresNormalModel: true`).

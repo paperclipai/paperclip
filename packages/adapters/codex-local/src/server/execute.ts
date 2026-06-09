@@ -177,6 +177,8 @@ type CodexTransientFallbackMode =
   | "fresh_session"
   | "fresh_session_safer_invocation";
 
+const APPROX_CHARS_PER_TOKEN = 4;
+
 function readCodexTransientFallbackMode(context: Record<string, unknown>): CodexTransientFallbackMode | null {
   const value = asString(context.codexTransientFallbackMode, "").trim();
   switch (value) {
@@ -211,10 +213,70 @@ function buildCodexTransientHandoffNote(input: {
     input.continuationSummaryBody
       ? `- Issue continuation summary: ${input.continuationSummaryBody.slice(0, 1_500)}`
       : "",
+    "- Context recovery: start with /api/issues/{issueId}/heartbeat-context and targeted comment APIs; use full issue/thread reads only when compact context is insufficient.",
     "Continue from the current task state. Rebuild only the minimum context you need.",
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function estimateTokensFromChars(chars: number): number {
+  if (!Number.isFinite(chars) || chars <= 0) return 0;
+  return Math.ceil(chars / APPROX_CHARS_PER_TOKEN);
+}
+
+function jsonChars(value: unknown): number {
+  try {
+    const serialized = JSON.stringify(value);
+    return typeof serialized === "string" ? serialized.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function contributorMetric(key: string, label: string, chars: number, source: string) {
+  const normalizedChars = Math.max(0, Math.floor(chars));
+  return {
+    key,
+    label,
+    source,
+    chars: normalizedChars,
+    estimatedTokens: estimateTokensFromChars(normalizedChars),
+  };
+}
+
+function buildCodexInputContextAttribution(input: {
+  promptChars: number;
+  instructionsChars: number;
+  bootstrapPromptChars: number;
+  wakePromptChars: number;
+  wakePayloadJsonChars: number;
+  sessionHandoffChars: number;
+  heartbeatPromptChars: number;
+  contextSnapshotJsonChars: number;
+  resumedSession: boolean;
+}) {
+  const contributors = [
+    contributorMetric("agent_instructions", "Agent instructions prefix", input.instructionsChars, "stdin_prompt"),
+    contributorMetric("bootstrap_prompt", "Bootstrap prompt", input.bootstrapPromptChars, "stdin_prompt"),
+    contributorMetric("wake_prompt", "Wake payload prompt", input.wakePromptChars, "stdin_prompt"),
+    contributorMetric("wake_payload_json", "Wake payload JSON", input.wakePayloadJsonChars, "environment"),
+    contributorMetric("session_handoff", "Session handoff", input.sessionHandoffChars, "stdin_prompt"),
+    contributorMetric("heartbeat_prompt", "Heartbeat contract prompt", input.heartbeatPromptChars, "stdin_prompt"),
+    contributorMetric("context_snapshot_json", "Adapter context snapshot", input.contextSnapshotJsonChars, "adapter_context"),
+  ];
+  const promptEstimatedTokens = estimateTokensFromChars(input.promptChars);
+
+  return {
+    version: 1,
+    estimator: `ceil(chars/${APPROX_CHARS_PER_TOKEN})`,
+    resumedSession: input.resumedSession,
+    promptChars: input.promptChars,
+    promptEstimatedTokens,
+    contributors,
+    note:
+      "Raw input tokens can exceed prompt estimates when Codex includes resumed session history, previous tool outputs, or native context-management state.",
+  };
 }
 
 export async function ensureCodexSkillsInjected(
@@ -668,14 +730,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     sessionHandoffNote,
     renderedPrompt,
   ]);
+  const sessionHandoffChars = codexFallbackHandoffNote.length + sessionHandoffNote.length;
+  const contextSnapshotJsonChars = jsonChars(context);
+  const wakePayloadJsonChars = wakePayloadJson?.length ?? 0;
   const promptMetrics = {
     promptChars: prompt.length,
     instructionsChars,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     wakePromptChars: wakePrompt.length,
-    sessionHandoffChars: sessionHandoffNote.length,
+    wakePayloadJsonChars,
+    sessionHandoffChars,
     heartbeatPromptChars: renderedPrompt.length,
+    contextSnapshotJsonChars,
+    promptEstimatedTokens: estimateTokensFromChars(prompt.length),
+    staticPromptEstimatedTokens: estimateTokensFromChars(
+      promptInstructionsPrefix.length + renderedBootstrapPrompt.length + renderedPrompt.length,
+    ),
   };
+  const inputContextAttribution = buildCodexInputContextAttribution({
+    ...promptMetrics,
+    resumedSession: Boolean(sessionId),
+  });
 
   const runAttempt = async (resumeSessionId: string | null) => {
     const execArgs = buildCodexExecArgs(
@@ -703,6 +778,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         env: loggedEnv,
         prompt,
         promptMetrics,
+        inputContextAttribution,
         context,
       });
     }
@@ -816,6 +892,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
+        inputContextAttribution: {
+          ...inputContextAttribution,
+          rawInputTokens: attempt.parsed.usage.inputTokens,
+          rawCachedInputTokens: attempt.parsed.usage.cachedInputTokens,
+          rawOutputTokens: attempt.parsed.usage.outputTokens,
+        },
         ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
         ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
         ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
