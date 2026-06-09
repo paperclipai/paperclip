@@ -456,7 +456,7 @@ Which action Paperclip picks is a per-company policy choice. Auto-downgrade is t
 
 This is distinct from productivity review. Productivity review asks whether an *assigned source issue* shows unusual progression patterns — no-comment terminal-run streaks, long active duration, high churn — and acts on the issue. Empty-heartbeat detection asks whether the *agent's scheduled wake schedule itself* is producing any work at all, and acts on the agent's `runtimeConfig`. One does not substitute for the other: a productive agent can still have an oversized heartbeat budget, and a misconfigured event-driven agent can still be doing productive work on every assignment wake.
 
-Empty-heartbeat detection runs on the periodic reconciliation loop alongside productivity review (§10, step 5).
+Empty-heartbeat detection runs on the periodic reconciliation loop as a distinct pass after productivity review (§10, step 6).
 
 ## 10. Startup and Periodic Reconciliation
 
