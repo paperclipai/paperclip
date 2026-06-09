@@ -267,11 +267,78 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
   );
 }
 
-function StatusPill({ children, className }: { children: React.ReactNode; className?: string }) {
+function OperationStatusPill({ status }: { status: string }) {
+  const tone =
+    status === "running"
+      ? { dot: "bg-status-running", text: "text-status-running", border: "border-status-running/40", live: true }
+      : status === "succeeded"
+        ? { dot: "bg-status-success", text: "text-status-success", border: "border-status-success/40", live: false }
+        : status === "failed"
+          ? { dot: "bg-status-error", text: "text-status-error", border: "border-status-error/40", live: false }
+          : { dot: "bg-muted-foreground/50", text: "text-muted-foreground", border: "border-border", live: false };
+
   return (
-    <div className={cn("inline-flex items-center rounded-full border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground", className)}>
-      {children}
-    </div>
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1.5 self-start rounded-sm border px-2 py-0.5 font-mono text-[10.5px] font-medium uppercase tracking-[0.12em]",
+        tone.border,
+        tone.text,
+      )}
+    >
+      {tone.live ? (
+        <span className="relative flex h-1.5 w-1.5">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-status-running opacity-70" />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-status-running" />
+        </span>
+      ) : (
+        <span className={cn("h-1.5 w-1.5 rounded-full", tone.dot)} />
+      )}
+      {status}
+    </span>
+  );
+}
+
+function WorkspaceStatusBadge({
+  status,
+  runningServiceCount,
+}: {
+  status: ExecutionWorkspace["status"];
+  runningServiceCount: number;
+}) {
+  const live = runningServiceCount > 0;
+  const tone = live
+    ? { dot: "bg-status-running", text: "text-status-running", border: "border-status-running/40" }
+    : status === "cleanup_failed"
+      ? { dot: "bg-status-error", text: "text-status-error", border: "border-status-error/40" }
+      : status === "archived"
+        ? { dot: "bg-muted-foreground/50", text: "text-muted-foreground", border: "border-border" }
+        : { dot: "bg-muted-foreground/50", text: "text-muted-foreground", border: "border-border" };
+  const label = live
+    ? `Running · ${runningServiceCount}`
+    : status === "cleanup_failed"
+      ? "Cleanup failed"
+      : status === "archived"
+        ? "Archived"
+        : "Idle";
+
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-sm border px-2 py-0.5 font-mono text-[10.5px] font-medium uppercase tracking-[0.12em]",
+        tone.border,
+        tone.text,
+      )}
+    >
+      {live ? (
+        <span className="relative flex h-1.5 w-1.5">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-status-running opacity-70" />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-status-running" />
+        </span>
+      ) : (
+        <span className={cn("h-1.5 w-1.5 rounded-full", tone.dot)} />
+      )}
+      {label}
+    </span>
   );
 }
 
@@ -386,19 +453,19 @@ function WorkspaceRoutineRow({
   const isRunning = runningRoutineId === routine.id;
 
   return (
-    <div className="flex flex-col gap-3 border-b border-border px-3 py-3 last:border-b-0 sm:flex-row sm:items-center">
+    <div className="flex flex-col gap-3 border-b border-border px-3 py-3 transition-colors last:border-b-0 hover:bg-accent/50 sm:flex-row sm:items-center">
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex flex-wrap items-center gap-2">
           <Link to={`/routines/${routine.id}`} className="truncate text-sm font-medium hover:underline">
             {routine.title}
           </Link>
           {routine.status !== "active" ? (
-            <span className="text-xs text-muted-foreground">{routine.status}</span>
+            <span className="font-mono text-[10.5px] font-medium uppercase tracking-[0.12em] text-muted-foreground">{routine.status}</span>
           ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
           <span>{routine.assigneeAgentId ? "Default agent set" : "Choose agent when running"}</span>
-          <span>Last run {formatOptionalDateTime(routine.lastRun?.triggeredAt ?? routine.lastTriggeredAt)}</span>
+          <span>Last run <span className="font-mono tabular-nums">{formatOptionalDateTime(routine.lastRun?.triggeredAt ?? routine.lastTriggeredAt)}</span></span>
           <span className="flex flex-wrap gap-1">
             {variableNames.map((name) => (
               <span key={name} className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
@@ -741,6 +808,7 @@ export function ExecutionWorkspaceDetail() {
     canRunJobs: canRunWorkspaceCommands,
   });
   const pendingRuntimeAction = controlRuntimeServices.isPending ? controlRuntimeServices.variables ?? null : null;
+  const runningServiceCount = (workspace.runtimeServices ?? []).filter((service) => service.status === "running").length;
 
   const pluginSlotContext = {
     companyId: workspace.companyId,
@@ -784,12 +852,15 @@ export function ExecutionWorkspaceDetail() {
   return (
     <>
       <div className="space-y-4 overflow-hidden sm:space-y-6">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex flex-col gap-4 border-b border-border pb-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 space-y-2">
-            <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+            <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
               Execution workspace
             </div>
-            <h1 className="truncate text-xl font-semibold sm:text-2xl">{workspace.name}</h1>
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="min-w-0 truncate font-serif text-2xl font-medium tracking-tight">{workspace.name}</h1>
+              <WorkspaceStatusBadge status={workspace.status} runningServiceCount={runningServiceCount} />
+            </div>
           </div>
           <WorkspaceRuntimeQuickControls
             sections={runtimeControlSections}
@@ -1140,12 +1211,21 @@ export function ExecutionWorkspaceDetail() {
               <DetailRow label="Branch">
                 {workspace.branchName ? <MonoValue value={workspace.branchName} copy /> : "None"}
               </DetailRow>
-              <DetailRow label="Opened">{formatDateTime(workspace.openedAt)}</DetailRow>
-              <DetailRow label="Last used">{formatDateTime(workspace.lastUsedAt)}</DetailRow>
+              <DetailRow label="Opened">
+                <span className="font-mono text-xs tabular-nums">{formatDateTime(workspace.openedAt)}</span>
+              </DetailRow>
+              <DetailRow label="Last used">
+                <span className="font-mono text-xs tabular-nums">{formatDateTime(workspace.lastUsedAt)}</span>
+              </DetailRow>
               <DetailRow label="Cleanup">
-                {workspace.cleanupEligibleAt
-                  ? `${formatDateTime(workspace.cleanupEligibleAt)}${workspace.cleanupReason ? ` · ${workspace.cleanupReason}` : ""}`
-                  : "Not scheduled"}
+                {workspace.cleanupEligibleAt ? (
+                  <span>
+                    <span className="font-mono text-xs tabular-nums">{formatDateTime(workspace.cleanupEligibleAt)}</span>
+                    {workspace.cleanupReason ? ` · ${workspace.cleanupReason}` : ""}
+                  </span>
+                ) : (
+                  "Not scheduled"
+                )}
               </DetailRow>
               </CardContent>
             </Card>
@@ -1166,23 +1246,23 @@ export function ExecutionWorkspaceDetail() {
                   : "Failed to load workspace operations."}
               </p>
             ) : workspaceOperationsQuery.data && workspaceOperationsQuery.data.length > 0 ? (
-              <div className="space-y-3">
+              <div className="border border-border divide-y divide-border">
                 {workspaceOperationsQuery.data.map((operation) => (
-                  <div key={operation.id} className="rounded-none border border-border/80 bg-background px-4 py-3">
+                  <div key={operation.id} className="bg-background px-4 py-3 transition-colors hover:bg-accent/50">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="space-y-1">
-                        <div className="text-sm font-medium">{operation.command ?? operation.phase}</div>
-                        <div className="text-xs text-muted-foreground">
+                        <div className="font-mono text-[13px] font-medium">{operation.command ?? operation.phase}</div>
+                        <div className="font-mono text-xs tabular-nums text-muted-foreground">
                           {formatDateTime(operation.startedAt)}
                           {operation.finishedAt ? ` → ${formatDateTime(operation.finishedAt)}` : ""}
                         </div>
                         {operation.stderrExcerpt ? (
-                          <div className="whitespace-pre-wrap break-words text-xs text-destructive">{operation.stderrExcerpt}</div>
+                          <div className="whitespace-pre-wrap break-words font-mono text-xs text-destructive">{operation.stderrExcerpt}</div>
                         ) : operation.stdoutExcerpt ? (
-                          <div className="whitespace-pre-wrap break-words text-xs text-muted-foreground">{operation.stdoutExcerpt}</div>
+                          <div className="whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground">{operation.stdoutExcerpt}</div>
                         ) : null}
                       </div>
-                      <StatusPill className="self-start">{operation.status}</StatusPill>
+                      <OperationStatusPill status={operation.status} />
                     </div>
                   </div>
                 ))}

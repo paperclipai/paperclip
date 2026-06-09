@@ -32,7 +32,9 @@ import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
 import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
-import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
+import { AgentPortrait } from "../components/AgentPortrait";
+import { agentStatusDot, agentStatusDotDefault, agentLiveState } from "../lib/status-colors";
+import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { CopyText } from "../components/CopyText";
 import { EntityRow } from "../components/EntityRow";
@@ -88,7 +90,7 @@ import {
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
-import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
+import { AgentIconPicker } from "../components/AgentIconPicker";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
 import {
   isFoundingAgentRole,
@@ -341,6 +343,10 @@ function asNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function getAdapterModel(agent: { adapterConfig?: Record<string, unknown> | null }): string | null {
+  return asNonEmptyString(agent.adapterConfig?.model);
 }
 
 export function RunInvocationCard({
@@ -1011,20 +1017,31 @@ export function AgentDetail() {
     <div className={cn("space-y-6", isMobile && showConfigActionBar && "pb-24")}>
       {/* Header */}
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-3 min-w-0">
+        <div className="flex items-center gap-3.5 min-w-0">
           <AgentIconPicker
             value={agent.icon}
             onChange={(icon) => updateIcon.mutate(icon)}
           >
-            <button className="shrink-0 flex items-center justify-center h-12 w-12 rounded-lg bg-accent hover:bg-accent/80 transition-colors">
-              <AgentIcon icon={agent.icon} className="h-6 w-6" />
+            <button className="shrink-0 transition-opacity hover:opacity-80" title="Change icon">
+              <AgentPortrait
+                src={null}
+                name={agent.name}
+                state={agentLiveState(agent.status)}
+                size={48}
+              />
             </button>
           </AgentIconPicker>
           <div className="min-w-0">
-            <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
-            <p className="text-sm text-muted-foreground truncate">
-              {roleLabels[agent.role] ?? agent.role}
-              {agent.title ? ` - ${agent.title}` : ""}
+            <div className="flex items-center gap-2.5">
+              <h2 className="font-serif text-2xl font-medium tracking-tight truncate">{agent.name}</h2>
+              <span className="hidden sm:inline shrink-0"><StatusBadge status={agent.status} /></span>
+            </div>
+            <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono tabular-nums text-xs text-muted-foreground truncate">
+              <span>{getAdapterModel(agent) ?? getAdapterLabel(agent.adapterType)}</span>
+              <span className="text-muted-foreground/40">·</span>
+              <span>{roleLabels[agent.role] ?? agent.role}{agent.title ? ` — ${agent.title}` : ""}</span>
+              <span className="text-muted-foreground/40">·</span>
+              <span>{agent.lastHeartbeatAt ? `ran ${relativeTime(agent.lastHeartbeatAt)}` : "never run"}</span>
             </p>
           </div>
         </div>
@@ -1048,7 +1065,6 @@ export function AgentDetail() {
             onResume={() => agentAction.mutate("resume")}
             disabled={agentAction.isPending || isPendingApproval}
           />
-          <span className="hidden sm:inline"><StatusBadge status={agent.status} /></span>
           {mobileLiveRun && (
             <Link
               to={`/agents/${canonicalAgentRef}/runs/${mobileLiveRun.id}`}
@@ -1319,7 +1335,7 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
   return (
     <div className="space-y-3">
       <div className="flex w-full items-center justify-between">
-        <h3 className="flex items-center gap-2 text-sm font-medium">
+        <h3 className="flex items-center gap-2 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
           {isLive && (
             <span className="relative flex h-2 w-2">
               <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-status-running opacity-75" />
@@ -1410,7 +1426,7 @@ function AgentOverview({
       {/* Recent Issues */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium">Recent Issues</h3>
+          <h3 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Recent Issues</h3>
           <Link
             to={`/issues?participantAgentId=${agentId}`}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"
@@ -1442,7 +1458,7 @@ function AgentOverview({
 
       {/* Costs */}
       <div className="space-y-3">
-        <h3 className="text-sm font-medium">Costs</h3>
+        <h3 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Costs</h3>
         <CostsSection runtimeState={runtimeState} runs={runs} />
       </div>
     </div>

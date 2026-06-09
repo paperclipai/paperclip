@@ -195,7 +195,7 @@ function TriggerEditor({
           {trigger.kind === "schedule" ? <Clock3 className="h-3.5 w-3.5" /> : trigger.kind === "webhook" ? <Webhook className="h-3.5 w-3.5" /> : <Zap className="h-3.5 w-3.5" />}
           {trigger.label ?? trigger.kind}
         </div>
-        <span className="text-xs text-muted-foreground">
+        <span className="font-mono text-xs tabular-nums text-muted-foreground">
           {trigger.kind === "schedule" && trigger.nextRunAt
             ? `Next: ${new Date(trigger.nextRunAt).toLocaleString()}`
             : trigger.kind === "webhook"
@@ -781,7 +781,7 @@ export function RoutineDetail() {
         <div className="min-w-0 flex-1 space-y-2">
           <textarea
             ref={titleInputRef}
-            className="w-full resize-none overflow-hidden bg-transparent text-xl font-bold outline-none placeholder:text-muted-foreground/50"
+            className="w-full resize-none overflow-hidden bg-transparent font-serif text-2xl font-medium tracking-tight outline-none placeholder:text-muted-foreground/50"
             placeholder="Routine title"
             rows={1}
             value={editDraft.title}
@@ -840,7 +840,12 @@ export function RoutineDetail() {
             disabled={automationToggleDisabled}
             aria-label={automationEnabled ? "Pause automatic triggers" : "Enable automatic triggers"}
           />
-          <span className={`min-w-[3.75rem] text-sm font-medium ${automationLabelClassName}`}>
+          <span className={`inline-flex min-w-[3.75rem] items-center gap-1.5 text-sm font-medium ${automationLabelClassName}`}>
+            <span
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                automationEnabled ? "bg-status-running" : "bg-muted-foreground/50"
+              }`}
+            />
             {automationLabel}
           </span>
         </div>
@@ -1043,7 +1048,7 @@ export function RoutineDetail() {
         <CollapsibleContent className="pt-3">
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
-              <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Concurrency</p>
+              <p className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Concurrency</p>
               <Select
                 value={editDraft.concurrencyPolicy}
                 onValueChange={(concurrencyPolicy) => setEditDraft((current) => ({ ...current, concurrencyPolicy }))}
@@ -1060,7 +1065,7 @@ export function RoutineDetail() {
               <p className="text-xs text-muted-foreground">{concurrencyPolicyDescriptions[editDraft.concurrencyPolicy]}</p>
             </div>
             <div className="space-y-2">
-              <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Catch-up</p>
+              <p className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Catch-up</p>
               <Select
                 value={editDraft.catchUpPolicy}
                 onValueChange={(catchUpPolicy) => setEditDraft((current) => ({ ...current, catchUpPolicy }))}
@@ -1227,7 +1232,7 @@ export function RoutineDetail() {
                       </Link>
                     )}
                   </div>
-                  <span className="text-xs text-muted-foreground shrink-0 ml-2">{timeAgo(run.triggeredAt)}</span>
+                  <span className="font-mono text-xs tabular-nums text-muted-foreground shrink-0 ml-2">{timeAgo(run.triggeredAt)}</span>
                 </div>
               ))}
             </div>
@@ -1255,7 +1260,7 @@ export function RoutineDetail() {
                       </span>
                     )}
                   </div>
-                  <span className="text-muted-foreground/60 shrink-0">{timeAgo(event.createdAt)}</span>
+                  <span className="font-mono tabular-nums text-muted-foreground/60 shrink-0">{timeAgo(event.createdAt)}</span>
                 </div>
               ))}
             </div>

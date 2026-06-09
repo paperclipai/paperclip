@@ -118,10 +118,47 @@ export function Workspaces() {
   if (dataLoading) return <PageSkeleton variant="list" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
 
+  const totals = groups.reduce(
+    (acc, group) => {
+      for (const summary of group.summaries) {
+        acc.workspaces += 1;
+        if (summary.runningServiceCount > 0) acc.running += 1;
+        else if (summary.serviceCount > 0) acc.stopped += 1;
+      }
+      return acc;
+    },
+    { workspaces: 0, running: 0, stopped: 0 },
+  );
+
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-xl font-bold">Workspaces</h2>
+        <h1 className="font-serif text-2xl font-medium tracking-tight">Workspaces</h1>
+        {groups.length > 0 && (
+          <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-muted-foreground">
+            <span>
+              <span className="font-mono text-foreground">{totals.workspaces}</span> workspace{totals.workspaces === 1 ? "" : "s"}
+            </span>
+            {[
+              { n: totals.running, label: "running", dot: "bg-status-running", live: true },
+              { n: totals.stopped, label: "stopped", dot: "bg-muted-foreground/50", live: false },
+            ]
+              .filter((s) => s.n > 0)
+              .map((s) => (
+                <span key={s.label} className="inline-flex items-center gap-1.5">
+                  {s.live ? (
+                    <span className="relative flex h-1.5 w-1.5">
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-status-running opacity-70" />
+                      <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-status-running" />
+                    </span>
+                  ) : (
+                    <span className={`h-1.5 w-1.5 rounded-full ${s.dot}`} />
+                  )}
+                  <span className="font-mono font-medium text-foreground">{s.n}</span> {s.label}
+                </span>
+              ))}
+          </p>
+        )}
       </div>
 
       {groups.length === 0 ? (
@@ -130,11 +167,11 @@ export function Workspaces() {
         <div className="space-y-8">
           {groups.map((group) => (
             <section key={group.project.id} className="space-y-3">
-              <div className="flex flex-wrap items-end justify-between gap-2">
+              <div className="flex flex-wrap items-end justify-between gap-2 border-b border-border pb-2">
                 <div className="min-w-0">
                   <Link
                     to={`/projects/${group.projectRef}/workspaces`}
-                    className="text-base font-semibold hover:underline"
+                    className="font-serif text-base font-medium hover:underline"
                   >
                     {group.project.name}
                   </Link>
@@ -144,8 +181,19 @@ export function Workspaces() {
                     </p>
                   ) : null}
                 </div>
-                <span className="text-xs text-muted-foreground">
-                  {group.summaries.length} workspace{group.summaries.length === 1 ? "" : "s"}
+                <span className="flex items-center gap-2 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                  {group.runningServiceCount > 0 ? (
+                    <span className="inline-flex items-center gap-1.5 text-status-running">
+                      <span className="relative flex h-1.5 w-1.5">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-status-running opacity-70" />
+                        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-status-running" />
+                      </span>
+                      {group.runningServiceCount} live
+                    </span>
+                  ) : null}
+                  <span>
+                    {group.summaries.length} workspace{group.summaries.length === 1 ? "" : "s"}
+                  </span>
                 </span>
               </div>
               <ProjectWorkspacesContent

@@ -39,8 +39,40 @@ export function MyIssues() {
     (i) => !i.assigneeAgentId && !["done", "cancelled"].includes(i.status)
   );
 
+  // Status summary (open buckets only — done/cancelled are filtered out above).
+  let blocked = 0, inProgress = 0, open = 0;
+  for (const i of myIssues) {
+    if (i.blockerAttention || i.status === "blocked") blocked++;
+    else if (i.status === "in_progress") inProgress++;
+    else open++;
+  }
+
   return (
     <div className="space-y-4">
+      <div>
+        <h1 className="font-serif text-2xl font-medium tracking-tight">My Issues</h1>
+        {myIssues.length > 0 && (
+          <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-muted-foreground">
+            <span>
+              <span className="font-mono text-foreground">{myIssues.length}</span>{" "}
+              {myIssues.length === 1 ? "issue" : "issues"}
+            </span>
+            {[
+              { n: blocked, label: "blocked", dot: "bg-status-error" },
+              { n: inProgress, label: "in progress", dot: "bg-status-running" },
+              { n: open, label: "open", dot: "bg-muted-foreground/50" },
+            ]
+              .filter((s) => s.n > 0)
+              .map((s) => (
+                <span key={s.label} className="inline-flex items-center gap-1.5">
+                  <span className={`h-1.5 w-1.5 rounded-full ${s.dot}`} />
+                  <span className="font-mono font-medium text-foreground">{s.n}</span> {s.label}
+                </span>
+              ))}
+          </p>
+        )}
+      </div>
+
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {myIssues.length === 0 && (
@@ -59,7 +91,7 @@ export function MyIssues() {
                 <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />
               }
               trailing={
-                <span className="text-xs text-muted-foreground">
+                <span className="font-mono text-xs tabular-nums text-muted-foreground">
                   {formatDate(issue.createdAt)}
                 </span>
               }

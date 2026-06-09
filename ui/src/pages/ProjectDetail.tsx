@@ -124,12 +124,12 @@ function ColorPicker({
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen(!open)}
-        className="shrink-0 h-5 w-5 rounded-md cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-[box-shadow]"
+        className="shrink-0 h-4 w-4 rounded-[3px] cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-[box-shadow]"
         style={{ backgroundColor: currentColor }}
         aria-label="Change project color"
       />
       {open && (
-        <div className="absolute top-full left-0 mt-2 p-2 bg-popover border border-border rounded-lg z-50 w-max">
+        <div className="absolute top-full left-0 mt-2 p-2 bg-popover border border-border z-50 w-max">
           <div className="grid grid-cols-5 gap-1.5">
             {PROJECT_COLORS.map((color) => (
               <button
@@ -138,7 +138,7 @@ function ColorPicker({
                   onSelect(color);
                   setOpen(false);
                 }}
-                className={`h-6 w-6 rounded-md cursor-pointer transition-[transform,box-shadow] duration-150 hover:scale-110 ${
+                className={`h-6 w-6 rounded-[3px] cursor-pointer transition-[transform,box-shadow] duration-150 hover:scale-110 ${
                   color === currentColor
                     ? "ring-2 ring-foreground ring-offset-1 ring-offset-background"
                     : "hover:ring-2 hover:ring-foreground/30"
@@ -634,8 +634,8 @@ export function ProjectDetail() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start gap-3">
-        <div className="h-7 flex items-center">
+      <div className="flex items-start gap-2.5">
+        <div className="mt-[7px] flex items-center">
           <ColorPicker
             currentColor={project.color ?? "#6366f1"}
             onSelect={(color) => updateProject.mutate({ color })}
@@ -645,21 +645,52 @@ export function ProjectDetail() {
           <InlineEditor
             value={project.name}
             onSave={(name) => updateProject.mutate({ name })}
-            as="h2"
-            className="text-xl font-bold"
+            as="h1"
+            className="font-serif text-2xl font-medium tracking-tight"
           />
-          {project.pauseReason === "budget" ? (
-            <div className="inline-flex items-center gap-2 rounded-full border border-status-error/30 bg-status-error/12 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-status-error">
-              <span className="h-2 w-2 rounded-full bg-status-error" />
-              Paused by budget hard stop
-            </div>
-          ) : null}
-          {project.managedByPlugin ? (
-            <div className="inline-flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-[11px] font-medium text-muted-foreground">
-              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: project.color ?? "#6366f1" }} />
-              Managed by {project.managedByPlugin.pluginDisplayName}
-            </div>
-          ) : null}
+          <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5">
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  project.pausedAt
+                    ? "bg-status-error"
+                    : project.status === "completed"
+                      ? "bg-status-success"
+                      : project.status === "in_progress"
+                        ? "bg-status-running"
+                        : project.status === "cancelled"
+                          ? "bg-muted-foreground/40"
+                          : "bg-muted-foreground/50"
+                }`}
+              />
+              <span className="font-mono font-medium uppercase tracking-[0.04em] text-foreground">
+                {project.status.replaceAll("_", " ")}
+              </span>
+            </span>
+            <span>
+              <span className="font-mono font-medium text-foreground">{project.workspaces.length}</span>{" "}
+              workspace{project.workspaces.length === 1 ? "" : "s"}
+            </span>
+            {project.targetDate ? (
+              <span>
+                target <span className="font-mono tabular-nums text-foreground">{project.targetDate}</span>
+              </span>
+            ) : null}
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            {project.pauseReason === "budget" ? (
+              <div className="inline-flex items-center gap-2 rounded-[2px] border border-status-error/30 bg-status-error/12 px-2.5 py-1 text-[10.5px] font-medium uppercase tracking-[0.14em] text-status-error">
+                <span className="h-1.5 w-1.5 rounded-full bg-status-error" />
+                Paused by budget hard stop
+              </div>
+            ) : null}
+            {project.managedByPlugin ? (
+              <div className="inline-flex items-center gap-2 rounded-[2px] border border-border px-2.5 py-1 text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: project.color ?? "#6366f1" }} />
+                Managed by {project.managedByPlugin.pluginDisplayName}
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
 

@@ -410,10 +410,10 @@ function ConflictResolutionList({
     <div className="mx-5 mt-3">
       <div className="rounded-md border border-border">
         <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
-          <h3 className="text-sm font-medium">
+          <h3 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
             Renames
           </h3>
-          <span className="text-xs text-muted-foreground">
+          <span className="font-mono text-xs text-muted-foreground tabular-nums">
             {conflicts.length} item{conflicts.length === 1 ? "" : "s"}
           </span>
         </div>
@@ -549,8 +549,8 @@ function AdapterPickerList({
     <div className="mx-5 mt-3">
       <div className="rounded-md border border-border">
         <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
-          <h3 className="text-sm font-medium">Adapters</h3>
-          <span className="text-xs text-muted-foreground">
+          <h3 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Adapters</h3>
+          <span className="font-mono text-xs text-muted-foreground tabular-nums">
             {agents.length} agent{agents.length === 1 ? "" : "s"}
           </span>
         </div>
@@ -1094,8 +1094,8 @@ export function CompanyImport() {
       {/* Source form section */}
       <div className="border-b border-border px-5 py-5 space-y-4">
         <div>
-          <h2 className="text-base font-semibold">Import source</h2>
-          <p className="text-xs text-muted-foreground mt-1">
+          <h1 className="font-serif text-2xl font-medium tracking-tight">Import company</h1>
+          <p className="text-xs text-muted-foreground mt-1.5">
             Choose a GitHub repo or upload a local ValadrienOs zip package.
           </p>
         </div>
@@ -1245,20 +1245,22 @@ export function CompanyImport() {
           {/* Sticky import action bar */}
           <div className="sticky top-0 z-10 border-b border-border bg-background px-5 py-3">
             <div className="flex flex-wrap items-center gap-4 text-sm">
-              <span className="font-medium">
+              <span className="font-serif text-base font-medium tracking-tight">
                 Import preview
               </span>
-              <span className="text-muted-foreground">
+              <span className="font-mono text-muted-foreground tabular-nums">
                 {selectedCount} / {totalFiles} file{totalFiles === 1 ? "" : "s"} selected
               </span>
               {conflicts.length > 0 && (
-                <span className="text-status-warning">
-                  {conflicts.length} conflict{conflicts.length === 1 ? "" : "s"}
+                <span className="inline-flex items-center gap-1.5 text-status-warning">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-status-warning" />
+                  <span className="font-mono tabular-nums">{conflicts.length}</span> conflict{conflicts.length === 1 ? "" : "s"}
                 </span>
               )}
               {importPreview.errors.length > 0 && (
-                <span className="text-destructive">
-                  {importPreview.errors.length} error{importPreview.errors.length === 1 ? "" : "s"}
+                <span className="inline-flex items-center gap-1.5 text-destructive">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-status-error" />
+                  <span className="font-mono tabular-nums">{importPreview.errors.length}</span> error{importPreview.errors.length === 1 ? "" : "s"}
                 </span>
               )}
             </div>
@@ -1322,7 +1324,7 @@ export function CompanyImport() {
           <div className="grid gap-4 xl:h-[calc(100vh-16rem)] xl:grid-cols-[19rem_minmax(0,1fr)] xl:gap-0">
             <aside className="flex max-h-[24rem] flex-col overflow-hidden border-b border-border xl:max-h-none xl:border-b-0 xl:border-r">
               <div className="border-b border-border px-4 py-3 shrink-0">
-                <h2 className="text-base font-semibold">Package files</h2>
+                <h2 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Package files</h2>
               </div>
               <div className="flex-1 overflow-y-auto">
                 <FileTree

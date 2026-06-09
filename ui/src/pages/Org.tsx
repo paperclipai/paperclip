@@ -8,7 +8,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { ChevronRight, GitBranch } from "lucide-react";
+import { ChevronRight, Network } from "lucide-react";
 import { cn } from "../lib/utils";
 
 function OrgTree({
@@ -79,7 +79,7 @@ function OrgTreeNode({
           )}
         />
         <span className="font-medium flex-1">{node.name}</span>
-        <span className="text-xs text-muted-foreground">{node.role}</span>
+        <span className="font-mono text-[11px] text-muted-foreground tabular-nums">{node.role}</span>
         <StatusBadge status={node.status} />
       </Link>
       {hasChildren && expanded && (
@@ -104,20 +104,33 @@ export function Org() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={GitBranch} message="Select a company to view org chart." />;
+    return <EmptyState icon={Network} message="Select a company to view the org chart." />;
   }
 
   if (isLoading) {
     return <PageSkeleton variant="list" />;
   }
 
+  const totalAgents = data ? countOrgNodes(data) : 0;
+
   return (
     <div className="space-y-4">
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="font-serif text-2xl font-medium tracking-tight">Org</h1>
+          {totalAgents > 0 && (
+            <p className="mt-1 text-[12.5px] text-muted-foreground">
+              <span className="font-mono text-foreground tabular-nums">{totalAgents}</span> agents
+            </p>
+          )}
+        </div>
+      </div>
+
+      {error && <p className="text-sm text-status-error">{error.message}</p>}
 
       {data && data.length === 0 && (
         <EmptyState
-          icon={GitBranch}
+          icon={Network}
           message="No agents in the organization. Create agents to build your org chart."
         />
       )}
@@ -129,4 +142,8 @@ export function Org() {
       )}
     </div>
   );
+}
+
+function countOrgNodes(nodes: OrgNode[]): number {
+  return nodes.reduce((sum, node) => sum + 1 + countOrgNodes(node.reports), 0);
 }

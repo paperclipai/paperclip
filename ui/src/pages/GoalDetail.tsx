@@ -21,6 +21,35 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Plus, SlidersHorizontal } from "lucide-react";
 import type { Goal, Project } from "@valadrien-os/shared";
 
+// Goal-specific status badge mirroring GoalTree semantics: active = in-progress
+// (teal), achieved = done (green), planned = grey — distinct from the shared
+// StatusBadge, which renders both active and achieved green.
+const GOAL_BADGE: Record<string, string> = {
+  planned: "border border-border text-muted-foreground",
+  active: "border border-status-running/30 bg-status-running/12 text-status-running",
+  achieved: "border border-status-success/30 bg-status-success/12 text-status-success",
+  cancelled: "bg-muted text-muted-foreground",
+};
+const GOAL_LABEL: Record<string, string> = {
+  planned: "Planned",
+  active: "In progress",
+  achieved: "Achieved",
+  cancelled: "Cancelled",
+};
+
+function GoalStatusBadge({ status }: { status: string }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap",
+        GOAL_BADGE[status] ?? "bg-muted text-muted-foreground",
+      )}
+    >
+      {GOAL_LABEL[status] ?? status.replace(/_/g, " ")}
+    </span>
+  );
+}
+
 interface GoalPropertiesToggleButtonProps {
   panelVisible: boolean;
   onShowProperties: () => void;
@@ -143,10 +172,10 @@ export function GoalDetail() {
     <div className="space-y-6">
       <div className="space-y-3">
         <div className="flex items-center gap-2">
-          <span className="text-xs uppercase text-muted-foreground">
+          <span className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
             {goal.level}
           </span>
-          <StatusBadge status={goal.status} />
+          <GoalStatusBadge status={goal.status} />
           <div className="ml-auto">
             <GoalPropertiesToggleButton
               panelVisible={panelVisible}
@@ -159,7 +188,7 @@ export function GoalDetail() {
           value={goal.title}
           onSave={(title) => updateGoal.mutate({ title })}
           as="h2"
-          className="text-xl font-bold"
+          className="font-serif text-lg font-medium tracking-tight"
         />
 
         <InlineEditor

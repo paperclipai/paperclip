@@ -1916,8 +1916,49 @@ export function Inbox() {
   const canMarkAllRead = unreadIssueIds.length > 0;
   const activeIssueFilterCount = countActiveIssueFilters(issueFilters, true);
   const showGeneralIssueToolbarControls = tab !== "blocked";
+  const unreadCount = unreadIssueIds.length;
+  const pendingApprovalsCount = approvalsToRender.filter((approval) =>
+    ACTIONABLE_APPROVAL_STATUSES.has(approval.status),
+  ).length;
+  const failedRunsCount = failedRuns.length;
   return (
     <div className="space-y-6">
+      {/* Control-room masthead — frames the inbox as a living triage surface. */}
+      <div>
+        <h1 className="font-serif text-2xl font-medium tracking-tight">Inbox</h1>
+        <p className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12.5px] text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5">
+            <span className={cn(
+              "h-1.5 w-1.5 rounded-full",
+              unreadCount > 0 ? "bg-status-running" : "bg-muted-foreground/50",
+            )} />
+            <span className="font-mono text-foreground">{unreadCount}</span> unread
+          </span>
+          <span className="text-muted-foreground/50">·</span>
+          <span>
+            <span className="font-mono text-foreground">{totalVisibleWorkItems}</span> in inbox
+          </span>
+          {pendingApprovalsCount > 0 && (
+            <>
+              <span className="text-muted-foreground/50">·</span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="h-1.5 w-1.5 rounded-full bg-status-warning" />
+                <span className="font-mono text-foreground">{pendingApprovalsCount}</span> awaiting approval
+              </span>
+            </>
+          )}
+          {failedRunsCount > 0 && (
+            <>
+              <span className="text-muted-foreground/50">·</span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="h-1.5 w-1.5 rounded-full bg-status-error" />
+                <span className="font-mono text-foreground">{failedRunsCount}</span> failed run{failedRunsCount === 1 ? "" : "s"}
+              </span>
+            </>
+          )}
+        </p>
+      </div>
+
       <div className="space-y-2">
         {/* Search — full-width row on mobile, inline on desktop */}
         <div className="relative sm:hidden">
@@ -2710,9 +2751,10 @@ export function Inbox() {
         <>
           {showSeparatorBefore("alerts") && <Separator />}
           <div>
-            <h3 className="mb-3 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+            <div className="mb-3 flex items-center gap-3 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
               Alerts
-            </h3>
+              <span className="h-px flex-1 bg-border/70" />
+            </div>
             <div className="divide-y divide-border border border-border">
               {showAggregateAgentError && (
                 <div className="group/alert relative flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">

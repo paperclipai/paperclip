@@ -499,7 +499,7 @@ function SearchTabContent({
     return (
       <div className="mx-auto flex w-full max-w-xl flex-col items-center justify-center gap-3 px-4 py-12 text-center">
         <AlertTriangle className="h-10 w-10 text-destructive" aria-hidden />
-        <div className="text-base font-semibold">Couldn’t run that search</div>
+        <div className="font-serif text-lg font-medium tracking-tight">Couldn’t run that search</div>
         <p className="text-sm text-muted-foreground">
           {status ? `The server returned ${status}.` : "The request failed."} Your input and filters are still here, so
           you can retry or fall back to the Issues filter.
@@ -544,7 +544,7 @@ function SearchTabContent({
     return (
       <div className="mx-auto flex w-full max-w-xl flex-col items-center justify-center gap-3 px-4 py-12 text-center">
         <FileQuestion className="h-10 w-10 text-muted-foreground" aria-hidden />
-        <div className="text-base font-semibold">No results for &ldquo;{trimmedQuery}&rdquo;</div>
+        <div className="font-serif text-lg font-medium tracking-tight">No results for &ldquo;{trimmedQuery}&rdquo;</div>
         <p className="text-sm text-muted-foreground">
           We couldn’t find a match in {describeScope(scope).toLowerCase()}. Try widening the scope or rephrasing your
           query.
@@ -578,7 +578,7 @@ function SearchTabContent({
 
   return (
     <div className="flex w-full max-w-[960px] flex-col px-2 sm:px-4" data-testid="search-results">
-      <div className="flex items-center justify-between py-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+      <div className="flex items-center justify-between py-2 font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
         <span>
           {totalResults === 1 ? "1 result" : `${totalResults} results`} · sorted by relevance
         </span>

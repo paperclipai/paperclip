@@ -934,15 +934,16 @@ export function CompanyExport() {
       <div className="sticky top-0 z-10 border-b border-border bg-background px-5 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-4 text-sm">
-            <span className="font-medium">
+            <span className="font-serif text-base font-medium tracking-tight">
               {selectedCompany?.name ?? "Company"} export
             </span>
-            <span className="text-muted-foreground">
+            <span className="font-mono text-muted-foreground tabular-nums">
               {selectedCount} / {totalFiles} file{totalFiles === 1 ? "" : "s"} selected
             </span>
             {warnings.length > 0 && (
-              <span className="text-status-warning">
-                {warnings.length} warning{warnings.length === 1 ? "" : "s"}
+              <span className="inline-flex items-center gap-1.5 text-status-warning">
+                <span className="inline-block h-1.5 w-1.5 rounded-full bg-status-warning" />
+                <span className="font-mono tabular-nums">{warnings.length}</span> warning{warnings.length === 1 ? "" : "s"}
               </span>
             )}
           </div>
@@ -972,7 +973,7 @@ export function CompanyExport() {
       <div className="grid gap-4 xl:h-[calc(100vh-12rem)] xl:grid-cols-[19rem_minmax(0,1fr)] xl:gap-0">
         <aside className="flex max-h-[24rem] flex-col overflow-hidden border-b border-border xl:max-h-none xl:border-b-0 xl:border-r">
           <div className="border-b border-border px-4 py-3 shrink-0">
-            <h2 className="text-base font-semibold">Package files</h2>
+            <h2 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Package files</h2>
           </div>
           <div className="border-b border-border px-3 py-2 shrink-0">
             <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1">

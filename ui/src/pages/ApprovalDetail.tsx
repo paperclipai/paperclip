@@ -203,8 +203,8 @@ export function ApprovalDetail() {
           <div className="flex items-center gap-2">
             <TypeIcon className="h-5 w-5 text-muted-foreground shrink-0" />
             <div>
-              <h2 className="text-lg font-semibold">{approvalLabel(approval.type, approval.payload as Record<string, unknown> | null)}</h2>
-              <p className="text-xs text-muted-foreground font-mono">{approval.id}</p>
+              <h2 className="font-serif text-lg font-medium tracking-tight">{approvalLabel(approval.type, approval.payload as Record<string, unknown> | null)}</h2>
+              <p className="font-mono text-xs tabular-nums text-muted-foreground">{approval.id}</p>
             </div>
           </div>
           <StatusBadge status={approval.status} />
@@ -240,7 +240,7 @@ export function ApprovalDetail() {
         {error && <p className="text-sm text-destructive">{error}</p>}
         {linkedIssues && linkedIssues.length > 0 && (
           <div className="pt-2 border-t border-border/60">
-            <p className="text-xs text-muted-foreground mb-1.5">Linked Issues</p>
+            <p className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground mb-1.5">Linked Issues</p>
             <div className="space-y-1.5">
               {linkedIssues.map((issue) => (
                 <Link
@@ -265,7 +265,6 @@ export function ApprovalDetail() {
             <>
               <Button
                 size="sm"
-                className="bg-status-success hover:bg-status-success/90 text-white"
                 onClick={() => approveMutation.mutate()}
                 disabled={approveMutation.isPending}
               >
@@ -339,7 +338,7 @@ export function ApprovalDetail() {
                 ) : (
                   <Identity name="Board" size="sm" />
                 )}
-                <span className="text-xs text-muted-foreground">
+                <span className="font-mono text-xs tabular-nums text-muted-foreground">
                   {new Date(comment.createdAt).toLocaleString()}
                 </span>
               </div>
