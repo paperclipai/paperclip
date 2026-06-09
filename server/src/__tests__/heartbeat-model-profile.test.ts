@@ -207,4 +207,35 @@ describe("heartbeat model profile application", () => {
       modelProfile: { fallbackReason: "agent_runtime_profile_disabled" },
     });
   });
+
+  it("reproduces the CTO RUD-900 path: grok_local wake-context cheap request fails fast", () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [],
+      agentRuntimeConfig: {},
+      issueModelProfile: null,
+      contextSnapshot: { modelProfile: "cheap" },
+    });
+
+    const result = buildUnsupportedModelProfileAdapterResult({
+      adapterType: "grok_local",
+      modelProfile,
+    });
+
+    expect(modelProfile).toMatchObject({
+      requested: "cheap",
+      requestedBy: "wake_context",
+      applied: null,
+      configSource: null,
+      fallbackReason: "adapter_profile_not_supported",
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.timedOut).toBe(false);
+    expect(result.errorCode).toBe("model_profile_not_supported");
+    expect(result.errorMessage).toMatch(/grok_local/);
+    expect(result.errorMessage).toMatch(/cheap/);
+    expect(result.clearSession).toBe(false);
+    expect(result.errorMeta).toMatchObject({
+      modelProfile: { requestedBy: "wake_context" },
+    });
+  });
 });
