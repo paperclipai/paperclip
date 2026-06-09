@@ -466,6 +466,7 @@ export function companyService(db: Db) {
         await tx.delete(costEvents).where(eq(costEvents.companyId, id));
         await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
+        await tx.delete(budgetIncidents).where(eq(budgetIncidents.companyId, id));
         await tx.delete(approvals).where(eq(approvals.companyId, id));
         await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
         await tx.delete(companySecretBindings).where(eq(companySecretBindings.companyId, id));
@@ -497,7 +498,6 @@ export function companyService(db: Db) {
         await tx.delete(goals).where(eq(goals.companyId, id));
         await tx.delete(projects).where(eq(projects.companyId, id));
         await tx.delete(secretAccessEvents).where(eq(secretAccessEvents.companyId, id));
-        await tx.delete(budgetIncidents).where(eq(budgetIncidents.companyId, id));
         await tx.delete(budgetPolicies).where(eq(budgetPolicies.companyId, id));
         await tx.delete(agentConfigRevisions).where(eq(agentConfigRevisions.companyId, id));
         await tx.delete(agents).where(eq(agents.companyId, id));
