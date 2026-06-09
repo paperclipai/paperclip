@@ -72,6 +72,8 @@ import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
 import { secretService } from "./secrets.js";
+import { logActivity } from "./activity-log.js";
+import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import {
   PORTABLE_CATALOG_PROVENANCE_STRING_KEYS,
   readCatalogStringList,
@@ -2604,6 +2606,8 @@ function buildManifestFromPackageFiles(
       icon: asString(extension.icon),
       capabilities: asString(extension.capabilities),
       reportsToSlug: asString(frontmatter.reportsTo) ?? asString(extension.reportsTo),
+      reportsToExistingAgentId: null,
+      reportsToExistingAgentSlug: null,
       adapterType: asString(extensionAdapter?.type) ?? "process",
       adapterConfig,
       runtimeConfig,
@@ -2743,6 +2747,7 @@ function buildManifestFromPackageFiles(
       leadAgentSlug: asString(extension.leadAgentSlug),
       targetDate: asString(extension.targetDate),
       color: asString(extension.color),
+      icon: asString(extension.icon) ?? null,
       status: asString(extension.status),
       env: normalizePortableProjectEnv(extension.env),
       executionWorkspacePolicy: isPlainRecord(extension.executionWorkspacePolicy)
