@@ -4,12 +4,17 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agentApiKeys,
   agents,
+  assets,
   companies,
   costEvents,
   createDb,
+  documents,
   heartbeatRuns,
+  issueAttachments,
   issueComments,
+  issueDocuments,
   issueReadStates,
+  issueRelations,
   issues,
   projects,
 } from "@paperclipai/db";
@@ -234,6 +239,56 @@ describeEmbeddedPostgres("cascade-delete service handlers (GH#7250)", () => {
       outputTokens: 5,
       costCents: 0,
       occurredAt: new Date(),
+    });
+    // Additional issue-child tables to verify full cascade coverage
+    // Need parent records for FK constraints
+    const documentId = randomUUID();
+    await db.insert(documents).values({
+      id: documentId,
+      companyId,
+      title: "Test document",
+      latestBody: "# Test",
+    });
+    await db.insert(issueDocuments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      documentId,
+      key: "test-key",
+    });
+    const assetId = randomUUID();
+    await db.insert(assets).values({
+      id: assetId,
+      companyId,
+      provider: "local",
+      objectKey: "test-asset.bin",
+      contentType: "application/octet-stream",
+      byteSize: 1024,
+      sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    });
+    await db.insert(issueAttachments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      assetId,
+    });
+    const relatedIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: relatedIssueId,
+      companyId,
+      projectId,
+      title: "Related issue",
+      status: "open",
+      priority: "low",
+      issueNumber: 2,
+      identifier: "PJC-2",
+    });
+    await db.insert(issueRelations).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      relatedIssueId,
+      type: "blocks",
     });
 
     const svc = projectService(db);
