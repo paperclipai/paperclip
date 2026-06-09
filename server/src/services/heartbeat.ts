@@ -220,6 +220,8 @@ const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const NO_EVENT_TIMEOUT_ERROR_CODE = "no_event_timeout";
+const NO_EVENT_TIMEOUT_DEFAULT_MS = 10 * 60 * 1000;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -7295,9 +7297,49 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; noEventTimeoutMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
+
+    const resolveNoEventTimeoutMs = (adapterConfig: unknown) => {
+      const configured = Math.floor(asNumber(parseObject(adapterConfig).noEventTimeoutMs, opts?.noEventTimeoutMs ?? NO_EVENT_TIMEOUT_DEFAULT_MS));
+      return Number.isFinite(configured) ? Math.max(0, configured) : NO_EVENT_TIMEOUT_DEFAULT_MS;
+    };
+    const runProgressStats = async (run: typeof heartbeatRuns.$inferSelect) => {
+      const [stats] = await db
+        .select({
+          usefulEventCount: sql<number>`count(*) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))::int`,
+          adapterInvokeCount: sql<number>`count(*) filter (where ${heartbeatRunEvents.eventType} = 'adapter.invoke')::int`,
+          latestUsefulEventAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt}) filter (where ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error'))`,
+          latestEventAt: sql<Date | null>`max(${heartbeatRunEvents.createdAt})`,
+        })
+        .from(heartbeatRunEvents)
+        .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id)));
+      return {
+        usefulEventCount: countValue(stats?.usefulEventCount),
+        adapterInvokeCount: countValue(stats?.adapterInvokeCount),
+        latestUsefulEventAt: stats?.latestUsefulEventAt ?? null,
+        latestEventAt: stats?.latestEventAt ?? null,
+      };
+    };
+    const lastNoEventActivityAt = (
+      run: typeof heartbeatRuns.$inferSelect,
+      stats: Awaited<ReturnType<typeof runProgressStats>>,
+    ) => latestDate(stats.latestEventAt, run.lastOutputAt, run.processStartedAt);
+    const shouldReapNoEventTimeout = async (
+      run: typeof heartbeatRuns.$inferSelect,
+      adapterConfig: unknown,
+    ) => {
+      const noEventTimeoutMs = resolveNoEventTimeoutMs(adapterConfig);
+      if (noEventTimeoutMs <= 0) return null;
+      const stats = await runProgressStats(run);
+      if (stats.adapterInvokeCount <= 0 || stats.usefulEventCount > 0 || stats.latestUsefulEventAt) return null;
+      const lastActivityAt = lastNoEventActivityAt(run, stats);
+      if (!lastActivityAt) return null;
+      const ageMs = now.getTime() - lastActivityAt.getTime();
+      if (ageMs < noEventTimeoutMs) return null;
+      return { stats, lastActivityAt, ageMs, noEventTimeoutMs };
+    };
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
@@ -7325,6 +7367,64 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {
+        const noEventTimeout = await shouldReapNoEventTimeout(run, adapterConfig);
+        if (noEventTimeout) {
+          const ageSec = Math.floor(noEventTimeout.ageMs / 1000);
+          const timeoutSec = Math.floor(noEventTimeout.noEventTimeoutMs / 1000);
+          const timeoutMessage = `No useful events after adapter invocation for ${ageSec}s (threshold ${timeoutSec}s); terminating stalled child pid ${run.processPid}`;
+          await terminateHeartbeatRunProcess({
+            pid: run.processPid,
+            processGroupId: run.processGroupId,
+          });
+          let finalizedRun = await setRunStatus(run.id, "failed", {
+            error: timeoutMessage,
+            errorCode: NO_EVENT_TIMEOUT_ERROR_CODE,
+            finishedAt: now,
+            resultJson: mergeRunStopMetadataForAgent(
+              { adapterType, adapterConfig },
+              "failed",
+              {
+                resultJson: parseObject(run.resultJson),
+                errorCode: NO_EVENT_TIMEOUT_ERROR_CODE,
+                errorMessage: timeoutMessage,
+              },
+            ),
+          });
+          await setWakeupStatus(run.wakeupRequestId, "failed", {
+            finishedAt: now,
+            error: timeoutMessage,
+          });
+          if (!finalizedRun) finalizedRun = await getRun(run.id);
+          if (!finalizedRun) continue;
+          finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
+          await releaseEnvironmentLeasesForRun({
+            runId: finalizedRun.id,
+            companyId: finalizedRun.companyId,
+            agentId: finalizedRun.agentId,
+            status: finalizedRun.status,
+            failureReason: finalizedRun.error ?? undefined,
+          });
+          await releaseIssueExecutionAndPromote(finalizedRun);
+          await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "error",
+            message: timeoutMessage,
+            payload: {
+              errorCode: NO_EVENT_TIMEOUT_ERROR_CODE,
+              processPid: run.processPid,
+              ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
+              lastActivityAt: noEventTimeout.lastActivityAt.toISOString(),
+              ageMs: noEventTimeout.ageMs,
+              thresholdMs: noEventTimeout.noEventTimeoutMs,
+            },
+          });
+          await finalizeAgentStatus(run.agentId, "failed");
+          await startNextQueuedRunForAgent(run.agentId);
+          runningProcesses.delete(run.id);
+          reaped.push(run.id);
+          continue;
+        }
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {

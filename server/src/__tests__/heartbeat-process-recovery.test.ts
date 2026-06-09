@@ -955,6 +955,138 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
+  it.skipIf(process.platform === "win32")("reaps alive local runs that never progress beyond adapter invoke", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId, wakeupRequestId, companyId, agentId, issueId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      agentStatus: "running",
+    });
+    const staleAt = new Date(Date.now() - 15 * 60 * 1000);
+    await db.insert(heartbeatRunEvents).values([
+      {
+        companyId,
+        agentId,
+        runId,
+        seq: 1,
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "run started",
+        createdAt: staleAt,
+      },
+      {
+        companyId,
+        agentId,
+        runId,
+        seq: 2,
+        eventType: "adapter.invoke",
+        stream: "system",
+        level: "info",
+        message: "adapter invocation",
+        createdAt: staleAt,
+      },
+    ]);
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ noEventTimeoutMs: 10 * 60 * 1000 });
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+    expect(await waitForPidExit(child.pid!, 2_000)).toBe(true);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("no_event_timeout");
+    expect(run?.error).toContain("No useful events");
+    expect(run?.livenessState).toBe("failed");
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("failed");
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).not.toBe(runId);
+  });
+
+  it.skipIf(process.platform === "win32")("keeps alive invoke-only runs below the no-event timeout", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId, companyId, agentId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      includeIssue: false,
+    });
+    await db.insert(heartbeatRunEvents).values({
+      companyId,
+      agentId,
+      runId,
+      seq: 1,
+      eventType: "adapter.invoke",
+      stream: "system",
+      level: "info",
+      message: "adapter invocation",
+      createdAt: new Date(),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ noEventTimeoutMs: 10 * 60 * 1000 });
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBe("process_detached");
+  });
+
+  it.skipIf(process.platform === "win32")("keeps alive runs that emitted a useful event before going quiet", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId, companyId, agentId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      includeIssue: false,
+    });
+    const staleAt = new Date(Date.now() - 15 * 60 * 1000);
+    await db.insert(heartbeatRunEvents).values([
+      {
+        companyId,
+        agentId,
+        runId,
+        seq: 1,
+        eventType: "adapter.invoke",
+        stream: "system",
+        level: "info",
+        message: "adapter invocation",
+        createdAt: staleAt,
+      },
+      {
+        companyId,
+        agentId,
+        runId,
+        seq: 2,
+        eventType: "tool",
+        stream: "stdout",
+        level: "info",
+        message: "useful adapter event",
+        createdAt: staleAt,
+      },
+    ]);
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ noEventTimeoutMs: 10 * 60 * 1000 });
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBe("process_detached");
+  });
+
   it("queues exactly one retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",
