@@ -1,0 +1,52 @@
+{
+  "TESTIMONIALS": {
+    "snazzy": {
+      "id": "snazzy",
+      "quote": "Conversion rate up from 65% to 82%. Agent workload reduced by 40%. Lead response time under 2 minutes.",
+      "author": "Ayush Pateria",
+      "role": "CEO & Cofounder, Snazzy",
+      "company": "Snazzy",
+      "image": "/_static/homepage/c1.svg"
+    },
+    "orbit": {
+      "id": "orbit",
+      "quote": "Call abandonment down to 5% from ~30%. 75-80% of inbound calls fully handled by Finn. 24/7 AI coverage replaced 80+ offshore agents.",
+      "author": "Shikha Chouksey",
+      "role": "COO & Cofounder, Orbit Wallet",
+      "company": "Orbit Wallet",
+      "image": "/_static/homepage/c5.svg"
+    },
+    "frinks": {
+      "id": "frinks",
+      "quote": "70% of production-support calls now contained. 800+ man-hours saved every month. Wait time reduced to under 30 seconds.",
+      "author": "David Johnson",
+      "role": "Head of HR, Frinks AI",
+      "company": "Frinks AI",
+      "image": "/_static/homepage/c2.svg"
+    },
+    "tofa": {
+      "id": "tofa",
+      "quote": "TOFA launched a national campaign with Finn — 10K+ calls daily and seamless human escalations.",
+      "author": "Alice Smith",
+      "role": "Senior Engineer, Gofts",
+      "company": "TOFA",
+      "image": "/_static/homepage/c4.svg"
+    },
+    "rocketsdr": {
+      "id": "rocketsdr",
+      "quote": "RocketSDR improved candidate experience and reduced offer drop-offs with Finn 24×7 AI helpline and proactive escalations.",
+      "author": "Shivansh",
+      "role": "Head of Engineering, RocketSDR",
+      "company": "RocketSDR",
+      "image": "/_static/homepage/c3.svg"
+    },
+    "pbs": {
+      "id": "pbs",
+      "quote": "Pillar Bridge scaled multilingual customer support — handling case details and payments in Hindi, Tamil, and Kannada with zero wait time and perfect empathy.",
+      "author": "Rajesh Bangera",
+      "role": "Founder, PBS",
+      "company": "Pillar Bridge",
+      "image": "/_static/homepage/c6.svg"
+    }
+  }
+}

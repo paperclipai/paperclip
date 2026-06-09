@@ -1,0 +1,158 @@
+{
+  "PAGE_SEO": {
+    "/pricing": {
+      "title": "Pricing",
+      "description": "Transparent per-minute pricing for Finn AI voice agents. Start free, scale to enterprise. No setup fees, no hidden charges."
+    },
+    "/manifesto": {
+      "title": "Manifesto",
+      "description": "Why we built Finn — to make AI voice agents that sound human, ship in days, and don't replace the people who matter."
+    },
+    "/compliance": {
+      "title": "Compliance & Security",
+      "description": "HIPAA, GDPR, and SOC 2 posture for Finn AI voice agents. Data residency, retention, and audit logs explained."
+    },
+    "/terms": {
+      "title": "Terms of Service",
+      "description": "Terms governing your use of Finn — service availability, data handling, and acceptable use.",
+      "noindex": false
+    },
+    "/privacy": {
+      "title": "Privacy Policy",
+      "description": "How Finn collects, uses, and protects customer and end-user data across calls, transcripts, and account information."
+    },
+    "/refundpolicy": {
+      "title": "Refund Policy",
+      "description": "Refund and credit policy for Finn subscriptions, AI credits, and add-on services."
+    },
+    "/signin": {
+      "title": "Sign in",
+      "description": "Sign in to your Finn workspace to build, deploy, and monitor AI voice agents.",
+      "noindex": true
+    },
+    "/signup": {
+      "title": "Sign up",
+      "description": "Create your Finn workspace. Build your first AI voice agent in under 2 minutes.",
+      "noindex": true
+    },
+    "/bookademo": {
+      "title": "Book a demo",
+      "description": "See Finn in action. Book a 30-minute walkthrough with our team to design a voice agent for your use case."
+    },
+    "/careers": {
+      "title": "Careers",
+      "description": "Join Finn and help build the voice layer for every business. Open roles in engineering and go-to-market. High ownership, ship fast."
+    },
+    "/meet": {
+      "title": "Schedule your meeting",
+      "description": "Pick a time to meet the Finn team and plan your AI voice agent rollout.",
+      "noindex": true
+    },
+    "/join": {
+      "title": "Join Finn",
+      "description": "Join the Finn workspace and start building AI voice agents.",
+      "noindex": true
+    },
+    "/solutions/debt-collection": {
+      "title": "Debt collection AI voice agents",
+      "description": "Compliant collections with human-like tone. Finn handles outreach, payment plans, and escalation."
+    },
+    "/solutions/financial-services": {
+      "title": "Financial services AI voice agents",
+      "description": "KYC, loan origination, and proactive servicing for banks, NBFCs, and insurers. Built for compliance."
+    },
+    "/solutions/healthcare": {
+      "title": "Healthcare AI voice agents",
+      "description": "Appointment booking, reminders, and patient intake. HIPAA-aware Finn agents for clinics and TPAs."
+    },
+    "/solutions/home-services": {
+      "title": "Home services AI voice agents",
+      "description": "Booking, dispatch confirmation, and follow-up calls for plumbing, HVAC, landscaping, and beyond."
+    },
+    "/solutions/insurance": {
+      "title": "Insurance AI voice agents",
+      "description": "Claims FNOL, policy servicing, and renewal outreach. Finn keeps every call compliant and recorded."
+    },
+    "/solutions/logistics": {
+      "title": "Logistics AI voice agents",
+      "description": "Driver dispatch, delivery confirmations, and exception handling at fleet scale."
+    },
+    "/solutions/retail": {
+      "title": "Retail AI voice agents",
+      "description": "Order updates, return processing, and customer retention calls. Multilingual out of the box."
+    },
+    "/solutions/travel": {
+      "title": "Travel AI voice agents",
+      "description": "Booking changes, irrops handling, and post-trip surveys. Finn runs your call center off-shift."
+    },
+    "/solutions/real-estate": {
+      "title": "Real estate AI voice agents",
+      "description": "Speed-to-lead, dormant lead reactivation, and showing coordination for residential teams."
+    },
+    "/solutions/mortgage": {
+      "title": "Mortgage AI voice agents",
+      "description": "Borrower pre-qualification, document follow-up, and TRID-aware LO meeting booking."
+    },
+    "/solutions/saas": {
+      "title": "SaaS AI voice agents",
+      "description": "Demo booking, trial activation, webinar reminders, and win-back calls for SaaS GTM teams."
+    },
+    "/solutions/recruitment": {
+      "title": "Recruitment AI voice agents",
+      "description": "Interview scheduling, candidate screening, and offer-stage nurture for high-volume hiring."
+    },
+    "/solutions/legal": {
+      "title": "Legal AI voice agents",
+      "description": "Case intake, conflict checks, and paid consult booking. Compliance-first for law firms."
+    },
+    "/solutions/automotive": {
+      "title": "Automotive AI voice agents",
+      "description": "Service ops, sales follow-up, and lease-end campaigns for dealerships and BDCs."
+    },
+    "/solutions/fintech": {
+      "title": "Fintech AI voice agents",
+      "description": "Fraud verification, KYC follow-up, and dispute support at digital-bank scale."
+    },
+    "/solutions/education": {
+      "title": "Education AI voice agents",
+      "description": "Admissions reception, enrollment nurture, and student retention calls."
+    },
+    "/solutions/hospitality": {
+      "title": "Hospitality AI voice agents",
+      "description": "Reservation booking, event RSVPs, and guest feedback loops for venues and restaurants."
+    },
+    "/solutions/wellness": {
+      "title": "Wellness AI voice agents",
+      "description": "Salon and spa booking, gap-fill outreach, and lapsed-guest revival."
+    },
+    "/solutions/customer-success": {
+      "title": "Customer success AI voice agents",
+      "description": "NPS surveys, churn-save outreach, and outage notifications run by your Finn agents."
+    },
+    "/solutions/solar": {
+      "title": "Solar AI voice agents",
+      "description": "Homeowner qualification, utility bill intake, and consult booking for solar sales teams."
+    },
+    "/solutions/non-profit": {
+      "title": "Non-profit AI voice agents",
+      "description": "Donor reactivation, EOY giving campaigns, and volunteer engagement at any chapter size."
+    },
+    "/solutions/customer-service": {
+      "title": "Customer service AI voice agents",
+      "description": "Automate customer service calls with Finn AI voice agents. Resolve tickets, route inquiries, and deliver 24/7 phone support that scales without growing headcount."
+    },
+    "/solutions": {
+      "title": "Solutions and playbooks",
+      "description": "22 industry solutions and 46 ready-to-deploy voice agent playbooks. Filter by vertical, type, or use case."
+    },
+    "/partner": {
+      "title": "Become a Finn partner",
+      "description": "Referral, BPO, reseller, and technology partnerships. Build voice AI into your service or product with Finn."
+    },
+    "/marketing/unsubscribe": {
+      "title": "Unsubscribe",
+      "description": "Manage your Finn marketing email preferences or unsubscribe from future communications.",
+      "noindex": true
+    }
+  }
+}

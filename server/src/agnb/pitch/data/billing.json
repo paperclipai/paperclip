@@ -1,0 +1,11 @@
+{
+  "FINN_BILLING": {
+    "legal_name": "AIforge Tech Pvt. Ltd.",
+    "gstin": "08ABCCA0158K1ZQ",
+    "registered_state": "Rajasthan",
+    "registered_state_code": "08",
+    "sac_code": "998314",
+    "gst_rate_basis_points": 1800,
+    "pricing_model": "exclusive"
+  }
+}

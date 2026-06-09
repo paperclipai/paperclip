@@ -1,0 +1,318 @@
+{
+  "VOICE_CATALOG": {
+    "English": [
+      {
+        "id": "21m00Tcm4TlvDq8ikWAM",
+        "name": "Rachel",
+        "gender": "female",
+        "style": "warm, professional, calm",
+        "accent": "American",
+        "age": "young adult",
+        "languages": [
+          "English"
+        ]
+      },
+      {
+        "id": "AZnzlk1XvdvUeBnXmlld",
+        "name": "Domi",
+        "gender": "female",
+        "style": "friendly, casual, expressive",
+        "accent": "American",
+        "age": "young adult",
+        "languages": [
+          "English"
+        ]
+      },
+      {
+        "id": "EXAVITQu4vr4xnSDxMaL",
+        "name": "Bella",
+        "gender": "female",
+        "style": "energetic, upbeat, youthful",
+        "accent": "American",
+        "age": "young",
+        "languages": [
+          "English"
+        ]
+      },
+      {
+        "id": "ErXwobaYiN019PkySvjV",
+        "name": "Antoni",
+        "gender": "male",
+        "style": "confident, articulate, warm",
+        "accent": "American",
+        "age": "middle aged",
+        "languages": [
+          "English"
+        ]
+      },
+      {
+        "id": "MF3mGyEYCl7XYWbV9V6O",
+        "name": "Elli",
+        "gender": "female",
+        "style": "cheerful, young, friendly",
+        "accent": "American",
+        "age": "young",
+        "languages": [
+          "English"
+        ]
+      },
+      {
+        "id": "TxGEqnHWrfWFTfGW9XjX",
+        "name": "Josh",
+        "gender": "male",
+        "style": "confident, salesy, deep",
+        "accent": "American",
+        "age": "young adult",
+        "languages": [
+          "English"
+        ]
+      },
+      {
+        "id": "VR6AewLTigWG4xSOukaG",
+        "name": "Arnold",
+        "gender": "male",
+        "style": "authoritative, bold, strong",
+        "accent": "American",
+        "age": "middle aged",
+        "languages": [
+          "English"
+        ]
+      },
+      {
+        "id": "pNInz6obpgDQGcFmaJgB",
+        "name": "Adam",
+        "gender": "male",
+        "style": "deep, professional, narration",
+        "accent": "American",
+        "age": "middle aged",
+        "languages": [
+          "English"
+        ]
+      },
+      {
+        "id": "yoZ06aMxZJJ28mfd3POQ",
+        "name": "Sam",
+        "gender": "male",
+        "style": "calm, composed, clear",
+        "accent": "American",
+        "age": "young adult",
+        "languages": [
+          "English"
+        ]
+      },
+      {
+        "id": "onwK4e9ZLuTAKqWW03F9",
+        "name": "Daniel",
+        "gender": "male",
+        "style": "British, authoritative, news anchor",
+        "accent": "British",
+        "age": "middle aged",
+        "languages": [
+          "English"
+        ]
+      },
+      {
+        "id": "XB0fDUnXU5powFXDhCwa",
+        "name": "Charlotte",
+        "gender": "female",
+        "style": "British, elegant, warm",
+        "accent": "British",
+        "age": "young adult",
+        "languages": [
+          "English"
+        ]
+      },
+      {
+        "id": "Xb7hH8MSUJpSbSDYk0k2",
+        "name": "Alice",
+        "gender": "female",
+        "style": "British, confident, sophisticated",
+        "accent": "British",
+        "age": "middle aged",
+        "languages": [
+          "English"
+        ]
+      }
+    ],
+    "Spanish": [
+      {
+        "id": "GBv7mTt0atIp3Br8iCZE",
+        "name": "Thomas",
+        "gender": "male",
+        "style": "calm, professional, clear",
+        "accent": "Neutral Spanish",
+        "age": "middle aged",
+        "languages": [
+          "Spanish",
+          "English"
+        ]
+      },
+      {
+        "id": "jsCqWAovK2LkecY7zXl4",
+        "name": "Freya",
+        "gender": "female",
+        "style": "warm, friendly, conversational",
+        "accent": "Neutral Spanish",
+        "age": "young adult",
+        "languages": [
+          "Spanish",
+          "English"
+        ]
+      }
+    ],
+    "French": [
+      {
+        "id": "XrExE9yKIg1WjnnlVkGX",
+        "name": "Matilda",
+        "gender": "female",
+        "style": "warm, professional, elegant",
+        "accent": "French",
+        "age": "young adult",
+        "languages": [
+          "French",
+          "English"
+        ]
+      }
+    ],
+    "German": [
+      {
+        "id": "pqHfZKP75CvOlQylNhV4",
+        "name": "Bill",
+        "gender": "male",
+        "style": "professional, clear, trustworthy",
+        "accent": "German",
+        "age": "middle aged",
+        "languages": [
+          "German",
+          "English"
+        ]
+      }
+    ],
+    "Hindi": [
+      {
+        "id": "nPczCjzI2devNBz1zQrb",
+        "name": "Brian",
+        "gender": "male",
+        "style": "deep, professional, narration",
+        "accent": "Hindi",
+        "age": "middle aged",
+        "languages": [
+          "Hindi",
+          "English"
+        ]
+      }
+    ],
+    "Portuguese": [
+      {
+        "id": "ThT5KcBeYPX3keUQqHPh",
+        "name": "Dorothy",
+        "gender": "female",
+        "style": "warm, pleasant, friendly",
+        "accent": "Brazilian Portuguese",
+        "age": "young adult",
+        "languages": [
+          "Portuguese",
+          "English"
+        ]
+      }
+    ],
+    "Italian": [
+      {
+        "id": "g5CIjZEefAph4nQFvHAz",
+        "name": "Ethan",
+        "gender": "male",
+        "style": "warm, conversational, professional",
+        "accent": "Italian",
+        "age": "young adult",
+        "languages": [
+          "Italian",
+          "English"
+        ]
+      }
+    ],
+    "Dutch": [
+      {
+        "id": "IKne3meq5aSn9XLyUdCD",
+        "name": "Charlie",
+        "gender": "male",
+        "style": "casual, friendly, natural",
+        "accent": "Dutch",
+        "age": "young adult",
+        "languages": [
+          "Dutch",
+          "English"
+        ]
+      }
+    ],
+    "Polish": [
+      {
+        "id": "ODq5zmih8GrVes37Dizd",
+        "name": "Patrick",
+        "gender": "male",
+        "style": "professional, clear, trustworthy",
+        "accent": "Polish",
+        "age": "middle aged",
+        "languages": [
+          "Polish",
+          "English"
+        ]
+      }
+    ],
+    "Arabic": [
+      {
+        "id": "CYw3kZ02Hs0563khs1Fj",
+        "name": "Dave",
+        "gender": "male",
+        "style": "conversational, friendly, warm",
+        "accent": "Arabic",
+        "age": "young adult",
+        "languages": [
+          "Arabic",
+          "English"
+        ]
+      }
+    ],
+    "Chinese": [
+      {
+        "id": "iP95p4xoKVk53GoZ742B",
+        "name": "Chris",
+        "gender": "male",
+        "style": "professional, clear, calm",
+        "accent": "Chinese",
+        "age": "middle aged",
+        "languages": [
+          "Chinese",
+          "English"
+        ]
+      }
+    ],
+    "Japanese": [
+      {
+        "id": "bIHbv24MWmeRgasZH58o",
+        "name": "Will",
+        "gender": "male",
+        "style": "friendly, professional, warm",
+        "accent": "Japanese",
+        "age": "young adult",
+        "languages": [
+          "Japanese",
+          "English"
+        ]
+      }
+    ],
+    "Korean": [
+      {
+        "id": "N2lVS1w4EtoT3dr4eOWO",
+        "name": "Callum",
+        "gender": "male",
+        "style": "calm, professional, trustworthy",
+        "accent": "Korean",
+        "age": "middle aged",
+        "languages": [
+          "Korean",
+          "English"
+        ]
+      }
+    ]
+  }
+}

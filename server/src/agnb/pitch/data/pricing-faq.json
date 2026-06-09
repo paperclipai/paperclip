@@ -1,0 +1,52 @@
+{
+  "pricingFaqData": [
+    {
+      "question": "How does Finn pricing work?",
+      "answer": "Finn is wallet-based — not a subscription. You pick a plan (Starter / Pro / Growth / Enterprise) that sets your per-AI-credit rate, minimum top-up, and concurrent-call cap. You top up the wallet, and credits are deducted in real time as calls run. You only pay when you top up; nothing recurs."
+    },
+    {
+      "question": "What is an AI credit?",
+      "answer": "An AI credit is the unit of consumption for every Finn call. Each call deducts credits from your wallet at your plan's rate. The dashboard shows the per-call ledger so you can see exactly what was spent and why."
+    },
+    {
+      "question": "Do credits expire?",
+      "answer": "No. Credits never expire as long as the workspace is active. Top up once, and your balance stays available until it's used."
+    },
+    {
+      "question": "What's the difference between the plans?",
+      "answer": "Plans only differ on three things: rate per credit, minimum top-up, and concurrent-call cap. Starter is ₹10/credit with a ₹2,000 minimum and 2 concurrent calls. Pro is ₹7/credit, ₹10,000 minimum, 20 concurrent. Growth is ₹6/credit, ₹50,000 minimum, 100 concurrent. Enterprise is custom. Every plan gets the full product — same workflow editor, knowledge base, integrations, and compliance."
+    },
+    {
+      "question": "Can I switch plans later?",
+      "answer": "Yes, any time. Switch from the dashboard's Billing settings. The new rate applies to future credit purchases; credits already in your wallet keep their original value."
+    },
+    {
+      "question": "How do I top up the wallet?",
+      "answer": "From the dashboard's Billing settings. India workspaces pay in INR via Razorpay; other workspaces pay in USD via DodoPayments. Both support cards, UPI, and bank transfers depending on region."
+    },
+    {
+      "question": "Do I get free credits to try Finn?",
+      "answer": "Yes — the Starter plan includes 50 free AI credits on signup so you can build, test, and run real calls before topping up."
+    },
+    {
+      "question": "What if I want to stop using Finn?",
+      "answer": "Cancel any time from the dashboard. Wallet balances are non-refundable once topped up — credits never expire, so use them whenever you're ready to come back."
+    },
+    {
+      "question": "Are phone numbers included?",
+      "answer": "Phone number rental is separate, billed at ₹400 per month per number and deducted from your wallet automatically. You can rent numbers from the Phone Numbers settings page across 40+ countries."
+    },
+    {
+      "question": "Is there a setup or onboarding fee?",
+      "answer": "No. Sign up, build your first Finn, and run real calls within minutes. White-glove onboarding is available for Growth and Enterprise plans at no extra cost."
+    },
+    {
+      "question": "Do you offer enterprise contracts?",
+      "answer": "Yes. Enterprise plans get custom per-credit rates, custom minimum top-ups, unlimited concurrent calls, SLAs, dedicated support, and a security/compliance review. Email sales@hirefinn.ai or use the Talk to sales button on the Enterprise plan card."
+    },
+    {
+      "question": "What's included in every plan?",
+      "answer": "Drag-and-drop workflow editor, knowledge base, 100+ voices across 46 languages, live transfer, post-call analysis, batch calling, SMS/WhatsApp/email follow-ups, calendar integrations, audit log, SOC 2, HIPAA, GDPR, and DPDP compliance. Plans only gate concurrency and rate — not features."
+    }
+  ]
+}
