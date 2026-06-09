@@ -9,6 +9,8 @@ export interface ClickUpAwaitingHumanProviderConfigRecord {
   workspaceId: string | null;
   channelId: string | null;
   attachmentTaskId: string | null;
+  primaryReviewerUserId: string | null;
+  secondaryReviewerUserId: string | null;
 }
 
 export type AwaitingHumanProviderConfigRecord = ClickUpAwaitingHumanProviderConfigRecord;

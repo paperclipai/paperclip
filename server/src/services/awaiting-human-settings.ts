@@ -18,6 +18,8 @@ interface StoredClickUpProviderConfig {
   workspaceId: string | null;
   channelId: string | null;
   attachmentTaskId: string | null;
+  primaryReviewerUserId: string | null;
+  secondaryReviewerUserId: string | null;
 }
 
 type StoredAwaitingHumanSettingsRow = {
@@ -50,6 +52,8 @@ function toPublicSettings(row: StoredAwaitingHumanSettingsRow): CompanyAwaitingH
         workspaceId: row.providerConfigJson?.workspaceId ?? null,
         channelId: row.providerConfigJson?.channelId ?? null,
         attachmentTaskId: row.providerConfigJson?.attachmentTaskId ?? null,
+        primaryReviewerUserId: row.providerConfigJson?.primaryReviewerUserId ?? null,
+        secondaryReviewerUserId: row.providerConfigJson?.secondaryReviewerUserId ?? null,
       }
       : null,
     hasStoredAuthToken: row.provider === "clickup" && !!row.providerConfigJson?.authTokenRef?.secretId,
@@ -100,6 +104,8 @@ export function awaitingHumanSettingsService(db: Db) {
       workspaceId: config?.workspaceId ?? null,
       channelId: config?.channelId ?? null,
       attachmentTaskId: config?.attachmentTaskId ?? null,
+      primaryReviewerUserId: config?.primaryReviewerUserId ?? null,
+      secondaryReviewerUserId: config?.secondaryReviewerUserId ?? null,
     };
   }
 
@@ -157,6 +163,8 @@ export function awaitingHumanSettingsService(db: Db) {
             workspaceId: normalizedConfig?.workspaceId ?? null,
             channelId: normalizedConfig?.channelId ?? null,
             attachmentTaskId: normalizedConfig?.attachmentTaskId ?? null,
+            primaryReviewerUserId: normalizedConfig?.primaryReviewerUserId ?? null,
+            secondaryReviewerUserId: normalizedConfig?.secondaryReviewerUserId ?? null,
           }
           : null;
       }
@@ -198,6 +206,8 @@ export function awaitingHumanSettingsService(db: Db) {
             workspaceId: nextProviderConfig?.workspaceId ?? null,
             channelId: nextProviderConfig?.channelId ?? null,
             attachmentTaskId: nextProviderConfig?.attachmentTaskId ?? null,
+            primaryReviewerUserId: nextProviderConfig?.primaryReviewerUserId ?? null,
+            secondaryReviewerUserId: nextProviderConfig?.secondaryReviewerUserId ?? null,
           };
         }
       }

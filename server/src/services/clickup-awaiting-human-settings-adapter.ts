@@ -4,6 +4,8 @@ export interface ClickUpAwaitingHumanProviderConfigInput {
   workspaceId: string | null;
   channelId: string | null;
   attachmentTaskId: string | null;
+  primaryReviewerUserId?: string | null;
+  secondaryReviewerUserId?: string | null;
 }
 
 function trimNullable(value: string | null | undefined) {
@@ -38,6 +40,8 @@ export function normalizeClickUpAwaitingHumanProviderConfig(
     workspaceId: trimNullable(input.workspaceId),
     channelId: trimNullable(input.channelId),
     attachmentTaskId: normalizeClickUpAttachmentTaskId(input.attachmentTaskId),
+    primaryReviewerUserId: trimNullable(input.primaryReviewerUserId ?? null),
+    secondaryReviewerUserId: trimNullable(input.secondaryReviewerUserId ?? null),
   };
 }
 

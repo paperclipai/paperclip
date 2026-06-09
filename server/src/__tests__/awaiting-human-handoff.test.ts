@@ -103,6 +103,46 @@ describe("maybeLogAwaitingHumanHandoff", () => {
     expect(logActivity).toHaveBeenCalledTimes(1);
   });
 
+  it("passes approval context through the handoff payload", async () => {
+    process.env.BIZBOX_PUBLIC_URL = "https://bizbox.example";
+
+    const created = await maybeLogAwaitingHumanHandoff(mockDbWithAwaitingHumanRows(), {
+      previousIssue: basePreviousIssue,
+      updatedIssue: baseUpdatedIssue,
+      source: "issue_thread_interactions.create",
+      handoffKind: "request_confirmation",
+      actor: baseActor,
+      approvalContext: {
+        approvalName: "Policy approval",
+        requiresSecondReview: true,
+      },
+      interaction: {
+        id: "interaction-ugc-1",
+        kind: "request_confirmation",
+        title: null,
+        summary: null,
+        payload: {
+          version: 1,
+          prompt: "Approve the finance article before it goes to the final reviewer.",
+        },
+      },
+    });
+
+    expect(created).toBe(true);
+    expect(enqueueAwaitingHumanNotification).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        notification: expect.objectContaining({
+          approvalContext: {
+            approvalName: "Policy approval",
+            approvalStage: null,
+            requiresSecondReview: true,
+          },
+        }),
+      }),
+    );
+  });
+
   it("renders absolute target links for relative request confirmation targets", async () => {
     process.env.BIZBOX_PUBLIC_URL = "https://bizbox.example";
 

@@ -23,6 +23,8 @@ describe("clickup awaiting human settings adapter", () => {
       workspaceId: "90161423646",
       channelId: "channel-1",
       attachmentTaskId: "86d35fwx8",
+      primaryReviewerUserId: null,
+      secondaryReviewerUserId: null,
     });
   });
 });

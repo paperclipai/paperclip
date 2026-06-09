@@ -6,6 +6,8 @@ export const clickupAwaitingHumanProviderConfigSchema = z.object({
   workspaceId: z.string().min(1).max(200).nullable(),
   channelId: z.string().min(1).max(200).nullable(),
   attachmentTaskId: z.string().min(1).max(200).nullable().optional(),
+  primaryReviewerUserId: z.string().min(1).max(200).nullable().optional(),
+  secondaryReviewerUserId: z.string().min(1).max(200).nullable().optional(),
 });
 
 export const companyAwaitingHumanSettingsSchema = z.object({

@@ -104,6 +104,8 @@ describe("PATCH /api/companies/:companyId/awaiting-human-settings", () => {
         providerConfig: {
           workspaceId: 123,
           channelId: "channel-1",
+          primaryReviewerUserId: null,
+          secondaryReviewerUserId: null,
         },
       });
 
@@ -136,6 +138,8 @@ describe("PATCH /api/companies/:companyId/awaiting-human-settings", () => {
         providerConfig: {
           workspaceId: "workspace-1",
           channelId: "channel-1",
+          primaryReviewerUserId: null,
+          secondaryReviewerUserId: null,
         },
         clickupPersonalToken: "token-123",
       });

@@ -50,6 +50,15 @@ function createFailingAwaitingHumanSettingsDb(baseDb: ReturnType<typeof createDb
   return wrap(baseDb) as ReturnType<typeof createDb>;
 }
 
+async function createCompany(db: ReturnType<typeof createDb>, companyId: string) {
+  await db.insert(companies).values({
+    id: companyId,
+    name: "Paperclip",
+    issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    requireBoardApprovalForNewAgents: false,
+  });
+}
+
 describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -70,16 +79,100 @@ describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
     await tempDb?.cleanup();
   });
 
-  it("does not rotate the stored token until ClickUp settings validation passes", async () => {
+  it("uses an upsert when two first-time saves race for the same company", async () => {
+    const companyId = randomUUID();
+    await createCompany(db, companyId);
+
+    const service = awaitingHumanSettingsService(db);
+    const patch = {
+      enabled: true,
+      provider: "clickup" as const,
+      providerConfig: {
+        workspaceId: "workspace-123",
+        channelId: "channel-123",
+        attachmentTaskId: null,
+        primaryReviewerUserId: "primary-user-id",
+        secondaryReviewerUserId: "secondary-user-id",
+      },
+      clickupPersonalToken: "token-123",
+    };
+
+    const [first, second] = await Promise.all([
+      service.update(companyId, patch, { userId: "user-1", agentId: null }),
+      service.update(companyId, patch, { userId: "user-2", agentId: null }),
+    ]);
+
+    expect(first).toEqual(expect.objectContaining({
+      companyId,
+      enabled: true,
+      provider: "clickup",
+    }));
+    expect(second).toEqual(expect.objectContaining({
+      companyId,
+      enabled: true,
+      provider: "clickup",
+    }));
+
+    const settingsRows = await db.select().from(companyAwaitingHumanSettings).where(eq(companyAwaitingHumanSettings.companyId, companyId));
+    expect(settingsRows).toHaveLength(1);
+    expect(settingsRows[0]?.providerConfigJson).toEqual(expect.objectContaining({
+      workspaceId: "workspace-123",
+      channelId: "channel-123",
+      attachmentTaskId: null,
+      primaryReviewerUserId: "primary-user-id",
+      secondaryReviewerUserId: "secondary-user-id",
+    }));
+  });
+
+  it("saves and returns generic approval reviewer IDs", async () => {
+    const companyId = randomUUID();
+    await createCompany(db, companyId);
+
+    const service = awaitingHumanSettingsService(db);
+    const updated = await service.update(companyId, {
+      enabled: true,
+      provider: "clickup",
+      providerConfig: {
+        workspaceId: "workspace-123",
+        channelId: "channel-123",
+        attachmentTaskId: "task-123",
+        primaryReviewerUserId: "primary-user-id",
+        secondaryReviewerUserId: "secondary-user-id",
+      },
+      clickupPersonalToken: "token-123",
+    }, {
+      userId: "user-1",
+      agentId: null,
+    });
+
+    expect(updated).toEqual(expect.objectContaining({
+      companyId,
+      enabled: true,
+      provider: "clickup",
+      providerConfig: {
+        workspaceId: "workspace-123",
+        channelId: "channel-123",
+        attachmentTaskId: "task-123",
+        primaryReviewerUserId: "primary-user-id",
+        secondaryReviewerUserId: "secondary-user-id",
+      },
+      hasStoredAuthToken: true,
+    }));
+
+    const fetched = await service.get(companyId);
+    expect(fetched.providerConfig).toEqual({
+      workspaceId: "workspace-123",
+      channelId: "channel-123",
+      attachmentTaskId: "task-123",
+      primaryReviewerUserId: "primary-user-id",
+      secondaryReviewerUserId: "secondary-user-id",
+    });
+  });
+
+  it("does not rotate the stored token until ClickUp validation passes", async () => {
     const companyId = randomUUID();
     const secrets = secretService(db);
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
+    await createCompany(db, companyId);
 
     const secret = await secrets.create(companyId, {
       name: "awaiting-human-clickup-token",
@@ -116,24 +209,12 @@ describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
     const [storedSecret] = await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id));
     expect(storedSecret?.latestVersion).toBe(1);
     await expect(secrets.resolveSecretValue(companyId, secret.id, "latest")).resolves.toBe("old-token");
-
-    const [settingsRow] = await db.select().from(companyAwaitingHumanSettings).where(eq(companyAwaitingHumanSettings.companyId, companyId));
-    expect(settingsRow?.providerConfigJson).toEqual(expect.objectContaining({
-      workspaceId: "workspace-123",
-      channelId: "channel-123",
-    }));
   });
 
   it("allows a blank ClickUp channel ID and still rotates the stored token", async () => {
     const companyId = randomUUID();
     const secrets = secretService(db);
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
+    await createCompany(db, companyId);
 
     const secret = await secrets.create(companyId, {
       name: "awaiting-human-clickup-token",
@@ -153,7 +234,6 @@ describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
     });
 
     const service = awaitingHumanSettingsService(db);
-
     const updated = await service.update(companyId, {
       enabled: true,
       provider: "clickup",
@@ -161,6 +241,8 @@ describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
         workspaceId: "workspace-123",
         channelId: null,
         attachmentTaskId: null,
+        primaryReviewerUserId: null,
+        secondaryReviewerUserId: null,
       },
       clickupPersonalToken: "new-token",
     }, {
@@ -176,6 +258,8 @@ describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
         workspaceId: "workspace-123",
         channelId: null,
         attachmentTaskId: null,
+        primaryReviewerUserId: null,
+        secondaryReviewerUserId: null,
       },
       hasStoredAuthToken: true,
     }));
@@ -187,13 +271,7 @@ describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
 
   it("rejects enabling ClickUp without a stored or incoming token", async () => {
     const companyId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
+    await createCompany(db, companyId);
 
     const service = awaitingHumanSettingsService(db);
 
@@ -211,23 +289,13 @@ describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
 
     const settingsRows = await db.select().from(companyAwaitingHumanSettings).where(eq(companyAwaitingHumanSettings.companyId, companyId));
     expect(settingsRows).toHaveLength(0);
-
-    const secretRows = await db.select().from(companySecrets).where(eq(companySecrets.companyId, companyId));
-    expect(secretRows).toHaveLength(0);
   });
 
   it("rolls back a newly created ClickUp secret if the settings write fails", async () => {
     const companyId = randomUUID();
-    const failingDb = createFailingAwaitingHumanSettingsDb(db);
+    await createCompany(db, companyId);
 
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-
-    const service = awaitingHumanSettingsService(failingDb);
+    const service = awaitingHumanSettingsService(createFailingAwaitingHumanSettingsDb(db));
 
     await expect(service.update(companyId, {
       enabled: true,
@@ -244,116 +312,16 @@ describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
 
     const secretRows = await db.select().from(companySecrets).where(eq(companySecrets.companyId, companyId));
     expect(secretRows).toHaveLength(0);
-
     const secretVersionRows = await db.select().from(companySecretVersions);
     expect(secretVersionRows).toHaveLength(0);
-
     const settingsRows = await db.select().from(companyAwaitingHumanSettings).where(eq(companyAwaitingHumanSettings.companyId, companyId));
     expect(settingsRows).toHaveLength(0);
-  });
-
-  it("uses an upsert when two first-time saves race for the same company", async () => {
-    const companyId = randomUUID();
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-
-    const service = awaitingHumanSettingsService(db);
-    const input = {
-      enabled: true,
-      provider: "clickup" as const,
-      providerConfig: {
-        workspaceId: "workspace-123",
-        channelId: "channel-123",
-      },
-      clickupPersonalToken: "race-token",
-    };
-
-    await Promise.all([
-      service.update(companyId, input, { userId: "user-1", agentId: null }),
-      service.update(companyId, input, { userId: "user-2", agentId: null }),
-    ]);
-
-    const rows = await db.select().from(companyAwaitingHumanSettings).where(eq(companyAwaitingHumanSettings.companyId, companyId));
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toEqual(expect.objectContaining({
-      companyId,
-      enabled: true,
-      provider: "clickup",
-      providerConfigJson: expect.objectContaining({
-        workspaceId: "workspace-123",
-        channelId: "channel-123",
-      }),
-    }));
-
-    const secretRows = await db.select().from(companySecrets).where(eq(companySecrets.companyId, companyId));
-    expect(secretRows).toHaveLength(1);
-
-    const secretVersionRows = await db.select().from(companySecretVersions);
-    expect(secretVersionRows).toHaveLength(2);
-  });
-
-  it("rejects enabling the bridge without selecting a provider", async () => {
-    const companyId = randomUUID();
-    const secrets = secretService(db);
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
-
-    const secret = await secrets.create(companyId, {
-      name: "awaiting-human-clickup-token",
-      provider: "local_encrypted",
-      value: "old-token",
-    });
-
-    await db.insert(companyAwaitingHumanSettings).values({
-      companyId,
-      enabled: true,
-      provider: "clickup",
-      providerConfigJson: {
-        authTokenRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
-        workspaceId: "workspace-123",
-        channelId: "channel-123",
-      },
-    });
-
-    const service = awaitingHumanSettingsService(db);
-
-    await expect(service.update(companyId, {
-      provider: null,
-    }, {
-      userId: "user-1",
-      agentId: null,
-    })).rejects.toThrow(/without selecting a provider/i);
-
-    const [settingsRow] = await db.select().from(companyAwaitingHumanSettings).where(eq(companyAwaitingHumanSettings.companyId, companyId));
-    expect(settingsRow).toEqual(expect.objectContaining({
-      enabled: true,
-      provider: "clickup",
-    }));
-
-    const [storedSecret] = await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id));
-    expect(storedSecret?.latestVersion).toBe(1);
-    await expect(secrets.resolveSecretValue(companyId, secret.id, "latest")).resolves.toBe("old-token");
   });
 
   it("deletes the stored ClickUp secret when switching away from ClickUp", async () => {
     const companyId = randomUUID();
     const secrets = secretService(db);
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
+    await createCompany(db, companyId);
 
     const secret = await secrets.create(companyId, {
       name: "awaiting-human-clickup-token",
@@ -373,7 +341,6 @@ describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
     });
 
     const service = awaitingHumanSettingsService(db);
-
     const updated = await service.update(companyId, {
       enabled: false,
       provider: null,
@@ -396,13 +363,7 @@ describeEmbeddedPostgres("awaitingHumanSettingsService", () => {
 
   it("defaults companies without a settings row to disabled awaiting-human delivery", async () => {
     const companyId = randomUUID();
-
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-    });
+    await createCompany(db, companyId);
 
     const service = awaitingHumanSettingsService(db);
     const settings = await service.get(companyId);

@@ -1,5 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+import { resolveApprovalFlowRoute } from "./approval-flow-routing.js";
 import type {
   AwaitingHumanNotificationPayload,
   AwaitingHumanNotificationResult,
@@ -30,6 +31,8 @@ type ClickUpChatConfig = {
   personalToken: string;
   workspaceId: string;
   channelId: string;
+  primaryReviewerUserId: string;
+  secondaryReviewerUserId: string;
 };
 
 export type ClickUpAwaitingHumanConfigOverrides = {
@@ -37,6 +40,8 @@ export type ClickUpAwaitingHumanConfigOverrides = {
   workspaceId?: string | null;
   channelId?: string | null;
   attachmentTaskId?: string | null;
+  primaryReviewerUserId?: string | null;
+  secondaryReviewerUserId?: string | null;
 };
 
 export function resolveClickUpAttachmentTaskId(
@@ -111,6 +116,8 @@ async function readCompanyClickUpOverrides(
     workspaceId: resolved.workspaceId,
     channelId: resolved.channelId,
     attachmentTaskId: resolved.attachmentTaskId,
+    primaryReviewerUserId: resolved.primaryReviewerUserId,
+    secondaryReviewerUserId: resolved.secondaryReviewerUserId,
   };
 }
 
@@ -131,10 +138,20 @@ function readClickUpChatConfig(
     process.env.CLICKUP_AWAITING_HUMAN_CHANNEL_ID?.trim() ||
     process.env.CLICKUP_ENGINEERING_CHANNEL_ID?.trim() ||
     "";
+  const primaryReviewerUserId =
+    overrides?.primaryReviewerUserId?.trim() ||
+    process.env.CLICKUP_AWAITING_HUMAN_PRIMARY_REVIEWER_USER_ID?.trim() ||
+    "";
+  const secondaryReviewerUserId =
+    overrides?.secondaryReviewerUserId?.trim() ||
+    process.env.CLICKUP_AWAITING_HUMAN_SECONDARY_REVIEWER_USER_ID?.trim() ||
+    "";
   return {
     personalToken,
     workspaceId,
     channelId,
+    primaryReviewerUserId,
+    secondaryReviewerUserId,
   };
 }
 
@@ -221,11 +238,61 @@ function extractReplyRows(payload: ClickUpGetChatMessageRepliesResponse): ClickU
     content: row.content,
   }));
 }
+function formatClickUpUserMention(userId: string | null | undefined) {
+  const trimmed = readString(userId);
+  return trimmed ? `clickup://user/${trimmed}` : null;
+}
 
+function formatApprovalStage(stage: "primary" | "final") {
+  return stage === "primary" ? "primary review" : "final check";
+}
 
-function renderClickUpMessage(notification: AwaitingHumanNotificationPayload) {
+function renderApprovalContextSection(
+  notification: AwaitingHumanNotificationPayload,
+  config: ClickUpChatConfig,
+) {
+  const approvalContext = notification.approvalContext;
+  if (!approvalContext) return null;
+  const route = resolveApprovalFlowRoute(approvalContext, config);
+  const lines: string[] = [];
+
+  if (route.approvalName) {
+    lines.push(`Approval: ${route.approvalName}`);
+  }
+  lines.push(`Approval stage: ${formatApprovalStage(route.approvalStage)}`);
+
+  const currentReviewerMention = formatClickUpUserMention(route.currentReviewerUserId);
+  if (currentReviewerMention) {
+    lines.push(`Reviewer: ${currentReviewerMention}`);
+  } else {
+    lines.push("Reviewer: not configured");
+  }
+
+  if (route.nextReviewerUserId) {
+    const nextReviewerMention = formatClickUpUserMention(route.nextReviewerUserId);
+    lines.push(`Next reviewer: ${nextReviewerMention ?? "not configured"}`);
+  }
+
+  if (route.approvalStage === "primary" && route.requiresSecondReview) {
+    const nextReviewerMention = formatClickUpUserMention(route.nextReviewerUserId);
+    lines.push(
+      `Next step: ${currentReviewerMention ?? "the reviewer"} checks first, then ${nextReviewerMention ?? "the secondary reviewer"} handles the final check if approved.`,
+    );
+  } else if (route.approvalStage === "final" && route.requiresSecondReview) {
+    lines.push(
+      `Next step: ${currentReviewerMention ?? "the reviewer"} handles the final check after the primary review clears.`,
+    );
+  } else {
+    lines.push(`Next step: ${currentReviewerMention ?? "the reviewer"} handles the approval.`);
+  }
+
+  return lines.join("\n");
+}
+
+function renderClickUpMessage(notification: AwaitingHumanNotificationPayload, config: ClickUpChatConfig) {
   const title = truncateText(notification.title, MAX_TITLE_LENGTH);
   const bodySection = formatBodySection(notification.body);
+  const approvalSection = renderApprovalContextSection(notification, config);
   const lines = [`**${title}**`];
 
   if (bodySection) {
@@ -234,6 +301,11 @@ function renderClickUpMessage(notification: AwaitingHumanNotificationPayload) {
   } else if (notification.summary.trim().length > 0) {
     lines.push("");
     lines.push(truncateText(notification.summary, MAX_SUMMARY_LENGTH));
+  }
+
+  if (approvalSection) {
+    lines.push("");
+    lines.push(approvalSection);
   }
 
   if (notification.reviewFile) {
@@ -370,8 +442,9 @@ export async function sendAwaitingHumanNotification(
   input: SendAwaitingHumanNotificationInput,
   overrides?: ClickUpAwaitingHumanConfigOverrides,
 ): Promise<AwaitingHumanNotificationResult> {
+  const config = readClickUpChatConfig(overrides);
   return postClickUpChatMessage(
-    renderClickUpMessage(input.notification),
+    renderClickUpMessage(input.notification, config),
     overrides,
   );
 }

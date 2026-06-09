@@ -9,6 +9,7 @@ import {
   enqueueAwaitingHumanNotification,
   type AwaitingHumanNotificationPayload,
 } from "./awaiting-human-notifications.js";
+import type { ApprovalFlowContext } from "./approval-flow-routing.js";
 import { logActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
 
@@ -50,6 +51,7 @@ type AwaitingHumanHandoffInput = {
   actor: AwaitingHumanActor;
   interaction?: AwaitingHumanInteraction | null;
   blockers?: AwaitingHumanBlocker[] | null;
+  approvalContext?: ApprovalFlowContext | null;
   emitIssueUpdatedActivity?: boolean;
   delivery?: "enqueue" | "none";
 };
@@ -187,7 +189,8 @@ export function renderRequestConfirmationBody(
   }
   if (lines.length > 0) lines.push("");
   lines.push("Disclaimer:");
-  lines.push("It is your responsibility to read and verify this content. Not doing so may result in unattended negative consequence leading to financial loss or brand harm"); const body = lines.join("\n").trim();
+  lines.push("It is your responsibility to read and verify this content. Not doing so may result in unattended negative consequence leading to financial loss or brand harm");
+  const body = lines.join("\n").trim();
   if (!link.trim()) return body || null;
   return body ? `${body}\n\nOpen in Bizbox: ${link.trim()}` : `Open in Bizbox: ${link.trim()}`;
 }
@@ -281,6 +284,13 @@ function buildNotification(
 ): AwaitingHumanNotificationPayload {
   const label = input.updatedIssue.identifier ?? truncateText(input.updatedIssue.title, 48);
   const isQuestionHandoff = input.handoffKind === "ask_user_questions";
+  const approvalContext = input.approvalContext
+    ? {
+      approvalName: input.approvalContext.approvalName ?? null,
+      approvalStage: input.approvalContext.approvalStage ?? null,
+      requiresSecondReview: input.approvalContext.requiresSecondReview ?? null,
+    }
+    : null;
   return {
     title: truncateText(
       isQuestionHandoff
@@ -304,6 +314,7 @@ function buildNotification(
       : input.handoffKind === "request_confirmation"
         ? renderRequestConfirmationBody(input.interaction, link)
         : null,
+    approvalContext,
     target: input.handoffKind === "request_confirmation" && input.interaction?.kind === "request_confirmation"
       ? {
         label: input.interaction.payload.target?.label ?? null,
@@ -453,6 +464,7 @@ export async function maybeLogAwaitingHumanHandoff(
       interactionKind: input.interaction?.kind ?? null,
       blockerIssueId: firstBlocker?.id ?? null,
       blockerIdentifier: firstBlocker?.identifier ?? null,
+      approvalContext: input.approvalContext ?? null,
       dedupeKey,
       notification,
       notificationDelivery: {

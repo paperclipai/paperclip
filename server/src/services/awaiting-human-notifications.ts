@@ -41,6 +41,11 @@ export interface AwaitingHumanNotificationPayload {
   audience?: string | null;
   interactionId?: string | null;
   body?: string | null;
+  approvalContext?: {
+    approvalName?: string | null;
+    approvalStage?: "primary" | "final" | null;
+    requiresSecondReview?: boolean | null;
+  } | null;
   target?: {
     label?: string | null;
     href?: string | null;

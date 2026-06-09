@@ -33,6 +33,8 @@ export function CompanyAwaitingHumanSettings() {
   const [workspaceId, setWorkspaceId] = useState("");
   const [channelId, setChannelId] = useState("");
   const [attachmentTaskId, setAttachmentTaskId] = useState("");
+  const [primaryReviewerUserId, setPrimaryReviewerUserId] = useState("");
+  const [secondaryReviewerUserId, setSecondaryReviewerUserId] = useState("");
 
   useEffect(() => {
     setBreadcrumbs([
@@ -51,6 +53,8 @@ export function CompanyAwaitingHumanSettings() {
     setWorkspaceId(settings.providerConfig?.workspaceId ?? "");
     setChannelId(settings.providerConfig?.channelId ?? "");
     setAttachmentTaskId(settings.providerConfig?.attachmentTaskId ?? "");
+    setPrimaryReviewerUserId(settings.providerConfig?.primaryReviewerUserId ?? "");
+    setSecondaryReviewerUserId(settings.providerConfig?.secondaryReviewerUserId ?? "");
   }, [settingsQuery.data]);
 
   const saveMutation = useMutation({
@@ -67,6 +71,8 @@ export function CompanyAwaitingHumanSettings() {
             workspaceId: workspaceId.trim() || null,
             channelId: channelId.trim() || null,
             attachmentTaskId: attachmentTaskId.trim() || null,
+            primaryReviewerUserId: primaryReviewerUserId.trim() || null,
+            secondaryReviewerUserId: secondaryReviewerUserId.trim() || null,
           }
           : null,
         clickupPersonalToken: provider === "clickup" ? (personalToken.trim() || null) : null,
@@ -92,6 +98,8 @@ export function CompanyAwaitingHumanSettings() {
             workspaceId: workspaceId.trim() || null,
             channelId: channelId.trim() || null,
             attachmentTaskId: attachmentTaskId.trim() || null,
+            primaryReviewerUserId: primaryReviewerUserId.trim() || null,
+            secondaryReviewerUserId: secondaryReviewerUserId.trim() || null,
           }
           : null,
         clickupPersonalToken: provider === "clickup" ? (personalToken.trim() || null) : null,
@@ -138,7 +146,9 @@ export function CompanyAwaitingHumanSettings() {
     || personalToken.trim().length > 0
     || workspaceId !== (settings?.providerConfig?.workspaceId ?? "")
     || channelId !== (settings?.providerConfig?.channelId ?? "")
-    || attachmentTaskId !== (settings?.providerConfig?.attachmentTaskId ?? "");
+    || attachmentTaskId !== (settings?.providerConfig?.attachmentTaskId ?? "")
+    || primaryReviewerUserId !== (settings?.providerConfig?.primaryReviewerUserId ?? "")
+    || secondaryReviewerUserId !== (settings?.providerConfig?.secondaryReviewerUserId ?? "");
   const providerEnabled = provider !== "none";
   const hasStoredClickUpToken = settings?.hasStoredAuthToken ?? false;
 
@@ -262,6 +272,34 @@ export function CompanyAwaitingHumanSettings() {
                 onChange={(e) => setAttachmentTaskId(e.target.value)}
                 disabled={!providerEnabled}
                 placeholder="86d35fwx8"
+                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-60"
+              />
+            </Field>
+
+            <Field
+              label="Primary reviewer user ID"
+              hint="Optional. ClickUp user ID for the first approval pass. Also used as the fallback reviewer for single-step approvals when no secondary reviewer is set."
+            >
+              <input
+                type="text"
+                value={primaryReviewerUserId}
+                onChange={(e) => setPrimaryReviewerUserId(e.target.value)}
+                disabled={!providerEnabled}
+                placeholder="ClickUp user ID"
+                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-60"
+              />
+            </Field>
+
+            <Field
+              label="Secondary reviewer user ID"
+              hint="Optional. ClickUp user ID for the final approval pass in a two-step flow. Leave blank to fall back to the primary reviewer for single-step approvals."
+            >
+              <input
+                type="text"
+                value={secondaryReviewerUserId}
+                onChange={(e) => setSecondaryReviewerUserId(e.target.value)}
+                disabled={!providerEnabled}
+                placeholder="ClickUp user ID"
                 className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-60"
               />
             </Field>

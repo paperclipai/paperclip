@@ -4,6 +4,7 @@ import {
   deleteClickUpChatMessageReaction,
   detectClickUpAwaitingHumanBridgeEvents,
   getClickUpChatMessageReplies,
+  sendAwaitingHumanNotification,
   uploadClickUpReviewFile,
 } from "../services/clickup-awaiting-human-transport.js";
 import { logger } from "../middleware/logger.js";
@@ -385,6 +386,48 @@ describe("getClickUpChatMessageReplies", () => {
     const result = await getClickUpChatMessageReplies("message-42");
 
     expect(result.replies[0]?.content).toBe("Reject");
+  });
+});
+
+describe("sendAwaitingHumanNotification review context", () => {
+  it("renders approval stage and reviewer mentions for generic approval routing", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      text: async () => JSON.stringify({ id: "message-review" }),
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await sendAwaitingHumanNotification({
+      companyId: "company-1",
+      issueId: "issue-1",
+      handoffKind: "request_confirmation",
+      notification: {
+        title: "BIZ-35 needs confirmation",
+        summary: "Please review the approval item.",
+        link: "https://bizbox.example/issues/BIZ-35",
+        cta: "Reply in Bizbox.",
+        labels: ["awaiting_human", "request_confirmation"],
+        approvalContext: {
+          approvalName: "Policy approval",
+          requiresSecondReview: true,
+        },
+      },
+    }, {
+      personalToken: "token-123",
+      workspaceId: "workspace-1",
+      channelId: "channel-9",
+      primaryReviewerUserId: "primary-user-id",
+      secondaryReviewerUserId: "secondary-user-id",
+    });
+
+    expect(result.status).toBe("sent");
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.content).toContain("Approval: Policy approval");
+    expect(body.content).toContain("Approval stage: primary review");
+    expect(body.content).toContain("Reviewer: clickup://user/primary-user-id");
+    expect(body.content).toContain("Next reviewer: clickup://user/secondary-user-id");
+    expect(body.content).toContain("Next step:");
   });
 });
 

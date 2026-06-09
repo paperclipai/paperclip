@@ -96,6 +96,8 @@ async function loadCompanyOverrides(db: Db, companyId: string): Promise<ClickUpA
     workspaceId: resolved.workspaceId,
     channelId: resolved.channelId,
     attachmentTaskId: resolved.attachmentTaskId,
+    primaryReviewerUserId: resolved.primaryReviewerUserId,
+    secondaryReviewerUserId: resolved.secondaryReviewerUserId,
   };
 }
 
