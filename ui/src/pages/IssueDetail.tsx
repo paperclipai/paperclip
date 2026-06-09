@@ -60,6 +60,7 @@ import {
 } from "../lib/optimistic-issue-comments";
 import { clearIssueExecutionRun, removeLiveRunById, upsertInterruptedRun } from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
+import { useIssueFavorites } from "../hooks/useIssueFavorites";
 import { relativeTime, cn, formatDurationMs, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
@@ -139,6 +140,7 @@ import {
   Plus,
   Repeat,
   SlidersHorizontal,
+  Star,
   XCircle,
 } from "lucide-react";
 import {
@@ -1284,6 +1286,8 @@ export function IssueDetail() {
     enabled: !!issueId,
   });
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
+  const { isFavorite: isIssueFavorite, toggleFavorite: toggleIssueFavorite } = useIssueFavorites(resolvedCompanyId);
+  const issueFavorited = issue?.id ? isIssueFavorite(issue.id) : false;
   const commentComposerDisabledReason = useMemo(() => {
     if (!issue?.currentExecutionWorkspace || !isClosedIsolatedExecutionWorkspace(issue.currentExecutionWorkspace)) {
       return null;
@@ -3471,6 +3475,18 @@ export function IssueDetail() {
           )}
 
           <div className="hidden md:flex items-center md:ml-auto shrink-0">
+            {issue?.id && (
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                onClick={() => toggleIssueFavorite(issue.id)}
+                title={issueFavorited ? "Remove from favorites" : "Add to favorites"}
+                aria-label={issueFavorited ? "Remove from favorites" : "Add to favorites"}
+                aria-pressed={issueFavorited}
+              >
+                <Star className={cn("h-4 w-4", issueFavorited ? "fill-amber-500 text-amber-500" : undefined)} />
+              </Button>
+            )}
             {canArchiveFromInbox && (
               <Button
                 variant="ghost"

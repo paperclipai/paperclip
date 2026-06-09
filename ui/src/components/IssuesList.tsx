@@ -55,6 +55,7 @@ import { Identity } from "./Identity";
 import { IssueGroupHeader } from "./IssueGroupHeader";
 import { IssueFiltersPopover } from "./IssueFiltersPopover";
 import { IssueRow } from "./IssueRow";
+import { useIssueFavorites } from "../hooks/useIssueFavorites";
 import { PageSkeleton } from "./PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -641,6 +642,7 @@ export function IssuesList({
     retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const { favoriteIds, isFavorite, toggleFavorite } = useIssueFavorites(selectedCompanyId);
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
 
   // Scope the storage key per company so folding/view state is independent across companies.
@@ -975,6 +977,7 @@ export function IssuesList({
       enableRoutineVisibilityFilter,
       liveIssueIds,
       issueFilterWorkspaceContext,
+      favoriteIds,
     );
     return sortIssues(filteredByControls, viewState);
   }, [
@@ -988,6 +991,7 @@ export function IssuesList({
     enableRoutineVisibilityFilter,
     liveIssueIds,
     issueFilterWorkspaceContext,
+    favoriteIds,
   ]);
 
   const progressSummary = useMemo(
@@ -1739,6 +1743,8 @@ export function IssuesList({
                       <IssueRow
                         issue={issue}
                         issueLinkState={issueLinkState}
+                        isFavorite={isFavorite(issue.id)}
+                        onToggleFavorite={() => toggleFavorite(issue.id)}
                         checklistStepNumber={checklistStepNumber}
                         checklistCurrentStep={checklistMeta?.currentStepIssueId === issue.id}
                         checklistDependencyChips={checklistDependencyChips}

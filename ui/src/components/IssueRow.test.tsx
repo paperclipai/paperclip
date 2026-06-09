@@ -180,6 +180,45 @@ describe("IssueRow", () => {
     });
   });
 
+  it("renders a favorite toggle and invokes onToggleFavorite without navigating", () => {
+    const root = createRoot(container);
+    const onToggleFavorite = vi.fn();
+
+    act(() => {
+      root.render(
+        <IssueRow issue={createIssue()} isFavorite onToggleFavorite={onToggleFavorite} />,
+      );
+    });
+
+    const favoriteButton = container.querySelector('[data-testid="issue-row-favorite"]') as HTMLButtonElement | null;
+    expect(favoriteButton).not.toBeNull();
+    expect(favoriteButton?.getAttribute("aria-pressed")).toBe("true");
+    expect(favoriteButton?.getAttribute("aria-label")).toBe("Remove from favorites");
+
+    act(() => {
+      favoriteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    expect(onToggleFavorite).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("omits the favorite toggle when no handler is provided", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} />);
+    });
+
+    expect(container.querySelector('[data-testid="issue-row-favorite"]')).toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders titleSuffix inline after the issue title", () => {
     const root = createRoot(container);
     const issue = createIssue({ title: "Parent task" });

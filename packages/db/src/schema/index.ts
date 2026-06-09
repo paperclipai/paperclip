@@ -51,6 +51,7 @@ export { inboxDismissals } from "./inbox_dismissals.js";
 export { feedbackVotes } from "./feedback_votes.js";
 export { feedbackExports } from "./feedback_exports.js";
 export { issueReadStates } from "./issue_read_states.js";
+export { issueFavorites } from "./issue_favorites.js";
 export { assets } from "./assets.js";
 export { issueAttachments } from "./issue_attachments.js";
 export { documents } from "./documents.js";
