@@ -213,14 +213,25 @@ function sanitizeBoundedRecoveryContinuationSummary(value: string | null | undef
   const normalized = value?.replace(/\r\n/g, "\n").trim();
   if (!normalized) return "";
 
+  const nonEmptyLines = normalized
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const repeatedLineCount = new Map<string, number>();
+  for (const line of nonEmptyLines) {
+    if (line.length < 80) continue;
+    repeatedLineCount.set(line, (repeatedLineCount.get(line) ?? 0) + 1);
+  }
+
   const hasTranscriptMarkers =
     /(^|\n)\s*(system|developer|user|assistant|tool|commentary|observation)\s*:/im.test(normalized) ||
     /<\|(?:system|developer|user|assistant|tool|commentary|observation)[^>]*\|>/i.test(normalized) ||
     /(^|\n)\s*```/.test(normalized);
   const hasOversizedLines = normalized.split("\n").some((line) => line.trim().length > 500);
   const hasRepeatedConversationContent = /(.{16,}?)(?:\1){4,}/s.test(normalized);
+  const hasRepeatedLongLines = Array.from(repeatedLineCount.values()).some((count) => count >= 3);
 
-  if (hasTranscriptMarkers || hasOversizedLines || hasRepeatedConversationContent) {
+  if (hasTranscriptMarkers || hasOversizedLines || hasRepeatedConversationContent || hasRepeatedLongLines) {
     return [
       "[paperclip omitted unsafe continuation-summary body from bounded recovery handoff]",
       "Use Paperclip issue/run metadata APIs to rebuild the minimum context needed.",
