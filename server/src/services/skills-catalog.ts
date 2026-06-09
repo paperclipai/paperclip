@@ -19,10 +19,33 @@ interface CatalogManifestFile {
   skills: CatalogSkill[];
 }
 
-const serviceDir = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(serviceDir, "../../..");
-const catalogPackageRoot = path.join(repoRoot, "packages/skills-catalog");
-const catalogManifestPath = path.join(catalogPackageRoot, "generated/catalog.json");
+const EMPTY_CATALOG_MANIFEST: CatalogManifestFile = {
+  packageName: "@paperclipai/skills-catalog",
+  packageVersion: "0.0.0",
+  skills: [],
+};
+
+function resolveCatalogManifestPath(): string {
+  // Try using import.meta.resolve to find the package's catalog.json.
+  // This works when running from an installed npm package.
+  try {
+    const resolved = import.meta.resolve(
+      "@paperclipai/skills-catalog/catalog.json",
+    );
+    if (typeof resolved === "string" && resolved.startsWith("file://")) {
+      return fileURLToPath(resolved);
+    }
+  } catch {
+    // Fall through to relative path for monorepo dev mode
+  }
+
+  // Fallback: monorepo dev mode relative path from server/dist/services/
+  const serviceDir = path.dirname(fileURLToPath(import.meta.url));
+  const repoRoot = path.resolve(serviceDir, "../../..");
+  return path.join(repoRoot, "packages/skills-catalog", "generated", "catalog.json");
+}
+
+const catalogManifestPath = resolveCatalogManifestPath();
 let cachedCatalogManifest: {
   manifest: CatalogManifestFile;
   mtimeMs: number;
@@ -31,18 +54,15 @@ let cachedCatalogManifest: {
 
 function loadCatalogManifest(): CatalogManifestFile {
   if (!existsSync(catalogManifestPath)) {
-    throw new Error(
-      `Skills catalog manifest not found at ${catalogManifestPath}. Run pnpm --filter @paperclipai/skills-catalog build:manifest.`,
-    );
+    return EMPTY_CATALOG_MANIFEST;
   }
   return JSON.parse(readFileSync(catalogManifestPath, "utf8")) as CatalogManifestFile;
 }
 
 function getCatalogManifest() {
   if (!existsSync(catalogManifestPath)) {
-    throw new Error(
-      `Skills catalog manifest not found at ${catalogManifestPath}. Run pnpm --filter @paperclipai/skills-catalog build:manifest.`,
-    );
+    cachedCatalogManifest = null;
+    return EMPTY_CATALOG_MANIFEST;
   }
   const stats = statSync(catalogManifestPath);
   if (
@@ -93,7 +113,8 @@ function inferLanguageFromPath(filePath: string) {
 }
 
 function resolveCatalogPackageRoot() {
-  return catalogPackageRoot;
+  // The catalog.json is at <packageRoot>/generated/catalog.json
+  return path.dirname(path.dirname(catalogManifestPath));
 }
 
 function sourceRootPath(source: CatalogSkillSource) {
