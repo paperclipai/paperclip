@@ -415,21 +415,30 @@ export function workflowHandoffBridgeService(db: Db) {
       });
     }
 
-    await logActivity(db, {
-      companyId: handoff.companyId,
-      actorType: "system",
-      actorId: "workflow_handoff_bridge",
-      action: "workflow.handoff.bridge_opened",
-      entityType: "workflow_run",
-      entityId: handoff.workflowRunId,
-      details: {
+    try {
+      await logActivity(db, {
+        companyId: handoff.companyId,
+        actorType: "system",
+        actorId: "workflow_handoff_bridge",
+        action: "workflow.handoff.bridge_opened",
+        entityType: "workflow_run",
+        entityId: handoff.workflowRunId,
+        details: {
+          bridgeId: bridge?.id ?? null,
+          workflowHandoffId: handoff.id,
+          provider: "clickup",
+          externalMessageId,
+          externalThreadId,
+        },
+      });
+    } catch (error) {
+      logger.warn({
+        err: error,
         bridgeId: bridge?.id ?? null,
+        companyId: handoff.companyId,
         workflowHandoffId: handoff.id,
-        provider: "clickup",
-        externalMessageId,
-        externalThreadId,
-      },
-    });
+      }, "workflow handoff bridge: failed to log handoff open");
+    }
 
     return bridge ?? null;
   }

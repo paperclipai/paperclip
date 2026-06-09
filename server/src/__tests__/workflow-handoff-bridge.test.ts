@@ -233,6 +233,47 @@ describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
     );
   });
 
+  it("keeps an opened bridge when open activity logging fails", async () => {
+    const { companyId, runId, handoffId } = await insertWorkflowHandoff(db, {
+      runStatus: "awaiting_human",
+      runError: null,
+      promptMarkdown: "Which city should I check?",
+    });
+    mocks.sendAwaitingHumanNotification.mockResolvedValueOnce({
+      status: "sent",
+      channel: "clickup-chat",
+      detail: "sent",
+      externalId: "thread-root-1",
+    });
+    mocks.sendAwaitingHumanNotificationReply.mockResolvedValueOnce({
+      status: "sent",
+      channel: "clickup-chat",
+      detail: "sent",
+      externalId: "question-reply-1",
+    });
+    mocks.logActivity.mockRejectedValueOnce(new Error("activity log unavailable"));
+
+    const bridge = await workflowHandoffBridgeService(db).openForHandoff({
+      id: handoffId,
+      companyId,
+      workflowRunId: runId,
+      kind: "response",
+      promptMarkdown: "Which city should I check?",
+    });
+
+    expect(bridge).not.toBeNull();
+    expect(bridge?.status).toBe("waiting_for_human");
+    expect(mocks.addClickUpChatMessageReaction).toHaveBeenCalledWith(
+      "question-reply-1",
+      "brain_is_thinking",
+      expect.objectContaining({ personalToken: "token-123" }),
+    );
+    expect(mocks.logActivity).toHaveBeenCalledTimes(1);
+
+    const [persistedBridge] = await db.select().from(workflowHandoffBridges).where(eq(workflowHandoffBridges.id, bridge!.id));
+    expect(persistedBridge?.status).toBe("waiting_for_human");
+  });
+
   it("reuses the existing workflow thread for later handoffs in the same run", async () => {
     const first = await insertWorkflowHandoff(db, {
       runStatus: "awaiting_human",
