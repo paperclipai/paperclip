@@ -1,7 +1,7 @@
 import { useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { IssueAttachment } from "@paperclipai/shared";
-import { Download, ExternalLink, FileText, Paperclip, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Download, ExternalLink, FileText, Paperclip, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { FoldCurtain } from "./FoldCurtain";
 import { MarkdownBody } from "./MarkdownBody";
@@ -97,36 +97,53 @@ function MarkdownAttachmentCard({
   deletePending?: boolean;
 }) {
   const filename = attachmentFilename(attachment);
+  const [expanded, setExpanded] = useState(false);
+  // Defer the fetch + markdown render until the user expands this card. Rendering
+  // every markdown attachment eagerly froze issues with many attachments (VANA-517).
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.attachmentPreview(attachment.id),
     queryFn: () => fetchAttachmentText(attachment),
+    enabled: expanded,
   });
 
   return (
     <div id={`attachment-${attachment.id}`} className="scroll-mt-20 rounded-lg border border-border p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="flex min-w-0 items-center gap-2">
+          <button
+            type="button"
+            className="flex min-w-0 items-center gap-2 text-left"
+            onClick={() => setExpanded((prev) => !prev)}
+            aria-expanded={expanded}
+            title={expanded ? "Hide preview" : "Show preview"}
+          >
+            {expanded ? (
+              <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+            )}
             <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
             <span className="truncate text-sm font-medium" title={filename}>{filename}</span>
-          </div>
+          </button>
           <AttachmentMeta attachment={attachment} />
         </div>
         <AttachmentActions attachment={attachment} onDelete={onDelete} deletePending={deletePending} />
       </div>
-      <div className="mt-3 rounded-md hover:bg-accent/10">
-        {isLoading ? (
-          <p className="px-1 py-2 text-xs text-muted-foreground">Loading preview...</p>
-        ) : error ? (
-          <p className="px-1 py-2 text-xs text-destructive">Could not load markdown preview.</p>
-        ) : (
-          <FoldCurtain>
-            <MarkdownBody className="paperclip-edit-in-place-content min-h-[220px] text-[15px] leading-7" softBreaks={false}>
-              {data ?? ""}
-            </MarkdownBody>
-          </FoldCurtain>
-        )}
-      </div>
+      {expanded && (
+        <div className="mt-3 rounded-md hover:bg-accent/10">
+          {isLoading ? (
+            <p className="px-1 py-2 text-xs text-muted-foreground">Loading preview...</p>
+          ) : error ? (
+            <p className="px-1 py-2 text-xs text-destructive">Could not load markdown preview.</p>
+          ) : (
+            <FoldCurtain>
+              <MarkdownBody className="paperclip-edit-in-place-content min-h-[220px] text-[15px] leading-7" softBreaks={false}>
+                {data ?? ""}
+              </MarkdownBody>
+            </FoldCurtain>
+          )}
+        </div>
+      )}
     </div>
   );
 }
