@@ -11,6 +11,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
 import { agentLiveState } from "../lib/status-colors";
 import { AgentPortrait } from "../components/AgentPortrait";
+import { HeartbeatSpine } from "../components/HeartbeatSpine";
 import { EntityRow } from "../components/EntityRow";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -265,7 +266,8 @@ export function Agents() {
       {/* List view */}
       {effectiveView === "list" && filtered.length > 0 && (
         <div className="border border-border">
-          {filtered.map((agent) => {
+          {filtered.map((agent, agentIndex) => {
+            const liveState = agentLiveState(agent.status);
             return (
               <EntityRow
                 key={agent.id}
@@ -278,12 +280,22 @@ export function Agents() {
                     "relative before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full before:bg-primary",
                 )}
                 leading={
-                  <AgentPortrait
-                    src={null}
-                    name={agent.name}
-                    state={agentLiveState(agent.status)}
-                    size={28}
-                  />
+                  // Identity + the signature heartbeat spine: each agent beats on
+                  // its own cadence so the roster shimmers arrhythmically.
+                  <div className="flex items-stretch gap-2.5">
+                    <HeartbeatSpine
+                      state={liveState}
+                      beat={2.1 + (agentIndex % 5) * 0.28}
+                      delay={(agentIndex % 7) * 0.36}
+                      className="self-stretch"
+                    />
+                    <AgentPortrait
+                      src={null}
+                      name={agent.name}
+                      state={liveState}
+                      size={28}
+                    />
+                  </div>
                 }
                 trailing={
                   <div className="flex items-center gap-3">
