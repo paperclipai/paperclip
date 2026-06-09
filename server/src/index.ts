@@ -637,7 +637,17 @@ export async function startServer(): Promise<StartedServer> {
     betterAuthHandler = createBetterAuthHandler(auth);
     resolveSession = (req) => resolveBetterAuthSession(auth, req);
     resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
-    await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
+    // Unbounded boot DB op (reads instanceUserRoles, may seed a challenge). On Vercel it
+    // was the last unbounded await on the cold path — a stall here pins the whole
+    // serverless boot (which blocks EVERY route, incl. /api/health). Bound it like the
+    // adapter step: continue degraded on timeout (it re-runs next boot / on the worker).
+    if (process.env.VERCEL) {
+      await boundColdStartStep("initializeBoardClaimChallenge", 5_000, () =>
+        initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode }),
+      );
+    } else {
+      await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
+    }
     authReady = true;
   }
   bootMark("auth");

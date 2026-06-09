@@ -71,6 +71,16 @@ export function createDb(url: string) {
     // co-located in the DB's region (vercel.json regions: pdx1 ↔ Supabase us-west-2),
     // a healthy connect is well under this.
     connect_timeout: isServerless ? 10 : 30,
+    // connect_timeout only bounds the CONNECT. Once connected, a query stalling on a
+    // contended pooler had NO upper bound and could pin a serverless cold boot or a
+    // route to the function's 300s ceiling (→ 504 clusters on /api/health, companies,
+    // issues — the cold-boot-hang root cause). statement_timeout caps every query
+    // server-side; idle_in_transaction_session_timeout reclaims a stuck txn-held
+    // connection. 8s is far above warm latency (~200-400ms) yet fails fast under
+    // contention. Serverless only — the persistent worker runs long reconciles.
+    ...(isServerless
+      ? { connection: { statement_timeout: 8_000, idle_in_transaction_session_timeout: 8_000 } }
+      : {}),
     // pgbouncer transaction mode (Supabase :6543) can't use prepared statements.
     prepare: usesTransactionPooler ? false : undefined,
   });

@@ -64,7 +64,11 @@ export function CloudAccessGate() {
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
     enabled: isAuthenticatedMode,
-    retry: false,
+    // getSession() returns null on a clean 401 (no thrown error), so a retry only kicks
+    // in for transient failures (cold-boot timeout / 5xx) — never for "logged out".
+    // Retry a couple times so a cold get-session blip doesn't surface as a forced
+    // sign-out (the login/nav lag the cold-boot hang caused).
+    retry: 2,
   });
 
   const boardAccessQuery = useQuery({
@@ -96,6 +100,21 @@ export function CloudAccessGate() {
 
   if (isAuthenticatedMode && healthQuery.data?.bootstrapStatus === "bootstrap_pending") {
     return <BootstrapPendingPage hasActiveInvite={healthQuery.data.bootstrapInviteActive} />;
+  }
+
+  // A get-session that THREW (cold-boot timeout / 5xx / network) is a transient failure,
+  // NOT a sign-out — getSession() resolves to null (not an error) for a real 401. Don't
+  // bounce the user to /auth on a transient error; keep the shell and offer Retry. This
+  // is the most direct fix for "login still lags / drops me to sign-in" under cold boots.
+  if (isAuthenticatedMode && sessionQuery.error) {
+    return (
+      <RoboError
+        error={sessionQuery.error}
+        onRetry={() => {
+          void sessionQuery.refetch();
+        }}
+      />
+    );
   }
 
   if (isAuthenticatedMode && !sessionQuery.data) {
