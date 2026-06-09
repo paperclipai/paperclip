@@ -224,6 +224,34 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     return Boolean(agent && !["paused", "terminated", "pending_approval"].includes(agent.status));
   }
 
+  // Productivity reviews require manager-style judgement (decide to close, snooze,
+  // reroute, decompose, or stop work). Small-model `opencode_local` engineers cannot
+  // be trusted to make that call, so auto-assigning a review to one (as happened in
+  // SAG-668 / SAG-661) just churns. Gate auto-assignment to capable manager-tier
+  // adapters and let the caller fall back to the CEO when none qualify.
+  //
+  // We gate on adapterType / adapterConfig.model rather than the `capabilities`
+  // column because `capabilities` is a free-text summary string (see the agent join
+  // request shape), not a structured/enumerated signal we can reliably test.
+  // TODO: replace this with a proper structured capability system (e.g. a
+  // `manager_judgement` capability flag) and gate on that as the primary signal,
+  // treating adapter type/model only as a secondary heuristic.
+  //
+  // `opencode_local` is denied unless its model is on this allowlist. The allowlist
+  // is intentionally EMPTY by default: no opencode_local model qualifies as
+  // manager-capable until one is explicitly proven and added here.
+  const MANAGER_CAPABLE_OPENCODE_MODELS: ReadonlySet<string> = new Set<string>();
+
+  function isManagerCapableAdapter(agent: AgentRow): boolean {
+    if (agent.adapterType === "opencode_local") {
+      const model = typeof agent.adapterConfig?.model === "string" ? agent.adapterConfig.model : "";
+      return MANAGER_CAPABLE_OPENCODE_MODELS.has(model);
+    }
+    // `claude_local` (any hosted Claude model) and other manager-tier adapters
+    // (e.g. `codex_local`, `process`) are treated as capable.
+    return true;
+  }
+
   async function isProductivityReviewDescendant(issue: Pick<IssueRow, "companyId" | "parentId">) {
     let parentId = issue.parentId;
     let depth = 0;
@@ -541,18 +569,41 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .orderBy(sql`case when ${agents.role} = 'cto' then 0 else 1 end`, asc(agents.createdAt), asc(agents.id));
     candidateIds.push(...roleCandidates.map((agent) => agent.id));
 
+    const isAssignable = async (candidate: AgentRow | null) => {
+      if (!candidate || candidate.companyId !== sourceIssue.companyId || !isAgentInvokable(candidate)) return false;
+      const budgetBlock = await budgets.getInvocationBlock(sourceIssue.companyId, candidate.id, {
+        issueId: sourceIssue.id,
+        projectId: sourceIssue.projectId ?? null,
+      });
+      return !budgetBlock;
+    };
+
+    // First pass: prefer the prioritized candidates (reporting manager, creator,
+    // project lead, CTO, CEO), but only accept ones with manager-capable adapters.
+    // This skips small-model `opencode_local` engineers (the SAG-668 / SAG-661 bug).
     const seen = new Set<string>();
     for (const agentId of candidateIds) {
       if (seen.has(agentId)) continue;
       seen.add(agentId);
       const candidate = await getAgent(agentId);
-      if (!candidate || candidate.companyId !== sourceIssue.companyId || !isAgentInvokable(candidate)) continue;
-      const budgetBlock = await budgets.getInvocationBlock(sourceIssue.companyId, candidate.id, {
-        issueId: sourceIssue.id,
-        projectId: sourceIssue.projectId ?? null,
-      });
-      if (!budgetBlock) return candidate.id;
+      if (!candidate || !isManagerCapableAdapter(candidate)) continue;
+      if (await isAssignable(candidate)) return candidate.id;
     }
+
+    // Fallback: when no capable manager-tier candidate qualifies, route to the CEO
+    // rather than auto-assigning to a small-model engineer. The CEO is the capable
+    // manager of last resort for review judgement.
+    const ceoCandidates = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.companyId, sourceIssue.companyId), eq(agents.role, "ceo")))
+      .orderBy(asc(agents.createdAt), asc(agents.id));
+    for (const { id: ceoId } of ceoCandidates) {
+      const candidate = await getAgent(ceoId);
+      if (!candidate || !isManagerCapableAdapter(candidate)) continue;
+      if (await isAssignable(candidate)) return candidate.id;
+    }
+
     return null;
   }
 
