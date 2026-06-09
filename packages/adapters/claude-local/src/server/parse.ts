@@ -191,8 +191,16 @@ export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): bo
     .map((msg) => msg.trim())
     .filter(Boolean);
 
+  // Also catch the Anthropic Agent SDK 400 on `diagnostics.previous_message_id`
+  // (Claude Code 2.1.131 occasionally writes a synthetic assistant entry to the
+  // project-dir session jsonl with a non-`msg_*` id; the next /v1/messages call
+  // sends that id as previous_message_id and the API rejects with 400). The SDK
+  // surfaces this with subtype=success and exitCode 0, so the detector regex
+  // (not exit code) is the source of truth for triggering a resume retry.
   return allMessages.some((msg) =>
-    /no conversation found with session id|unknown session|session .* not found/i.test(msg),
+    /no conversation found with session id|unknown session|session .* not found|previous_message_id[^\n]{0,160}?(must be the|from a prior)|400[^\n]{0,160}?previous_message_id/i.test(
+      msg,
+    ),
   );
 }
 

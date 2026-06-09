@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
@@ -123,6 +124,89 @@ function isBedrockAuth(env: Record<string, string>): boolean {
     env.CLAUDE_CODE_USE_BEDROCK === "true" ||
     hasNonEmptyEnvValue(env, "ANTHROPIC_BEDROCK_BASE_URL")
   );
+}
+
+interface QuarantineResult {
+  quarantined: boolean;
+  path?: string;
+  poisonedPath?: string;
+  poisonId?: string;
+  error?: string;
+}
+
+// Detect and quarantine a poisoned project-dir session jsonl before invoking
+// the Claude CLI. Claude Code 2.1.131 occasionally appends a synthetic
+// `assistant` entry whose `id` is a plain UUID instead of an Anthropic `msg_*`
+// id; the next CLI invocation replays that tail and Anthropic rejects with a
+// 400 on `diagnostics.previous_message_id` forever. We rename the file aside
+// so the CLI is forced to start a fresh session.
+export async function quarantinePoisonedJsonl(opts: {
+  claudeConfigDir: string;
+  cwd: string;
+  sessionId: string | null;
+  runId: string;
+}): Promise<QuarantineResult | null> {
+  try {
+    const home = process.env.HOME ?? "";
+    const configDir = opts.claudeConfigDir || `${home}/.claude`;
+    const encodedCwd = opts.cwd.replace(/\//g, "-");
+    const projectDir = `${configDir}/projects/${encodedCwd}`;
+
+    let targetPath: string | null = null;
+    if (opts.sessionId) {
+      const candidate = `${projectDir}/${opts.sessionId}.jsonl`;
+      try {
+        await fs.access(candidate);
+        targetPath = candidate;
+      } catch {
+        /* no file at the resume target */
+      }
+    }
+    if (!targetPath) {
+      let entries: string[];
+      try {
+        entries = await fs.readdir(projectDir);
+      } catch {
+        return null;
+      }
+      const jsonlFiles = entries.filter(
+        (e) => e.endsWith(".jsonl") && !e.includes(".poisoned-"),
+      );
+      if (jsonlFiles.length === 0) return null;
+      const stats = await Promise.all(
+        jsonlFiles.map(async (f) => ({
+          f,
+          mtime: (await fs.stat(`${projectDir}/${f}`)).mtimeMs,
+        })),
+      );
+      stats.sort((a, b) => b.mtime - a.mtime);
+      targetPath = `${projectDir}/${stats[0].f}`;
+    }
+
+    const raw = await fs.readFile(targetPath, "utf-8");
+    const lines = raw.split("\n").filter((l) => l.trim().length > 0);
+    // Only the tail matters — the poisoned entry is what the CLI replays.
+    const tail = lines.slice(-60);
+    for (const line of tail) {
+      let entry: Record<string, unknown>;
+      try {
+        entry = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      if (entry.type !== "assistant") continue;
+      const msg = entry.message as Record<string, unknown> | undefined;
+      if (!msg || msg.model !== "<synthetic>") continue;
+      const id = typeof msg.id === "string" ? msg.id : "";
+      if (id.startsWith("msg_")) continue;
+      const poisonedPath = `${targetPath}.poisoned-${opts.runId}`;
+      await fs.rename(targetPath, poisonedPath);
+      return { quarantined: true, path: targetPath, poisonedPath, poisonId: id };
+    }
+    return { quarantined: false };
+  } catch (err) {
+    return { quarantined: false, error: String(err) };
+  }
 }
 
 function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" | "metered_api" {
@@ -675,9 +759,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const buildClaudeArgs = (
     resumeSessionId: string | null,
     attemptInstructionsFilePath: string | undefined,
+    freshSessionId?: string | null,
   ) => {
     const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
-    if (resumeSessionId) args.push("--resume", resumeSessionId);
+    if (resumeSessionId) {
+      args.push("--resume", resumeSessionId);
+    } else if (freshSessionId) {
+      // Force a specific brand-new uuid so the CLI cannot land on a poisoned
+      // project-dir jsonl on retry.
+      args.push("--session-id", freshSessionId);
+    }
     args.push(...buildClaudeExecutionPermissionArgs({
       dangerouslySkipPermissions,
       targetIsSandbox: executionTargetIsSandbox,
@@ -718,9 +809,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : `Claude exited with code ${proc.exitCode ?? -1}`;
   };
 
-  const runAttempt = async (resumeSessionId: string | null) => {
+  const runAttempt = async (
+    resumeSessionId: string | null,
+    freshSessionId?: string | null,
+  ) => {
     const attemptInstructionsFilePath = resumeSessionId ? undefined : effectiveInstructionsFilePath;
-    const args = buildClaudeArgs(resumeSessionId, attemptInstructionsFilePath);
+    const args = buildClaudeArgs(resumeSessionId, attemptInstructionsFilePath, freshSessionId);
     const commandNotes: string[] = [];
     if (!resumeSessionId) {
       commandNotes.push(`Using stable Claude prompt bundle ${promptBundle.bundleKey}.`);
@@ -765,7 +859,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const parsedStream = parseClaudeStreamJson(proc.stdout);
     const parsed = parsedStream.resultJson ?? parseJson(proc.stdout);
-    return { proc, parsedStream, parsed };
+    return {
+      proc,
+      parsedStream,
+      parsed,
+      resumeSessionId: resumeSessionId ?? null,
+      freshSessionId: freshSessionId ?? null,
+    };
   };
 
   const toAdapterResult = (
@@ -773,10 +873,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       proc: RunProcessResult;
       parsedStream: ReturnType<typeof parseClaudeStreamJson>;
       parsed: Record<string, unknown> | null;
+      resumeSessionId?: string | null;
+      freshSessionId?: string | null;
     },
     opts: { fallbackSessionId: string | null; clearSessionOnMissingSession?: boolean },
   ): AdapterExecutionResult => {
     const { proc, parsedStream, parsed } = attempt;
+    const attemptResumeSessionId = attempt.resumeSessionId ?? null;
+    const attemptFreshSessionId = attempt.freshSessionId ?? null;
     const loginMeta = detectClaudeLoginRequired({
       parsed,
       stdout: proc.stdout,
@@ -915,6 +1019,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
       ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+      // Record the resume/fresh session-id args we passed Claude so regressions
+      // on `diagnostics.previous_message_id` can be diagnosed without diffing
+      // project-dir jsonl tails.
+      commandArgs: {
+        usedResume: Boolean(attemptResumeSessionId),
+        sessionId: attemptResumeSessionId ?? attemptFreshSessionId ?? null,
+      },
     };
 
     return {
@@ -942,19 +1053,53 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   try {
-    const initial = await runAttempt(sessionId ?? null);
+    // Quarantine a poisoned project-dir session jsonl before invoking the CLI.
+    // (Claude Code 2.1.131 occasionally appends a synthetic assistant entry
+    // with a non-`msg_*` id; the next CLI invocation replays it and Anthropic
+    // 400s on diagnostics.previous_message_id forever.) Remote targets manage
+    // their own ~/.claude state, so skip the local-fs scan there.
+    const claudeConfigDirForQuarantine =
+      env.CLAUDE_CONFIG_DIR ?? effectiveEnv.CLAUDE_CONFIG_DIR ?? "";
+    const quarantineResult = !executionTargetIsRemote
+      ? await quarantinePoisonedJsonl({
+          claudeConfigDir: claudeConfigDirForQuarantine,
+          cwd: effectiveExecutionCwd,
+          sessionId: sessionId ?? null,
+          runId,
+        })
+      : null;
+    const effectiveSessionId = quarantineResult?.quarantined ? null : sessionId ?? null;
+    // When we just quarantined a poisoned jsonl, force a brand-new --session-id
+    // on the first attempt too. Otherwise the CLI's "no session arg" path can
+    // land on another stale jsonl in the same project dir (multiple prompt
+    // bundles, prior runs in the same cwd). Symmetric with the SDK-400 retry
+    // branch below.
+    const postQuarantineFreshSessionId = quarantineResult?.quarantined ? randomUUID() : null;
+    if (quarantineResult?.quarantined) {
+      await onLog(
+        "stdout",
+        `[paperclip] Quarantined poisoned session jsonl "${quarantineResult.path}" (synthetic id: ${quarantineResult.poisonId}). Starting fresh session "${postQuarantineFreshSessionId}".\n`,
+      );
+    }
+
+    const initial = await runAttempt(effectiveSessionId, postQuarantineFreshSessionId);
+    // Drop the (exitCode !== 0) gate from the retry condition: the Anthropic
+    // Agent SDK 400 on previous_message_id surfaces with subtype=success and
+    // exitCode 0, so we rely on the detector regex as the source of truth. On
+    // retry, pass --session-id <fresh-uuid> (not just omit --resume) so the
+    // CLI cannot land on the same poisoned project-dir jsonl.
     if (
-      sessionId &&
+      effectiveSessionId &&
       !initial.proc.timedOut &&
-      (initial.proc.exitCode ?? 0) !== 0 &&
       initial.parsed &&
       isClaudeUnknownSessionError(initial.parsed)
     ) {
+      const freshSessionId = randomUUID();
       await onLog(
         "stdout",
-        `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+        `[paperclip] Claude resume session "${effectiveSessionId}" is unavailable; retrying with fresh session-id "${freshSessionId}".\n`,
       );
-      const retry = await runAttempt(null);
+      const retry = await runAttempt(null, freshSessionId);
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
     }
 
