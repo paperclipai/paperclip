@@ -148,6 +148,7 @@ const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const PLUGIN_API_BODY_LIMIT_BYTES = 1_000_000;
+const PLUGIN_ACTION_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
 const PLUGIN_SCOPED_API_RESPONSE_HEADER_ALLOWLIST = new Set([
   "cache-control",
   "etag",
@@ -1417,6 +1418,7 @@ export function pluginRoutes(
           actorContext: performActionActorContext(req, companyId),
           renderEnvironment: body.renderEnvironment ?? null,
         },
+        PLUGIN_ACTION_RPC_TIMEOUT_MS,
       );
       res.json({ data: result });
     } catch (err) {
@@ -1601,6 +1603,7 @@ export function pluginRoutes(
           actorContext: performActionActorContext(req, companyId),
           renderEnvironment: body?.renderEnvironment ?? null,
         },
+        PLUGIN_ACTION_RPC_TIMEOUT_MS,
       );
       res.json({ data: result });
     } catch (err) {
