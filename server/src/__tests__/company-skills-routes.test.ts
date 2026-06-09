@@ -25,6 +25,7 @@ const mockCompanySkillService = vi.hoisted(() => ({
   createComment: vi.fn(),
   updateComment: vi.fn(),
   deleteComment: vi.fn(),
+  resolveCompanyId: vi.fn((companyId: string) => Promise.resolve(companyId)),
   importFromSource: vi.fn(),
   installFromCatalog: vi.fn(),
   deleteSkill: vi.fn(),

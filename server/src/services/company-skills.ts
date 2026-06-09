@@ -45,7 +45,7 @@ import type {
   CompanySkillVersionCreateRequest,
   CompanySkillVersionFileInventoryEntry,
 } from "@paperclipai/shared";
-import { normalizeAgentUrlKey } from "@paperclipai/shared";
+import { normalizeAgentUrlKey, isUuidLike } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
@@ -4544,7 +4544,19 @@ export function companySkillService(db: Db) {
     return skill;
   }
 
+  async function resolveCompanyId(input: string): Promise<string> {
+    if (isUuidLike(input)) return input;
+    const company = await db
+      .select({ id: companies.id })
+      .from(companies)
+      .where(eq(companies.issuePrefix, input))
+      .then((rows) => rows[0] ?? null);
+    if (!company) throw notFound(`Company not found: ${input}`);
+    return company.id;
+  }
+
   return {
+    resolveCompanyId,
     list,
     listFull,
     getById,

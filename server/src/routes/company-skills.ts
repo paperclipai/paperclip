@@ -138,7 +138,7 @@ export function companySkillRoutes(db: Db) {
   });
 
   router.get("/companies/:companyId/skills", async (req, res) => {
-    const companyId = req.params.companyId as string;
+    const companyId = await svc.resolveCompanyId(req.params.companyId as string);
     assertCompanyAccess(req, companyId);
     const result = await svc.list(companyId, companySkillListQuerySchema.parse({
       q: firstQueryString(req.query.q),
@@ -160,7 +160,7 @@ export function companySkillRoutes(db: Db) {
   });
 
   router.get("/companies/:companyId/skills/:skillId", async (req, res) => {
-    const companyId = req.params.companyId as string;
+    const companyId = await svc.resolveCompanyId(req.params.companyId as string);
     const skillId = req.params.skillId as string;
     assertCompanyAccess(req, companyId);
     const result = await svc.detail(companyId, skillId, skillActor(req));
@@ -365,7 +365,7 @@ export function companySkillRoutes(db: Db) {
   });
 
   router.get("/companies/:companyId/skills/:skillId/update-status", async (req, res) => {
-    const companyId = req.params.companyId as string;
+    const companyId = await svc.resolveCompanyId(req.params.companyId as string);
     const skillId = req.params.skillId as string;
     assertCompanyAccess(req, companyId);
     const result = await svc.updateStatus(companyId, skillId);
@@ -377,7 +377,7 @@ export function companySkillRoutes(db: Db) {
   });
 
   router.get("/companies/:companyId/skills/:skillId/files", async (req, res) => {
-    const companyId = req.params.companyId as string;
+    const companyId = await svc.resolveCompanyId(req.params.companyId as string);
     const skillId = req.params.skillId as string;
     const relativePath = String(req.query.path ?? "SKILL.md");
     assertCompanyAccess(req, companyId);
@@ -393,7 +393,7 @@ export function companySkillRoutes(db: Db) {
     "/companies/:companyId/skills",
     validate(companySkillCreateSchema),
     async (req, res) => {
-      const companyId = req.params.companyId as string;
+      const companyId = await svc.resolveCompanyId(req.params.companyId as string);
       await assertCanMutateCompanySkills(req, companyId);
       const result = await svc.createLocalSkill(companyId, req.body, skillActor(req));
 
@@ -450,7 +450,7 @@ export function companySkillRoutes(db: Db) {
     "/companies/:companyId/skills/:skillId/files",
     validate(companySkillFileUpdateSchema),
     async (req, res) => {
-      const companyId = req.params.companyId as string;
+      const companyId = await svc.resolveCompanyId(req.params.companyId as string);
       const skillId = req.params.skillId as string;
       await assertCanMutateCompanySkills(req, companyId);
       const result = await svc.updateFile(
@@ -485,7 +485,7 @@ export function companySkillRoutes(db: Db) {
     "/companies/:companyId/skills/import",
     validate(companySkillImportSchema),
     async (req, res) => {
-      const companyId = req.params.companyId as string;
+      const companyId = await svc.resolveCompanyId(req.params.companyId as string);
       await assertCanMutateCompanySkills(req, companyId);
       const source = String(req.body.source ?? "");
       const result = await svc.importFromSource(companyId, source);
@@ -525,7 +525,7 @@ export function companySkillRoutes(db: Db) {
     "/companies/:companyId/skills/install-catalog",
     validate(companySkillInstallCatalogSchema),
     async (req, res) => {
-      const companyId = req.params.companyId as string;
+      const companyId = await svc.resolveCompanyId(req.params.companyId as string);
       await assertCanMutateCompanySkills(req, companyId);
       const result = await svc.installFromCatalog(companyId, req.body);
 
@@ -557,7 +557,7 @@ export function companySkillRoutes(db: Db) {
     "/companies/:companyId/skills/scan-projects",
     validate(companySkillProjectScanRequestSchema),
     async (req, res) => {
-      const companyId = req.params.companyId as string;
+      const companyId = await svc.resolveCompanyId(req.params.companyId as string);
       await assertCanMutateCompanySkills(req, companyId);
       const result = await svc.scanProjectWorkspaces(companyId, req.body);
 
@@ -587,7 +587,7 @@ export function companySkillRoutes(db: Db) {
   );
 
   router.delete("/companies/:companyId/skills/:skillId", async (req, res) => {
-    const companyId = req.params.companyId as string;
+    const companyId = await svc.resolveCompanyId(req.params.companyId as string);
     const skillId = req.params.skillId as string;
     await assertCanMutateCompanySkills(req, companyId);
     const result = await svc.deleteSkill(companyId, skillId);
@@ -618,7 +618,7 @@ export function companySkillRoutes(db: Db) {
   router.post(
     "/companies/:companyId/skills/:skillId/audit",
     async (req, res) => {
-      const companyId = req.params.companyId as string;
+      const companyId = await svc.resolveCompanyId(req.params.companyId as string);
       const skillId = req.params.skillId as string;
       await assertCanMutateCompanySkills(req, companyId);
       const result = await svc.auditSkill(companyId, skillId);
@@ -654,7 +654,7 @@ export function companySkillRoutes(db: Db) {
     "/companies/:companyId/skills/:skillId/install-update",
     validate(companySkillInstallUpdateSchema),
     async (req, res) => {
-      const companyId = req.params.companyId as string;
+      const companyId = await svc.resolveCompanyId(req.params.companyId as string);
       const skillId = req.params.skillId as string;
       await assertCanMutateCompanySkills(req, companyId);
       const before = await svc.getById(companyId, skillId);
@@ -694,7 +694,7 @@ export function companySkillRoutes(db: Db) {
     "/companies/:companyId/skills/:skillId/reset",
     validate(companySkillResetSchema),
     async (req, res) => {
-      const companyId = req.params.companyId as string;
+      const companyId = await svc.resolveCompanyId(req.params.companyId as string);
       const skillId = req.params.skillId as string;
       await assertCanMutateCompanySkills(req, companyId);
       const before = await svc.getById(companyId, skillId);
