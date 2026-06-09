@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import { and, asc, desc, eq, inArray, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   workflowDeliverables,
@@ -579,6 +579,7 @@ export function workflowService(db: Db) {
       const failedRunIds = rows.map((row) => row.id);
       await db.update(workflowRunPhases).set({
         status: "failed",
+        startedAt: sql`COALESCE(${workflowRunPhases.startedAt}, ${now.toISOString()}::timestamptz)`,
         finishedAt: now,
         updatedAt: now,
       }).where(and(

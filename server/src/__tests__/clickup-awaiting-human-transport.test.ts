@@ -324,6 +324,40 @@ describe("getClickUpChatMessageReplies", () => {
     });
   });
 
+  it("orders same-time replies by IDs beyond Number precision", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [
+          {
+            id: "9007199254740993",
+            parent_message: "message-42",
+            content: "second",
+            links: { reactions: "https://example.test/reactions/second" },
+          },
+          {
+            id: "9007199254740992",
+            parent_message: "message-42",
+            content: "first",
+            links: { reactions: "https://example.test/reactions/first" },
+          },
+        ],
+      }),
+    }) as typeof fetch;
+
+    const result = await getClickUpChatMessageReplies("message-42");
+
+    expect(result.status).toBe("sent");
+    expect(result.replies.map((reply) => reply.id)).toEqual([
+      "9007199254740992",
+      "9007199254740993",
+    ]);
+  });
+
   it("aborts slow ClickUp reply polling requests", async () => {
     process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
     process.env.CLICKUP_WORKSPACE_ID = "workspace-1";

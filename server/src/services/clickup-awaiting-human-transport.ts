@@ -271,10 +271,15 @@ function compareClickUpRepliesChronologically(
     return aDate - bDate;
   }
 
-  const aId = readNumericValue(a.id);
-  const bId = readNumericValue(b.id);
-  if (aId !== null && bId !== null && aId !== bId) {
-    return aId - bId;
+  const aIdStr = typeof a.id === "string" && a.id.trim().length > 0 ? a.id.trim() : null;
+  const bIdStr = typeof b.id === "string" && b.id.trim().length > 0 ? b.id.trim() : null;
+  if (aIdStr !== null && bIdStr !== null && aIdStr !== bIdStr) {
+    try {
+      const cmp = BigInt(aIdStr) - BigInt(bIdStr);
+      if (cmp !== 0n) return cmp > 0n ? 1 : -1;
+    } catch {
+      return aIdStr < bIdStr ? -1 : 1;
+    }
   }
 
   return 0;

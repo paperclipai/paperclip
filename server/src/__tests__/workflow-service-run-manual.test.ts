@@ -322,7 +322,7 @@ describeEmbeddedPostgres("workflowService.runManual", () => {
         label: "Phase 1",
         kind: "phase",
         ordinal: 0,
-        status: "awaiting_human",
+        status: "idle",
       },
       {
         companyId,
@@ -352,6 +352,8 @@ describeEmbeddedPostgres("workflowService.runManual", () => {
     expect(activeRun?.error).toBe("Workflow process was interrupted before completion.");
     const [activePhase] = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, activeRunId));
     expect(activePhase?.status).toBe("failed");
+    expect(activePhase?.startedAt).toBeInstanceOf(Date);
+    expect(activePhase?.finishedAt).toBeInstanceOf(Date);
 
     const [durableRun] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, durableRunId));
     expect(durableRun?.status).toBe("awaiting_human");
