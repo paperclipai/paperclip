@@ -524,6 +524,44 @@ describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
     expect(bridge?.nextPollAt).toBeNull();
   });
 
+  it("closes terminal threaded bridges even when the question marker cannot be found", async () => {
+    const { bridgeId } = await insertWaitingWorkflowBridge(db, {
+      runStatus: "failed",
+      runError: "Tool failed",
+      externalThreadId: "thread-root-1",
+      externalMessageId: "question-reply-1",
+    });
+
+    mocks.detectClickUpAwaitingHumanBridgeEventsAfterMessage.mockResolvedValueOnce({
+      status: "failed",
+      detail: "question-marker-not-found",
+      events: [],
+    });
+
+    const result = await workflowHandoffBridgeService(db).pollActiveBridges();
+
+    expect(result.checked).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(result.terminalClosed).toBe(1);
+    expect(mocks.detectClickUpAwaitingHumanBridgeEventsAfterMessage).toHaveBeenCalledWith(
+      "thread-root-1",
+      "question-reply-1",
+      expect.objectContaining({ personalToken: "token-123" }),
+    );
+    expect(mocks.addClickUpChatMessageReaction).toHaveBeenCalledTimes(1);
+    expect(mocks.addClickUpChatMessageReaction).toHaveBeenCalledWith(
+      "question-reply-1",
+      "x",
+      expect.objectContaining({ personalToken: "token-123" }),
+    );
+
+    const [bridge] = await db.select().from(workflowHandoffBridges).where(eq(workflowHandoffBridges.id, bridgeId));
+    expect(bridge?.status).toBe("closed");
+    expect(bridge?.closeOutcome).toBe("failed");
+    expect(bridge?.lastError).toBe("question-marker-not-found");
+    expect(bridge?.nextPollAt).toBeNull();
+  });
+
   it("closes active bridges after direct handoff resolution", async () => {
     const { bridgeId, handoffId } = await insertWaitingWorkflowBridge(db, {
       runStatus: "running",

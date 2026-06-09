@@ -585,14 +585,12 @@ export function workflowHandoffBridgeService(db: Db) {
             runError: run?.error ?? null,
           }, "workflow handoff bridge: terminal run reply poll failed while closing bridge");
           await tryRecordBridgePollFailure(db, bridge, now, detail);
-          summary.failed += 1;
-          continue;
+          detectedTerminal = { status: "sent", detail: "terminal-reply-detection-failed", events: [] };
         }
 
         if (detectedTerminal.status === "failed") {
           await tryRecordBridgePollFailure(db, bridge, now, detectedTerminal.detail);
-          summary.failed += 1;
-          continue;
+          detectedTerminal = { status: "sent", detail: detectedTerminal.detail, events: [] };
         }
 
         try {
