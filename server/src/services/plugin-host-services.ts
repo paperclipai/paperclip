@@ -1188,6 +1188,29 @@ export function buildHostServices(
           namespace: params.namespace,
         });
       },
+      async list(params) {
+        const page = await stateStore.list(pluginId, {
+          scopeKind: params.scopeKind as any,
+          scopeId: params.scopeId,
+          namespace: params.namespace,
+          stateKeyPrefix: params.stateKeyPrefix,
+          limit: params.limit,
+          offset: params.offset,
+        });
+        return {
+          entries: page.rows.map((row) => ({
+            scopeKind: row.scopeKind,
+            scopeId: row.scopeId,
+            namespace: row.namespace,
+            stateKey: row.stateKey,
+            value: row.valueJson,
+            updatedAt: row.updatedAt instanceof Date
+              ? row.updatedAt.toISOString()
+              : new Date(row.updatedAt).toISOString(),
+          })),
+          hasMore: page.hasMore,
+        };
+      },
       async set(params) {
         await stateStore.set(pluginId, {
           scopeKind: params.scopeKind as any,

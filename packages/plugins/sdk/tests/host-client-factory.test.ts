@@ -87,7 +87,33 @@ describe("createHostClientHandlers invocation company scope", () => {
     expect(stateGet).not.toHaveBeenCalled();
   });
 
+  it("delegates state.list when the plugin has state read capability", async () => {
+    const stateList = vi.fn(async () => ({ entries: [], hasMore: false }));
+    const services = {
+      state: {
+        list: stateList,
+      },
+    } as unknown as HostServices;
+
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["plugin.state.read"],
+      services,
+    });
+
+    await expect(
+      handlers["state.list"]({ scopeKind: "instance", stateKeyPrefix: "link:" }),
+    ).resolves.toEqual({ entries: [], hasMore: false });
+    expect(stateList).toHaveBeenCalledWith({ scopeKind: "instance", stateKeyPrefix: "link:" });
+  });
+
   it.each([
+    [
+      "state.list",
+      "plugin.state.read",
+      { scopeKind: "instance" },
+      (services: HostServices) => vi.mocked(services.state.list),
+    ],
     [
       "access.members.list",
       "access.members.read",
@@ -157,6 +183,9 @@ describe("createHostClientHandlers invocation company scope", () => {
             updatedAt: new Date().toISOString(),
             applied: true,
           })),
+        },
+        state: {
+          list: vi.fn(async () => ({ entries: [], hasMore: false })),
         },
       } as unknown as HostServices;
       const handlers = createHostClientHandlers({

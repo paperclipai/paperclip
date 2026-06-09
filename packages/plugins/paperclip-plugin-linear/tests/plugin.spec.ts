@@ -54,6 +54,7 @@ vi.mock("../src/linear.js", () => ({
     url: "https://linear.app/lucitra/issue/LUC-1",
     assignee: null,
   }),
+  listIssuesByIds: vi.fn().mockResolvedValue([]),
   createIssue: vi.fn().mockResolvedValue({
     id: "lin-iss-new",
     identifier: "LUC-43",
@@ -1891,6 +1892,7 @@ describe("paperclip-plugin-linear", () => {
         ],
       });
       const createIssue = vi.spyOn(harness.ctx.issues, "create");
+
       await harness.ctx.state.set(
         { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
         "lin_token_123",
@@ -1914,6 +1916,86 @@ describe("paperclip-plugin-linear", () => {
         originKind: "plugin:paperclip-plugin-linear",
         originId: "lin-issue-title-match",
       });
+    });
+
+    it("syncs persisted Linear links without crawling every open Linear issue", async () => {
+      const { listIssuesByIds, listOpenIssues } = await import("../src/linear.js");
+      const linkOne = {
+        paperclipIssueId: "pc-1",
+        paperclipCompanyId: "comp-1",
+        linearIssueId: "lin-1",
+        linearIdentifier: "LUC-1",
+        linearUrl: "https://linear.app/lucitra/issue/LUC-1",
+        syncDirection: "bidirectional" as const,
+        lastSyncAt: "2026-06-09T00:00:00.000Z",
+        lastLinearStateType: "backlog",
+        lastCommentSyncAt: null,
+      };
+      const linkTwo = {
+        paperclipIssueId: "pc-2",
+        paperclipCompanyId: "comp-1",
+        linearIssueId: "lin-2",
+        linearIdentifier: "LUC-2",
+        linearUrl: "https://linear.app/lucitra/issue/LUC-2",
+        syncDirection: "linear-to-paperclip" as const,
+        lastSyncAt: "2026-06-09T00:00:00.000Z",
+        lastLinearStateType: "started",
+        lastCommentSyncAt: null,
+      };
+      const linearOne = {
+        id: "lin-1",
+        identifier: "LUC-1",
+        title: "Linked one",
+        description: null,
+        state: { name: "Done", type: "completed" },
+        priority: 2,
+        url: "https://linear.app/lucitra/issue/LUC-1",
+        assignee: null,
+        labels: { nodes: [] },
+        project: null,
+        createdAt: "2026-06-09T00:00:00.000Z",
+        updatedAt: "2026-06-09T00:00:00.000Z",
+      };
+      const linearTwo = {
+        id: "lin-2",
+        identifier: "LUC-2",
+        title: "Linked two",
+        description: null,
+        state: { name: "In Progress", type: "started" },
+        priority: 3,
+        url: "https://linear.app/lucitra/issue/LUC-2",
+        assignee: null,
+        labels: { nodes: [] },
+        project: null,
+        createdAt: "2026-06-09T00:00:00.000Z",
+        updatedAt: "2026-06-09T00:00:00.000Z",
+      };
+
+      vi.mocked(listIssuesByIds).mockResolvedValueOnce([linearOne, linearTwo]);
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: `${STATE_KEYS.linkPrefix}${linkOne.paperclipIssueId}` },
+        linkOne,
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: `${STATE_KEYS.linkPrefix}${linkTwo.paperclipIssueId}` },
+        linkTwo,
+      );
+
+      await expect(harness.runJob(JOB_KEYS.periodicSync)).resolves.not.toThrow();
+
+      expect(listOpenIssues).not.toHaveBeenCalled();
+      expect(listIssuesByIds).toHaveBeenCalledWith(
+        expect.any(Function),
+        "lin_token_123",
+        ["lin-1", "lin-2"],
+      );
+      expect(syncModule.getLinkByLinear).not.toHaveBeenCalled();
+      expect(syncModule.syncFromLinear).toHaveBeenCalledWith(harness.ctx, linkOne, linearOne);
+      expect(syncModule.syncFromLinear).toHaveBeenCalledWith(harness.ctx, linkTwo, linearTwo);
     });
 
     it("registers initial-import job", async () => {

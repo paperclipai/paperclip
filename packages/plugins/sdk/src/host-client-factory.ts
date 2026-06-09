@@ -114,9 +114,10 @@ export interface HostServices {
     deleteFile(params: WorkerToHostMethods["localFolders.deleteFile"][0]): Promise<WorkerToHostMethods["localFolders.deleteFile"][1]>;
   };
 
-  /** Provides `state.get`, `state.set`, `state.delete`. */
+  /** Provides `state.get`, `state.list`, `state.set`, `state.delete`. */
   state: {
     get(params: WorkerToHostMethods["state.get"][0]): Promise<WorkerToHostMethods["state.get"][1]>;
+    list(params: WorkerToHostMethods["state.list"][0]): Promise<WorkerToHostMethods["state.list"][1]>;
     set(params: WorkerToHostMethods["state.set"][0]): Promise<void>;
     delete(params: WorkerToHostMethods["state.delete"][0]): Promise<void>;
   };
@@ -398,6 +399,7 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
 
   // State
   "state.get": "plugin.state.read",
+  "state.list": "plugin.state.read",
   "state.set": "plugin.state.write",
   "state.delete": "plugin.state.write",
 
@@ -714,6 +716,9 @@ export function createHostClientHandlers(
     // State
     "state.get": gated("state.get", async (params) => {
       return services.state.get(params);
+    }),
+    "state.list": gated("state.list", async (params) => {
+      return services.state.list(params);
     }),
     "state.set": gated("state.set", async (params) => {
       return services.state.set(params);

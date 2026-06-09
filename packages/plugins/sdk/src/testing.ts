@@ -904,6 +904,38 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         requireCapability(manifest, capabilitySet, "plugin.state.read");
         return state.has(stateMapKey(input)) ? state.get(stateMapKey(input)) : null;
       },
+      async list(input = {}) {
+        requireCapability(manifest, capabilitySet, "plugin.state.read");
+        const scopeKind = input.scopeKind;
+        const scopeId = input.scopeId;
+        const namespace = input.namespace;
+        const prefix = input.stateKeyPrefix;
+        const limit = Math.max(1, Math.min(500, Math.trunc(input.limit ?? 100)));
+        const offset = Math.max(0, Math.trunc(input.offset ?? 0));
+        const entries = Array.from(state.entries())
+          .map(([key, value]) => {
+            const [entryScopeKind = "", entryScopeId = "", entryNamespace = "default", stateKey = ""] = key.split("|");
+            return {
+              scopeKind: entryScopeKind as ScopeKey["scopeKind"],
+              scopeId: entryScopeId || null,
+              namespace: entryNamespace,
+              stateKey,
+              value,
+              updatedAt: new Date().toISOString(),
+            };
+          })
+          .filter((entry) => scopeKind === undefined || entry.scopeKind === scopeKind)
+          .filter((entry) => scopeId === undefined || entry.scopeId === scopeId)
+          .filter((entry) => namespace === undefined || entry.namespace === namespace)
+          .filter((entry) => prefix === undefined || entry.stateKey.startsWith(prefix))
+          .sort((a, b) => {
+            const left = `${a.scopeKind}|${a.scopeId ?? ""}|${a.namespace}|${a.stateKey}`;
+            const right = `${b.scopeKind}|${b.scopeId ?? ""}|${b.namespace}|${b.stateKey}`;
+            return left.localeCompare(right);
+          });
+        const page = entries.slice(offset, offset + limit);
+        return { entries: page, hasMore: offset + limit < entries.length };
+      },
       async set(input, value) {
         requireCapability(manifest, capabilitySet, "plugin.state.write");
         state.set(stateMapKey(input), value);

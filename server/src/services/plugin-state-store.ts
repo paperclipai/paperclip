@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull, like } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { plugins, pluginState } from "@paperclipai/db";
 import type {
@@ -14,6 +14,12 @@ import { notFound } from "../errors.js";
 
 /** Default namespace used when the plugin does not specify one. */
 const DEFAULT_NAMESPACE = "default";
+const DEFAULT_LIST_LIMIT = 100;
+const MAX_LIST_LIMIT = 500;
+
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
 
 /**
  * Build the WHERE clause conditions for a scoped state lookup.
@@ -199,8 +205,13 @@ export function pluginStateStore(db: Db) {
      * @param pluginId - UUID of the owning plugin
      * @param filter - Optional scope filters (scopeKind, scopeId, namespace)
      */
-    list: async (pluginId: string, filter: ListPluginState = {}): Promise<typeof pluginState.$inferSelect[]> => {
+    list: async (pluginId: string, filter: ListPluginState = {}): Promise<{
+      rows: typeof pluginState.$inferSelect[];
+      hasMore: boolean;
+    }> => {
       const conditions = [eq(pluginState.pluginId, pluginId)];
+      const limit = Math.max(1, Math.min(MAX_LIST_LIMIT, Math.trunc(filter.limit ?? DEFAULT_LIST_LIMIT)));
+      const offset = Math.max(0, Math.trunc(filter.offset ?? 0));
 
       if (filter.scopeKind !== undefined) {
         conditions.push(eq(pluginState.scopeKind, filter.scopeKind));
@@ -211,11 +222,22 @@ export function pluginStateStore(db: Db) {
       if (filter.namespace !== undefined) {
         conditions.push(eq(pluginState.namespace, filter.namespace));
       }
+      if (filter.stateKeyPrefix !== undefined) {
+        conditions.push(like(pluginState.stateKey, `${escapeLikePattern(filter.stateKeyPrefix)}%`));
+      }
 
-      return db
+      const rows = await db
         .select()
         .from(pluginState)
-        .where(and(...conditions));
+        .where(and(...conditions))
+        .orderBy(asc(pluginState.scopeKind), asc(pluginState.scopeId), asc(pluginState.namespace), asc(pluginState.stateKey))
+        .limit(limit + 1)
+        .offset(offset);
+
+      return {
+        rows: rows.slice(0, limit),
+        hasMore: rows.length > limit,
+      };
     },
 
     /**

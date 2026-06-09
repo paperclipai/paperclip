@@ -165,6 +165,35 @@ export interface ScopeKey {
   stateKey: string;
 }
 
+export interface PluginStateListInput {
+  /** Optional scope kind filter. Omit to scan all scopes owned by this plugin. */
+  scopeKind?: PluginStateScopeKind;
+  /** Optional scope id filter. */
+  scopeId?: string;
+  /** Optional namespace filter. Defaults are not implied for listing. */
+  namespace?: string;
+  /** Optional prefix match for state keys. */
+  stateKeyPrefix?: string;
+  /** Page size. The host caps this at 500. */
+  limit?: number;
+  /** Offset for deterministic paging. */
+  offset?: number;
+}
+
+export interface PluginStateListEntry {
+  scopeKind: PluginStateScopeKind;
+  scopeId: string | null;
+  namespace: string;
+  stateKey: string;
+  value: unknown;
+  updatedAt: string;
+}
+
+export interface PluginStateListResult {
+  entries: PluginStateListEntry[];
+  hasMore: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Event types
 // ---------------------------------------------------------------------------
@@ -790,6 +819,17 @@ export interface PluginStateClient {
    * @returns The stored JSON value, or `null` if no value has been set
    */
   get(input: ScopeKey): Promise<unknown>;
+
+  /**
+   * List state values owned by this plugin.
+   *
+   * Results are isolated to the current plugin and returned in deterministic
+   * scope/key order. Use `limit` + `offset` for bounded scans.
+   *
+   * @param input - Optional filters and pagination options
+   * @returns Matching state entries and whether another page exists
+   */
+  list(input?: PluginStateListInput): Promise<PluginStateListResult>;
 
   /**
    * Write a state value. Creates the row if it does not exist; replaces it

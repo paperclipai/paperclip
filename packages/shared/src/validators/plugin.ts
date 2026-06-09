@@ -1097,6 +1097,9 @@ export const listPluginStateSchema = z.object({
   scopeKind: z.enum(PLUGIN_STATE_SCOPE_KINDS).optional(),
   scopeId: z.string().min(1).optional(),
   namespace: z.string().min(1).optional(),
+  stateKeyPrefix: z.string().min(1).optional(),
+  limit: z.number().int().min(1).max(500).optional(),
+  offset: z.number().int().min(0).optional(),
 });
 
 export type ListPluginState = z.infer<typeof listPluginStateSchema>;

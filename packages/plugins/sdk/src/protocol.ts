@@ -721,6 +721,20 @@ export interface WorkerToHostMethods {
     params: { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string },
     result: unknown,
   ];
+  "state.list": [
+    params: { scopeKind?: string; scopeId?: string; namespace?: string; stateKeyPrefix?: string; limit?: number; offset?: number },
+    result: {
+      entries: Array<{
+        scopeKind: PluginStateScopeKind;
+        scopeId: string | null;
+        namespace: string;
+        stateKey: string;
+        value: unknown;
+        updatedAt: string;
+      }>;
+      hasMore: boolean;
+    },
+  ];
   "state.set": [
     params: { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string; value: unknown },
     result: void,

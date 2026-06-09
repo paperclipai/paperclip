@@ -2623,6 +2623,20 @@ async function runImport(ctx: PluginContext): Promise<{
 // Full sync (re-sync all linked issues from Linear)
 // ---------------------------------------------------------------------------
 
+const LINEAR_LINK_SYNC_PAGE_SIZE = 100;
+const LINEAR_ISSUE_SYNC_BATCH_SIZE = 50;
+
+function isIssueLink(value: unknown): value is sync.IssueLink {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<sync.IssueLink>;
+  return typeof candidate.paperclipIssueId === "string"
+    && typeof candidate.paperclipCompanyId === "string"
+    && typeof candidate.linearIssueId === "string"
+    && typeof candidate.linearIdentifier === "string"
+    && typeof candidate.linearUrl === "string"
+    && typeof candidate.syncDirection === "string";
+}
+
 async function runFullSync(ctx: PluginContext): Promise<{
   synced: number;
   errors: number;
@@ -2634,43 +2648,64 @@ async function runFullSync(ctx: PluginContext): Promise<{
     return { synced: 0, errors: 0 };
   }
 
+  const fetch = ctx.http.fetch.bind(ctx.http);
   const teamId = await getTeamId(ctx).catch(() => "");
-  if (!teamId) return { synced: 0, errors: 0 };
-
-  // Fetch all open Linear issues for the team
-  const allLinear: linear.LinearIssue[] = [];
-  let cursor: string | undefined;
-  let hasMore = true;
-
-  while (hasMore) {
-    const page = await linear.listOpenIssues(
-      ctx.http.fetch.bind(ctx.http),
-      token,
-      teamId,
-      cursor,
-    );
-    allLinear.push(...page.issues);
-    hasMore = page.hasNextPage;
-    cursor = page.endCursor ?? undefined;
-  }
-
   let synced = 0;
   let errors = 0;
+  let scanned = 0;
+  let offset = 0;
 
-  for (const linearIssue of allLinear) {
-    const link = await sync.getLinkByLinear(ctx, linearIssue.id);
-    if (!link) continue;
+  while (true) {
+    const page = await ctx.state.list({
+      scopeKind: "instance",
+      namespace: "default",
+      stateKeyPrefix: STATE_KEYS.linkPrefix,
+      limit: LINEAR_LINK_SYNC_PAGE_SIZE,
+      offset,
+    });
+    const links = page.entries
+      .map((entry) => entry.value)
+      .filter(isIssueLink);
+    scanned += links.length;
 
-    try {
-      await sync.syncFromLinear(ctx, link, linearIssue);
-      synced++;
-    } catch (err) {
-      ctx.logger.warn(`Sync failed for ${linearIssue.identifier}: ${err}`);
-      errors++;
+    for (let index = 0; index < links.length; index += LINEAR_ISSUE_SYNC_BATCH_SIZE) {
+      const batch = links.slice(index, index + LINEAR_ISSUE_SYNC_BATCH_SIZE);
+      const linearIds = batch.map((link) => link.linearIssueId);
+      let linearIssues: linear.LinearIssue[];
+
+      try {
+        linearIssues = await linear.listIssuesByIds(fetch, token, linearIds);
+      } catch (err) {
+        ctx.logger.warn(`Linear issue batch fetch failed: ${err}`);
+        errors += batch.length;
+        continue;
+      }
+
+      const linearById = new Map(linearIssues.map((issue) => [issue.id, issue]));
+
+      for (const link of batch) {
+        const linearIssue = linearById.get(link.linearIssueId);
+        if (!linearIssue) {
+          ctx.logger.warn(`Linked Linear issue ${link.linearIdentifier} (${link.linearIssueId}) was not found`);
+          errors++;
+          continue;
+        }
+
+        try {
+          await sync.syncFromLinear(ctx, link, linearIssue);
+          synced++;
+        } catch (err) {
+          ctx.logger.warn(`Sync failed for ${linearIssue.identifier}: ${err}`);
+          errors++;
+        }
+      }
     }
+
+    if (!page.hasMore) break;
+    offset += LINEAR_LINK_SYNC_PAGE_SIZE;
   }
 
-  ctx.logger.info(`Full sync complete: ${synced} synced, ${errors} errors`);
+  ctx.logger.info(`Full sync complete: ${synced} synced from ${scanned} linked issues, ${errors} errors`);
 
   // Re-push goals so status/targetDate edits land in Linear within one cron
   // tick even if the goal.updated event was missed.
@@ -2693,7 +2728,7 @@ async function runFullSync(ctx: PluginContext): Promise<{
   // tick so issues, goals, and projects all converge together.
   try {
     const companyId = await getCompanyId(ctx);
-    if (companyId) {
+    if (companyId && teamId) {
       const projResult = await runProjectSync(ctx, companyId, teamId, token);
       const sdkSkipNotes: string[] = [];
       if (projResult.skippedDrift > 0) {

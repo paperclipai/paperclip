@@ -72,3 +72,41 @@ describe("createTestHarness action context", () => {
     await expect(harness.performAction("legacy", { ok: true })).resolves.toEqual({ ok: true });
   });
 });
+
+describe("createTestHarness state client", () => {
+  it("lists state by prefix with deterministic paging", async () => {
+    const harness = createTestHarness({
+      manifest: {
+        ...manifest,
+        capabilities: ["plugin.state.read", "plugin.state.write"],
+      },
+    });
+
+    await harness.ctx.state.set({ scopeKind: "instance", stateKey: "link:b" }, { id: "b" });
+    await harness.ctx.state.set({ scopeKind: "instance", stateKey: "other" }, { id: "other" });
+    await harness.ctx.state.set({ scopeKind: "instance", stateKey: "link:a" }, { id: "a" });
+
+    const firstPage = await harness.ctx.state.list({
+      scopeKind: "instance",
+      namespace: "default",
+      stateKeyPrefix: "link:",
+      limit: 1,
+    });
+    const secondPage = await harness.ctx.state.list({
+      scopeKind: "instance",
+      namespace: "default",
+      stateKeyPrefix: "link:",
+      limit: 1,
+      offset: 1,
+    });
+
+    expect(firstPage).toMatchObject({
+      entries: [{ stateKey: "link:a", value: { id: "a" } }],
+      hasMore: true,
+    });
+    expect(secondPage).toMatchObject({
+      entries: [{ stateKey: "link:b", value: { id: "b" } }],
+      hasMore: false,
+    });
+  });
+});

@@ -344,6 +344,34 @@ export async function getIssueByIdentifier(
   }
 }
 
+export async function listIssuesByIds(
+  fetch: LinearFetch,
+  token: string,
+  issueIds: string[],
+): Promise<LinearIssue[]> {
+  const ids = Array.from(new Set(issueIds.filter((id) => id.trim().length > 0)));
+  if (ids.length === 0) return [];
+
+  const data = await gql<{
+    issues: { nodes: LinearIssue[] };
+  }>(fetch, token, `
+    query ListIssuesByIds($ids: [String!]!, $first: Int!) {
+      issues(filter: { id: { in: $ids } }, first: $first) {
+        nodes {
+          id identifier title description url priority
+          createdAt updatedAt
+          state { name type }
+          assignee { name email }
+          labels { nodes { name color } }
+          project { id name description state }
+        }
+      }
+    }
+  `, { ids, first: ids.length });
+
+  return data.issues.nodes;
+}
+
 export async function createIssue(
   fetch: LinearFetch,
   token: string,

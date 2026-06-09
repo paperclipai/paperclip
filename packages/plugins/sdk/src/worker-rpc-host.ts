@@ -633,6 +633,17 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           });
         },
 
+        async list(input = {}) {
+          return callHost("state.list", {
+            scopeKind: input.scopeKind,
+            scopeId: input.scopeId,
+            namespace: input.namespace,
+            stateKeyPrefix: input.stateKeyPrefix,
+            limit: input.limit,
+            offset: input.offset,
+          });
+        },
+
         async set(input: ScopeKey, value: unknown): Promise<void> {
           await callHost("state.set", {
             scopeKind: input.scopeKind,
