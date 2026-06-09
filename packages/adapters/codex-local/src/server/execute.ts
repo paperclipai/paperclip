@@ -1,7 +1,16 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  inferOpenAiCompatibleBiller,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@paperclipai/adapter-utils";
+import {
+  redactChangedJsonlPersistenceArtifacts,
+  snapshotJsonlPersistenceArtifacts,
+  type PersistenceArtifactSnapshot,
+} from "@paperclipai/adapter-utils/persistence-redaction";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -678,6 +687,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
+    const codexSessionArtifactSnapshot: PersistenceArtifactSnapshot = await snapshotJsonlPersistenceArtifacts(
+      effectiveCodexHome,
+    );
     const execArgs = buildCodexExecArgs(
       forceSaferInvocation ? { ...config, fastMode: false } : config,
       {
@@ -723,6 +735,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         if (!cleaned.trim()) return;
         await onLog(stream, cleaned);
       },
+    });
+    await redactChangedJsonlPersistenceArtifacts({
+      root: effectiveCodexHome,
+      before: codexSessionArtifactSnapshot,
     });
     const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
     return {

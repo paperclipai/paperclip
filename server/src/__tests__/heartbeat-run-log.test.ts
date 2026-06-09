@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { compactRunLogChunk } from "../services/heartbeat.js";
+import { getRunLogStore, resetRunLogStoreForTests } from "../services/run-log-store.js";
 
 describe("compactRunLogChunk", () => {
   it("redacts inline base64 image data from structured log chunks", () => {
@@ -37,5 +41,40 @@ describe("compactRunLogChunk", () => {
     expect(compacted).not.toContain("paperclip-shell-secret");
     expect(compacted).not.toContain("paperclip-json-secret");
     expect(compacted).not.toContain("paperclip-flag-secret");
+  });
+
+  it("redacts run-log NDJSON at the store boundary and creates owner-only artifacts", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-log-redaction-"));
+    const bearerValue = ["live", "bearer", "token", "value"].join("-");
+    const previousRunLogBasePath = process.env.RUN_LOG_BASE_PATH;
+    process.env.RUN_LOG_BASE_PATH = root;
+    resetRunLogStoreForTests();
+
+    try {
+      const store = getRunLogStore();
+      const handle = await store.begin({
+        companyId: "company-1",
+        agentId: "agent-1",
+        runId: "run-1",
+      });
+      await store.append(handle, {
+        ts: "2026-06-07T00:00:00.000Z",
+        stream: "stdout",
+        chunk: `Authorization: Bearer ${bearerValue}`,
+      });
+
+      const artifactPath = path.join(root, handle.logRef);
+      const mode = (await fs.stat(artifactPath)).mode & 0o777;
+      const persisted = await fs.readFile(artifactPath, "utf8");
+
+      expect(mode).toBe(0o600);
+      expect(persisted).toContain("[REDACTED:bearer-token:");
+      expect(persisted).not.toContain(bearerValue);
+    } finally {
+      if (previousRunLogBasePath === undefined) delete process.env.RUN_LOG_BASE_PATH;
+      else process.env.RUN_LOG_BASE_PATH = previousRunLogBasePath;
+      resetRunLogStoreForTests();
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

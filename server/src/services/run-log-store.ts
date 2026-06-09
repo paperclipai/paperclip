@@ -1,6 +1,11 @@
 import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import {
+  appendOwnerOnlyPersistenceArtifact,
+  redactPersistenceArtifactText,
+  writeOwnerOnlyPersistenceArtifact,
+} from "@paperclipai/adapter-utils/persistence-redaction";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
@@ -101,7 +106,7 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
       await ensureDir(relDir);
 
       const absPath = resolveWithin(basePath, relPath);
-      await fs.writeFile(absPath, "", "utf8");
+      await writeOwnerOnlyPersistenceArtifact(absPath, "");
 
       return { store: "local_file", logRef: relPath };
     },
@@ -109,13 +114,14 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
     async append(handle, event) {
       if (handle.store !== "local_file") return 0;
       const absPath = resolveWithin(basePath, handle.logRef);
+      const redactedChunk = redactPersistenceArtifactText(event.chunk).text;
       const line = JSON.stringify({
         ts: event.ts,
         stream: event.stream,
-        chunk: event.chunk,
+        chunk: redactedChunk,
       });
       const persisted = `${line}\n`;
-      await fs.appendFile(absPath, persisted, "utf8");
+      await appendOwnerOnlyPersistenceArtifact(absPath, persisted);
       return Buffer.byteLength(persisted, "utf8");
     },
 
@@ -154,4 +160,8 @@ export function getRunLogStore() {
   const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
   cachedStore = createLocalFileRunLogStore(basePath);
   return cachedStore;
+}
+
+export function resetRunLogStoreForTests() {
+  cachedStore = null;
 }
