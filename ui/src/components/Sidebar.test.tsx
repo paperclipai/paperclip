@@ -16,17 +16,22 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/router", () => ({
-  NavLink: ({ to, children, className, ...props }: {
+  // Mirror react-router's NavLink: className and children both accept a render
+  // function receiving { isActive }. SidebarNavItem uses the function-children
+  // form, so a literal {children} render would produce empty links. Also strip
+  // the `state` prop so it isn't leaked onto the DOM node as an attribute.
+  NavLink: ({ to, children, className, state: _state, ...props }: {
     to: string;
-    children: ReactNode;
+    children: ReactNode | ((state: { isActive: boolean }) => ReactNode);
     className?: string | ((state: { isActive: boolean }) => string);
+    state?: unknown;
   }) => (
     <a
       href={to}
       className={typeof className === "function" ? className({ isActive: false }) : className}
       {...props}
     >
-      {children}
+      {typeof children === "function" ? children({ isActive: false }) : children}
     </a>
   ),
 }));
