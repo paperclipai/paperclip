@@ -507,6 +507,60 @@ describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
     );
   });
 
+  it("closes stale accepted bridges with accepted reactions", async () => {
+    const { bridgeId, handoffId } = await insertWaitingWorkflowBridge(db, {
+      runStatus: "running",
+      runError: null,
+    });
+    await db.update(workflowHandoffs).set({
+      status: "approved",
+      responseMarkdown: "Looks good",
+      decidedByUserId: "clickup_bridge",
+      decidedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(eq(workflowHandoffs.id, handoffId));
+
+    mocks.detectClickUpAwaitingHumanBridgeEvents.mockResolvedValueOnce({
+      status: "sent",
+      detail: "ok",
+      events: [{
+        kind: "approval_signal",
+        externalEventId: "reply-1",
+        externalMessageId: "message-1",
+        body: "approve",
+        metadata: { clickupReplyId: "reply-1" },
+      }],
+    });
+
+    const result = await workflowHandoffBridgeService(db).pollActiveBridges();
+
+    expect(result.resolved).toBe(1);
+    expect(result.terminalClosed).toBe(0);
+    expect(mocks.addClickUpChatMessageReaction).toHaveBeenCalledWith(
+      "reply-1",
+      "white_check_mark",
+      expect.objectContaining({ personalToken: "token-123" }),
+    );
+    expect(mocks.addClickUpChatMessageReaction).toHaveBeenCalledWith(
+      "message-1",
+      "white_check_mark",
+      expect.objectContaining({ personalToken: "token-123" }),
+    );
+    expect(mocks.addClickUpChatMessageReaction).not.toHaveBeenCalledWith(
+      expect.any(String),
+      "x",
+      expect.anything(),
+    );
+
+    const [bridge] = await db.select().from(workflowHandoffBridges).where(eq(workflowHandoffBridges.id, bridgeId));
+    expect(bridge?.status).toBe("closed");
+    expect(bridge?.closeOutcome).toBe("approved");
+
+    const [handoff] = await db.select().from(workflowHandoffs).where(eq(workflowHandoffs.id, handoffId));
+    expect(handoff?.status).toBe("approved");
+    expect(handoff?.responseMarkdown).toBe("Looks good");
+  });
+
   it("continues polling terminal bridges when terminal cleanup logging fails", async () => {
     const first = await insertWaitingWorkflowBridge(db, {
       runStatus: "failed",
