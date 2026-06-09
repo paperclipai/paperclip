@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const root = join(__dir, "..");
-const D = (f) => JSON.parse(readFileSync(join(root, "data", f), "utf8"));
+const D = (f) => JSON.parse(readFileSync(join(root, "snapshot", f), "utf8"));
 
 // Assets live in a public bucket (no binaries committed). A committed manifest
 // lists available files; emitted URLs point at the bucket. Base overridable via env.

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
-const D = (f) => JSON.parse(readFileSync(join(__dir, "..", "data", f), "utf8"));
+const D = (f) => JSON.parse(readFileSync(join(__dir, "..", "snapshot", f), "utf8"));
 
 const HUMAN = D("human-cost.json");
 const FINN = D("finn-roi.json");

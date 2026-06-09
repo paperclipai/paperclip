@@ -30,7 +30,7 @@ function buildContext(answers) {
 }
 
 function buildPrompt(answers, slides, ctx) {
-  const facts = readFileSync(join(root, "data", "facts.md"), "utf8");
+  const facts = readFileSync(join(root, "snapshot", "facts.md"), "utf8");
 
   const slideSpec = slides
     .map((s) => `- "${s.id}" (${s.name}): ${s.hint}`)

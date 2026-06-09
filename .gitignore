@@ -11,8 +11,6 @@ drizzle/meta/
 coverage/
 .DS_Store
 data/
-# Pitch-deck Finn content snapshot is real source, not scratch data.
-!server/src/agnb/pitch/data/
 .paperclip/
 .pnpm-store/
 tmp-*
