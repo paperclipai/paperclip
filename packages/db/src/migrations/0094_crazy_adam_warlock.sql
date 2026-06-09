@@ -1,1 +1,0 @@
-CREATE INDEX "heartbeat_runs_company_created_at_idx" ON "heartbeat_runs" USING btree ("company_id","created_at");

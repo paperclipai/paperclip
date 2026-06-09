@@ -25,10 +25,10 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
   if (blockerAttention.reason === "active_child") {
     const count = blockerAttention.coveredBlockerCount;
     if (count === 1 && blockerAttention.sampleBlockerIdentifier) {
-      return `Blocked · waiting on active sub-issue ${blockerAttention.sampleBlockerIdentifier}`;
+      return `Blocked · waiting on active sub-task ${blockerAttention.sampleBlockerIdentifier}`;
     }
-    if (count === 1) return "Blocked · waiting on 1 active sub-issue";
-    return `Blocked · waiting on ${count} active sub-issues`;
+    if (count === 1) return "Blocked · waiting on 1 active sub-task";
+    return `Blocked · waiting on ${count} active sub-tasks`;
   }
 
   if (blockerAttention.reason === "active_dependency") {

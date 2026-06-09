@@ -438,10 +438,10 @@ export function IssueWorkspaceCard({
           {!workspace && (
             <div className="text-muted-foreground">
               {currentSelection === "isolated_workspace"
-                ? "A fresh isolated workspace will be created when this issue runs."
+                ? "A fresh isolated workspace will be created when this task runs."
                 : currentSelection === "reuse_existing"
-                  ? "This issue will reuse an existing workspace when it runs."
-                  : "This issue will use the project default workspace configuration when it runs."}
+                  ? "This task will reuse an existing workspace when it runs."
+                  : "This task will use the project default workspace configuration when it runs."}
             </div>
           )}
           {currentSelection === "reuse_existing" && selectedReusableExecutionWorkspace && (

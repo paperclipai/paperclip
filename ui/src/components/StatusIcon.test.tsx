@@ -23,8 +23,8 @@ describe("StatusIcon", () => {
     );
 
     expect(html).toContain('data-blocker-attention-state="covered"');
-    expect(html).toContain('aria-label="Blocked · waiting on active sub-issue PAP-2"');
-    expect(html).toContain('title="Blocked · waiting on active sub-issue PAP-2"');
+    expect(html).toContain('aria-label="Blocked · waiting on active sub-task PAP-2"');
+    expect(html).toContain('title="Blocked · waiting on active sub-task PAP-2"');
     expect(html).toContain("border-cyan-600");
     expect(html).not.toContain("border-red-600");
     expect(html).not.toContain("border-dashed");

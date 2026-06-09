@@ -9,6 +9,7 @@ import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
+  envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
   type BillingType,
   type EnvironmentLeaseStatus,
@@ -20,6 +21,7 @@ import {
   type ModelProfileKey,
   type RoutineRevisionSnapshotV1,
   type RunLivenessState,
+  type SourceTrustMetadata,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -29,6 +31,7 @@ import {
   activityLog,
   approvals,
   companySkills as companySkillsTable,
+  companies,
   documentAnnotationComments,
   documentAnnotationThreads,
   documentRevisions,
@@ -153,6 +156,16 @@ import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
+  evaluateAgentInvokability,
+  evaluateAgentInvokabilityFromDb,
+  shouldCancelRunsForNonInvokableAgent,
+  type AgentOrgRow,
+} from "./agent-invokability.js";
+import {
+  redactQuarantinedBodyForHigherTrust,
+  sanitizeQuarantinedCommentForHigherTrust,
+} from "./source-trust.js";
+import {
   redactCurrentUserText,
   redactCurrentUserValue,
   type CurrentUserRedactionOptions,
@@ -172,6 +185,11 @@ import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
+import {
+  assertLowTrustRuntimeServicesAllowed,
+  assertLowTrustWorkspaceIsolation,
+} from "./low-trust-runtime-containment.js";
+import { resolveCoreTrustPreset, type TrustPresetResolution } from "./trust-preset-resolver.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -228,6 +246,20 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
+const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
+// Keep this in sync with local adapters that require a git workspace before launch.
+const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
+  "acpx_local",
+  "claude_local",
+  "codex_local",
+  "cursor",
+  "gemini_local",
+  "grok_local",
+  "hermes_local",
+  "opencode_local",
+  "pi_local",
+]);
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -245,6 +277,17 @@ interface MaxTurnContinuationPolicy {
   enabled: boolean;
   maxAttempts: number;
   delayMs: number;
+}
+
+export class WorkspaceValidationFailure extends Error {
+  code = WORKSPACE_VALIDATION_FAILURE_CODE;
+  resultJson: Record<string, unknown>;
+
+  constructor(message: string, resultJson: Record<string, unknown>) {
+    super(message);
+    this.name = "WorkspaceValidationFailure";
+    this.resultJson = resultJson;
+  }
 }
 
 function resolveCodexTransientFallbackMode(attempt: number): CodexTransientFallbackMode {
@@ -335,6 +378,9 @@ type RuntimeConfigSecretResolver = Pick<
   "resolveAdapterConfigForRuntime" | "resolveEnvBindings"
 >;
 
+const LOW_TRUST_SENSITIVE_ENV_KEY_RE =
+  /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
+
 function isPaperclipRuntimeEnvKey(key: string) {
   return key.startsWith("PAPERCLIP_");
 }
@@ -355,6 +401,24 @@ function stripPaperclipRuntimeEnvFromAdapterConfig(config: Record<string, unknow
   };
 }
 
+function assertLowTrustEnvConfigAllowed(envValue: unknown, source: string) {
+  const record = stripPaperclipRuntimeEnvBindings(envValue);
+  if (!record) return;
+  for (const [key, rawBinding] of Object.entries(record)) {
+    const parsed = envBindingSchema.safeParse(rawBinding);
+    if (!parsed.success) continue;
+    const binding = parsed.data;
+    const isPlainBinding =
+      typeof binding === "string" ||
+      (typeof binding === "object" && binding !== null && binding.type === "plain");
+    if (isPlainBinding && LOW_TRUST_SENSITIVE_ENV_KEY_RE.test(key)) {
+      throw new HttpError(422, `Low-trust execution cannot use inline sensitive env value ${source}.${key}`, {
+        code: "low_trust_inline_sensitive_env_denied",
+      });
+    }
+  }
+}
+
 export async function resolveExecutionRunAdapterConfig(input: {
   companyId: string;
   agentId?: string | null;
@@ -366,10 +430,19 @@ export async function resolveExecutionRunAdapterConfig(input: {
   projectEnv: unknown;
   routineEnv?: unknown;
   secretsSvc: RuntimeConfigSecretResolver;
+  trustPreset?: TrustPresetResolution;
 }) {
   const executionRunConfig = stripPaperclipRuntimeEnvFromAdapterConfig(input.executionRunConfig);
   const projectEnv = stripPaperclipRuntimeEnvBindings(input.projectEnv);
   const routineEnv = stripPaperclipRuntimeEnvBindings(input.routineEnv);
+  const lowTrustAllowedBindingIds = input.trustPreset?.kind === "low_trust_review"
+    ? input.trustPreset.boundary.allowedSecretBindingIds ?? []
+    : undefined;
+  if (input.trustPreset?.kind === "low_trust_review") {
+    assertLowTrustEnvConfigAllowed(executionRunConfig.env, "agent.env");
+    assertLowTrustEnvConfigAllowed(projectEnv, "project.env");
+    assertLowTrustEnvConfigAllowed(routineEnv, "routine.env");
+  }
   const { config: resolvedConfig, secretKeys, manifest } = await input.secretsSvc.resolveAdapterConfigForRuntime(
     input.companyId,
     executionRunConfig,
@@ -381,6 +454,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
           actorId: input.agentId,
           issueId: input.issueId ?? null,
           heartbeatRunId: input.heartbeatRunId ?? null,
+          ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
         }
       : undefined,
   );
@@ -396,6 +470,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
               actorId: input.agentId ?? null,
               issueId: input.issueId ?? null,
               heartbeatRunId: input.heartbeatRunId ?? null,
+              ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
             }
           : undefined,
       )
@@ -421,6 +496,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
               actorId: input.agentId ?? null,
               issueId: input.issueId ?? null,
               heartbeatRunId: input.heartbeatRunId ?? null,
+              ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
             }
           : undefined,
       )
@@ -452,7 +528,9 @@ export function extractMentionedSkillIdsFromSources(
   for (const source of sources) {
     if (typeof source !== "string" || source.length === 0) continue;
     for (const skillId of extractSkillMentionIds(source)) {
-      mentionedIds.add(skillId);
+      if (isUuidLike(skillId)) {
+        mentionedIds.add(skillId);
+      }
     }
   }
   return [...mentionedIds];
@@ -522,6 +600,7 @@ async function resolveRunScopedMentionedSkillKeys(input: {
       and(
         eq(issueComments.issueId, input.issueId),
         eq(issueComments.companyId, input.companyId),
+        isNull(issueComments.deletedAt),
       ),
     );
   const mentionedSkillIds = extractMentionedSkillIdsFromSources([
@@ -708,6 +787,79 @@ function buildExecutionWorkspaceConfigSnapshot(
   return hasSnapshot ? snapshot : null;
 }
 
+export function stripHostWorkspaceProvisionForLowTrustSandbox(input: {
+  config: Record<string, unknown>;
+  trustPreset: TrustPresetResolution;
+  selectedEnvironmentDriver: string | null | undefined;
+}): Record<string, unknown> {
+  if (input.trustPreset.kind !== "low_trust_review") return input.config;
+  if (input.selectedEnvironmentDriver !== "sandbox") return input.config;
+
+  const workspaceStrategy = parseObject(input.config.workspaceStrategy);
+  if (typeof workspaceStrategy.provisionCommand !== "string") return input.config;
+
+  const nextWorkspaceStrategy = { ...workspaceStrategy };
+  delete nextWorkspaceStrategy.provisionCommand;
+
+  return {
+    ...input.config,
+    workspaceStrategy: nextWorkspaceStrategy,
+  };
+}
+
+export async function preflightLowTrustWorkspaceIsolation(input: {
+  db?: Db;
+  trustPreset: TrustPresetResolution;
+  isolatedWorkspacesEnabled: boolean;
+  effectiveExecutionWorkspaceMode: string | null | undefined;
+  issue: { companyId: string; id?: string | null; projectId?: string | null } | null;
+  resolveSelectedEnvironmentDriver: () => Promise<string | null | undefined>;
+}): Promise<string | null> {
+  if (input.trustPreset.kind !== "denied" && input.trustPreset.kind !== "low_trust_review") {
+    return null;
+  }
+
+  const selectedEnvironmentDriver =
+    input.trustPreset.kind === "low_trust_review"
+      ? await input.resolveSelectedEnvironmentDriver()
+      : null;
+
+  await assertLowTrustWorkspaceIsolation({
+    db: input.db,
+    resolution: input.trustPreset,
+    isolatedWorkspacesEnabled: input.isolatedWorkspacesEnabled,
+    effectiveExecutionWorkspaceMode: input.effectiveExecutionWorkspaceMode,
+    selectedEnvironmentDriver,
+    issue: input.issue,
+  });
+
+  return selectedEnvironmentDriver ?? null;
+}
+
+export async function resolveWorkspaceAfterLowTrustPreflight<TWorkspace>(input: {
+  db?: Db;
+  trustPreset: TrustPresetResolution;
+  isolatedWorkspacesEnabled: boolean;
+  effectiveExecutionWorkspaceMode: string | null | undefined;
+  issue: { companyId: string; id?: string | null; projectId?: string | null } | null;
+  resolveSelectedEnvironmentDriver: () => Promise<string | null | undefined>;
+  resolveWorkspace: () => Promise<TWorkspace>;
+}): Promise<{ selectedEnvironmentDriver: string | null; workspace: TWorkspace }> {
+  const selectedEnvironmentDriver = await preflightLowTrustWorkspaceIsolation({
+    db: input.db,
+    trustPreset: input.trustPreset,
+    isolatedWorkspacesEnabled: input.isolatedWorkspacesEnabled,
+    effectiveExecutionWorkspaceMode: input.effectiveExecutionWorkspaceMode,
+    issue: input.issue,
+    resolveSelectedEnvironmentDriver: input.resolveSelectedEnvironmentDriver,
+  });
+
+  return {
+    selectedEnvironmentDriver,
+    workspace: await input.resolveWorkspace(),
+  };
+}
+
 function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
   const trimmed = repoUrl?.trim() ?? "";
   if (!trimmed) return null;
@@ -769,6 +921,184 @@ async function ensureManagedProjectWorkspace(input: {
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(`Failed to prepare managed checkout for "${input.repoUrl}" at "${cwd}": ${reason}`);
+  }
+}
+
+function isWorkspaceValidationFailure(error: unknown): error is WorkspaceValidationFailure {
+  return error instanceof WorkspaceValidationFailure;
+}
+
+function isWorkspaceValidationFailedRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
+) {
+  return run?.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE;
+}
+
+async function hasGitMetadata(cwd: string | null | undefined) {
+  const normalized = readNonEmptyString(cwd);
+  if (!normalized) return false;
+  return fs
+    .lstat(path.resolve(normalized, ".git"))
+    .then((entry) => entry.isDirectory() || entry.isFile())
+    .catch(() => false);
+}
+
+function sameResolvedPath(left: string | null | undefined, right: string | null | undefined) {
+  const leftPath = readNonEmptyString(left);
+  const rightPath = readNonEmptyString(right);
+  if (!leftPath || !rightPath) return false;
+  return path.resolve(leftPath) === path.resolve(rightPath);
+}
+
+export async function assertGitSensitiveAdapterWorkspaceValid(input: {
+  adapterType: string;
+  agentId: string;
+  issue: {
+    id: string;
+    identifier: string | null;
+    projectId: string | null;
+    projectWorkspaceId: string | null;
+  } | null;
+  resolvedWorkspace: ResolvedWorkspaceForRun;
+  executionWorkspace: RealizedExecutionWorkspace;
+  persistedExecutionWorkspace: ExecutionWorkspace | null;
+  executionTarget: unknown;
+  environmentDriver?: string | null;
+  leaseMetadata?: unknown;
+}) {
+  if (!GIT_SENSITIVE_LOCAL_ADAPTER_TYPES.has(input.adapterType)) return;
+
+  const executionTargetKind = readNonEmptyString((input.executionTarget as { kind?: unknown } | null)?.kind) ?? "local";
+  if (executionTargetKind !== "local") return;
+
+  const issue = input.issue;
+  if (!issue) return;
+
+  const environmentDriver = readNonEmptyString(input.environmentDriver) ?? "local";
+  const leaseMetadata = parseObject(input.leaseMetadata);
+  const leaseProviderMetadata = parseObject(leaseMetadata.providerMetadata);
+  const leaseRemoteCwd =
+    readNonEmptyString(leaseMetadata.remoteCwd) ??
+    readNonEmptyString(leaseProviderMetadata.remoteCwd);
+
+  const effectiveCwd = readNonEmptyString(input.executionWorkspace.cwd);
+  const persistedCwd = readNonEmptyString(input.persistedExecutionWorkspace?.cwd);
+  const agentFallbackCwd = resolveDefaultAgentWorkspaceDir(input.agentId);
+  const workspaceExpectation =
+    Boolean(issue.projectWorkspaceId) ||
+    Boolean(input.resolvedWorkspace.workspaceId) ||
+    input.executionWorkspace.strategy === "git_worktree";
+
+  const fail = (reason: string, message: string, extra: Record<string, unknown> = {}) => {
+    throw new WorkspaceValidationFailure(message, {
+      workspaceValidation: {
+        reason,
+        adapterType: input.adapterType,
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        issueProjectId: issue.projectId,
+        issueProjectWorkspaceId: issue.projectWorkspaceId,
+        resolvedWorkspaceSource: input.resolvedWorkspace.source,
+        resolvedProjectId: input.resolvedWorkspace.projectId,
+        resolvedProjectWorkspaceId: input.resolvedWorkspace.workspaceId,
+        resolvedWorkspaceCwd: input.resolvedWorkspace.cwd,
+        executionWorkspaceCwd: effectiveCwd,
+        executionWorkspaceStrategy: input.executionWorkspace.strategy,
+        executionWorkspaceProjectId: input.executionWorkspace.projectId,
+        executionWorkspaceProjectWorkspaceId: input.executionWorkspace.workspaceId,
+        persistedExecutionWorkspaceId: input.persistedExecutionWorkspace?.id ?? null,
+        persistedWorkspaceCwd: persistedCwd,
+        persistedWorkspaceStrategy: input.persistedExecutionWorkspace?.strategyType ?? null,
+        persistedProjectId: input.persistedExecutionWorkspace?.projectId ?? null,
+        persistedProjectWorkspaceId: input.persistedExecutionWorkspace?.projectWorkspaceId ?? null,
+        persistedProviderRef: input.persistedExecutionWorkspace?.providerRef ?? null,
+        ...extra,
+      },
+    });
+  };
+
+  if (issue.projectWorkspaceId && !issue.projectId) {
+    fail(
+      "missing_project_id",
+      `Issue ${issue.identifier ?? issue.id} is linked to a project workspace but has no project id; refusing to launch ${input.adapterType} from fallback cwd.`,
+    );
+  }
+
+  if (!input.executionTarget && environmentDriver !== "local" && leaseRemoteCwd) return;
+
+  if (workspaceExpectation && !input.persistedExecutionWorkspace) {
+    fail(
+      "missing_persisted_execution_workspace",
+      `Issue ${issue.identifier ?? issue.id} requires a project execution workspace, but none was persisted before adapter launch.`,
+    );
+  }
+
+  if (workspaceExpectation && !effectiveCwd) {
+    fail(
+      "missing_effective_cwd",
+      `Issue ${issue.identifier ?? issue.id} expected a project workspace, but no adapter cwd was resolved before launch.`,
+    );
+  }
+
+  if (
+    input.persistedExecutionWorkspace &&
+    effectiveCwd &&
+    persistedCwd &&
+    !sameResolvedPath(effectiveCwd, persistedCwd)
+  ) {
+    fail(
+      "persisted_cwd_mismatch",
+      `Issue ${issue.identifier ?? issue.id} resolved adapter cwd "${effectiveCwd}" but persisted execution workspace cwd is "${persistedCwd}".`,
+    );
+  }
+
+  const expectedProjectWorkspaceId = issue.projectWorkspaceId ?? input.resolvedWorkspace.workspaceId ?? null;
+  if (
+    expectedProjectWorkspaceId &&
+    input.persistedExecutionWorkspace &&
+    !input.persistedExecutionWorkspace.projectWorkspaceId
+  ) {
+    fail(
+      "persisted_workspace_missing_project_workspace_id",
+      `Issue ${issue.identifier ?? issue.id} expected project workspace "${expectedProjectWorkspaceId}" but persisted execution workspace has no project workspace id.`,
+    );
+  }
+
+  if (
+    expectedProjectWorkspaceId &&
+    input.persistedExecutionWorkspace?.projectWorkspaceId &&
+    input.persistedExecutionWorkspace.projectWorkspaceId !== expectedProjectWorkspaceId
+  ) {
+    fail(
+      "project_workspace_mismatch",
+      `Issue ${issue.identifier ?? issue.id} expected project workspace "${expectedProjectWorkspaceId}" but persisted execution workspace points at "${input.persistedExecutionWorkspace.projectWorkspaceId}".`,
+    );
+  }
+
+  if (workspaceExpectation && effectiveCwd && sameResolvedPath(effectiveCwd, agentFallbackCwd)) {
+    fail(
+      "fallback_agent_home_cwd",
+      `Issue ${issue.identifier ?? issue.id} expected a project workspace, but ${input.adapterType} would launch from agent fallback cwd "${effectiveCwd}".`,
+    );
+  }
+
+  if (
+    input.persistedExecutionWorkspace?.strategyType === "git_worktree" &&
+    input.persistedExecutionWorkspace.providerRef &&
+    effectiveCwd &&
+    !sameResolvedPath(effectiveCwd, input.persistedExecutionWorkspace.providerRef)
+  ) {
+    fail(
+      "git_worktree_provider_ref_mismatch",
+      `Issue ${issue.identifier ?? issue.id} expected git worktree "${input.persistedExecutionWorkspace.providerRef}" but adapter cwd resolved to "${effectiveCwd}".`,
+    );
+  }
+
+  if (workspaceExpectation && effectiveCwd && !await hasGitMetadata(effectiveCwd)) {
+    fail(
+      "missing_git_metadata",
+      `Issue ${issue.identifier ?? issue.id} expected a git workspace for ${input.adapterType}, but "${effectiveCwd}" has no .git metadata.`,
+    );
   }
 }
 
@@ -1425,25 +1755,46 @@ type ResumeSessionRow = {
 };
 
 export function buildExplicitResumeSessionOverride(input: {
+  adapterType?: string | null;
   resumeFromRunId: string;
   resumeRunSessionIdBefore: string | null;
   resumeRunSessionIdAfter: string | null;
+  resumeRunSessionParams?: Record<string, unknown> | null;
   taskSession: ResumeSessionRow | null;
   sessionCodec: AdapterSessionCodec;
 }) {
-  const desiredDisplayId = truncateDisplayId(
-    input.resumeRunSessionIdAfter ?? input.resumeRunSessionIdBefore,
-  );
-  const taskSessionParams = normalizeSessionParams(
+  const resumeRunSessionIdAfter = truncateDisplayId(input.resumeRunSessionIdAfter);
+  const resumeRunSessionIdBefore = truncateDisplayId(input.resumeRunSessionIdBefore);
+  const desiredDisplayId = requiresCanonicalSessionIds(input.adapterType)
+    ? isCanonicalSessionIdForAdapter(input.adapterType, resumeRunSessionIdAfter)
+      ? resumeRunSessionIdAfter
+      : isCanonicalSessionIdForAdapter(input.adapterType, resumeRunSessionIdBefore)
+        ? resumeRunSessionIdBefore
+        : null
+    : resumeRunSessionIdAfter ?? resumeRunSessionIdBefore;
+  const runSessionParams = requiresCanonicalSessionIds(input.adapterType)
+    ? normalizeResumeParamsForAdapter(
+        input.adapterType,
+        input.sessionCodec.deserialize(input.resumeRunSessionParams ?? null),
+      )
+    : null;
+  const runSessionDisplayId = truncateDisplayId(readNonEmptyString(runSessionParams?.sessionId));
+  const taskSessionParams = normalizeResumeParamsForAdapter(
+    input.adapterType,
     input.sessionCodec.deserialize(input.taskSession?.sessionParamsJson ?? null),
   );
+  const taskSessionRawDisplayId = input.taskSession?.sessionDisplayId ?? null;
   const taskSessionDisplayId = truncateDisplayId(
-    input.taskSession?.sessionDisplayId ??
-      (input.sessionCodec.getDisplayId ? input.sessionCodec.getDisplayId(taskSessionParams) : null) ??
-      readNonEmptyString(taskSessionParams?.sessionId),
+    requiresCanonicalSessionIds(input.adapterType)
+      ? readNonEmptyString(taskSessionParams?.sessionId) ??
+        (isCanonicalSessionIdForAdapter(input.adapterType, taskSessionRawDisplayId) ? taskSessionRawDisplayId : null)
+      : taskSessionRawDisplayId ??
+        (input.sessionCodec.getDisplayId ? input.sessionCodec.getDisplayId(taskSessionParams) : null) ??
+        readNonEmptyString(taskSessionParams?.sessionId),
   );
   const canReuseTaskSessionParams =
     input.taskSession != null &&
+    (!requiresCanonicalSessionIds(input.adapterType) || taskSessionParams != null) &&
     (
       input.taskSession.lastRunId === input.resumeFromRunId ||
       (!!desiredDisplayId && taskSessionDisplayId === desiredDisplayId)
@@ -1451,10 +1802,16 @@ export function buildExplicitResumeSessionOverride(input: {
   const sessionParams =
     canReuseTaskSessionParams
       ? taskSessionParams
-      : desiredDisplayId
-        ? { sessionId: desiredDisplayId }
-        : null;
-  const sessionDisplayId = desiredDisplayId ?? (canReuseTaskSessionParams ? taskSessionDisplayId : null);
+      : runSessionParams
+        ? runSessionParams
+        : desiredDisplayId
+          ? { sessionId: desiredDisplayId }
+          : null;
+  const sessionDisplayId = canReuseTaskSessionParams
+    ? taskSessionDisplayId
+    : runSessionParams
+      ? runSessionDisplayId
+      : desiredDisplayId;
 
   if (!sessionDisplayId && !sessionParams) return null;
   return {
@@ -1940,6 +2297,20 @@ function normalizeInteractionContinuationWakeContext(
   clearInteractionContinuationWakeContext(contextSnapshot);
 }
 
+function isAcceptedPlanContinuationWakeContext(
+  contextSnapshot: Record<string, unknown>,
+  issueWorkMode?: string | null,
+) {
+  return (
+    readNonEmptyString(contextSnapshot.workspaceRefreshReason) === "accepted_plan_confirmation" ||
+    (
+      issueWorkMode === "planning" &&
+      readNonEmptyString(contextSnapshot.interactionKind) === "request_confirmation" &&
+      readNonEmptyString(contextSnapshot.interactionStatus) === "accepted"
+    )
+  );
+}
+
 type AcceptedPlanWakeRoutingDecision = {
   otherActiveClaimIssueId: string;
   otherActiveClaimIdentifier: string | null;
@@ -2018,7 +2389,7 @@ export function mergeCoalescedContextSnapshot(
   return merged;
 }
 
-async function buildPaperclipWakePayload(input: {
+export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
   contextSnapshot: Record<string, unknown>;
@@ -2027,6 +2398,7 @@ async function buildPaperclipWakePayload(input: {
         key: string;
         title: string | null;
         body: string;
+        sourceTrust?: SourceTrustMetadata | null;
         updatedAt: Date;
       }
     | null;
@@ -2038,11 +2410,14 @@ async function buildPaperclipWakePayload(input: {
         status: string;
         priority: string;
         workMode: string;
+        projectId?: string | null;
+        executionPolicy?: unknown;
       }
     | null;
+  exposeLowTrustRaw?: boolean;
 }) {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
-  const commentIds = extractWakeCommentIds(input.contextSnapshot);
+  let commentIds = extractWakeCommentIds(input.contextSnapshot);
   const annotationCommentId = readNonEmptyString(input.contextSnapshot.annotationCommentId);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const continuationSummary = input.continuationSummary ?? null;
@@ -2062,6 +2437,28 @@ async function buildPaperclipWakePayload(input: {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
+  let acceptedPlanCommentWindowTruncated = false;
+  const acceptedPlanContinuationWake = isAcceptedPlanContinuationWakeContext(
+    input.contextSnapshot,
+    issueSummary?.workMode,
+  );
+  if (commentIds.length === 0 && acceptedPlanContinuationWake && issueSummary?.id) {
+    const recentPlanCommentRows = await input.db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(and(
+        eq(issueComments.companyId, input.companyId),
+        eq(issueComments.issueId, issueSummary.id),
+        isNull(issueComments.deletedAt),
+      ))
+      .orderBy(desc(issueComments.createdAt))
+      .limit(MAX_INLINE_WAKE_COMMENTS + 1);
+    acceptedPlanCommentWindowTruncated = recentPlanCommentRows.length > MAX_INLINE_WAKE_COMMENTS;
+    commentIds = recentPlanCommentRows
+      .slice(0, MAX_INLINE_WAKE_COMMENTS)
+      .reverse()
+      .map((comment) => comment.id);
+  }
   if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
 
   const commentRows =
@@ -2077,6 +2474,12 @@ async function buildPaperclipWakePayload(input: {
             authorUserId: issueComments.authorUserId,
             presentation: issueComments.presentation,
             metadata: issueComments.metadata,
+            deletedAt: issueComments.deletedAt,
+            deletedByType: issueComments.deletedByType,
+            deletedByAgentId: issueComments.deletedByAgentId,
+            deletedByUserId: issueComments.deletedByUserId,
+            deletedByRunId: issueComments.deletedByRunId,
+            sourceTrust: issueComments.sourceTrust,
             createdAt: issueComments.createdAt,
           })
           .from(issueComments)
@@ -2090,8 +2493,12 @@ async function buildPaperclipWakePayload(input: {
   const commentsById = new Map(commentRows.map((comment) => [comment.id, comment]));
   const comments: Array<Record<string, unknown>> = [];
   let remainingBodyChars = MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS;
-  let truncated = false;
+  let truncated = acceptedPlanCommentWindowTruncated;
   let missingCommentCount = 0;
+  const safeContinuationSummary =
+    continuationSummary && !input.exposeLowTrustRaw
+      ? redactQuarantinedBodyForHigherTrust(continuationSummary)
+      : continuationSummary;
 
   for (const commentId of commentIds) {
     const row = commentsById.get(commentId);
@@ -2105,7 +2512,9 @@ async function buildPaperclipWakePayload(input: {
       break;
     }
 
-    const fullBody = row.body;
+    const deletedAt = row.deletedAt ?? null;
+    const safeRow = deletedAt || input.exposeLowTrustRaw ? row : sanitizeQuarantinedCommentForHigherTrust(row);
+    const fullBody = deletedAt ? "" : safeRow.body;
     const allowedBodyChars = Math.min(MAX_INLINE_WAKE_COMMENT_BODY_CHARS, remainingBodyChars);
     if (allowedBodyChars <= 0) {
       truncated = true;
@@ -2123,8 +2532,14 @@ async function buildPaperclipWakePayload(input: {
       authorType: row.authorType ?? (row.authorAgentId ? "agent" : row.authorUserId ? "user" : "system"),
       body,
       bodyTruncated,
-      presentation: row.presentation ?? null,
-      metadata: row.metadata ?? null,
+      presentation: deletedAt ? null : safeRow.presentation ?? null,
+      metadata: deletedAt ? null : safeRow.metadata ?? null,
+      deletedAt: deletedAt ? deletedAt.toISOString() : null,
+      deletedByType: deletedAt ? row.deletedByType ?? null : null,
+      deletedByAgentId: deletedAt ? row.deletedByAgentId ?? null : null,
+      deletedByUserId: deletedAt ? row.deletedByUserId ?? null : null,
+      deletedByRunId: deletedAt ? row.deletedByRunId ?? null : null,
+      sourceTrust: row.sourceTrust ?? null,
       createdAt: row.createdAt.toISOString(),
       author: row.authorAgentId
         ? { type: "agent", id: row.authorAgentId }
@@ -2216,6 +2631,9 @@ async function buildPaperclipWakePayload(input: {
       : null,
     interactionKind: readNonEmptyString(input.contextSnapshot.interactionKind),
     interactionStatus: readNonEmptyString(input.contextSnapshot.interactionStatus),
+    commentContextSource: acceptedPlanContinuationWake && commentIds.length > 0
+      ? "accepted_plan_confirmation"
+      : null,
     checkedOutByHarness: input.contextSnapshot[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true,
     dependencyBlockedInteraction: input.contextSnapshot.dependencyBlockedInteraction === true,
     treeHoldInteraction: input.contextSnapshot.treeHoldInteraction === true,
@@ -2227,16 +2645,17 @@ async function buildPaperclipWakePayload(input: {
       ? input.contextSnapshot.unresolvedBlockerSummaries
       : [],
     executionStage: Object.keys(executionStage).length > 0 ? executionStage : null,
-    continuationSummary: continuationSummary
+    continuationSummary: safeContinuationSummary
       ? {
-          key: continuationSummary.key,
-          title: continuationSummary.title,
+          key: safeContinuationSummary.key,
+          title: safeContinuationSummary.title,
           body:
-            continuationSummary.body.length > 4_000
-              ? continuationSummary.body.slice(0, 4_000)
-              : continuationSummary.body,
-          bodyTruncated: continuationSummary.body.length > 4_000,
-          updatedAt: continuationSummary.updatedAt.toISOString(),
+            safeContinuationSummary.body.length > 4_000
+              ? safeContinuationSummary.body.slice(0, 4_000)
+              : safeContinuationSummary.body,
+          bodyTruncated: safeContinuationSummary.body.length > 4_000,
+          sourceTrust: safeContinuationSummary.sourceTrust ?? null,
+          updatedAt: safeContinuationSummary.updatedAt.toISOString(),
         }
       : null,
     commentIds,
@@ -2289,6 +2708,11 @@ export function buildPaperclipTaskMarkdown(input: {
     kind?: string | null;
     status?: string | null;
   } | null;
+  acceptedPlanComments?: Array<{
+    id?: string | null;
+    authorType?: string | null;
+    body?: string | null;
+  }> | null;
   acceptedPlanContinuation?: boolean;
 }) {
   const quoteTaskScalar = (value: string) => JSON.stringify(value);
@@ -2348,6 +2772,28 @@ export function buildPaperclipTaskMarkdown(input: {
   }
   if (wakeComment?.body.trim()) {
     lines.push("", "Latest wake comment:", fenceTaskText(wakeComment.body.trim()));
+  }
+  if (acceptedPlanContinuation) {
+    const acceptedPlanComments = (input.acceptedPlanComments ?? [])
+      .map((comment) => ({
+        ...comment,
+        body: comment.body?.trim() ?? "",
+      }))
+      .filter((comment) => comment.body.length > 0)
+      .slice(0, MAX_INLINE_WAKE_COMMENTS);
+    if (acceptedPlanComments.length > 0) {
+      lines.push("", "Comments included with the confirmed plan:");
+      for (const [index, comment] of acceptedPlanComments.entries()) {
+        const authorType = comment.authorType?.trim();
+        const commentId = comment.id?.trim();
+        const labelParts = [
+          `Comment ${index + 1}`,
+          ...(authorType ? [authorType] : []),
+          ...(commentId ? [commentId] : []),
+        ];
+        lines.push("", `${labelParts.join(" - ")}:`, fenceTaskText(comment.body));
+      }
+    }
   }
   lines.push("", "Use this task context as the current assignment.");
   return lines.join("\n");
@@ -2447,14 +2893,45 @@ function normalizeSessionParams(params: Record<string, unknown> | null | undefin
   return Object.keys(params).length > 0 ? params : null;
 }
 
-function resolveNextSessionState(input: {
+type RunSessionOutcome = "succeeded" | "failed" | "cancelled" | "timed_out";
+
+const HERMES_ADAPTER_TYPE = "hermes_local";
+const HERMES_SESSION_ID_REGEX = /^(?:\d{8}_\d{6}_[A-Za-z0-9_-]{4,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
+
+function requiresCanonicalSessionIds(adapterType: string | null | undefined) {
+  return adapterType === HERMES_ADAPTER_TYPE;
+}
+
+function isCanonicalSessionIdForAdapter(
+  adapterType: string | null | undefined,
+  sessionId: string | null | undefined,
+) {
+  if (!sessionId) return false;
+  if (!requiresCanonicalSessionIds(adapterType)) return true;
+  return HERMES_SESSION_ID_REGEX.test(sessionId);
+}
+
+function normalizeResumeParamsForAdapter(
+  adapterType: string | null | undefined,
+  params: Record<string, unknown> | null | undefined,
+) {
+  const normalized = normalizeSessionParams(params);
+  if (!normalized) return null;
+  if (!requiresCanonicalSessionIds(adapterType)) return normalized;
+  const sessionId = readNonEmptyString(normalized.sessionId);
+  return isCanonicalSessionIdForAdapter(adapterType, sessionId) ? normalized : null;
+}
+
+export function resolveNextSessionState(input: {
+  adapterType?: string | null;
   codec: AdapterSessionCodec;
   adapterResult: AdapterExecutionResult;
+  outcome: RunSessionOutcome;
   previousParams: Record<string, unknown> | null;
   previousDisplayId: string | null;
   previousLegacySessionId: string | null;
 }) {
-  const { codec, adapterResult, previousParams, previousDisplayId, previousLegacySessionId } = input;
+  const { adapterType, codec, adapterResult, previousParams, previousDisplayId, previousLegacySessionId } = input;
 
   if (adapterResult.clearSession) {
     return {
@@ -2464,38 +2941,109 @@ function resolveNextSessionState(input: {
     };
   }
 
+  if (!requiresCanonicalSessionIds(adapterType)) {
+    const explicitParams = adapterResult.sessionParams;
+    const hasExplicitParams = adapterResult.sessionParams !== undefined;
+    const hasExplicitSessionId = adapterResult.sessionId !== undefined;
+    const explicitSessionId = readNonEmptyString(adapterResult.sessionId);
+    const hasExplicitDisplay = adapterResult.sessionDisplayId !== undefined;
+    const explicitDisplayId = readNonEmptyString(adapterResult.sessionDisplayId);
+    const shouldUsePrevious = !hasExplicitParams && !hasExplicitSessionId && !hasExplicitDisplay;
+
+    const candidateParams =
+      hasExplicitParams
+        ? explicitParams
+        : hasExplicitSessionId
+          ? (explicitSessionId ? { sessionId: explicitSessionId } : null)
+          : previousParams;
+
+    const serialized = normalizeSessionParams(codec.serialize(normalizeSessionParams(candidateParams) ?? null));
+    const deserialized = normalizeSessionParams(codec.deserialize(serialized));
+
+    const displayId = truncateDisplayId(
+      explicitDisplayId ??
+        (codec.getDisplayId ? codec.getDisplayId(deserialized) : null) ??
+        readNonEmptyString(deserialized?.sessionId) ??
+        (shouldUsePrevious ? previousDisplayId : null) ??
+        explicitSessionId ??
+        (shouldUsePrevious ? previousLegacySessionId : null),
+    );
+
+    const legacySessionId =
+      explicitSessionId ??
+      readNonEmptyString(deserialized?.sessionId) ??
+      displayId ??
+      (shouldUsePrevious ? previousLegacySessionId : null);
+
+    return {
+      params: serialized,
+      displayId,
+      legacySessionId,
+    };
+  }
+
+  const previousSerializedParams = normalizeResumeParamsForAdapter(
+    adapterType,
+    codec.serialize(normalizeResumeParamsForAdapter(adapterType, previousParams)),
+  );
+  const validPreviousDisplayId = isCanonicalSessionIdForAdapter(adapterType, previousDisplayId)
+    ? previousDisplayId
+    : null;
+  const validPreviousLegacySessionId = isCanonicalSessionIdForAdapter(adapterType, previousLegacySessionId)
+    ? previousLegacySessionId
+    : null;
+  const previousState = () => {
+    const displayId = truncateDisplayId(
+      readNonEmptyString(previousSerializedParams?.sessionId) ??
+        validPreviousDisplayId ??
+        validPreviousLegacySessionId,
+    );
+    return {
+      params: previousSerializedParams,
+      displayId,
+      legacySessionId: readNonEmptyString(previousSerializedParams?.sessionId) ?? displayId ?? validPreviousLegacySessionId,
+    };
+  };
+
+  if (input.outcome !== "succeeded") {
+    return previousState();
+  }
+
   const explicitParams = adapterResult.sessionParams;
   const hasExplicitParams = adapterResult.sessionParams !== undefined;
-  const hasExplicitSessionId = adapterResult.sessionId !== undefined;
   const explicitSessionId = readNonEmptyString(adapterResult.sessionId);
-  const hasExplicitDisplay = adapterResult.sessionDisplayId !== undefined;
+  const validExplicitSessionId = isCanonicalSessionIdForAdapter(adapterType, explicitSessionId)
+    ? explicitSessionId
+    : null;
   const explicitDisplayId = readNonEmptyString(adapterResult.sessionDisplayId);
-  const shouldUsePrevious = !hasExplicitParams && !hasExplicitSessionId && !hasExplicitDisplay;
+  const validExplicitDisplayId = isCanonicalSessionIdForAdapter(adapterType, explicitDisplayId)
+    ? explicitDisplayId
+    : null;
+  const explicitSerializedParams = hasExplicitParams
+    ? normalizeResumeParamsForAdapter(
+        adapterType,
+        codec.serialize(normalizeSessionParams(explicitParams) ?? null),
+      )
+    : null;
+  const explicitCanonicalSessionId =
+    readNonEmptyString(explicitSerializedParams?.sessionId) ??
+    validExplicitSessionId ??
+    validExplicitDisplayId;
 
-  const candidateParams =
-    hasExplicitParams
-      ? explicitParams
-      : hasExplicitSessionId
-        ? (explicitSessionId ? { sessionId: explicitSessionId } : null)
-        : previousParams;
+  if (!explicitCanonicalSessionId) {
+    return previousState();
+  }
 
-  const serialized = normalizeSessionParams(codec.serialize(normalizeSessionParams(candidateParams) ?? null));
-  const deserialized = normalizeSessionParams(codec.deserialize(serialized));
-
-  const displayId = truncateDisplayId(
-    explicitDisplayId ??
-      (codec.getDisplayId ? codec.getDisplayId(deserialized) : null) ??
-      readNonEmptyString(deserialized?.sessionId) ??
-      (shouldUsePrevious ? previousDisplayId : null) ??
-      explicitSessionId ??
-      (shouldUsePrevious ? previousLegacySessionId : null),
+  const serialized = normalizeResumeParamsForAdapter(
+    adapterType,
+    codec.serialize({ sessionId: explicitCanonicalSessionId }),
   );
-
-  const legacySessionId =
-    explicitSessionId ??
-    readNonEmptyString(deserialized?.sessionId) ??
-    displayId ??
-    (shouldUsePrevious ? previousLegacySessionId : null);
+  const displayId = truncateDisplayId(
+    readNonEmptyString(serialized?.sessionId) ??
+      (codec.getDisplayId ? codec.getDisplayId(serialized) : null) ??
+      explicitCanonicalSessionId,
+  );
+  const legacySessionId = readNonEmptyString(serialized?.sessionId) ?? explicitCanonicalSessionId;
 
   return {
     params: serialized,
@@ -2593,6 +3141,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  async function getAgentInvokability(agent: typeof agents.$inferSelect | null | undefined) {
+    return evaluateAgentInvokabilityFromDb(db, agent);
+  }
+
+  function toAgentOrgRow(agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "reportsTo" | "status">): AgentOrgRow {
+    return {
+      id: agent.id,
+      companyId: agent.companyId,
+      name: agent.name,
+      reportsTo: agent.reportsTo,
+      status: agent.status,
+    };
+  }
+
+  async function listCompanyAgentOrgRows(companyId: string): Promise<AgentOrgRow[]> {
+    return db
+      .select({
+        id: agents.id,
+        companyId: agents.companyId,
+        name: agents.name,
+        reportsTo: agents.reportsTo,
+        status: agents.status,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+  }
+
+  function groupAgentOrgRowsByCompany(agentRows: AgentOrgRow[]) {
+    const byCompany = new Map<string, AgentOrgRow[]>();
+    for (const agent of agentRows) {
+      const companyAgents = byCompany.get(agent.companyId);
+      if (companyAgents) {
+        companyAgents.push(agent);
+      } else {
+        byCompany.set(agent.companyId, [agent]);
+      }
+    }
+    return byCompany;
+  }
+
   async function getRun(runId: string, opts?: { unsafeFullResultJson?: boolean }) {
     const safeForLegacyEncoding = !opts?.unsafeFullResultJson && await hasUnsafeTextProjectionDatabase();
     return db
@@ -2632,6 +3220,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionWorkspacePreference: issues.executionWorkspacePreference,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+        executionPolicy: issues.executionPolicy,
         executionWorkspaceSettings: issues.executionWorkspaceSettings,
         originKind: issues.originKind,
         originId: issues.originId,
@@ -3356,8 +3945,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const dueMonitors = await db
       .select(issueMonitorDispatchColumns)
       .from(issues)
+      .innerJoin(companies, eq(companies.id, issues.companyId))
       .where(
         and(
+          eq(companies.status, "active"),
           sql`${issues.monitorNextCheckAt} is not null`,
           lte(issues.monitorNextCheckAt, now),
           isNull(issues.assigneeUserId),
@@ -3629,6 +4220,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .select({
         id: heartbeatRuns.id,
         contextSnapshot: heartbeatRuns.contextSnapshot,
+        resultJson: heartbeatRuns.resultJson,
         sessionIdBefore: heartbeatRuns.sessionIdBefore,
         sessionIdAfter: heartbeatRuns.sessionIdAfter,
       })
@@ -3649,10 +4241,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, resumeTaskKey)
       : null;
     const sessionCodec = getAdapterSessionCodec(agent.adapterType);
+    const resumeRunResult = parseObject(resumeRun.resultJson);
+    const resumeRunSessionId = requiresCanonicalSessionIds(agent.adapterType)
+      ? readNonEmptyString(resumeRunResult.sessionId) ?? readNonEmptyString(resumeRunResult.session_id)
+      : null;
     const sessionOverride = buildExplicitResumeSessionOverride({
+      adapterType: agent.adapterType,
       resumeFromRunId,
       resumeRunSessionIdBefore: resumeRun.sessionIdBefore,
       resumeRunSessionIdAfter: resumeRun.sessionIdAfter,
+      resumeRunSessionParams: resumeRunSessionId ? { sessionId: resumeRunSessionId } : null,
       taskSession: resumeTaskSession,
       sessionCodec,
     });
@@ -4668,6 +5266,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     issueId: string,
   ) {
+    const invokability = await getAgentInvokability(agent);
+    if (!invokability.invokable) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Missing-comment retry suppressed because the agent is not invokable",
+        payload: {
+          reason: invokability.reason,
+          invalidOrgChain: invokability.invalidOrgChain,
+          ...invokability.details,
+        },
+      });
+      return null;
+    }
+
     const contextSnapshot = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
@@ -4888,6 +5502,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     now: Date,
   ) {
+    const invokability = await getAgentInvokability(agent);
+    if (!invokability.invokable) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Process-loss retry suppressed because the agent is not invokable",
+        payload: {
+          reason: invokability.reason,
+          invalidOrgChain: invokability.invalidOrgChain,
+          ...invokability.details,
+        },
+      });
+      await releaseIssueExecutionAndPromote(run);
+      return null;
+    }
+
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
@@ -5038,15 +5669,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+    const agentInvokability = await getAgentInvokability(agent);
+    if (!agentInvokability.invokable) {
       return {
         allowed: false,
         reason: "Scheduled retry suppressed because the agent is not invokable",
         errorCode: "agent_not_invokable",
         issueId,
         details: {
-          agentId: agent.id,
-          agentStatus: agent.status,
+          ...agentInvokability.details,
+          invalidOrgChain: agentInvokability.invalidOrgChain,
         },
       };
     }
@@ -5418,6 +6050,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         maxAttempts,
       };
     }
+
+    if (retryReason !== MAX_TURN_CONTINUATION_RETRY_REASON) {
+      const invokability = await getAgentInvokability(agent);
+      if (!invokability.invokable) {
+        const contextSnapshot = parseObject(run.contextSnapshot);
+        const issueId = readNonEmptyString(contextSnapshot.issueId);
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "Scheduled retry suppressed because the agent is not invokable",
+          payload: {
+            retryReason,
+            scheduledRetryAttempt: nextAttempt,
+            maxAttempts,
+            reason: invokability.reason,
+            invalidOrgChain: invokability.invalidOrgChain,
+            ...invokability.details,
+          },
+        });
+        return {
+          outcome: "not_scheduled" as const,
+          reason: "Scheduled retry suppressed because the agent is not invokable",
+          errorCode: "agent_not_invokable" as const,
+          issueId,
+        };
+      }
+    }
+
     const schedule =
       transientRetryNotBefore && transientRetryNotBefore.getTime() > baseSchedule.dueAt.getTime()
         ? {
@@ -6044,15 +6705,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
-  async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
+  async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
     if (!agent) {
       await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
       return null;
     }
-    if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
-      await cancelRunInternal(run.id, "Cancelled because the agent is not invokable");
+    const invokability = companyAgents
+      ? evaluateAgentInvokability(toAgentOrgRow(agent), companyAgents)
+      : await getAgentInvokability(agent);
+    if (!invokability.invokable) {
+      await cancelRunInternal(run.id, `Cancelled because the agent is not invokable: ${invokability.reason}`);
       return null;
     }
 
@@ -6570,6 +7234,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             eq(issueComments.companyId, run.companyId),
             eq(issueComments.issueId, contextIssueId),
             eq(issueComments.createdByRunId, run.id),
+            isNull(issueComments.deletedAt),
           ),
         )
       : [{ count: 0, latestAt: null }];
@@ -6844,7 +7509,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.status, "queued"));
+      .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
+      .where(and(
+        eq(heartbeatRuns.status, "queued"),
+        eq(companies.status, "active"),
+      ));
 
     const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
     for (const agentId of agentIds) {
@@ -6958,7 +7627,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
-      if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+      const invokability = await getAgentInvokability(agent);
+      if (!invokability.invokable) {
+        if (shouldCancelRunsForNonInvokableAgent(invokability)) {
+          await cancelActiveForAgentInternal(agentId, `Cancelled because the agent is not invokable: ${invokability.reason}`);
+        }
         return [];
       }
       const policy = parseHeartbeatPolicy(agent);
@@ -6992,6 +7665,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : sql`false`,
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
+      const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
       const prioritizedRuns = [...queuedRuns].sort((left, right) => {
         const leftIssueId = readNonEmptyString(parseObject(left.contextSnapshot).issueId);
         const rightIssueId = readNonEmptyString(parseObject(right.contextSnapshot).issueId);
@@ -7013,7 +7687,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
-        const claimed = await claimQueuedRun(queuedRun);
+        const claimed = await claimQueuedRun(queuedRun, companyAgents);
         if (claimed) claimedRuns.push(claimed);
       }
       if (claimedRuns.length === 0) return [];
@@ -7101,6 +7775,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               authorUserId: issueComments.authorUserId,
               presentation: issueComments.presentation,
               metadata: issueComments.metadata,
+              deletedAt: issueComments.deletedAt,
+              deletedByType: issueComments.deletedByType,
+              deletedByAgentId: issueComments.deletedByAgentId,
+              deletedByUserId: issueComments.deletedByUserId,
+              deletedByRunId: issueComments.deletedByRunId,
+              sourceTrust: issueComments.sourceTrust,
             })
             .from(issueComments)
             .where(and(
@@ -7108,7 +7788,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               eq(issueComments.issueId, issueContext.id),
               eq(issueComments.companyId, agent.companyId),
             ))
-            .then((rows) => rows[0] ?? null)
+            .then((rows) => {
+              const row = rows[0] ?? null;
+              return row?.deletedAt
+                ? {
+                    ...row,
+                    body: "",
+                    presentation: null,
+                    metadata: null,
+                  }
+                : row;
+            })
         : null;
     const issueAssigneeOverrides =
       issueContext && issueContext.assigneeAgentId === agent.id
@@ -7139,13 +7829,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           companyId: agent.companyId,
           agentId: agent.id,
           issueId,
-          acceptedPlanContinuationWake:
-            readNonEmptyString(context.workspaceRefreshReason) === "accepted_plan_confirmation"
-            || (
-              issueContext.workMode === "planning"
-              && readNonEmptyString(context.interactionKind) === "request_confirmation"
-              && readNonEmptyString(context.interactionStatus) === "accepted"
-            ),
+          acceptedPlanContinuationWake: isAcceptedPlanContinuationWakeContext(context, issueContext.workMode),
           contextSnapshot: context,
         })
       : null;
@@ -7169,13 +7853,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       parseProjectExecutionWorkspacePolicy(projectContext?.executionWorkspacePolicy),
       isolatedWorkspacesEnabled,
     );
+    const trustPreset = resolveCoreTrustPreset({
+      companyId: agent.companyId,
+      agent: {
+        companyId: agent.companyId,
+        permissions: agent.permissions,
+      },
+      project: projectContext
+        ? {
+            companyId: agent.companyId,
+            executionWorkspacePolicy: projectExecutionWorkspacePolicy,
+          }
+        : null,
+      issue: issueContext
+        ? {
+            companyId: agent.companyId,
+            executionPolicy: issueContext.executionPolicy,
+          }
+        : null,
+    });
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;
     const resetTaskSession = shouldResetTaskSessionForWake(context);
     const sessionResetReason = describeSessionResetReason(context);
     const taskSessionForRun = resetTaskSession ? null : taskSession;
-    const explicitResumeSessionParams = normalizeSessionParams(
+    const explicitResumeSessionParams = normalizeResumeParamsForAdapter(
+      agent.adapterType,
       sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
     );
     const explicitResumeSessionDisplayId = truncateDisplayId(
@@ -7185,20 +7889,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
     const previousSessionParams =
       explicitResumeSessionParams ??
-      (explicitResumeSessionDisplayId ? { sessionId: explicitResumeSessionDisplayId } : null) ??
-      normalizeSessionParams(sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null));
+      (isCanonicalSessionIdForAdapter(agent.adapterType, explicitResumeSessionDisplayId)
+        ? { sessionId: explicitResumeSessionDisplayId }
+        : null) ??
+      normalizeResumeParamsForAdapter(
+        agent.adapterType,
+        sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
+      );
     const config = parseObject(agent.adapterConfig);
-    const requestedExecutionWorkspaceMode = resolveExecutionWorkspaceMode({
+    const resolvedExecutionWorkspaceMode = resolveExecutionWorkspaceMode({
       projectPolicy: projectExecutionWorkspacePolicy,
       issueSettings: issueExecutionWorkspaceSettings,
       legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
     });
-    const resolvedWorkspace = await resolveWorkspaceForRun(
-      agent,
-      context,
-      previousSessionParams,
-      { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
-    );
+    const requestedExecutionWorkspaceMode =
+      trustPreset.kind === "low_trust_review" && resolvedExecutionWorkspaceMode === "shared_workspace"
+        ? "isolated_workspace"
+        : resolvedExecutionWorkspaceMode;
     const issueRef = issueContext
       ? {
           id: issueContext.id,
@@ -7217,12 +7924,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const continuationSummary = issueRef
       ? await getIssueContinuationSummaryDocument(db, issueRef.id)
       : null;
+    const exposeLowTrustRaw = trustPreset.kind === "low_trust_review";
+    const safeContinuationSummary =
+      continuationSummary && !exposeLowTrustRaw
+        ? redactQuarantinedBodyForHigherTrust(continuationSummary)
+        : continuationSummary;
+    const safeWakeCommentContext =
+      wakeCommentContext && !exposeLowTrustRaw
+        ? sanitizeQuarantinedCommentForHigherTrust(wakeCommentContext)
+        : wakeCommentContext;
     if (continuationSummary) {
       context.paperclipContinuationSummary = {
-        key: continuationSummary.key,
-        title: continuationSummary.title,
-        body: continuationSummary.body,
-        updatedAt: continuationSummary.updatedAt.toISOString(),
+        key: safeContinuationSummary!.key,
+        title: safeContinuationSummary!.title,
+        body: safeContinuationSummary!.body,
+        sourceTrust: safeContinuationSummary!.sourceTrust ?? null,
+        updatedAt: safeContinuationSummary!.updatedAt.toISOString(),
       };
     } else {
       delete context.paperclipContinuationSummary;
@@ -7240,14 +7957,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: issueRef.status,
             priority: issueRef.priority,
             workMode: issueRef.workMode,
+            projectId: issueRef.projectId,
+            executionPolicy: issueContext?.executionPolicy ?? null,
           }
         : null,
+      exposeLowTrustRaw,
     });
     if (paperclipWakePayload) {
       context[PAPERCLIP_WAKE_PAYLOAD_KEY] = paperclipWakePayload;
     } else {
       delete context[PAPERCLIP_WAKE_PAYLOAD_KEY];
     }
+    const acceptedPlanWakeRouting = parseObject(context.acceptedPlanWakeRouting);
+    const acceptedPlanContinuationForTask =
+      isAcceptedPlanContinuationWakeContext(context, issueRef?.workMode) &&
+      Object.keys(acceptedPlanWakeRouting).length === 0;
+    const acceptedPlanCommentsForTask =
+      acceptedPlanContinuationForTask && Array.isArray(paperclipWakePayload?.comments)
+        ? paperclipWakePayload.comments.map((comment) => ({
+            id: readNonEmptyString(comment.id),
+            authorType: readNonEmptyString(comment.authorType),
+            body: readNonEmptyString(comment.body),
+          }))
+        : null;
     const taskMarkdown = buildPaperclipTaskMarkdown({
       issue: issueRef
         ? {
@@ -7258,14 +7990,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             description: issueRef.description,
           }
         : null,
-      wakeComment: wakeCommentContext,
+      wakeComment: safeWakeCommentContext,
       interaction: {
         kind: readNonEmptyString(context.interactionKind),
         status: readNonEmptyString(context.interactionStatus),
       },
-      acceptedPlanContinuation:
-        readNonEmptyString(context.workspaceRefreshReason) === "accepted_plan_confirmation"
-        && !parseObject(context.acceptedPlanWakeRouting),
+      acceptedPlanComments: acceptedPlanCommentsForTask,
+      acceptedPlanContinuation: acceptedPlanContinuationForTask,
     });
     if (issueRef) {
       context.paperclipIssue = {
@@ -7279,7 +8010,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       delete context.paperclipIssue;
     }
     if (wakeCommentContext) {
-      context.paperclipWakeComment = wakeCommentContext;
+      context.paperclipWakeComment = safeWakeCommentContext;
     } else {
       delete context.paperclipWakeComment;
     }
@@ -7341,6 +8072,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? persistedExecutionWorkspaceMode
         : requestedExecutionWorkspaceMode;
     const selectedEnvironmentId = environmentResolution.environmentId;
+    const {
+      selectedEnvironmentDriver: lowTrustPreflightEnvironmentDriver,
+      workspace: resolvedWorkspace,
+    } = await resolveWorkspaceAfterLowTrustPreflight({
+      db,
+      trustPreset,
+      isolatedWorkspacesEnabled,
+      effectiveExecutionWorkspaceMode,
+      issue: issueRef
+        ? {
+            companyId: agent.companyId,
+            id: issueRef.id,
+            projectId: issueRef.projectId,
+          }
+        : null,
+      resolveSelectedEnvironmentDriver: async () => {
+        const preflightEnvironment = await envOrchestrator.resolveEnvironment({
+          companyId: agent.companyId,
+          selectedEnvironmentId,
+          defaultEnvironmentId: defaultEnvironment.id,
+        });
+        return preflightEnvironment.driver;
+      },
+      resolveWorkspace: () =>
+        resolveWorkspaceForRun(
+          agent,
+          context,
+          previousSessionParams,
+          { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
+        ),
+    });
     const workspaceManagedConfig = shouldReuseExisting
       ? { ...config }
       : buildExecutionWorkspaceAdapterConfig({
@@ -7404,6 +8166,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       projectEnv: projectContext?.env ?? null,
       routineEnv: routineEnvContext.env,
       secretsSvc,
+      trustPreset,
     });
     if (secretManifest.length > 0) {
       context.paperclipSecrets = {
@@ -7426,6 +8189,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
+    const hostExecutionWorkspaceConfig = stripHostWorkspaceProvisionForLowTrustSandbox({
+      config: runtimeConfig,
+      trustPreset,
+      selectedEnvironmentDriver: lowTrustPreflightEnvironmentDriver,
+    });
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
       companyId: agent.companyId,
       heartbeatRunId: run.id,
@@ -7474,7 +8242,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : null;
     const executionWorkspace = reusedExecutionWorkspace ?? await realizeExecutionWorkspace({
           base: executionWorkspaceBase,
-          config: runtimeConfig,
+          config: hostExecutionWorkspaceConfig,
           issue: issueRef,
           agent: {
             id: agent.id,
@@ -7739,6 +8507,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           )
         : [];
     })();
+    assertLowTrustRuntimeServicesAllowed({
+      resolution: trustPreset,
+      runtimeServiceCount: runtimeServiceIntents.length,
+    });
     if (runtimeServiceIntents.length > 0) {
       context.paperclipRuntimeServiceIntents = runtimeServiceIntents;
     } else {
@@ -7747,14 +8519,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
     }
-    const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
-    let previousSessionDisplayId = truncateDisplayId(
+    const runtimeSessionFallback = taskKey || resetTaskSession
+      ? null
+      : isCanonicalSessionIdForAdapter(agent.adapterType, runtime.sessionId)
+        ? runtime.sessionId
+        : null;
+    const runtimeSessionDisplayId = truncateDisplayId(
       explicitResumeSessionDisplayId ??
         taskSessionForRun?.sessionDisplayId ??
         (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(runtimeSessionParams) : null) ??
         readNonEmptyString(runtimeSessionParams?.sessionId) ??
         runtimeSessionFallback,
     );
+    let previousSessionDisplayId = requiresCanonicalSessionIds(agent.adapterType)
+      ? truncateDisplayId(
+          readNonEmptyString(previousSessionParams?.sessionId) ??
+            (isCanonicalSessionIdForAdapter(agent.adapterType, runtimeSessionDisplayId) ? runtimeSessionDisplayId : null) ??
+            runtimeSessionFallback,
+        )
+      : runtimeSessionDisplayId;
     let runtimeSessionIdForAdapter =
       readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback;
     let runtimeSessionParamsForAdapter = runtimeSessionParams;
@@ -7938,6 +8721,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const logEntry = formatRuntimeWorkspaceWarningLog(warning);
         await onLog(logEntry.stream, logEntry.chunk);
       }
+      await assertGitSensitiveAdapterWorkspaceValid({
+        adapterType: agent.adapterType,
+        agentId: agent.id,
+        issue: issueRef
+          ? {
+              id: issueRef.id,
+              identifier: issueRef.identifier,
+              projectId: issueRef.projectId,
+              projectWorkspaceId: issueRef.projectWorkspaceId,
+            }
+          : null,
+        resolvedWorkspace,
+        executionWorkspace,
+        persistedExecutionWorkspace,
+        executionTarget,
+        environmentDriver: selectedEnvironment.driver,
+        leaseMetadata: activeEnvironmentLease.lease.metadata,
+      });
       const adapterEnv = Object.fromEntries(
         Object.entries(parseObject(resolvedConfig.env)).filter(
           (entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string",
@@ -8143,9 +8944,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
+      let outcome: RunSessionOutcome;
+      const latestRun = await getRun(run.id);
+      if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
+        outcome = latestRun.status;
+      } else if (adapterResult.timedOut) {
+        outcome = "timed_out";
+      } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
+        outcome = "succeeded";
+      } else {
+        outcome = "failed";
+      }
+
       const nextSessionState = resolveNextSessionState({
+        adapterType: agent.adapterType,
         codec: sessionCodec,
         adapterResult,
+        outcome,
         previousParams: previousSessionParams,
         previousDisplayId: runtimeForAdapter.sessionDisplayId,
         previousLegacySessionId: runtimeForAdapter.sessionId,
@@ -8158,18 +8973,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         rawUsage,
       });
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
-
-      let outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
-      const latestRun = await getRun(run.id);
-      if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
-        outcome = latestRun.status;
-      } else if (adapterResult.timedOut) {
-        outcome = "timed_out";
-      } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
-        outcome = "succeeded";
-      } else {
-        outcome = "failed";
-      }
       const runErrorMessage =
         outcome === "cancelled"
           ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
@@ -8420,6 +9223,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         err instanceof Error ? err.message : "Unknown adapter failure",
         await getCurrentUserRedactionOptions(),
       );
+      const workspaceValidationFailure = isWorkspaceValidationFailure(err) ? err : null;
+      const failureErrorCode = workspaceValidationFailure?.code ?? "adapter_failed";
       logger.error({ err, runId }, "heartbeat execution failed");
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
@@ -8440,11 +9245,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const failedRun = await setRunStatus(run.id, "failed", {
         error: message,
-        errorCode: "adapter_failed",
+        errorCode: failureErrorCode,
         finishedAt: new Date(),
         resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
-          errorCode: "adapter_failed",
+          errorCode: failureErrorCode,
           errorMessage: message,
+          resultJson: workspaceValidationFailure?.resultJson ?? null,
         }),
         stdoutExcerpt,
         stderrExcerpt,
@@ -8466,7 +9272,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
         const livenessRun = await classifyAndPersistRunLiveness(failedRun) ?? failedRun;
         await refreshContinuationSummaryForRun(livenessRun, agent);
-        await finalizeIssueCommentPolicy(livenessRun, agent);
+        if (!isWorkspaceValidationFailedRun(livenessRun)) {
+          await finalizeIssueCommentPolicy(livenessRun, agent);
+        }
         await releaseIssueExecutionAndPromote(livenessRun);
 
         await updateRuntimeState(agent, livenessRun, {
@@ -8529,7 +9337,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             const failedAgent = setupFailureAgent ?? await getAgent(run.agentId).catch(() => null);
             if (failedAgent) {
               await refreshContinuationSummaryForRun(livenessRun, failedAgent).catch(() => undefined);
-              await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
+              if (!isWorkspaceValidationFailedRun(livenessRun)) {
+                await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
+              }
             }
             await releaseIssueExecutionAndPromote(livenessRun).catch(() => undefined);
           }
@@ -8568,6 +9378,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       "Paperclip automatically retried continuation for this assigned `in_progress` issue during terminal run " +
       `recovery, but it still has no live execution path.${failureSummary ?? ""} ` +
       "Moving it to `blocked` so it is visible for intervention."
+    );
+  }
+
+  function buildWorkspaceValidationRecoveryComment(input: {
+    latestRun: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined;
+  }) {
+    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+    return (
+      "Paperclip stopped before launching the local adapter because the issue workspace failed validation. " +
+      `This prevents git-sensitive adapters from running in an unrelated fallback cwd.${failureSummary ?? ""} ` +
+      "Moving it to `blocked` with a source-scoped recovery action so the workspace link, cwd, or git checkout can be repaired before resuming."
     );
   }
 
@@ -8623,6 +9444,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(eq(issues.id, issue.id));
       }
 
+      if (
+        isWorkspaceValidationFailedRun(run) &&
+        (issue.status === "todo" || issue.status === "in_progress") &&
+        !issue.assigneeUserId &&
+        issue.assigneeAgentId === run.agentId
+      ) {
+        return {
+          kind: "blocked" as const,
+          issue,
+          previousStatus: issue.status,
+          comment: buildWorkspaceValidationRecoveryComment({ latestRun: run }),
+          recoveryCause: WORKSPACE_VALIDATION_RECOVERY_CAUSE,
+        };
+      }
+
       while (true) {
         const deferred = await tx
           .select()
@@ -8646,13 +9482,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(eq(agents.id, deferred.agentId))
           .then((rows) => rows[0] ?? null);
 
-        if (
-          !deferredAgent ||
-          deferredAgent.companyId !== issue.companyId ||
-          deferredAgent.status === "paused" ||
-          deferredAgent.status === "terminated" ||
-          deferredAgent.status === "pending_approval"
-        ) {
+        const companyAgents = deferredAgent
+          ? await tx
+            .select({
+              id: agents.id,
+              companyId: agents.companyId,
+              name: agents.name,
+              reportsTo: agents.reportsTo,
+              status: agents.status,
+            })
+            .from(agents)
+            .where(eq(agents.companyId, issue.companyId))
+          : [];
+        const deferredInvokability =
+          deferredAgent?.companyId === issue.companyId
+            ? evaluateAgentInvokability(deferredAgent, companyAgents)
+            : evaluateAgentInvokability(null, companyAgents);
+
+        if (!deferredAgent || deferredAgent.companyId !== issue.companyId || !deferredInvokability.invokable) {
           await tx
             .update(agentWakeupRequests)
             .set({
@@ -8901,17 +9748,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const shouldBlockImmediately =
         !recoveryAgentInvokable ||
         !recoveryAgent ||
+        isWorkspaceValidationFailedRun(run) ||
         didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
       if (shouldBlockImmediately) {
-        const comment = buildImmediateExecutionPathRecoveryComment({
-          status: issue.status as "todo" | "in_progress",
-          latestRun: run,
-        });
+        const workspaceValidationFailure = isWorkspaceValidationFailedRun(run);
+        const comment = workspaceValidationFailure
+          ? buildWorkspaceValidationRecoveryComment({ latestRun: run })
+          : buildImmediateExecutionPathRecoveryComment({
+              status: issue.status as "todo" | "in_progress",
+              latestRun: run,
+            });
         return {
           kind: "blocked" as const,
           issue,
           previousStatus: issue.status,
           comment,
+          recoveryCause: workspaceValidationFailure ? WORKSPACE_VALIDATION_RECOVERY_CAUSE : undefined,
         };
       }
 
@@ -8994,6 +9846,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         previousStatus: promotionResult.previousStatus as "todo" | "in_progress",
         latestRun: run,
         comment: promotionResult.comment,
+        recoveryCause:
+          promotionResult.recoveryCause === WORKSPACE_VALIDATION_RECOVERY_CAUSE
+            ? WORKSPACE_VALIDATION_RECOVERY_CAUSE
+            : undefined,
       });
       return;
     }
@@ -9051,6 +9907,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+
+    const writeSkippedRequest = async (
+      skipReason: string,
+      patch: Partial<typeof agentWakeupRequests.$inferInsert> = {},
+    ) => {
+      await db.insert(agentWakeupRequests).values({
+        companyId: agent.companyId,
+        agentId,
+        source,
+        triggerDetail,
+        reason: skipReason,
+        payload,
+        status: "skipped",
+        requestedByActorType: opts.requestedByActorType ?? null,
+        requestedByActorId: opts.requestedByActorId ?? null,
+        idempotencyKey: opts.idempotencyKey ?? null,
+        finishedAt: new Date(),
+        ...patch,
+      });
+    };
+
+    const company = await db
+      .select({ status: companies.status })
+      .from(companies)
+      .where(eq(companies.id, agent.companyId))
+      .then((rows) => rows[0] ?? null);
+
+    if (!company || company.status !== "active") {
+      const companyStatus = company?.status ?? "missing";
+      if (opts.requestedByActorType === "user") {
+        throw conflict("Company is not active", { status: companyStatus });
+      }
+      await writeSkippedRequest("company.inactive", {
+        error: `Wake suppressed because company status is ${companyStatus}`,
+      });
+      return null;
+    }
+
     const explicitResumeSession = await resolveExplicitResumeSessionOverride(agent, payload, taskKey);
     if (explicitResumeSession) {
       enrichedContextSnapshot.resumeFromRunId = explicitResumeSession.resumeFromRunId;
@@ -9072,22 +9966,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       explicitResumeSession?.sessionDisplayId ??
       await resolveSessionBeforeForWakeup(agent, effectiveTaskKey);
     const continuationAttempt = readContinuationAttempt(enrichedContextSnapshot.livenessContinuationAttempt);
-
-    const writeSkippedRequest = async (skipReason: string) => {
-      await db.insert(agentWakeupRequests).values({
-        companyId: agent.companyId,
-        agentId,
-        source,
-        triggerDetail,
-        reason: skipReason,
-        payload,
-        status: "skipped",
-        requestedByActorType: opts.requestedByActorType ?? null,
-        requestedByActorId: opts.requestedByActorId ?? null,
-        idempotencyKey: opts.idempotencyKey ?? null,
-        finishedAt: new Date(),
-      });
-    };
 
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
     if (!projectId && issueId) {
@@ -9136,12 +10014,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
     }
 
-    if (
-      agent.status === "paused" ||
-      agent.status === "terminated" ||
-      agent.status === "pending_approval"
-    ) {
-      throw conflict("Agent is not invokable in its current state", { status: agent.status });
+    const invokability = await getAgentInvokability(agent);
+    if (!invokability.invokable) {
+      if (opts.requestedByActorType !== "user") {
+        await writeSkippedRequest("agent.not_invokable", {
+          error: invokability.message,
+        });
+      }
+      throw conflict(invokability.message, {
+        status: agent.status,
+        reason: invokability.reason,
+        invalidOrgChain: invokability.invalidOrgChain,
+        ...invokability.details,
+      });
     }
 
     const policy = parseHeartbeatPolicy(agent);
@@ -9945,6 +10830,52 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return runs.length;
   }
 
+  async function cancelPendingWakeupsForAgentsInternal(agentIds: string[], reason: string) {
+    const uniqueAgentIds = [...new Set(agentIds)].filter((agentId) => agentId.length > 0);
+    if (uniqueAgentIds.length === 0) return 0;
+
+    const now = new Date();
+    const wakeupIds = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          inArray(agentWakeupRequests.agentId, uniqueAgentIds),
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+          sql`${agentWakeupRequests.runId} is null`,
+        ),
+      )
+      .then((rows) => rows.map((row) => row.id));
+
+    if (wakeupIds.length === 0) return 0;
+
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        status: "cancelled",
+        finishedAt: now,
+        error: reason,
+        updatedAt: now,
+      })
+      .where(inArray(agentWakeupRequests.id, wakeupIds));
+
+    return wakeupIds.length;
+  }
+
+  async function cancelInvocationsForAgentsInternal(agentIds: string[], reason: string) {
+    const uniqueAgentIds = [...new Set(agentIds)].filter((agentId) => agentId.length > 0);
+    let runsCancelled = 0;
+    for (const agentId of uniqueAgentIds) {
+      runsCancelled += await cancelActiveForAgentInternal(agentId, reason);
+    }
+    const wakeupsCancelled = await cancelPendingWakeupsForAgentsInternal(uniqueAgentIds, reason);
+    return {
+      agentIds: uniqueAgentIds,
+      runsCancelled,
+      wakeupsCancelled,
+    };
+  }
+
   async function cancelBudgetScopeWork(scope: BudgetEnforcementScope) {
     if (scope.scopeType === "agent") {
       await cancelActiveForAgentInternal(scope.scopeId, "Cancelled due to budget pause");
@@ -10241,13 +11172,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     buildRunOutputSilence,
 
     tickTimers: async (now = new Date()) => {
-      const allAgents = await db.select().from(agents);
+      const allAgents = await db
+        .select({ ...getTableColumns(agents) })
+        .from(agents)
+        .innerJoin(companies, eq(companies.id, agents.companyId))
+        .where(eq(companies.status, "active"));
+      const agentsByCompany = groupAgentOrgRowsByCompany(allAgents.map(toAgentOrgRow));
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
 
       for (const agent of allAgents) {
-        if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") continue;
+        const invokability = evaluateAgentInvokability(toAgentOrgRow(agent), agentsByCompany.get(agent.companyId) ?? []);
+        if (!invokability.invokable) continue;
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
@@ -10281,9 +11218,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     },
 
-    cancelRun: (runId: string) => cancelRunInternal(runId),
+    cancelRun: (runId: string, reason?: string) => cancelRunInternal(runId, reason),
 
-    cancelActiveForAgent: (agentId: string) => cancelActiveForAgentInternal(agentId),
+    cancelActiveForAgent: (agentId: string, reason?: string) => cancelActiveForAgentInternal(agentId, reason),
+
+    cancelInvocationsForAgents: (agentIds: string[], reason: string) =>
+      cancelInvocationsForAgentsInternal(agentIds, reason),
 
     cancelBudgetScopeWork,
 

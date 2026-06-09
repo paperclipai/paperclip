@@ -11,7 +11,7 @@ import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
-import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap } from "../lib/company-members";
+import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, isAgentTaskTarget } from "../lib/company-members";
 import { ISSUE_OVERRIDE_ADAPTER_TYPES, type IssueModelLane } from "../lib/issue-assignee-overrides";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import {
@@ -268,7 +268,7 @@ function RemovableIssueReferencePill({
           "inline-flex items-center gap-1 rounded-full border border-border py-0.5 pl-1 pr-2 text-xs",
         )}
         title={issue.title}
-        aria-label={`Issue ${issueLabel}: ${issue.title}`}
+        aria-label={`Task ${issueLabel}: ${issue.title}`}
       >
         <button
           type="button"
@@ -283,7 +283,7 @@ function RemovableIssueReferencePill({
           <Link
             to={`/issues/${issueLabel}`}
             className="inline-flex min-w-0 items-center gap-1 no-underline hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring"
-            aria-label={`Issue ${issueLabel}: ${issue.title}`}
+            aria-label={`Task ${issueLabel}: ${issue.title}`}
           >
             {content}
           </Link>
@@ -296,7 +296,7 @@ function RemovableIssueReferencePill({
           <DialogHeader>
             <DialogTitle>Remove blocker?</DialogTitle>
             <DialogDescription>
-              Remove {confirmLabel} as a blocker for this issue.
+              Remove {confirmLabel} as a blocker for this task.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -545,7 +545,7 @@ export function IssueProperties({
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [assigneeOpen]);
   const recentAssigneeSelectionIds = useMemo(() => getRecentAssigneeSelectionIds(), [assigneeOpen]);
   const sortedAgents = useMemo(
-    () => sortAgentsByRecency((agents ?? []).filter((a) => a.status !== "terminated"), recentAssigneeIds),
+    () => sortAgentsByRecency((agents ?? []).filter(isAgentTaskTarget), recentAssigneeIds),
     [agents, recentAssigneeIds],
   );
   const recentAssigneeValues = useMemo(
@@ -766,7 +766,7 @@ export function IssueProperties({
     <div className="w-full space-y-2 p-2">
       <p className="text-xs text-muted-foreground">
         {assignee
-          ? "This assignee's adapter does not expose editable issue overrides."
+          ? "This assignee's adapter does not expose editable task overrides."
           : "Select a compatible agent assignee to edit these overrides."}
       </p>
       <button
@@ -1621,7 +1621,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search issues..."
+        placeholder="Search tasks..."
         value={parentSearch}
         onChange={(e) => setParentSearch(e.target.value)}
         autoFocus={!inline}
@@ -1693,11 +1693,11 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search issues..."
+        placeholder="Search tasks..."
         value={blockedBySearch}
         onChange={(e) => setBlockedBySearch(e.target.value)}
         autoFocus={!inline}
-        aria-label="Search issues to add as blockers"
+        aria-label="Search tasks to add as blockers"
       />
       <div className="max-h-48 overflow-y-auto overscroll-contain">
         <button
@@ -1734,9 +1734,9 @@ export function IssueProperties({
           );
         })}
         {blockerOptionsLoading ? (
-          <div className="px-2 py-2 text-xs text-muted-foreground">Searching issues...</div>
+          <div className="px-2 py-2 text-xs text-muted-foreground">Searching tasks...</div>
         ) : blockerOptions.length === 0 ? (
-          <div className="px-2 py-2 text-xs text-muted-foreground">No matching issues.</div>
+          <div className="px-2 py-2 text-xs text-muted-foreground">No matching tasks.</div>
         ) : null}
       </div>
     </>
@@ -1913,7 +1913,7 @@ export function IssueProperties({
           ) : null}
         </PropertyRow>
 
-        <PropertyRow label="Sub-issues">
+        <PropertyRow label="Sub-tasks">
           <div className="flex flex-wrap items-center gap-1.5">
             {childIssues.length > 0
               ? childIssues.map((child) => (
@@ -1927,7 +1927,7 @@ export function IssueProperties({
                 onClick={onAddSubIssue}
               >
                 <Plus className="h-3 w-3" />
-              Add sub-issue
+              Add sub-task
               </button>
             ) : null}
           </div>

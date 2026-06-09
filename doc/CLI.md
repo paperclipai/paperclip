@@ -119,6 +119,7 @@ export PAPERCLIP_API_KEY=...
 ```sh
 pnpm paperclipai company list
 pnpm paperclipai company get <company-id>
+pnpm paperclipai company current [--company-id <company-id>]
 pnpm paperclipai company stats
 pnpm paperclipai company create --payload-json '{...}'
 pnpm paperclipai company update <company-id> --payload-json '{...}'
@@ -142,6 +143,12 @@ pnpm paperclipai company delete 5cbe79ee-acb3-4597-896e-7662742593cd --yes --con
 
 Notes:
 
+- With agent authentication, `company list` and `company current` are
+  agent-safe company selectors. `company list` first tries the board-wide list;
+  if that is forbidden, it uses `--company-id`, `PAPERCLIP_COMPANY_ID`, context,
+  or `/api/agents/me` and then reads only that scoped company.
+- `company create` requires board/instance-admin authentication because it is
+  an instance-wide setup command.
 - Deletion is server-gated by `PAPERCLIP_ENABLE_COMPANY_DELETION`.
 - With agent authentication, company deletion is company-scoped. Use the current company ID/prefix (for example via `--company-id` or `PAPERCLIP_COMPANY_ID`), not another company.
 
@@ -492,6 +499,43 @@ still enforced by the server in both cases.
 - `skills remove`, `skills reset`, and `skills agent clear` prompt in a TTY and
   require `--yes` in non-interactive use.
 - `--json` prints the raw API result for each command.
+
+## Teams Commands
+
+`paperclipai teams` works with the app-shipped team catalog in
+`@paperclipai/teams-catalog`. Browse, search, inspect, and file reads do not
+change company state. `preview` runs the company import planner, and `install`
+imports the catalog team into an existing company.
+
+```sh
+pnpm paperclipai teams browse [--kind bundled|optional] [--category <slug>] [--query <text>]
+pnpm paperclipai teams search "<text>" [--kind bundled|optional] [--category <slug>]
+pnpm paperclipai teams inspect <catalog-id-or-key-or-slug> [--file TEAM.md]
+pnpm paperclipai teams preview <catalog-id-or-key-or-slug> --company-id <company-id>
+pnpm paperclipai teams install <catalog-id-or-key-or-slug> --company-id <company-id>
+```
+
+Preview/install options:
+
+- Under agent authentication, use `paperclipai company list --json`,
+  `paperclipai company current --json`, or `PAPERCLIP_COMPANY_ID` to select the
+  target company. `company list` falls back to the scoped current company when
+  board-wide listing is forbidden. `teams install` creates agents and therefore
+  requires board authentication, an `agents:create` grant, or an agent with
+  explicit `canCreateAgents` permission.
+- `--request-approval-on-forbidden` turns a 403 install denial into a linked
+  board approval request instead of a raw failed command; use
+  `--approval-issue-id <id>` to attach it to a specific issue. During Paperclip
+  task runs with `PAPERCLIP_TASK_ID` set, this fallback is automatic so
+  agent-run walkthroughs leave a pending approval path instead of a raw 403.
+- `--target-manager-agent-id <id>` or `--target-manager-slug <slug>` reparents
+  catalog root agents under an existing manager.
+- `--agent <slug>` and `--selected-file <path>` narrow the import.
+- `--collision-strategy rename|skip|replace` controls name/key collisions.
+- `--allow-external-sources`, `--allow-unpinned-optional-sources`, and
+  `--allow-local-path-sources` explicitly opt into higher-trust source policy.
+  Local-path sources are development-only and stay blocked unless that flag is
+  passed.
 
 ## Secrets Commands
 

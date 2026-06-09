@@ -5,7 +5,7 @@
   "type": "module",
   "private": true,
   "exports": {
-    ".": "./dist/index.js"
+    ".": "./src/index.ts"
   },
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",
@@ -24,7 +24,6 @@
   "devDependencies": {
     "@types/node": "^24.6.0",
     "typescript": "^5.7.3",
-    "vitest": "^3.2.4"
-  },
-  "main": "./dist/index.js"
+    "vitest": "^4.1.8"
+  }
 }
