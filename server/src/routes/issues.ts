@@ -1430,20 +1430,6 @@ export function issueRoutes(
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
       }
-      const requestedStatus =
-        req.body && typeof req.body === "object" && !Array.isArray(req.body)
-          ? (req.body as Record<string, unknown>).status
-          : undefined;
-      const executionState = parseIssueExecutionState(issue.executionState);
-      if (
-        issue.status === "in_review" &&
-        requestedStatus === "blocked" &&
-        executionState?.status === "pending" &&
-        executionState.returnAssignee?.type === "agent" &&
-        executionState.returnAssignee.agentId === actorAgentId
-      ) {
-        return true;
-      }
       if (issue.status === "in_progress") {
         res.status(409).json({
           error: "Issue is checked out by another agent",

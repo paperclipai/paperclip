@@ -145,12 +145,6 @@ describe("issue execution policy routes", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
-    mockIssueService.addComment.mockImplementation(async (issueId: string, body: string) => ({
-      id: "comment-1",
-      issueId,
-      body,
-      createdAt: new Date(),
-    }));
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
