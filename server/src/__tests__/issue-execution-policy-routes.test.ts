@@ -619,6 +619,7 @@ describe("issue execution policy routes", () => {
     const reviewStageId = "55555555-5555-4555-8555-555555555555";
     const reviewerAgentId = "44444444-4444-4444-8444-444444444444";
     const implementerAgentId = "33333333-3333-4333-8333-333333333333";
+    const unrelatedAgentId = "66666666-6666-4666-8666-666666666666";
 
     function makeInReviewIssue(overrides: Record<string, unknown> = {}) {
       const policy = normalizeIssueExecutionPolicy({
@@ -701,6 +702,40 @@ describe("issue execution policy routes", () => {
       const updateCall = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
       expect(updateCall.status).toBe("blocked");
       expect(updateCall.executionState).toBeNull();
+    });
+
+    it("rejects blocked correction payloads with unrelated issue mutations", async () => {
+      const issue = makeInReviewIssue({ assigneeAgentId: reviewerAgentId });
+      mockIssueService.getById.mockResolvedValue(issue);
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: implementerAgentId,
+        companyId: "company-1",
+        runId: "run-blo-9316-extra-fields",
+      }))
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ status: "blocked", title: "pwned" });
+
+      expect(res.status).toBe(403);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects an unrelated agent so blocked correction does not bypass issue ownership broadly", async () => {
+      const issue = makeInReviewIssue({ assigneeAgentId: reviewerAgentId });
+      mockIssueService.getById.mockResolvedValue(issue);
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: unrelatedAgentId,
+        companyId: "company-1",
+        runId: "run-blo-9316c",
+      }))
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ status: "blocked" });
+
+      expect(res.status).toBe(403);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
     });
   });
 });

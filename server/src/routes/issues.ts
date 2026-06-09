@@ -1384,10 +1384,35 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  function isBlockedCorrectionPatchBody(body: unknown) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+    const patch = body as Record<string, unknown>;
+    const allowedKeys = new Set(["status", "comment"]);
+    if (!Object.keys(patch).every((key) => allowedKeys.has(key))) return false;
+    return patch.status === "blocked";
+  }
+
+  function isAgentBlockedCorrectionForActiveExecutionStage(
+    req: Request,
+    issue: { status: string; executionState?: unknown },
+  ) {
+    if (req.actor.type !== "agent" || !req.actor.agentId) return false;
+    if (!isBlockedCorrectionPatchBody(req.body)) return false;
+    if (issue.status !== "in_review") return false;
+    const executionState = parseIssueExecutionState(issue.executionState);
+    if (executionState?.status !== "pending") return false;
+    const actor = { type: "agent" as const, agentId: req.actor.agentId, userId: null };
+    return (
+      executionPrincipalsEqual(executionState.currentParticipant, actor) ||
+      executionPrincipalsEqual(executionState.returnAssignee, actor)
+    );
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
     issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null; executionState?: unknown },
+    options: { allowBlockedCorrection?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1398,22 +1423,11 @@ export function issueRoutes(
     if (issue.assigneeAgentId === null) {
       return true;
     }
+    if (options.allowBlockedCorrection && isAgentBlockedCorrectionForActiveExecutionStage(req, issue)) {
+      return true;
+    }
     if (issue.assigneeAgentId !== actorAgentId) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
-        return true;
-      }
-      const requestedStatus =
-        req.body && typeof req.body === "object" && !Array.isArray(req.body)
-          ? (req.body as Record<string, unknown>).status
-          : undefined;
-      const executionState = parseIssueExecutionState(issue.executionState);
-      if (
-        issue.status === "in_review" &&
-        requestedStatus === "blocked" &&
-        executionState?.status === "pending" &&
-        executionState.returnAssignee?.type === "agent" &&
-        executionState.returnAssignee.agentId === actorAgentId
-      ) {
         return true;
       }
       if (issue.status === "in_progress") {
@@ -3984,7 +3998,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, { allowBlockedCorrection: true }))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
