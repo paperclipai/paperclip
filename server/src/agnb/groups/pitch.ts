@@ -36,30 +36,49 @@ const DECK_CSP = [
   "connect-src 'none'",
 ].join("; ");
 
+// Pitch decks are generated dev-only (local DB). Deployed instances may not have
+// the table at all (0003 not applied) — treat "relation does not exist" as empty.
+function isMissingTable(e: unknown): boolean {
+  if ((e as { code?: string })?.code === "42P01") return true;
+  const msg = e instanceof Error ? e.message : String(e);
+  return /relation .*pitch_decks.* does not exist|42P01/i.test(msg);
+}
+
 export function registerPitch(router: Router, db: Db) {
   /** GET /api/agnb/pitch — list decks (meta only). */
   router.get("/agnb/pitch", async (req, res) => {
     assertAgnbAccess(req);
-    const decks = rows<PitchListRow>(
-      await db.execute(sql`
-        SELECT id, client_name, vertical, deck_title, created_by, created_at, updated_at
-        FROM agnb.pitch_decks
-        ORDER BY updated_at DESC
-        LIMIT 200
-      `),
-    );
-    res.json({ ok: true, decks });
+    try {
+      const decks = rows<PitchListRow>(
+        await db.execute(sql`
+          SELECT id, client_name, vertical, deck_title, created_by, created_at, updated_at
+          FROM agnb.pitch_decks
+          ORDER BY updated_at DESC
+          LIMIT 200
+        `),
+      );
+      res.json({ ok: true, decks });
+    } catch (e) {
+      if (isMissingTable(e)) return res.json({ ok: true, decks: [] });
+      throw e;
+    }
   });
 
   /** GET /api/agnb/pitch/:id — single deck (meta + slides + answers, no html). */
   router.get("/agnb/pitch/:id", async (req, res) => {
     assertAgnbAccess(req);
-    const deck = rows(
-      await db.execute(sql`
-        SELECT id, client_name, vertical, deck_title, slides, answers, created_by, created_at, updated_at
-        FROM agnb.pitch_decks WHERE id = ${req.params.id} LIMIT 1
-      `),
-    )[0];
+    let deck: unknown;
+    try {
+      deck = rows(
+        await db.execute(sql`
+          SELECT id, client_name, vertical, deck_title, slides, answers, created_by, created_at, updated_at
+          FROM agnb.pitch_decks WHERE id = ${req.params.id} LIMIT 1
+        `),
+      )[0];
+    } catch (e) {
+      if (isMissingTable(e)) return res.status(404).json({ ok: false, error: "not found" });
+      throw e;
+    }
     if (!deck) return res.status(404).json({ ok: false, error: "not found" });
     res.json({ ok: true, deck });
   });
@@ -67,9 +86,15 @@ export function registerPitch(router: Router, db: Db) {
   /** GET /api/agnb/pitch/:id/content — the rendered reveal.js HTML (for iframe). */
   router.get("/agnb/pitch/:id/content", async (req, res) => {
     assertAgnbAccess(req);
-    const row = rows<{ html: string }>(
-      await db.execute(sql`SELECT html FROM agnb.pitch_decks WHERE id = ${req.params.id} LIMIT 1`),
-    )[0];
+    let row: { html: string } | undefined;
+    try {
+      row = rows<{ html: string }>(
+        await db.execute(sql`SELECT html FROM agnb.pitch_decks WHERE id = ${req.params.id} LIMIT 1`),
+      )[0];
+    } catch (e) {
+      if (isMissingTable(e)) return res.status(404).send("not found");
+      throw e;
+    }
     if (!row) return res.status(404).send("not found");
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("X-Content-Type-Options", "nosniff");
