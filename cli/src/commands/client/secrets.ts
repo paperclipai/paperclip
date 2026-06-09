@@ -632,6 +632,63 @@ export function registerSecretCommands(program: Command): void {
         }
       }),
   );
+
+  addCommonClientOptions(
+    secrets
+      .command("rotate <id>")
+      .description("Rotate a secret's value in-place (keeps same secret ID)")
+      .option("--value <value>", "New secret value (prompted if omitted)")
+      .action(async (id: string, opts: BaseClientOptions & { value?: string }) => {
+        try {
+          const ctx = resolveCommandContext(opts, { requireCompany: false });
+          let newValue = opts.value;
+          if (!newValue) {
+            const { createInterface } = await import("readline");
+            const rl = createInterface({ input: process.stdin, output: process.stdout });
+            newValue = await new Promise<string>((resolve) => {
+              rl.question("New secret value: ", (answer) => {
+                rl.close();
+                resolve(answer);
+              });
+            });
+          }
+          await ctx.api.post(`/api/secrets/${id}/rotate`, { value: newValue });
+          printOutput(pc.green(`Secret ${id} rotated successfully.`), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    secrets
+      .command("delete <id>")
+      .description("Delete a secret by ID")
+      .option("--yes", "Skip confirmation prompt", false)
+      .action(async (id: string, opts: BaseClientOptions & { yes?: boolean }) => {
+        try {
+          const ctx = resolveCommandContext(opts, { requireCompany: false });
+          if (!opts.yes) {
+            const { createInterface } = await import("readline");
+            const rl = createInterface({ input: process.stdin, output: process.stdout });
+            const confirmed = await new Promise<boolean>((resolve) => {
+              rl.question(`Delete secret ${id}? This cannot be undone. [y/N] `, (answer) => {
+                rl.close();
+                resolve(answer.toLowerCase() === "y");
+              });
+            });
+            if (!confirmed) {
+              printOutput(pc.yellow("Aborted."), { json: ctx.json });
+              return;
+            }
+          }
+          await ctx.api.delete(`/api/secrets/${id}`);
+          printOutput(pc.green(`Secret ${id} deleted successfully.`), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
 }
 
 function addCompanySecretJsonPost(parent: Command, name: string, description: string, path: string): void {

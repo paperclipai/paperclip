@@ -1218,7 +1218,7 @@ function RequestConfirmationCard({
       {interaction.status === "pending" ? (
         <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
           <div className="text-sm leading-6 text-foreground">
-            {interaction.payload.prompt}
+            {<MarkdownBody>{interaction.payload.prompt}</MarkdownBody>}
           </div>
           {interaction.payload.detailsMarkdown ? (
             <div className="border-t border-border/60 pt-3 text-sm">

@@ -209,17 +209,26 @@ export function companyService(db: Db) {
     return "A".repeat(attempt - 1);
   }
 
-  function isIssuePrefixConflict(error: unknown) {
+  function isIssuePrefixConflict(error: unknown): boolean {
     const seen = new Set<unknown>();
     let current = error;
-    while (typeof current === "object" && current !== null && !seen.has(current)) {
+    let depth = 0;
+    const MAX_DEPTH = 10; // Prevent infinite recursion
+
+    while (typeof current === "object" && current !== null && !seen.has(current) && depth < MAX_DEPTH) {
       seen.add(current);
       const maybe = current as { code?: string; constraint?: string; constraint_name?: string; cause?: unknown };
+
+      // Normalize constraint key
       const constraint = maybe.constraint ?? maybe.constraint_name;
+
+      // Check for PostgreSQL unique violation code and target constraint
       if (maybe.code === "23505" && constraint === "companies_issue_prefix_idx") {
         return true;
       }
+
       current = maybe.cause;
+      depth++;
     }
     return false;
   }

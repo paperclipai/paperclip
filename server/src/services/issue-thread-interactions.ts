@@ -714,7 +714,7 @@ export function issueThreadInteractionService(db: Db) {
         result: {
           version: 1,
           outcome: "rejected",
-          reason: reason || null,
+          reason: reason,
         },
         resolvedByAgentId: args.actor.agentId ?? null,
         resolvedByUserId: args.actor.userId ?? null,
