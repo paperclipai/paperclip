@@ -29,6 +29,7 @@ import {
   asStringArray,
   parseObject,
   buildPaperclipEnv,
+  defaultPathForPlatform,
   joinPromptSections,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
@@ -49,6 +50,7 @@ import {
   ensureOpenCodeModelConfiguredAndAvailable,
   parseOpenCodeModelsOutput,
   requireOpenCodeModelId,
+  resolveOpenCodeCommand,
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
@@ -206,7 +208,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.promptTemplate,
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
-  const command = asString(config.command, "opencode");
+  const command = resolveOpenCodeCommand(config.command);
   const model = asString(config.model, "").trim();
   const variant = asString(config.variant, "").trim();
 
@@ -306,6 +308,42 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
+    // Ensure common binary directories are in PATH for local execution.
+    // Three sources of PATH entries:
+    //   1. The server process's existing PATH (from process.env or config).
+    //   2. OpenCode-specific install locations: the official curl installer
+    //      puts the binary in $HOME/.opencode/bin and (when sudo is
+    //      unavailable) symlinks to $HOME/.local/bin. Non-login shells
+    //      don't source ~/.bashrc so these may be missing from PATH.
+    //   3. Default system paths from defaultPathForPlatform (e.g.,
+    //      /usr/local/bin, /usr/local/sbin). The server's process.env.PATH
+    //      may be set to a minimal value that omits these, so we ensure
+    //      they're present regardless.
+    if (!adapterExecutionTargetIsRemote(executionTarget)) {
+      const homeDir = os.homedir();
+      const openCodeBinDirs = [
+        path.join(homeDir, ".opencode", "bin"),
+        path.join(homeDir, ".local", "bin"),
+      ];
+      const defaultPathEntries = defaultPathForPlatform()
+        .split(":")
+        .filter(Boolean);
+      const pathEntries = (runtimeEnv["PATH"] ?? "").split(":").filter(Boolean);
+      const seen = new Set(pathEntries);
+      for (const dir of openCodeBinDirs) {
+        if (!seen.has(dir)) {
+          seen.add(dir);
+          pathEntries.unshift(dir);
+        }
+      }
+      for (const dir of defaultPathEntries) {
+        if (!seen.has(dir)) {
+          seen.add(dir);
+          pathEntries.push(dir);
+        }
+      }
+      runtimeEnv["PATH"] = pathEntries.join(":");
+    }
     const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
       executionTarget,
       asNumber(config.timeoutSec, 0),

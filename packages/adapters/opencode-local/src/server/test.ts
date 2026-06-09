@@ -12,6 +12,7 @@ import {
   asNumber,
   asString,
   asStringArray,
+  defaultPathForPlatform,
   parseObject,
   ensurePathInEnv,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -25,7 +26,7 @@ import {
   prepareAdapterExecutionTargetRuntime,
   overrideAdapterExecutionTargetRemoteCwd,
 } from "@paperclipai/adapter-utils/execution-target";
-import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
+import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable, resolveOpenCodeCommand } from "./models.js";
 import { parseOpenCodeJsonl } from "./parse.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
@@ -70,7 +71,7 @@ export async function testEnvironment(
 ): Promise<AdapterEnvironmentTestResult> {
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
-  const command = asString(config.command, "opencode");
+  const command = resolveOpenCodeCommand(config.command);
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
@@ -174,6 +175,43 @@ export async function testEnvironment(
       }
     }
     const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env }));
+
+    // Ensure common binary directories are in PATH for local execution.
+    // Three sources of PATH entries:
+    //   1. The server process's existing PATH (from process.env or config).
+    //   2. OpenCode-specific install locations: the official curl installer
+    //      puts the binary in $HOME/.opencode/bin and (when sudo is
+    //      unavailable) symlinks to $HOME/.local/bin. Non-login shells
+    //      don't source ~/.bashrc so these may be missing from PATH.
+    //   3. Default system paths from defaultPathForPlatform (e.g.,
+    //      /usr/local/bin, /usr/local/sbin). The server's process.env.PATH
+    //      may be set to a minimal value that omits these, so we ensure
+    //      they're present regardless.
+    if (!targetIsRemote) {
+      const homeDir = os.homedir();
+      const openCodeBinDirs = [
+        path.join(homeDir, ".opencode", "bin"),
+        path.join(homeDir, ".local", "bin"),
+      ];
+      const defaultPathEntries = defaultPathForPlatform()
+        .split(":")
+        .filter(Boolean);
+      const pathEntries = (runtimeEnv["PATH"] ?? "").split(":").filter(Boolean);
+      const seen = new Set(pathEntries);
+      for (const dir of openCodeBinDirs) {
+        if (!seen.has(dir)) {
+          seen.add(dir);
+          pathEntries.unshift(dir);
+        }
+      }
+      for (const dir of defaultPathEntries) {
+        if (!seen.has(dir)) {
+          seen.add(dir);
+          pathEntries.push(dir);
+        }
+      }
+      runtimeEnv["PATH"] = pathEntries.join(":");
+    }
 
     const cwdInvalid = checks.some((check) => check.code === "opencode_cwd_invalid");
     if (cwdInvalid) {
