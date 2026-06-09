@@ -1041,10 +1041,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       processPid: 999_999_999,
       includeIssue: false,
     });
-    const schedulerHeartbeat = heartbeatService(db);
-    heartbeatService(db);
-
     activeRunExecutions.add(runId);
+    
+    const schedulerHeartbeat = heartbeatService(db);
     try {
       const result = await schedulerHeartbeat.reapOrphanedRuns();
       expect(result.reaped).toBe(0);
