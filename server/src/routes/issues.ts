@@ -5597,17 +5597,20 @@ export function issueRoutes(
 
       if (commentBody && comment) {
         const assigneeId = issue.assigneeAgentId;
+        const actorIsAgent = actor.actorType === "agent";
+        const selfComment = actorIsAgent && actor.actorId === assigneeId;
+        const skipAssigneeCommentWake = selfComment || isClosed;
 
-        if (assigneeId && !assigneeChanged && reopened) {
+        if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
             source: "automation",
             triggerDetail: "system",
-            reason: "issue_reopened_via_comment",
+            reason: reopened ? "issue_reopened_via_comment" : "issue_commented",
             payload: {
               issueId: id,
               commentId: comment.id,
               mutation: "comment",
-              reopenedFrom: reopenFromStatus,
+              ...(reopened ? { reopenedFrom: reopenFromStatus } : {}),
               ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
               ...(interruptedRunId ? { interruptedRunId } : {}),
             },
@@ -5618,9 +5621,9 @@ export function issueRoutes(
               taskId: id,
               commentId: comment.id,
               wakeCommentId: comment.id,
-              source: "issue.comment.reopen",
-              wakeReason: "issue_reopened_via_comment",
-              reopenedFrom: reopenFromStatus,
+              source: reopened ? "issue.comment.reopen" : "issue.comment",
+              wakeReason: reopened ? "issue_reopened_via_comment" : "issue_commented",
+              ...(reopened ? { reopenedFrom: reopenFromStatus } : {}),
               ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
               ...(interruptedRunId ? { interruptedRunId } : {}),
             },
@@ -6762,33 +6765,62 @@ export function issueRoutes(
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
-      if (assigneeId && reopened) {
-        wakeups.set(assigneeId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "issue_reopened_via_comment",
-          payload: {
-            issueId: currentIssue.id,
-            commentId: comment.id,
-            reopenedFrom: reopenFromStatus,
-            mutation: "comment",
-            ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
-            ...(interruptedRunId ? { interruptedRunId } : {}),
-          },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: {
-            issueId: currentIssue.id,
-            taskId: currentIssue.id,
-            commentId: comment.id,
-            wakeCommentId: comment.id,
-            source: "issue.comment.reopen",
-            wakeReason: "issue_reopened_via_comment",
-            reopenedFrom: reopenFromStatus,
-            ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
-            ...(interruptedRunId ? { interruptedRunId } : {}),
-          },
-        });
+      const selfComment = actorIsAgent && actor.actorId === assigneeId;
+      const skipWake = selfComment || isClosed;
+      if (assigneeId && (reopened || !skipWake)) {
+        if (reopened) {
+          wakeups.set(assigneeId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_reopened_via_comment",
+            payload: {
+              issueId: currentIssue.id,
+              commentId: comment.id,
+              reopenedFrom: reopenFromStatus,
+              mutation: "comment",
+              ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+              ...(interruptedRunId ? { interruptedRunId } : {}),
+            },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: currentIssue.id,
+              taskId: currentIssue.id,
+              commentId: comment.id,
+              wakeCommentId: comment.id,
+              source: "issue.comment.reopen",
+              wakeReason: "issue_reopened_via_comment",
+              reopenedFrom: reopenFromStatus,
+              ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+              ...(interruptedRunId ? { interruptedRunId } : {}),
+            },
+          });
+        } else {
+          wakeups.set(assigneeId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_commented",
+            payload: {
+              issueId: currentIssue.id,
+              commentId: comment.id,
+              mutation: "comment",
+              ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+              ...(interruptedRunId ? { interruptedRunId } : {}),
+            },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: currentIssue.id,
+              taskId: currentIssue.id,
+              commentId: comment.id,
+              wakeCommentId: comment.id,
+              source: "issue.comment",
+              wakeReason: "issue_commented",
+              ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+              ...(interruptedRunId ? { interruptedRunId } : {}),
+            },
+          });
+        }
       }
 
       let mentionedIds: string[] = [];
