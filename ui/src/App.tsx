@@ -55,6 +55,9 @@ import { OrgChart } from "./pages/OrgChart";
 import { Assets } from "./pages/Assets";
 import { AssetDetail } from "./pages/AssetDetail";
 import { NewAsset } from "./pages/NewAsset";
+import { PitchList } from "./pages/PitchList";
+import { NewPitch } from "./pages/NewPitch";
+import { PitchDetail } from "./pages/PitchDetail";
 import { Pipeline } from "./pages/Pipeline";
 import { Forecast } from "./pages/Forecast";
 import { Demos } from "./pages/Demos";
@@ -189,6 +192,9 @@ function boardRoutes() {
       <Route path="assets" element={<Assets />} />
       <Route path="assets/new" element={<NewAsset />} />
       <Route path="assets/:assetId" element={<AssetDetail />} />
+      <Route path="pitch" element={<PitchList />} />
+      <Route path="pitch/new" element={<NewPitch />} />
+      <Route path="pitch/:pitchId" element={<PitchDetail />} />
       <Route path="pipeline" element={<Pipeline />} />
       <Route path="forecast" element={<Forecast />} />
       <Route path="demos" element={<Demos />} />
@@ -530,6 +536,9 @@ export function App() {
           <Route path="assets" element={<UnprefixedBoardRedirect />} />
           <Route path="assets/new" element={<UnprefixedBoardRedirect />} />
           <Route path="assets/:assetId" element={<UnprefixedBoardRedirect />} />
+          <Route path="pitch" element={<UnprefixedBoardRedirect />} />
+          <Route path="pitch/new" element={<UnprefixedBoardRedirect />} />
+          <Route path="pitch/:pitchId" element={<UnprefixedBoardRedirect />} />
           <Route path="pipeline" element={<UnprefixedBoardRedirect />} />
           <Route path="forecast" element={<UnprefixedBoardRedirect />} />
           <Route path="demos" element={<UnprefixedBoardRedirect />} />

@@ -1,0 +1,44 @@
+{
+  "_comment": "Slide blocks selected by rules. Generator passes the resolved list to Claude so it writes copy ONLY for included slides.",
+  "always": [
+    "title",
+    "problem",
+    "solution",
+    "how_it_works",
+    "roi",
+    "demo",
+    "capabilities",
+    "dashboard",
+    "proof",
+    "pricing",
+    "cta"
+  ],
+  "byClientType": {
+    "enterprise": ["compliance", "integrations"],
+    "smb": ["integrations"],
+    "investor": ["market", "traction"]
+  },
+  "byLength": {
+    "short": { "drop": ["integrations", "market", "traction", "pricing"] },
+    "deep": { "add": ["results", "objections"] }
+  },
+  "blocks": {
+    "title":       { "name": "Title", "hint": "Product name + one-line tagline tuned to client + their logo placeholder" },
+    "problem":     { "name": "The Problem", "hint": "Client's specific pain in their use case. 3 sharp bullets + 1 stat." },
+    "solution":    { "name": "Solution", "hint": "What Finn is in one sentence, then 3 value props." },
+    "how_it_works":{ "name": "How It Works", "hint": "3 steps: Build, Deploy, Analyze." },
+    "roi":         { "name": "ROI", "hint": "Human-vs-Finn cost framing. Write ONLY headline+accent+subhead. The cost comparison numbers are injected automatically — leave bullets empty []." },
+    "proof":       { "name": "Proof", "hint": "A customer result framing. Write ONLY headline+accent+subhead. The real customer quote + logo are injected automatically — leave bullets empty []." },
+    "demo":        { "name": "Live Demo", "hint": "Walk through one real call: caller profile, what Finn does, the outcome. 3 bullets as Caller/Finn/Outcome." },
+    "capabilities":{ "name": "Capabilities", "hint": "6 capability tiles relevant to the use case." },
+    "dashboard":   { "name": "Dashboard", "hint": "What the client's team learns from analytics: real metrics they can act on (pickup by segment, conversion by category, searchable transcripts, sentiment)." },
+    "integrations":{ "name": "Integrations", "hint": "Calendar, CRM, telephony tied to client stack if known." },
+    "compliance":  { "name": "Compliance & Security", "hint": "Data residency, audit, number health. Region-specific." },
+    "market":      { "name": "Market", "hint": "TAM/SAM for voice AI in client's vertical. Investor framing." },
+    "traction":    { "name": "Traction", "hint": "Logos, usage, growth. Placeholders for real numbers." },
+    "results":     { "name": "Results", "hint": "Outcome metrics: cost/call, pickup rate, time saved." },
+    "objections":  { "name": "Why Finn", "hint": "Differentiators vs named competitor / vs human agents." },
+    "pricing":     { "name": "Pricing", "hint": "Plan tiers, per-min rate, credits. Currency by region." },
+    "cta":         { "name": "Next Steps", "hint": "Clear CTA tuned to decision stage." }
+  }
+}

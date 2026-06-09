@@ -5,6 +5,7 @@ import { Link } from "@/lib/router";
 import { marketingApi, type AssetRow, type AssetStage } from "../api/marketing";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { AgnbSubnav } from "../components/AgnbSubnav";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Card, CardContent } from "@/components/ui/card";
@@ -73,6 +74,8 @@ export function Assets() {
           </Link>
         </Button>
       </div>
+
+      <AgnbSubnav group="assets" />
 
       {error && (
         <p className="text-sm text-destructive">{(error as Error).message}</p>

@@ -99,10 +99,21 @@ Return the JSON object and nothing else.`;
 
 function callClaude(prompt) {
   console.log("🤖  Calling local Claude… (this can take ~30-60s)");
+  // The server process PATH often omits user bin dirs (~/.local/bin, brew) where
+  // the `claude` CLI lives. Augment PATH and allow an explicit CLAUDE_BIN override.
+  const bin = process.env.CLAUDE_BIN || "claude";
+  const home = process.env.HOME || "";
+  const extraPath = [`${home}/.local/bin`, "/usr/local/bin", "/opt/homebrew/bin", "/usr/bin"]
+    .filter(Boolean)
+    .join(":");
   const raw = execFileSync(
-    "claude",
+    bin,
     ["-p", prompt, "--output-format", "json"],
-    { encoding: "utf8", maxBuffer: 20 * 1024 * 1024 }
+    {
+      encoding: "utf8",
+      maxBuffer: 20 * 1024 * 1024,
+      env: { ...process.env, PATH: `${process.env.PATH || ""}:${extraPath}` },
+    }
   );
   const envelope = JSON.parse(raw);
   if (envelope.is_error) throw new Error("Claude returned error: " + envelope.result);

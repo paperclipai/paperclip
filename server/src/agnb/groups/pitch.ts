@@ -97,8 +97,9 @@ export function registerPitch(router: Router, db: Db) {
       slides = deck.slides ?? [];
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      // `claude` binary absent (Cloud Run) → ENOENT.
-      if (/ENOENT|spawn claude|not found/i.test(msg)) {
+      console.error("[pitch.generate] failed:", msg);
+      // `claude` binary absent (Cloud Run) → ENOENT/spawn error naming the CLI.
+      if (/claude/i.test(msg) && /ENOENT|spawn|not found/i.test(msg)) {
         return res.status(503).json({
           ok: false,
           error: "Pitch generation runs only in local dev (requires the `claude` CLI).",

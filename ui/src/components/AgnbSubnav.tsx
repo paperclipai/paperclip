@@ -4,6 +4,10 @@ import { cn } from "../lib/utils";
 
 /** Sub-navigation groups for the AGNB sections (mirrors AGNB's SUBNAV config). */
 export const AGNB_SUBNAV = {
+  assets: [
+    { to: "/assets", label: "Templates" },
+    { to: "/pitch", label: "Pitch decks" },
+  ],
   pipeline: [
     { to: "/pipeline", label: "HubSpot" },
     { to: "/forecast", label: "Forecast" },
