@@ -128,7 +128,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     ageMs: number;
     withOutput?: boolean;
     logChunk?: string;
-    sourceStatus?: "in_progress" | "done" | "cancelled";
+    sourceStatus?: "in_progress" | "done" | "cancelled" | "blocked";
     sourceOriginKind?: string;
     sameRunTerminalEvidence?: "activity" | "comment";
   }) {
@@ -822,5 +822,29 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       createdByRunId: randomUUID(),
     });
     expect(decision.createdByRunId).toBe(managerRunId);
+  });
+
+  it("suppresses stale_active_run_evaluation creation when source issue is blocked", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, issueId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      sourceStatus: "blocked",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+
+    const [source] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(source?.status).toBe("blocked");
   });
 });
