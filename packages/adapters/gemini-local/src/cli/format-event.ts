@@ -93,14 +93,14 @@ function printTextMessage(prefix: string, colorize: (text: string) => string, me
 }
 
 function printUsage(parsed: Record<string, unknown>) {
-  const usage = asRecord(parsed.usage) ?? asRecord(parsed.usageMetadata);
+  const usage = asRecord(parsed.usage) ?? asRecord(parsed.usageMetadata) ?? asRecord(parsed.stats);
   const usageMetadata = asRecord(usage?.usageMetadata);
   const source = usageMetadata ?? usage ?? {};
   const input = asNumber(source.input_tokens, asNumber(source.inputTokens, asNumber(source.promptTokenCount)));
   const output = asNumber(source.output_tokens, asNumber(source.outputTokens, asNumber(source.candidatesTokenCount)));
   const cached = asNumber(
     source.cached_input_tokens,
-    asNumber(source.cachedInputTokens, asNumber(source.cachedContentTokenCount)),
+    asNumber(source.cachedInputTokens, asNumber(source.cachedContentTokenCount, asNumber(source.cached))),
   );
   const cost = asNumber(parsed.total_cost_usd, asNumber(parsed.cost_usd, asNumber(parsed.cost)));
   console.log(pc.blue(`tokens: in=${input} out=${output} cached=${cached} cost=$${cost.toFixed(6)}`));
@@ -154,6 +154,21 @@ export function printGeminiStreamEvent(raw: string, _debug: boolean): void {
     return;
   }
 
+  // Gemini CLI v0.38+ stream-json schema:
+  // {"type":"message","role":"assistant"|"user","content":"...","delta":?true}
+  if (type === "message") {
+    const role = asString(parsed.role).trim().toLowerCase();
+    if (role === "assistant") {
+      printTextMessage("assistant", pc.green, parsed.content);
+      return;
+    }
+    if (role === "user") {
+      printTextMessage("user", pc.gray, parsed.content);
+      return;
+    }
+    return;
+  }
+
   if (type === "thinking") {
     const text = asString(parsed.text).trim() || asString(asRecord(parsed.delta)?.text).trim();
     if (text) console.log(pc.gray(`thinking: ${text}`));
@@ -190,10 +205,16 @@ export function printGeminiStreamEvent(raw: string, _debug: boolean): void {
 
   if (type === "result") {
     printUsage(parsed);
-    const subtype = asString(parsed.subtype, "result");
-    const isError = parsed.is_error === true;
+    const status = asString(parsed.status).toLowerCase();
+    const isError =
+      parsed.is_error === true || status === "error" || status === "failed";
+    const subtype = asString(parsed.subtype, status || "result");
     if (subtype || isError) {
       console.log((isError ? pc.red : pc.blue)(`result: subtype=${subtype} is_error=${isError ? "true" : "false"}`));
+    }
+    if (isError) {
+      const text = errorText(parsed.error ?? parsed.message ?? parsed.result);
+      if (text) console.log(pc.red(`error: ${text}`));
     }
     return;
   }
