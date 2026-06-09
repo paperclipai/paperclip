@@ -54,6 +54,7 @@ import {
   isClaudeMaxTurnsResult,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
+  isClaudeModifiedThinkingError,
 } from "./parse.js";
 import { prepareClaudeConfigSeed } from "./claude-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
@@ -948,11 +949,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       !initial.proc.timedOut &&
       (initial.proc.exitCode ?? 0) !== 0 &&
       initial.parsed &&
-      isClaudeUnknownSessionError(initial.parsed)
+      (isClaudeUnknownSessionError(initial.parsed) || isClaudeModifiedThinkingError(initial.parsed))
     ) {
+      const reason = isClaudeUnknownSessionError(initial.parsed)
+        ? "Claude resume session is unavailable"
+        : "Claude resume session has a modified thinking block";
       await onLog(
         "stdout",
-        `[paperclip] Claude resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+        `[paperclip] ${reason}; retrying with a fresh session. (session "${sessionId}")\n`,
       );
       const retry = await runAttempt(null);
       return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
