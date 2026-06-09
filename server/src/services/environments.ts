@@ -157,7 +157,13 @@ async function leaseHolderIsStale(db: Db, lease: EnvironmentLeaseRow, now: Date)
   return !(LIVE_HEARTBEAT_RUN_STATUSES as readonly string[]).includes(run.status);
 }
 
-/** Most-recent ACTIVE lease holding a given (environment, execution workspace), if any. */
+/**
+ * Most-recent ACTIVE single-flight lease holding a given (environment, execution
+ * workspace), if any. Scoped to {@link SINGLE_FLIGHT_LEASE_POLICY} so it matches
+ * the partial unique index (`lease_policy = 'ephemeral'`) exactly: a coexisting
+ * `reuse_by_environment` lease on the same workspace must neither be returned as
+ * a conflict nor be expired as a "stale" single-flight holder.
+ */
 async function findActiveWorkspaceLease(
   db: Db,
   environmentId: string,
@@ -171,6 +177,7 @@ async function findActiveWorkspaceLease(
         eq(environmentLeases.environmentId, environmentId),
         eq(environmentLeases.executionWorkspaceId, executionWorkspaceId),
         eq(environmentLeases.status, "active"),
+        eq(environmentLeases.leasePolicy, SINGLE_FLIGHT_LEASE_POLICY),
       ),
     )
     .orderBy(desc(environmentLeases.acquiredAt), desc(environmentLeases.createdAt))
@@ -333,8 +340,8 @@ export function environmentService(db: Db) {
       const heartbeatRunId = input.heartbeatRunId ?? null;
       const leasePolicy = input.leasePolicy ?? "ephemeral";
 
-      const insertLease = async (): Promise<EnvironmentLease> => {
-        const row = await db
+      const insertLease = async (executor: Db = db): Promise<EnvironmentLease> => {
+        const row = await executor
           .insert(environmentLeases)
           .values({
             companyId: input.companyId,
@@ -399,19 +406,33 @@ export function environmentService(db: Db) {
         if (!(await leaseHolderIsStale(db, existing, now))) {
           throw conflictFrom(existing);
         }
-        await db
-          .update(environmentLeases)
-          .set({
-            status: "expired",
-            releasedAt: now,
-            lastUsedAt: now,
-            updatedAt: now,
-            failureReason: existing.failureReason ?? "superseded: stale single-flight workspace lease",
-          })
-          .where(and(eq(environmentLeases.id, existing.id), eq(environmentLeases.status, "active")));
       }
 
       try {
+        // Stale-holder adoption must be atomic: expiring the old lease and
+        // inserting the replacement in two independent statements risks leaving
+        // the workspace unoccupied if the process dies between them. Wrap both in
+        // one transaction so a crash rolls back to the prior state and the run can
+        // retry cleanly. The `status = 'active'` guard makes the expire a no-op if
+        // a concurrent acquirer already adopted the holder, in which case our
+        // insert trips the partial unique index and is handled below. The plain
+        // no-contention insert (no existing holder) stays outside a transaction.
+        if (existing) {
+          return await db.transaction(async (tx) => {
+            const txDb = tx as unknown as Db;
+            await txDb
+              .update(environmentLeases)
+              .set({
+                status: "expired",
+                releasedAt: now,
+                lastUsedAt: now,
+                updatedAt: now,
+                failureReason: existing.failureReason ?? "superseded: stale single-flight workspace lease",
+              })
+              .where(and(eq(environmentLeases.id, existing.id), eq(environmentLeases.status, "active")));
+            return insertLease(txDb);
+          });
+        }
         return await insertLease();
       } catch (err) {
         // Lost a race to a concurrent acquirer; the partial unique index rejects

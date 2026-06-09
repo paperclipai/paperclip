@@ -379,6 +379,69 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(active).toHaveLength(2);
   });
 
+  it("does not treat a coexisting reuse lease as an ephemeral single-flight conflict", async () => {
+    // A live `reuse_by_environment` lease shares the workspace with an incoming
+    // ephemeral acquisition. The single-flight guard is scoped to ephemeral
+    // leases (matching the partial unique index), so the ephemeral acquire must
+    // succeed and both leases must remain active rather than colliding.
+    const { companyId, agentId, environmentId, runId, executionWorkspaceId } = await seedEnvironment();
+    const ephemeralRunId = await seedRun(companyId, agentId, "running");
+
+    const reuse = await svc.acquireLease({
+      companyId,
+      environmentId,
+      executionWorkspaceId,
+      heartbeatRunId: runId,
+      leasePolicy: "reuse_by_environment",
+    });
+    const ephemeral = await svc.acquireLease({
+      companyId,
+      environmentId,
+      executionWorkspaceId,
+      heartbeatRunId: ephemeralRunId,
+      leasePolicy: "ephemeral",
+    });
+
+    expect(ephemeral.id).not.toBe(reuse.id);
+    // The reuse lease was neither conflicted-on nor expired.
+    expect((await svc.getLeaseById(reuse.id))?.status).toBe("active");
+    const active = await svc.listLeases(environmentId, { status: "active" });
+    expect(active.map((lease) => lease.id).sort()).toEqual([reuse.id, ephemeral.id].sort());
+  });
+
+  it("does not expire a coexisting reuse lease whose holding run has terminated", async () => {
+    // The dangerous cross-policy mode: a `reuse_by_environment` lease persists
+    // past its holding run by design, so a terminal run does not make it stale.
+    // An ephemeral acquirer on the same workspace must not adopt/expire it as if
+    // it were an abandoned single-flight holder.
+    const { companyId, agentId, environmentId, runId, executionWorkspaceId } = await seedEnvironment();
+
+    const reuse = await svc.acquireLease({
+      companyId,
+      environmentId,
+      executionWorkspaceId,
+      heartbeatRunId: runId,
+      leasePolicy: "reuse_by_environment",
+    });
+    // The reuse lease's originating run finishes; the sandbox lease lives on.
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+
+    const ephemeralRunId = await seedRun(companyId, agentId, "running");
+    const ephemeral = await svc.acquireLease({
+      companyId,
+      environmentId,
+      executionWorkspaceId,
+      heartbeatRunId: ephemeralRunId,
+      leasePolicy: "ephemeral",
+    });
+
+    expect(ephemeral.id).not.toBe(reuse.id);
+    // Pre-fix, the unscoped lookup would have expired this reuse lease here.
+    expect((await svc.getLeaseById(reuse.id))?.status).toBe("active");
+    const active = await svc.listLeases(environmentId, { status: "active" });
+    expect(active.map((lease) => lease.id).sort()).toEqual([reuse.id, ephemeral.id].sort());
+  });
+
   it("does not single-flight leases without an execution workspace", async () => {
     const { companyId, agentId, environmentId, runId } = await seedEnvironment();
     const otherRunId = await seedRun(companyId, agentId, "running");
