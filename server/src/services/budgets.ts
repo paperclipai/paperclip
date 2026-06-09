@@ -14,6 +14,7 @@ import type {
   BudgetIncidentResolutionInput,
   BudgetMetric,
   BudgetOverview,
+  PauseReason,
   BudgetPolicy,
   BudgetPolicySummary,
   BudgetPolicyUpsertInput,
@@ -28,7 +29,7 @@ type ScopeRecord = {
   companyId: string;
   name: string;
   paused: boolean;
-  pauseReason: "manual" | "budget" | "system" | null;
+  pauseReason: PauseReason | null;
 };
 
 type PolicyRow = typeof budgetPolicies.$inferSelect;
@@ -156,7 +157,7 @@ async function computeObservedAmount(
 
   const [row] = await db
     .select({
-      total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+      total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
     })
     .from(costEvents)
     .where(and(...conditions));

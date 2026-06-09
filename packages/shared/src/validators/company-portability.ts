@@ -1,4 +1,11 @@
 import { z } from "zod";
+import { MAX_COMPANY_ATTACHMENT_MAX_BYTES } from "../constants.js";
+import {
+  issueCommentAuthorTypeSchema,
+  issueCommentMetadataSchema,
+  issueCommentPresentationSchema,
+} from "./issue.js";
+import { routineVariableSchema } from "./routine.js";
 
 export const portabilityIncludeSchema = z
   .object({
@@ -14,6 +21,7 @@ export const portabilityEnvInputSchema = z.object({
   key: z.string().min(1),
   description: z.string().nullable(),
   agentSlug: z.string().min(1).nullable(),
+  projectSlug: z.string().min(1).nullable(),
   kind: z.enum(["secret", "plain"]),
   requirement: z.enum(["required", "optional"]),
   defaultValue: z.string().nullable(),
@@ -35,7 +43,12 @@ export const portabilityCompanyManifestEntrySchema = z.object({
   description: z.string().nullable(),
   brandColor: z.string().nullable(),
   logoPath: z.string().nullable(),
+  attachmentMaxBytes: z.number().int().min(1).max(MAX_COMPANY_ATTACHMENT_MAX_BYTES).nullable().default(null),
   requireBoardApprovalForNewAgents: z.boolean(),
+  feedbackDataSharingEnabled: z.boolean().default(false),
+  feedbackDataSharingConsentAt: z.string().datetime().nullable().default(null),
+  feedbackDataSharingConsentByUserId: z.string().nullable().default(null),
+  feedbackDataSharingTermsVersion: z.string().nullable().default(null),
 });
 
 export const portabilitySidebarOrderSchema = z.object({
@@ -54,11 +67,11 @@ export const portabilityAgentManifestEntrySchema = z.object({
   capabilities: z.string().nullable(),
   reportsToSlug: z.string().min(1).nullable(),
   adapterType: z.string().min(1),
-  adapterConfig: z.record(z.unknown()),
-  runtimeConfig: z.record(z.unknown()),
-  permissions: z.record(z.unknown()),
+  adapterConfig: z.record(z.string(), z.unknown()),
+  runtimeConfig: z.record(z.string(), z.unknown()),
+  permissions: z.record(z.string(), z.unknown()),
   budgetMonthlyCents: z.number().int().nonnegative(),
-  metadata: z.record(z.unknown()).nullable(),
+  metadata: z.record(z.string(), z.unknown()).nullable(),
 });
 
 export const portabilitySkillManifestEntrySchema = z.object({
@@ -72,7 +85,7 @@ export const portabilitySkillManifestEntrySchema = z.object({
   sourceRef: z.string().nullable(),
   trustLevel: z.string().nullable(),
   compatibility: z.string().nullable(),
-  metadata: z.record(z.unknown()).nullable(),
+  metadata: z.record(z.string(), z.unknown()).nullable(),
   fileInventory: z.array(z.object({
     path: z.string().min(1),
     kind: z.string().min(1),
@@ -89,7 +102,7 @@ export const portabilityProjectManifestEntrySchema = z.object({
   targetDate: z.string().nullable(),
   color: z.string().nullable(),
   status: z.string().nullable(),
-  executionWorkspacePolicy: z.record(z.unknown()).nullable(),
+  executionWorkspacePolicy: z.record(z.string(), z.unknown()).nullable(),
   workspaces: z.array(z.object({
     key: z.string().min(1),
     name: z.string().min(1),
@@ -100,10 +113,10 @@ export const portabilityProjectManifestEntrySchema = z.object({
     visibility: z.string().nullable(),
     setupCommand: z.string().nullable(),
     cleanupCommand: z.string().nullable(),
-    metadata: z.record(z.unknown()).nullable(),
+    metadata: z.record(z.string(), z.unknown()).nullable(),
     isPrimary: z.boolean(),
   })).default([]),
-  metadata: z.record(z.unknown()).nullable(),
+  metadata: z.record(z.string(), z.unknown()).nullable(),
 });
 
 export const portabilityIssueRoutineTriggerManifestEntrySchema = z.object({
@@ -119,7 +132,18 @@ export const portabilityIssueRoutineTriggerManifestEntrySchema = z.object({
 export const portabilityIssueRoutineManifestEntrySchema = z.object({
   concurrencyPolicy: z.string().nullable(),
   catchUpPolicy: z.string().nullable(),
+  variables: z.array(routineVariableSchema).nullable().optional(),
   triggers: z.array(portabilityIssueRoutineTriggerManifestEntrySchema).default([]),
+});
+
+export const portabilityIssueCommentManifestEntrySchema = z.object({
+  body: z.string().min(1),
+  authorType: issueCommentAuthorTypeSchema,
+  authorAgentSlug: z.string().min(1).nullable(),
+  authorUserId: z.string().nullable(),
+  presentation: issueCommentPresentationSchema.nullable(),
+  metadata: issueCommentMetadataSchema.nullable(),
+  createdAt: z.string().datetime().nullable(),
 });
 
 export const portabilityIssueManifestEntrySchema = z.object({
@@ -133,14 +157,15 @@ export const portabilityIssueManifestEntrySchema = z.object({
   description: z.string().nullable(),
   recurring: z.boolean().default(false),
   routine: portabilityIssueRoutineManifestEntrySchema.nullable(),
-  legacyRecurrence: z.record(z.unknown()).nullable(),
+  legacyRecurrence: z.record(z.string(), z.unknown()).nullable(),
   status: z.string().nullable(),
   priority: z.string().nullable(),
   labelIds: z.array(z.string().min(1)).default([]),
   billingCode: z.string().nullable(),
-  executionWorkspaceSettings: z.record(z.unknown()).nullable(),
-  assigneeAdapterOverrides: z.record(z.unknown()).nullable(),
-  metadata: z.record(z.unknown()).nullable(),
+  executionWorkspaceSettings: z.record(z.string(), z.unknown()).nullable(),
+  assigneeAdapterOverrides: z.record(z.string(), z.unknown()).nullable(),
+  comments: z.array(portabilityIssueCommentManifestEntrySchema).default([]),
+  metadata: z.record(z.string(), z.unknown()).nullable(),
 });
 
 export const portabilityManifestSchema = z.object({
@@ -172,7 +197,7 @@ export const portabilitySourceSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("inline"),
     rootPath: z.string().min(1).optional().nullable(),
-    files: z.record(portabilityFileEntrySchema),
+    files: z.record(z.string(), portabilityFileEntrySchema),
   }),
   z.object({
     type: z.literal("github"),
@@ -226,11 +251,12 @@ export type CompanyPortabilityPreview = z.infer<typeof companyPortabilityPreview
 
 export const portabilityAdapterOverrideSchema = z.object({
   adapterType: z.string().min(1),
-  adapterConfig: z.record(z.unknown()).optional(),
+  adapterConfig: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const companyPortabilityImportSchema = companyPortabilityPreviewSchema.extend({
   adapterOverrides: z.record(z.string().min(1), portabilityAdapterOverrideSchema).optional(),
+  secretValues: z.record(z.string().min(1), z.string()).optional(),
 });
 
 export type CompanyPortabilityImport = z.infer<typeof companyPortabilityImportSchema>;

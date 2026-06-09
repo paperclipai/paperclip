@@ -5,25 +5,41 @@ import * as p from "@clack/prompts";
 import pc from "picocolors";
 import type {
   Company,
+  FeedbackTrace,
   CompanyPortabilityFileEntry,
   CompanyPortabilityExportResult,
   CompanyPortabilityInclude,
   CompanyPortabilityPreviewResult,
   CompanyPortabilityImportResult,
 } from "@paperclipai/shared";
+import { getTelemetryClient, trackCompanyImported } from "../../telemetry.js";
 import { ApiRequestError } from "../../client/http.js";
 import { openUrl } from "../../client/board-auth.js";
 import { binaryContentTypeByExtension, readZipArchive } from "./zip.js";
 import {
   addCommonClientOptions,
+  apiPath,
   formatInlineRecord,
   handleCommandError,
   printOutput,
   resolveCommandContext,
   type BaseClientOptions,
 } from "./common.js";
+import {
+  buildFeedbackTraceQuery,
+  normalizeFeedbackTraceExportFormat,
+  serializeFeedbackTraces,
+} from "./feedback.js";
 
 interface CompanyCommandOptions extends BaseClientOptions {}
+interface CompanyJsonOptions extends BaseClientOptions {
+  companyId?: string;
+  payloadJson?: string;
+}
+interface AgentMeResponse {
+  id: string;
+  companyId: string;
+}
 type CompanyDeleteSelectorMode = "auto" | "id" | "prefix";
 type CompanyImportTargetMode = "new" | "existing";
 type CompanyCollisionMode = "rename" | "skip" | "replace";
@@ -42,6 +58,20 @@ interface CompanyExportOptions extends BaseClientOptions {
   issues?: string;
   projectIssues?: string;
   expandReferencedSkills?: boolean;
+}
+
+interface CompanyFeedbackOptions extends BaseClientOptions {
+  targetType?: string;
+  vote?: string;
+  status?: string;
+  projectId?: string;
+  issueId?: string;
+  from?: string;
+  to?: string;
+  sharedOnly?: boolean;
+  includePayload?: boolean;
+  out?: string;
+  format?: string;
 }
 
 interface CompanyImportOptions extends BaseClientOptions {
@@ -724,8 +754,8 @@ export function resolveCompanyImportApiPath(input: {
       throw new Error("Existing-company imports require a companyId to resolve the API route.");
     }
     return input.dryRun
-      ? `/api/companies/${companyId}/imports/preview`
-      : `/api/companies/${companyId}/imports/apply`;
+      ? apiPath`/api/companies/${companyId}/imports/preview`
+      : apiPath`/api/companies/${companyId}/imports/apply`;
   }
 
   return input.dryRun ? "/api/companies/import/preview" : "/api/companies/import";
@@ -765,8 +795,15 @@ export function isHttpUrl(input: string): boolean {
   return /^https?:\/\//i.test(input.trim());
 }
 
-export function isGithubUrl(input: string): boolean {
-  return /^https?:\/\/github\.com\//i.test(input.trim());
+export function looksLikeRepoUrl(input: string): boolean {
+  try {
+    const url = new URL(input.trim());
+    if (url.protocol !== "https:") return false;
+    const segments = url.pathname.split("/").filter(Boolean);
+    return segments.length >= 2;
+  } catch {
+    return false;
+  }
 }
 
 function isGithubSegment(input: string): boolean {
@@ -797,13 +834,15 @@ function normalizeGithubImportPath(input: string | null | undefined): string | n
 }
 
 function buildGithubImportUrl(input: {
+  hostname?: string;
   owner: string;
   repo: string;
   ref?: string | null;
   path?: string | null;
   companyPath?: string | null;
 }): string {
-  const url = new URL(`https://github.com/${input.owner}/${input.repo.replace(/\.git$/i, "")}`);
+  const host = input.hostname || "github.com";
+  const url = new URL(`https://${host}/${input.owner}/${input.repo.replace(/\.git$/i, "")}`);
   const ref = input.ref?.trim();
   if (ref) {
     url.searchParams.set("ref", ref);
@@ -834,14 +873,15 @@ export function normalizeGithubImportSource(input: string, refOverride?: string)
     });
   }
 
-  if (!isGithubUrl(trimmed)) {
-    throw new Error("GitHub source must be a github.com URL or owner/repo[/path] shorthand.");
+  if (!looksLikeRepoUrl(trimmed)) {
+    throw new Error("GitHub source must be a GitHub or GitHub Enterprise URL, or owner/repo[/path] shorthand.");
   }
   if (!ref) {
     return trimmed;
   }
 
   const url = new URL(trimmed);
+  const hostname = url.hostname;
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts.length < 2) {
     throw new Error("Invalid GitHub URL.");
@@ -852,18 +892,18 @@ export function normalizeGithubImportSource(input: string, refOverride?: string)
   const existingPath = normalizeGithubImportPath(url.searchParams.get("path"));
   const existingCompanyPath = normalizeGithubImportPath(url.searchParams.get("companyPath"));
   if (existingCompanyPath) {
-    return buildGithubImportUrl({ owner, repo, ref, companyPath: existingCompanyPath });
+    return buildGithubImportUrl({ hostname, owner, repo, ref, companyPath: existingCompanyPath });
   }
   if (existingPath) {
-    return buildGithubImportUrl({ owner, repo, ref, path: existingPath });
+    return buildGithubImportUrl({ hostname, owner, repo, ref, path: existingPath });
   }
   if (parts[2] === "tree") {
-    return buildGithubImportUrl({ owner, repo, ref, path: parts.slice(4).join("/") });
+    return buildGithubImportUrl({ hostname, owner, repo, ref, path: parts.slice(4).join("/") });
   }
   if (parts[2] === "blob") {
-    return buildGithubImportUrl({ owner, repo, ref, companyPath: parts.slice(4).join("/") });
+    return buildGithubImportUrl({ hostname, owner, repo, ref, companyPath: parts.slice(4).join("/") });
   }
-  return buildGithubImportUrl({ owner, repo, ref });
+  return buildGithubImportUrl({ hostname, owner, repo, ref });
 }
 
 async function pathExists(inputPath: string): Promise<boolean> {
@@ -921,12 +961,12 @@ export async function resolveInlineSourceFromPath(inputPath: string): Promise<{
   };
 }
 
-async function writeExportToFolder(outDir: string, exported: CompanyPortabilityExportResult): Promise<void> {
+export async function writeExportToFolder(outDir: string, exported: CompanyPortabilityExportResult): Promise<void> {
   const root = path.resolve(outDir);
   await mkdir(root, { recursive: true });
   for (const [relativePath, content] of Object.entries(exported.files)) {
     const normalized = relativePath.replace(/\\/g, "/");
-    const filePath = path.join(root, normalized);
+    const filePath = resolveExportOutputPath(root, normalized);
     await mkdir(path.dirname(filePath), { recursive: true });
     const writeValue = portableFileEntryToWriteValue(content);
     if (typeof writeValue === "string") {
@@ -935,6 +975,16 @@ async function writeExportToFolder(outDir: string, exported: CompanyPortabilityE
       await writeFile(filePath, writeValue);
     }
   }
+}
+
+export function resolveExportOutputPath(root: string, relativePath: string): string {
+  const resolvedRoot = path.resolve(root);
+  const filePath = path.resolve(resolvedRoot, relativePath);
+  const rootPrefix = resolvedRoot.endsWith(path.sep) ? resolvedRoot : `${resolvedRoot}${path.sep}`;
+  if (filePath !== resolvedRoot && !filePath.startsWith(rootPrefix)) {
+    throw new Error(`Refusing to write export file outside output directory: ${relativePath}`);
+  }
+  return filePath;
 }
 
 async function confirmOverwriteExportDirectory(outDir: string): Promise<void> {
@@ -1049,7 +1099,7 @@ export function registerCompanyCommands(program: Command): void {
       .action(async (opts: CompanyCommandOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const rows = (await ctx.api.get<Company[]>("/api/companies")) ?? [];
+          const rows = await listCompaniesForContext(ctx);
           if (ctx.json) {
             printOutput(rows, { json: true });
             return;
@@ -1085,12 +1135,195 @@ export function registerCompanyCommands(program: Command): void {
       .action(async (companyId: string, opts: CompanyCommandOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const row = await ctx.api.get<Company>(`/api/companies/${companyId}`);
+          const row = await ctx.api.get<Company>(apiPath`/api/companies/${companyId}`);
           printOutput(row, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
       }),
+  );
+
+  addCommonClientOptions(
+    company
+      .command("current")
+      .description("Get the current scoped company from --company-id, context, env, or agent authentication")
+      .action(async (opts: CompanyCommandOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const companyId = await resolveCurrentCompanyId(ctx);
+          const row = await ctx.api.get<Company>(apiPath`/api/companies/${companyId}`);
+          printOutput(row, { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: true },
+  );
+
+  addCommonClientOptions(
+    company
+      .command("stats")
+      .description("Get company stats")
+      .action(async (opts: CompanyCommandOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.get("/api/companies/stats"), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    company
+      .command("create")
+      .description("Create a company")
+      .requiredOption("--payload-json <json>", "CreateCompany JSON payload")
+      .action(async (opts: CompanyJsonOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await createCompanyForContext(ctx, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    company
+      .command("update")
+      .description("Update a company")
+      .argument("<companyId>", "Company ID")
+      .requiredOption("--payload-json <json>", "UpdateCompany JSON payload")
+      .action(async (companyId: string, opts: CompanyJsonOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.patch(apiPath`/api/companies/${companyId}`, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    company
+      .command("branding:update")
+      .description("Update company branding")
+      .argument("<companyId>", "Company ID")
+      .requiredOption("--payload-json <json>", "UpdateCompanyBranding JSON payload")
+      .action(async (companyId: string, opts: CompanyJsonOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.patch(apiPath`/api/companies/${companyId}/branding`, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCommonClientOptions(
+    company
+      .command("archive")
+      .description("Archive a company")
+      .argument("<companyId>", "Company ID")
+      .action(async (companyId: string, opts: CompanyCommandOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.post(apiPath`/api/companies/${companyId}/archive`, {}), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+
+  addCompanyJsonPost(company, "export:preview", "Preview a portable company export", "exports/preview");
+  addCompanyJsonPost(company, "export:api", "Export a company through the raw API route", "exports");
+  addCompanyJsonPost(company, "import:preview", "Preview a safe company import through the raw API route", "imports/preview");
+  addCompanyJsonPost(company, "import:apply", "Apply a safe company import through the raw API route", "imports/apply");
+
+  addCommonClientOptions(
+    company
+      .command("feedback:list")
+      .description("List feedback traces for a company")
+      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("--target-type <type>", "Filter by target type")
+      .option("--vote <vote>", "Filter by vote value")
+      .option("--status <status>", "Filter by trace status")
+      .option("--project-id <id>", "Filter by project ID")
+      .option("--issue-id <id>", "Filter by issue ID")
+      .option("--from <iso8601>", "Only include traces created at or after this timestamp")
+      .option("--to <iso8601>", "Only include traces created at or before this timestamp")
+      .option("--shared-only", "Only include traces eligible for sharing/export")
+      .option("--include-payload", "Include stored payload snapshots in the response")
+      .action(async (opts: CompanyFeedbackOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const traces = (await ctx.api.get<FeedbackTrace[]>(
+            `${apiPath`/api/companies/${ctx.companyId}/feedback-traces`}${buildFeedbackTraceQuery(opts)}`,
+          )) ?? [];
+          if (ctx.json) {
+            printOutput(traces, { json: true });
+            return;
+          }
+          printOutput(
+            traces.map((trace) => ({
+              id: trace.id,
+              issue: trace.issueIdentifier ?? trace.issueId,
+              vote: trace.vote,
+              status: trace.status,
+              targetType: trace.targetType,
+              target: trace.targetSummary.label,
+            })),
+            { json: false },
+          );
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    company
+      .command("feedback:export")
+      .description("Export feedback traces for a company")
+      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("--target-type <type>", "Filter by target type")
+      .option("--vote <vote>", "Filter by vote value")
+      .option("--status <status>", "Filter by trace status")
+      .option("--project-id <id>", "Filter by project ID")
+      .option("--issue-id <id>", "Filter by issue ID")
+      .option("--from <iso8601>", "Only include traces created at or after this timestamp")
+      .option("--to <iso8601>", "Only include traces created at or before this timestamp")
+      .option("--shared-only", "Only include traces eligible for sharing/export")
+      .option("--include-payload", "Include stored payload snapshots in the export")
+      .option("--out <path>", "Write export to a file path instead of stdout")
+      .option("--format <format>", "Export format: json or ndjson", "ndjson")
+      .action(async (opts: CompanyFeedbackOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts, { requireCompany: true });
+          const traces = (await ctx.api.get<FeedbackTrace[]>(
+            `${apiPath`/api/companies/${ctx.companyId}/feedback-traces`}${buildFeedbackTraceQuery(opts, opts.includePayload ?? true)}`,
+          )) ?? [];
+          const serialized = serializeFeedbackTraces(traces, opts.format);
+          if (opts.out?.trim()) {
+            await writeFile(opts.out, serialized, "utf8");
+            if (ctx.json) {
+              printOutput(
+                { out: opts.out, count: traces.length, format: normalizeFeedbackTraceExportFormat(opts.format) },
+                { json: true },
+              );
+              return;
+            }
+            console.log(`Wrote ${traces.length} feedback trace(s) to ${opts.out}`);
+            return;
+          }
+          process.stdout.write(`${serialized}${serialized.endsWith("\n") ? "" : "\n"}`);
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
   );
 
   addCommonClientOptions(
@@ -1110,7 +1343,7 @@ export function registerCompanyCommands(program: Command): void {
           const ctx = resolveCommandContext(opts);
           const include = parseInclude(opts.include);
           const exported = await ctx.api.post<CompanyPortabilityExportResult>(
-            `/api/companies/${companyId}/export`,
+            apiPath`/api/companies/${companyId}/export`,
             {
               include,
               skills: parseCsvValues(opts.skills),
@@ -1208,13 +1441,13 @@ export function registerCompanyCommands(program: Command): void {
             | { type: "github"; url: string };
 
           const treatAsLocalPath = !isHttpUrl(from) && await pathExists(from);
-          const isGithubSource = isGithubUrl(from) || (isGithubShorthand(from) && !treatAsLocalPath);
+          const isGithubSource = looksLikeRepoUrl(from) || (isGithubShorthand(from) && !treatAsLocalPath);
 
           if (isHttpUrl(from) || isGithubSource) {
-            if (!isGithubUrl(from) && !isGithubShorthand(from)) {
+            if (!looksLikeRepoUrl(from) && !isGithubShorthand(from)) {
               throw new Error(
                 "Only GitHub URLs and local paths are supported for import. " +
-                "Generic HTTP URLs are not supported. Use a GitHub URL (https://github.com/...) or a local directory path.",
+                "Generic HTTP URLs are not supported. Use a GitHub or GitHub Enterprise URL (https://github.com/... or https://ghe.example.com/...) or a local directory path.",
               );
             }
             sourcePayload = { type: "github", url: normalizeGithubImportSource(from, opts.ref) };
@@ -1325,10 +1558,16 @@ export function registerCompanyCommands(program: Command): void {
           if (!imported) {
             throw new Error("Import request returned no data.");
           }
+          const tc = getTelemetryClient();
+          if (tc) {
+            const isPrivate = sourcePayload.type !== "github";
+            const sourceRef = sourcePayload.type === "github" ? sourcePayload.url : from;
+            trackCompanyImported(tc, { sourceType: sourcePayload.type, sourceRef, isPrivate });
+          }
           let companyUrl: string | undefined;
           if (!ctx.json) {
             try {
-              const importedCompany = await ctx.api.get<Company>(`/api/companies/${imported.company.id}`);
+              const importedCompany = await ctx.api.get<Company>(apiPath`/api/companies/${imported.company.id}`);
               const issuePrefix = importedCompany?.issuePrefix?.trim();
               if (issuePrefix) {
                 companyUrl = buildCompanyDashboardUrl(ctx.api.apiBase, issuePrefix);
@@ -1398,7 +1637,7 @@ export function registerCompanyCommands(program: Command): void {
           let target: Company | null = null;
           const shouldTryIdLookup = by === "id" || (by === "auto" && isUuidLike(normalizedSelector));
           if (shouldTryIdLookup) {
-            const byId = await ctx.api.get<Company>(`/api/companies/${normalizedSelector}`, { ignoreNotFound: true });
+            const byId = await ctx.api.get<Company>(apiPath`/api/companies/${normalizedSelector}`, { ignoreNotFound: true });
             if (byId) {
               target = byId;
             } else if (by === "id") {
@@ -1407,7 +1646,7 @@ export function registerCompanyCommands(program: Command): void {
           }
 
           if (!target && ctx.companyId) {
-            const scoped = await ctx.api.get<Company>(`/api/companies/${ctx.companyId}`, { ignoreNotFound: true });
+            const scoped = await ctx.api.get<Company>(apiPath`/api/companies/${ctx.companyId}`, { ignoreNotFound: true });
             if (scoped) {
               try {
                 target = resolveCompanyForDeletion([scoped], normalizedSelector, by);
@@ -1437,7 +1676,7 @@ export function registerCompanyCommands(program: Command): void {
 
           assertDeleteConfirmation(target, opts);
 
-          await ctx.api.delete<{ ok: true }>(`/api/companies/${target.id}`);
+          await ctx.api.delete<{ ok: true }>(apiPath`/api/companies/${target.id}`);
 
           printOutput(
             {
@@ -1453,4 +1692,89 @@ export function registerCompanyCommands(program: Command): void {
         }
       }),
   );
+}
+
+async function listCompaniesForContext(ctx: {
+  companyId?: string;
+  api: { get<T>(path: string): Promise<T | null> };
+}): Promise<Company[]> {
+  try {
+    return (await ctx.api.get<Company[]>("/api/companies")) ?? [];
+  } catch (error) {
+    if (!isBoardAccessRequiredError(error)) {
+      throw error;
+    }
+  }
+
+  const companyId = await resolveCurrentCompanyId(ctx);
+  const scopedCompany = await ctx.api.get<Company>(apiPath`/api/companies/${companyId}`);
+  return scopedCompany ? [scopedCompany] : [];
+}
+
+async function createCompanyForContext(ctx: {
+  api: { post<T>(path: string, body?: unknown): Promise<T | null> };
+}, payload: unknown): Promise<unknown> {
+  try {
+    return await ctx.api.post("/api/companies", payload);
+  } catch (error) {
+    if (isBoardAccessRequiredError(error) || isInstanceAdminRequiredError(error)) {
+      throw new Error(
+        "Creating companies requires board/instance-admin authentication. Agent API keys are scoped to one company; use `paperclipai company list --json` or `paperclipai company current --json` to select the scoped company, or rerun create with a board token/login.",
+      );
+    }
+    throw error;
+  }
+}
+
+async function resolveCurrentCompanyId(ctx: { companyId?: string; api: { get<T>(path: string): Promise<T | null> } }): Promise<string> {
+  const fromContext = ctx.companyId?.trim();
+  if (fromContext) return fromContext;
+
+  let agent: AgentMeResponse | null = null;
+  try {
+    agent = await ctx.api.get<AgentMeResponse>("/api/agents/me");
+  } catch (error) {
+    if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403)) {
+      throw new Error(
+        "Current company is not available. Pass --company-id, set PAPERCLIP_COMPANY_ID, set a context profile companyId, or authenticate with an agent API key.",
+      );
+    }
+    throw error;
+  }
+
+  const fromAgent = agent?.companyId?.trim();
+  if (fromAgent) return fromAgent;
+  throw new Error(
+    "Current company is not available. Pass --company-id, set PAPERCLIP_COMPANY_ID, set a context profile companyId, or authenticate with an agent API key.",
+  );
+}
+
+function isBoardAccessRequiredError(error: unknown): error is ApiRequestError {
+  return error instanceof ApiRequestError && error.status === 403 && error.message.toLowerCase().includes("board access required");
+}
+
+function isInstanceAdminRequiredError(error: unknown): error is ApiRequestError {
+  return error instanceof ApiRequestError && error.status === 403 && error.message.toLowerCase().includes("instance admin");
+}
+
+function addCompanyJsonPost(parent: Command, name: string, description: string, pathSuffix: string): void {
+  addCommonClientOptions(
+    parent
+      .command(name)
+      .description(description)
+      .argument("<companyId>", "Company ID")
+      .requiredOption("--payload-json <json>", "JSON payload")
+      .action(async (companyId: string, opts: CompanyJsonOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.post(`${apiPath`/api/companies/${companyId}`}/${pathSuffix}`, parseJson(opts.payloadJson ?? "{}")), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+}
+
+function parseJson(value: string): unknown {
+  return JSON.parse(value) as unknown;
 }

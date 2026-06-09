@@ -35,24 +35,25 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc && cp -r src/migrations dist/migrations",
+    "check:migrations": "tsx src/check-migration-numbering.ts",
+    "build": "pnpm run check:migrations && tsc && cp -r src/migrations dist/migrations",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit",
-    "generate": "tsc -p tsconfig.json && drizzle-kit generate",
-    "migrate": "tsx src/migrate.ts",
+    "typecheck": "pnpm run check:migrations && tsc --noEmit",
+    "generate": "pnpm run check:migrations && tsc -p tsconfig.json && drizzle-kit generate",
+    "migrate": "pnpm run check:migrations && tsx src/migrate.ts",
     "seed": "tsx src/seed.ts"
   },
   "dependencies": {
     "@paperclipai/shared": "workspace:*",
-    "drizzle-orm": "^0.38.4",
+    "drizzle-orm": "^0.45.2",
     "embedded-postgres": "^18.1.0-beta.16",
-    "postgres": "^3.4.5"
+    "postgres": "^3.4.9"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
-    "drizzle-kit": "^0.31.9",
+    "drizzle-kit": "^0.31.10",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
-    "vitest": "^3.0.5"
+    "vitest": "^4.1.8"
   }
 }

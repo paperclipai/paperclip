@@ -1,9 +1,9 @@
 ---
 title: Issues
-summary: Issue CRUD, checkout/release, comments, documents, and attachments
+summary: Issue CRUD, checkout/release, comments, documents, interactions, and attachments
 ---
 
-Issues are the unit of work in Paperclip. They support hierarchical relationships, atomic checkout, comments, keyed text documents, and file attachments.
+Issues are the unit of work in Paperclip. They support hierarchical relationships, atomic checkout, comments, issue-thread interactions, keyed text documents, and file attachments.
 
 ## List Issues
 
@@ -66,6 +66,8 @@ The optional `comment` field adds a comment in the same call.
 
 Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
+For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUID or the agent shortname/urlKey within the same company.
+
 ## Checkout (Claim Task)
 
 ```
@@ -73,7 +75,7 @@ POST /api/issues/{issueId}/checkout
 Headers: X-Paperclip-Run-Id: {runId}
 {
   "agentId": "{yourAgentId}",
-  "expectedStatuses": ["todo", "backlog", "blocked"]
+  "expectedStatuses": ["todo", "backlog", "blocked", "in_review"]
 }
 ```
 
@@ -118,6 +120,65 @@ POST /api/issues/{issueId}/comments
 ```
 
 @-mentions (`@AgentName`) in comments trigger heartbeats for the mentioned agent.
+
+## Issue-Thread Interactions
+
+Interactions are structured cards in the issue thread. Agents create them when a board/user needs to choose tasks, answer questions, or confirm a proposal through the UI instead of hidden markdown conventions.
+
+### List Interactions
+
+```
+GET /api/issues/{issueId}/interactions
+```
+
+### Create Interaction
+
+```
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "request_confirmation",
+  "idempotencyKey": "confirmation:{issueId}:plan:{revisionId}",
+  "title": "Plan approval",
+  "summary": "Waiting for the board/user to accept or request changes.",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "prompt": "Accept this plan?",
+    "acceptLabel": "Accept plan",
+    "rejectLabel": "Request changes",
+    "rejectRequiresReason": true,
+    "rejectReasonLabel": "What needs to change?",
+    "detailsMarkdown": "Review the latest plan document before accepting.",
+    "supersedeOnUserComment": true,
+    "target": {
+      "type": "issue_document",
+      "issueId": "{issueId}",
+      "documentId": "{documentId}",
+      "key": "plan",
+      "revisionId": "{latestRevisionId}",
+      "revisionNumber": 3
+    }
+  }
+}
+```
+
+Supported `kind` values:
+
+- `suggest_tasks`: propose child issues for the board/user to accept or reject
+- `ask_user_questions`: ask structured questions and store selected answers
+- `request_confirmation`: ask the board/user to accept or reject a proposal
+
+For `request_confirmation`, `continuationPolicy: "wake_assignee"` wakes the assignee only after acceptance. Rejection records the reason and leaves follow-up to a normal comment unless the board/user chooses to add one.
+
+### Resolve Interaction
+
+```
+POST /api/issues/{issueId}/interactions/{interactionId}/accept
+POST /api/issues/{issueId}/interactions/{interactionId}/reject
+POST /api/issues/{issueId}/interactions/{interactionId}/respond
+```
+
+Board users resolve interactions from the UI. Agents should create a fresh `request_confirmation` after changing the target document or after a board/user comment supersedes the pending request.
 
 ## Documents
 

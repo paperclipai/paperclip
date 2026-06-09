@@ -43,6 +43,7 @@ export const statusBadge: Record<string, string> = {
   // Agent statuses
   active: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
   running: "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300",
+  scheduled_retry: "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300",
   paused: "bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300",
   idle: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
   archived: "bg-muted text-muted-foreground",
@@ -56,7 +57,10 @@ export const statusBadge: Record<string, string> = {
   failed: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   timed_out: "bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300",
   succeeded: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  ok: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  warning: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
   error: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+  info: "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300",
   terminated: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   pending: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
 
@@ -79,20 +83,50 @@ export const statusBadge: Record<string, string> = {
 export const statusBadgeDefault = "bg-muted text-muted-foreground";
 
 // ---------------------------------------------------------------------------
-// Agent status dot — solid background for small indicator dots
+// Agent status — brand state system (PAP-75)
+//
+// The agents section shows four states only. Each maps to a brand colour name;
+// the indicator is a brand heartbeat capsule (8×16, r4) and the row chip is a
+// brand `.task-chip` (1px border, light/dark variants). `active` is dead code
+// that folds into idle; `running` pulses and `error` blinks. `terminated` and
+// `pending_approval` are excluded from the list but may still render on detail
+// pages, where they fall through to the gray default.
 // ---------------------------------------------------------------------------
 
-export const agentStatusDot: Record<string, string> = {
-  running: "bg-cyan-400 animate-pulse",
-  active: "bg-green-400",
-  paused: "bg-yellow-400",
-  idle: "bg-yellow-400",
-  pending_approval: "bg-amber-400",
-  error: "bg-red-400",
-  archived: "bg-neutral-400",
+export type AgentBadgeColor = "gray" | "blue" | "amber" | "red";
+
+/** Agent status → brand colour name. `active` aliases idle (never assigned). */
+export const agentStatusColor: Record<string, AgentBadgeColor> = {
+  idle: "gray",
+  active: "gray",
+  running: "blue",
+  paused: "amber",
+  error: "red",
 };
 
-export const agentStatusDotDefault = "bg-neutral-400";
+export const agentStatusColorDefault: AgentBadgeColor = "gray";
+
+/** Brand `.task-chip` styles (1px border) per colour name — light + dark. */
+export const agentStatusBadge: Record<AgentBadgeColor, string> = {
+  gray: "bg-[#F5F3F0] text-[#52585D] border-[#A8AEB2] dark:bg-[#6e696024] dark:text-[#9A958A] dark:border-[#9e958a73]",
+  blue: "bg-[#DBEAFE] text-[#1D4ED8] border-[#2563EB] dark:bg-[#2563eb2e] dark:text-[#2563EB] dark:border-[#2563eb73]",
+  amber: "bg-[#FEF3C7] text-[#B45309] border-[#F59E0B] dark:bg-[#f59e0b24] dark:text-[#F59E0B] dark:border-[#f59e0b73]",
+  red: "bg-[#FEE2E2] text-[#991B1B] border-[#DC2626] dark:bg-[#dc26262e] dark:text-[#DC2626] dark:border-[#dc262673]",
+};
+
+/** Heartbeat-capsule fill (solid) per colour name. gray darkens in dark mode. */
+export const agentStatusCapsule: Record<AgentBadgeColor, string> = {
+  gray: "bg-[#A8AEB2] dark:bg-[#6E6960]",
+  blue: "bg-[#2563EB]",
+  amber: "bg-[#F59E0B]",
+  red: "bg-[#DC2626]",
+};
+
+/** Per-status capsule motion (running pulses, error blinks). Honors reduced-motion. */
+export const agentStatusMotion: Record<string, string> = {
+  running: "hb-pulse",
+  error: "hb-blink",
+};
 
 // ---------------------------------------------------------------------------
 // Priority colors

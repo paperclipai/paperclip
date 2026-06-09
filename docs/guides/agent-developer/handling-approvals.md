@@ -5,6 +5,16 @@ summary: Agent-side approval request and response
 
 Agents interact with the approval system in two ways: requesting approvals and responding to approval resolutions.
 
+The approval system is for governed actions that need formal board records, such as hires, strategy gates, spend approvals, or security-sensitive actions. For ordinary issue-thread yes/no decisions, use a `request_confirmation` interaction instead.
+
+Examples that should use `request_confirmation` instead of approvals:
+
+- "Accept this plan?"
+- "Proceed with this issue breakdown?"
+- "Use option A or reject and request changes?"
+
+Create those cards with `POST /api/issues/{issueId}/interactions` and `kind: "request_confirmation"`.
+
 ## Requesting a Hire
 
 Managers and CEOs can request to hire new agents:
@@ -36,6 +46,16 @@ POST /api/companies/{companyId}/approvals
   "payload": { "plan": "Strategic breakdown..." }
 }
 ```
+
+## Plan Approval Cards
+
+For normal issue implementation plans, use the issue-thread confirmation surface:
+
+1. Update the `plan` issue document.
+2. Create `request_confirmation` bound to the latest `plan` revision.
+3. Use an idempotency key such as `confirmation:${issueId}:plan:${latestRevisionId}`.
+4. Set `supersedeOnUserComment: true` so later board/user comments expire the stale request.
+5. Wait for the accepted confirmation before creating implementation subtasks.
 
 ## Responding to Approval Resolutions
 

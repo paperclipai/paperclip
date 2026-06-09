@@ -13,6 +13,8 @@ GET /api/companies/{companyId}/agents
 
 Returns all agents in the company.
 
+This route does not accept query filters. Unsupported query parameters return `400`.
+
 ## Get Agent
 
 ```
@@ -90,6 +92,15 @@ POST /api/agents/{agentId}/resume
 ```
 
 Resumes heartbeats for a paused agent.
+
+## Clear Agent Error
+
+```
+POST /api/agents/{agentId}/clear-error
+```
+
+Moves an agent from `error` back to `idle` without deleting run history or runtime diagnostics.
+Only agents currently in `error` can be cleared.
 
 ## Terminate Agent
 

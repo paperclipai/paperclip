@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
-import { useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
+import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, isUuidLike, type BudgetPolicySummary } from "@paperclipai/shared";
+import { PROJECT_COLORS, PROJECT_ICON_NAMES, isUuidLike, type BudgetPolicySummary } from "@paperclipai/shared";
 import { budgetsApi } from "../api/budgets";
+import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
@@ -10,24 +12,39 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
-import { useToast } from "../context/ToastContext";
+import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
 import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
+import { ProjectTile } from "../components/ProjectTile";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
-import { projectRouteRef, cn } from "../lib/utils";
+import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
+import { MembershipAction } from "../components/MembershipAction";
+import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
+import { collectLiveIssueIds } from "../lib/liveIssueIds";
+import { projectRouteRef } from "../lib/utils";
+import { PROJECT_ICONS } from "../lib/project-icons";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
+import {
+  resourceMembershipState,
+  useResourceMembershipMutation,
+  useResourceMemberships,
+} from "../hooks/useResourceMemberships";
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "overview" | "list" | "configuration" | "budget";
+type ProjectBaseTab = "overview" | "list" | "plugin-operations" | "workspaces" | "configuration" | "budget";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -44,6 +61,8 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   if (tab === "configuration") return "configuration";
   if (tab === "budget") return "budget";
   if (tab === "issues") return "list";
+  if (tab === "plugin-operations") return "plugin-operations";
+  if (tab === "workspaces") return "workspaces";
   return null;
 }
 
@@ -63,6 +82,7 @@ function OverviewContent({
       <InlineEditor
         value={project.description ?? ""}
         onSave={(description) => onUpdate({ description })}
+        nullable
         as="p"
         className="text-sm text-muted-foreground"
         placeholder="Add a description..."
@@ -88,60 +108,116 @@ function OverviewContent({
   );
 }
 
-/* ── Color picker popover ── */
+/* ── Combined icon + color picker popover (PAP-72 / PAP-68 part 4) ── */
 
-function ColorPicker({
-  currentColor,
-  onSelect,
+const DEFAULT_PROJECT_ICON = "folder";
+
+function ProjectTilePicker({
+  color,
+  icon,
+  onSelectIcon,
+  onSelectColor,
 }: {
-  currentColor: string;
-  onSelect: (color: string) => void;
+  color: string | null;
+  icon: string | null;
+  onSelectIcon: (icon: string) => void;
+  onSelectColor: (color: string | null) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const [search, setSearch] = useState("");
 
-  useEffect(() => {
-    if (!open) return;
-    function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [open]);
+  const filteredIcons = useMemo(() => {
+    const entries = PROJECT_ICON_NAMES.map((name) => [name, PROJECT_ICONS[name]] as const);
+    if (!search) return entries;
+    const q = search.toLowerCase();
+    return entries.filter(([name]) => name.includes(q));
+  }, [search]);
 
+  // Keep the popover open across selections so the user can pick both an icon
+  // and a color in one pass; reset the search when it closes.
   return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen(!open)}
-        className="shrink-0 h-5 w-5 rounded-md cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-[box-shadow]"
-        style={{ backgroundColor: currentColor }}
-        aria-label="Change project color"
-      />
-      {open && (
-        <div className="absolute top-full left-0 mt-2 p-2 bg-popover border border-border rounded-lg shadow-lg z-50 w-max">
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setSearch("");
+      }}
+    >
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="shrink-0 rounded-lg cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-[box-shadow]"
+          aria-label="Change project icon and color"
+        >
+          <ProjectTile color={color} icon={icon} size="md" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-72 p-3" align="start">
+        {/* Icon search + grid */}
+        <p className="text-xs font-medium text-muted-foreground mb-2">Icon</p>
+        <Input
+          placeholder="Search icons..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="mb-2 h-8 text-sm"
+          autoFocus
+        />
+        <div className="grid grid-cols-7 gap-1 max-h-40 overflow-y-auto">
+          {filteredIcons.map(([name, Icon]) => (
+            <button
+              key={name}
+              type="button"
+              onClick={() => onSelectIcon(name)}
+              className={cn(
+                "flex items-center justify-center h-8 w-8 rounded hover:bg-accent transition-colors",
+                (icon ?? DEFAULT_PROJECT_ICON) === name && "bg-accent ring-1 ring-primary",
+              )}
+              title={name}
+            >
+              <Icon className="h-4 w-4" />
+            </button>
+          ))}
+          {filteredIcons.length === 0 && (
+            <p className="col-span-7 text-xs text-muted-foreground text-center py-2">No icons match</p>
+          )}
+        </div>
+
+        {/* Color swatches */}
+        <div className="mt-3 border-t border-border pt-3">
+          <p className="text-xs font-medium text-muted-foreground mb-2">Color</p>
           <div className="grid grid-cols-5 gap-1.5">
-            {PROJECT_COLORS.map((color) => (
+            {/* Neutral / reset-to-gray option */}
+            <button
+              type="button"
+              onClick={() => onSelectColor(null)}
+              className={`h-6 w-6 cursor-pointer transition-[transform,box-shadow] duration-150 hover:scale-110 ${
+                color === null
+                  ? "ring-2 ring-foreground ring-offset-1 ring-offset-background rounded-md"
+                  : ""
+              }`}
+              aria-label="Reset to neutral gray"
+              title="Neutral (default)"
+            >
+              <ProjectTile color={null} size="sm" />
+            </button>
+            {PROJECT_COLORS.map((swatch) => (
               <button
-                key={color}
-                onClick={() => {
-                  onSelect(color);
-                  setOpen(false);
-                }}
+                key={swatch}
+                type="button"
+                onClick={() => onSelectColor(swatch)}
                 className={`h-6 w-6 rounded-md cursor-pointer transition-[transform,box-shadow] duration-150 hover:scale-110 ${
-                  color === currentColor
+                  swatch === color
                     ? "ring-2 ring-foreground ring-offset-1 ring-offset-background"
                     : "hover:ring-2 hover:ring-foreground/30"
                 }`}
-                style={{ backgroundColor: color }}
-                aria-label={`Select color ${color}`}
+                style={{ backgroundColor: swatch }}
+                aria-label={`Select color ${swatch}`}
               />
             ))}
           </div>
         </div>
-      )}
-    </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -162,14 +238,13 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
     enabled: !!companyId,
     refetchInterval: 5000,
   });
+  const { data: projects } = useQuery({
+    queryKey: queryKeys.projects.list(companyId),
+    queryFn: () => projectsApi.list(companyId),
+    enabled: !!companyId,
+  });
 
-  const liveIssueIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const run of liveRuns ?? []) {
-      if (run.issueId) ids.add(run.issueId);
-    }
-    return ids;
-  }, [liveRuns]);
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
 
   const { data: issues, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.listByProject(companyId, projectId),
@@ -192,9 +267,71 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       isLoading={isLoading}
       error={error as Error | null}
       agents={agents}
+      projects={projects}
       liveIssueIds={liveIssueIds}
       projectId={projectId}
-      viewStateKey={`paperclip:project-view:${projectId}`}
+      viewStateKey="paperclip:project-issues-view"
+      onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+    />
+  );
+}
+
+function ProjectPluginOperationsList({
+  projectId,
+  companyId,
+  pluginKey,
+}: {
+  projectId: string;
+  companyId: string;
+  pluginKey: string;
+}) {
+  const queryClient = useQueryClient();
+  const originKindPrefix = `plugin:${pluginKey}`;
+
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(companyId),
+    queryFn: () => agentsApi.list(companyId),
+    enabled: !!companyId,
+  });
+  const { data: projects } = useQuery({
+    queryKey: queryKeys.projects.list(companyId),
+    queryFn: () => projectsApi.list(companyId),
+    enabled: !!companyId,
+  });
+  const { data: liveRuns } = useQuery({
+    queryKey: queryKeys.liveRuns(companyId),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+    enabled: !!companyId,
+    refetchInterval: 5000,
+  });
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
+
+  const { data: issues, isLoading, error } = useQuery({
+    queryKey: queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix),
+    queryFn: () => issuesApi.list(companyId, { projectId, originKindPrefix }),
+    enabled: !!companyId && !!projectId,
+  });
+
+  const updateIssue = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
+      issuesApi.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+    },
+  });
+
+  return (
+    <IssuesList
+      issues={issues ?? []}
+      isLoading={isLoading}
+      error={error as Error | null}
+      agents={agents}
+      projects={projects}
+      liveIssueIds={liveIssueIds}
+      projectId={projectId}
+      viewStateKey={`paperclip:project-plugin-operations-view:${pluginKey}`}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
   );
@@ -211,11 +348,12 @@ export function ProjectDetail() {
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { closePanel } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { pushToast } = useToast();
+  const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
   const [fieldSaveStates, setFieldSaveStates] = useState<Partial<Record<ProjectConfigFieldKey, ProjectFieldSaveState>>>({});
+  const [dismissedLeftProjectIds, setDismissedLeftProjectIds] = useState<Set<string>>(() => new Set());
   const fieldSaveRequestIds = useRef<Partial<Record<ProjectConfigFieldKey, number>>>({});
   const fieldSaveTimers = useRef<Partial<Record<ProjectConfigFieldKey, ReturnType<typeof setTimeout>>>>({});
   const routeProjectRef = projectId ?? "";
@@ -241,6 +379,15 @@ export function ProjectDetail() {
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
   const projectLookupRef = project?.id ?? routeProjectRef;
   const resolvedCompanyId = project?.companyId ?? selectedCompanyId;
+  const membershipsQuery = useResourceMemberships(resolvedCompanyId);
+  const membershipMutation = useResourceMembershipMutation(resolvedCompanyId);
+  const projectMembershipState = project?.id
+    ? resourceMembershipState(membershipsQuery.data, "project", project.id)
+    : "joined";
+  const experimentalSettingsQuery = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
   const {
     slots: pluginDetailSlots,
     isLoading: pluginDetailSlotsLoading,
@@ -259,6 +406,39 @@ export function ProjectDetail() {
     [pluginDetailSlots],
   );
   const activePluginTab = pluginTabItems.find((item) => item.value === activeTab) ?? null;
+  const isolatedWorkspacesEnabled = experimentalSettingsQuery.data?.enableIsolatedWorkspaces === true;
+  const workspaceTabProjectId = project?.id ?? null;
+  const { data: workspaceTabIssues = [], isLoading: isWorkspaceTabIssuesLoading, error: workspaceTabIssuesError } = useQuery({
+    queryKey: workspaceTabProjectId && resolvedCompanyId
+      ? queryKeys.issues.listByProject(resolvedCompanyId, workspaceTabProjectId)
+      : ["issues", "__workspace-tab__", "disabled"],
+    queryFn: () => issuesApi.list(resolvedCompanyId!, { projectId: workspaceTabProjectId! }),
+    enabled: Boolean(resolvedCompanyId && workspaceTabProjectId && isolatedWorkspacesEnabled),
+  });
+  const {
+    data: workspaceTabExecutionWorkspaces = [],
+    isLoading: isWorkspaceTabExecutionWorkspacesLoading,
+    error: workspaceTabExecutionWorkspacesError,
+  } = useQuery({
+    queryKey: workspaceTabProjectId && resolvedCompanyId
+      ? queryKeys.executionWorkspaces.list(resolvedCompanyId, { projectId: workspaceTabProjectId })
+      : ["execution-workspaces", "__workspace-tab__", "disabled"],
+    queryFn: () => executionWorkspacesApi.list(resolvedCompanyId!, { projectId: workspaceTabProjectId! }),
+    enabled: Boolean(resolvedCompanyId && workspaceTabProjectId && isolatedWorkspacesEnabled),
+  });
+  const workspaceSummaries = useMemo(() => {
+    if (!project || !isolatedWorkspacesEnabled) return [];
+    return buildProjectWorkspaceSummaries({
+      project,
+      issues: workspaceTabIssues,
+      executionWorkspaces: workspaceTabExecutionWorkspaces,
+    });
+  }, [project, isolatedWorkspacesEnabled, workspaceTabIssues, workspaceTabExecutionWorkspaces]);
+  const showWorkspacesTab = isolatedWorkspacesEnabled && workspaceSummaries.length > 0;
+  const workspaceTabDecisionLoaded =
+    experimentalSettingsQuery.isFetched &&
+    (!isolatedWorkspacesEnabled || (!isWorkspaceTabIssuesLoading && !isWorkspaceTabExecutionWorkspacesLoading));
+  const workspaceTabError = (workspaceTabIssuesError ?? workspaceTabExecutionWorkspacesError) as Error | null;
 
   useEffect(() => {
     if (!project?.companyId || project.companyId === selectedCompanyId) return;
@@ -345,6 +525,14 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}/budget`, { replace: true });
       return;
     }
+    if (activeTab === "plugin-operations") {
+      navigate(`/projects/${canonicalProjectRef}/plugin-operations`, { replace: true });
+      return;
+    }
+    if (activeTab === "workspaces") {
+      navigate(`/projects/${canonicalProjectRef}/workspaces`, { replace: true });
+      return;
+    }
     if (activeTab === "list") {
       if (filter) {
         navigate(`/projects/${canonicalProjectRef}/issues/${filter}`, { replace: true });
@@ -360,6 +548,16 @@ export function ProjectDetail() {
     closePanel();
     return () => closePanel();
   }, [closePanel]);
+
+  useEffect(() => {
+    if (!project?.id || projectMembershipState !== "joined") return;
+    setDismissedLeftProjectIds((current) => {
+      if (!current.has(project.id)) return current;
+      const next = new Set(current);
+      next.delete(project.id);
+      return next;
+    });
+  }, [project?.id, projectMembershipState]);
 
   useEffect(() => {
     return () => {
@@ -455,6 +653,10 @@ export function ProjectDetail() {
     return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
   }
 
+  if (activeTab === "workspaces" && workspaceTabDecisionLoaded && !showWorkspacesTab) {
+    return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
+  }
+
   // Redirect bare /projects/:id to cached tab or default /issues
   if (routeProjectRef && activeTab === null) {
     let cachedTab: string | null = null;
@@ -470,6 +672,15 @@ export function ProjectDetail() {
     if (cachedTab === "budget") {
       return <Navigate to={`/projects/${canonicalProjectRef}/budget`} replace />;
     }
+    if (cachedTab === "plugin-operations" && project?.managedByPlugin) {
+      return <Navigate to={`/projects/${canonicalProjectRef}/plugin-operations`} replace />;
+    }
+    if (cachedTab === "workspaces" && workspaceTabDecisionLoaded && showWorkspacesTab) {
+      return <Navigate to={`/projects/${canonicalProjectRef}/workspaces`} replace />;
+    }
+    if (cachedTab === "workspaces" && !workspaceTabDecisionLoaded) {
+      return <PageSkeleton variant="detail" />;
+    }
     if (isProjectPluginTab(cachedTab)) {
       return <Navigate to={`/projects/${canonicalProjectRef}?tab=${encodeURIComponent(cachedTab)}`} replace />;
     }
@@ -479,6 +690,12 @@ export function ProjectDetail() {
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!project) return null;
+  const showLeftProjectNotice =
+    projectMembershipState === "left" && !dismissedLeftProjectIds.has(project.id);
+  const projectMembershipPending =
+    membershipMutation.isPending &&
+    membershipMutation.variables?.resourceType === "project" &&
+    membershipMutation.variables.resourceId === project.id;
 
   const handleTabChange = (tab: ProjectTab) => {
     // Cache the active tab per project
@@ -491,8 +708,12 @@ export function ProjectDetail() {
     }
     if (tab === "overview") {
       navigate(`/projects/${canonicalProjectRef}/overview`);
+    } else if (tab === "workspaces") {
+      navigate(`/projects/${canonicalProjectRef}/workspaces`);
     } else if (tab === "budget") {
       navigate(`/projects/${canonicalProjectRef}/budget`);
+    } else if (tab === "plugin-operations") {
+      navigate(`/projects/${canonicalProjectRef}/plugin-operations`);
     } else if (tab === "configuration") {
       navigate(`/projects/${canonicalProjectRef}/configuration`);
     } else {
@@ -502,11 +723,47 @@ export function ProjectDetail() {
 
   return (
     <div className="space-y-6">
+      {showLeftProjectNotice ? (
+        <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-100">
+          <p className="min-w-0 flex-1">
+            You left this project. It no longer appears in your sidebar.
+          </p>
+          <MembershipAction
+            compact
+            state="left"
+            pending={projectMembershipPending}
+            pendingState={projectMembershipPending ? membershipMutation.variables?.state : null}
+            resourceName={project.name}
+            onJoin={() => membershipMutation.mutate({
+              resourceType: "project",
+              resourceId: project.id,
+              resourceName: project.name,
+              state: "joined",
+            })}
+            onLeave={() => membershipMutation.mutate({
+              resourceType: "project",
+              resourceId: project.id,
+              resourceName: project.name,
+              state: "left",
+            })}
+          />
+          <button
+            type="button"
+            className="h-6 w-6 shrink-0 text-yellow-100/70 hover:text-yellow-100"
+            aria-label="Dismiss project membership notice"
+            onClick={() => setDismissedLeftProjectIds((current) => new Set(current).add(project.id))}
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
       <div className="flex items-start gap-3">
         <div className="h-7 flex items-center">
-          <ColorPicker
-            currentColor={project.color ?? "#6366f1"}
-            onSelect={(color) => updateProject.mutate({ color })}
+          <ProjectTilePicker
+            color={project.color ?? null}
+            icon={project.icon ?? null}
+            onSelectIcon={(icon) => updateProject.mutate({ icon })}
+            onSelectColor={(color) => updateProject.mutate({ color })}
           />
         </div>
         <div className="min-w-0 space-y-2">
@@ -520,6 +777,12 @@ export function ProjectDetail() {
             <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
               <span className="h-2 w-2 rounded-full bg-red-400" />
               Paused by budget hard stop
+            </div>
+          ) : null}
+          {project.managedByPlugin ? (
+            <div className="inline-flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-[11px] font-medium text-muted-foreground">
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: project.color ?? "#6366f1" }} />
+              Managed by {project.managedByPlugin.pluginDisplayName}
             </div>
           ) : null}
         </div>
@@ -559,8 +822,10 @@ export function ProjectDetail() {
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
         <PageTabBar
           items={[
-            { value: "list", label: "Issues" },
+            { value: "list", label: "Tasks" },
             { value: "overview", label: "Overview" },
+            ...(project.managedByPlugin ? [{ value: "plugin-operations", label: "Plugin operations" }] : []),
+            ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
             { value: "configuration", label: "Configuration" },
             { value: "budget", label: "Budget" },
             ...pluginTabItems.map((item) => ({
@@ -588,6 +853,31 @@ export function ProjectDetail() {
       {activeTab === "list" && project?.id && resolvedCompanyId && (
         <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />
       )}
+
+      {activeTab === "plugin-operations" && project?.id && resolvedCompanyId && project.managedByPlugin && (
+        <ProjectPluginOperationsList
+          projectId={project.id}
+          companyId={resolvedCompanyId}
+          pluginKey={project.managedByPlugin.pluginKey}
+        />
+      )}
+
+      {activeTab === "workspaces" ? (
+        workspaceTabDecisionLoaded ? (
+          workspaceTabError ? (
+            <p className="text-sm text-destructive">{workspaceTabError.message}</p>
+          ) : (
+            <ProjectWorkspacesContent
+              companyId={resolvedCompanyId!}
+              projectId={project.id}
+              projectRef={canonicalProjectRef}
+              summaries={workspaceSummaries}
+            />
+          )
+        ) : (
+          <p className="text-sm text-muted-foreground">Loading workspaces...</p>
+        )
+      ) : null}
 
       {activeTab === "configuration" && (
         <div className="max-w-4xl">

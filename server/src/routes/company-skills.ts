@@ -1,15 +1,30 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
+  catalogSkillListQuerySchema,
   companySkillCreateSchema,
   companySkillFileUpdateSchema,
   companySkillImportSchema,
+  companySkillInstallCatalogSchema,
+  companySkillInstallUpdateSchema,
   companySkillProjectScanRequestSchema,
+  companySkillResetSchema,
 } from "@paperclipai/shared";
+import { trackSkillImported } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { accessService, agentService, companySkillService, logActivity } from "../services/index.js";
+import { getCatalogSkillOrThrow, listCatalogSkills, readCatalogSkillFile } from "../services/skills-catalog.js";
 import { forbidden } from "../errors.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertAuthenticated, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { getTelemetryClient } from "../telemetry.js";
+
+type SkillTelemetryInput = {
+  key: string;
+  slug: string;
+  sourceType: string;
+  sourceLocator: string | null;
+  metadata: Record<string, unknown> | null;
+};
 
 export function companySkillRoutes(db: Db) {
   const router = Router();
@@ -20,6 +35,32 @@ export function companySkillRoutes(db: Db) {
   function canCreateAgents(agent: { permissions: Record<string, unknown> | null | undefined }) {
     if (!agent.permissions || typeof agent.permissions !== "object") return false;
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+  }
+
+  function asString(value: unknown): string | null {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  function deriveTrackedSkillRef(skill: SkillTelemetryInput): string | null {
+    if (skill.sourceType === "skills_sh") {
+      return skill.key;
+    }
+    if (skill.sourceType !== "github") {
+      return null;
+    }
+    const hostname = asString(skill.metadata?.hostname);
+    if (hostname !== "github.com") {
+      return null;
+    }
+    return skill.key;
+  }
+
+  function firstQueryString(value: unknown): string | undefined {
+    if (typeof value === "string") return value;
+    if (Array.isArray(value) && typeof value[0] === "string") return value[0];
+    return undefined;
   }
 
   async function assertCanMutateCompanySkills(req: Request, companyId: string) {
@@ -50,6 +91,29 @@ export function companySkillRoutes(db: Db) {
 
     throw forbidden("Missing permission: can create agents");
   }
+
+  router.get("/skills/catalog", async (req, res) => {
+    assertAuthenticated(req);
+    const query = catalogSkillListQuerySchema.parse({
+      kind: firstQueryString(req.query.kind),
+      category: firstQueryString(req.query.category),
+      q: firstQueryString(req.query.q),
+    });
+    res.json(listCatalogSkills(query));
+  });
+
+  router.get("/skills/catalog/:catalogId/files", async (req, res) => {
+    assertAuthenticated(req);
+    const catalogRef = firstQueryString(req.query.ref) ?? (req.params.catalogId as string);
+    const relativePath = firstQueryString(req.query.path) ?? "SKILL.md";
+    res.json(await readCatalogSkillFile(catalogRef, relativePath));
+  });
+
+  router.get("/skills/catalog/:catalogId", async (req, res) => {
+    assertAuthenticated(req);
+    const catalogRef = firstQueryString(req.query.ref) ?? (req.params.catalogId as string);
+    res.json(getCatalogSkillOrThrow(catalogRef));
+  });
 
   router.get("/companies/:companyId/skills", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -183,8 +247,49 @@ export function companySkillRoutes(db: Db) {
           warningCount: result.warnings.length,
         },
       });
+      const telemetryClient = getTelemetryClient();
+      if (telemetryClient) {
+        for (const skill of result.imported) {
+          trackSkillImported(telemetryClient, {
+            sourceType: skill.sourceType,
+            skillRef: deriveTrackedSkillRef(skill),
+          });
+        }
+      }
 
       res.status(201).json(result);
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/skills/install-catalog",
+    validate(companySkillInstallCatalogSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertCanMutateCompanySkills(req, companyId);
+      const result = await svc.installFromCatalog(companyId, req.body);
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: result.action === "created" ? "company.skill_catalog_installed" : "company.skill_catalog_updated",
+        entityType: "company_skill",
+        entityId: result.skill.id,
+        details: {
+          action: result.action,
+          catalogId: result.catalogSkill.id,
+          catalogKey: result.catalogSkill.key,
+          slug: result.skill.slug,
+          originHash: result.catalogSkill.contentHash,
+          warningCount: result.warnings.length,
+        },
+      });
+
+      res.status(result.action === "created" ? 201 : 200).json(result);
     },
   );
 
@@ -250,34 +355,120 @@ export function companySkillRoutes(db: Db) {
     res.json(result);
   });
 
-  router.post("/companies/:companyId/skills/:skillId/install-update", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    const skillId = req.params.skillId as string;
-    await assertCanMutateCompanySkills(req, companyId);
-    const result = await svc.installUpdate(companyId, skillId);
-    if (!result) {
-      res.status(404).json({ error: "Skill not found" });
-      return;
-    }
+  router.post(
+    "/companies/:companyId/skills/:skillId/audit",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const skillId = req.params.skillId as string;
+      await assertCanMutateCompanySkills(req, companyId);
+      const result = await svc.auditSkill(companyId, skillId);
+      if (!result) {
+        res.status(404).json({ error: "Skill not found" });
+        return;
+      }
 
-    const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "company.skill_update_installed",
-      entityType: "company_skill",
-      entityId: result.id,
-      details: {
-        slug: result.slug,
-        sourceRef: result.sourceRef,
-      },
-    });
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.skill_audited",
+        entityType: "company_skill",
+        entityId: skillId,
+        details: {
+          verdict: result.verdict,
+          codes: result.codes,
+          installedHash: result.installedHash,
+          originHash: result.originHash,
+          scanVersion: result.scanVersion,
+        },
+      });
 
-    res.json(result);
-  });
+      res.json(result);
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/skills/:skillId/install-update",
+    validate(companySkillInstallUpdateSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const skillId = req.params.skillId as string;
+      await assertCanMutateCompanySkills(req, companyId);
+      const before = await svc.getById(companyId, skillId);
+      const result = await svc.installUpdate(companyId, skillId, req.body);
+      if (!result) {
+        res.status(404).json({ error: "Skill not found" });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.skill_update_installed",
+        entityType: "company_skill",
+        entityId: result.id,
+        details: {
+          slug: result.slug,
+          previousOriginHash: before?.metadata?.originHash ?? before?.sourceRef ?? null,
+          previousOriginVersion: before?.metadata?.originVersion ?? null,
+          newOriginHash: result.metadata?.originHash ?? result.sourceRef,
+          newOriginVersion: result.metadata?.originVersion ?? null,
+          driftDetected: Boolean(before?.metadata?.userModifiedAt),
+          force: Boolean(req.body.force),
+          auditVerdict: result.metadata?.auditVerdict ?? null,
+        },
+      });
+
+      res.json(result);
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/skills/:skillId/reset",
+    validate(companySkillResetSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const skillId = req.params.skillId as string;
+      await assertCanMutateCompanySkills(req, companyId);
+      const before = await svc.getById(companyId, skillId);
+      const result = await svc.resetSkill(companyId, skillId, req.body);
+      if (!result) {
+        res.status(404).json({ error: "Skill not found" });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.skill_reset",
+        entityType: "company_skill",
+        entityId: result.id,
+        details: {
+          slug: result.slug,
+          previousOriginHash: before?.metadata?.originHash ?? before?.sourceRef ?? null,
+          previousOriginVersion: before?.metadata?.originVersion ?? null,
+          newOriginHash: result.metadata?.originHash ?? result.sourceRef,
+          newOriginVersion: result.metadata?.originVersion ?? null,
+          driftDetected: Boolean(before?.metadata?.userModifiedAt),
+          force: Boolean(req.body.force),
+          auditVerdict: result.metadata?.auditVerdict ?? null,
+        },
+      });
+
+      res.json(result);
+    },
+  );
 
   return router;
 }

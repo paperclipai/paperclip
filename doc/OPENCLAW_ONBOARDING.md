@@ -3,7 +3,7 @@ Use this exact checklist.
 1. Start Paperclip in auth mode.
 ```bash
 cd <paperclip-repo-root>
-pnpm dev --tailscale-auth
+pnpm dev --bind lan
 ```
 Then verify:
 ```bash
