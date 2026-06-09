@@ -7,6 +7,7 @@ import { registerExperiments } from "./groups/experiments.js";
 import { registerMentions } from "./groups/mentions.js";
 import { registerCatalog } from "./groups/catalog.js";
 import { registerMarketing } from "./groups/marketing.js";
+import { registerPitch } from "./groups/pitch.js";
 import { registerYoutube } from "./groups/youtube.js";
 import { registerTeam } from "./groups/team.js";
 import { registerRenewals } from "./groups/renewals.js";
@@ -36,6 +37,7 @@ export function agnbRoutes(db: Db) {
   registerMentions(router, db);
   registerCatalog(router, db);
   registerMarketing(router, db);
+  registerPitch(router, db);
   registerYoutube(router, db);
   registerTeam(router, db);
   registerRenewals(router, db);

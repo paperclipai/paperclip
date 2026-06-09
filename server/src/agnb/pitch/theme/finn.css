@@ -1,0 +1,163 @@
+/* Finn deck theme — matched to hirefinn.ai marketing brand. */
+:root {
+  --bg: #F6F3EC;
+  --surface: #ffffff;
+  --ink: #1D1F20;
+  --muted: #737373;
+  --border: #E6E1D6;
+  --moss: #435E35;
+  --moss-soft: #d6efd9;
+  --moss-on-soft: #1f5132;
+  --peach: #FDB87A;
+  --pink: #FD7FAD;
+}
+
+.reveal { font-family: "Inter", system-ui, sans-serif; color: var(--ink); font-size: 24px; background: var(--bg); }
+.reveal .backgrounds { background: var(--bg); }
+
+.reveal .slides section { text-align: left; top: 0 !important; height: 100%; box-sizing: border-box; }
+.reveal .layout { height: 100%; box-sizing: border-box; }
+
+/* type */
+.reveal h1, .reveal h2 { font-weight: 800; line-height: 1.04; letter-spacing: -0.035em; margin: 0; color: var(--ink); text-transform: none; }
+.reveal h1 { font-size: 2.9em; }
+.reveal h2 { font-size: 1.85em; }
+.reveal .accent {
+  display: block; font-family: var(--font-playfair,"Playfair Display"),Georgia,serif;
+  font-style: italic; font-weight: 500; letter-spacing: -0.02em; color: #2a2f3a; margin-top: 0.08em;
+}
+.reveal .subhead { color: var(--muted); font-size: 0.8em; line-height: 1.5; margin-top: 0.7em; max-width: 26em; }
+
+/* autofit wrapper */
+.reveal .fit { transform: scale(var(--fit-scale,1)); transform-origin: top left; width: calc(100% / var(--fit-scale,1)); }
+
+/* pill */
+.reveal .pill {
+  display: inline-flex; align-items: center; gap: 0.5em; background: var(--surface);
+  border: 1px solid rgba(0,0,0,0.08); border-radius: 999px; padding: 0.32em 0.9em 0.32em 0.4em;
+  font-size: 0.5em; font-weight: 600; margin-bottom: 1.1em;
+}
+.reveal .pill .tag { background: var(--moss-soft); color: var(--moss-on-soft); border-radius: 999px; padding: 0.2em 0.7em; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; font-size: 0.85em; }
+
+/* bullets */
+.reveal ul { margin-top: 0.9em; list-style: none; padding: 0; }
+.reveal li { margin: 0.42em 0; line-height: 1.36; font-size: 0.82em; padding-left: 1.3em; position: relative; max-width: 24em; }
+.reveal li::before { content:""; position:absolute; left:0; top:0.5em; width:0.5em; height:0.5em; border-radius:2px; background: linear-gradient(135deg,var(--peach),var(--pink)); }
+
+/* inline stat (left column) */
+.reveal .stat { margin: 0.9em 0 0.2em; }
+.reveal .stat .value { font-size: 3em; font-weight: 800; line-height: 1; letter-spacing: -0.04em; background: linear-gradient(135deg,var(--moss),#6b8f56); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.reveal .stat .label { color: var(--muted); font-size: 0.72em; margin-top: 0.3em; max-width: 18em; }
+
+/* ============ LAYOUTS ============ */
+
+/* split: content | visual */
+.reveal .layout.split { display: grid; grid-template-columns: 0.92fr 1.08fr; gap: 4%; align-items: center; padding: 5% 6% 6%; }
+.reveal .col-text { min-width: 0; align-self: center; }
+
+/* title hero */
+.reveal .layout.title { display: grid; grid-template-columns: 1fr 0.85fr; gap: 4%; align-items: center; padding: 6%; }
+.reveal .hero-left { align-self: center; }
+.reveal .deck-logo { width: 124px; margin-bottom: 1.5em; }
+.reveal .deck-logo svg { width: 100%; height: auto; color: var(--ink); }
+.reveal .layout.title h1 { font-size: 3.1em; }
+
+/* full-width slides */
+.reveal .layout.full { padding: 5.5% 7%; display: flex; flex-direction: column; justify-content: center; }
+
+/* tiles */
+.reveal .tiles { display: grid; grid-template-columns: repeat(3,1fr); gap: 0.9em; margin-top: 1.3em; }
+.reveal .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 1em 1.1em; font-size: 0.72em; line-height: 1.4; }
+.reveal .tile b { display: block; font-weight: 700; margin-bottom: 0.25em; font-size: 1.05em; }
+
+/* steps */
+.reveal .steps { display: grid; grid-template-columns: repeat(3,1fr); gap: 1.4em; margin-top: 1.5em; }
+.reveal .step { font-size: 0.8em; line-height: 1.4; }
+.reveal .step .num { width: 1.8em; height: 1.8em; border-radius: 12px; background: linear-gradient(135deg,var(--peach),var(--pink)); color:#fff; font-weight: 800; display:flex; align-items:center; justify-content:center; margin-bottom: 0.6em; font-size: 1.15em; }
+.reveal .step b { display:block; font-weight: 700; margin-bottom: 0.25em; font-size: 1.1em; }
+
+/* ============ VISUAL PANELS ============ */
+.reveal .visual { border-radius: 20px; overflow: hidden; position: relative; align-self: center; justify-self: center; }
+.reveal .visual.brand, .reveal .visual.hero { height: 78%; width: 100%; }
+
+/* live screenshot panel — auto-sized to the snap (set inline) */
+.reveal .visual.shot { background: #fff; border: 1px solid var(--border); box-shadow: 0 24px 60px rgba(0,0,0,0.12); max-width: 100%; }
+.reveal .snap { border: 0; transform-origin: top left; pointer-events: none; }
+
+/* branded gradient panel */
+.reveal .visual.brand {
+  background: linear-gradient(150deg, #fff 0%, #fbeee4 45%, #fbe2ec 100%);
+  border: 1px solid var(--border); display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 24px 60px rgba(253,127,173,0.12);
+}
+.reveal .visual.brand .wave { position: absolute; inset: auto -12% -18% auto; width: 90%; opacity: 0.16; transform: rotate(-8deg); }
+.reveal .visual.brand .wave svg { width: 100%; height: auto; }
+.reveal .visual.brand .wave svg path[fill^="url"] { /* keep gradient mark */ }
+.reveal .panel-stat { text-align: center; z-index: 1; padding: 2em; }
+.reveal .panel-stat .pv { font-size: 5.2em; font-weight: 800; letter-spacing: -0.05em; line-height: 0.95; background: linear-gradient(135deg,var(--moss),#7a9e63); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.reveal .panel-stat .pl { color: var(--moss-on-soft); font-size: 0.85em; font-weight: 600; margin-top: 0.6em; max-width: 14em; margin-inline: auto; }
+.reveal .panel-accent { z-index: 1; font-family: var(--font-playfair,"Playfair Display"),Georgia,serif; font-style: italic; font-weight: 500; font-size: 2.4em; letter-spacing: -0.02em; color: #5a4636; text-align: center; padding: 1.5em; line-height: 1.15; }
+.reveal .layout.title .visual.hero { height: 86%; }
+.reveal .layout.title .panel-accent { font-size: 2.9em; }
+
+/* title official logotype */
+.reveal .deck-logo-img { height: 34px; width: auto; margin-bottom: 1.5em; }
+
+/* title lockup: Finn primary + scraped client logo, framed so any
+   aspect/background renders clean */
+.reveal .title-lockup { display: flex; align-items: center; gap: 0.7em; margin-bottom: 1.5em; }
+.reveal .title-lockup .deck-logo-img,
+.reveal .title-lockup .deck-logo { margin-bottom: 0; }
+.reveal .title-lockup .deck-logo { width: 90px; }
+.reveal .lockup-x { font-size: 1.2em; color: var(--muted, #6b6660); font-weight: 300; line-height: 1; }
+.reveal .client-logo {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 44px; max-width: 150px; padding: 6px 10px;
+  background: #fff; border: 1px solid rgba(0,0,0,.08); border-radius: 9px;
+}
+.reveal .client-logo img { max-height: 100%; max-width: 100%; width: auto; object-fit: contain; }
+
+/* industry photo hero */
+.reveal .visual.photo { height: 82%; width: 100%; background-size: cover; background-position: center; box-shadow: 0 24px 60px rgba(0,0,0,0.14); }
+
+/* ROI comparison card */
+.reveal .visual.roi { height: auto; width: 100%; background: linear-gradient(150deg,#fff,#f6f1e8); border: 1px solid var(--border); padding: 2em 1.8em; display: flex; flex-direction: column; gap: 1.2em; box-shadow: 0 24px 60px rgba(0,0,0,0.10); }
+.reveal .roi-row { display: flex; align-items: center; justify-content: space-between; gap: 0.6em; }
+.reveal .roi-col { flex: 1; text-align: center; }
+.reveal .roi-col .rl { font-size: 0.5em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.reveal .roi-col .rv { font-size: 1.9em; font-weight: 800; letter-spacing: -0.03em; line-height: 1.1; }
+.reveal .roi-col.human .rv { color: #b4541f; }
+.reveal .roi-col.finn .rv { background: linear-gradient(135deg,var(--moss),#7a9e63); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.reveal .roi-col .rs { font-size: 0.42em; color: var(--muted); margin-top: 0.3em; }
+.reveal .roi-vs { font-family: var(--font-playfair),serif; font-style: italic; color: var(--muted); font-size: 0.7em; }
+.reveal .roi-badges { display: flex; gap: 0.6em; border-top: 1px solid var(--border); padding-top: 1em; }
+.reveal .rb { flex: 1; text-align: center; font-size: 0.42em; color: var(--muted); line-height: 1.3; }
+.reveal .rb b { display: block; font-size: 2.1em; font-weight: 800; color: var(--moss); letter-spacing: -0.03em; }
+.reveal .roi-foot { font-size: 0.4em; color: var(--muted); text-align: center; }
+
+/* proof quote card */
+.reveal .visual.proof { height: auto; width: 100%; background: linear-gradient(150deg,#fff,#fbe7ee); border: 1px solid var(--border); padding: 2.2em; display: flex; flex-direction: column; gap: 1em; box-shadow: 0 24px 60px rgba(253,127,173,0.12); }
+.reveal .proof-logo { height: 34px; width: auto; object-fit: contain; align-self: flex-start; }
+.reveal .proof-co { font-weight: 800; font-size: 1.05em; letter-spacing: -0.02em; color: var(--moss); }
+.reveal .visual.proof blockquote { margin: 0; font-size: 0.82em; line-height: 1.4; font-weight: 500; color: var(--ink); }
+.reveal .proof-by { font-size: 0.5em; font-weight: 700; color: var(--ink); }
+.reveal .proof-by span { display: block; font-weight: 500; color: var(--muted); margin-top: 0.2em; }
+
+/* integration logo grid */
+.reveal .visual.logos { height: 82%; width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: 20px; display: flex; align-items: center; box-shadow: 0 24px 60px rgba(0,0,0,0.08); }
+.reveal .logo-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; background: var(--border); width: 100%; height: 100%; border-radius: 20px; overflow: hidden; }
+.reveal .logo-cell { background: #fff; display: flex; align-items: center; justify-content: center; padding: 1.2em; }
+.reveal .logo-cell img { max-width: 64px; max-height: 34px; object-fit: contain; }
+
+/* footer — left aligned, clears nav arrows */
+.reveal .slide-footer { position: absolute; bottom: 4%; left: 6%; right: auto; max-width: 60%; font-size: 0.42em; color: var(--muted); }
+.reveal .slide-footer .fmark { display: flex; align-items: center; gap: 0.6em; }
+.reveal .slide-footer .fmark svg { height: 1.5em; width: auto; color: var(--ink); }
+.reveal .slide-footer .fmark i { font-style: normal; font-weight: 600; }
+
+/* controls/number */
+.reveal .slide-number { background: transparent; color: var(--muted); right: 12px; bottom: 8px; }
+.reveal .controls { color: var(--moss); }
+
+/* print */
+@media print { .reveal .slide-footer { font-size: 0.42em; } }
