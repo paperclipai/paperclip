@@ -6821,6 +6821,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function startNextQueuedRunForAgent(agentId: string) {
+    // Control plane vs runtime: the Vercel serverless control plane CANNOT execute
+    // agent runs (read-only FS, no Claude CLI — claiming a run here fails with
+    // `EACCES mkdir /home/vercel` → adapter_failed). Runs are created `status:"queued"`
+    // by enqueueWakeup; on Vercel we must leave them queued and let the always-on
+    // Railway worker drain them (its scheduler calls resumeQueuedRuns() every tick).
+    // Only the runtime (non-Vercel) executes inline. This is the single chokepoint for
+    // all inline-execution entry points (wakeup, start-next, promote, etc.).
+    if (process.env.VERCEL) return [];
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
