@@ -2788,7 +2788,19 @@ function findMessageAnchorIndex(messages: readonly ThreadMessage[], anchorId: st
   return messages.findIndex((message) => issueChatMessageAnchorId(message) === anchorId);
 }
 
-export function findLatestCommentMessageIndex(messages: readonly ThreadMessage[]): number {
+export function findLatestCommentMessageIndex(
+  messages: readonly ThreadMessage[],
+  newestFirst = false,
+): number {
+  // In a newest-first feed the newest comment is the first comment-anchored
+  // row (lowest index); otherwise it is the last.
+  if (newestFirst) {
+    for (let index = 0; index < messages.length; index += 1) {
+      const anchorId = issueChatMessageAnchorId(messages[index]);
+      if (anchorId && anchorId.startsWith("comment-")) return index;
+    }
+    return -1;
+  }
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const anchorId = issueChatMessageAnchorId(messages[index]);
     if (anchorId && anchorId.startsWith("comment-")) return index;
@@ -3061,15 +3073,17 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
     },
     scrollToLatest: (options) => {
       if (messages.length === 0) return;
-      virtualizer.scrollToIndex(messages.length - 1, {
-        align: "end",
+      // Newest-first (full) feed: the latest row sits at the top (index 0).
+      const newestFirst = variant === "full";
+      virtualizer.scrollToIndex(newestFirst ? 0 : messages.length - 1, {
+        align: newestFirst ? "start" : "end",
         behavior: options?.behavior ?? "smooth",
       });
     },
     measure: () => {
       virtualizer.measure();
     },
-  }), [messages.length, virtualizer]);
+  }), [messages.length, variant, virtualizer]);
 
   useLayoutEffect(() => {
     return () => {
@@ -3933,6 +3947,10 @@ export function IssueChatThread({
         agentMap,
         currentUserId,
         userLabelMap,
+        // The full issue feed reads newest-first (top to bottom) with pending
+        // confirmations pinned to the top. The embedded run-output view keeps
+        // its natural chronological (oldest-first) reading order.
+        newestFirst: variant === "full",
       }),
     [
       comments,
@@ -3949,6 +3967,7 @@ export function IssueChatThread({
       agentMap,
       currentUserId,
       userLabelMap,
+      variant,
     ],
   );
   const stableMessagesRef = useRef<readonly ThreadMessage[]>([]);
@@ -4037,7 +4056,10 @@ export function IssueChatThread({
   });
 
   useEffect(() => {
-    const lastUserMessage = [...messages].reverse().find((m) => m.role === "user");
+    // The newest user message: in the newest-first (full) feed it is the first
+    // user-role row; otherwise (chronological) the last.
+    const lastUserMessage = (variant === "full" ? messages : [...messages].reverse())
+      .find((m) => m.role === "user");
     const lastUserId = lastUserMessage?.id ?? null;
 
     if (
@@ -4046,21 +4068,29 @@ export function IssueChatThread({
       && lastUserId !== lastUserMessageIdRef.current
     ) {
       pendingSubmitScrollRef.current = false;
-      const custom = lastUserMessage?.metadata.custom as { anchorId?: unknown } | undefined;
-      const anchorId = typeof custom?.anchorId === "string" ? custom.anchorId : null;
-      if (anchorId) {
-        const reserve = Math.round(window.innerHeight * SUBMIT_SCROLL_RESERVE_VH);
-        spacerBaselineAnchorRef.current = anchorId;
-        spacerInitialReserveRef.current = reserve;
-        setBottomSpacerHeight(reserve);
+      if (variant === "full") {
+        // Newest-first feed: the just-sent message is pinned at the top, so no
+        // bottom spacer reserve is needed — just bring the top into view.
         requestAnimationFrame(() => {
-          scrollToThreadAnchor(anchorId, { align: "start", behavior: "smooth" });
+          scrollThreadToTop();
         });
+      } else {
+        const custom = lastUserMessage?.metadata.custom as { anchorId?: unknown } | undefined;
+        const anchorId = typeof custom?.anchorId === "string" ? custom.anchorId : null;
+        if (anchorId) {
+          const reserve = Math.round(window.innerHeight * SUBMIT_SCROLL_RESERVE_VH);
+          spacerBaselineAnchorRef.current = anchorId;
+          spacerInitialReserveRef.current = reserve;
+          setBottomSpacerHeight(reserve);
+          requestAnimationFrame(() => {
+            scrollToThreadAnchor(anchorId, { align: "start", behavior: "smooth" });
+          });
+        }
       }
     }
 
     lastUserMessageIdRef.current = lastUserId;
-  }, [messageAnchorIndex, messages, useVirtualizedThread]);
+  }, [messageAnchorIndex, messages, useVirtualizedThread, variant]);
 
   useLayoutEffect(() => {
     const anchorId = spacerBaselineAnchorRef.current;
@@ -4134,7 +4164,30 @@ export function IssueChatThread({
     };
   }, [location.hash, messageAnchorIndex, messages, useVirtualizedThread]);
 
+  // Scroll the issue page back to the top. In the newest-first (full) feed the
+  // latest content lives at the top, so "jump to latest" and post-submit scroll
+  // both resolve to this. Mirrors IssueDetail's on-open scroll-to-top.
+  function scrollThreadToTop(behavior: ScrollBehavior = "smooth") {
+    if (typeof window === "undefined") return;
+    // Drive whichever element actually scrolls the thread: the overflow-auto
+    // `<main id="main-content">` ancestor on desktop, else the window (mobile /
+    // perf fixture). Mirrors the virtualizer's findScrollContainer detection.
+    const mainContent = document.getElementById("main-content");
+    if (mainContent) {
+      const overflowY = window.getComputedStyle(mainContent).overflowY;
+      if (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") {
+        mainContent.scrollTo({ top: 0, behavior });
+        return;
+      }
+    }
+    window.scrollTo({ top: 0, behavior });
+  }
+
   function jumpToLatestFallback() {
+    if (variant === "full") {
+      scrollThreadToTop();
+      return;
+    }
     if (useVirtualizedThread) {
       virtualizedThreadRef.current?.scrollToLatest({ behavior: "smooth" });
       return;
@@ -4155,6 +4208,13 @@ export function IssueChatThread({
   // that element is at the scroll container's bottom (or scroll position
   // and content height stop changing).
   function scrollToLatestCommentWithSettle(messageSnapshot: readonly ThreadMessage[] = latestMessagesRef.current) {
+    if (variant === "full") {
+      // Newest-first feed: "latest" lives at the top. Scrolling to the top is
+      // exact, so the settle convergence loop (which exists to fight the
+      // virtualizer's estimated bottom on long threads) is unnecessary.
+      scrollThreadToTop();
+      return;
+    }
     const latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot);
     if (latestCommentIndex < 0) {
       jumpToLatestFallback();
@@ -4377,10 +4437,112 @@ export function IssueChatThread({
   }
   const errorBoundaryResetKey = String(errorBoundaryResetVersionRef.current);
 
+  // The full issue feed renders newest-first, so the composer (and its action
+  // notices) live at the TOP of the thread. The embedded run-output view keeps
+  // the chat convention with the composer docked at the bottom.
+  const composerAtTop = variant === "full";
+
+  const threadNotices = showComposer ? (
+    <div data-testid="issue-chat-thread-notices" className="space-y-2">
+      <IssueAssignedBacklogNotice
+        issueStatus={issueStatus ?? ""}
+        assigneeAgent={assignedAgent}
+        assigneeUserId={assigneeUserId}
+        onResume={onResumeFromBacklog}
+        resuming={resumeFromBacklogPending}
+      />
+      {recoveryAction ? (
+        <IssueRecoveryActionCard
+          action={recoveryAction}
+          agentMap={agentMap}
+          onResolve={onResolveRecoveryAction}
+          canFalsePositive={canFalsePositiveRecoveryAction}
+        />
+      ) : null}
+      {legacyRecoverySourceIssue ? (
+        <SystemNotice
+          tone="info"
+          label="Legacy recovery task"
+          body={
+            <span>
+              Legacy recovery task. Newer recovery actions live on the source task
+              {legacyRecoverySourceIssue.identifier ? (
+                <>
+                  {" — "}
+                  <Link
+                    to={legacyRecoverySourceIssue.href}
+                    className="underline-offset-2 hover:underline"
+                  >
+                    {legacyRecoverySourceIssue.identifier}
+                    {legacyRecoverySourceIssue.title ? (
+                      <span className="text-muted-foreground">
+                        {" "}
+                        — {legacyRecoverySourceIssue.title}
+                      </span>
+                    ) : null}
+                  </Link>
+                </>
+              ) : (
+                "."
+              )}
+            </span>
+          }
+        />
+      ) : null}
+      <IssueBlockedNotice
+        issueId={issueId}
+        issueStatus={issueStatus}
+        blockers={unresolvedBlockers}
+        blockerAttention={blockerAttention}
+        successfulRunHandoff={recoveryAction ? null : successfulRunHandoff}
+        scheduledRetry={scheduledRetry}
+        agentName={
+          successfulRunHandoff?.assigneeAgentId
+            ? agentMap?.get(successfulRunHandoff.assigneeAgentId)?.name ?? null
+            : null
+        }
+      />
+      <IssueAssigneePausedNotice agent={assignedAgent} />
+    </div>
+  ) : null;
+
+  const composerDock = showComposer ? (
+    <div
+      ref={composerViewportAnchorRef}
+      data-testid="issue-chat-composer-dock"
+      className={cn(
+        "z-20 space-y-2",
+        composerAtTop
+          ? "sticky top-[calc(env(safe-area-inset-top)+8px)] bg-gradient-to-b from-background via-background/95 to-background/0 pb-6"
+          : "sticky bottom-[calc(env(safe-area-inset-bottom)+20px)] bg-gradient-to-t from-background via-background/95 to-background/0 pt-6",
+      )}
+    >
+      <IssueChatComposer
+        ref={composerRef}
+        onImageUpload={imageUploadHandler}
+        onAttachImage={onAttachImage}
+        draftKey={draftKey}
+        enableReassign={enableReassign}
+        reassignOptions={reassignOptions}
+        currentAssigneeValue={currentAssigneeValue}
+        suggestedAssigneeValue={suggestedAssigneeValue}
+        mentions={mentions}
+        agentMap={agentMap}
+        composerDisabledReason={composerDisabledReason}
+        composerHint={composerHint}
+        issueStatus={issueStatus}
+        issueWorkMode={issueWorkMode}
+        onWorkModeChange={onWorkModeChange}
+      />
+    </div>
+  ) : null;
+
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <IssueChatCtx.Provider value={chatCtx}>
       <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
+        {composerAtTop ? composerDock : null}
+        {composerAtTop ? threadNotices : null}
         {resolvedShowJumpToLatest ? (
           <div className="flex justify-end">
             <button
@@ -4438,72 +4600,10 @@ export function IssueChatThread({
                   />
               ))
             )}
-              {showComposer ? (
-                <div data-testid="issue-chat-thread-notices" className="space-y-2">
-                  <IssueAssignedBacklogNotice
-                    issueStatus={issueStatus ?? ""}
-                    assigneeAgent={assignedAgent}
-                    assigneeUserId={assigneeUserId}
-                    onResume={onResumeFromBacklog}
-                    resuming={resumeFromBacklogPending}
-                  />
-                  {recoveryAction ? (
-                    <IssueRecoveryActionCard
-                      action={recoveryAction}
-                      agentMap={agentMap}
-                      onResolve={onResolveRecoveryAction}
-                      canFalsePositive={canFalsePositiveRecoveryAction}
-                    />
-                  ) : null}
-                  {legacyRecoverySourceIssue ? (
-                    <SystemNotice
-                      tone="info"
-                      label="Legacy recovery task"
-                      body={
-                        <span>
-                          Legacy recovery task. Newer recovery actions live on the source task
-                          {legacyRecoverySourceIssue.identifier ? (
-                            <>
-                              {" — "}
-                              <Link
-                                to={legacyRecoverySourceIssue.href}
-                                className="underline-offset-2 hover:underline"
-                              >
-                                {legacyRecoverySourceIssue.identifier}
-                                {legacyRecoverySourceIssue.title ? (
-                                  <span className="text-muted-foreground">
-                                    {" "}
-                                    — {legacyRecoverySourceIssue.title}
-                                  </span>
-                                ) : null}
-                              </Link>
-                            </>
-                          ) : (
-                            "."
-                          )}
-                        </span>
-                      }
-                    />
-                  ) : null}
-                  <IssueBlockedNotice
-                    issueId={issueId}
-                    issueStatus={issueStatus}
-                    blockers={unresolvedBlockers}
-                    blockerAttention={blockerAttention}
-                    successfulRunHandoff={recoveryAction ? null : successfulRunHandoff}
-                    scheduledRetry={scheduledRetry}
-                    agentName={
-                      successfulRunHandoff?.assigneeAgentId
-                        ? agentMap?.get(successfulRunHandoff.assigneeAgentId)?.name ?? null
-                        : null
-                    }
-                  />
-                  <IssueAssigneePausedNotice agent={assignedAgent} />
-                </div>
-              ) : null}
+              {composerAtTop ? null : threadNotices}
               {footer ? <div data-testid="issue-chat-thread-footer">{footer}</div> : null}
               <div ref={bottomAnchorRef} />
-              {showComposer ? (
+              {!composerAtTop && showComposer ? (
                 <div
                   aria-hidden
                   data-testid="issue-chat-bottom-spacer"
@@ -4514,31 +4614,7 @@ export function IssueChatThread({
           </div>
         </IssueChatErrorBoundary>
 
-        {showComposer ? (
-          <div
-            ref={composerViewportAnchorRef}
-            data-testid="issue-chat-composer-dock"
-            className="sticky bottom-[calc(env(safe-area-inset-bottom)+20px)] z-20 space-y-2 bg-gradient-to-t from-background via-background/95 to-background/0 pt-6"
-          >
-            <IssueChatComposer
-              ref={composerRef}
-              onImageUpload={imageUploadHandler}
-              onAttachImage={onAttachImage}
-              draftKey={draftKey}
-              enableReassign={enableReassign}
-              reassignOptions={reassignOptions}
-              currentAssigneeValue={currentAssigneeValue}
-              suggestedAssigneeValue={suggestedAssigneeValue}
-              mentions={mentions}
-              agentMap={agentMap}
-              composerDisabledReason={composerDisabledReason}
-              composerHint={composerHint}
-              issueStatus={issueStatus}
-              issueWorkMode={issueWorkMode}
-              onWorkModeChange={onWorkModeChange}
-            />
-          </div>
-        ) : null}
+        {composerAtTop ? null : composerDock}
       </div>
       </IssueChatCtx.Provider>
     </AssistantRuntimeProvider>

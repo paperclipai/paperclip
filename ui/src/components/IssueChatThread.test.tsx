@@ -806,10 +806,10 @@ describe("IssueChatThread", () => {
     scrollHost.remove();
   });
 
-  // Regression for PAP-2672: when the merged feed ends with a non-comment row
-  // (run/timeline/embedded output) we still want Jump to latest to land on the
-  // last comment, not whichever activity row sorts last.
-  it("targets the latest comment row when trailing rows are non-comments (PAP-2672)", () => {
+  // PAP-2672, newest-first variant: the merged feed renders newest at the top,
+  // so Jump to latest scrolls the container to offset 0 regardless of which row
+  // (comment vs trailing run/timeline output) sorts where.
+  it("scrolls to the top when jumping to latest in the newest-first feed (PAP-2672)", () => {
     const lastComment = issueChatLongThreadComments.at(-1);
     expect(lastComment).toBeDefined();
     const trailingRunStart = new Date(new Date(lastComment!.createdAt).getTime() + 60_000);
@@ -902,16 +902,11 @@ describe("IssueChatThread", () => {
       .filter(hasSmoothScrollBehavior);
     expect(smoothCalls.length).toBeGreaterThan(0);
 
-    // For align="end" with the very last index, tanstack-virtual short-circuits
-    // to getMaxScrollOffset() (= scrollHeight - clientHeight = 199_200 here).
-    // A jump to the latest comment row (one slot earlier) lands at item.end -
-    // clientHeight, which is strictly less. Asserting top < maxScrollOffset
-    // proves the button isn't routing to the trailing run row.
-    const maxScrollOffset = 200_000 - 800;
+    // Newest-first feed: "latest" lives at the top, so Jump to latest drives the
+    // scroll container straight to offset 0 — no settle loop and no dependence
+    // on whichever (non-comment) row sorts last.
     const lastTop = smoothCalls[smoothCalls.length - 1]?.top;
-    expect(typeof lastTop).toBe("number");
-    expect(lastTop as number).toBeLessThan(maxScrollOffset);
-    expect(lastTop as number).toBeGreaterThan(0);
+    expect(lastTop).toBe(0);
 
     act(() => {
       root.unmount();
@@ -962,12 +957,8 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("uses comments rendered by onRefreshLatestComments before resolving latest", async () => {
-    const scrolledIds: string[] = [];
-    const originalScrollIntoView = Element.prototype.scrollIntoView;
-    Element.prototype.scrollIntoView = vi.fn(function scrollIntoView(this: Element) {
-      scrolledIds.push(this.id);
-    }) as unknown as typeof Element.prototype.scrollIntoView;
+  it("scrolls to the top after onRefreshLatestComments resolves on Jump to latest", async () => {
+    const scrollToMock = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
 
     const olderComment = {
       id: "comment-before-refresh",
@@ -1029,15 +1020,17 @@ describe("IssueChatThread", () => {
       await new Promise((resolve) => window.requestAnimationFrame(resolve));
     });
 
-    expect(scrolledIds).toContain("comment-comment-after-refresh");
+    expect(
+      scrollToMock.mock.calls.some(([arg]) => (arg as ScrollToOptions | undefined)?.top === 0),
+    ).toBe(true);
 
-    Element.prototype.scrollIntoView = originalScrollIntoView;
+    scrollToMock.mockRestore();
     act(() => {
       root.unmount();
     });
   });
 
-  it("findLatestCommentMessageIndex prefers the last comment-anchored row (PAP-2672)", () => {
+  it("findLatestCommentMessageIndex prefers the last comment-anchored row, or first when newest-first (PAP-2672)", () => {
     const messages = [
       { metadata: { custom: { anchorId: "comment-a" } } },
       { metadata: { custom: { anchorId: "run-1" } } },
@@ -1046,6 +1039,8 @@ describe("IssueChatThread", () => {
       { metadata: { custom: { anchorId: "activity-3" } } },
     ];
     expect(findLatestCommentMessageIndex(messages as never)).toBe(2);
+    // Newest-first feed: the newest comment is the first comment-anchored row.
+    expect(findLatestCommentMessageIndex(messages as never, true)).toBe(0);
     expect(
       findLatestCommentMessageIndex([
         { metadata: { custom: { anchorId: "run-only" } } },
@@ -2150,7 +2145,8 @@ describe("IssueChatThread", () => {
     const dock = container.querySelector('[data-testid="issue-chat-composer-dock"]') as HTMLDivElement | null;
     expect(dock).not.toBeNull();
     expect(dock?.className).toContain("sticky");
-    expect(dock?.className).toContain("bottom-[calc(env(safe-area-inset-bottom)+20px)]");
+    // Full (newest-first) feed docks the composer at the top, near fresh messages.
+    expect(dock?.className).toContain("top-[calc(env(safe-area-inset-top)+8px)]");
     expect(dock?.className).toContain("z-20");
 
     const composer = container.querySelector('[data-testid="issue-chat-composer"]') as HTMLDivElement | null;
@@ -2367,6 +2363,8 @@ describe("IssueChatThread", () => {
     });
   });
 
+  // The bottom spacer (submit-scroll reserve) only exists in the bottom-docked
+  // embedded variant; the newest-first full feed scrolls to the top instead.
   it("renders the bottom spacer with zero height until the user has submitted", () => {
     const root = createRoot(container);
 
@@ -2374,6 +2372,7 @@ describe("IssueChatThread", () => {
       root.render(
         <MemoryRouter>
           <IssueChatThread
+            variant="embedded"
             comments={[{
               id: "comment-spacer-1",
               companyId: "company-1",
