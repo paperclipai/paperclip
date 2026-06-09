@@ -176,7 +176,7 @@ describe("MarkdownBody", () => {
     ]);
 
     expect(html).toContain('href="/issues/PAP-1271"');
-    expect(html).toContain("text-green-600");
+    expect(html).toContain("text-status-success");
     expect(html).toContain(">PAP-1271<");
     expect(html).toContain('data-mention-kind="issue"');
     expect(html).toContain("valadrien-os-markdown-issue-ref");
@@ -217,8 +217,8 @@ describe("MarkdownBody", () => {
     expect(html).toContain('href="/issues/PAP-1180"');
     expect(html).toContain(">/issues/PAP-1179<");
     expect(html).toContain(">/PAP/issues/pap-1180<");
-    expect(html).toContain("text-red-600");
-    expect(html).toContain("text-green-600");
+    expect(html).toContain("text-status-error");
+    expect(html).toContain("text-status-success");
   });
 
   it("does not auto-link non-issue internal route paths", () => {
@@ -240,8 +240,8 @@ describe("MarkdownBody", () => {
     expect(html).toContain('href="/issues/PAP-1311"');
     expect(html).toContain(">issue://PAP-1310<");
     expect(html).toContain(">issue://:PAP-1311<");
-    expect(html).toContain("text-green-600");
-    expect(html).toContain("text-red-600");
+    expect(html).toContain("text-status-success");
+    expect(html).toContain("text-status-error");
   });
 
   it("linkifies issue identifiers inside inline code spans", () => {
@@ -251,7 +251,7 @@ describe("MarkdownBody", () => {
 
     expect(html).toContain('href="/issues/PAP-1271"');
     expect(html).toContain('<code style="overflow-wrap:anywhere;word-break:break-word">PAP-1271</code>');
-    expect(html).toContain("text-green-600");
+    expect(html).toContain("text-status-success");
     expect(html).toContain("valadrien-os-markdown-issue-ref");
   });
 
