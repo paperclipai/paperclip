@@ -275,7 +275,7 @@ describe("ProjectWorkspaceSummaryCard", () => {
     });
 
     const serviceLink = container.querySelector("a[href='http://127.0.0.1:62475']");
-    expect(serviceLink?.className).toContain("text-emerald");
+    expect(serviceLink?.className).toContain("text-status-running");
 
     act(() => {
       root.unmount();

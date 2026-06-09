@@ -402,7 +402,7 @@ describe("IssueChatThread", () => {
     const composer = container.querySelector('[data-testid="issue-chat-composer"]');
     expect(composer).not.toBeNull();
     expect(composer?.getAttribute("data-pending-work-mode")).toBe("planning");
-    expect(composer?.className).toContain("amber");
+    expect(composer?.className).toContain("status-warning");
 
     const toggle = container.querySelector(
       '[data-testid="issue-chat-composer-work-mode-toggle"]',
@@ -442,7 +442,7 @@ describe("IssueChatThread", () => {
     ).toBeNull();
     const composer = container.querySelector('[data-testid="issue-chat-composer"]');
     expect(composer?.getAttribute("data-pending-work-mode")).toBe("standard");
-    expect(composer?.className).not.toContain("amber");
+    expect(composer?.className).not.toContain("status-warning");
 
     const menuTrigger = container.querySelector(
       '[data-testid="issue-chat-composer-work-mode-menu"]',
@@ -464,7 +464,7 @@ describe("IssueChatThread", () => {
 
     expect(onWorkModeChange).not.toHaveBeenCalled();
     expect(composer?.getAttribute("data-pending-work-mode")).toBe("planning");
-    expect(composer?.className).toContain("amber");
+    expect(composer?.className).toContain("status-warning");
 
     const visibleChip = container.querySelector(
       '[data-testid="issue-chat-composer-work-mode-toggle"]',

@@ -620,7 +620,7 @@ describe("IssueProperties", () => {
     const serviceLink = container.querySelector(`a[href="${serviceUrl}"]`);
     expect(serviceLink).not.toBeNull();
     expect(serviceLink?.getAttribute("target")).toBe("_blank");
-    expect(serviceLink?.className).toContain("text-emerald");
+    expect(serviceLink?.className).toContain("text-status-running");
     expect((container.textContent ?? "").indexOf("Service")).toBeLessThan(
       (container.textContent ?? "").indexOf("Workspace"),
     );
