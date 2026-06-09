@@ -16,10 +16,22 @@ import { normalizePortablePath } from "./portable-path.js";
 
 const require = createRequire(import.meta.url);
 
+/** Resolve the @paperclipai/skills-catalog package root.
+ *  In dev the manifest lives at packages/skills-catalog/generated/catalog.json.
+ *  In published builds it lives at dist/generated/catalog.json (per publishConfig.exports).
+ *  We walk up from the manifest to find package.json so we get the real root in both cases. */
 function resolveCatalogPackageRoot(): string {
   try {
-    const manifestPath = require.resolve("@paperclipai/skills-catalog/generated/catalog.json");
-    return path.dirname(path.dirname(manifestPath));
+    const manifestPath = require.resolve("@paperclipai/skills-catalog/catalog.json");
+    // Walk up from manifest to find the package root (where package.json lives)
+    let dir = path.dirname(manifestPath);
+    while (dir !== path.dirname(dir)) {
+      if (existsSync(path.join(dir, "package.json"))) return dir;
+      dir = path.dirname(dir);
+    }
+    // Fallback: monorepo path
+    const serviceDir = path.dirname(fileURLToPath(import.meta.url));
+    return path.join(path.resolve(serviceDir, "../../.."), "packages/skills-catalog");
   } catch {
     const serviceDir = path.dirname(fileURLToPath(import.meta.url));
     return path.join(path.resolve(serviceDir, "../../.."), "packages/skills-catalog");
@@ -119,9 +131,9 @@ async function fetchCatalogSourceFile(
 ): Promise<Buffer> {
   const source = skill.source;
   if (!source) {
-    const packageRoot = resolveCatalogPackageRoot();
-    const absolutePath = path.resolve(packageRoot, skill.path, relativePath);
-    const skillRoot = path.resolve(packageRoot, skill.path);
+    // Use cached catalogPackageRoot constant (resolved once at module load)
+    const absolutePath = path.resolve(catalogPackageRoot, skill.path, relativePath);
+    const skillRoot = path.resolve(catalogPackageRoot, skill.path);
     if (absolutePath !== skillRoot && !absolutePath.startsWith(`${skillRoot}${path.sep}`)) {
       throw notFound("Catalog skill file not found");
     }
