@@ -1995,8 +1995,12 @@ function deriveTaskKey(
 
 /**
  * Extended task key derivation that falls back to a stable synthetic key
- * for timer/heartbeat wakes. This ensures timer wakes can resume their
- * previous session via `agentTaskSessions` instead of starting fresh.
+ * for timer/heartbeat wakes. The synthetic key keeps the
+ * `agentTaskSessions` row addressable across heartbeats so the row can be
+ * cleared and re-keyed deterministically; it does NOT mean the prior
+ * session is resumed. Since PF-4 (#4838), `heartbeat_timer` wakes always
+ * go through `shouldResetTaskSessionForWake` and start a fresh session —
+ * see `describeSessionResetReason` for the paired log message.
  *
  * The synthetic key is only used when:
  * - No explicit task/issue key exists in the context
