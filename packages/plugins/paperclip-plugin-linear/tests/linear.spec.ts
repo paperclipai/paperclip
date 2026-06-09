@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { listOpenIssues, markDuplicate } from "../src/linear.js";
+import { listIssuesByIds, listOpenIssues, markDuplicate } from "../src/linear.js";
 
 // gql() (linear.ts:222) calls fetch(LINEAR_API, {..., body: JSON.stringify({query, variables})}),
 // checks res.ok, then res.json() -> { data, errors }. Mock that contract.
@@ -72,5 +72,41 @@ describe("listOpenIssues", () => {
 
     const body = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
     expect(body.query).toContain('"completed", "canceled", "cancelled"');
+  });
+});
+
+describe("listIssuesByIds", () => {
+  it("uses Linear ID variables for the id.in filter", async () => {
+    const fetch = mockFetch([
+      {
+        data: {
+          issues: {
+            nodes: [
+              {
+                id: "issue-1",
+                identifier: "BLO-1",
+                title: "Test",
+                description: null,
+                url: "https://linear.app/blockc/issue/BLO-1/test",
+                priority: 0,
+                createdAt: "2026-06-09T00:00:00.000Z",
+                updatedAt: "2026-06-09T00:00:00.000Z",
+                state: { name: "Todo", type: "unstarted" },
+                assignee: null,
+                labels: { nodes: [] },
+                project: null,
+              },
+            ],
+          },
+        },
+      },
+    ]);
+
+    const issues = await listIssuesByIds(fetch, "tok", ["issue-1", "issue-1", ""]);
+
+    expect(issues).toHaveLength(1);
+    const body = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(body.query).toContain("query ListIssuesByIds($ids: [ID!]!, $first: Int!)");
+    expect(body.variables).toEqual({ ids: ["issue-1"], first: 1 });
   });
 });

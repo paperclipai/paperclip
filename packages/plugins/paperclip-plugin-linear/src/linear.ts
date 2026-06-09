@@ -355,7 +355,7 @@ export async function listIssuesByIds(
   const data = await gql<{
     issues: { nodes: LinearIssue[] };
   }>(fetch, token, `
-    query ListIssuesByIds($ids: [String!]!, $first: Int!) {
+    query ListIssuesByIds($ids: [ID!]!, $first: Int!) {
       issues(filter: { id: { in: $ids } }, first: $first) {
         nodes {
           id identifier title description url priority
