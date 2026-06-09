@@ -8,7 +8,7 @@ export function isClosedIssueStatus(status: string | null | undefined): status i
   return status === "done" || status === "cancelled";
 }
 
-export function queueResolvedInteractionContinuationWakeup(input: {
+export async function queueResolvedInteractionContinuationWakeup(input: {
   heartbeat: IssueAssignmentWakeupDeps;
   issue: { id: string; assigneeAgentId: string | null; status: string };
   interaction: Pick<
@@ -17,7 +17,7 @@ export function queueResolvedInteractionContinuationWakeup(input: {
   >;
   actor: { actorType: "user" | "agent" | "system"; actorId: string };
   source: string;
-}) {
+}): Promise<void> {
   if (
     input.interaction.continuationPolicy !== "wake_assignee"
     && input.interaction.continuationPolicy !== "wake_assignee_on_accept"
@@ -29,7 +29,7 @@ export function queueResolvedInteractionContinuationWakeup(input: {
   if (input.interaction.status === "expired") return;
   if (!input.issue.assigneeAgentId || isClosedIssueStatus(input.issue.status)) return;
 
-  void input.heartbeat.wakeup(input.issue.assigneeAgentId, {
+  await input.heartbeat.wakeup(input.issue.assigneeAgentId, {
     source: "automation",
     triggerDetail: "system",
     reason: "issue_commented",
@@ -168,7 +168,7 @@ export async function finalizeAcceptedInteractionResolution(input: {
     });
   }
 
-  queueResolvedInteractionContinuationWakeup({
+  await queueResolvedInteractionContinuationWakeup({
     heartbeat: input.heartbeat,
     issue: continuationWakeIssue,
     interaction: input.interaction,

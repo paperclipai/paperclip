@@ -10,6 +10,7 @@ import {
   type AwaitingHumanNotificationPayload,
 } from "./awaiting-human-notifications.js";
 import type { ApprovalFlowContext } from "./approval-flow-routing.js";
+import { awaitingHumanSettingsService } from "./awaiting-human-settings.js";
 import { logActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
 
@@ -276,21 +277,57 @@ function resolveAudienceUserId(input: AwaitingHumanHandoffInput) {
   return userIds.length === 1 ? userIds[0] : null;
 }
 
-function buildNotification(
+async function resolveApprovalContext(
+  db: Db,
   input: AwaitingHumanHandoffInput,
-  link: string,
-  needsHumanInput: string,
-  audienceUserId: string | null,
-): AwaitingHumanNotificationPayload {
-  const label = input.updatedIssue.identifier ?? truncateText(input.updatedIssue.title, 48);
-  const isQuestionHandoff = input.handoffKind === "ask_user_questions";
-  const approvalContext = input.approvalContext
-    ? {
+): Promise<ApprovalFlowContext | null> {
+  if (input.approvalContext) {
+    return {
       approvalName: input.approvalContext.approvalName ?? null,
       approvalStage: input.approvalContext.approvalStage ?? null,
       requiresSecondReview: input.approvalContext.requiresSecondReview ?? null,
+    };
+  }
+  if (input.handoffKind !== "request_confirmation") return null;
+
+  try {
+    const runtime = await awaitingHumanSettingsService(db).resolveClickUpRuntimeConfig(
+      input.updatedIssue.companyId,
+    );
+    const primaryReviewerUserId = runtime.primaryReviewerUserId?.trim() ?? "";
+    const secondaryReviewerUserId = runtime.secondaryReviewerUserId?.trim() ?? "";
+    if (!primaryReviewerUserId && !secondaryReviewerUserId) return null;
+
+    return {
+      approvalName: null,
+      approvalStage: null,
+      requiresSecondReview: Boolean(secondaryReviewerUserId),
+    };
+  } catch (err) {
+    if (err instanceof Error && err.message === "awaiting-human-bridge-disabled") {
+      return null;
     }
-    : null;
+    logger.warn(
+      {
+        err,
+        companyId: input.updatedIssue.companyId,
+        issueId: input.updatedIssue.id,
+      },
+      "failed to resolve ClickUp approval context",
+    );
+    return null;
+  }
+}
+
+async function buildNotification(
+  input: AwaitingHumanHandoffInput,
+  approvalContext: ApprovalFlowContext | null,
+  link: string,
+  needsHumanInput: string,
+  audienceUserId: string | null,
+): Promise<AwaitingHumanNotificationPayload> {
+  const label = input.updatedIssue.identifier ?? truncateText(input.updatedIssue.title, 48);
+  const isQuestionHandoff = input.handoffKind === "ask_user_questions";
   return {
     title: truncateText(
       isQuestionHandoff
@@ -372,7 +409,14 @@ export async function maybeLogAwaitingHumanHandoff(
   if (await hasLoggedAwaitingHumanHandoff(db, input, dedupeKey)) return false;
   const audienceUserId = resolveAudienceUserId(input);
   const notificationLink = issueUrl ?? issuePath;
-  const notification = buildNotification(input, notificationLink, needsHumanInput, audienceUserId);
+  const approvalContext = await resolveApprovalContext(db, input);
+  const notification = await buildNotification(
+    input,
+    approvalContext,
+    notificationLink,
+    needsHumanInput,
+    audienceUserId,
+  );
   const firstBlocker = input.blockers?.[0] ?? null;
 
   if (input.emitIssueUpdatedActivity) {
@@ -464,7 +508,7 @@ export async function maybeLogAwaitingHumanHandoff(
       interactionKind: input.interaction?.kind ?? null,
       blockerIssueId: firstBlocker?.id ?? null,
       blockerIdentifier: firstBlocker?.identifier ?? null,
-      approvalContext: input.approvalContext ?? null,
+      approvalContext,
       dedupeKey,
       notification,
       notificationDelivery: {
