@@ -62,6 +62,7 @@ import {
   writePluginLocalFolderTextAtomic,
 } from "./plugin-local-folders.js";
 import { createPluginSecretsHandler } from "./plugin-secrets-handler.js";
+import { secretService } from "./secrets.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
@@ -489,7 +490,13 @@ export function buildHostServices(
   const registry = pluginRegistryService(db);
   const stateStore = pluginStateStore(db);
   const pluginDb = pluginDatabaseService(db);
-  const secretsHandler = createPluginSecretsHandler({ db, pluginId });
+  const svc = secretService(db);
+  const secretsHandler = createPluginSecretsHandler({
+    db,
+    pluginId,
+    resolveSecretValue: (companyId, secretId, version) =>
+      svc.resolveSecretValue(companyId, secretId, version),
+  });
   const companies = companyService(db);
   const agents = agentService(db);
   const managedAgents = pluginManagedAgentService(db, {
@@ -1229,8 +1236,8 @@ export function buildHostServices(
     },
 
     secrets: {
-      async resolve(params) {
-        return secretsHandler.resolve(params);
+      async resolve(params, context) {
+        return secretsHandler.resolve(params, context);
       },
     },
 
