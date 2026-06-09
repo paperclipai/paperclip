@@ -266,7 +266,7 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Enable Environments</h2>
+            <h2 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Enable Environments</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Show environment management in company settings and allow project and agent environment assignment
               controls.
@@ -284,7 +284,7 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Enable Isolated Workspaces</h2>
+            <h2 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Enable Isolated Workspaces</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Show execution workspace controls in project configuration and allow isolated workspace behavior for new
               and existing issue runs.
@@ -302,7 +302,7 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Cloud Sync</h2>
+            <h2 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Cloud Sync</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Show local ValadrienOs Cloud upstream connection, preview, push, retry, and activation review surfaces.
               Saved connections and run history are preserved when this is disabled.
@@ -320,7 +320,7 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Auto-Restart Dev Server When Idle</h2>
+            <h2 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Auto-Restart Dev Server When Idle</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               In `pnpm dev:once`, wait for all queued and running local agent runs to finish, then restart the server
               automatically when backend changes or migrations make the current boot stale.
@@ -339,7 +339,7 @@ export function InstanceExperimentalSettings() {
         <div className="flex flex-col gap-5">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1.5">
-              <h2 className="text-sm font-semibold">Auto-Create Issue Recovery Tasks</h2>
+              <h2 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Auto-Create Issue Recovery Tasks</h2>
               <p className="max-w-2xl text-sm text-muted-foreground">
                 Let the heartbeat scheduler create recovery issues for issue dependency chains found inside the
                 configured lookback window.
@@ -416,7 +416,7 @@ export function InstanceExperimentalSettings() {
           </div>
 
           <p className="text-xs text-muted-foreground">
-            Current window: last {lookbackHours} {lookbackHours === 1 ? "hour" : "hours"}.
+            Current window: last <span className="font-mono tabular-nums">{lookbackHours}</span> {lookbackHours === 1 ? "hour" : "hours"}.
           </p>
         </div>
       </section>

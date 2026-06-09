@@ -68,12 +68,30 @@ function BillerTabLabel({ biller, rows }: { biller: string; rows: CostByBiller[]
   );
 }
 
+/** Thin square utilization bar — GLASSHOUSE clay/amber/green by load. */
+function BudgetBar({ percent }: { percent: number }) {
+  const clamped = Math.max(0, Math.min(100, percent));
+  return (
+    <div className="mt-3 h-1.5 overflow-hidden bg-muted">
+      <div
+        className={cn(
+          "h-full transition-[width,background-color] duration-150",
+          percent > 90 ? "bg-status-error" : percent > 70 ? "bg-status-warning" : "bg-status-success",
+        )}
+        style={{ width: `${clamped}%` }}
+      />
+    </div>
+  );
+}
+
 function MetricTile({
   label,
   value,
   subtitle,
   icon: Icon,
   accent,
+  delta,
+  budgetPercent,
 }: {
   label: string;
   value: string;
@@ -81,12 +99,16 @@ function MetricTile({
   icon: ComponentType<{ className?: string }>;
   /** "money" = amber cost-tape, "credit" = green (positive finance net) */
   accent?: "money" | "credit";
+  /** A status-colored trend chip rendered under the eyebrow. */
+  delta?: { direction: "up" | "down" | "flat"; label: string; tone: "good" | "bad" | "neutral" };
+  /** When set, renders a thin square utilization bar (0–100) beneath the value. */
+  budgetPercent?: number;
 }) {
   return (
     <div className="border border-border p-4">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
+          <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
           <div
             className={cn(
               "mt-2 font-mono text-2xl font-medium tabular-nums",
@@ -96,12 +118,30 @@ function MetricTile({
           >
             {value}
           </div>
-          <div className="mt-1 text-xs leading-5 text-muted-foreground">{subtitle}</div>
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs leading-5 text-muted-foreground">
+            {delta ? (
+              <span
+                className={cn(
+                  "inline-flex items-center gap-0.5 font-mono tabular-nums",
+                  delta.tone === "good" && "text-status-success",
+                  delta.tone === "bad" && "text-status-error",
+                  delta.tone === "neutral" && "text-muted-foreground",
+                )}
+              >
+                <span aria-hidden="true">
+                  {delta.direction === "up" ? "▲" : delta.direction === "down" ? "▼" : "■"}
+                </span>
+                {delta.label}
+              </span>
+            ) : null}
+            <span className="min-w-0">{subtitle}</span>
+          </div>
         </div>
         <div className="flex h-9 w-9 shrink-0 items-center justify-center border border-border">
           <Icon className="h-4 w-4 text-muted-foreground" />
         </div>
       </div>
+      {typeof budgetPercent === "number" ? <BudgetBar percent={budgetPercent} /> : null}
     </div>
   );
 }
@@ -122,7 +162,9 @@ function FinanceSummaryCard({
   return (
     <Card>
       <CardHeader className="px-5 pt-5 pb-2">
-        <CardTitle className="text-base">Finance ledger</CardTitle>
+        <CardTitle className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+          Finance ledger
+        </CardTitle>
         <CardDescription>
           Account-level charges that do not map to a single inference request.
         </CardDescription>
@@ -555,29 +597,35 @@ export function Costs() {
     <div className="space-y-6">
       <div className="space-y-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div>
+            <div className="min-w-0">
                 <h1 className="font-serif text-2xl font-medium tracking-tight">Costs</h1>
-                <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-muted-foreground">
-                  <span className="font-mono font-medium text-primary">
+                {/* Hero spend — the cost tape, large serif over a mono period eyebrow. */}
+                <div className="mt-3">
+                  <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                    {PRESET_LABELS[preset]} · total spend
+                  </div>
+                  <div className="mt-1.5 font-serif text-4xl font-medium tabular-nums leading-none text-primary lg:text-5xl">
                     {formatCents(spendData?.summary.spendCents ?? 0)}
-                  </span>
-                  <span>this period</span>
-                  {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0 ? (
-                    <>
-                      <span className="text-muted-foreground/50">·</span>
-                      <span className="font-mono text-foreground">{spendData.summary.utilizationPercent}%</span>
-                      <span>of</span>
-                      <span className="font-mono">{formatCents(spendData.summary.budgetCents)}</span>
-                      <span>budget</span>
-                    </>
-                  ) : null}
-                  {activeBudgetIncidents.length > 0 ? (
-                    <>
-                      <span className="text-muted-foreground/50">·</span>
-                      <span className="font-mono font-semibold text-status-error">{activeBudgetIncidents.length}</span>
-                      <span>incident{activeBudgetIncidents.length > 1 ? "s" : ""}</span>
-                    </>
-                  ) : null}
+                  </div>
+                  <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-muted-foreground">
+                    {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0 ? (
+                      <>
+                        <span className="font-mono tabular-nums text-foreground">{spendData.summary.utilizationPercent}%</span>
+                        <span>of</span>
+                        <span className="font-mono tabular-nums">{formatCents(spendData.summary.budgetCents)}</span>
+                        <span>budget</span>
+                      </>
+                    ) : (
+                      <span className="font-mono text-muted-foreground">No cap configured</span>
+                    )}
+                    {activeBudgetIncidents.length > 0 ? (
+                      <>
+                        <span className="text-muted-foreground/50">·</span>
+                        <span className="font-mono font-semibold tabular-nums text-status-error">{activeBudgetIncidents.length}</span>
+                        <span>incident{activeBudgetIncidents.length > 1 ? "s" : ""}</span>
+                      </>
+                    ) : null}
+                  </div>
                 </div>
             </div>
 
@@ -595,6 +643,7 @@ export function Costs() {
               ))}
             </div>
           </div>
+          <hr className="border-border" />
 
           {preset === "custom" ? (
             <div className="flex flex-wrap items-center gap-2 border border-border p-3">
@@ -637,6 +686,11 @@ export function Costs() {
                     : "No monthly cap configured"
               }
               icon={Coins}
+              budgetPercent={
+                activeBudgetIncidents.length === 0 && spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
+                  ? spendData.summary.utilizationPercent
+                  : undefined
+              }
             />
             <MetricTile
               label="Finance net"
@@ -644,6 +698,15 @@ export function Costs() {
               subtitle={financeReady ? `${formatCents(financeData!.summary.debitCents)} debits · ${formatCents(financeData!.summary.creditCents)} credits` : "Loading…"}
               icon={ReceiptText}
               accent={(financeData?.summary.netCents ?? 0) >= 0 ? "credit" : "money"}
+              delta={
+                financeReady
+                  ? (financeData!.summary.netCents > 0
+                      ? { direction: "up", label: "net debit", tone: "bad" }
+                      : financeData!.summary.netCents < 0
+                        ? { direction: "down", label: "net credit", tone: "good" }
+                        : { direction: "flat", label: "even", tone: "neutral" })
+                  : undefined
+              }
             />
             <MetricTile
               label="Finance events"
@@ -694,7 +757,9 @@ export function Costs() {
               <div className="grid gap-4 xl:grid-cols-[1.3fr,1fr]">
                 <Card>
                   <CardHeader className="px-5 pt-5 pb-2">
-                    <CardTitle className="text-base">Inference ledger</CardTitle>
+                    <CardTitle className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                      Inference ledger
+                    </CardTitle>
                     <CardDescription>
                       Request-scoped inference spend for the selected period.
                     </CardDescription>
@@ -702,18 +767,18 @@ export function Costs() {
                   <CardContent className="space-y-4 px-5 pb-5 pt-2">
                     <div className="flex flex-wrap items-end justify-between gap-3">
                       <div>
-                        <div className="text-3xl font-semibold tabular-nums">
+                        <div className="font-mono text-3xl font-medium tabular-nums text-primary">
                           {formatCents(spendData?.summary.spendCents ?? 0)}
                         </div>
                         <div className="mt-1 text-sm text-muted-foreground">
                           {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
-                            ? `Budget ${formatCents(spendData.summary.budgetCents)}`
+                            ? <>Budget <span className="font-mono tabular-nums">{formatCents(spendData.summary.budgetCents)}</span></>
                             : "Unlimited budget"}
                         </div>
                       </div>
                       <div className="border border-border px-4 py-3 text-right">
-                        <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">usage</div>
-                        <div className="mt-1 text-lg font-medium tabular-nums">
+                        <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">usage</div>
+                        <div className="mt-1 font-mono text-lg font-medium tabular-nums">
                           {formatTokens(inferenceTokenTotal)}
                         </div>
                       </div>
@@ -734,7 +799,7 @@ export function Costs() {
                           />
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          {spendData.summary.utilizationPercent}% of monthly budget consumed in this range.
+                          <span className="font-mono tabular-nums text-foreground">{spendData.summary.utilizationPercent}%</span> of monthly budget consumed in this range.
                         </div>
                       </div>
                     ) : null}
@@ -753,7 +818,9 @@ export function Costs() {
               <div className="grid gap-4 xl:grid-cols-[1.25fr,0.95fr]">
                 <Card>
                   <CardHeader className="px-5 pt-5 pb-2">
-                    <CardTitle className="text-base">By agent</CardTitle>
+                    <CardTitle className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                      By agent
+                    </CardTitle>
                     <CardDescription>What each agent consumed in the selected period.</CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-2 px-5 pb-5 pt-2">
@@ -782,7 +849,7 @@ export function Costs() {
                                 {row.agentStatus === "terminated" ? <StatusBadge status="terminated" /> : null}
                               </div>
                               <div className="text-right text-sm tabular-nums">
-                                <div className="font-medium">{formatCents(row.costCents)}</div>
+                                <div className="font-mono font-medium text-foreground">{formatCents(row.costCents)}</div>
                                 <div className="text-xs text-muted-foreground">
                                   in {formatTokens(row.inputTokens + row.cachedInputTokens)} · out {formatTokens(row.outputTokens)}
                                 </div>
@@ -818,7 +885,7 @@ export function Costs() {
                                         </div>
                                       </div>
                                       <div className="text-right tabular-nums">
-                                        <div className="font-medium">
+                                        <div className="font-mono font-medium text-foreground">
                                           {formatCents(modelRow.costCents)}
                                           <span className="ml-1 font-normal text-muted-foreground">({sharePct}%)</span>
                                         </div>
@@ -841,7 +908,9 @@ export function Costs() {
                 <div className="space-y-4">
                   <Card>
                     <CardHeader className="px-5 pt-5 pb-2">
-                      <CardTitle className="text-base">By project</CardTitle>
+                      <CardTitle className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                        By project
+                      </CardTitle>
                       <CardDescription>Run costs attributed through project-linked issues.</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-2 px-5 pb-5 pt-2">
@@ -854,7 +923,7 @@ export function Costs() {
                             className="flex items-center justify-between gap-3 border border-border px-3 py-2 text-sm"
                           >
                             <span className="truncate">{row.projectName ?? row.projectId ?? "Unattributed"}</span>
-                            <span className="font-medium tabular-nums">{formatCents(row.costCents)}</span>
+                            <span className="font-mono font-medium tabular-nums text-foreground">{formatCents(row.costCents)}</span>
                           </div>
                         ))
                       )}
@@ -875,9 +944,11 @@ export function Costs() {
             <p className="text-sm text-destructive">{(budgetError as Error).message}</p>
           ) : (
             <>
-              <Card className="border-border/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02))]">
+              <Card className="border-border">
                 <CardHeader className="px-5 pt-5 pb-3">
-                  <CardTitle className="text-base">Budget control plane</CardTitle>
+                  <CardTitle className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                    Budget control plane
+                  </CardTitle>
                   <CardDescription>
                     Hard-stop spend limits for agents and projects. Provider subscription quota stays separate and appears under Providers.
                   </CardDescription>
@@ -913,8 +984,8 @@ export function Costs() {
               {activeBudgetIncidents.length > 0 ? (
                 <div className="space-y-3">
                   <div>
-                    <h2 className="text-lg font-semibold">Active incidents</h2>
-                    <p className="text-sm text-muted-foreground">
+                    <h2 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-status-error">Active incidents</h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
                       Resolve hard stops here by raising the budget or explicitly keeping the scope paused.
                     </p>
                   </div>
@@ -944,8 +1015,8 @@ export function Costs() {
                   return (
                     <section key={scopeType} className="space-y-3">
                       <div>
-                        <h2 className="text-lg font-semibold capitalize">{scopeType} budgets</h2>
-                        <p className="text-sm text-muted-foreground">
+                        <h2 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">{scopeType} budgets</h2>
+                        <p className="mt-1 text-sm text-muted-foreground">
                           {scopeType === "company"
                             ? "Company-wide monthly policy."
                             : scopeType === "agent"
@@ -1114,7 +1185,9 @@ export function Costs() {
                 <div className="space-y-4">
                   <Card>
                     <CardHeader className="px-5 pt-5 pb-2">
-                      <CardTitle className="text-base">By biller</CardTitle>
+                      <CardTitle className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                        By biller
+                      </CardTitle>
                       <CardDescription>Account-level financial events grouped by who charged or credited them.</CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-4 px-5 pb-5 pt-2 md:grid-cols-2">

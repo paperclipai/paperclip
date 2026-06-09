@@ -39,12 +39,14 @@ export function DashboardLive() {
             <ArrowLeft className="h-3.5 w-3.5" />
             Dashboard
           </Link>
-          <h1 className="mt-2 text-2xl font-semibold tracking-normal text-foreground">Live agent runs</h1>
+          <h1 className="mt-2 font-serif text-2xl font-medium tracking-tight text-foreground">Live agent runs</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Active runs first, followed by the most recent completed runs.
           </p>
         </div>
-        <div className="text-sm text-muted-foreground">Showing up to {DASHBOARD_LIVE_RUN_LIMIT}</div>
+        <div className="text-sm text-muted-foreground">
+          Showing up to <span className="font-mono tabular-nums text-foreground">{DASHBOARD_LIVE_RUN_LIMIT}</span>
+        </div>
       </div>
 
       <ActiveAgentsPanel

@@ -219,7 +219,7 @@ export function PluginManager() {
       <section className="space-y-3">
         <div className="flex items-center gap-2">
           <FlaskConical className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-base font-semibold">Available Plugins</h2>
+          <h2 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Available Plugins</h2>
           <Badge variant="outline">Bundled</Badge>
         </div>
 
@@ -259,7 +259,7 @@ export function PluginManager() {
                         )}
                       </div>
                       <p className="mt-1 text-sm text-muted-foreground">{example.description}</p>
-                      <p className="mt-1 text-xs text-muted-foreground">{example.packageName}</p>
+                      <p className="mt-1 font-mono text-xs text-muted-foreground">{example.packageName}</p>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       {installedPlugin ? (
@@ -306,7 +306,7 @@ export function PluginManager() {
       <section className="space-y-3">
         <div className="flex items-center gap-2">
           <Puzzle className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-base font-semibold">Installed Plugins</h2>
+          <h2 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Installed Plugins</h2>
         </div>
 
         {!installedPlugins.length ? (
@@ -338,7 +338,7 @@ export function PluginManager() {
                       )}
                     </div>
                     <div>
-                      <p className="text-xs text-muted-foreground mt-0.5 truncate" title={plugin.packageName}>
+                      <p className="font-mono text-xs text-muted-foreground mt-0.5 truncate" title={plugin.packageName}>
                         {plugin.packageName} · v{plugin.manifestJson.version ?? plugin.version}
                       </p>
                     </div>

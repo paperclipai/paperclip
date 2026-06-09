@@ -189,8 +189,8 @@ export function NewAgent() {
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <div>
-        <h1 className="text-lg font-semibold">New Agent</h1>
-        <p className="text-sm text-muted-foreground mt-1">
+        <h1 className="font-serif text-2xl font-medium tracking-tight">New Agent</h1>
+        <p className="mt-1 font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground">
           Advanced agent configuration
         </p>
       </div>
@@ -269,8 +269,10 @@ export function NewAgent() {
         <div className="border-t border-border px-4 py-4">
           <div className="space-y-3">
             <div>
-              <h2 className="text-sm font-medium">Company skills</h2>
-              <p className="mt-1 text-xs text-muted-foreground">
+              <h2 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                Company Skills
+              </h2>
+              <p className="mt-1.5 text-xs text-muted-foreground">
                 Optional skills from the company library. Built-in ValadrienOs runtime skills are added automatically.
               </p>
             </div>

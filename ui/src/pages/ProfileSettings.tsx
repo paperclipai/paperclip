@@ -142,7 +142,7 @@ export function ProfileSettings() {
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <UserRoundPen className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Profile</h1>
+          <h1 className="font-serif text-lg font-medium">Profile</h1>
         </div>
         <p className="text-sm text-muted-foreground">
           Control how your account appears in the sidebar and other board surfaces.

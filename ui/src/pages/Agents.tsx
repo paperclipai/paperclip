@@ -246,8 +246,8 @@ export function Agents() {
       </div>
 
       {filtered.length > 0 && (
-        <p className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground/70">
-          {filtered.length} agent{filtered.length !== 1 ? "s" : ""}
+        <p className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+          <span className="tabular-nums">{filtered.length}</span> agent{filtered.length !== 1 ? "s" : ""}
         </p>
       )}
 

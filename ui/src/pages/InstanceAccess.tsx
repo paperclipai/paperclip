@@ -142,7 +142,7 @@ export function InstanceAccess() {
                   ) : null}
                 </div>
                 <div className="mt-2 text-xs text-muted-foreground">
-                  {user.activeCompanyMembershipCount} active company memberships
+                  <span className="font-mono tabular-nums">{user.activeCompanyMembershipCount}</span> active company memberships
                 </div>
               </button>
             ))}
@@ -162,7 +162,7 @@ export function InstanceAccess() {
             <>
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
-                  <div className="text-lg font-semibold">
+                  <div className="font-serif text-lg font-medium">
                     {selectedUser?.name || selectedUser?.email || selectedUserId}
                   </div>
                   <div className="text-sm text-muted-foreground">
@@ -179,8 +179,10 @@ export function InstanceAccess() {
               </div>
 
               <div className="space-y-3">
-                <div>
-                  <h2 className="text-sm font-semibold">Company access</h2>
+                <div className="space-y-1">
+                  <h2 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                    Company access
+                  </h2>
                   <p className="text-sm text-muted-foreground">
                     Toggle company membership for this user. New access defaults to an active operator membership.
                   </p>
@@ -220,7 +222,9 @@ export function InstanceAccess() {
               </div>
 
               <div className="space-y-2">
-                <h2 className="text-sm font-semibold">Current memberships</h2>
+                <h2 className="font-mono text-[10.5px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                  Current memberships
+                </h2>
                 <div className="space-y-2">
                   {(userAccessQuery.data?.companyAccess ?? []).map((membership) => (
                     <div
@@ -229,11 +233,11 @@ export function InstanceAccess() {
                     >
                       <div>
                         <div className="font-medium">{membership.companyName || membership.companyId}</div>
-                        <div className="text-muted-foreground">
+                        <div className="font-mono text-xs text-muted-foreground">
                           {membership.membershipRole || "unset"} • {membership.status}
                         </div>
                       </div>
-                      <div className="text-xs text-muted-foreground">
+                      <div className="font-mono tabular-nums text-xs text-muted-foreground">
                         {new Date(membership.updatedAt).toLocaleDateString()}
                       </div>
                     </div>
