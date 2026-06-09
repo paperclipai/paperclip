@@ -1,20 +1,16 @@
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
+import type { ActivityEvent } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
-export type RoutineActivityEvent = {
-  id: string;
-  action: string;
-  details?: Record<string, unknown> | null;
-  createdAt: string;
-};
+export type RoutineActivityEvent = Pick<ActivityEvent, "id" | "action" | "details" | "createdAt">;
 
-function formatTime(value: string): string {
+function formatTime(value: string | Date): string {
   try {
     return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   } catch {
-    return value;
+    return String(value);
   }
 }
 
