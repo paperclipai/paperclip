@@ -4,6 +4,8 @@ import { cn } from "../lib/utils";
 
 interface EntityRowProps {
   leading?: ReactNode;
+  /** Absolute, full-height accent pinned to the row's left edge (e.g. a heartbeat spine). */
+  leftAccent?: ReactNode;
   identifier?: string;
   title: string;
   subtitle?: string;
@@ -16,6 +18,7 @@ interface EntityRowProps {
 
 export function EntityRow({
   leading,
+  leftAccent,
   identifier,
   title,
   subtitle,
@@ -28,6 +31,7 @@ export function EntityRow({
   const isClickable = !!(to || onClick);
   const classes = cn(
     "flex items-center gap-3 px-4 py-2 text-sm border-b border-border last:border-b-0 transition-colors",
+    leftAccent && "relative",
     isClickable && "cursor-pointer hover:bg-accent/50",
     selected && "bg-accent/30",
     className
@@ -35,6 +39,7 @@ export function EntityRow({
 
   const content = (
     <>
+      {leftAccent}
       {leading && <div className="flex items-center gap-2 shrink-0">{leading}</div>}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">

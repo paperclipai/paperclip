@@ -274,28 +274,24 @@ export function Agents() {
                 title={agent.name}
                 subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
                 to={agentUrl(agent)}
-                className={cn(
-                  agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
-                  liveRunByAgent.has(agent.id) &&
-                    "relative before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:rounded-full before:bg-primary",
-                )}
+                className={cn(agent.pausedAt && tab !== "paused" ? "opacity-50" : "")}
+                leftAccent={
+                  // The signature heartbeat spine on the box's left edge — each
+                  // agent beats on its own cadence so the roster shimmers arrhythmically.
+                  <HeartbeatSpine
+                    state={liveState}
+                    beat={2.1 + (agentIndex % 5) * 0.28}
+                    delay={(agentIndex % 7) * 0.36}
+                    className="absolute inset-y-0 left-0"
+                  />
+                }
                 leading={
-                  // Identity + the signature heartbeat spine: each agent beats on
-                  // its own cadence so the roster shimmers arrhythmically.
-                  <div className="flex items-stretch gap-2.5">
-                    <HeartbeatSpine
-                      state={liveState}
-                      beat={2.1 + (agentIndex % 5) * 0.28}
-                      delay={(agentIndex % 7) * 0.36}
-                      className="self-stretch"
-                    />
-                    <AgentPortrait
-                      src={null}
-                      name={agent.name}
-                      state={liveState}
-                      size={28}
-                    />
-                  </div>
+                  <AgentPortrait
+                    src={null}
+                    name={agent.name}
+                    state={liveState}
+                    size={28}
+                  />
                 }
                 trailing={
                   <div className="flex items-center gap-3">
@@ -386,13 +382,22 @@ function OrgTreeNode({
   tab: FilterTab;
 }) {
   const agent = agentMap.get(node.id);
+  // Stable per-agent cadence so the roster shimmers arrhythmically.
+  const seed = [...node.id].reduce((a, c) => a + c.charCodeAt(0), 0);
 
   return (
     <div style={{ paddingLeft: depth * 24 }}>
       <Link
         to={agent ? agentUrl(agent) : `/agents/${node.id}`}
-        className={cn("flex items-center gap-3 px-3 py-2 hover:bg-accent/30 transition-colors w-full text-left no-underline text-inherit", agent?.pausedAt && tab !== "paused" && "opacity-50")}
+        className={cn("relative flex items-center gap-3 px-3 py-2 hover:bg-accent/30 transition-colors w-full text-left no-underline text-inherit", agent?.pausedAt && tab !== "paused" && "opacity-50")}
       >
+        {/* The signature heartbeat spine on the box's left edge. */}
+        <HeartbeatSpine
+          state={agentLiveState(node.status)}
+          beat={2.1 + (seed % 5) * 0.28}
+          delay={(seed % 7) * 0.36}
+          className="absolute inset-y-0 left-0"
+        />
         <AgentPortrait
           src={null}
           name={node.name}
