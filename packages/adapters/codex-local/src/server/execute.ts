@@ -8,6 +8,7 @@ import {
 } from "@paperclipai/adapter-utils";
 import {
   redactChangedJsonlPersistenceArtifacts,
+  redactShellSnapshotPersistenceArtifacts,
   snapshotJsonlPersistenceArtifacts,
   type PersistenceArtifactSnapshot,
 } from "@paperclipai/adapter-utils/persistence-redaction";
@@ -739,6 +740,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await redactChangedJsonlPersistenceArtifacts({
       root: effectiveCodexHome,
       before: codexSessionArtifactSnapshot,
+    });
+    await redactShellSnapshotPersistenceArtifacts({
+      root: effectiveCodexHome,
     });
     const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
     return {
