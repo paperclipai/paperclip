@@ -1,0 +1,17 @@
+version: 1
+agent:
+  name: "Timi"
+  # Single source of truth: the agent's canonical AGENTS.md (read by both kimi_local via system_prompt_path and any other adapter via instructionsFilePath).
+  system_prompt_path: ../AGENTS.md
+  tools:
+    - "kimi_cli.tools.shell:Shell"
+    - "kimi_cli.tools.file:ReadFile"
+    - "kimi_cli.tools.file:ReadMediaFile"
+    - "kimi_cli.tools.file:Glob"
+    - "kimi_cli.tools.file:Grep"
+    - "kimi_cli.tools.file:WriteFile"
+    - "kimi_cli.tools.file:StrReplaceFile"
+    - "kimi_cli.tools.web:SearchWeb"
+    - "kimi_cli.tools.web:FetchURL"
+    - "kimi_cli.tools.plan:ExitPlanMode"
+    - "kimi_cli.tools.plan.enter:EnterPlanMode"
