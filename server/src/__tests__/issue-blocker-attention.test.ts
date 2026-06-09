@@ -255,6 +255,37 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("does not surface a cancelled child as the blocker sample after a replacement blocker exists", async () => {
+    const { companyId } = await createCompany("PBRP");
+    const parentId = await insertIssue({ companyId, identifier: "PBRP-1", title: "Parent", status: "blocked" });
+    const replacementBlockerId = await insertIssue({
+      companyId,
+      identifier: "PBRP-2",
+      title: "Human-owned replacement blocker",
+      status: "backlog",
+      assigneeUserId: "board-user-1",
+    });
+    await insertIssue({
+      companyId,
+      identifier: "PBRP-3",
+      title: "Cancelled stale child",
+      status: "cancelled",
+      parentId,
+    });
+    await block({ companyId, blockerIssueId: replacementBlockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_dependency",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PBRP-2",
+    });
+  });
+
   it("covers recursive blocker chains when the downstream leaf has active work", async () => {
     const { companyId, agentId } = await createCompany("PBR");
     const parentId = await insertIssue({ companyId, identifier: "PBR-1", title: "Parent", status: "blocked" });
