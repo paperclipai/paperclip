@@ -1387,7 +1387,7 @@ export function issueRoutes(
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
-    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null; executionState?: unknown },
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1400,6 +1400,20 @@ export function issueRoutes(
     }
     if (issue.assigneeAgentId !== actorAgentId) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
+        return true;
+      }
+      const requestedStatus =
+        req.body && typeof req.body === "object" && !Array.isArray(req.body)
+          ? (req.body as Record<string, unknown>).status
+          : undefined;
+      const executionState = parseIssueExecutionState(issue.executionState);
+      if (
+        issue.status === "in_review" &&
+        requestedStatus === "blocked" &&
+        executionState?.status === "pending" &&
+        executionState.returnAssignee?.type === "agent" &&
+        executionState.returnAssignee.agentId === actorAgentId
+      ) {
         return true;
       }
       if (issue.status === "in_progress") {

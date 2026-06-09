@@ -15,15 +15,41 @@ const lockPollMs = 100;
 const buildTargets = [
   {
     name: "@paperclipai/shared",
-    output: path.join(rootDir, "packages/shared/dist/index.js"),
+    outputs: [
+      path.join(rootDir, "packages/shared/dist/index.js"),
+      path.join(rootDir, "packages/shared/dist/index.d.ts"),
+      path.join(rootDir, "packages/shared/dist/telemetry/index.js"),
+      path.join(rootDir, "packages/shared/dist/telemetry/index.d.ts"),
+    ],
     sourceDir: path.join(rootDir, "packages/shared/src"),
     tsconfig: path.join(rootDir, "packages/shared/tsconfig.json"),
+    buildInfo: path.join(rootDir, "packages/shared/tsconfig.tsbuildinfo"),
   },
   {
     name: "@paperclipai/plugin-sdk",
-    output: path.join(rootDir, "packages/plugins/sdk/dist/index.js"),
+    outputs: [
+      path.join(rootDir, "packages/plugins/sdk/dist/index.js"),
+      path.join(rootDir, "packages/plugins/sdk/dist/index.d.ts"),
+      path.join(rootDir, "packages/plugins/sdk/dist/protocol.js"),
+      path.join(rootDir, "packages/plugins/sdk/dist/protocol.d.ts"),
+      path.join(rootDir, "packages/plugins/sdk/dist/types.js"),
+      path.join(rootDir, "packages/plugins/sdk/dist/types.d.ts"),
+      path.join(rootDir, "packages/plugins/sdk/dist/ui/index.js"),
+      path.join(rootDir, "packages/plugins/sdk/dist/ui/index.d.ts"),
+      path.join(rootDir, "packages/plugins/sdk/dist/ui/hooks.js"),
+      path.join(rootDir, "packages/plugins/sdk/dist/ui/hooks.d.ts"),
+      path.join(rootDir, "packages/plugins/sdk/dist/ui/types.js"),
+      path.join(rootDir, "packages/plugins/sdk/dist/ui/types.d.ts"),
+      path.join(rootDir, "packages/plugins/sdk/dist/testing.js"),
+      path.join(rootDir, "packages/plugins/sdk/dist/testing.d.ts"),
+      path.join(rootDir, "packages/plugins/sdk/dist/bundlers.js"),
+      path.join(rootDir, "packages/plugins/sdk/dist/bundlers.d.ts"),
+      path.join(rootDir, "packages/plugins/sdk/dist/dev-server.js"),
+      path.join(rootDir, "packages/plugins/sdk/dist/dev-server.d.ts"),
+    ],
     sourceDir: path.join(rootDir, "packages/plugins/sdk/src"),
     tsconfig: path.join(rootDir, "packages/plugins/sdk/tsconfig.json"),
+    buildInfo: path.join(rootDir, "packages/plugins/sdk/tsconfig.tsbuildinfo"),
   },
 ];
 
@@ -72,10 +98,12 @@ function newestMtimeInDir(dir) {
   return newest;
 }
 
-// Existence alone is not enough: a stale dist (e.g., predating recent src
-// edits) silently produces wrong type-check errors in downstream plugins.
-// Treat the output as up-to-date only if its mtime is at least as recent
-// as the newest .ts/.tsx in src/ and the tsconfig itself.
+// Existence alone is not enough: a stale or partially emitted dist (e.g.,
+// predating recent src edits, or missing a subpath export while another
+// process is still building) silently produces wrong type-check errors in
+// downstream plugins. Treat the outputs as up-to-date only if every generated
+// entrypoint we depend on exists and the oldest output mtime is at least as
+// recent as the newest .ts/.tsx in src/ and the tsconfig itself.
 //
 // Assumes each buildTarget's sources live under `<tsconfig dir>/src` — keep
 // `buildTargets` aligned with this convention. If a future target uses a
@@ -83,8 +111,12 @@ function newestMtimeInDir(dir) {
 // pass freshness (the whole bug this script exists to prevent). We return
 // false in that case to force a rebuild and log loudly.
 function isFresh(target) {
-  if (!fs.existsSync(target.output)) return false;
-  const outputMtime = fs.statSync(target.output).mtimeMs;
+  const outputMtimes = [];
+  for (const output of target.outputs) {
+    if (!fs.existsSync(output)) return false;
+    outputMtimes.push(fs.statSync(output).mtimeMs);
+  }
+  const outputMtime = Math.min(...outputMtimes);
   const srcDir = path.join(path.dirname(target.tsconfig), "src");
   if (!fs.existsSync(srcDir)) {
     console.warn(
@@ -152,6 +184,11 @@ try {
     if (isFresh(target)) {
       continue;
     }
+
+    // If `tsc --noEmit` or a previous interrupted build left incremental
+    // metadata behind while required dist files are absent/stale, a normal
+    // emitting build can incorrectly consider the project up to date.
+    fs.rmSync(target.buildInfo, { force: true });
 
     const result = spawnSync(process.execPath, [tscCliPath, "-p", target.tsconfig], {
       cwd: rootDir,

@@ -149,6 +149,11 @@ describe("issue execution policy routes", () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      body: "test comment",
+    });
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
