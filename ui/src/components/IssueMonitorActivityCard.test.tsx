@@ -81,6 +81,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     createdAt: new Date("2026-04-11T10:00:00.000Z"),
     updatedAt: new Date("2026-04-11T10:00:00.000Z"),
     ...overrides,
+    workMode: overrides.workMode ?? "standard",
   };
 }
 
@@ -153,6 +154,44 @@ describe("IssueMonitorActivityCard", () => {
     expect(container.textContent).toContain("Deploy provider");
     expect(container.textContent).not.toContain("provider.example");
     expect(container.textContent).not.toContain("token=secret");
+
+    act(() => root.unmount());
+  });
+
+  it("renders without throwing when monitorNextCheckAt arrives as an ISO string", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueMonitorActivityCard
+          issue={createIssue({
+            monitorNextCheckAt: "2026-04-11T12:30:00.000Z" as unknown as Date,
+            executionPolicy: {
+              mode: "normal",
+              commentRequired: true,
+              stages: [],
+            },
+            executionState: {
+              status: "idle",
+              currentStageId: null,
+              currentStageIndex: null,
+              currentStageType: null,
+              currentParticipant: null,
+              returnAssignee: null,
+              reviewRequest: null,
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+              monitor: null,
+            },
+          })}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Monitor scheduled");
+    expect(container.textContent).toContain("Next check");
+    expect(container.textContent).toContain("in 30m");
 
     act(() => root.unmount());
   });

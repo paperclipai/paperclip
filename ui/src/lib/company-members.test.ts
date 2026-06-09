@@ -6,6 +6,7 @@ import {
   buildCompanyUserProfileMap,
   buildMarkdownMentionOptions,
 } from "./company-members";
+import type { AgentOrgChainHealth } from "@paperclipai/shared";
 
 const activeMember = (overrides: Partial<CompanyMember>): CompanyMember => ({
   id: overrides.id ?? "member-1",
@@ -21,6 +22,15 @@ const activeMember = (overrides: Partial<CompanyMember>): CompanyMember => ({
     : overrides.user,
   grants: overrides.grants ?? [],
 });
+
+const invalidOrgChainHealth: AgentOrgChainHealth = {
+  status: "invalid_org_chain",
+  reason: "terminated_ancestor",
+  fullChain: [],
+  firstInvalidAncestor: { id: "manager-1", name: "Manager", status: "terminated" },
+  invalidAncestors: [{ id: "manager-1", name: "Manager", status: "terminated" }],
+  repairGuidance: "Repair the reporting chain.",
+};
 
 describe("company-members helpers", () => {
   it("builds labels from company member profiles", () => {
@@ -79,6 +89,25 @@ describe("company-members helpers", () => {
       { id: "user:user-1", name: "Taylor", kind: "user", userId: "user-1" },
       { id: "agent:agent-1", name: "CodexCoder", kind: "agent", agentId: "agent-1", agentIcon: "code" },
       { id: "project:project-1", name: "Paperclip App", kind: "project", projectId: "project-1", projectColor: "#336699" },
+    ]);
+  });
+
+  it("omits invalid-org-chain agents from markdown mention options", () => {
+    const options = buildMarkdownMentionOptions({
+      agents: [
+        { id: "agent-1", name: "CodexCoder", status: "active", icon: "code" },
+        {
+          id: "agent-2",
+          name: "InvalidCoder",
+          status: "active",
+          icon: "code",
+          orgChainHealth: invalidOrgChainHealth,
+        },
+      ],
+    });
+
+    expect(options).toEqual([
+      { id: "agent:agent-1", name: "CodexCoder", kind: "agent", agentId: "agent-1", agentIcon: "code" },
     ]);
   });
 

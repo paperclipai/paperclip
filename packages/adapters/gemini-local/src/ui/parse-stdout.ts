@@ -195,7 +195,7 @@ function readSessionId(parsed: Record<string, unknown>): string {
 }
 
 function readUsage(parsed: Record<string, unknown>) {
-  const usage = asRecord(parsed.usage) ?? asRecord(parsed.usageMetadata);
+  const usage = asRecord(parsed.usage) ?? asRecord(parsed.usageMetadata) ?? asRecord(parsed.stats);
   const usageMetadata = asRecord(usage?.usageMetadata);
   const source = usageMetadata ?? usage ?? {};
   return {
@@ -203,7 +203,7 @@ function readUsage(parsed: Record<string, unknown>) {
     outputTokens: asNumber(source.output_tokens, asNumber(source.outputTokens, asNumber(source.candidatesTokenCount))),
     cachedTokens: asNumber(
       source.cached_input_tokens,
-      asNumber(source.cachedInputTokens, asNumber(source.cachedContentTokenCount)),
+      asNumber(source.cachedInputTokens, asNumber(source.cachedContentTokenCount, asNumber(source.cached))),
     ),
   };
 }
@@ -237,6 +237,19 @@ export function parseGeminiStdoutLine(line: string, ts: string): TranscriptEntry
     return collectTextEntries(parsed.message, ts, "user");
   }
 
+  // Gemini CLI v0.38+ stream-json schema:
+  // {"type":"message","role":"assistant"|"user","content":"...","delta":?true}
+  if (type === "message") {
+    const role = asString(parsed.role).trim().toLowerCase();
+    if (role === "assistant") {
+      return parseAssistantMessage(parsed.content, ts);
+    }
+    if (role === "user") {
+      return collectTextEntries(parsed.content, ts, "user");
+    }
+    return [];
+  }
+
   if (type === "thinking") {
     const text = asString(parsed.text).trim() || asString(asRecord(parsed.delta)?.text).trim();
     return text ? [{ kind: "thinking", ts, text }] : [];
@@ -248,7 +261,10 @@ export function parseGeminiStdoutLine(line: string, ts: string): TranscriptEntry
 
   if (type === "result") {
     const usage = readUsage(parsed);
-    const errors = parsed.is_error === true
+    const status = asString(parsed.status).toLowerCase();
+    const isError =
+      parsed.is_error === true || status === "error" || status === "failed";
+    const errors = isError
       ? [errorText(parsed.error ?? parsed.message ?? parsed.result)].filter(Boolean)
       : [];
     return [{
@@ -259,8 +275,8 @@ export function parseGeminiStdoutLine(line: string, ts: string): TranscriptEntry
       outputTokens: usage.outputTokens,
       cachedTokens: usage.cachedTokens,
       costUsd: asNumber(parsed.total_cost_usd, asNumber(parsed.cost_usd, asNumber(parsed.cost))),
-      subtype: asString(parsed.subtype, "result"),
-      isError: parsed.is_error === true,
+      subtype: asString(parsed.subtype, status || "result"),
+      isError,
       errors,
     }];
   }

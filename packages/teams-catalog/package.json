@@ -1,0 +1,52 @@
+{
+  "name": "@paperclipai/teams-catalog",
+  "version": "0.1.0",
+  "license": "MIT",
+  "homepage": "https://github.com/paperclipai/paperclip",
+  "bugs": {
+    "url": "https://github.com/paperclipai/paperclip/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "packages/teams-catalog"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./types": "./src/types.ts",
+    "./catalog.json": "./generated/catalog.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/src/index.d.ts",
+        "import": "./dist/src/index.js"
+      },
+      "./types": {
+        "types": "./dist/src/types.d.ts",
+        "import": "./dist/src/types.js"
+      },
+      "./catalog.json": "./dist/generated/catalog.json"
+    },
+    "main": "./dist/src/index.js",
+    "types": "./dist/src/index.d.ts"
+  },
+  "files": [
+    "catalog",
+    "dist",
+    "generated"
+  ],
+  "scripts": {
+    "build": "pnpm run build:manifest && tsc -p tsconfig.json",
+    "build:manifest": "node ../../cli/node_modules/tsx/dist/cli.mjs scripts/build-catalog-manifest.ts",
+    "clean": "rm -rf dist",
+    "test": "pnpm -w exec vitest run --root packages/teams-catalog --config vitest.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "validate": "node ../../cli/node_modules/tsx/dist/cli.mjs scripts/validate-catalog.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "app": {
+    "noCompanies": {
+      "title": "Creați prima companie",
+      "description": "Începeți prin crearea unei companii.",
+      "newCompany": "Companie nouă"
+    }
+  }
+}
