@@ -122,11 +122,11 @@ describe("actorMiddleware authenticated session profile", () => {
       userName: "Stack Owner",
       userEmail: "owner@example.com",
       source: "cloud_tenant",
-      isInstanceAdmin: true,
+      isInstanceAdmin: false,
       memberships: [expect.objectContaining({ membershipRole: "owner", status: "active" })],
     });
     expect(res.body.companyIds[0]).toMatch(/^[0-9a-f-]{36}$/);
-    expect(inserts).toHaveLength(4);
+    expect(inserts).toHaveLength(3);
     expect(inserts[0]?.values).toMatchObject({
       id: "global-user-1",
       email: "owner@example.com",
