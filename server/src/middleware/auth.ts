@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, agents, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { agentApiKeys, agents, authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -38,6 +38,16 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
+        const cloudTenantActor = await resolveCloudTenantActor(db, req);
+        if (cloudTenantActor) {
+          req.actor = {
+            ...cloudTenantActor,
+            runId: runIdHeader ?? undefined,
+          };
+          next();
+          return;
+        }
+
         let session: BetterAuthSessionResult | null = null;
         try {
           session = await opts.resolveSession(req);
@@ -187,6 +197,149 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     next();
   };
+}
+
+async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Request["actor"] | null> {
+  const expectedToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
+  if (!expectedToken) return null;
+
+  const token = req.header("x-paperclip-cloud-tenant-token")?.trim();
+  if (!token || !constantTimeStringEqual(token, expectedToken)) return null;
+
+  const userId = requiredCloudHeader(req, "x-paperclip-cloud-user-id");
+  const userEmail = requiredCloudHeader(req, "x-paperclip-cloud-user-email").toLowerCase();
+  const stackId = requiredCloudHeader(req, "x-paperclip-cloud-stack-id");
+  const stackRole = stackMembershipRole(req.header("x-paperclip-cloud-stack-role"));
+  const userName = req.header("x-paperclip-cloud-user-name")?.trim() || userEmail;
+  const paperclipCompanyId = req.header("x-paperclip-cloud-paperclip-company-id")?.trim();
+  const companyId = cloudTenantCompanyId(stackId);
+  const companyName = paperclipCompanyId || `${stackId} Paperclip`;
+  const now = new Date();
+
+  await db
+    .insert(authUsers)
+    .values({
+      id: userId,
+      name: userName,
+      email: userEmail,
+      emailVerified: true,
+      image: null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: authUsers.id,
+      set: {
+        name: userName,
+        email: userEmail,
+        emailVerified: true,
+        updatedAt: now,
+      },
+    });
+
+  await db
+    .insert(instanceUserRoles)
+    .values({
+      userId,
+      role: "instance_admin",
+      updatedAt: now,
+    })
+    .onConflictDoNothing({
+      target: [instanceUserRoles.userId, instanceUserRoles.role],
+    });
+
+  await db
+    .insert(companies)
+    .values({
+      id: companyId,
+      name: companyName,
+      description: `Provisioned by Paperclip Cloud for stack ${stackId}.`,
+      status: "active",
+      issuePrefix: issuePrefixForCloudStack(stackId),
+      updatedAt: now,
+    })
+    .onConflictDoNothing({
+      target: companies.id,
+    });
+
+  const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
+  const membership = await db
+    .insert(companyMemberships)
+    .values({
+      companyId,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: [
+        companyMemberships.companyId,
+        companyMemberships.principalType,
+        companyMemberships.principalId,
+      ],
+      set: {
+        status: "active",
+        membershipRole,
+        updatedAt: now,
+      },
+    })
+    .returning()
+    .then((rows) => rows[0] ?? {
+      companyId,
+      membershipRole,
+      status: "active",
+    });
+
+  return {
+    type: "board",
+    userId,
+    userName,
+    userEmail,
+    companyIds: [companyId],
+    memberships: [{
+      companyId,
+      membershipRole: membership.membershipRole,
+      status: membership.status,
+    }],
+    isInstanceAdmin: true,
+    source: "cloud_tenant",
+  };
+}
+
+function requiredCloudHeader(req: Request, name: string): string {
+  const value = req.header(name)?.trim();
+  if (!value) {
+    throw new Error(`Missing trusted Cloud tenant header ${name}`);
+  }
+  return value;
+}
+
+function stackMembershipRole(value: string | undefined): "owner" | "admin" | "member" | "support" {
+  if (value === "owner" || value === "admin" || value === "member" || value === "support") {
+    return value;
+  }
+  throw new Error("Invalid trusted Cloud tenant stack role");
+}
+
+function constantTimeStringEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function cloudTenantCompanyId(stackId: string): string {
+  const bytes = createHash("sha256").update(`paperclip-cloud-tenant-company:${stackId}`).digest();
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+function issuePrefixForCloudStack(stackId: string): string {
+  const hash = createHash("sha256").update(stackId).digest("hex").slice(0, 4).toUpperCase();
+  return `PC${hash}`;
 }
 
 export function requireBoard(req: Express.Request) {

@@ -31,8 +31,13 @@ import {
   thematicBreakPlugin,
   type RealmPlugin,
 } from "@mdxeditor/editor";
-import { buildAgentMentionHref, buildProjectMentionHref, buildUserMentionHref } from "@paperclipai/shared";
-import { Boxes, User } from "lucide-react";
+import {
+  buildAgentMentionHref,
+  buildProjectMentionHref,
+  buildRoutineMentionHref,
+  buildUserMentionHref,
+} from "@paperclipai/shared";
+import { Boxes, CalendarClock, User } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
@@ -41,7 +46,7 @@ import { looksLikeMarkdownPaste } from "../lib/markdownPaste";
 import { normalizeMarkdown } from "../lib/normalize-markdown";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
-import { useEditorAutocomplete, type SkillCommandOption } from "../context/EditorAutocompleteContext";
+import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
 
 /* ---- Mention types ---- */
 
@@ -174,15 +179,21 @@ interface MentionState {
   query: string;
   top: number;
   left: number;
-  /** Viewport-relative coords for portal positioning */
+  /**
+   * Caret-aligned viewport coords for portal positioning. `viewportTop` /
+   * `viewportBottom` describe the active text line, and `viewportLeft` is the
+   * caret X (right edge of the last typed character) so the menu can sit on
+   * the same line, just to the right of the cursor.
+   */
   viewportTop: number;
+  viewportBottom: number;
   viewportLeft: number;
   textNode: Text;
   atPos: number;
   endPos: number;
 }
 
-type AutocompleteOption = MentionOption | SkillCommandOption;
+type AutocompleteOption = MentionOption | SlashCommandOption;
 
 interface MentionMenuViewport {
   offsetLeft: number;
@@ -201,6 +212,9 @@ const MENTION_MENU_HEIGHT = 208;
 const MENTION_MENU_PADDING = 8;
 const MENTION_MENU_ROW_HEIGHT = 34;
 const MENTION_MENU_CHROME_HEIGHT = 8;
+const MAX_AUTOCOMPLETE_OPTIONS = 50;
+/** Roughly one space-width of breathing room between the caret and the menu. */
+const MENTION_MENU_CARET_GAP = 10;
 
 const CODE_BLOCK_LANGUAGES: Record<string, string> = {
   txt: "Text",
@@ -252,7 +266,9 @@ export function findMentionMatch(
 
   if (atPos === -1) return null;
   const query = text.slice(atPos + 1, offset);
-  if (trigger === "skill" && /\s/.test(query)) return null;
+  if (trigger === "skill" && /\s/.test(query) && !query.toLowerCase().startsWith("routine:")) {
+    return null;
+  }
 
   return {
     trigger: trigger ?? "mention",
@@ -261,6 +277,36 @@ export function findMentionMatch(
     atPos,
     endPos: offset,
   };
+}
+
+interface CaretRect {
+  top: number;
+  bottom: number;
+  /** Caret X — the right edge of the last typed character (or left edge of the next). */
+  x: number;
+}
+
+function measureCaretRect(textNode: Text, offset: number, atPos: number): CaretRect {
+  const length = textNode.textContent?.length ?? 0;
+  const rectFromRange = (start: number, end: number, side: "right" | "left"): CaretRect | null => {
+    if (start < 0 || end > length || end <= start) return null;
+    const range = document.createRange();
+    range.setStart(textNode, start);
+    range.setEnd(textNode, end);
+    const rect = range.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return null;
+    return { top: rect.top, bottom: rect.bottom, x: side === "right" ? rect.right : rect.left };
+  };
+
+  // Prefer the character immediately before the caret — its right edge IS the caret X
+  // and its top/bottom describe the active line. Falls back to the char after the caret
+  // and finally the @ marker if nothing else gives us a valid rect.
+  return (
+    rectFromRange(Math.max(0, offset - 1), offset, "right")
+    ?? rectFromRange(offset, Math.min(length, offset + 1), "left")
+    ?? rectFromRange(atPos, atPos + 1, "right")
+    ?? { top: 0, bottom: 0, x: 0 }
+  );
 }
 
 function detectMention(container: HTMLElement): MentionState | null {
@@ -277,21 +323,20 @@ function detectMention(container: HTMLElement): MentionState | null {
   const match = findMentionMatch(text, offset);
   if (!match) return null;
 
-  // Get position relative to container
-  const tempRange = document.createRange();
-  tempRange.setStart(textNode, match.atPos);
-  tempRange.setEnd(textNode, match.atPos + 1);
-  const rect = tempRange.getBoundingClientRect();
+  // Anchor the menu to the live caret so it tracks each typed character instead of
+  // staying glued to the @ marker.
+  const caret = measureCaretRect(textNode as Text, offset, match.atPos);
   const containerRect = container.getBoundingClientRect();
 
   return {
     trigger: match.trigger,
     marker: match.marker,
     query: match.query,
-    top: rect.bottom - containerRect.top,
-    left: rect.left - containerRect.left,
-    viewportTop: rect.bottom,
-    viewportLeft: rect.left,
+    top: caret.top - containerRect.top,
+    left: caret.x - containerRect.left,
+    viewportTop: caret.top,
+    viewportBottom: caret.bottom,
+    viewportLeft: caret.x,
     textNode: textNode as Text,
     atPos: match.atPos,
     endPos: match.endPos,
@@ -318,7 +363,7 @@ function getMentionMenuViewport(): MentionMenuViewport {
 }
 
 export function computeMentionMenuPosition(
-  anchor: Pick<MentionState, "viewportTop" | "viewportLeft">,
+  anchor: Pick<MentionState, "viewportTop" | "viewportBottom" | "viewportLeft">,
   viewport: MentionMenuViewport,
   menuSize: MentionMenuSize = { width: MENTION_MENU_WIDTH, height: MENTION_MENU_HEIGHT },
 ) {
@@ -327,10 +372,23 @@ export function computeMentionMenuPosition(
   const minTop = viewport.offsetTop + MENTION_MENU_PADDING;
   const maxTop = viewport.offsetTop + viewport.height - menuSize.height;
 
-  return {
-    top: Math.max(minTop, Math.min(viewport.offsetTop + anchor.viewportTop + 4, maxTop)),
-    left: Math.max(minLeft, Math.min(viewport.offsetLeft + anchor.viewportLeft, maxLeft)),
-  };
+  // Place the menu's top edge on the current line so it sits next to the caret.
+  // If it would overflow below, flip above so the menu's bottom hugs the line.
+  const desiredTop = viewport.offsetTop + anchor.viewportTop;
+  let top: number;
+  if (desiredTop > maxTop) {
+    const flipped = viewport.offsetTop + anchor.viewportBottom - menuSize.height;
+    top = Math.max(minTop, Math.min(flipped, maxTop));
+  } else {
+    top = Math.max(minTop, desiredTop);
+  }
+
+  // Place the menu's left edge a small gap to the right of the caret X so
+  // there's roughly a space-width of breathing room between cursor and menu.
+  const desiredLeft = viewport.offsetLeft + anchor.viewportLeft + MENTION_MENU_CARET_GAP;
+  const left = Math.max(minLeft, Math.min(desiredLeft, maxLeft));
+
+  return { top, left };
 }
 
 function getMentionMenuSize(optionCount: number): MentionMenuSize {
@@ -373,12 +431,21 @@ function mentionMarkdown(option: MentionOption): string {
   return `[@${option.name}](${buildAgentMentionHref(agentId, option.agentIcon ?? null)}) `;
 }
 
-function skillMarkdown(option: SkillCommandOption): string {
+function slashCommandLabel(option: SlashCommandOption): string {
+  return option.kind === "routine" ? `/routine:${option.name}` : `/${option.slug}`;
+}
+
+function slashCommandMarkdown(option: SlashCommandOption): string {
+  if (option.kind === "routine") {
+    return `[${slashCommandLabel(option)}](${buildRoutineMentionHref(option.routineId)}) `;
+  }
   return `[/${option.slug}](${option.href}) `;
 }
 
 function autocompleteMarkdown(option: AutocompleteOption): string {
-  return option.kind === "skill" ? skillMarkdown(option) : mentionMarkdown(option);
+  return option.kind === "skill" || option.kind === "routine"
+    ? slashCommandMarkdown(option)
+    : mentionMarkdown(option);
 }
 
 export function shouldAcceptAutocompleteKey(
@@ -410,6 +477,9 @@ function autocompleteOptionMatchesLink(option: AutocompleteOption, href: string)
 
   if (option.kind === "skill") {
     return parsed.kind === "skill" && parsed.skillId === option.skillId;
+  }
+  if (option.kind === "routine") {
+    return parsed.kind === "routine" && parsed.routineId === option.routineId;
   }
 
   if (option.kind === "project" && option.projectId) {
@@ -534,6 +604,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   const [mentionState, setMentionState] = useState<MentionState | null>(null);
   const mentionStateRef = useRef<MentionState | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
+  const autocompleteOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const skillEnterArmedRef = useRef(false);
   const autocompleteSelectionHandledRef = useRef(false);
   const mentionActive = mentionState !== null && (
@@ -579,10 +650,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           if (!q) return true;
           return command.aliases.some((alias) => alias.toLowerCase().includes(q));
         })
-        .slice(0, 8);
+        .slice(0, MAX_AUTOCOMPLETE_OPTIONS);
     }
     if (!mentions) return [];
-    return mentions.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 8);
+    return mentions
+      .filter((m) => m.name.toLowerCase().includes(q))
+      .slice(0, MAX_AUTOCOMPLETE_OPTIONS);
   }, [mentionState, mentions, slashCommands]);
 
   useImperativeHandle(forwardedRef, () => ({
@@ -735,7 +808,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         continue;
       }
 
-      if (parsed.kind === "skill") {
+      if (parsed.kind === "skill" || parsed.kind === "routine") {
         applyMentionChipDecoration(link, parsed);
         continue;
       }
@@ -828,6 +901,18 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   }, [checkMention, mentionActive]);
 
   useEffect(() => {
+    if (!mentionActive) return;
+    autocompleteOptionRefs.current.length = filteredMentions.length;
+    if (mentionIndex >= filteredMentions.length) {
+      setMentionIndex(Math.max(0, filteredMentions.length - 1));
+      return;
+    }
+    const activeOption = autocompleteOptionRefs.current[mentionIndex];
+    if (!activeOption || typeof activeOption.scrollIntoView !== "function") return;
+    activeOption.scrollIntoView({ block: "nearest" });
+  }, [filteredMentions.length, mentionActive, mentionIndex]);
+
+  useEffect(() => {
     if (mentionActive) return;
     autocompleteSelectionHandledRef.current = false;
   }, [mentionActive]);
@@ -902,6 +987,44 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       autocompleteSelectionHandledRef.current = true;
     }
   }, [selectMention]);
+
+  // Touch handling for the mention menu. We deliberately do NOT preventDefault
+  // on touchstart so the browser can still scroll the menu vertically; instead
+  // we record the start point and only treat the gesture as a selection if the
+  // finger lifted with negligible movement (i.e., a tap, not a scroll).
+  const touchStartPointRef = useRef<{ x: number; y: number } | null>(null);
+  const TOUCH_TAP_THRESHOLD_PX = 8;
+
+  const handleAutocompleteTouchStart = useCallback((event: ReactTouchEvent<HTMLButtonElement>) => {
+    const touch = event.touches[0];
+    if (!touch) return;
+    touchStartPointRef.current = { x: touch.clientX, y: touch.clientY };
+  }, []);
+
+  const handleAutocompleteTouchMove = useCallback((event: ReactTouchEvent<HTMLButtonElement>) => {
+    const start = touchStartPointRef.current;
+    if (!start) return;
+    const touch = event.touches[0];
+    if (!touch) return;
+    if (Math.hypot(touch.clientX - start.x, touch.clientY - start.y) > TOUCH_TAP_THRESHOLD_PX) {
+      touchStartPointRef.current = null;
+    }
+  }, []);
+
+  const handleAutocompleteTouchEnd = useCallback((
+    event: ReactTouchEvent<HTMLButtonElement>,
+    option: AutocompleteOption,
+  ) => {
+    const start = touchStartPointRef.current;
+    touchStartPointRef.current = null;
+    if (!start) return;
+    const touch = event.changedTouches[0];
+    if (!touch) return;
+    if (Math.hypot(touch.clientX - start.x, touch.clientY - start.y) > TOUCH_TAP_THRESHOLD_PX) {
+      return;
+    }
+    handleAutocompletePress(event, option);
+  }, [handleAutocompletePress]);
 
   function hasFilePayload(evt: DragEvent<HTMLDivElement>) {
     return Array.from(evt.dataTransfer?.types ?? []).includes("Files");
@@ -1131,26 +1254,41 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       />
 
       {/* Mention dropdown — rendered via portal so it isn't clipped by overflow containers */}
-      {mentionActive && filteredMentions.length > 0 &&
+      {mentionActive && filteredMentions.length > 0 && mentionMenuPosition &&
         createPortal(
           <div
-            className="fixed z-[9999] min-w-[180px] max-w-[calc(100vw-16px)] max-h-[200px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
+            data-paperclip-floating-ui=""
+            data-testid="mention-autocomplete-menu"
+            className="pointer-events-auto fixed z-[9999] min-w-[180px] max-w-[calc(100vw-16px)] max-h-[208px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
             style={{
-              top: Math.min(mentionState.viewportTop + 4, window.innerHeight - 208),
-              left: Math.max(8, Math.min(mentionState.viewportLeft, window.innerWidth - 188)),
+              top: mentionMenuPosition.top,
+              left: mentionMenuPosition.left,
+              touchAction: "pan-y",
+              WebkitOverflowScrolling: "touch",
             }}
           >
             {filteredMentions.map((option, i) => (
               <button
                 key={option.id}
                 type="button"
+                tabIndex={-1}
+                ref={(node) => {
+                  autocompleteOptionRefs.current[i] = node;
+                }}
                 className={cn(
                   "flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 transition-colors",
                   i === mentionIndex && "bg-accent",
                 )}
-                onPointerDown={(e) => handleAutocompletePress(e, option)}
+                onPointerDown={(e) => {
+                  // Touch is handled via onTouchStart/onTouchEnd so vertical scrolling
+                  // isn't swallowed; only handle mouse/pen here.
+                  if (e.pointerType === "touch") return;
+                  handleAutocompletePress(e, option);
+                }}
                 onMouseDown={(e) => handleAutocompletePress(e, option)}
-                onTouchStart={(e) => handleAutocompletePress(e, option)}
+                onTouchStart={handleAutocompleteTouchStart}
+                onTouchMove={handleAutocompleteTouchMove}
+                onTouchEnd={(e) => handleAutocompleteTouchEnd(e, option)}
                 onMouseEnter={() => {
                   if (mentionStateRef.current?.trigger === "skill") {
                     skillEnterArmedRef.current = true;
@@ -1158,7 +1296,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   setMentionIndex(i);
                 }}
               >
-                {option.kind === "skill" ? (
+                {option.kind === "routine" ? (
+                  <CalendarClock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                ) : option.kind === "skill" ? (
                   <Boxes className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 ) : option.kind === "project" && option.projectId ? (
                   <span
@@ -1173,7 +1313,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                     className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
                   />
                 )}
-                <span>{option.kind === "skill" ? `/${option.slug}` : option.name}</span>
+                <span>
+                  {option.kind === "skill" || option.kind === "routine"
+                    ? slashCommandLabel(option)
+                    : option.name}
+                </span>
                 {option.kind === "project" && option.projectId && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
                     Project
@@ -1187,6 +1331,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 {option.kind === "skill" && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
                     Skill
+                  </span>
+                )}
+                {option.kind === "routine" && (
+                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Routine
                   </span>
                 )}
               </button>

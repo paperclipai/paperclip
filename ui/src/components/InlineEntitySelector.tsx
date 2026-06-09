@@ -135,15 +135,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
           disablePortal={disablePortal}
           onOpenAutoFocus={(event) => {
             event.preventDefault();
-            // On touch devices, don't auto-focus the search input to avoid
-            // opening the virtual keyboard which reshapes the viewport and
-            // pushes the popover off-screen.
-            const isTouch = typeof window.matchMedia === "function"
-              ? window.matchMedia("(pointer: coarse)").matches
-              : false;
-            if (!isTouch) {
-              inputRef.current?.focus();
-            }
+            inputRef.current?.focus();
           }}
           onCloseAutoFocus={(event) => {
             if (!shouldPreventCloseAutoFocusRef.current) return;

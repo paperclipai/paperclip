@@ -11,12 +11,12 @@ import {
 } from "lucide-react";
 import { BreadcrumbBar } from "@/components/BreadcrumbBar";
 import { CommandPalette } from "@/components/CommandPalette";
-import { CompanyRail } from "@/components/CompanyRail";
 import { CompanySwitcher } from "@/components/CompanySwitcher";
 import { KeyboardShortcutsCheatsheetContent } from "@/components/KeyboardShortcutsCheatsheet";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { PageTabBar } from "@/components/PageTabBar";
 import { Sidebar } from "@/components/Sidebar";
+import { PluginLauncherProvider } from "@/plugins/launchers";
 import { SidebarAccountMenu } from "@/components/SidebarAccountMenu";
 import { SidebarCompanyMenu } from "@/components/SidebarCompanyMenu";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -75,7 +75,6 @@ function SidebarShell({ collapsed = false }: { collapsed?: boolean }) {
   return (
     <div className="h-[520px] overflow-hidden border border-border bg-background">
       <div className="flex h-full min-h-0">
-        <CompanyRail />
         <div className={cn("overflow-hidden transition-[width]", collapsed ? "w-0" : "w-60")}>
           <Sidebar />
         </div>
@@ -249,19 +248,12 @@ function NavigationLayoutStories() {
           </div>
         </Section>
 
-        <Section eyebrow="Company rail" title="Multi-company rail with selected, inactive, live, and unread indicators">
-          <div className="h-[420px] w-[72px] overflow-hidden border border-border bg-background">
-            <CompanyRail />
-          </div>
-        </Section>
-
         <Section eyebrow="Menus" title="Account, company, and switcher menus in open state">
           <div className="grid gap-5 xl:grid-cols-3">
             <div className="relative h-[440px] overflow-hidden border border-border bg-background">
               <div className="absolute bottom-0 left-0 w-72">
                 <SidebarAccountMenu
                   deploymentMode="authenticated"
-                  instanceSettingsTarget="/instance/settings/general"
                   open
                   onOpenChange={() => undefined}
                   version="0.3.1"
@@ -358,3 +350,30 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const BoardChromeMatrix: Story = {};
+
+// PAP-10676 verification harness: renders the real Sidebar at a fixed width so a
+// screenshot of the expanded state and a screenshot of the pinned-collapsed rail
+// can be overlaid. The icon column must be pixel-identical between the two — the
+// only difference should be the labels (sr-only in the rail). Playwright toggles
+// collapse via the in-sidebar control, so this exercises the real context path.
+function SidebarIconAlignmentHarness() {
+  return (
+    <PluginLauncherProvider>
+      <div className="paperclip-story">
+        <RouteSetter to="/PAP/projects/board-ui/issues" />
+        <div className="flex min-h-[760px] items-start justify-center bg-muted/30 p-8">
+          <div
+            data-testid="sidebar-align-frame"
+            className="h-[700px] w-60 overflow-hidden border border-border bg-background"
+          >
+            <Sidebar />
+          </div>
+        </div>
+      </div>
+    </PluginLauncherProvider>
+  );
+}
+
+export const SidebarIconAlignment: Story = {
+  render: () => <SidebarIconAlignmentHarness />,
+};

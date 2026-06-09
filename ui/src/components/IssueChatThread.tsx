@@ -16,6 +16,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
@@ -35,7 +36,11 @@ import type {
   FeedbackVoteValue,
   IssueAttachment,
   IssueBlockerAttention,
+  IssueRecoveryAction,
   IssueRelationIssueSummary,
+  IssueScheduledRetry,
+  SuccessfulRunHandoffState,
+  IssueWorkMode,
 } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
@@ -54,12 +59,18 @@ import type {
   AskUserQuestionsAnswer,
   AskUserQuestionsInteraction,
   IssueThreadInteraction,
+  RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
   SuggestTasksInteraction,
 } from "../lib/issue-thread-interactions";
 import { buildIssueThreadInteractionSummary, isIssueThreadInteraction } from "../lib/issue-thread-interactions";
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
-import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
+import {
+  formatTimelineWorkspaceLabel,
+  type IssueTimelineAssignee,
+  type IssueTimelineEvent,
+  type IssueTimelineWorkspace,
+} from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -94,6 +105,24 @@ import { useOptionalToastActions } from "../context/ToastContext";
 import type { CompanyUserProfile } from "../lib/company-members";
 import { timeAgo } from "../lib/timeAgo";
 import {
+  isSuccessfulRunHandoffComment,
+  isSuccessfulRunHandoffEscalationComment,
+} from "../lib/successful-run-handoff";
+import {
+  SystemNotice,
+  type SystemNoticeMetadataRow,
+  type SystemNoticeMetadataSection,
+} from "./SystemNotice";
+import {
+  buildSystemNoticeProps,
+  mapCommentMetadataToSystemNoticeSections,
+} from "../lib/system-notice-comment";
+import type {
+  IssueCommentMetadata,
+  IssueCommentPresentation,
+  SourceTrustMetadata,
+} from "@paperclipai/shared";
+import {
   describeToolInput,
   displayToolName,
   formatToolPayload,
@@ -106,8 +135,11 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
+import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp, Trash2 } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
+import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
+import { IssueRecoveryActionCard, type RecoveryResolveOutcome } from "./IssueRecoveryActionCard";
+import { SourceTrustBadge } from "./SourceTrustBadge";
 
 interface IssueChatMessageContext {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
@@ -122,27 +154,55 @@ interface IssueChatMessageContext {
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
   onStopRun?: (runId: string) => Promise<void>;
+  stopRunLabel?: string;
+  stoppingRunLabel?: string;
+  stopRunVariant?: "stop" | "pause";
+  runFinalizationActions?: readonly IssueChatRunFinalizationAction[];
   onInterruptQueued?: (runId: string) => Promise<void>;
   onCancelQueued?: (commentId: string) => void;
+  onDeleteComment?: (commentId: string) => Promise<void> | void;
   onImageClick?: (src: string) => void;
   onAcceptInteraction?: (
-    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    interaction:
+      | SuggestTasksInteraction
+      | RequestConfirmationInteraction
+      | RequestCheckboxConfirmationInteraction,
     selectedClientKeys?: string[],
+    selectedOptionIds?: string[],
   ) => Promise<void> | void;
   onRejectInteraction?: (
-    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    interaction:
+      | SuggestTasksInteraction
+      | RequestConfirmationInteraction
+      | RequestCheckboxConfirmationInteraction,
     reason?: string,
   ) => Promise<void> | void;
   onSubmitInteractionAnswers?: (
     interaction: AskUserQuestionsInteraction,
     answers: AskUserQuestionsAnswer[],
   ) => Promise<void> | void;
+  onCancelInteraction?: (
+    interaction: AskUserQuestionsInteraction,
+  ) => Promise<void> | void;
+  issueStatus?: string;
+  successfulRunHandoff?: SuccessfulRunHandoffState | null;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
   feedbackDataSharingPreference: "prompt",
   feedbackTermsUrl: null,
+  issueStatus: undefined,
+  successfulRunHandoff: null,
 });
+
+export type IssueChatRunFinalizationAction = {
+  id: "cancel" | "done";
+  label: string;
+  pendingLabel: string;
+  onSelect: (runId: string) => Promise<void> | void;
+  isPending?: boolean;
+  disabled?: boolean;
+};
 
 export function resolveAssistantMessageFoldedState(args: {
   messageId: string;
@@ -244,6 +304,8 @@ interface IssueChatComposerProps {
   composerDisabledReason?: string | null;
   composerHint?: string | null;
   issueStatus?: string;
+  issueWorkMode?: IssueWorkMode;
+  onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
 }
 
 interface IssueChatThreadProps {
@@ -256,8 +318,22 @@ interface IssueChatThreadProps {
   timelineEvents?: IssueTimelineEvent[];
   liveRuns?: LiveRunForIssue[];
   activeRun?: ActiveRunForIssue | null;
+  issueId?: string | null;
   blockedBy?: IssueRelationIssueSummary[];
   blockerAttention?: IssueBlockerAttention | null;
+  successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  scheduledRetry?: IssueScheduledRetry | null;
+  recoveryAction?: IssueRecoveryAction | null;
+  onResolveRecoveryAction?: (outcome: RecoveryResolveOutcome) => void;
+  canFalsePositiveRecoveryAction?: boolean;
+  legacyRecoverySourceIssue?: {
+    identifier: string | null;
+    href: string;
+    title?: string | null;
+  } | null;
+  assigneeUserId?: string | null;
+  onResumeFromBacklog?: () => Promise<void> | void;
+  resumeFromBacklogPending?: boolean;
   companyId?: string | null;
   projectId?: string | null;
   issueStatus?: string;
@@ -273,6 +349,10 @@ interface IssueChatThreadProps {
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   onCancelRun?: () => Promise<void>;
   onStopRun?: (runId: string) => Promise<void>;
+  stopRunLabel?: string;
+  stoppingRunLabel?: string;
+  stopRunVariant?: "stop" | "pause";
+  runFinalizationActions?: readonly IssueChatRunFinalizationAction[];
   imageUploadHandler?: (file: File) => Promise<string>;
   onAttachImage?: (file: File) => Promise<IssueAttachment | void>;
   draftKey?: string;
@@ -283,9 +363,11 @@ interface IssueChatThreadProps {
   mentions?: MentionOption[];
   composerDisabledReason?: string | null;
   composerHint?: string | null;
+  onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
   showComposer?: boolean;
   showJumpToLatest?: boolean;
   emptyMessage?: string;
+  footer?: ReactNode;
   variant?: "full" | "embedded";
   enableLiveTranscriptPolling?: boolean;
   transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;
@@ -293,22 +375,34 @@ interface IssueChatThreadProps {
   includeSucceededRunsWithoutOutput?: boolean;
   onInterruptQueued?: (runId: string) => Promise<void>;
   onCancelQueued?: (commentId: string) => void;
+  onDeleteComment?: (commentId: string) => Promise<void> | void;
   interruptingQueuedRunId?: string | null;
   stoppingRunId?: string | null;
   onImageClick?: (src: string) => void;
   onAcceptInteraction?: (
-    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    interaction:
+      | SuggestTasksInteraction
+      | RequestConfirmationInteraction
+      | RequestCheckboxConfirmationInteraction,
     selectedClientKeys?: string[],
+    selectedOptionIds?: string[],
   ) => Promise<void> | void;
   onRejectInteraction?: (
-    interaction: SuggestTasksInteraction | RequestConfirmationInteraction,
+    interaction:
+      | SuggestTasksInteraction
+      | RequestConfirmationInteraction
+      | RequestCheckboxConfirmationInteraction,
     reason?: string,
   ) => Promise<void> | void;
   onSubmitInteractionAnswers?: (
     interaction: AskUserQuestionsInteraction,
     answers: AskUserQuestionsAnswer[],
   ) => Promise<void> | void;
+  onCancelInteraction?: (
+    interaction: AskUserQuestionsInteraction,
+  ) => Promise<void> | void;
   composerRef?: Ref<IssueChatComposerHandle>;
+  issueWorkMode?: IssueWorkMode;
   /**
    * Hook for the parent to refetch comments when the user explicitly asks
    * to jump to the latest comment. Used to make sure the absolute newest
@@ -433,7 +527,7 @@ function IssueChatFallbackThread({
           <div className="space-y-1">
             <p className="font-medium">Chat renderer hit an internal state error.</p>
             <p className="text-xs opacity-80">
-              Showing a safe fallback transcript instead of crashing the issues page.
+              Showing a safe fallback transcript instead of crashing the tasks page.
             </p>
           </div>
         </div>
@@ -571,6 +665,9 @@ function commentDateLabel(date: Date | string | undefined): string {
 
 const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
   const { onImageClick } = useContext(IssueChatCtx);
+  if (isSuccessfulRunHandoffComment(text)) {
+    return <SuccessfulRunHandoffCommentCallout text={text} recessed={recessed} onImageClick={onImageClick} />;
+  }
   return (
     <MarkdownBody
       className="text-sm leading-6"
@@ -582,6 +679,41 @@ const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed }: { 
     </MarkdownBody>
   );
 });
+
+export function SuccessfulRunHandoffCommentCallout({
+  text,
+  recessed,
+  onImageClick,
+}: {
+  text: string;
+  recessed?: boolean;
+  onImageClick?: (src: string) => void;
+}) {
+  const escalated = isSuccessfulRunHandoffEscalationComment(text);
+  return (
+    <div
+      className={cn(
+        "rounded-md border px-3 py-2.5 text-sm shadow-sm",
+        escalated
+          ? "border-red-500/35 bg-red-500/10 text-red-950 dark:text-red-100"
+          : "border-amber-300/70 bg-amber-50/90 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100",
+      )}
+      style={recessed ? { opacity: 0.55 } : undefined}
+    >
+      <div className="flex items-start gap-2">
+        <AlertTriangle
+          className={cn(
+            "mt-1 h-4 w-4 shrink-0",
+            escalated ? "text-red-600 dark:text-red-300" : "text-amber-600 dark:text-amber-300",
+          )}
+        />
+        <MarkdownBody className="min-w-0 text-sm leading-6" softBreaks onImageClick={onImageClick}>
+          {text}
+        </MarkdownBody>
+      </div>
+    </div>
+  );
+}
 
 function humanizeValue(value: string | null) {
   if (!value) return "None";
@@ -1169,6 +1301,7 @@ function IssueChatUserMessage({
   const {
     onInterruptQueued,
     onCancelQueued,
+    onDeleteComment,
     currentUserId,
     userProfileMap,
   } = useContext(IssueChatCtx);
@@ -1178,12 +1311,15 @@ function IssueChatUserMessage({
   const authorName = typeof custom.authorName === "string" ? custom.authorName : null;
   const authorUserId = typeof custom.authorUserId === "string" ? custom.authorUserId : null;
   const queued = custom.queueState === "queued" || custom.clientStatus === "queued";
+  const sourceTrust = isSourceTrustMetadata(custom.sourceTrust) ? custom.sourceTrust : null;
   const followUpRequested = custom.followUpRequested === true;
   const queueReason = typeof custom.queueReason === "string" ? custom.queueReason : null;
   const queueBadgeLabel = queueReason === "hold" ? "\u23f8 Deferred wake" : "Queued";
   const pending = custom.clientStatus === "pending";
+  const deleted = Boolean(custom.deletedAt);
   const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
   const [copied, setCopied] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const {
     isCurrentUser,
     authorName: resolvedAuthorName,
@@ -1200,10 +1336,21 @@ function IssueChatUserMessage({
       <AvatarFallback>{initialsForName(resolvedAuthorName)}</AvatarFallback>
     </Avatar>
   );
+  const canDeleteComment = Boolean(onDeleteComment && isCurrentUser && !queued && !pending && !deleted);
+  const handleDeleteComment = () => {
+    if (!canDeleteComment) return;
+    setDeleteDialogOpen(true);
+  };
+  const confirmDeleteComment = () => {
+    if (!canDeleteComment) return;
+    setDeleteDialogOpen(false);
+    void onDeleteComment?.(commentId);
+  };
   const messageBody = (
     <div className={cn("flex min-w-0 max-w-[85%] flex-col", isCurrentUser && "items-end")}>
       <div className={cn("mb-1 flex items-center gap-2 px-1", isCurrentUser ? "justify-end" : "justify-start")}>
         <span className="text-sm font-medium text-foreground">{resolvedAuthorName}</span>
+        <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
         {followUpRequested ? (
           <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
             Follow-up
@@ -1215,6 +1362,8 @@ function IssueChatUserMessage({
           "min-w-0 max-w-full overflow-hidden break-all rounded-2xl px-4 py-2.5",
           queued
             ? "bg-amber-50/80 dark:bg-amber-500/10"
+            : deleted
+              ? "bg-muted/50 text-muted-foreground"
             : "bg-muted",
           pending && "opacity-80",
         )}
@@ -1247,9 +1396,13 @@ function IssueChatUserMessage({
             ) : null}
           </div>
         ) : null}
-        <div className="min-w-0 max-w-full space-y-3">
-          <IssueChatTextParts message={message} />
-        </div>
+        {deleted ? (
+          <div className="text-sm italic text-muted-foreground">Comment deleted</div>
+        ) : (
+          <div className="min-w-0 max-w-full space-y-3">
+            <IssueChatTextParts message={message} />
+          </div>
+        )}
       </div>
 
       {pending ? (
@@ -1276,45 +1429,78 @@ function IssueChatUserMessage({
               {message.createdAt ? formatDateTime(message.createdAt) : ""}
             </TooltipContent>
           </Tooltip>
-          <button
-            type="button"
-            className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
-            title="Copy message"
-            aria-label="Copy message"
-            onClick={() => {
-              const text = message.content
-                .filter((p): p is { type: "text"; text: string } => p.type === "text")
-                .map((p) => p.text)
-                .join("\n\n");
-              void navigator.clipboard.writeText(text).then(() => {
-                setCopied(true);
-                setTimeout(() => setCopied(false), 2000);
-              });
-            }}
-          >
-            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-          </button>
+          {!deleted ? (
+            <button
+              type="button"
+              className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+              title="Copy message"
+              aria-label="Copy message"
+              onClick={() => {
+                const text = message.content
+                  .filter((p): p is { type: "text"; text: string } => p.type === "text")
+                  .map((p) => p.text)
+                  .join("\n\n");
+                void navigator.clipboard.writeText(text).then(() => {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                });
+              }}
+            >
+              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            </button>
+          ) : null}
+          {canDeleteComment ? (
+            <button
+              type="button"
+              className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-destructive"
+              title="Delete comment"
+              aria-label="Delete comment"
+              onClick={handleDeleteComment}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
         </div>
       )}
     </div>
   );
 
   return (
-    <div id={anchorId}>
-      <div className={cn("group flex items-start gap-2.5", isCurrentUser && "justify-end")}>
-        {isCurrentUser ? (
-          <>
-            {messageBody}
-            {authorAvatar}
-          </>
-        ) : (
-          <>
-            {authorAvatar}
-            {messageBody}
-          </>
-        )}
+    <>
+      <div id={anchorId}>
+        <div className={cn("group flex items-start gap-2.5", isCurrentUser && "justify-end")}>
+          {isCurrentUser ? (
+            <>
+              {messageBody}
+              {authorAvatar}
+            </>
+          ) : (
+            <>
+              {authorAvatar}
+              {messageBody}
+            </>
+          )}
+        </div>
       </div>
-    </div>
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete comment?</DialogTitle>
+            <DialogDescription>
+              This will replace the comment with a deleted-comment marker.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={confirmDeleteComment}>
+              Delete comment
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -1335,6 +1521,10 @@ function IssueChatAssistantMessage({
     onVote,
     agentMap,
     onStopRun,
+    stopRunLabel = "Stop run",
+    stoppingRunLabel = "Stopping...",
+    stopRunVariant = "stop",
+    runFinalizationActions = [],
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1350,6 +1540,7 @@ function IssueChatAssistantMessage({
   const agentId = authorAgentId ?? runAgentId;
   const agentIcon = agentId ? agentMap?.get(agentId)?.icon : undefined;
   const commentId = typeof custom.commentId === "string" ? custom.commentId : null;
+  const sourceTrust = isSourceTrustMetadata(custom.sourceTrust) ? custom.sourceTrust : null;
   const notices = Array.isArray(custom.notices)
     ? custom.notices.filter((notice): notice is string => typeof notice === "string" && notice.length > 0)
     : [];
@@ -1359,11 +1550,12 @@ function IssueChatAssistantMessage({
   const canStopRun = Boolean(runId) && (isRunActive || runStatus === "queued" || runStatus === "running");
   const chainOfThoughtLabel = typeof custom.chainOfThoughtLabel === "string" ? custom.chainOfThoughtLabel : null;
   const hasCoT = message.content.some((p) => p.type === "reasoning" || p.type === "tool-call");
+  const deleted = Boolean(custom.deletedAt);
   const isFoldable = !isRunning && !!chainOfThoughtLabel;
   const [folded, setFolded] = useState(isFoldable);
   const [prevFoldKey, setPrevFoldKey] = useState({ messageId: message.id, isFoldable });
   const [copied, setCopied] = useState(false);
-  const copyText = getThreadMessageCopyText(message);
+  const copyText = deleted ? "" : getThreadMessageCopyText(message);
 
   // Derive fold state synchronously during render (not in useEffect) so the
   // browser never paints the un-folded intermediate state — prevents the
@@ -1411,6 +1603,7 @@ function IssueChatAssistantMessage({
               onClick={() => setFolded((v) => !v)}
             >
               <span className="text-sm font-medium text-foreground">{authorName}</span>
+              <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
               <span className="text-xs text-muted-foreground/60">{chainOfThoughtLabel?.toLowerCase()}</span>
               <span className="ml-auto flex items-center gap-1.5">
                 {message.createdAt ? (
@@ -1424,6 +1617,7 @@ function IssueChatAssistantMessage({
           ) : (
             <div className="mb-1.5 flex items-center gap-2">
               <span className="text-sm font-medium text-foreground">{authorName}</span>
+              <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
               {followUpRequested ? (
                 <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
                   Follow-up
@@ -1438,7 +1632,11 @@ function IssueChatAssistantMessage({
             </div>
           )}
 
-          {!folded ? (
+          {deleted ? (
+            <div className="rounded-sm bg-muted/40 px-3 py-2 text-sm italic text-muted-foreground">
+              Comment deleted
+            </div>
+          ) : !folded ? (
             <>
               <div className="space-y-3">
                 <IssueChatAssistantParts message={message} hasCoT={hasCoT} />
@@ -1528,15 +1726,46 @@ function IssueChatAssistantMessage({
                     {canStopRun && onStopRun && runId ? (
                       <DropdownMenuItem
                         disabled={isStoppingRun}
-                        className="text-red-700 focus:text-red-800 dark:text-red-300 dark:focus:text-red-200"
+                        className={cn(
+                          stopRunVariant === "pause"
+                            ? "text-amber-700 focus:text-amber-800 dark:text-amber-300 dark:focus:text-amber-200"
+                            : "text-red-700 focus:text-red-800 dark:text-red-300 dark:focus:text-red-200",
+                        )}
                         onSelect={() => {
                           void onStopRun(runId);
                         }}
                       >
-                        <Square className="mr-2 h-3.5 w-3.5 fill-current" />
-                        {isStoppingRun ? "Stopping…" : "Stop run"}
+                        {stopRunVariant === "pause" ? (
+                          <PauseCircle className="mr-2 h-3.5 w-3.5" />
+                        ) : (
+                          <Square className="mr-2 h-3.5 w-3.5 fill-current" />
+                        )}
+                        {isStoppingRun ? stoppingRunLabel : stopRunLabel}
                       </DropdownMenuItem>
                     ) : null}
+                    {canStopRun && runId
+                      ? runFinalizationActions.map((action) => (
+                        <DropdownMenuItem
+                          key={action.id}
+                          disabled={isStoppingRun || action.isPending || action.disabled}
+                          className={cn(
+                            action.id === "cancel"
+                              ? "text-red-700 focus:text-red-800 dark:text-red-300 dark:focus:text-red-200"
+                              : "text-green-700 focus:text-green-800 dark:text-green-300 dark:focus:text-green-200",
+                          )}
+                          onSelect={() => {
+                            void action.onSelect(runId);
+                          }}
+                        >
+                          {action.id === "cancel" ? (
+                            <Square className="mr-2 h-3.5 w-3.5 fill-current" />
+                          ) : (
+                            <Check className="mr-2 h-3.5 w-3.5" />
+                          )}
+                          {action.isPending ? action.pendingLabel : action.label}
+                        </DropdownMenuItem>
+                      ))
+                      : null}
                     {runHref ? (
                       <DropdownMenuItem asChild>
                         <Link to={runHref} target="_blank" rel="noreferrer noopener">
@@ -1791,6 +2020,7 @@ function ExpiredRequestConfirmationActivity({
     userLabelMap,
     onAcceptInteraction,
     onRejectInteraction,
+    onCancelInteraction,
   } = useContext(IssueChatCtx);
   const [expanded, setExpanded] = useState(false);
   const hasResolvedActor = Boolean(interaction.resolvedByAgentId || interaction.resolvedByUserId);
@@ -1869,9 +2099,379 @@ function ExpiredRequestConfirmationActivity({
             userLabelMap={userLabelMap}
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
+            onCancelInteraction={onCancelInteraction}
           />
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function isIssueCommentPresentation(value: unknown): value is IssueCommentPresentation {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return v.kind === "system_notice" || v.kind === "message";
+}
+
+function isIssueCommentMetadata(value: unknown): value is IssueCommentMetadata {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return v.version === 1 && Array.isArray(v.sections);
+}
+
+function isSourceTrustMetadata(value: unknown): value is SourceTrustMetadata {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return v.preset === "low_trust_review" && (
+    v.disposition === "quarantined" ||
+    v.disposition === "promoted"
+  );
+}
+
+function issueStatusIsTerminalDisposition(issueStatus: string | undefined) {
+  return issueStatus === "done" || issueStatus === "cancelled";
+}
+
+function sourceRunIdFromSuccessfulRunHandoffMetadata(metadata: IssueCommentMetadata | null) {
+  if (metadata?.sourceRunId) return metadata.sourceRunId;
+  const runLinks = [];
+  for (const section of metadata?.sections ?? []) {
+    for (const row of section.rows) {
+      if (row.type === "run_link") runLinks.push(row.runId);
+    }
+  }
+  return runLinks.length === 1 ? runLinks[0] : null;
+}
+
+function isStaleSuccessfulRunHandoffNotice(input: {
+  bodyText: string;
+  issueStatus?: string;
+  successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  runId?: string | null;
+  metadata: IssueCommentMetadata | null;
+}) {
+  if (!isSuccessfulRunHandoffComment(input.bodyText)) return false;
+
+  const currentHandoff = input.successfulRunHandoff ?? null;
+  if (currentHandoff?.state === "resolved") return true;
+  if (issueStatusIsTerminalDisposition(input.issueStatus)) return true;
+
+  const noticeSourceRunId = sourceRunIdFromSuccessfulRunHandoffMetadata(input.metadata) ?? input.runId ?? null;
+  if (
+    noticeSourceRunId
+    && currentHandoff?.sourceRunId
+    && noticeSourceRunId !== currentHandoff.sourceRunId
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function StaleDispositionWarningMetadataRow({ row }: { row: SystemNoticeMetadataRow }) {
+  const label = (
+    <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+      {row.label}
+    </span>
+  );
+  const value = (() => {
+    switch (row.kind) {
+      case "text":
+        return <span>{row.value}</span>;
+      case "code":
+        return (
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/80">
+            {row.value}
+          </code>
+        );
+      case "issue": {
+        const content = (
+          <>
+            <span>{row.identifier}</span>
+            {row.title ? <span className="text-muted-foreground"> - {row.title}</span> : null}
+          </>
+        );
+        return row.href ? (
+          <a href={row.href} className="font-medium text-foreground underline-offset-2 hover:underline">
+            {content}
+          </a>
+        ) : (
+          <span className="font-medium text-foreground">{content}</span>
+        );
+      }
+      case "agent":
+        return row.href ? (
+          <a href={row.href} className="font-medium text-foreground underline-offset-2 hover:underline">
+            {row.name}
+          </a>
+        ) : (
+          <span className="font-medium text-foreground">{row.name}</span>
+        );
+      case "run": {
+        const runShort = row.runId.length > 12 ? `${row.runId.slice(0, 8)}...` : row.runId;
+        const content = (
+          <>
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/80">
+              {runShort}
+            </code>
+            {row.status ? <span>{row.status}</span> : null}
+          </>
+        );
+        return row.href ? (
+          <a href={row.href} className="inline-flex items-center gap-1.5 underline-offset-2 hover:underline">
+            {content}
+          </a>
+        ) : (
+          <span className="inline-flex items-center gap-1.5">{content}</span>
+        );
+      }
+    }
+  })();
+
+  return (
+    <div className="grid grid-cols-[7.5rem_minmax(0,1fr)] gap-2 text-xs leading-5">
+      {label}
+      <div className="min-w-0 break-words text-foreground/80">{value}</div>
+    </div>
+  );
+}
+
+function metadataRowKey(row: SystemNoticeMetadataRow) {
+  switch (row.kind) {
+    case "issue":
+      return `issue:${row.label}:${row.identifier}:${row.href ?? ""}:${row.title ?? ""}`;
+    case "agent":
+      return `agent:${row.label}:${row.name}:${row.href ?? ""}`;
+    case "run":
+      return `run:${row.label}:${row.runId}:${row.href ?? ""}:${row.status ?? ""}`;
+    default:
+      return `${row.kind}:${row.label}:${row.value}`;
+  }
+}
+
+function metadataSectionKey(section: SystemNoticeMetadataSection) {
+  return `${section.title ?? "details"}:${section.rows.map(metadataRowKey).join("|")}`;
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function isTimelineWorkspace(value: unknown): value is IssueTimelineWorkspace {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const workspace = value as Record<string, unknown>;
+  return isNullableString(workspace.label)
+    && isNullableString(workspace.projectWorkspaceId)
+    && isNullableString(workspace.executionWorkspaceId)
+    && isNullableString(workspace.mode);
+}
+
+function isTimelineWorkspaceChange(value: unknown): value is NonNullable<IssueTimelineEvent["workspaceChange"]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const change = value as Record<string, unknown>;
+  return isTimelineWorkspace(change.from) && isTimelineWorkspace(change.to);
+}
+
+function StaleDispositionWarningDetails({
+  sections,
+}: {
+  sections: SystemNoticeMetadataSection[];
+}) {
+  if (sections.length === 0) {
+    return <div className="text-xs leading-5 text-muted-foreground">No additional details.</div>;
+  }
+
+  return (
+    <div className="space-y-3 text-left">
+      {sections.map((section) => (
+        <div key={metadataSectionKey(section)} className="space-y-1.5">
+          {section.title ? (
+            <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              {section.title}
+            </div>
+          ) : null}
+          <div className="space-y-1">
+            {section.rows.map((row) => (
+              <StaleDispositionWarningMetadataRow key={metadataRowKey(row)} row={row} />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StaleDispositionWarningRow({
+  anchorId,
+  message,
+  metadata,
+  runAgentId,
+}: {
+  anchorId?: string;
+  message: ThreadMessage;
+  metadata: IssueCommentMetadata | null;
+  runAgentId?: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const detailsId = useId();
+  const sections = mapCommentMetadataToSystemNoticeSections(metadata, { runAgentId });
+
+  return (
+    <div id={anchorId} data-testid="stale-disposition-warning">
+      <div className="flex items-start gap-2.5 py-1.5">
+        <span className="size-6 shrink-0" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={detailsId}
+            className="group flex w-full items-center gap-2 py-0.5 text-left"
+            onClick={() => setOpen((value) => !value)}
+          >
+            <span className="text-sm font-medium text-foreground/80">
+              Stale disposition warning
+            </span>
+            <span className="ml-auto flex items-center gap-1.5">
+              {message.createdAt ? (
+                <span data-testid="stale-disposition-warning-time" className="text-[11px] text-muted-foreground/50">
+                  {commentDateLabel(message.createdAt)}
+                </span>
+              ) : null}
+              <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground/40 transition-transform", open && "rotate-180")} />
+            </span>
+          </button>
+          <div id={detailsId} hidden={!open} className="space-y-1 py-1">
+            <StaleDispositionWarningDetails sections={sections} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SystemNoticeCommentRow({
+  message,
+  anchorId,
+}: {
+  message: ThreadMessage;
+  anchorId?: string;
+}) {
+  const { onImageClick, agentMap, issueStatus, successfulRunHandoff } = useContext(IssueChatCtx);
+  const custom = message.metadata.custom as Record<string, unknown>;
+  const presentation = isIssueCommentPresentation(custom.presentation) ? custom.presentation : null;
+  const commentMetadata = isIssueCommentMetadata(custom.commentMetadata) ? custom.commentMetadata : null;
+  const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
+  const runId = typeof custom.runId === "string" ? custom.runId : null;
+  const authorType = typeof custom.authorType === "string" ? custom.authorType : null;
+  const authorName = typeof custom.authorName === "string" ? custom.authorName : null;
+  const bodyText = message.content
+    .filter((p): p is { type: "text"; text: string } => p.type === "text")
+    .map((p) => p.text)
+    .join("\n\n");
+  const staleSuccessfulRunHandoffNotice = isStaleSuccessfulRunHandoffNotice({
+    bodyText,
+    issueStatus,
+    successfulRunHandoff,
+    runId,
+    metadata: commentMetadata,
+  });
+  const [copied, setCopied] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+
+  const source = (() => {
+    const runAgentName = runAgentId ? agentMap?.get(runAgentId)?.name ?? null : null;
+    if (authorType === "system") {
+      const label = runAgentName ?? "Paperclip";
+      if (runAgentId && runId) return { label, href: `/agents/${runAgentId}/runs/${runId}` };
+      return { label };
+    }
+    if (runAgentId && runId) {
+      return { label: authorName ?? runAgentName ?? "Paperclip", href: `/agents/${runAgentId}/runs/${runId}` };
+    }
+    if (authorName) return { label: authorName };
+    return undefined;
+  })();
+
+  const props = buildSystemNoticeProps({
+    presentation,
+    metadata: commentMetadata,
+    body: (
+      <MarkdownBody className="text-sm leading-6" softBreaks onImageClick={onImageClick}>
+        {bodyText}
+      </MarkdownBody>
+    ),
+    timestamp: message.createdAt ? new Date(message.createdAt).toISOString() : undefined,
+    source,
+    runAgentId,
+  });
+
+  const handleCopy = () => {
+    void navigator.clipboard.writeText(bodyText).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const handleCopyLink = () => {
+    if (!anchorId || typeof window === "undefined") return;
+    const url = `${window.location.origin}${window.location.pathname}#${anchorId}`;
+    void navigator.clipboard.writeText(url).then(() => {
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2000);
+    });
+  };
+
+  if (staleSuccessfulRunHandoffNotice) {
+    return (
+      <StaleDispositionWarningRow
+        anchorId={anchorId}
+        message={message}
+        metadata={commentMetadata}
+        runAgentId={runAgentId}
+      />
+    );
+  }
+
+  return (
+    <div id={anchorId} className="group">
+      <div className="py-1">
+        <SystemNotice {...props} />
+        <div className="mt-1 flex items-center justify-end gap-1.5 px-1 opacity-0 transition-opacity group-hover:opacity-100">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <a
+                href={anchorId ? `#${anchorId}` : undefined}
+                className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+              >
+                {message.createdAt ? commentDateLabel(message.createdAt) : ""}
+              </a>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-xs">
+              {message.createdAt ? formatDateTime(message.createdAt) : ""}
+            </TooltipContent>
+          </Tooltip>
+          {anchorId ? (
+            <button
+              type="button"
+              className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+              title="Copy link"
+              aria-label="Copy link to system notice"
+              onClick={handleCopyLink}
+            >
+              {copiedLink ? <Check className="h-3.5 w-3.5" /> : <Paperclip className="h-3.5 w-3.5" />}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+            title="Copy notice text"
+            aria-label="Copy system notice"
+            onClick={handleCopy}
+          >
+            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1884,6 +2484,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     onAcceptInteraction,
     onRejectInteraction,
     onSubmitInteractionAnswers,
+    onCancelInteraction,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1903,9 +2504,19 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
         to: IssueTimelineAssignee;
       }
     : null;
+  const workspaceChange = isTimelineWorkspaceChange(custom.workspaceChange) ? custom.workspaceChange : null;
   const interaction = isIssueThreadInteraction(custom.interaction)
     ? custom.interaction
     : null;
+
+  if (custom.kind === "system_notice") {
+    return (
+      <SystemNoticeCommentRow
+        message={message}
+        anchorId={anchorId}
+      />
+    );
+  }
 
   if (custom.kind === "interaction" && interaction) {
     if (interaction.kind === "request_confirmation" && interaction.status === "expired") {
@@ -1929,6 +2540,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+            onCancelInteraction={onCancelInteraction}
           />
         </div>
       </div>
@@ -1977,6 +2589,21 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
             <ArrowRight className="h-3 w-3 text-muted-foreground" />
             <span className="font-medium text-foreground">
               {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId, userLabelMap)}
+            </span>
+          </div>
+        ) : null}
+
+        {workspaceChange ? (
+          <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
+            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Workspace
+            </span>
+            <span className="text-muted-foreground">
+              {formatTimelineWorkspaceLabel(workspaceChange.from)}
+            </span>
+            <ArrowRight className="h-3 w-3 text-muted-foreground" />
+            <span className="font-medium text-foreground">
+              {formatTimelineWorkspaceLabel(workspaceChange.to)}
             </span>
           </div>
         ) : null}
@@ -2110,6 +2737,16 @@ function issueChatMessageQueuedRunIsInterrupting(
 ): boolean {
   const queueTargetRunId = issueChatMessageQueueTargetRunId(message);
   return Boolean(queueTargetRunId && interruptingQueuedRunId === queueTargetRunId);
+}
+
+function issueChatMessageIsDeleted(message: ThreadMessage): boolean {
+  const custom = issueChatMessageCustom(message);
+  return Boolean(custom.deletedAt);
+}
+
+function issueChatMessageDeletedAt(message: ThreadMessage): string | null {
+  const custom = issueChatMessageCustom(message);
+  return typeof custom.deletedAt === "string" ? custom.deletedAt : null;
 }
 
 // Above ~150 merged rows the direct render path forces React to mount and
@@ -2543,6 +3180,33 @@ interface IssueChatMessageRowProps {
   interruptingQueuedRunId?: string | null;
 }
 
+function IssueChatDeletedComment({
+  message,
+  deletedAt,
+}: {
+  message: ThreadMessage;
+  deletedAt: string;
+}) {
+  const custom = issueChatMessageCustom(message);
+  const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
+  const authorName = typeof custom.authorName === "string" ? custom.authorName : "Comment";
+  const deletedDate = new Date(deletedAt);
+  const deletedDateLabel = Number.isNaN(deletedDate.getTime()) ? "" : formatDateTime(deletedDate);
+
+  return (
+    <div id={anchorId} className="flex items-start gap-2.5 py-1.5">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border bg-muted/40 text-muted-foreground">
+        <Trash2 className="h-3.5 w-3.5" />
+      </div>
+      <div className="min-w-0 rounded-md border border-dashed border-border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+        <span className="font-medium text-foreground/80">{authorName}</span>
+        <span> deleted this comment</span>
+        {deletedDateLabel ? <span className="text-xs"> · {deletedDateLabel}</span> : null}
+      </div>
+    </div>
+  );
+}
+
 const IssueChatMessageRow = memo(function IssueChatMessageRow({
   message,
   feedbackVoteByTargetId,
@@ -2551,11 +3215,14 @@ const IssueChatMessageRow = memo(function IssueChatMessageRow({
   interruptingQueuedRunId,
 }: IssueChatMessageRowProps) {
   const kind = issueChatMessageKind(message);
+  const deletedAt = issueChatMessageDeletedAt(message);
   const activeVote = issueChatMessageActiveVote(message, feedbackVoteByTargetId);
   const isRunActive = issueChatMessageRunIsActive(message, activeRunIds);
   const isStoppingRun = issueChatMessageRunIsStopping(message, stoppingRunId);
   const isInterruptingQueuedRun = issueChatMessageQueuedRunIsInterrupting(message, interruptingQueuedRunId);
-  const renderedMessage = message.role === "user"
+  const renderedMessage = deletedAt
+    ? <IssueChatDeletedComment message={message} deletedAt={deletedAt} />
+    : message.role === "user"
     ? (
       <IssueChatUserMessage
         message={message}
@@ -2609,6 +3276,8 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   composerDisabledReason = null,
   composerHint = null,
   issueStatus,
+  issueWorkMode,
+  onWorkModeChange,
 }, forwardedRef) {
   const api = useAui();
   const toastActions = useOptionalToastActions();
@@ -2621,6 +3290,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const [unassignedConfirmed, setUnassignedConfirmed] = useState(false);
+  const resolvedIssueWorkMode: IssueWorkMode = issueWorkMode ?? "standard";
+  const [pendingWorkMode, setPendingWorkMode] = useState<IssueWorkMode>(resolvedIssueWorkMode);
+  const [workModeMenuOpen, setWorkModeMenuOpen] = useState(false);
+  const canToggleWorkMode = typeof onWorkModeChange === "function";
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const composerContainerRef = useRef<HTMLDivElement | null>(null);
@@ -2671,6 +3344,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     setUnassignedConfirmed(false);
   }, [reassignTarget]);
 
+  useEffect(() => {
+    setPendingWorkMode(resolvedIssueWorkMode);
+  }, [resolvedIssueWorkMode]);
+
   useImperativeHandle(forwardedRef, () => ({
     focus: focusComposer,
     restoreDraft: (submittedBody: string) => {
@@ -2713,10 +3390,14 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     const submittedBody = trimmed;
     const viewportSnapshot = captureComposerViewportSnapshot(composerContainerRef.current);
 
+    const workModeChanged = pendingWorkMode !== resolvedIssueWorkMode;
     setSubmitting(true);
     setBody("");
     setUnassignedConfirmed(false);
     try {
+      if (workModeChanged && onWorkModeChange) {
+        await onWorkModeChange(pendingWorkMode);
+      }
       const appendPromise = api.thread().append({
         role: "user",
         content: [{ type: "text", text: submittedBody }],
@@ -2874,12 +3555,16 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     );
   }
 
+  const isPlanning = pendingWorkMode === "planning";
+
   return (
     <div
       ref={composerContainerRef}
       data-testid="issue-chat-composer"
+      data-pending-work-mode={pendingWorkMode}
       className={cn(
         "relative rounded-md border border-border/70 bg-background/95 p-[15px] shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]",
+        isPlanning && "border-amber-500/60 bg-amber-50/60 supports-[backdrop-filter]:bg-amber-50/40 dark:border-amber-500/50 dark:bg-amber-500/[0.07] dark:supports-[backdrop-filter]:bg-amber-500/[0.07]",
         isDragOver && "border-primary/45 bg-background shadow-[0_-12px_28px_rgba(15,23,42,0.08),0_0_0_1px_hsl(var(--primary)/0.16)]",
       )}
       onDragEnterCapture={handleFileDragEnter}
@@ -2899,7 +3584,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
             <div className="min-w-0">
               <div className="text-sm font-medium text-foreground">Drop to upload</div>
               <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                Images insert into the reply. Other files are added to this issue.
+                Images insert into the reply. Other files are added to this task.
               </div>
             </div>
           </div>
@@ -2934,12 +3619,12 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
             const sizeLabel = formatAttachmentSize(attachment.size);
             const statusLabel =
               attachment.status === "uploading"
-                ? "Uploading to issue"
+                ? "Uploading to task"
                 : attachment.status === "error"
                   ? attachment.error ?? "Upload failed"
                   : attachment.inline
                     ? "Inserted inline"
-                    : "Attached to issue";
+                    : "Attached to task";
             return (
               <div
                 key={attachment.id}
@@ -2971,25 +3656,77 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       ) : null}
 
       <div className="flex flex-wrap items-center justify-end gap-3">
-        {(onImageUpload || onAttachImage) ? (
-          <div className="mr-auto flex items-center gap-3">
-            <input
-              ref={attachInputRef}
-              type="file"
-              className="hidden"
-              onChange={handleAttachFile}
-            />
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={() => attachInputRef.current?.click()}
-              disabled={attaching}
-              title="Attach file"
+        <div className="mr-auto flex items-center gap-2">
+          {(onImageUpload || onAttachImage) ? (
+            <>
+              <input
+                ref={attachInputRef}
+                type="file"
+                className="hidden"
+                onChange={handleAttachFile}
+              />
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => attachInputRef.current?.click()}
+                disabled={attaching}
+                title="Attach file"
+              >
+                <Paperclip className="h-4 w-4" />
+              </Button>
+            </>
+          ) : null}
+          {canToggleWorkMode ? (
+            <Popover open={workModeMenuOpen} onOpenChange={setWorkModeMenuOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  data-testid="issue-chat-composer-work-mode-menu"
+                  title="More composer options"
+                >
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-44 p-1" align="start">
+                <button
+                  type="button"
+                  data-testid="issue-chat-composer-work-mode-menu-toggle"
+                  data-pending-work-mode={pendingWorkMode}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
+                    isPlanning ? "text-amber-700 dark:text-amber-300" : "text-foreground",
+                  )}
+                  onClick={() => {
+                    setPendingWorkMode((prev) => (prev === "planning" ? "standard" : "planning"));
+                    setWorkModeMenuOpen(false);
+                  }}
+                >
+                  {isPlanning ? (
+                    <Hammer className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                  ) : (
+                    <ClipboardList className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden />
+                  )}
+                  <span>{isPlanning ? "Switch to standard" : "Switch to planning"}</span>
+                </button>
+              </PopoverContent>
+            </Popover>
+          ) : null}
+          {canToggleWorkMode && isPlanning ? (
+            <button
+              type="button"
+              data-testid="issue-chat-composer-work-mode-toggle"
+              data-pending-work-mode={pendingWorkMode}
+              aria-pressed
+              title="Planning mode is on for this submission. Click to switch to Standard."
+              onClick={() => setPendingWorkMode("standard")}
+              className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/60 bg-amber-500/15 px-2 py-1 text-xs text-amber-800 transition-colors hover:bg-amber-500/25 dark:border-amber-500/50 dark:bg-amber-500/15 dark:text-amber-200 dark:hover:bg-amber-500/25"
             >
-              <Paperclip className="h-4 w-4" />
-            </Button>
-          </div>
-        ) : null}
+              <ClipboardList className="h-3.5 w-3.5" aria-hidden />
+              <span>Planning</span>
+            </button>
+          ) : null}
+        </div>
 
         {enableReassign && reassignOptions.length > 0 ? (
           <InlineEntitySelector
@@ -3048,8 +3785,15 @@ export function IssueChatThread({
   timelineEvents = [],
   liveRuns = [],
   activeRun = null,
+  issueId = null,
   blockedBy = [],
   blockerAttention = null,
+  successfulRunHandoff = null,
+  scheduledRetry = null,
+  recoveryAction = null,
+  onResolveRecoveryAction,
+  canFalsePositiveRecoveryAction = false,
+  legacyRecoverySourceIssue = null,
   companyId,
   projectId,
   issueStatus,
@@ -3061,6 +3805,10 @@ export function IssueChatThread({
   onAdd,
   onCancelRun,
   onStopRun,
+  stopRunLabel,
+  stoppingRunLabel,
+  stopRunVariant,
+  runFinalizationActions,
   imageUploadHandler,
   onAttachImage,
   draftKey,
@@ -3074,6 +3822,7 @@ export function IssueChatThread({
   showComposer = true,
   showJumpToLatest,
   emptyMessage,
+  footer,
   variant = "full",
   enableLiveTranscriptPolling = true,
   transcriptsByRunId,
@@ -3081,14 +3830,21 @@ export function IssueChatThread({
   includeSucceededRunsWithoutOutput = false,
   onInterruptQueued,
   onCancelQueued,
+  onDeleteComment,
   interruptingQueuedRunId = null,
   stoppingRunId = null,
   onImageClick,
   onAcceptInteraction,
   onRejectInteraction,
   onSubmitInteractionAnswers,
+  onCancelInteraction,
   composerRef,
+  issueWorkMode,
+  onWorkModeChange,
   onRefreshLatestComments,
+  assigneeUserId = null,
+  onResumeFromBacklog,
+  resumeFromBacklogPending = false,
 }: IssueChatThreadProps) {
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
@@ -3101,6 +3857,8 @@ export function IssueChatThread({
   const lastUserMessageIdRef = useRef<string | null>(null);
   const spacerBaselineAnchorRef = useRef<string | null>(null);
   const spacerInitialReserveRef = useRef(0);
+  const latestSettleTimeoutsRef = useRef<number[]>([]);
+  const latestSettleCleanupRef = useRef<(() => void) | null>(null);
   const [bottomSpacerHeight, setBottomSpacerHeight] = useState(0);
   const displayLiveRuns = useMemo(() => {
     const deduped = new Map<string, LiveRunForIssue>();
@@ -3141,6 +3899,17 @@ export function IssueChatThread({
     }
     return ids;
   }, [displayLiveRuns]);
+  const clearLatestSettleTimeouts = useCallback(() => {
+    for (const timeout of latestSettleTimeoutsRef.current) {
+      window.clearTimeout(timeout);
+    }
+    latestSettleTimeoutsRef.current = [];
+    latestSettleCleanupRef.current?.();
+    latestSettleCleanupRef.current = null;
+  }, []);
+
+  useEffect(() => clearLatestSettleTimeouts, [clearLatestSettleTimeouts]);
+
   const { transcriptByRun, hasOutputForRun } = useLiveRunTranscripts({
     runs: enableLiveTranscriptPolling ? transcriptRuns : [],
     companyId,
@@ -3194,6 +3963,8 @@ export function IssueChatThread({
     stableMessageCacheRef.current = stabilized.cache;
     return stabilized.messages;
   }, [rawMessages]);
+  const latestMessagesRef = useRef<readonly ThreadMessage[]>(messages);
+  latestMessagesRef.current = messages;
 
   const isRunning = displayLiveRuns.some((run) => run.status === "queued" || run.status === "running");
   const unresolvedBlockers = useMemo(
@@ -3226,9 +3997,14 @@ export function IssueChatThread({
   function scrollToThreadAnchor(
     anchorId: string,
     options?: { align?: "start" | "center" | "end" | "auto"; behavior?: ScrollBehavior },
+    messageSnapshot: readonly ThreadMessage[] = messages,
   ) {
-    const virtualIndex = messageAnchorIndex.get(anchorId);
-    if (useVirtualizedThread && virtualIndex !== undefined) {
+    const snapshotUsesVirtualizer = messageSnapshot.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD;
+    const virtualIndex =
+      messageSnapshot === messages
+        ? messageAnchorIndex.get(anchorId)
+        : findMessageAnchorIndex(messageSnapshot, anchorId);
+    if (snapshotUsesVirtualizer && virtualIndex !== undefined && virtualIndex >= 0) {
       if (!virtualizedThreadRef.current) return false;
       virtualizedThreadRef.current.scrollToIndex(virtualIndex, {
         align: options?.align ?? "center",
@@ -3328,6 +4104,16 @@ export function IssueChatThread({
     ) return;
     if (messages.length === 0 || lastScrolledHashRef.current === hash) return;
     const targetId = hash.slice(1);
+    if (targetId.startsWith("comment-")) {
+      const targetMessage = messages.find((message) => issueChatMessageAnchorId(message) === targetId);
+      if (targetMessage && issueChatMessageIsDeleted(targetMessage)) {
+        lastScrolledHashRef.current = hash;
+        if (typeof window !== "undefined") {
+          window.history.replaceState(null, "", `${location.pathname}${location.search}`);
+        }
+        return;
+      }
+    }
     let cancelled = false;
     const attemptScroll = (finalAttempt = false) => {
       if (cancelled || lastScrolledHashRef.current === hash) return;
@@ -3356,26 +4142,35 @@ export function IssueChatThread({
     bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }
 
-  // Walks the thread by anchor and lands on the latest `comment-*` row, with
-  // a short series of settle passes. The virtualizer estimates row sizes for
-  // unmeasured rows, and that estimate undershoots tall markdown comments —
-  // so the first scroll often lands above the actual bottom and the user
-  // ends up clicking Jump to latest repeatedly to converge. Re-issuing the
-  // scroll after measurements catch up lets one click reach the actual
-  // latest comment (PAP-2672 follow-up).
-  function scrollToLatestCommentWithSettle() {
-    const latestCommentIndex = findLatestCommentMessageIndex(messages);
+  // Lands on the latest `comment-*` row and then drives the scroll the rest
+  // of the way home as the virtualizer's per-row measurements arrive.
+  //
+  // The virtualizer estimates 220px for unmeasured rows. On long threads
+  // with tall markdown comments (PAP-2536 et al.), totalSize is hugely
+  // underestimated until rows render and get measured. A single scroll
+  // lands above the actual bottom; rendered rows then expand, the layout
+  // grows, and the user has to keep clicking Jump-to-latest to walk closer
+  // to the real bottom. The convergence loop below issues `scrollIntoView`
+  // on the latest comment element on every tick until the DOM bottom of
+  // that element is at the scroll container's bottom (or scroll position
+  // and content height stop changing).
+  function scrollToLatestCommentWithSettle(messageSnapshot: readonly ThreadMessage[] = latestMessagesRef.current) {
+    const latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot);
     if (latestCommentIndex < 0) {
       jumpToLatestFallback();
       return;
     }
-    const latestCommentAnchor = issueChatMessageAnchorId(messages[latestCommentIndex]);
+    const latestCommentAnchor = issueChatMessageAnchorId(messageSnapshot[latestCommentIndex]);
     if (!latestCommentAnchor) {
       jumpToLatestFallback();
       return;
     }
 
-    const initial = scrollToThreadAnchor(latestCommentAnchor, { align: "end", behavior: "smooth" });
+    const initial = scrollToThreadAnchor(
+      latestCommentAnchor,
+      { align: "end", behavior: "smooth" },
+      messageSnapshot,
+    );
     if (!initial) {
       jumpToLatestFallback();
       return;
@@ -3383,51 +4178,140 @@ export function IssueChatThread({
 
     if (typeof window === "undefined") return;
 
-    const settleDelays = [380, 760, 1140];
-    settleDelays.forEach((delay) => {
-      window.setTimeout(() => {
-        const el = document.getElementById(latestCommentAnchor);
-        if (el) {
-          el.scrollIntoView({ behavior: "smooth", block: "end" });
-          return;
-        }
-        // The row may still be outside the virtualizer's render buffer; nudge
-        // the offset so it gets mounted, then the next pass can align with
-        // real DOM measurements.
+    const startedAt = (typeof performance !== "undefined" ? performance.now() : Date.now());
+    const MAX_DURATION_MS = 4000;
+    const TICK_MS = 80;
+    const TOLERANCE_PX = 4;
+
+    clearLatestSettleTimeouts();
+    const resolveScrollContainer = (): HTMLElement | null =>
+      (document.getElementById("main-content") as HTMLElement | null);
+    const cancelTarget = resolveScrollContainer() ?? window;
+
+    let lastScrollTop = -1;
+    let lastScrollHeight = -1;
+    let stableTicks = 0;
+    let cancelled = false;
+
+    const cancel = () => {
+      cancelled = true;
+    };
+
+    const cleanup = () => {
+      cancelTarget.removeEventListener("wheel", cancel);
+      cancelTarget.removeEventListener("touchstart", cancel);
+    };
+
+    cancelTarget.addEventListener("wheel", cancel, { once: true, passive: true });
+    cancelTarget.addEventListener("touchstart", cancel, { once: true, passive: true });
+    latestSettleCleanupRef.current = cleanup;
+
+    const finish = () => {
+      cleanup();
+      latestSettleCleanupRef.current = null;
+      for (const timeout of latestSettleTimeoutsRef.current) {
+        window.clearTimeout(timeout);
+      }
+      latestSettleTimeoutsRef.current = [];
+    };
+
+    const scheduleTick = (delay: number) => {
+      const timeout = window.setTimeout(() => {
+        latestSettleTimeoutsRef.current = latestSettleTimeoutsRef.current.filter((entry) => entry !== timeout);
+        tick();
+      }, delay);
+      latestSettleTimeoutsRef.current.push(timeout);
+    };
+
+    const tick = () => {
+      const now = (typeof performance !== "undefined" ? performance.now() : Date.now());
+      if (cancelled || now - startedAt > MAX_DURATION_MS) {
+        finish();
+        return;
+      }
+
+      if (typeof document === "undefined") {
+        finish();
+        return;
+      }
+
+      const el = document.getElementById(latestCommentAnchor);
+      if (!el) {
+        // Row hasn't been rendered into the virtualizer's buffer yet — nudge
+        // the offset (instant) so it gets mounted, then keep settling.
         virtualizedThreadRef.current?.scrollToIndex(latestCommentIndex, {
           align: "end",
           behavior: "auto",
         });
-      }, delay);
-    });
+        scheduleTick(TICK_MS);
+        return;
+      }
+
+      const container = resolveScrollContainer();
+      const containerBottom = container
+        ? container.getBoundingClientRect().bottom
+        : window.innerHeight;
+      const elBottom = el.getBoundingClientRect().bottom;
+      const offBottom = elBottom - containerBottom;
+
+      if (Math.abs(offBottom) > TOLERANCE_PX) {
+        el.scrollIntoView({ behavior: "smooth", block: "end" });
+      }
+
+      const currentScrollTop = container?.scrollTop ?? window.scrollY;
+      const currentScrollHeight = container?.scrollHeight ?? document.documentElement.scrollHeight;
+      const scrollStable = Math.abs(currentScrollTop - lastScrollTop) < 1;
+      const heightStable = currentScrollHeight === lastScrollHeight;
+      const atBottom = Math.abs(offBottom) <= TOLERANCE_PX;
+      if (scrollStable && heightStable && atBottom) {
+        stableTicks += 1;
+        if (stableTicks >= 3) {
+          finish();
+          return;
+        }
+      } else {
+        stableTicks = 0;
+      }
+      lastScrollTop = currentScrollTop;
+      lastScrollHeight = currentScrollHeight;
+      scheduleTick(TICK_MS);
+    };
+
+    // Hold the first iteration off for one frame so the initial smooth
+    // scroll has begun (and the virtualizer has rendered the buffer around
+    // the target) before we start settling.
+    scheduleTick(120);
   }
 
   function handleJumpToLatest() {
     if (onRefreshLatestComments) {
-      // Refetching from page 0 (newest first) brings any comments that
-      // arrived after the initial load into the cache before we scroll —
-      // otherwise we'd land on the latest *loaded* row rather than the
-      // absolute newest, which is what PAP-2672 reopened on.
+      // Refetching the comments query (page 0 first) brings any comment that
+      // arrived after the initial load — including ones live updates may
+      // have missed during reconnects — into the loaded set before we
+      // resolve the latest target. Otherwise we'd land on the latest
+      // *loaded* comment but not the absolute newest. (PAP-2672 follow-up.)
       const refreshed = onRefreshLatestComments();
       if (refreshed && typeof (refreshed as Promise<unknown>).then === "function") {
         (refreshed as Promise<unknown>).then(
-          () => scrollToLatestCommentWithSettle(),
-          () => scrollToLatestCommentWithSettle(),
+          () => scrollToLatestCommentWithSettle(latestMessagesRef.current),
+          () => scrollToLatestCommentWithSettle(latestMessagesRef.current),
         );
         return;
       }
     }
-    scrollToLatestCommentWithSettle();
+    scrollToLatestCommentWithSettle(latestMessagesRef.current);
   }
 
   const stableOnVote = useStableEvent(onVote);
   const stableOnStopRun = useStableEvent(onStopRun);
   const stableOnInterruptQueued = useStableEvent(onInterruptQueued);
   const stableOnCancelQueued = useStableEvent(onCancelQueued);
+  const stableOnDeleteComment = useStableEvent(onDeleteComment);
   const stableOnImageClick = useStableEvent(onImageClick);
   const stableOnAcceptInteraction = useStableEvent(onAcceptInteraction);
   const stableOnRejectInteraction = useStableEvent(onRejectInteraction);
   const stableOnSubmitInteractionAnswers = useStableEvent(onSubmitInteractionAnswers);
+  const stableOnCancelInteraction = useStableEvent(onCancelInteraction);
 
   const chatCtx = useMemo<IssueChatMessageContext>(
     () => ({
@@ -3439,12 +4323,20 @@ export function IssueChatThread({
       userProfileMap,
       onVote: stableOnVote,
       onStopRun: stableOnStopRun,
+      stopRunLabel,
+      stoppingRunLabel,
+      stopRunVariant,
+      runFinalizationActions,
       onInterruptQueued: stableOnInterruptQueued,
       onCancelQueued: stableOnCancelQueued,
+      onDeleteComment: stableOnDeleteComment,
       onImageClick: stableOnImageClick,
       onAcceptInteraction: stableOnAcceptInteraction,
       onRejectInteraction: stableOnRejectInteraction,
       onSubmitInteractionAnswers: stableOnSubmitInteractionAnswers,
+      onCancelInteraction: stableOnCancelInteraction,
+      issueStatus,
+      successfulRunHandoff,
     }),
     [
       feedbackDataSharingPreference,
@@ -3455,12 +4347,20 @@ export function IssueChatThread({
       userProfileMap,
       stableOnVote,
       stableOnStopRun,
+      stopRunLabel,
+      stoppingRunLabel,
+      stopRunVariant,
+      runFinalizationActions,
       stableOnInterruptQueued,
       stableOnCancelQueued,
+      stableOnDeleteComment,
       stableOnImageClick,
       stableOnAcceptInteraction,
       stableOnRejectInteraction,
       stableOnSubmitInteractionAnswers,
+      stableOnCancelInteraction,
+      issueStatus,
+      successfulRunHandoff,
     ],
   );
 
@@ -3468,7 +4368,7 @@ export function IssueChatThread({
   const resolvedEmptyMessage = emptyMessage
     ?? (variant === "embedded"
       ? "No run output yet."
-      : "This issue conversation is empty. Start with a message below.");
+      : "This task conversation is empty. Start with a message below.");
   const previousErrorBoundaryMessagesRef = useRef<readonly ThreadMessage[] | null>(null);
   const errorBoundaryResetVersionRef = useRef(0);
   if (previousErrorBoundaryMessagesRef.current !== messages) {
@@ -3536,18 +4436,72 @@ export function IssueChatThread({
                     stoppingRunId={stoppingRunId}
                     interruptingQueuedRunId={interruptingQueuedRunId}
                   />
-                ))
-              )}
+              ))
+            )}
               {showComposer ? (
                 <div data-testid="issue-chat-thread-notices" className="space-y-2">
+                  <IssueAssignedBacklogNotice
+                    issueStatus={issueStatus ?? ""}
+                    assigneeAgent={assignedAgent}
+                    assigneeUserId={assigneeUserId}
+                    onResume={onResumeFromBacklog}
+                    resuming={resumeFromBacklogPending}
+                  />
+                  {recoveryAction ? (
+                    <IssueRecoveryActionCard
+                      action={recoveryAction}
+                      agentMap={agentMap}
+                      onResolve={onResolveRecoveryAction}
+                      canFalsePositive={canFalsePositiveRecoveryAction}
+                    />
+                  ) : null}
+                  {legacyRecoverySourceIssue ? (
+                    <SystemNotice
+                      tone="info"
+                      label="Legacy recovery task"
+                      body={
+                        <span>
+                          Legacy recovery task. Newer recovery actions live on the source task
+                          {legacyRecoverySourceIssue.identifier ? (
+                            <>
+                              {" — "}
+                              <Link
+                                to={legacyRecoverySourceIssue.href}
+                                className="underline-offset-2 hover:underline"
+                              >
+                                {legacyRecoverySourceIssue.identifier}
+                                {legacyRecoverySourceIssue.title ? (
+                                  <span className="text-muted-foreground">
+                                    {" "}
+                                    — {legacyRecoverySourceIssue.title}
+                                  </span>
+                                ) : null}
+                              </Link>
+                            </>
+                          ) : (
+                            "."
+                          )}
+                        </span>
+                      }
+                    />
+                  ) : null}
                   <IssueBlockedNotice
+                    issueId={issueId}
                     issueStatus={issueStatus}
                     blockers={unresolvedBlockers}
                     blockerAttention={blockerAttention}
+                    successfulRunHandoff={recoveryAction ? null : successfulRunHandoff}
+                    scheduledRetry={scheduledRetry}
+                    agentName={
+                      successfulRunHandoff?.assigneeAgentId
+                        ? agentMap?.get(successfulRunHandoff.assigneeAgentId)?.name ?? null
+                        : null
+                    }
                   />
                   <IssueAssigneePausedNotice agent={assignedAgent} />
                 </div>
               ) : null}
+              {footer ? <div data-testid="issue-chat-thread-footer">{footer}</div> : null}
               <div ref={bottomAnchorRef} />
               {showComposer ? (
                 <div
@@ -3580,6 +4534,8 @@ export function IssueChatThread({
               composerDisabledReason={composerDisabledReason}
               composerHint={composerHint}
               issueStatus={issueStatus}
+              issueWorkMode={issueWorkMode}
+              onWorkModeChange={onWorkModeChange}
             />
           </div>
         ) : null}
