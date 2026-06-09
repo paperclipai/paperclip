@@ -359,6 +359,66 @@ describe("getClickUpChatMessageReplies", () => {
     ]);
   });
 
+  it("paginates replies and orders them chronologically across all pages", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [{
+            id: "reply-3",
+            parent_message: "message-42",
+            content: "third",
+            date: 3000,
+            links: { reactions: "https://example.test/reactions/third" },
+          }],
+          next_cursor: "cursor-1",
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [
+            {
+              id: "reply-1",
+              parent_message: "message-42",
+              content: "first",
+              date: 1000,
+              links: { reactions: "https://example.test/reactions/first" },
+            },
+            {
+              id: "reply-2",
+              parent_message: "message-42",
+              content: "second",
+              date: 2000,
+              links: { reactions: "https://example.test/reactions/second" },
+            },
+          ],
+          next_cursor: null,
+        }),
+      });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await getClickUpChatMessageReplies("message-42");
+
+    expect(result.status).toBe("sent");
+    expect(result.replies.map((reply) => reply.id)).toEqual(["reply-1", "reply-2", "reply-3"]);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/message-42/replies",
+      expect.anything(),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/message-42/replies?cursor=cursor-1",
+      expect.anything(),
+    );
+  });
+
   it("aborts slow ClickUp reply polling requests", async () => {
     process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
     process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
@@ -855,5 +915,102 @@ describe("detectClickUpAwaitingHumanBridgeEventsAfterMessage", () => {
         },
       }],
     });
+  });
+
+  it("detects a human answer on page 2 after a marker on page 1", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [{
+            id: "question-reply-1",
+            parent_message: "thread-root-1",
+            content: "**Workflow input required**",
+            date: 1000,
+            links: { reactions: "https://example.test/reactions/question" },
+          }],
+          next_cursor: "cursor-1",
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [{
+            id: "human-reply-1",
+            parent_message: "thread-root-1",
+            content: "Celsius",
+            date: 2000,
+            links: { reactions: "https://example.test/reactions/answer" },
+          }],
+          next_cursor: null,
+        }),
+      }) as typeof fetch;
+
+    const result = await detectClickUpAwaitingHumanBridgeEventsAfterMessage(
+      "thread-root-1",
+      "question-reply-1",
+    );
+
+    expect(result.status).toBe("sent");
+    expect(result.detail).toBe("replies-detected");
+    expect(result.events.map((event) => event.externalEventId)).toEqual(["human-reply-1"]);
+  });
+
+  it("detects a marker on page 2 after older replies on page 1", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [{
+            id: "previous-human-reply",
+            parent_message: "thread-root-1",
+            content: "Sydney",
+            date: 1000,
+            links: { reactions: "https://example.test/reactions/previous" },
+          }],
+          next_cursor: "cursor-1",
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [
+            {
+              id: "question-reply-2",
+              parent_message: "thread-root-1",
+              content: "**Workflow input required**",
+              date: 2000,
+              links: { reactions: "https://example.test/reactions/question" },
+            },
+            {
+              id: "human-reply-2",
+              parent_message: "thread-root-1",
+              content: "Fahrenheit",
+              date: 3000,
+              links: { reactions: "https://example.test/reactions/answer" },
+            },
+          ],
+          next_cursor: null,
+        }),
+      }) as typeof fetch;
+
+    const result = await detectClickUpAwaitingHumanBridgeEventsAfterMessage(
+      "thread-root-1",
+      "question-reply-2",
+    );
+
+    expect(result.status).toBe("sent");
+    expect(result.detail).toBe("replies-detected");
+    expect(result.events.map((event) => event.externalEventId)).toEqual(["human-reply-2"]);
   });
 });

@@ -19,6 +19,7 @@ const MAX_SUMMARY_LENGTH = 280;
 const MAX_DETAIL_BULLETS = 5;
 const MAX_BULLET_LENGTH = 220;
 const DEFAULT_CLICKUP_TIMEOUT_SEC = 30;
+const MAX_CLICKUP_REPLY_PAGES = 20;
 const CLICKUP_ATTACHMENT_FILE_FIELD = "attachment[0]";
 
 export interface ClickUpTransportTestNotification {
@@ -248,8 +249,8 @@ type ClickUpReplyMessageResponse = {
 };
 
 type ClickUpGetChatMessageRepliesResponse = {
-  data: ClickUpReplyMessageResponse[];
-  next_cursor: string;
+  data?: ClickUpReplyMessageResponse[];
+  next_cursor?: string | null;
 };
 
 function readNumericValue(value: unknown) {
@@ -289,14 +290,18 @@ function compareClickUpRepliesChronologically(
   return 0;
 }
 
-function extractReplyRows(payload: ClickUpGetChatMessageRepliesResponse): ClickUpChatMessageReply[] {
-  return [...payload.data].sort(compareClickUpRepliesChronologically).map((row) => ({
+function extractReplyRowsFromRows(rows: ClickUpReplyMessageResponse[]): ClickUpChatMessageReply[] {
+  return [...rows].sort(compareClickUpRepliesChronologically).map((row) => ({
     id: row.id,
     parentMessageId: row.parent_message,
     reactionsUrl: row.links.reactions,
     content: row.content,
     dateMs: readClickUpReplyDate(row),
   }));
+}
+
+function extractReplyRows(payload: ClickUpGetChatMessageRepliesResponse): ClickUpChatMessageReply[] {
+  return extractReplyRowsFromRows(Array.isArray(payload.data) ? payload.data : []);
 }
 function formatClickUpUserMention(userId: string | null | undefined) {
   const trimmed = readString(userId);
@@ -880,18 +885,30 @@ export async function getClickUpChatMessageReplies(
     };
   }
 
-  const response = await fetchClickUpJson(
-    config,
-    `/chat/messages/${encodeURIComponent(messageId)}/replies`,
-  );
-  if (response.status === "failed") {
-    return { status: "failed", detail: response.detail, replies: [] };
+  const rawReplies: ClickUpReplyMessageResponse[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < MAX_CLICKUP_REPLY_PAGES; page += 1) {
+    const cursorQuery = cursor
+      ? `?${new URLSearchParams({ cursor }).toString()}`
+      : "";
+    const response = await fetchClickUpJson(
+      config,
+      `/chat/messages/${encodeURIComponent(messageId)}/replies${cursorQuery}`,
+    );
+    if (response.status === "failed") {
+      return { status: "failed", detail: response.detail, replies: [] };
+    }
+
+    const payload = response.payload as ClickUpGetChatMessageRepliesResponse;
+    if (Array.isArray(payload.data)) rawReplies.push(...payload.data);
+    cursor = readString(payload.next_cursor);
+    if (!cursor) break;
   }
 
   return {
     status: "sent",
     detail: "ok",
-    replies: extractReplyRows(response.payload as ClickUpGetChatMessageRepliesResponse),
+    replies: extractReplyRowsFromRows(rawReplies),
   };
 }
 

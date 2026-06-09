@@ -601,6 +601,14 @@ export function workflowHandoffBridgeService(db: Db) {
               : null;
             if (replyId) replyMessageIds.add(replyId);
           }
+          const [currentHandoff] = await db
+            .select({ status: workflowHandoffs.status })
+            .from(workflowHandoffs)
+            .where(eq(workflowHandoffs.id, bridge.workflowHandoffId))
+            .limit(1);
+          const acceptedOutcome = isResolvedHandoffStatus(currentHandoff?.status)
+            ? currentHandoff.status
+            : null;
           for (const replyId of replyMessageIds) {
             await applyReaction({
               db,
@@ -608,23 +616,25 @@ export function workflowHandoffBridgeService(db: Db) {
               companyId: bridge.companyId,
               workflowHandoffId: bridge.workflowHandoffId,
               messageId: replyId,
-              reaction: "x",
+              reaction: acceptedOutcome ? "white_check_mark" : "x",
               target: "reply",
               overrides,
             });
           }
 
-          await db.update(workflowHandoffs).set({
-            status: "cancelled",
-            responseMarkdown: null,
-            decidedByUserId: "workflow_handoff_bridge",
-            decidedAt: now,
-            updatedAt: now,
-          }).where(and(
-            eq(workflowHandoffs.id, bridge.workflowHandoffId),
-            eq(workflowHandoffs.status, "pending"),
-          ));
-          const closeOutcome = toCloseOutcome(run);
+          if (!acceptedOutcome) {
+            await db.update(workflowHandoffs).set({
+              status: "cancelled",
+              responseMarkdown: null,
+              decidedByUserId: "workflow_handoff_bridge",
+              decidedAt: now,
+              updatedAt: now,
+            }).where(and(
+              eq(workflowHandoffs.id, bridge.workflowHandoffId),
+              eq(workflowHandoffs.status, "pending"),
+            ));
+          }
+          const closeOutcome = acceptedOutcome ?? toCloseOutcome(run);
           await closeBridgeRow(db, bridge, closeOutcome, overrides);
           try {
             await logActivity(db, {
@@ -642,6 +652,7 @@ export function workflowHandoffBridgeService(db: Db) {
                 externalThreadId: bridge.externalThreadId ?? null,
                 runStatus: run?.status ?? null,
                 runError: run?.error ?? null,
+                handoffStatus: currentHandoff?.status ?? null,
                 closeOutcome,
               },
             });
