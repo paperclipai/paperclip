@@ -2821,7 +2821,21 @@ export function issueRoutes(
 
     const { actionId, outcome, sourceIssueStatus, resolutionNote } = req.body;
     if (outcome === "false_positive" || outcome === "cancelled") {
-      assertBoard(req);
+      // false_positive / cancelled dispositions retire a recovery action without
+      // restoring a live execution path, so they stay gated behind board access.
+      // The single exception is the recovery action's own owner agent: it already
+      // passed assertRecoveryActionAuthority above, and an owner officer must be
+      // able to retire its own stale/false-positive action via `--as <owner>`
+      // without an un-mintable board-admin identity. Peers (assignee-only or
+      // checkout-override agents that are not the owner) still require board.
+      const actorIsRecoveryOwner =
+        req.actor.type === "agent" &&
+        !!req.actor.agentId &&
+        !!activeRecoveryAction &&
+        activeRecoveryAction.ownerAgentId === req.actor.agentId;
+      if (!actorIsRecoveryOwner) {
+        assertBoard(req);
+      }
     }
 
     const actor = getActorInfo(req);
