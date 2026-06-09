@@ -13,6 +13,15 @@ const CLAUDE_TRANSIENT_UPSTREAM_RE =
   /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+// Standard Node / Rust `getaddrinfo` wording — emitted by the `claude`
+// CLI's HTTP client when the system resolver cannot reach the upstream.
+// We treat this as its own family rather than a transient upstream
+// error because retries do not cure resolver failures.
+const CLAUDE_DNS_FAILURE_RE =
+  /(?:failed to lookup address information|nodename nor servname provided|not known|Name or service not known|Temporary failure in name resolution|getaddrinfo)/i;
+
+export const CLAUDE_DEFAULT_DNS_ERROR_CODE = "claude_dns_unreachable";
+const CLAUDE_DNS_FAILURE_HOST_RE = /\b(?:api\.anthropic\.com|anthropic\.com|claude\.ai)\b/i;
 
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
@@ -365,6 +374,37 @@ export function extractClaudeRetryNotBefore(
   const match = haystack.match(CLAUDE_EXTRA_USAGE_RESET_RE);
   if (!match) return null;
   return parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
+}
+
+export type ClaudeDnsErrorMatch = {
+  errorCode: string;
+  errorFamily: "transient_dns";
+  matchedHost: string | null;
+};
+
+export function classifyClaudeDnsError(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+  errorCode?: string | null;
+}): ClaudeDnsErrorMatch | null {
+  if (input.errorCode === CLAUDE_DEFAULT_DNS_ERROR_CODE) {
+    return {
+      errorCode: CLAUDE_DEFAULT_DNS_ERROR_CODE,
+      errorFamily: "transient_dns",
+      matchedHost: null,
+    };
+  }
+  const haystack = buildClaudeTransientHaystack(input);
+  if (!haystack) return null;
+  if (!CLAUDE_DNS_FAILURE_RE.test(haystack)) return null;
+  const hostMatch = haystack.match(CLAUDE_DNS_FAILURE_HOST_RE);
+  if (!hostMatch) return null;
+  return {
+    errorCode: CLAUDE_DEFAULT_DNS_ERROR_CODE,
+    errorFamily: "transient_dns",
+    matchedHost: hostMatch[0]?.toLowerCase() ?? null,
+  };
 }
 
 export function isClaudeTransientUpstreamError(input: {

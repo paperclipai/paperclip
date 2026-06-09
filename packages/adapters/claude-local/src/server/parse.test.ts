@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyClaudeDnsError,
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
 } from "./parse.js";
@@ -118,6 +119,47 @@ describe("extractClaudeRetryNotBefore", () => {
   it("returns null when no reset hint is present", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
+    ).toBeNull();
+  });
+});
+
+describe("classifyClaudeDnsError", () => {
+  it("matches the standard api.anthropic.com getaddrinfo failure", () => {
+    const match = classifyClaudeDnsError({
+      stderr:
+        "Error: failed to connect to api.anthropic.com: error sending request: error trying to connect: failed to lookup address information: nodename nor servname provided, or not known",
+    });
+    expect(match).not.toBeNull();
+    expect(match?.errorCode).toBe("claude_dns_unreachable");
+    expect(match?.errorFamily).toBe("transient_dns");
+    expect(match?.matchedHost).toBe("api.anthropic.com");
+  });
+
+  it("honors an explicit preflight errorCode without requiring the host name", () => {
+    const match = classifyClaudeDnsError({
+      stderr: "preflight probe failed before any claude invocation",
+      errorCode: "claude_dns_unreachable",
+    });
+    expect(match).toEqual({
+      errorCode: "claude_dns_unreachable",
+      errorFamily: "transient_dns",
+      matchedHost: null,
+    });
+  });
+
+  it("does not classify an unrelated DNS failure for a non-Claude host", () => {
+    expect(
+      classifyClaudeDnsError({
+        stderr: "failed to lookup address information: nodename nor servname provided, or not known for example-vendor.com",
+      }),
+    ).toBeNull();
+  });
+
+  it("does not classify a non-DNS Claude failure as a DNS error", () => {
+    expect(
+      classifyClaudeDnsError({
+        stderr: "401 unauthorized from api.anthropic.com",
+      }),
     ).toBeNull();
   });
 });

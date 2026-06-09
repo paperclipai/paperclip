@@ -10,6 +10,14 @@ const CODEX_TRANSIENT_UPSTREAM_RE =
 const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
 const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
+// Standard Node `getaddrinfo` wording — emitted by both reqwest (via the
+// `codex` CLI's Rust HTTP client) and the system resolver. We don't want
+// to retry this class of error, so we treat it as its own family.
+const CODEX_DNS_FAILURE_RE =
+  /(?:failed to lookup address information|nodename nor servname provided|not known|Name or service not known|Temporary failure in name resolution|getaddrinfo)/i;
+
+export const CODEX_DEFAULT_DNS_ERROR_CODE = "codex_dns_unreachable";
+const CODEX_DNS_FAILURE_HOST_RE = /\b(?:chatgpt\.com|api\.openai\.com|openai\.com)\b/i;
 
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
@@ -81,6 +89,50 @@ export function isCodexUnknownSessionError(stdout: string, stderr: string): bool
   return /unknown (session|thread)|session .* not found|thread .* not found|conversation .* not found|missing rollout path for thread|state db missing rollout path|no rollout found for thread id/i.test(
     haystack,
   );
+}
+
+export type CodexDnsErrorMatch = {
+  errorCode: string;
+  errorFamily: "transient_dns";
+  matchedHost: string | null;
+};
+
+/**
+ * Detect a DNS-resolution failure for the Codex upstream. We only classify
+ * a failure as DNS when the error string matches the standard Node/Rust
+ * `getaddrinfo` wording AND the haystack names a known Codex upstream
+ * (so a transient DNS error in a totally unrelated subsystem does not
+ * poison a healthy run).
+ *
+ * Returns `null` if the haystack is not a Codex DNS failure, so the
+ * caller can keep its existing error-classification path.
+ */
+export function classifyCodexDnsError(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+  errorCode?: string | null;
+}): CodexDnsErrorMatch | null {
+  // Honor an explicit DNS error from the preflight path so we don't rely on
+  // string-matching stderr when the adapter knows it just probed the host.
+  if (input.errorCode === CODEX_DEFAULT_DNS_ERROR_CODE) {
+    return {
+      errorCode: CODEX_DEFAULT_DNS_ERROR_CODE,
+      errorFamily: "transient_dns",
+      matchedHost: null,
+    };
+  }
+
+  const haystack = buildCodexErrorHaystack(input);
+  if (!haystack) return null;
+  if (!CODEX_DNS_FAILURE_RE.test(haystack)) return null;
+  const hostMatch = haystack.match(CODEX_DNS_FAILURE_HOST_RE);
+  if (!hostMatch) return null;
+  return {
+    errorCode: CODEX_DEFAULT_DNS_ERROR_CODE,
+    errorFamily: "transient_dns",
+    matchedHost: hostMatch[0]?.toLowerCase() ?? null,
+  };
 }
 
 function buildCodexErrorHaystack(input: {

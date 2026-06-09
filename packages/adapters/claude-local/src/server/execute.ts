@@ -1,7 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  preflightHostnameLookup,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+  type HostnamePreflightOptions,
+} from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
   adapterExecutionTargetIsRemote,
@@ -48,6 +53,8 @@ import {
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import {
   parseClaudeStreamJson,
+  classifyClaudeDnsError,
+  CLAUDE_DEFAULT_DNS_ERROR_CODE,
   describeClaudeFailure,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
@@ -63,6 +70,14 @@ import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+
+// Primary Claude upstream host. The DNS preflight mirrors the codex_local
+// pattern (RUD-979): probe before spawning the CLI so a resolver failure
+// fails in <2s instead of burning the full reconnect budget.
+export const CLAUDE_DNS_PREFLIGHT_HOST = "api.anthropic.com";
+// Cool down DNS-failed runs so the next heartbeat doesn't immediately
+// re-enter the same outage. Manual wake cycles are the recovery path.
+export const CLAUDE_DNS_RETRY_COOLDOWN_MS = 5 * 60 * 1000;
 
 interface ClaudeExecutionInput {
   runId: string;
@@ -367,6 +382,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
   const executionTargetIsSandbox = executionTarget?.kind === "remote" && executionTarget.transport === "sandbox";
+  // Adapter config can disable the DNS preflight by setting
+  // `claudeDnsPreflightHost` to `"none"`. The default is to probe
+  // `api.anthropic.com` on local targets only. Tests can also inject
+  // a stubbed resolver through `claudeDnsPreflightResolver`.
+  const preflightHostRaw = asString(config.claudeDnsPreflightHost, CLAUDE_DNS_PREFLIGHT_HOST);
+  const preflightHost = preflightHostRaw.trim().toLowerCase() === "none" ? null : preflightHostRaw.trim();
+  const preflightEnabled = !executionTargetIsRemote && preflightHost !== null;
+  const preflightResolver =
+    typeof (config as Record<string, unknown>).claudeDnsPreflightResolver === "function"
+      ? ((config as Record<string, unknown>).claudeDnsPreflightResolver as HostnamePreflightOptions["resolver"])
+      : undefined;
+  const preflightTimeoutMs = asNumber((config as Record<string, unknown>).claudeDnsPreflightTimeoutMs, 1500);
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -902,18 +929,41 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorMessage,
         })
       : null;
+    const dnsFailure =
+      failed
+        ? classifyClaudeDnsError({
+            stdout: proc.stdout,
+            stderr: proc.stderr,
+            errorMessage,
+          })
+        : null;
+    const dnsRetryNotBefore =
+      dnsFailure != null ? new Date(Date.now() + CLAUDE_DNS_RETRY_COOLDOWN_MS) : null;
     const resolvedErrorCode = loginMeta.requiresLogin
       ? "claude_auth_required"
       : failed && clearSessionForMaxTurns
       ? "max_turns_exhausted"
+      : dnsFailure
+        ? dnsFailure.errorCode
+        : transientUpstream
+        ? "claude_transient_upstream"
+        : null;
+    const errorFamily = dnsFailure
+      ? dnsFailure.errorFamily
       : transientUpstream
-      ? "claude_transient_upstream"
-      : null;
+        ? "transient_upstream"
+        : null;
+    const retryNotBefore = dnsFailure
+      ? dnsRetryNotBefore?.toISOString() ?? null
+      : transientRetryNotBefore
+        ? transientRetryNotBefore.toISOString()
+        : null;
     const mergedResultJson: Record<string, unknown> = {
       ...parsed,
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
+      ...(dnsFailure ? { errorFamily: "transient_dns", dnsHost: dnsFailure.matchedHost } : {}),
       ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
-      ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+      ...(retryNotBefore ? { retryNotBefore } : {}),
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
     };
 
@@ -923,8 +973,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorMessage,
       errorCode: resolvedErrorCode,
-      errorFamily: transientUpstream ? "transient_upstream" : null,
-      retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
+      errorFamily,
+      retryNotBefore,
       errorMeta,
       usage,
       sessionId: resolvedSessionId,
@@ -942,6 +992,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   try {
+    if (preflightEnabled && preflightHost) {
+      const probe = await preflightHostnameLookup(preflightHost, {
+        resolver: preflightResolver as HostnamePreflightOptions["resolver"],
+        timeoutMs: preflightTimeoutMs,
+      });
+      if (!probe.ok) {
+        await onLog(
+          "stderr",
+          `[paperclip] Claude DNS preflight for ${preflightHost} failed (${probe.reason}: ${probe.message}); skipping claude CLI spawn and cooling down retries for ${Math.round(CLAUDE_DNS_RETRY_COOLDOWN_MS / 1000)}s.\n`,
+        );
+        return buildClaudeDnsPreflightResult({
+          host: preflightHost,
+          outcome: probe,
+        });
+      }
+    }
     const initial = await runAttempt(sessionId ?? null);
     if (
       sessionId &&
@@ -971,4 +1037,50 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await restoreRemoteWorkspace();
     }
   }
+}
+
+export function buildClaudeDnsPreflightResult(input: {
+  host: string;
+  outcome: Awaited<ReturnType<typeof preflightHostnameLookup>>;
+}): AdapterExecutionResult {
+  const { host, outcome } = input;
+  const isFailure = !outcome.ok;
+  const errorMessage = isFailure
+    ? `Claude upstream ${host} is not resolvable (${outcome.reason}: ${outcome.message})`
+    : null;
+  const retryNotBefore = isFailure
+    ? new Date(Date.now() + CLAUDE_DNS_RETRY_COOLDOWN_MS).toISOString()
+    : null;
+  return {
+    exitCode: null,
+    signal: null,
+    timedOut: false,
+    errorMessage,
+    errorCode: isFailure ? CLAUDE_DEFAULT_DNS_ERROR_CODE : null,
+    errorFamily: isFailure ? "transient_dns" : null,
+    retryNotBefore,
+    usage: {
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+    },
+    sessionId: null,
+    sessionParams: null,
+    sessionDisplayId: null,
+    provider: "anthropic",
+    biller: null,
+    model: null,
+    billingType: null,
+    costUsd: null,
+    resultJson: {
+      preflight: "dns",
+      host,
+      ...(isFailure
+        ? { reason: outcome.reason, preflightErrorCode: outcome.errorCode, dnsHost: host }
+        : { addressCount: outcome.addresses.length, dnsHost: host }),
+      ...(retryNotBefore ? { retryNotBefore } : {}),
+    },
+    summary: errorMessage,
+    clearSession: false,
+  };
 }

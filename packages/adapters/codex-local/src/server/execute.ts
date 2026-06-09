@@ -1,7 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  inferOpenAiCompatibleBiller,
+  preflightHostnameLookup,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+  type HostnamePreflightOptions,
+} from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -40,6 +46,8 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseCodexJsonl,
+  classifyCodexDnsError,
+  CODEX_DEFAULT_DNS_ERROR_CODE,
   extractCodexRetryNotBefore,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
@@ -52,6 +60,15 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
+
+// Primary Codex upstream host. The stream-disconnect bug recorded in RUD-852
+// traces back to a `getaddrinfo` failure for this host; probing it before
+// spawning the CLI lets us fail in <2s instead of burning the full
+// reconnect budget (~80s).
+export const CODEX_DNS_PREFLIGHT_HOST = "chatgpt.com";
+// Cool down DNS-failed runs so the next heartbeat doesn't immediately
+// re-enter the same outage. Manual wake cycles are the recovery path.
+export const CODEX_DNS_RETRY_COOLDOWN_MS = 5 * 60 * 1000;
 
 function stripCodexRolloutNoise(text: string): string {
   const parts = text.split(/\r?\n/);
@@ -217,6 +234,66 @@ function buildCodexTransientHandoffNote(input: {
     .join("\n");
 }
 
+type CodexDnsPreflightResult = {
+  outcome: Awaited<ReturnType<typeof preflightHostnameLookup>>;
+  preflight: HostnamePreflightOptions;
+};
+
+export async function preflightCodexUpstreamDns(
+  options: { host?: string; preflight?: HostnamePreflightOptions } = {},
+): Promise<CodexDnsPreflightResult> {
+  const host = options.host ?? CODEX_DNS_PREFLIGHT_HOST;
+  const outcome = await preflightHostnameLookup(host, options.preflight);
+  return { outcome, preflight: options.preflight ?? {} };
+}
+
+export function buildCodexDnsPreflightResult(input: {
+  host: string;
+  outcome: Awaited<ReturnType<typeof preflightHostnameLookup>>;
+  attemptCount?: number;
+}): AdapterExecutionResult {
+  const { host, outcome } = input;
+  const isFailure = !outcome.ok;
+  const errorMessage = isFailure
+    ? `Codex upstream ${host} is not resolvable (${outcome.reason}: ${outcome.message})`
+    : null;
+  const retryNotBefore = isFailure
+    ? new Date(Date.now() + CODEX_DNS_RETRY_COOLDOWN_MS).toISOString()
+    : null;
+  return {
+    exitCode: null,
+    signal: null,
+    timedOut: false,
+    errorMessage,
+    errorCode: isFailure ? CODEX_DEFAULT_DNS_ERROR_CODE : null,
+    errorFamily: isFailure ? "transient_dns" : null,
+    retryNotBefore,
+    usage: {
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+    },
+    sessionId: null,
+    sessionParams: null,
+    sessionDisplayId: null,
+    provider: "openai",
+    biller: null,
+    model: null,
+    billingType: null,
+    costUsd: null,
+    resultJson: {
+      preflight: "dns",
+      host,
+      ...(isFailure
+        ? { reason: outcome.reason, preflightErrorCode: outcome.errorCode, dnsHost: host }
+        : { addressCount: outcome.addresses.length, dnsHost: host }),
+      ...(retryNotBefore ? { retryNotBefore } : {}),
+    },
+    summary: errorMessage,
+    clearSession: false,
+  };
+}
+
 export async function ensureCodexSkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   options: EnsureCodexSkillsInjectedOptions = {},
@@ -328,6 +405,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
+  // Adapter config can override the preflight host (e.g. when an OpenAI-
+  // compatible proxy is in front of Codex) or disable the probe entirely
+  // via `"none"`. The default is to probe `chatgpt.com` on local targets.
+  // Tests can also pass a stubbed resolver through `codexDnsPreflightResolver`
+  // to exercise the failure path without touching the system resolver.
+  const preflightHostRaw = asString(config.codexDnsPreflightHost, CODEX_DNS_PREFLIGHT_HOST);
+  const preflightHost = preflightHostRaw.trim().toLowerCase() === "none" ? null : preflightHostRaw.trim();
+  const preflightEnabled = !executionTargetIsRemote && preflightHost !== null;
+  const preflightResolver =
+    typeof (config as Record<string, unknown>).codexDnsPreflightResolver === "function"
+      ? ((config as Record<string, unknown>).codexDnsPreflightResolver as HostnamePreflightOptions["resolver"])
+      : undefined;
+  const preflightTimeoutMs = asNumber((config as Record<string, unknown>).codexDnsPreflightTimeoutMs, 1500);
   const configuredCodexHome =
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())
@@ -789,6 +879,34 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderr: attempt.proc.stderr,
         errorMessage: fallbackErrorMessage,
       });
+    // DNS failures are not retryable inside the same run — they need a
+    // manual operator cycle once resolver is back. Surface a stable code
+    // so the run log and recovery routing treat them as their own family.
+    const dnsFailure =
+      (attempt.proc.exitCode ?? 0) !== 0
+        ? classifyCodexDnsError({
+            stdout: attempt.proc.stdout,
+            stderr: attempt.proc.stderr,
+            errorMessage: fallbackErrorMessage,
+          })
+        : null;
+    const dnsRetryNotBefore =
+      dnsFailure != null ? new Date(Date.now() + CODEX_DNS_RETRY_COOLDOWN_MS) : null;
+    const errorCode = dnsFailure
+      ? dnsFailure.errorCode
+      : transientUpstream
+        ? "codex_transient_upstream"
+        : null;
+    const errorFamily = dnsFailure
+      ? dnsFailure.errorFamily
+      : transientUpstream
+        ? "transient_upstream"
+        : null;
+    const retryNotBeforeIso = dnsFailure
+      ? dnsRetryNotBefore?.toISOString() ?? null
+      : transientRetryNotBefore
+        ? transientRetryNotBefore.toISOString()
+        : null;
 
     return {
       exitCode: attempt.proc.exitCode,
@@ -798,12 +916,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (attempt.proc.exitCode ?? 0) === 0
           ? null
           : fallbackErrorMessage,
-      errorCode:
-        transientUpstream
-          ? "codex_transient_upstream"
-          : null,
-      errorFamily: transientUpstream ? "transient_upstream" : null,
-      retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
+      errorCode,
+      errorFamily,
+      retryNotBefore: retryNotBeforeIso,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
@@ -816,8 +931,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
+        ...(dnsFailure ? { errorFamily: "transient_dns", dnsHost: dnsFailure.matchedHost } : {}),
         ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
-        ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+        ...(retryNotBeforeIso ? { retryNotBefore: retryNotBeforeIso } : {}),
         ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       },
       summary: attempt.parsed.summary,
@@ -826,6 +942,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   try {
+    if (preflightEnabled && preflightHost) {
+      const probe = await preflightCodexUpstreamDns({
+        host: preflightHost,
+        preflight: {
+          ...(preflightResolver ? { resolver: preflightResolver } : {}),
+          timeoutMs: preflightTimeoutMs,
+        },
+      });
+      if (!probe.outcome.ok) {
+        await onLog(
+          "stderr",
+          `[paperclip] Codex DNS preflight for ${preflightHost} failed (${probe.outcome.reason}: ${probe.outcome.message}); skipping codex CLI spawn and cooling down retries for ${Math.round(CODEX_DNS_RETRY_COOLDOWN_MS / 1000)}s.\n`,
+        );
+        return buildCodexDnsPreflightResult({
+          host: preflightHost,
+          outcome: probe.outcome,
+        });
+      }
+    }
     const initial = await runAttempt(sessionId);
     if (
       sessionId &&

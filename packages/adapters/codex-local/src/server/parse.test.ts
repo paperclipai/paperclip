@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyCodexDnsError,
   extractCodexRetryNotBefore,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
@@ -136,5 +137,57 @@ describe("isCodexTransientUpstreamError", () => {
         ].join("\n"),
       }),
     ).toBe(false);
+  });
+});
+
+describe("classifyCodexDnsError", () => {
+  it("matches the standard chatgpt.com getaddrinfo failure from the stream-disconnect bug", () => {
+    const match = classifyCodexDnsError({
+      stderr:
+        "Error sending request for url (https://chatgpt.com/backend-api/codex/responses): client error (Connect): error trying to connect: failed to lookup address information: nodename nor servname provided, or not known",
+    });
+    expect(match).not.toBeNull();
+    expect(match?.errorCode).toBe("codex_dns_unreachable");
+    expect(match?.errorFamily).toBe("transient_dns");
+    expect(match?.matchedHost).toBe("chatgpt.com");
+  });
+
+  it("matches the alternate getaddrinfo wording used by the Rust reqwest client", () => {
+    const match = classifyCodexDnsError({
+      stderr: "thread 'tokio-runtime-worker' panicked at 'called Result::unwrap() on an Err value: failed to lookup address information: Name or service not known' when dialing api.openai.com",
+    });
+    expect(match).toEqual({
+      errorCode: "codex_dns_unreachable",
+      errorFamily: "transient_dns",
+      matchedHost: "api.openai.com",
+    });
+  });
+
+  it("honors an explicit preflight errorCode without requiring the host name in the haystack", () => {
+    const match = classifyCodexDnsError({
+      stderr: "preflight probe failed before any codex invocation",
+      errorCode: "codex_dns_unreachable",
+    });
+    expect(match).toEqual({
+      errorCode: "codex_dns_unreachable",
+      errorFamily: "transient_dns",
+      matchedHost: null,
+    });
+  });
+
+  it("does not classify an unrelated DNS failure for a non-Codex host", () => {
+    expect(
+      classifyCodexDnsError({
+        stderr: "failed to lookup address information: nodename nor servname provided, or not known for api.example-vendor.com",
+      }),
+    ).toBeNull();
+  });
+
+  it("does not classify a non-DNS Codex failure as a DNS error", () => {
+    expect(
+      classifyCodexDnsError({
+        stderr: "Error sending request for url (https://chatgpt.com/backend-api/codex/responses): 401 unauthorized",
+      }),
+    ).toBeNull();
   });
 });
