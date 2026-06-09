@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildProjectMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
+import { buildProjectMentionHref, buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
 import {
   computeMentionMenuPosition,
   findClosestAutocompleteAnchor,
@@ -553,6 +553,16 @@ describe("MarkdownEditor", () => {
     expect(findMentionMatch("/open issue", "/open issue".length)).toBeNull();
   });
 
+  it("keeps routine slash queries active across spaces", () => {
+    expect(findMentionMatch("/routine:Weekly release review", "/routine:Weekly release review".length)).toEqual({
+      trigger: "skill",
+      marker: "/",
+      query: "routine:Weekly release review",
+      atPos: 0,
+      endPos: "/routine:Weekly release review".length,
+    });
+  });
+
   it("does not treat Enter as skill autocomplete accept", () => {
     expect(shouldAcceptAutocompleteKey("Enter", "skill")).toBe(false);
     expect(shouldAcceptAutocompleteKey("Enter", "skill", true)).toBe(true);
@@ -623,6 +633,26 @@ describe("MarkdownEditor", () => {
     expect(found).toBe(skillLink);
   });
 
+  it("finds routine anchors by mention metadata instead of visible text", () => {
+    const editable = document.createElement("div");
+    const routineLink = document.createElement("a");
+    routineLink.setAttribute("href", buildRoutineMentionHref("routine-123"));
+    routineLink.textContent = "/routine:Weekly release review ";
+    editable.appendChild(routineLink);
+
+    const found = findClosestAutocompleteAnchor(editable, {
+      id: "routine:routine-123",
+      kind: "routine",
+      routineId: "routine-123",
+      name: "Weekly release review",
+      status: "active",
+      href: buildRoutineMentionHref("routine-123"),
+      aliases: ["routine:Weekly release review", "Weekly release review"],
+    });
+
+    expect(found).toBe(routineLink);
+  });
+
   it("places the caret after the mention's trailing space when present", () => {
     const editable = document.createElement("div");
     editable.contentEditable = "true";
@@ -655,8 +685,17 @@ describe("MarkdownEditor", () => {
   }
 
   async function openMentionMenuFor(
-    handleChange: ReturnType<typeof vi.fn>,
-  ): Promise<{ option: HTMLButtonElement; root: ReturnType<typeof createRoot> }> {
+    handleChange: ReturnType<typeof vi.fn<(value: string) => void>>,
+    mentions = [
+      {
+        id: "project:project-123",
+        kind: "project" as const,
+        name: "Paperclip App",
+        projectId: "project-123",
+        projectColor: "#336699",
+      },
+    ],
+  ): Promise<{ option: HTMLButtonElement; root: ReturnType<typeof createRoot>; menu: HTMLElement }> {
     const root = createRoot(container);
 
     await act(async () => {
@@ -664,15 +703,7 @@ describe("MarkdownEditor", () => {
         <MarkdownEditor
           value="@Pap"
           onChange={handleChange}
-          mentions={[
-            {
-              id: "project:project-123",
-              kind: "project",
-              name: "Paperclip App",
-              projectId: "project-123",
-              projectColor: "#336699",
-            },
-          ]}
+          mentions={mentions}
         />,
       );
     });
@@ -699,7 +730,9 @@ describe("MarkdownEditor", () => {
     const option = Array.from(document.body.querySelectorAll('button[type="button"]'))
       .find((node) => node.textContent?.includes("Paperclip App")) as HTMLButtonElement | undefined;
     expect(option).toBeTruthy();
-    return { option: option!, root };
+    const menu = document.body.querySelector('[data-testid="mention-autocomplete-menu"]') as HTMLElement | null;
+    expect(menu).toBeTruthy();
+    return { option: option!, root, menu: menu! };
   }
 
   it("accepts mention selection from a touch tap", async () => {
@@ -723,6 +756,19 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it("marks the autocomplete portal as floating UI for modal pointer handling", async () => {
+    const handleChange = vi.fn();
+    const { option, root } = await openMentionMenuFor(handleChange);
+
+    const menu = option.closest("[data-paperclip-floating-ui]");
+    expect(menu).toBeTruthy();
+    expect(menu?.className).toContain("pointer-events-auto");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("does not preventDefault on touchstart so the mention menu can scroll on mobile", async () => {
     const handleChange = vi.fn();
     const { option, root } = await openMentionMenuFor(handleChange);
@@ -738,6 +784,99 @@ describe("MarkdownEditor", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("renders all mention matches inside a bounded scroll container", async () => {
+    const handleChange = vi.fn();
+    const mentions = Array.from({ length: 12 }, (_, index) => ({
+      id: `project:project-${index}`,
+      kind: "project" as const,
+      name: `Paperclip App ${index}`,
+      projectId: `project-${index}`,
+      projectColor: "#336699",
+    }));
+    const { menu, root } = await openMentionMenuFor(handleChange, mentions);
+
+    const options = Array.from(menu.querySelectorAll('button[type="button"]'));
+    expect(options).toHaveLength(12);
+    expect(menu.className).toContain("max-h-[208px]");
+    expect(menu.className).toContain("overflow-y-auto");
+    expect(menu.style.touchAction).toBe("pan-y");
+
+    const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 80 });
+    act(() => {
+      menu.dispatchEvent(wheel);
+    });
+    expect(wheel.defaultPrevented).toBe(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("caps rendered mention matches while keeping the menu scrollable", async () => {
+    const handleChange = vi.fn();
+    const mentions = Array.from({ length: 60 }, (_, index) => ({
+      id: `project:project-${index}`,
+      kind: "project" as const,
+      name: `Paperclip App ${index}`,
+      projectId: `project-${index}`,
+      projectColor: "#336699",
+    }));
+    const { menu, root } = await openMentionMenuFor(handleChange, mentions);
+
+    const options = Array.from(menu.querySelectorAll('button[type="button"]'));
+    expect(options).toHaveLength(50);
+    expect(menu.className).toContain("overflow-y-auto");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("scrolls the active mention option into view during keyboard navigation", async () => {
+    const handleChange = vi.fn();
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    const mentions = Array.from({ length: 12 }, (_, index) => ({
+      id: `project:project-${index}`,
+      kind: "project" as const,
+      name: `Paperclip App ${index}`,
+      projectId: `project-${index}`,
+      projectColor: "#336699",
+    }));
+    const { root } = await openMentionMenuFor(handleChange, mentions);
+    scrollIntoView.mockClear();
+
+    const editorScope = container.querySelector('[data-testid="mdx-editor"]')?.parentElement;
+    expect(editorScope).toBeTruthy();
+
+    act(() => {
+      editorScope?.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "ArrowDown",
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    await flush();
+
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+
+    await act(async () => {
+      root.unmount();
+    });
+    if (originalScrollIntoView) {
+      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+        configurable: true,
+        value: originalScrollIntoView,
+      });
+    } else {
+      delete (HTMLElement.prototype as unknown as { scrollIntoView?: unknown }).scrollIntoView;
+    }
   });
 
   it("does not select when the touch moves like a scroll", async () => {

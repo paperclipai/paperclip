@@ -42,3 +42,23 @@ export {
 export type {
   RunContinuationDecision,
 } from "./run-liveness-continuations.js";
+export {
+  DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
+  FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+  LEGACY_SUCCESSFUL_RUN_HANDOFF_NOTICE_PREFIXES,
+  SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
+  SUCCESSFUL_RUN_HANDOFF_OPTIONS,
+  SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
+  SUCCESSFUL_RUN_MISSING_STATE_REASON,
+  buildFinishSuccessfulRunHandoffIdempotencyKey,
+  buildSuccessfulRunHandoffExhaustedNotice,
+  buildSuccessfulRunHandoffInstruction,
+  buildSuccessfulRunHandoffRequiredNotice,
+  decideSuccessfulRunHandoff,
+  findExistingFinishSuccessfulRunHandoffWake,
+  isSuccessfulRunHandoffRequiredNoticeBody,
+} from "./successful-run-handoff.js";
+export type {
+  SuccessfulRunHandoffNotice,
+  SuccessfulRunHandoffDecision,
+} from "./successful-run-handoff.js";

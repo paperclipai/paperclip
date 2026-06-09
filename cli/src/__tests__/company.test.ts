@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { Command } from "commander";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyPortabilityPreviewResult } from "@paperclipai/shared";
 import {
   buildCompanyDashboardUrl,
@@ -8,9 +9,195 @@ import {
   buildSelectedFilesFromImportSelection,
   renderCompanyImportPreview,
   renderCompanyImportResult,
+  registerCompanyCommands,
   resolveCompanyImportApplyConfirmationMode,
   resolveCompanyImportApiPath,
 } from "../commands/client/company.js";
+
+const ORIGINAL_ENV = { ...process.env };
+const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
+
+function makeProgram(): Command {
+  const program = new Command();
+  program.exitOverride();
+  program.configureOutput({
+    writeOut: () => undefined,
+    writeErr: () => undefined,
+  });
+  registerCompanyCommands(program);
+  return program;
+}
+
+async function runCommand(args: string[]): Promise<void> {
+  await makeProgram().parseAsync(args, { from: "user" });
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function company(overrides: Record<string, unknown> = {}) {
+  return {
+    id: COMPANY_ID,
+    name: "Paperclip",
+    description: null,
+    status: "active",
+    issuePrefix: "PAP",
+    issueCounter: 1,
+    budgetMonthlyCents: 0,
+    spentMonthlyCents: 0,
+    attachmentMaxBytes: 1073741824,
+    requireBoardApprovalForNewAgents: false,
+    feedbackDataSharingEnabled: false,
+    feedbackDataSharingConsentAt: null,
+    feedbackDataSharingConsentByUserId: null,
+    feedbackDataSharingTermsVersion: null,
+    brandColor: "#5c5fff",
+    logoAssetId: null,
+    createdAt: "2026-06-04T00:00:00.000Z",
+    updatedAt: "2026-06-04T00:00:00.000Z",
+    logoUrl: null,
+    ...overrides,
+  };
+}
+
+describe("company CLI commands", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    delete process.env.PAPERCLIP_API_URL;
+    delete process.env.PAPERCLIP_API_KEY;
+    delete process.env.PAPERCLIP_COMPANY_ID;
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("gets the current company from an explicit company context without board-wide listing", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(company()));
+
+    await runCommand([
+      "company",
+      "current",
+      "--company-id",
+      COMPANY_ID,
+      "--api-base",
+      "http://paperclip.test",
+      "--api-key",
+      "agent-token",
+      "--json",
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `http://paperclip.test/api/companies/${COMPANY_ID}`,
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(JSON.parse(String(logSpy.mock.calls[0]?.[0]))).toMatchObject({ id: COMPANY_ID, name: "Paperclip" });
+  });
+
+  it("gets the current company from agent authentication when no company context is set", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ id: "agent-1", companyId: COMPANY_ID }))
+      .mockResolvedValueOnce(jsonResponse(company()));
+
+    await runCommand([
+      "company",
+      "current",
+      "--api-base",
+      "http://paperclip.test",
+      "--api-key",
+      "agent-token",
+      "--json",
+    ]);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://paperclip.test/api/agents/me",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      `http://paperclip.test/api/companies/${COMPANY_ID}`,
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(JSON.parse(String(logSpy.mock.calls[0]?.[0]))).toMatchObject({ id: COMPANY_ID, name: "Paperclip" });
+  });
+
+  it("lists the scoped agent company when board-wide company listing is denied", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: "Board access required" }, 403))
+      .mockResolvedValueOnce(jsonResponse({ id: "agent-1", companyId: COMPANY_ID }))
+      .mockResolvedValueOnce(jsonResponse(company()));
+
+    await runCommand([
+      "company",
+      "list",
+      "--api-base",
+      "http://paperclip.test",
+      "--api-key",
+      "agent-token",
+      "--json",
+    ]);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://paperclip.test/api/companies",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://paperclip.test/api/agents/me",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      `http://paperclip.test/api/companies/${COMPANY_ID}`,
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(JSON.parse(String(logSpy.mock.calls[0]?.[0]))).toMatchObject([{ id: COMPANY_ID, name: "Paperclip" }]);
+  });
+
+  it("explains that company creation requires board instance-admin authentication under agent auth", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "Board access required" }, 403));
+    vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
+      throw new Error(`exit:${code ?? 0}`);
+    }) as typeof process.exit);
+
+    await expect(runCommand([
+      "company",
+      "create",
+      "--payload-json",
+      "{\"name\":\"Disposable\"}",
+      "--api-base",
+      "http://paperclip.test",
+      "--api-key",
+      "agent-token",
+      "--json",
+    ])).rejects.toThrow("exit:1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://paperclip.test/api/companies",
+      expect.objectContaining({ method: "POST" }),
+    );
+    const rendered = String(errorSpy.mock.calls[0]?.[0]);
+    expect(rendered).toContain("Creating companies requires board/instance-admin authentication");
+    expect(rendered).toContain("company list --json");
+  });
+});
 
 describe("resolveCompanyImportApiPath", () => {
   it("uses company-scoped preview route for existing-company dry runs", () => {
@@ -184,6 +371,8 @@ describe("renderCompanyImportPreview", () => {
             icon: null,
             capabilities: null,
             reportsToSlug: null,
+            reportsToExistingAgentId: null,
+            reportsToExistingAgentSlug: null,
             adapterType: "codex_local",
             adapterConfig: {},
             runtimeConfig: {},
@@ -218,6 +407,7 @@ describe("renderCompanyImportPreview", () => {
             leadAgentSlug: null,
             targetDate: null,
             color: null,
+            icon: null,
             status: null,
             executionWorkspacePolicy: null,
             workspaces: [],
@@ -244,6 +434,7 @@ describe("renderCompanyImportPreview", () => {
             billingCode: null,
             executionWorkspaceSettings: null,
             assigneeAdapterOverrides: null,
+            comments: [],
             metadata: null,
           },
         ],
@@ -400,6 +591,8 @@ describe("import selection catalog", () => {
             icon: null,
             capabilities: null,
             reportsToSlug: null,
+            reportsToExistingAgentId: null,
+            reportsToExistingAgentSlug: null,
             adapterType: "codex_local",
             adapterConfig: {},
             runtimeConfig: {},
@@ -434,6 +627,7 @@ describe("import selection catalog", () => {
             leadAgentSlug: null,
             targetDate: null,
             color: null,
+            icon: null,
             status: null,
             executionWorkspacePolicy: null,
             workspaces: [],
@@ -460,6 +654,7 @@ describe("import selection catalog", () => {
             billingCode: null,
             executionWorkspaceSettings: null,
             assigneeAdapterOverrides: null,
+            comments: [],
             metadata: null,
           },
         ],
@@ -556,6 +751,8 @@ describe("default adapter overrides", () => {
             icon: null,
             capabilities: null,
             reportsToSlug: null,
+            reportsToExistingAgentId: null,
+            reportsToExistingAgentSlug: null,
             adapterType: "process",
             adapterConfig: {},
             runtimeConfig: {},
@@ -573,6 +770,8 @@ describe("default adapter overrides", () => {
             icon: null,
             capabilities: null,
             reportsToSlug: null,
+            reportsToExistingAgentId: null,
+            reportsToExistingAgentSlug: null,
             adapterType: "codex_local",
             adapterConfig: {},
             runtimeConfig: {},

@@ -263,6 +263,38 @@ wait_for_npm_package_version() {
   return 1
 }
 
+wait_for_release_registry_state() {
+  local attempts="${1:-12}"
+  local delay_seconds="${2:-5}"
+  shift 2
+  local attempt=1
+  local output
+  local status
+
+  while [ "$attempt" -le "$attempts" ]; do
+    if output="$(node "$REPO_ROOT/scripts/verify-release-registry-state.mjs" "$@" 2>&1)"; then
+      [ -n "$output" ] && printf '%s\n' "$output"
+      return 0
+    fi
+    status=$?
+
+    printf '%s\n' "$output" >&2
+
+    if [ "$status" -eq 2 ]; then
+      return "$status"
+    fi
+
+    if [ "$attempt" -lt "$attempts" ]; then
+      release_warn "npm registry metadata has not converged yet (attempt ${attempt}/${attempts}); retrying in ${delay_seconds}s."
+      sleep "$delay_seconds"
+    fi
+
+    attempt=$((attempt + 1))
+  done
+
+  return "${status:-1}"
+}
+
 require_clean_worktree() {
   if [ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]; then
     release_fail "working tree is not clean. Commit, stash, or remove changes before releasing."

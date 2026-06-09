@@ -702,7 +702,7 @@ export function ProjectProperties({
               onChange={(env) => commitField("env", { env: env ?? null })}
             />
             <p className="text-[11px] text-muted-foreground">
-              Applied to all runs for issues in this project. Project values override agent env on key conflicts.
+              Applied to all runs for tasks in this project. Project values override agent env on key conflicts.
             </p>
           </div>
         </PropertyRow>
@@ -995,7 +995,7 @@ export function ProjectProperties({
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="top">
-                    Project-owned defaults for isolated issue checkouts and execution workspace behavior.
+                    Project-owned defaults for isolated task checkouts and execution workspace behavior.
                   </TooltipContent>
                 </Tooltip>
               </div>
@@ -1003,11 +1003,11 @@ export function ProjectProperties({
                 <div className="flex items-center justify-between gap-3">
                   <div className="space-y-0.5">
                     <div className="flex items-center gap-2 text-sm font-medium">
-                      <span>Enable isolated issue checkouts</span>
+                      <span>Enable isolated task checkouts</span>
                       <SaveIndicator state={fieldState("execution_workspace_enabled")} />
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      Let issues choose between the project's primary checkout and an isolated execution workspace.
+                      Let tasks choose between the project's primary checkout and an isolated execution workspace.
                     </div>
                   </div>
                   {onUpdate || onFieldUpdate ? (
@@ -1031,11 +1031,11 @@ export function ProjectProperties({
                     <div className="flex items-center justify-between gap-3">
                       <div className="space-y-0.5">
                         <div className="flex items-center gap-2 text-sm">
-                          <span>New issues default to isolated checkout</span>
+                          <span>New tasks default to isolated checkout</span>
                           <SaveIndicator state={fieldState("execution_workspace_default_mode")} />
                         </div>
                         <div className="text-[11px] text-muted-foreground">
-                          If disabled, new issues stay on the project's primary checkout unless someone opts in.
+                          If disabled, new tasks stay on the project's primary checkout unless someone opts in.
                         </div>
                       </div>
                       <ToggleSwitch

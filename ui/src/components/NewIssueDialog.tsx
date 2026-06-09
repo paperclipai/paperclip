@@ -1,5 +1,6 @@
-import { memo, useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type DragEvent, type RefObject } from "react";
+import { memo, useState, useEffect, useRef, useCallback, useMemo, type ChangeEvent, type CSSProperties, type DragEvent, type RefObject } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import type { IssueWorkMode } from "@paperclipai/shared";
 import { pickTextColorForSolidBg } from "@/lib/color-contrast";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -12,7 +13,7 @@ import { agentsApi } from "../api/agents";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { assetsApi } from "../api/assets";
-import { buildCompanyUserInlineOptions, buildMarkdownMentionOptions } from "../lib/company-members";
+import { buildCompanyUserInlineOptions, buildMarkdownMentionOptions, isAgentTaskTarget } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
 import { orderReusableExecutionWorkspaces } from "../lib/reusable-execution-workspaces";
 import { useProjectOrder } from "../hooks/useProjectOrder";
@@ -43,6 +44,8 @@ import {
   ChevronRight,
   ChevronDown,
   CircleDot,
+  ClipboardList,
+  Hammer,
   Minus,
   ArrowUp,
   ArrowDown,
@@ -51,10 +54,12 @@ import {
   Calendar,
   Paperclip,
   FileText,
+  Flag,
   Loader2,
   ListTree,
   X,
   Eye,
+  ShieldAlert,
   ShieldCheck,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -63,9 +68,11 @@ import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDe
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
+import { getTrustPreset } from "../lib/trust-policy-ui";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
+const MOBILE_DIALOG_HEIGHT = "calc(100dvh - max(1rem, env(safe-area-inset-top)) - max(1rem, env(safe-area-inset-bottom)))";
 
 
 interface IssueDraft {
@@ -86,6 +93,7 @@ interface IssueDraft {
   executionWorkspaceMode?: string;
   selectedExecutionWorkspaceId?: string;
   useIsolatedExecutionWorkspace?: boolean;
+  workMode?: IssueWorkMode;
 }
 
 type StagedIssueFile = {
@@ -129,6 +137,19 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "max", label: "Max" },
   ],
 } as const;
+
+function isIssueWorkMode(value: unknown): value is IssueWorkMode {
+  return value === "standard" || value === "planning";
+}
+
+const ISSUE_WORK_MODE_OPTIONS: ReadonlyArray<{
+  value: IssueWorkMode;
+  label: string;
+  icon: typeof Hammer;
+}> = [
+  { value: "standard", label: "Standard", icon: Hammer },
+  { value: "planning", label: "Planning", icon: ClipboardList },
+];
 
 function loadDraft(): IssueDraft | null {
   try {
@@ -201,9 +222,19 @@ function formatFileSize(file: File) {
   return `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const statuses = [
-  { value: "backlog", label: "Backlog", color: issueStatusText.backlog ?? issueStatusTextDefault },
-  { value: "todo", label: "Todo", color: issueStatusText.todo ?? issueStatusTextDefault },
+const statuses: ReadonlyArray<{ value: string; label: string; color: string; description?: string }> = [
+  {
+    value: "backlog",
+    label: "Backlog",
+    color: issueStatusText.backlog ?? issueStatusTextDefault,
+    description: "Parked — assignee will not be woken",
+  },
+  {
+    value: "todo",
+    label: "Todo",
+    color: issueStatusText.todo ?? issueStatusTextDefault,
+    description: "Executable — assignee will be woken",
+  },
   { value: "in_progress", label: "In Progress", color: issueStatusText.in_progress ?? issueStatusTextDefault },
   { value: "in_review", label: "In Review", color: issueStatusText.in_review ?? issueStatusTextDefault },
   { value: "done", label: "Done", color: issueStatusText.done ?? issueStatusTextDefault },
@@ -242,6 +273,21 @@ function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePo
   return "shared_workspace";
 }
 
+function defaultExecutionWorkspaceModeForIssueDefaults(
+  defaults: {
+    executionWorkspaceId?: unknown;
+    executionWorkspaceMode?: unknown;
+  },
+  project: { executionWorkspacePolicy?: { enabled?: boolean; defaultMode?: string | null } | null } | null | undefined,
+) {
+  if (typeof defaults.executionWorkspaceId === "string" && defaults.executionWorkspaceId.length > 0) {
+    return "reuse_existing";
+  }
+  return typeof defaults.executionWorkspaceMode === "string" && defaults.executionWorkspaceMode.length > 0
+    ? defaults.executionWorkspaceMode
+    : defaultExecutionWorkspaceModeForProject(project);
+}
+
 const IssueTitleTextarea = memo(function IssueTitleTextarea({
   value,
   pending,
@@ -270,7 +316,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
   return (
     <textarea
       className="w-full text-lg font-semibold bg-transparent outline-none resize-none overflow-hidden placeholder:text-muted-foreground/50"
-      placeholder="Issue title"
+      placeholder="Task title"
       rows={1}
       value={draftValue}
       onChange={(e) => {
@@ -385,6 +431,7 @@ export function NewIssueDialog() {
   const [assigneeChrome, setAssigneeChrome] = useState(false);
   const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("shared_workspace");
   const [selectedExecutionWorkspaceId, setSelectedExecutionWorkspaceId] = useState("");
+  const [workMode, setWorkMode] = useState<IssueWorkMode>("standard");
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
   const [stagedFiles, setStagedFiles] = useState<StagedIssueFile[]>([]);
@@ -404,6 +451,7 @@ export function NewIssueDialog() {
   // Popover states
   const [statusOpen, setStatusOpen] = useState(false);
   const [priorityOpen, setPriorityOpen] = useState(false);
+  const [workModeOpen, setWorkModeOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
@@ -423,13 +471,13 @@ export function NewIssueDialog() {
     enabled: !!effectiveCompanyId && newIssueOpen,
   });
   const { data: reusableExecutionWorkspaces } = useQuery({
-    queryKey: queryKeys.executionWorkspaces.list(effectiveCompanyId!, {
+    queryKey: queryKeys.executionWorkspaces.summaryList(effectiveCompanyId!, {
       projectId,
       projectWorkspaceId: projectWorkspaceId || undefined,
       reuseEligible: true,
     }),
     queryFn: () =>
-      executionWorkspacesApi.list(effectiveCompanyId!, {
+      executionWorkspacesApi.listSummaries(effectiveCompanyId!, {
         projectId,
         projectWorkspaceId: projectWorkspaceId || undefined,
         reuseEligible: true,
@@ -611,6 +659,7 @@ export function NewIssueDialog() {
       assigneeChrome,
       executionWorkspaceMode,
       selectedExecutionWorkspaceId,
+      workMode,
     });
   }, [
     newIssueOpen,
@@ -627,6 +676,7 @@ export function NewIssueDialog() {
     assigneeChrome,
     executionWorkspaceMode,
     selectedExecutionWorkspaceId,
+    workMode,
   ]);
 
   const handleTitleChange = useCallback((nextTitle: string) => {
@@ -663,6 +713,7 @@ export function NewIssueDialog() {
     assigneeChrome,
     executionWorkspaceMode,
     selectedExecutionWorkspaceId,
+    workMode,
     newIssueOpen,
     queueDraftSave,
   ]);
@@ -681,14 +732,13 @@ export function NewIssueDialog() {
 
     const draft = loadDraft();
     if (newIssueDefaults.parentId) {
+      const nextWorkMode = isIssueWorkMode(newIssueDefaults.workMode) ? newIssueDefaults.workMode : "standard";
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
       const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
       const defaultProjectWorkspaceId = newIssueDefaults.projectWorkspaceId
         ?? defaultProjectWorkspaceIdForProject(defaultProject);
-      const defaultExecutionWorkspaceMode = newIssueDefaults.executionWorkspaceId
-        ? "reuse_existing"
-        : (newIssueDefaults.executionWorkspaceMode ?? defaultExecutionWorkspaceModeForProject(defaultProject));
+      const defaultExecutionWorkspaceMode = defaultExecutionWorkspaceModeForIssueDefaults(newIssueDefaults, defaultProject);
       setIssueText(newIssueDefaults.title ?? "", newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
@@ -700,18 +750,21 @@ export function NewIssueDialog() {
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
       setExecutionWorkspaceMode(defaultExecutionWorkspaceMode);
+      setWorkMode(nextWorkMode);
       setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
       executionWorkspaceDefaultProjectId.current = hasExplicitProjectWorkspaceId || defaultProject
         ? defaultProjectId || null
         : null;
     } else if (newIssueDefaults.title) {
+      const nextWorkMode = isIssueWorkMode(newIssueDefaults.workMode) ? newIssueDefaults.workMode : "standard";
       setIssueText(newIssueDefaults.title, newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
+      const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
       setProjectId(defaultProjectId);
-      setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject));
+      setProjectWorkspaceId(newIssueDefaults.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(defaultProject));
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setReviewerValue("");
       setApproverValue("");
@@ -720,12 +773,19 @@ export function NewIssueDialog() {
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
-      setSelectedExecutionWorkspaceId("");
-      executionWorkspaceDefaultProjectId.current = defaultProject ? defaultProjectId || null : null;
+      setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForIssueDefaults(newIssueDefaults, defaultProject));
+      setWorkMode(nextWorkMode);
+      setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
+      executionWorkspaceDefaultProjectId.current = hasExplicitProjectWorkspaceId || newIssueDefaults.executionWorkspaceId || defaultProject
+        ? defaultProjectId || null
+        : null;
     } else if (draft && draft.title.trim()) {
+      const nextWorkMode = isIssueWorkMode(draft.workMode) ? draft.workMode : "standard";
       const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
       const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
+      const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
+      const hasExplicitExecutionWorkspaceId = newIssueDefaults.executionWorkspaceId !== undefined;
+      const hasExplicitExecutionWorkspaceMode = newIssueDefaults.executionWorkspaceMode !== undefined;
       setIssueText(draft.title, draft.description);
       setStatus(draft.status || "todo");
       setPriority(draft.priority);
@@ -739,27 +799,42 @@ export function NewIssueDialog() {
       setShowReviewerRow(!!(draft.reviewerValue));
       setShowApproverRow(!!(draft.approverValue));
       setProjectId(restoredProjectId);
-      setProjectWorkspaceId(draft.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(restoredProject));
+      setProjectWorkspaceId(
+        hasExplicitProjectWorkspaceId
+          ? (newIssueDefaults.projectWorkspaceId ?? "")
+          : (draft.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(restoredProject)),
+      );
       setAssigneeModelLane(draft.assigneeModelLane ?? "primary");
       setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
       setAssigneeThinkingEffort(draft.assigneeThinkingEffort ?? "");
       setAssigneeChrome(draft.assigneeChrome ?? false);
       setExecutionWorkspaceMode(
-        draft.executionWorkspaceMode
-          ?? (draft.useIsolatedExecutionWorkspace ? "isolated_workspace" : defaultExecutionWorkspaceModeForProject(restoredProject)),
+        hasExplicitExecutionWorkspaceId || hasExplicitExecutionWorkspaceMode
+          ? defaultExecutionWorkspaceModeForIssueDefaults(newIssueDefaults, restoredProject)
+          : (
+              draft.executionWorkspaceMode
+              ?? (draft.useIsolatedExecutionWorkspace ? "isolated_workspace" : defaultExecutionWorkspaceModeForProject(restoredProject))
+            ),
       );
-      setSelectedExecutionWorkspaceId(draft.selectedExecutionWorkspaceId ?? "");
-      executionWorkspaceDefaultProjectId.current = draft.projectWorkspaceId || restoredProject
+      setWorkMode(nextWorkMode);
+      setSelectedExecutionWorkspaceId(
+        hasExplicitExecutionWorkspaceId
+          ? (newIssueDefaults.executionWorkspaceId ?? "")
+          : (draft.selectedExecutionWorkspaceId ?? ""),
+      );
+      executionWorkspaceDefaultProjectId.current = hasExplicitProjectWorkspaceId || hasExplicitExecutionWorkspaceId || draft.projectWorkspaceId || restoredProject
         ? restoredProjectId || null
         : null;
     } else {
+      setWorkMode("standard");
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
+      const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
       setIssueText("", "");
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(defaultProjectId);
-      setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(defaultProject));
+      setProjectWorkspaceId(newIssueDefaults.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(defaultProject));
       setAssigneeValue(assigneeValueFromSelection(newIssueDefaults));
       setReviewerValue("");
       setApproverValue("");
@@ -768,9 +843,11 @@ export function NewIssueDialog() {
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
-      setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
-      setSelectedExecutionWorkspaceId("");
-      executionWorkspaceDefaultProjectId.current = defaultProject ? defaultProjectId || null : null;
+      setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForIssueDefaults(newIssueDefaults, defaultProject));
+      setSelectedExecutionWorkspaceId(newIssueDefaults.executionWorkspaceId ?? "");
+      executionWorkspaceDefaultProjectId.current = hasExplicitProjectWorkspaceId || newIssueDefaults.executionWorkspaceId || defaultProject
+        ? defaultProjectId || null
+        : null;
     }
   }, [newIssueOpen, newIssueDefaults, orderedProjects, selectedCompanyId, setIssueText]);
 
@@ -829,6 +906,7 @@ export function NewIssueDialog() {
     setAssigneeChrome(false);
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
+    setWorkMode("standard");
     setExpanded(false);
     setDialogCompanyId(null);
     setStagedFiles([]);
@@ -855,6 +933,7 @@ export function NewIssueDialog() {
     setAssigneeChrome(false);
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
+    setWorkMode("standard");
   }
 
   function discardDraft() {
@@ -905,6 +984,7 @@ export function NewIssueDialog() {
       description: currentDescription || undefined,
       status,
       priority: priority || "medium",
+      workMode,
       ...(selectedAssigneeAgentId ? { assigneeAgentId: selectedAssigneeAgentId } : {}),
       ...(selectedAssigneeUserId ? { assigneeUserId: selectedAssigneeUserId } : {}),
       ...(newIssueDefaults.parentId ? { parentId: newIssueDefaults.parentId } : {}),
@@ -997,6 +1077,7 @@ export function NewIssueDialog() {
   const currentAssignee = selectedAssigneeAgentId
     ? (agents ?? []).find((a) => a.id === selectedAssigneeAgentId)
     : null;
+  const currentAssigneeLowTrust = getTrustPreset(currentAssignee?.permissions) === "low_trust_review";
   const currentProject = orderedProjects.find((project) => project.id === projectId);
   const currentProjectExecutionWorkspacePolicy =
     experimentalSettings?.enableIsolatedWorkspaces === true
@@ -1041,7 +1122,7 @@ export function NewIssueDialog() {
       ...currentUserAssigneeOption(currentUserId),
       ...buildCompanyUserInlineOptions(companyMembers?.users, { excludeUserIds: [currentUserId] }),
       ...sortAgentsByRecency(
-        (agents ?? []).filter((agent) => agent.status !== "terminated"),
+        (agents ?? []).filter(isAgentTaskTarget),
         recentAssigneeIds,
       ).map((agent) => ({
         id: assigneeValueFromSelection({ assigneeAgentId: agent.id }),
@@ -1064,7 +1145,7 @@ export function NewIssueDialog() {
   const hasSavedDraft = Boolean(savedDraft?.title.trim() || savedDraft?.description.trim());
   const canDiscardDraft = hasDraft || hasSavedDraft;
   const createIssueErrorMessage =
-    createIssue.error instanceof Error ? createIssue.error.message : "Failed to create issue. Try again.";
+    createIssue.error instanceof Error ? createIssue.error.message : "Failed to create task. Try again.";
   const stagedDocuments = stagedFiles.filter((file) => file.kind === "document");
   const stagedAttachments = stagedFiles.filter((file) => file.kind === "attachment");
 
@@ -1112,6 +1193,8 @@ export function NewIssueDialog() {
     },
     [assigneeAdapterModels],
   );
+  const currentWorkMode = ISSUE_WORK_MODE_OPTIONS[workMode === "planning" ? 1 : 0]!;
+  const CurrentWorkModeIcon = currentWorkMode.icon;
 
   return (
     <Dialog
@@ -1123,10 +1206,11 @@ export function NewIssueDialog() {
       <DialogContent
         showCloseButton={false}
         aria-describedby={undefined}
+        style={{ "--new-issue-dialog-height": MOBILE_DIALOG_HEIGHT } as CSSProperties}
         className={cn(
-          "flex h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:h-auto",
+          "flex h-[var(--new-issue-dialog-height)] max-h-[var(--new-issue-dialog-height)] flex-col gap-0 overflow-hidden p-0 sm:h-auto",
           expanded
-            ? "sm:max-w-2xl sm:h-[calc(100dvh-2rem)]"
+            ? "sm:max-w-2xl sm:h-[var(--new-issue-dialog-height)]"
             : "sm:max-w-lg"
         )}
         onKeyDown={handleKeyDown}
@@ -1142,12 +1226,12 @@ export function NewIssueDialog() {
           }
           // Radix Dialog's modal DismissableLayer calls preventDefault() on
           // pointerdown events that originate outside the Dialog DOM tree.
-          // Popover portals render at the body level (outside the Dialog), so
-          // touch events on popover content get their default prevented — which
-          // kills scroll gesture recognition on mobile.  Telling Radix "this
-          // event is handled" skips that preventDefault, restoring touch scroll.
+          // Popover and editor autocomplete portals render at the body level
+          // (outside the Dialog), so touch/click events on their content get
+          // their default prevented. Telling Radix "this event is handled" skips
+          // that preventDefault, restoring popover scroll and autocomplete taps.
           const target = event.detail.originalEvent.target as HTMLElement | null;
-          if (target?.closest("[data-radix-popper-content-wrapper]")) {
+          if (target?.closest("[data-radix-popper-content-wrapper], [data-paperclip-floating-ui]")) {
             event.preventDefault();
           }
         }}
@@ -1210,7 +1294,7 @@ export function NewIssueDialog() {
               </PopoverContent>
             </Popover>
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>{isSubIssueMode ? "New sub-issue" : "New issue"}</span>
+            <span>{isSubIssueMode ? "New sub-task" : "New task"}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -1269,6 +1353,10 @@ export function NewIssueDialog() {
                     trackRecentAssignee(nextAssignee.assigneeAgentId);
                   }
                   setAssigneeValue(value);
+                  const hasAssignee = Boolean(nextAssignee.assigneeAgentId || nextAssignee.assigneeUserId);
+                  if (hasAssignee && status === "backlog") {
+                    setStatus("todo");
+                  }
                 }}
                 onConfirm={() => {
                   if (projectId) {
@@ -1300,6 +1388,9 @@ export function NewIssueDialog() {
                     <>
                       {assignee ? <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
                       <span className="truncate">{option.label}</span>
+                      {assignee && getTrustPreset(assignee.permissions) === "low_trust_review" ? (
+                        <ShieldAlert className="ml-auto h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" aria-label="Low-trust review agent" />
+                      ) : null}
                     </>
                   );
                 }}
@@ -1488,7 +1579,7 @@ export function NewIssueDialog() {
             <div className="max-w-full rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
               <div className="flex items-center gap-1.5">
                 <ListTree className="h-3.5 w-3.5 shrink-0" />
-                <span className="shrink-0">Sub-issue of</span>
+                <span className="shrink-0">Sub-task of</span>
                 <span className="font-medium text-foreground">{parentIssueLabel}</span>
               </div>
               {newIssueDefaults.parentTitle ? (
@@ -1505,7 +1596,7 @@ export function NewIssueDialog() {
             <div className="space-y-1.5">
               <div className="text-xs font-medium">Execution workspace</div>
               <div className="text-[11px] text-muted-foreground">
-                Control whether this issue runs in the shared workspace, a new isolated workspace, or an existing one.
+                Control whether this task runs in the shared workspace, a new isolated workspace, or an existing one.
               </div>
               <select
                 className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
@@ -1544,7 +1635,7 @@ export function NewIssueDialog() {
               )}
               {showParentWorkspaceWarning ? (
                 <div className="rounded-md border border-amber-300/60 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-100">
-                  Warning: this sub-issue will no longer use the parent issue workspace{parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
+                  Warning: this sub-task will no longer use the parent task workspace{parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
                 </div>
               ) : null}
             </div>
@@ -1603,7 +1694,7 @@ export function NewIssueDialog() {
                     <p className="text-[11px] text-muted-foreground">Runs on the agent's primary model.</p>
                   )}
                   {assigneeModelLane === "custom" && (
-                    <p className="text-[11px] text-muted-foreground">Override the model and effort for this issue only.</p>
+                    <p className="text-[11px] text-muted-foreground">Override the model and effort for this task only.</p>
                   )}
                 </div>
                 {assigneeModelLane === "custom" && (
@@ -1760,18 +1851,23 @@ export function NewIssueDialog() {
                 {currentStatus.label}
               </button>
             </PopoverTrigger>
-            <PopoverContent className="w-36 p-1" align="start">
+            <PopoverContent className="w-56 p-1" align="start">
               {statuses.map((s) => (
                 <button
                   key={s.value}
                   className={cn(
-                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                    "flex w-full items-start gap-2 px-2 py-1.5 text-xs rounded hover:bg-accent/50",
                     s.value === status && "bg-accent"
                   )}
                   onClick={() => { setStatus(s.value); setStatusOpen(false); }}
                 >
-                  <CircleDot className={cn("h-3 w-3", s.color)} />
-                  {s.label}
+                  <CircleDot className={cn("h-3 w-3 mt-0.5 shrink-0", s.color)} />
+                  <span className="flex flex-col text-left leading-tight">
+                    <span>{s.label}</span>
+                    {s.description ? (
+                      <span className="text-[10px] text-muted-foreground">{s.description}</span>
+                    ) : null}
+                  </span>
                 </button>
               ))}
             </PopoverContent>
@@ -1780,7 +1876,11 @@ export function NewIssueDialog() {
           {/* Priority chip */}
           <Popover open={priorityOpen} onOpenChange={setPriorityOpen}>
             <PopoverTrigger asChild>
-              <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
+              <button
+                type="button"
+                data-testid="new-issue-priority-chip"
+                className="hidden items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs transition-colors hover:bg-accent/50 sm:inline-flex"
+              >
                 {currentPriority ? (
                   <>
                     <currentPriority.icon className={cn("h-3 w-3", currentPriority.color)} />
@@ -1834,14 +1934,84 @@ export function NewIssueDialog() {
             Upload
           </button>
 
-          {/* More (dates) */}
+          {/* Work mode chip */}
+          <Popover open={workModeOpen} onOpenChange={setWorkModeOpen}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                data-issue-work-mode-chip={workMode}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors",
+                  workMode === "planning"
+                    ? "border-amber-500/60 bg-amber-500/15 text-amber-800 hover:bg-amber-500/25 dark:border-amber-500/50 dark:bg-amber-500/15 dark:text-amber-200 dark:hover:bg-amber-500/25"
+                    : "border-border text-muted-foreground hover:bg-accent/50",
+                )}
+              >
+                <CurrentWorkModeIcon className="h-3 w-3" />
+                {currentWorkMode.label}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-36 p-1" align="start">
+              {ISSUE_WORK_MODE_OPTIONS.map((option) => {
+                const Icon = option.icon;
+                return (
+                  <button
+                    key={option.value}
+                    data-issue-work-mode={option.value}
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
+                      option.value === workMode && "bg-accent",
+                      option.value === "planning" && "text-amber-700 dark:text-amber-300",
+                    )}
+                    onClick={() => {
+                      setWorkMode(option.value);
+                      setWorkModeOpen(false);
+                    }}
+                  >
+                    <Icon className="h-3 w-3" />
+                    {option.label}
+                  </button>
+                );
+              })}
+            </PopoverContent>
+          </Popover>
+
+          {/* More */}
           <Popover open={moreOpen} onOpenChange={setMoreOpen}>
             <PopoverTrigger asChild>
-              <button className="inline-flex items-center justify-center rounded-md border border-border p-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
+              <button
+                type="button"
+                data-testid="new-issue-more-menu-trigger"
+                className="inline-flex items-center justify-center rounded-md border border-border p-1 text-xs text-muted-foreground transition-colors hover:bg-accent/50"
+              >
                 <MoreHorizontal className="h-3 w-3" />
               </button>
             </PopoverTrigger>
-            <PopoverContent className="w-44 p-1" align="start">
+            <PopoverContent className="w-44 p-1" align="start" data-testid="new-issue-more-menu">
+              <div className="sm:hidden">
+                <div className="px-2 py-1 text-[10px] font-medium uppercase text-muted-foreground">
+                  Priority
+                </div>
+                {priorities.map((p) => (
+                  <button
+                    type="button"
+                    key={p.value}
+                    data-testid={`new-issue-more-priority-${p.value}`}
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
+                      p.value === priority && "bg-accent",
+                    )}
+                    onClick={() => {
+                      setPriority(p.value);
+                      setMoreOpen(false);
+                    }}
+                  >
+                    <p.icon className={cn("h-3 w-3", p.color)} />
+                    {p.label}
+                  </button>
+                ))}
+                <div className="my-1 border-t border-border" />
+              </div>
               <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
                 <Calendar className="h-3 w-3" />
                 Start date
@@ -1853,6 +2023,30 @@ export function NewIssueDialog() {
             </PopoverContent>
           </Popover>
         </div>
+
+        {assigneeValue && status === "backlog" ? (
+          <div
+            data-testid="new-issue-assigned-backlog-note"
+            className="mx-4 mb-2 flex items-start gap-2 rounded-md border border-amber-300/70 bg-amber-50/90 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100"
+          >
+            <Flag className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
+            <span className="leading-snug">
+              Assigning implies executable intent — leave status as <span className="font-medium">Backlog</span> only to deliberately park this. The assignee will not be woken until status moves to <span className="font-medium">Todo</span> or <span className="font-medium">In Progress</span>.
+            </span>
+          </div>
+        ) : null}
+
+        {currentAssigneeLowTrust ? (
+          <div
+            data-testid="new-issue-low-trust-assignee-note"
+            className="mx-4 mb-2 flex items-start gap-2 rounded-md border border-amber-300/70 bg-amber-50/90 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100"
+          >
+            <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
+            <span className="leading-snug">
+              Low-trust review agent. It can only act inside its assigned review boundary; issue, project, or run policy defines the concrete scope.
+            </span>
+          </div>
+        ) : null}
 
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-2.5 border-t border-border shrink-0">
@@ -1885,7 +2079,7 @@ export function NewIssueDialog() {
             >
               <span className="inline-flex items-center justify-center gap-1.5">
                 {createIssue.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                <span>{createIssue.isPending ? "Creating..." : isSubIssueMode ? "Create Sub-Issue" : "Create Issue"}</span>
+                <span>{createIssue.isPending ? "Creating..." : isSubIssueMode ? "Create Sub-Task" : "Create Task"}</span>
               </span>
             </Button>
           </div>

@@ -61,7 +61,7 @@ describe("command managed runtime", () => {
         if (
           input.stdin != null &&
           (input.command === "sh" || input.command === "bash") &&
-          args[0] === "-lc" &&
+          (args[0] === "-c" || args[0] === "-lc") &&
           typeof args[1] === "string"
         ) {
           env.PAPERCLIP_TEST_STDIN = input.stdin;
@@ -130,5 +130,91 @@ describe("command managed runtime", () => {
     await expect(readFile(path.join(localWorkspaceDir, ".paperclip-runtime", "remote-state.json"), "utf8")).rejects
       .toMatchObject({ code: "ENOENT" });
     expect(calls.every((call) => call.stdin == null)).toBe(true);
+  });
+
+  it("runs setup commands from a stable root cwd when staging into a nested remote workspace dir", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-runtime-nested-"));
+    cleanupDirs.push(rootDir);
+
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteBaseDir = path.join(rootDir, "remote-base");
+    const remoteWorkspaceDir = path.join(remoteBaseDir, ".paperclip-runtime", "runs", "test", "workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(remoteBaseDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "local workspace\n", "utf8");
+
+    const calls: Array<{
+      command: string;
+      args?: string[];
+      cwd?: string;
+      env?: Record<string, string>;
+      stdin?: string;
+      timeoutMs?: number;
+    }> = [];
+    const runner = {
+      execute: async (input: {
+        command: string;
+        args?: string[];
+        cwd?: string;
+        env?: Record<string, string>;
+        stdin?: string;
+        timeoutMs?: number;
+      }): Promise<RunProcessResult> => {
+        calls.push({ ...input });
+        const startedAt = new Date().toISOString();
+        try {
+          const result = await execFile(input.command === "sh" ? "/bin/sh" : input.command, input.args ?? [], {
+            cwd: input.cwd,
+            env: {
+              ...process.env,
+              ...input.env,
+            },
+            maxBuffer: 32 * 1024 * 1024,
+            timeout: input.timeoutMs,
+          });
+          return {
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            pid: null,
+            startedAt,
+          };
+        } catch (error) {
+          const err = error as NodeJS.ErrnoException & {
+            stdout?: string;
+            stderr?: string;
+            code?: string | number | null;
+            signal?: NodeJS.Signals | null;
+            killed?: boolean;
+          };
+          return {
+            exitCode: typeof err.code === "number" ? err.code : null,
+            signal: err.signal ?? null,
+            timedOut: Boolean(err.killed && input.timeoutMs),
+            stdout: err.stdout ?? "",
+            stderr: err.stderr ?? "",
+            pid: null,
+            startedAt,
+          };
+        }
+      },
+    };
+
+    await prepareCommandManagedRuntime({
+      runner,
+      spec: {
+        remoteCwd: remoteBaseDir,
+        timeoutMs: 30_000,
+      },
+      adapterKey: "codex",
+      workspaceLocalDir: localWorkspaceDir,
+      workspaceRemoteDir: remoteWorkspaceDir,
+    });
+
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((call) => call.cwd === "/")).toBe(true);
+    await expect(readFile(path.join(remoteWorkspaceDir, "README.md"), "utf8")).resolves.toBe("local workspace\n");
   });
 });
