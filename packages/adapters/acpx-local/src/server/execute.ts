@@ -29,19 +29,30 @@ import {
   type ValadrienOsSkillEntry,
 } from "@valadrien-os/adapter-utils/server-utils";
 import { shellQuote } from "@valadrien-os/adapter-utils/ssh";
-import {
-  createAcpRuntime,
-  createAgentRegistry,
-  createRuntimeStore,
-  isAcpRuntimeError,
-  type AcpAgentRegistry,
-  type AcpRuntime,
-  type AcpRuntimeEvent,
-  type AcpRuntimeHandle,
-  type AcpRuntimeOptions,
-  type AcpRuntimeTurn,
-  type AcpRuntimeTurnResult,
+import type {
+  AcpAgentRegistry,
+  AcpRuntime,
+  AcpRuntimeEvent,
+  AcpRuntimeHandle,
+  AcpRuntimeOptions,
+  AcpRuntimeTurn,
+  AcpRuntimeTurnResult,
 } from "acpx/runtime";
+
+// `acpx/runtime` statically pulls @zed-industries/codex-acp (~165MB), which was
+// evaluated at module load on EVERY cold boot — including the Vercel control
+// plane, which never executes agents. That pinned cold starts (the OS "stuck
+// loading" hang). Load it lazily instead: only the execute path (worker) ever
+// needs it. Memoized so it's imported once per process. Vercel never calls
+// execute, so it never loads codex-acp at all.
+type AcpxRuntimeModule = typeof import("acpx/runtime");
+let __acpxRuntimeModule: AcpxRuntimeModule | undefined;
+async function loadAcpxRuntimeModule(): Promise<AcpxRuntimeModule> {
+  if (!__acpxRuntimeModule) {
+    __acpxRuntimeModule = await import("acpx/runtime");
+  }
+  return __acpxRuntimeModule;
+}
 import {
   DEFAULT_ACPX_LOCAL_AGENT,
   DEFAULT_ACPX_LOCAL_MODE,
@@ -893,6 +904,7 @@ async function buildRuntime(input: {
     : null;
   const wrapperPath = wrapper?.wrapperPath ?? null;
   const overrides = wrapperPath ? { [acpxAgent]: wrapperPath } : undefined;
+  const { createAgentRegistry } = await loadAcpxRuntimeModule();
   const agentRegistry = createAgentRegistry({ overrides });
   const fingerprint = shortHash({
     acpxAgent,
@@ -1155,7 +1167,9 @@ function describeErrorDiagnostics(err: unknown): {
       ? (err as { code: string }).code
       : null;
   const acpCode =
-    isAcpRuntimeError(err) || (maybeCode?.startsWith("ACP_") ?? false) ? maybeCode : null;
+    (__acpxRuntimeModule?.isAcpRuntimeError?.(err) ?? false) || (maybeCode?.startsWith("ACP_") ?? false)
+      ? maybeCode
+      : null;
   const cause =
     err && typeof err === "object" && (err as { cause?: unknown }).cause !== undefined
       ? (err as { cause?: unknown }).cause
@@ -1374,11 +1388,14 @@ function warmHandleMatches(
 }
 
 export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
-  const createRuntime = deps.createRuntime ?? createAcpRuntime;
   const now = deps.now ?? (() => Date.now());
   const warmHandles = deps.warmHandles ?? defaultWarmHandles;
 
   return async function executeAcpxLocal(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+    // Lazy-load the ACPX runtime (pulls codex-acp) only when actually executing —
+    // never at module scope, so the Vercel cold boot stays light.
+    const acpxRuntime = await loadAcpxRuntimeModule();
+    const createRuntime = deps.createRuntime ?? acpxRuntime.createAcpRuntime;
     const prepared = await buildRuntime({ ctx });
     const warmIdleMs = asNumber(ctx.config.warmHandleIdleMs, DEFAULT_ACPX_LOCAL_WARM_HANDLE_IDLE_MS);
     await cleanupIdleHandles({ handles: warmHandles, now: now(), idleMs: warmIdleMs });
@@ -1389,7 +1406,7 @@ export function createAcpxLocalExecutor(deps: ExecuteDeps = {}) {
     const cached = canResume ? warmHandles.get(prepared.sessionKey) : undefined;
     const runtimeOptions: AcpRuntimeOptions = {
       cwd: prepared.cwd,
-      sessionStore: createRuntimeStore({ stateDir: prepared.stateDir }),
+      sessionStore: acpxRuntime.createRuntimeStore({ stateDir: prepared.stateDir }),
       agentRegistry: prepared.agentRegistry,
       permissionMode: prepared.permissionMode,
       nonInteractivePermissions: prepared.nonInteractivePermissions,
