@@ -1104,7 +1104,7 @@ span.valadrien-os-project-mention-chip {
   animation: af-scan var(--af-scan, 2.6s) linear infinite;
 }
 .agent-face[data-state="done"] .af-eyes { animation: none; }
-.agent-face[data-state="done"] .af-eye { height: 14%; width: 16%; border-radius: 6px 6px 0 0; background: var(--status-success); box-shadow: none; animation: none; }
+.agent-face[data-state="done"] .af-eye { height: 16%; width: 17%; border-radius: 6px 6px 0 0; background: var(--status-success); box-shadow: none; transform-origin: center bottom; animation: af-done-blink calc(var(--af-look, 3.4s) * 1.85) steps(1, end) infinite; }
 .agent-face[data-state="blocked"] { border-color: color-mix(in oklch, var(--status-error) 38%, var(--border)); }
 .agent-face[data-state="blocked"] .af-eyes { animation: none; transform: none; }
 .agent-face[data-state="blocked"] .af-eye { height: 8%; width: 20%; background: var(--status-error); box-shadow: none; animation: none; }
@@ -1114,6 +1114,7 @@ span.valadrien-os-project-mention-chip {
 @keyframes af-look { 0%,13%{transform:translate(-12%,0)} 25%,38%{transform:translate(12%,0)} 50%,60%{transform:translate(0,9%)} 72%,100%{transform:translate(0,0)} }
 @keyframes af-blink { 0%,38%{transform:scaleY(1)} 40%{transform:scaleY(.08)} 43%{transform:scaleY(1)} 87%{transform:scaleY(1)} 89%{transform:scaleY(.08)} 91%{transform:scaleY(1)} 93%{transform:scaleY(.08)} 95%{transform:scaleY(1)} }
 @keyframes af-scan { 0%{top:-32%} 100%{top:100%} }
+@keyframes af-done-blink { 0%,90%{transform:scaleY(1)} 93%{transform:scaleY(.16)} 96%{transform:scaleY(1)} }
 
 /* ----- Heartbeat spine: an EKG line bound to the agent's pulse ----- */
 .heartbeat-spine { position: relative; width: 2px; align-self: stretch; background: var(--status-idle); overflow: hidden; border-radius: 1px; flex: none; }

@@ -196,7 +196,7 @@ const AgentRunCard = memo(function AgentRunCard({
               {/* Agent eyes — live-work surface uses the animated face, not a dot. */}
               <AgentFace
                 state={faceState}
-                size={24}
+                size={40}
                 look={cad.look}
                 scan={cad.scan}
                 className="shrink-0"
