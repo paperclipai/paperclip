@@ -58,12 +58,16 @@ export function createDb(url: string) {
   const sql = postgres(url, {
     // Vercel FREEZES idle instances without closing their pooled connections, so each
     // warm/frozen instance holds its pool against the Supabase pooler. With enough
-    // instances (churn from deploys + traffic bursts) even the transaction pooler's
-    // 200-client cap fills → `EMAXCONN` → cold boots fail (`database_unreachable`).
-    // So on serverless hold AT MOST ONE connection per instance, release it fast when
-    // idle, and recycle it on a short max_lifetime so stale frozen connections drain.
-    // The persistent (Railway) worker keeps the larger default pool.
-    max: isServerless ? 1 : 10,
+    // instances (churn from deploys + traffic bursts) the transaction pooler's client
+    // cap can fill → `EMAXCONN` → cold boots fail (`database_unreachable`) — which is
+    // why this was pinned to 1. But max:1 has ZERO redundancy: heavy list pages (Issues,
+    // Workspaces) fan out 6+ parallel company-scoped queries that then SERIALIZE on the
+    // single connection, and any `:6543` drop/stale-connection wedges the whole instance
+    // → 504. Allow a small pool (3) so the fan-out parallelizes and one bad connection
+    // doesn't stall the page. Still bounded: idle_timeout drains fast, max_lifetime
+    // recycles stale ones, and on Pro the pooler client cap is well above 3×instances at
+    // current traffic. (If EMAXCONN recurs under deploy churn, drop back to 1.)
+    max: isServerless ? 3 : 10,
     idle_timeout: isServerless ? 10 : undefined,
     max_lifetime: isServerless ? 60 * 5 : undefined,
     // Fast-fail a slow/contended cold connect so the app gate can't hang ~30s on
