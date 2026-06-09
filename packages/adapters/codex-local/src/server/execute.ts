@@ -209,6 +209,27 @@ function truncateCodexRecoveryHandoffText(value: string | null | undefined, maxC
   return `${normalized.slice(0, Math.max(0, maxChars - 80)).trimEnd()}\n[paperclip truncated bounded recovery handoff section: ${normalized.length} chars]`;
 }
 
+function sanitizeBoundedRecoveryContinuationSummary(value: string | null | undefined): string {
+  const normalized = value?.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return "";
+
+  const hasTranscriptMarkers =
+    /(^|\n)\s*(system|developer|user|assistant|tool|commentary|observation)\s*:/im.test(normalized) ||
+    /<\|(?:system|developer|user|assistant|tool|commentary|observation)[^>]*\|>/i.test(normalized) ||
+    /(^|\n)\s*```/.test(normalized);
+  const hasOversizedLines = normalized.split("\n").some((line) => line.trim().length > 500);
+  const hasRepeatedConversationContent = /(.{16,}?)(?:\1){4,}/s.test(normalized);
+
+  if (hasTranscriptMarkers || hasOversizedLines || hasRepeatedConversationContent) {
+    return [
+      "[paperclip omitted unsafe continuation-summary body from bounded recovery handoff]",
+      "Use Paperclip issue/run metadata APIs to rebuild the minimum context needed.",
+    ].join("\n");
+  }
+
+  return truncateCodexRecoveryHandoffText(normalized, 1_500);
+}
+
 function readContextString(context: Record<string, unknown>, key: string): string | null {
   const value = asString(context[key], "").trim();
   return value.length > 0 ? value : null;
@@ -239,6 +260,7 @@ function buildBoundedCodexRecoveryHandoffPrompt(input: {
   const continuationSummaryBody =
     asString(continuationSummary.body, "").trim() ||
     asString(wakeContinuationSummary.body, "").trim();
+  const sanitizedContinuationSummaryBody = sanitizeBoundedRecoveryContinuationSummary(continuationSummaryBody);
   const livenessInstruction = asString(livenessContinuation.instruction, "").trim();
   const lines = [
     "Paperclip bounded recovery handoff:",
@@ -254,8 +276,8 @@ function buildBoundedCodexRecoveryHandoffPrompt(input: {
     "Previous compaction failure:",
     truncateCodexRecoveryHandoffText(input.errorMessage, 1_500),
     "",
-    continuationSummaryBody
-      ? `Bounded continuation summary:\n${truncateCodexRecoveryHandoffText(continuationSummaryBody, 5_000)}`
+    sanitizedContinuationSummaryBody
+      ? `Bounded continuation summary:\n${sanitizedContinuationSummaryBody}`
       : "",
     livenessInstruction
       ? `\nRun liveness instruction:\n${truncateCodexRecoveryHandoffText(livenessInstruction, 1_500)}`
