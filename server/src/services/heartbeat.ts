@@ -50,6 +50,7 @@ import {
   routineRevisions,
   routineRuns,
   routines,
+  routineTriggers,
   workspaceOperations,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
@@ -4823,6 +4824,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const [
       activeExecutionPath,
       queuedWake,
+      activeRoutineNextFire,
       pendingInteraction,
       pendingApproval,
       explicitBlocker,
@@ -4865,6 +4867,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId' = ${issue.id}
                 or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId' = ${issue.id}
               )`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      issue
+        ? db
+          .select({ id: routines.id })
+          .from(routines)
+          .innerJoin(routineTriggers, eq(routineTriggers.routineId, routines.id))
+          .where(
+            and(
+              eq(routines.companyId, issue.companyId),
+              eq(routines.parentIssueId, issue.id),
+              eq(routines.status, "active"),
+              eq(routineTriggers.enabled, true),
+              gt(routineTriggers.nextRunAt, new Date()),
             ),
           )
           .limit(1)
@@ -4966,6 +4985,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       taskKey,
       hasActiveExecutionPath: Boolean(activeExecutionPath),
       hasQueuedWake: Boolean(queuedWake),
+      hasActiveRoutineNextFire: Boolean(activeRoutineNextFire),
       hasPendingInteractionOrApproval: Boolean(pendingInteraction || pendingApproval),
       hasExplicitBlockerPath: Boolean(explicitBlocker),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),

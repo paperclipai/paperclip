@@ -29,6 +29,7 @@ export type {
   IssueLivenessState,
 } from "./issue-graph-liveness.js";
 export {
+  MAX_MISSING_DISPOSITION_RECOVERY_ATTEMPTS,
   recoveryService,
 } from "./service.js";
 export {
