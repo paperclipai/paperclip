@@ -199,11 +199,10 @@ async function handleSwitch(input: PluginApiRequestInput): Promise<PluginApiResp
 
 async function handleSetSession(input: PluginApiRequestInput): Promise<PluginApiResponse> {
   // Operator-supplied sessionKey paste. Proxies to the auth-bot's
-  // /setSession then chains /reloginViaSession — same pair the
-  // /ccrotate:setSession intercepted slash command drives. Required
-  // because the auth-bot's magic-link auto-fallback only works for
-  // accounts readable by GMAIL_REFRESH_TOKEN; everything else needs an
-  // operator sessionKey from a real browser.
+  // /setSession, then chains the Claude email-magic relogin path. The
+  // saved sessionKey remains useful as auth-bot state, but stale Claude
+  // accounts now recover more reliably via /reloginViaEmailMagicAuto
+  // than by replaying the pasted sessionKey through /reloginViaSession.
   //
   // Auth-bot is reachable via the cluster Service `ccrotate-auth-bot:7000`
   // (paperclip-0 runs in-namespace). For local-dev this would 404 quietly —
@@ -240,12 +239,13 @@ async function handleSetSession(input: PluginApiRequestInput): Promise<PluginApi
     const text = await setRes.text().catch(() => "");
     return { status: setRes.status, body: { error: `bot /setSession returned ${setRes.status}: ${text.slice(0, 300)}` } };
   }
-  // Step 2: chain relogin (~30-90s)
+  // Step 2: chain relogin (~30-120s)
+  const reloginEndpoint = "/reloginViaEmailMagicAuto";
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 120_000);
   let loginRes: Response;
   try {
-    loginRes = await fetch(`${botBase}/reloginViaSession`, {
+    loginRes = await fetch(`${botBase}${reloginEndpoint}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, target }),
@@ -258,7 +258,7 @@ async function handleSetSession(input: PluginApiRequestInput): Promise<PluginApi
       body: {
         ok: false,
         sessionKeyPersisted: true,
-        error: `sessionKey saved but /reloginViaSession failed: ${describeError(e)}. Stale-poller will retry.`,
+        error: `sessionKey saved but ${reloginEndpoint} failed: ${describeError(e)}. Stale-poller will retry.`,
       },
     };
   }
@@ -283,7 +283,7 @@ async function handleSetSession(input: PluginApiRequestInput): Promise<PluginApi
       body: {
         ok: false,
         sessionKeyPersisted: true,
-        error: `bot /reloginViaSession returned ${loginRes.status}: ${String(loginBody?.error || "").slice(0, 300)}`,
+        error: `bot ${reloginEndpoint} returned ${loginRes.status}: ${String(loginBody?.error || "").slice(0, 300)}`,
       },
     };
   }
