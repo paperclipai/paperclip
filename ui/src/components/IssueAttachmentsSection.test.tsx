@@ -116,7 +116,7 @@ describe("IssueAttachmentsSection", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders markdown attachments with the document markdown presentation", async () => {
+  it("renders the markdown preview only after the card is expanded", async () => {
     const attachment = makeAttachment({
       id: "markdown-attachment",
       originalFilename: "plan.md",
@@ -137,6 +137,19 @@ describe("IssueAttachmentsSection", () => {
     });
     await flushReact();
 
+    // Collapsed by default: no eager fetch and no preview body (VANA-517 fix).
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="markdown-body"]')).toBeNull();
+
+    const toggle = container.querySelector('button[aria-expanded]') as HTMLButtonElement | null;
+    expect(toggle).toBeTruthy();
+    expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
     expect(fetchSpy).toHaveBeenCalledWith(
       "/api/attachments/markdown-attachment/content",
       expect.objectContaining({
@@ -149,6 +162,37 @@ describe("IssueAttachmentsSection", () => {
       expect(markdownBody?.textContent).toContain("Imported plan");
       expect(markdownBody?.className).toContain("paperclip-edit-in-place-content");
     });
+  });
+
+  it("does not eagerly fetch previews for many markdown attachments (VANA-517)", async () => {
+    const attachments = Array.from({ length: 20 }, (_, index) =>
+      makeAttachment({
+        id: `md-${index}`,
+        originalFilename: `doc-${index}.md`,
+        contentType: "text/plain",
+        contentPath: `/api/attachments/md-${index}/content`,
+      }),
+    );
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueAttachmentsSection
+            attachments={attachments}
+            onDelete={vi.fn()}
+            onImageClick={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    // The page used to issue one fetch + markdown render per attachment on mount,
+    // which froze issues with dozens of markdown files. Nothing should fetch now;
+    // each card stays a lightweight, collapsed row until the user expands it.
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(container.querySelectorAll('button[aria-expanded="false"]').length).toBe(20);
+    expect(container.querySelector('[data-testid="markdown-body"]')).toBeNull();
   });
 
   it("does not promote specific non-markdown content types by filename alone", async () => {
