@@ -174,14 +174,13 @@ export function EnvVarEditor({
     // Fill the trailing empty row (or append one) with this secret bound.
     const next = rows.map((row) => ({ ...row }));
     const trailing = next[next.length - 1];
-    const target =
-      trailing && !trailing.key && !trailing.plainValue && !trailing.secretId
-        ? trailing
-        : (() => {
-            const fresh = emptyRow();
-            next.push(fresh);
-            return fresh;
-          })();
+    let target: Row;
+    if (trailing && !trailing.key && !trailing.plainValue && !trailing.secretId) {
+      target = trailing;
+    } else {
+      target = emptyRow();
+      next.push(target);
+    }
     target.source = "secret";
     target.secretId = secret.id;
     target.version = "latest";

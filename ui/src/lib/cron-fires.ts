@@ -198,8 +198,8 @@ export function nextCronFires(
   cursor.setUTCMinutes(cursor.getUTCMinutes() + 1);
 
   const fires: Date[] = [];
-  // Search window: 5 years of minutes is plenty and bounds impossible schedules.
-  const maxIterations = 5 * 366 * 24 * 60;
+  // Preview-only bound: cap sparse or impossible schedules before they can stall the UI.
+  const maxIterations = 2 * 366 * 24 * 60;
   for (let i = 0; i < maxIterations && fires.length < count; i++) {
     let parts: ZonedParts;
     try {
