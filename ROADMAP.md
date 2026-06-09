@@ -44,7 +44,7 @@ Budgets are a core control-plane feature, not an afterthought. Better budgeting 
 
 Paperclip should support explicit review and approval stages as first-class workflow steps, not just ad hoc comments. That means reviewer routing, approval gates, change requests, and durable audit trails that fit the same task model as the rest of the control plane.
 
-### ⚪ Multiple Human Users
+### ✅ Multiple Human Users
 
 Paperclip needs a clearer path from solo operator to real human teams. That means shared board access, safer collaboration, and a better model for several humans supervising the same autonomous company.
 

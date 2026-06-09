@@ -67,6 +67,27 @@ Why:
 - the single `release.yml` workflow handles both canary and stable publishing
 - GitHub environments `npm-canary` and `npm-stable` still enforce different approval rules on the GitHub side
 
+### 2.2.1. Newly added public packages need a bootstrap phase
+
+Trusted publishing is configured on the npm package itself, not at the repo scope.
+That means a brand-new public package must not be auto-enrolled into CI publishing until its npm package exists and its trusted publisher has been configured.
+
+Repo policy:
+
+1. add every non-private package to [`scripts/release-package-manifest.json`](../scripts/release-package-manifest.json)
+2. set `"publishFromCi": true` only when CI is expected to publish that package
+3. if the package is not ready for CI publishing yet, keep `"publishFromCi": false`
+4. complete the package bootstrap before merging any PR that changes a release-enabled new package
+
+Bootstrap sequence for a new package:
+
+1. publish the package once from a trusted maintainer machine using normal npm auth
+2. open that package on npm and add the `paperclipai/paperclip` trusted publisher for `.github/workflows/release.yml`
+3. rerun or dry-run the release flow as needed to confirm CI publishing now works
+4. only then enable `"publishFromCi": true`
+
+PR CI enforces this by checking changed release-enabled package manifests against npm. That keeps `master` canary publishing healthy while preserving the no-long-lived-token model for normal CI releases.
+
 ### 2.3. Verify trusted publishing before removing old auth
 
 After the workflows are live:

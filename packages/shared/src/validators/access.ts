@@ -5,7 +5,6 @@ import {
   INVITE_JOIN_TYPES,
   JOIN_REQUEST_STATUSES,
   JOIN_REQUEST_TYPES,
-  MEMBERSHIP_STATUSES,
   PERMISSION_KEYS,
 } from "../constants.js";
 import { optionalAgentAdapterTypeSchema } from "../adapter-type.js";
@@ -86,6 +85,14 @@ export const resolveCliAuthChallengeSchema = z.object({
 
 export type ResolveCliAuthChallenge = z.infer<typeof resolveCliAuthChallengeSchema>;
 
+export const createBoardApiKeySchema = z.object({
+  name: z.string().trim().min(1).max(120).default("paperclipai cli"),
+  expiresAt: z.coerce.date().optional().nullable(),
+  requestedCompanyId: z.string().uuid().optional().nullable(),
+});
+
+export type CreateBoardApiKey = z.infer<typeof createBoardApiKeySchema>;
+
 export const updateMemberPermissionsSchema = z.object({
   grants: z.array(
     z.object({
@@ -97,9 +104,11 @@ export const updateMemberPermissionsSchema = z.object({
 
 export type UpdateMemberPermissions = z.infer<typeof updateMemberPermissionsSchema>;
 
+const editableMembershipStatuses = ["pending", "active", "suspended"] as const;
+
 export const updateCompanyMemberSchema = z.object({
   membershipRole: z.enum(HUMAN_COMPANY_MEMBERSHIP_ROLES).optional().nullable(),
-  status: z.enum(MEMBERSHIP_STATUSES).optional(),
+  status: z.enum(editableMembershipStatuses).optional(),
 }).refine((value) => value.membershipRole !== undefined || value.status !== undefined, {
   message: "membershipRole or status is required",
 });
@@ -108,13 +117,33 @@ export type UpdateCompanyMember = z.infer<typeof updateCompanyMemberSchema>;
 
 export const updateCompanyMemberWithPermissionsSchema = z.object({
   membershipRole: z.enum(HUMAN_COMPANY_MEMBERSHIP_ROLES).optional().nullable(),
-  status: z.enum(MEMBERSHIP_STATUSES).optional(),
+  status: z.enum(editableMembershipStatuses).optional(),
   grants: updateMemberPermissionsSchema.shape.grants.default([]),
 }).refine((value) => value.membershipRole !== undefined || value.status !== undefined, {
   message: "membershipRole or status is required",
 });
 
 export type UpdateCompanyMemberWithPermissions = z.infer<typeof updateCompanyMemberWithPermissionsSchema>;
+
+export const archiveCompanyMemberSchema = z.object({
+  reassignment: z
+    .object({
+      assigneeAgentId: z.string().uuid().optional().nullable(),
+      assigneeUserId: z.string().uuid().optional().nullable(),
+    })
+    .optional()
+    .nullable(),
+}).superRefine((value, ctx) => {
+  if (value.reassignment?.assigneeAgentId && value.reassignment.assigneeUserId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Choose either an agent or user reassignment target",
+      path: ["reassignment"],
+    });
+  }
+});
+
+export type ArchiveCompanyMember = z.infer<typeof archiveCompanyMemberSchema>;
 
 export const updateUserCompanyAccessSchema = z.object({
   companyIds: z.array(z.string().uuid()).default([]),

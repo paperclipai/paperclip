@@ -15,6 +15,8 @@ export function resolveIssueChatTranscriptRuns(args: {
       id: run.id,
       status: run.status,
       adapterType: run.adapterType,
+      logBytes: run.logBytes,
+      lastOutputBytes: run.lastOutputBytes,
     });
   }
 
@@ -23,6 +25,8 @@ export function resolveIssueChatTranscriptRuns(args: {
       id: activeRun.id,
       status: activeRun.status,
       adapterType: activeRun.adapterType,
+      logBytes: activeRun.logBytes,
+      lastOutputBytes: activeRun.lastOutputBytes,
     });
   }
 
@@ -35,6 +39,7 @@ export function resolveIssueChatTranscriptRuns(args: {
       status: run.status,
       adapterType,
       hasStoredOutput: run.hasStoredOutput,
+      logBytes: run.logBytes,
     });
   }
 

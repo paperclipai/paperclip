@@ -31,6 +31,10 @@ const mockCompanyPortabilityService = vi.hoisted(() => ({
   importBundle: vi.fn(),
 }));
 
+const mockCompanyArtifactsService = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockFeedbackService = vi.hoisted(() => ({
   listIssueVotesForUser: vi.fn(),
@@ -43,6 +47,7 @@ vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   budgetService: () => mockBudgetService,
+  companyArtifactsService: () => mockCompanyArtifactsService,
   companyPortabilityService: () => mockCompanyPortabilityService,
   companyService: () => mockCompanyService,
   feedbackService: () => mockFeedbackService,
@@ -91,7 +96,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
     vi.doUnmock("../routes/companies.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
-    vi.resetAllMocks();
+    vi.clearAllMocks();
   });
 
   it("rejects non-CEO agent callers", async () => {

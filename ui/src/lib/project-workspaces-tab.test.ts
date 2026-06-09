@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace, WorkspaceRuntimeService } from "@paperclipai/shared";
 import { buildProjectWorkspaceSummaries } from "./project-workspaces-tab";
 
 function createProjectWorkspace(overrides: Partial<ProjectWorkspace>): ProjectWorkspace {
@@ -91,6 +91,39 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace>): Execu
     config: overrides.config ?? null,
     metadata: overrides.metadata ?? null,
     runtimeServices: overrides.runtimeServices ?? [],
+    createdAt: overrides.createdAt ?? new Date("2026-03-26T09:00:00Z"),
+    updatedAt: overrides.updatedAt ?? new Date("2026-03-26T09:30:00Z"),
+  };
+}
+
+function createRuntimeService(overrides: Partial<WorkspaceRuntimeService> = {}): WorkspaceRuntimeService {
+  return {
+    id: overrides.id ?? "service-1",
+    companyId: overrides.companyId ?? "company-1",
+    projectId: overrides.projectId ?? "project-1",
+    projectWorkspaceId: overrides.projectWorkspaceId ?? null,
+    executionWorkspaceId: overrides.executionWorkspaceId ?? null,
+    issueId: overrides.issueId ?? null,
+    scopeType: overrides.scopeType ?? "execution_workspace",
+    scopeId: overrides.scopeId ?? null,
+    serviceName: overrides.serviceName ?? "preview",
+    status: overrides.status ?? "running",
+    lifecycle: overrides.lifecycle ?? "ephemeral",
+    reuseKey: overrides.reuseKey ?? null,
+    command: overrides.command ?? null,
+    cwd: overrides.cwd ?? null,
+    port: overrides.port ?? 3100,
+    url: overrides.url ?? "http://127.0.0.1:3100",
+    provider: overrides.provider ?? "local_process",
+    providerRef: overrides.providerRef ?? null,
+    ownerAgentId: overrides.ownerAgentId ?? null,
+    startedByRunId: overrides.startedByRunId ?? null,
+    lastUsedAt: overrides.lastUsedAt ?? new Date("2026-03-26T10:00:00Z"),
+    startedAt: overrides.startedAt ?? new Date("2026-03-26T09:00:00Z"),
+    stoppedAt: overrides.stoppedAt ?? null,
+    stopPolicy: overrides.stopPolicy ?? null,
+    healthStatus: overrides.healthStatus ?? "healthy",
+    configIndex: overrides.configIndex ?? null,
     createdAt: overrides.createdAt ?? new Date("2026-03-26T09:00:00Z"),
     updatedAt: overrides.updatedAt ?? new Date("2026-03-26T09:30:00Z"),
   };
@@ -227,5 +260,64 @@ describe("buildProjectWorkspaceSummaries", () => {
 
     expect(summaries).toHaveLength(1);
     expect(summaries[0]?.key).toBe("project:workspace-default");
+  });
+
+  it("sorts workspaces with running services first and marks live service urls", () => {
+    const summaries = buildProjectWorkspaceSummaries({
+      project,
+      issues: [
+        createIssue({
+          id: "issue-stopped",
+          executionWorkspaceId: "exec-stopped",
+          updatedAt: new Date("2026-03-27T12:00:00Z"),
+        }),
+        createIssue({
+          id: "issue-live",
+          executionWorkspaceId: "exec-live",
+          updatedAt: new Date("2026-03-25T12:00:00Z"),
+        }),
+      ],
+      executionWorkspaces: [
+        createExecutionWorkspace({
+          id: "exec-stopped",
+          name: "newer stopped",
+          lastUsedAt: new Date("2026-03-27T12:00:00Z"),
+          runtimeServices: [
+            createRuntimeService({
+              id: "service-stopped",
+              executionWorkspaceId: "exec-stopped",
+              status: "stopped",
+              url: "http://127.0.0.1:4100",
+            }),
+          ],
+        }),
+        createExecutionWorkspace({
+          id: "exec-live",
+          name: "older live",
+          lastUsedAt: new Date("2026-03-25T12:00:00Z"),
+          runtimeServices: [
+            createRuntimeService({
+              id: "service-live",
+              executionWorkspaceId: "exec-live",
+              status: "running",
+              url: "http://127.0.0.1:4200",
+            }),
+          ],
+        }),
+      ],
+    });
+
+    expect(summaries[0]).toMatchObject({
+      key: "execution:exec-live",
+      primaryServiceUrl: "http://127.0.0.1:4200",
+      primaryServiceUrlRunning: true,
+      runningServiceCount: 1,
+    });
+    expect(summaries[1]).toMatchObject({
+      key: "execution:exec-stopped",
+      primaryServiceUrl: "http://127.0.0.1:4100",
+      primaryServiceUrlRunning: false,
+      runningServiceCount: 0,
+    });
   });
 });

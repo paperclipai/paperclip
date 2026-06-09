@@ -37,7 +37,8 @@ export function InstanceGeneralSettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Instance Settings" },
+      { label: "Settings", href: "/company/settings" },
+      { label: "Instance settings" },
       { label: "General" },
     ]);
   }, [setBreadcrumbs]);
@@ -90,7 +91,8 @@ export function InstanceGeneralSettings() {
           <h1 className="text-lg font-semibold">General</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Configure instance-wide defaults that affect how operator-visible logs are displayed.
+          Configure instance-wide preferences including log display, keyboard shortcuts, backup
+          retention, and data sharing.
         </p>
       </div>
 
@@ -157,7 +159,7 @@ export function InstanceGeneralSettings() {
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Keyboard shortcuts</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Enable app keyboard shortcuts, including inbox navigation and global shortcuts like creating issues or
+              Enable app keyboard shortcuts, including inbox navigation and global shortcuts like creating tasks or
               toggling panels. This is off by default.
             </p>
           </div>
@@ -175,9 +177,9 @@ export function InstanceGeneralSettings() {
           <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Backup retention</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Configure how long to keep automatic database backups at each tier. Daily backups
-              are kept in full, then thinned to one per week and one per month. Backups are
-              compressed with gzip.
+              Configure how long automatic database backups are retained. Backups run roughly
+              every hour and are compressed with gzip. Within the daily window all backups are
+              kept; beyond that, one backup per week and one per month are preserved.
             </p>
           </div>
 

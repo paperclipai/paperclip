@@ -4,20 +4,27 @@ import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-lo
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
+  assertGitSensitiveAdapterWorkspaceValid,
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
   deriveTaskKeyWithHeartbeatFallback,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
+  mergeExecutionWorkspaceMetadataForPersistence,
   mergeCoalescedContextSnapshot,
+  preflightLowTrustWorkspaceIsolation,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  resolveNextSessionState,
+  resolveWorkspaceAfterLowTrustPreflight,
   resolveRuntimeSessionParamsForWorkspace,
   shouldDeferFollowupWakeForSameIssue,
+  stripHostWorkspaceProvisionForLowTrustSandbox,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
+import type { TrustPresetResolution } from "../services/trust-preset-resolver.ts";
 
 function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}): ResolvedWorkspaceForRun {
   return {
@@ -31,6 +38,86 @@ function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}
     warnings: [],
     ...overrides,
   };
+}
+
+type WorkspaceValidationInput = Parameters<typeof assertGitSensitiveAdapterWorkspaceValid>[0];
+
+function buildWorkspaceValidationInput(
+  overrides: Partial<WorkspaceValidationInput> = {},
+): WorkspaceValidationInput {
+  return {
+    adapterType: "codex_local",
+    agentId: "agent-1",
+    issue: {
+      id: "issue-1",
+      identifier: "PAP-1",
+      projectId: "project-1",
+      projectWorkspaceId: "workspace-1",
+    },
+    resolvedWorkspace: buildResolvedWorkspace(),
+    executionWorkspace: {
+      baseCwd: "/tmp/project",
+      source: "project_primary",
+      projectId: "project-1",
+      workspaceId: "workspace-1",
+      repoUrl: null,
+      repoRef: null,
+      strategy: "project_primary",
+      cwd: "/tmp/project",
+      branchName: null,
+      worktreePath: null,
+      warnings: [],
+      created: false,
+      baseRefSha: null,
+    },
+    persistedExecutionWorkspace: {
+      id: "execution-workspace-1",
+      companyId: "company-1",
+      projectId: "project-1",
+      projectWorkspaceId: "workspace-1",
+      sourceIssueId: "issue-1",
+      mode: "project_workspace",
+      strategyType: "project_primary",
+      name: "Primary workspace",
+      status: "active",
+      cwd: "/tmp/project",
+      repoUrl: null,
+      baseRef: null,
+      branchName: null,
+      providerType: "local_path",
+      providerRef: null,
+      derivedFromExecutionWorkspaceId: null,
+      lastUsedAt: new Date("2026-06-06T00:00:00.000Z"),
+      openedAt: new Date("2026-06-06T00:00:00.000Z"),
+      closedAt: null,
+      cleanupEligibleAt: null,
+      cleanupReason: null,
+      config: null,
+      metadata: null,
+      createdAt: new Date("2026-06-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-06-06T00:00:00.000Z"),
+    },
+    executionTarget: { kind: "local" },
+    ...overrides,
+  };
+}
+
+async function expectWorkspaceValidationFailure(
+  input: WorkspaceValidationInput,
+  reason: string,
+  message: string,
+) {
+  await expect(assertGitSensitiveAdapterWorkspaceValid(input)).rejects.toMatchObject({
+    code: "workspace_validation_failed",
+    message: expect.stringContaining(message),
+    resultJson: {
+      workspaceValidation: expect.objectContaining({
+        reason,
+        adapterType: input.adapterType,
+        issueId: input.issue?.id,
+      }),
+    },
+  });
 }
 
 function buildAgent(adapterType: string, runtimeConfig: Record<string, unknown> = {}) {
@@ -58,6 +145,406 @@ function buildAgent(adapterType: string, runtimeConfig: Record<string, unknown> 
     updatedAt: new Date(),
   } as unknown as typeof agents.$inferSelect;
 }
+
+const hermesSessionCodec = {
+  deserialize(raw: unknown) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+    const record = raw as Record<string, unknown>;
+    const sessionId = typeof record.sessionId === "string" && record.sessionId.trim() ? record.sessionId.trim() : null;
+    return sessionId ? { sessionId } : null;
+  },
+  serialize(params: Record<string, unknown> | null) {
+    if (!params) return null;
+    const sessionId = typeof params.sessionId === "string" && params.sessionId.trim() ? params.sessionId.trim() : null;
+    return sessionId ? { sessionId } : null;
+  },
+  getDisplayId(params: Record<string, unknown> | null) {
+    return typeof params?.sessionId === "string" && params.sessionId.trim() ? params.sessionId.trim() : null;
+  },
+};
+
+const truncatingHermesSessionCodec = {
+  ...hermesSessionCodec,
+  getDisplayId(params: Record<string, unknown> | null) {
+    const sessionId = hermesSessionCodec.getDisplayId(params);
+    return sessionId ? sessionId.slice(0, 16) : null;
+  },
+};
+
+function lowTrustResolution(): TrustPresetResolution {
+  return {
+    kind: "low_trust_review",
+    preset: "low_trust_review",
+    boundary: {
+      mode: "low_trust_review",
+      companyId: "company-1",
+      rootIssueId: "issue-1",
+    },
+    sourcePresets: { agent: "low_trust_review" },
+  };
+}
+
+function standardTrustResolution(): TrustPresetResolution {
+  return {
+    kind: "standard",
+    preset: "standard",
+    boundary: null,
+    sourcePresets: {},
+  };
+}
+
+function buildIssueAncestryDb(rows: Array<{ id: string; companyId: string; parentId: string | null }>) {
+  const queue = [...rows];
+  return {
+    select: () => ({
+      from: () => ({
+        where: () => {
+          const row = queue.shift();
+          return Promise.resolve(row ? [row] : []);
+        },
+      }),
+    }),
+  };
+}
+
+describe("assertGitSensitiveAdapterWorkspaceValid", () => {
+  it("rejects a project-workspace-linked issue that is missing its project id before adapter launch", async () => {
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          projectId: null,
+          projectWorkspaceId: "workspace-1",
+        },
+      }),
+      "missing_project_id",
+      "linked to a project workspace but has no project id",
+    );
+  });
+
+  it("rejects a git-sensitive local adapter when effective cwd differs from the persisted workspace cwd", async () => {
+    const input = buildWorkspaceValidationInput();
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          cwd: "/tmp/agent-fallback",
+        },
+      }),
+      "persisted_cwd_mismatch",
+      'resolved adapter cwd "/tmp/agent-fallback"',
+    );
+  });
+
+  it("rejects a workspace-linked issue when no execution workspace was persisted", async () => {
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        persistedExecutionWorkspace: null,
+      }),
+      "missing_persisted_execution_workspace",
+      "requires a project execution workspace",
+    );
+  });
+
+  it("rejects a workspace-linked issue when no effective adapter cwd was resolved", async () => {
+    const input = buildWorkspaceValidationInput();
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          cwd: null,
+        },
+      }),
+      "missing_effective_cwd",
+      "no adapter cwd was resolved",
+    );
+  });
+
+  it("rejects a persisted execution workspace linked to a different project workspace", async () => {
+    const input = buildWorkspaceValidationInput();
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          projectWorkspaceId: "workspace-other",
+        },
+      }),
+      "project_workspace_mismatch",
+      'expected project workspace "workspace-1"',
+    );
+  });
+
+  it("rejects a persisted execution workspace missing its project workspace id", async () => {
+    const input = buildWorkspaceValidationInput();
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          projectWorkspaceId: null,
+        },
+      }),
+      "persisted_workspace_missing_project_workspace_id",
+      "has no project workspace id",
+    );
+  });
+
+  it("rejects a workspace-linked issue that would launch from the agent fallback cwd", async () => {
+    const input = buildWorkspaceValidationInput();
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir("agent-1");
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          cwd: fallbackCwd,
+        },
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          cwd: fallbackCwd,
+        },
+      }),
+      "fallback_agent_home_cwd",
+      "would launch from agent fallback cwd",
+    );
+  });
+
+  it("rejects a git worktree persisted workspace when cwd differs from providerRef", async () => {
+    const input = buildWorkspaceValidationInput();
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          strategy: "git_worktree",
+          cwd: "/tmp/worktree-current",
+        },
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          strategyType: "git_worktree",
+          cwd: "/tmp/worktree-current",
+          providerRef: "/tmp/worktree-expected",
+        },
+      }),
+      "git_worktree_provider_ref_mismatch",
+      'expected git worktree "/tmp/worktree-expected"',
+    );
+  });
+
+  it("rejects a workspace-linked issue when adapter cwd has no git metadata", async () => {
+    const input = buildWorkspaceValidationInput();
+    const cwd = "/tmp/paperclip-workspace-without-git-metadata";
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        resolvedWorkspace: buildResolvedWorkspace({ cwd }),
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          baseCwd: cwd,
+          cwd,
+        },
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          cwd,
+        },
+      }),
+      "missing_git_metadata",
+      "has no .git metadata",
+    );
+  });
+
+  it("does not apply the git-sensitive workspace guard to non-local execution targets", async () => {
+    const input = buildWorkspaceValidationInput();
+
+    await expect(
+      assertGitSensitiveAdapterWorkspaceValid(
+        buildWorkspaceValidationInput({
+          executionTarget: { kind: "cloud" },
+          executionWorkspace: {
+            ...input.executionWorkspace,
+            cwd: "/tmp/agent-fallback",
+          },
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("stripHostWorkspaceProvisionForLowTrustSandbox", () => {
+  it("removes only the host-side provision command for sandbox-backed low-trust runs", () => {
+    const config = {
+      workspaceStrategy: {
+        type: "git_worktree",
+        branchTemplate: "{{issue.identifier}}-{{slug}}",
+        provisionCommand: "bash ./scripts/provision-worktree.sh",
+        teardownCommand: "bash ./scripts/teardown-worktree.sh",
+      },
+      workspaceRuntime: {
+        services: [{ name: "web" }],
+      },
+    };
+
+    const result = stripHostWorkspaceProvisionForLowTrustSandbox({
+      config,
+      trustPreset: lowTrustResolution(),
+      selectedEnvironmentDriver: "sandbox",
+    });
+
+    expect(result).not.toBe(config);
+    expect(result.workspaceStrategy).toEqual({
+      type: "git_worktree",
+      branchTemplate: "{{issue.identifier}}-{{slug}}",
+      teardownCommand: "bash ./scripts/teardown-worktree.sh",
+    });
+    expect(result.workspaceRuntime).toBe(config.workspaceRuntime);
+    expect(config.workspaceStrategy.provisionCommand).toBe("bash ./scripts/provision-worktree.sh");
+  });
+
+  it("preserves provision commands for standard-trust runs", () => {
+    const config = {
+      workspaceStrategy: {
+        type: "git_worktree",
+        provisionCommand: "bash ./scripts/provision-worktree.sh",
+      },
+    };
+
+    expect(stripHostWorkspaceProvisionForLowTrustSandbox({
+      config,
+      trustPreset: standardTrustResolution(),
+      selectedEnvironmentDriver: "sandbox",
+    })).toBe(config);
+  });
+
+  it("preserves provision commands when a low-trust run is not sandbox-backed", () => {
+    const config = {
+      workspaceStrategy: {
+        type: "git_worktree",
+        provisionCommand: "bash ./scripts/provision-worktree.sh",
+      },
+    };
+
+    expect(stripHostWorkspaceProvisionForLowTrustSandbox({
+      config,
+      trustPreset: lowTrustResolution(),
+      selectedEnvironmentDriver: "local",
+    })).toBe(config);
+  });
+});
+
+describe("preflightLowTrustWorkspaceIsolation", () => {
+  it("fails non-sandbox low-trust runs before the caller reaches host workspace side effects", async () => {
+    let hostWorkspaceSideEffectReached = false;
+
+    await expect((async () => {
+      await preflightLowTrustWorkspaceIsolation({
+        trustPreset: lowTrustResolution(),
+        isolatedWorkspacesEnabled: true,
+        effectiveExecutionWorkspaceMode: "isolated_workspace",
+        issue: {
+          companyId: "company-1",
+          id: "issue-1",
+          projectId: "project-1",
+        },
+        resolveSelectedEnvironmentDriver: async () => "local",
+      });
+      hostWorkspaceSideEffectReached = true;
+    })()).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "low_trust_requires_sandbox_environment",
+      }),
+    });
+
+    expect(hostWorkspaceSideEffectReached).toBe(false);
+  });
+
+  it("returns the sandbox driver for sandbox-backed low-trust runs", async () => {
+    await expect(preflightLowTrustWorkspaceIsolation({
+      trustPreset: lowTrustResolution(),
+      isolatedWorkspacesEnabled: true,
+      effectiveExecutionWorkspaceMode: "isolated_workspace",
+      issue: {
+        companyId: "company-1",
+        id: "issue-1",
+        projectId: "project-1",
+      },
+      resolveSelectedEnvironmentDriver: async () => "sandbox",
+    })).resolves.toBe("sandbox");
+  });
+
+  it("allows child issues inside a rootIssueId low-trust boundary during workspace preflight", async () => {
+    await expect(preflightLowTrustWorkspaceIsolation({
+      db: buildIssueAncestryDb([
+        { id: "issue-child", companyId: "company-1", parentId: "issue-1" },
+        { id: "issue-1", companyId: "company-1", parentId: null },
+      ]) as any,
+      trustPreset: lowTrustResolution(),
+      isolatedWorkspacesEnabled: true,
+      effectiveExecutionWorkspaceMode: "isolated_workspace",
+      issue: {
+        companyId: "company-1",
+        id: "issue-child",
+        projectId: null,
+      },
+      resolveSelectedEnvironmentDriver: async () => "sandbox",
+    })).resolves.toBe("sandbox");
+  });
+});
+
+describe("resolveWorkspaceAfterLowTrustPreflight", () => {
+  it("fails non-sandbox low-trust runs before resolving workspaces", async () => {
+    let workspaceResolverReached = false;
+
+    await expect(resolveWorkspaceAfterLowTrustPreflight({
+      trustPreset: lowTrustResolution(),
+      isolatedWorkspacesEnabled: true,
+      effectiveExecutionWorkspaceMode: "isolated_workspace",
+      issue: {
+        companyId: "company-1",
+        id: "issue-1",
+        projectId: "project-1",
+      },
+      resolveSelectedEnvironmentDriver: async () => "local",
+      resolveWorkspace: async () => {
+        workspaceResolverReached = true;
+        return buildResolvedWorkspace();
+      },
+    })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "low_trust_requires_sandbox_environment",
+      }),
+    });
+
+    expect(workspaceResolverReached).toBe(false);
+  });
+
+  it("preserves standard-trust workspace resolution", async () => {
+    const workspace = buildResolvedWorkspace({ cwd: "/tmp/standard-workspace" });
+
+    await expect(resolveWorkspaceAfterLowTrustPreflight({
+      trustPreset: standardTrustResolution(),
+      isolatedWorkspacesEnabled: false,
+      effectiveExecutionWorkspaceMode: "shared_workspace",
+      issue: {
+        companyId: "company-1",
+        id: "issue-1",
+        projectId: "project-1",
+      },
+      resolveSelectedEnvironmentDriver: async () => {
+        throw new Error("standard trust should not inspect the environment driver");
+      },
+      resolveWorkspace: async () => workspace,
+    })).resolves.toEqual({
+      selectedEnvironmentDriver: null,
+      workspace,
+    });
+  });
+});
 
 describe("resolveRuntimeSessionParamsForWorkspace", () => {
   it("migrates fallback workspace sessions to project workspace when project cwd becomes available", () => {
@@ -155,6 +642,81 @@ describe("applyPersistedExecutionWorkspaceConfig", () => {
 
     expect(result.workspaceRuntime).toEqual({
       services: [{ name: "workspace-web" }],
+    });
+  });
+});
+
+describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
+  it("merges config snapshot for newly realized workspaces", () => {
+    expect(mergeExecutionWorkspaceMetadataForPersistence({
+      existingMetadata: null,
+      source: "task_session",
+      createdByRuntime: true,
+      configSnapshot: {
+        environmentId: "env-new",
+        provisionCommand: "bash ./scripts/provision.sh",
+      },
+      shouldReuseExisting: false,
+      baseRef: null,
+      baseRefSha: null,
+    })).toEqual({
+      source: "task_session",
+      createdByRuntime: true,
+      config: {
+        environmentId: "env-new",
+        provisionCommand: "bash ./scripts/provision.sh",
+        teardownCommand: null,
+        cleanupCommand: null,
+        desiredState: null,
+        serviceStates: null,
+        workspaceRuntime: null,
+      },
+    });
+  });
+
+  it("preserves persisted config snapshot when reusing an existing workspace", () => {
+    expect(mergeExecutionWorkspaceMetadataForPersistence({
+      existingMetadata: {
+        config: {
+          environmentId: "env-old",
+          provisionCommand: "bash ./scripts/existing-provision.sh",
+        },
+      },
+      source: "task_session",
+      createdByRuntime: false,
+      configSnapshot: {
+        environmentId: "env-new",
+        provisionCommand: "bash ./scripts/new-provision.sh",
+      },
+      shouldReuseExisting: true,
+      baseRef: null,
+      baseRefSha: null,
+    })).toEqual({
+      config: {
+        environmentId: "env-old",
+        provisionCommand: "bash ./scripts/existing-provision.sh",
+      },
+      source: "task_session",
+      createdByRuntime: false,
+    });
+  });
+
+  it("records the resolved base ref SHA for newly realized workspaces", () => {
+    expect(mergeExecutionWorkspaceMetadataForPersistence({
+      existingMetadata: null,
+      source: "task_session",
+      createdByRuntime: true,
+      configSnapshot: null,
+      shouldReuseExisting: false,
+      baseRef: "origin/main",
+      baseRefSha: "abc1234567890",
+    })).toEqual({
+      source: "task_session",
+      createdByRuntime: true,
+      baseRefSnapshot: {
+        baseRef: "origin/main",
+        resolvedSha: "abc1234567890",
+      },
     });
   });
 });
@@ -266,6 +828,18 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeSource: "on_demand",
         wakeTriggerDetail: "manual",
         forceFreshSession: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("resets session context for accepted planning confirmations that refresh workspace selection", () => {
+    expect(
+      shouldResetTaskSessionForWake({
+        wakeReason: "issue_commented",
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        forceFreshSession: true,
+        workspaceRefreshReason: "accepted_plan_confirmation",
       }),
     ).toBe(true);
   });
@@ -469,6 +1043,264 @@ describe("buildExplicitResumeSessionOverride", () => {
         sessionId: "session-after",
       },
     });
+  });
+
+  it("does not synthesize Hermes resume params from a truncated display id", () => {
+    const result = buildExplicitResumeSessionOverride({
+      adapterType: "hermes_local",
+      resumeFromRunId: "run-1",
+      resumeRunSessionIdBefore: null,
+      resumeRunSessionIdAfter: "20260601_141558_",
+      taskSession: {
+        sessionParamsJson: {
+          sessionId: "20260601_141000_c861e4",
+        },
+        sessionDisplayId: "20260601_141000_",
+        lastRunId: "run-2",
+      },
+      sessionCodec: truncatingHermesSessionCodec,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("uses validated Hermes run result params before truncated display ids", () => {
+    const result = buildExplicitResumeSessionOverride({
+      adapterType: "hermes_local",
+      resumeFromRunId: "run-1",
+      resumeRunSessionIdBefore: null,
+      resumeRunSessionIdAfter: "20260601_141558_",
+      resumeRunSessionParams: {
+        sessionId: "20260601_141558_c861e4",
+      },
+      taskSession: null,
+      sessionCodec: truncatingHermesSessionCodec,
+    });
+
+    expect(result).toEqual({
+      sessionDisplayId: "20260601_141558_c861e4",
+      sessionParams: {
+        sessionId: "20260601_141558_c861e4",
+      },
+    });
+  });
+
+  it("keeps Hermes run result params and display id together when falling back from a prior session", () => {
+    const result = buildExplicitResumeSessionOverride({
+      adapterType: "hermes_local",
+      resumeFromRunId: "run-1",
+      resumeRunSessionIdBefore: "20260601_140000_old123",
+      resumeRunSessionIdAfter: "20260601_141558_",
+      resumeRunSessionParams: {
+        sessionId: "20260601_141558_c861e4",
+      },
+      taskSession: null,
+      sessionCodec: truncatingHermesSessionCodec,
+    });
+
+    expect(result).toEqual({
+      sessionDisplayId: "20260601_141558_c861e4",
+      sessionParams: {
+        sessionId: "20260601_141558_c861e4",
+      },
+    });
+  });
+
+  it("ignores invalid Hermes run result params", () => {
+    const result = buildExplicitResumeSessionOverride({
+      adapterType: "hermes_local",
+      resumeFromRunId: "run-1",
+      resumeRunSessionIdBefore: null,
+      resumeRunSessionIdAfter: "20260601_141558_",
+      resumeRunSessionParams: {
+        sessionId: "from",
+      },
+      taskSession: null,
+      sessionCodec: truncatingHermesSessionCodec,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("keeps full Hermes task-session params even when the saved display id is truncated", () => {
+    const result = buildExplicitResumeSessionOverride({
+      adapterType: "hermes_local",
+      resumeFromRunId: "run-1",
+      resumeRunSessionIdBefore: null,
+      resumeRunSessionIdAfter: "20260601_141558_",
+      taskSession: {
+        sessionParamsJson: {
+          sessionId: "20260601_141558_c861e4",
+        },
+        sessionDisplayId: "20260601_141558_",
+        lastRunId: "run-1",
+      },
+      sessionCodec: truncatingHermesSessionCodec,
+    });
+
+    expect(result).toEqual({
+      sessionDisplayId: "20260601_141558_c861e4",
+      sessionParams: {
+        sessionId: "20260601_141558_c861e4",
+      },
+    });
+  });
+
+  it("falls back from a poisoned Hermes session-after value to a valid session-before value", () => {
+    const result = buildExplicitResumeSessionOverride({
+      adapterType: "hermes_local",
+      resumeFromRunId: "run-1",
+      resumeRunSessionIdBefore: "20260601_141558_c861e4",
+      resumeRunSessionIdAfter: "from",
+      taskSession: null,
+      sessionCodec: hermesSessionCodec,
+    });
+
+    expect(result).toEqual({
+      sessionDisplayId: "20260601_141558_c861e4",
+      sessionParams: {
+        sessionId: "20260601_141558_c861e4",
+      },
+    });
+  });
+});
+
+describe("resolveNextSessionState", () => {
+  it("preserves previous valid Hermes session state when failed adapter output reports prose tokens", () => {
+    const result = resolveNextSessionState({
+      adapterType: "hermes_local",
+      codec: truncatingHermesSessionCodec,
+      adapterResult: {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        sessionParams: {
+          sessionId: "from",
+        },
+        sessionId: "from",
+        sessionDisplayId: "from",
+        errorMessage: "Session not found: 20260601_141558_",
+      },
+      outcome: "failed",
+      previousParams: {
+        sessionId: "20260601_141558_c861e4",
+      },
+      previousDisplayId: "20260601_141558_c861e4",
+      previousLegacySessionId: "20260601_141558_c861e4",
+    });
+
+    expect(result).toEqual({
+      params: {
+        sessionId: "20260601_141558_c861e4",
+      },
+      displayId: "20260601_141558_c861e4",
+      legacySessionId: "20260601_141558_c861e4",
+    });
+  });
+
+  it("drops poisoned previous Hermes session state instead of passing it to the next run", () => {
+    const result = resolveNextSessionState({
+      adapterType: "hermes_local",
+      codec: truncatingHermesSessionCodec,
+      adapterResult: {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        sessionId: "from",
+        sessionDisplayId: "from",
+        errorMessage: "Session not found: from",
+      },
+      outcome: "failed",
+      previousParams: {
+        sessionId: "from",
+      },
+      previousDisplayId: "from",
+      previousLegacySessionId: "from",
+    });
+
+    expect(result).toEqual({
+      params: null,
+      displayId: null,
+      legacySessionId: null,
+    });
+  });
+
+  it("derives Hermes display state from canonical params instead of adapter-truncated display ids", () => {
+    const result = resolveNextSessionState({
+      adapterType: "hermes_local",
+      codec: truncatingHermesSessionCodec,
+      adapterResult: {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        sessionParams: {
+          sessionId: "20260601_141558_c861e4",
+        },
+        sessionDisplayId: "20260601_141558_",
+      },
+      outcome: "succeeded",
+      previousParams: null,
+      previousDisplayId: null,
+      previousLegacySessionId: null,
+    });
+
+    expect(result).toEqual({
+      params: {
+        sessionId: "20260601_141558_c861e4",
+      },
+      displayId: "20260601_141558_c861e4",
+      legacySessionId: "20260601_141558_c861e4",
+    });
+  });
+
+  it("uses one canonical Hermes explicit session candidate instead of mixing valid and invalid fields", () => {
+    const result = resolveNextSessionState({
+      adapterType: "hermes_local",
+      codec: truncatingHermesSessionCodec,
+      adapterResult: {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        sessionParams: {
+          sessionId: "from",
+        },
+        sessionId: "20260601_141558_c861e4",
+        sessionDisplayId: "20260601_141558_",
+      },
+      outcome: "succeeded",
+      previousParams: {
+        sessionId: "20260601_140000_previous",
+      },
+      previousDisplayId: "20260601_140000_previous",
+      previousLegacySessionId: "20260601_140000_previous",
+    });
+
+    expect(result).toEqual({
+      params: {
+        sessionId: "20260601_141558_c861e4",
+      },
+      displayId: "20260601_141558_c861e4",
+      legacySessionId: "20260601_141558_c861e4",
+    });
+  });
+
+  it("keeps non-Hermes arbitrary session ids unchanged", () => {
+    const result = resolveNextSessionState({
+      adapterType: "codex_local",
+      codec: codexSessionCodec,
+      adapterResult: {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        sessionId: "from",
+      },
+      outcome: "failed",
+      previousParams: null,
+      previousDisplayId: null,
+      previousLegacySessionId: null,
+    });
+
+    expect(result.legacySessionId).toBe("from");
   });
 });
 

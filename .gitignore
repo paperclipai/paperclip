@@ -3,6 +3,7 @@ node_modules/
 **/node_modules
 **/node_modules/
 dist/
+ui/storybook-static/
 .env
 *.tsbuildinfo
 drizzle/meta/
@@ -17,6 +18,8 @@ cli/tmp/
 
 # Scratch/seed scripts (but not scripts/ dir)
 check-*.mjs
+!.github/scripts/check-*.mjs
+!.github/scripts/tests/check-*.mjs
 !scripts/check-*.mjs
 new-agent*.json
 newcompany.json
@@ -35,6 +38,7 @@ server/src/**/*.d.ts
 server/src/**/*.d.ts.map
 tmp/
 feedback-export-*
+diagnostics/
 
 # Editor / tool temp files
 *.tmp
@@ -53,4 +57,6 @@ tests/e2e/playwright-report/
 tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
 .superset/
+.superpowers/
 .claude/worktrees/
+.herenow

@@ -9,6 +9,7 @@ export interface AdapterCapabilities {
   supportsSkills: boolean;
   supportsLocalAgentJwt: boolean;
   requiresMaterializedRuntimeSkills: boolean;
+  supportsModelProfiles: boolean;
 }
 
 export interface AdapterInfo {

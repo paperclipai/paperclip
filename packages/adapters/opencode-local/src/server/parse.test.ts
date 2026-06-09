@@ -40,6 +40,33 @@ describe("parseOpenCodeJsonl", () => {
     });
     expect(parsed.costUsd).toBeCloseTo(0.0025, 6);
     expect(parsed.errorMessage).toContain("model unavailable");
+    expect(parsed.toolErrors).toEqual([]);
+  });
+
+  it("keeps failed tool calls separate from fatal run errors", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "tool_use",
+        sessionID: "session_123",
+        part: {
+          state: {
+            status: "error",
+            error: "File not found: e2b-adapter-result.txt",
+          },
+        },
+      }),
+      JSON.stringify({
+        type: "text",
+        sessionID: "session_123",
+        part: { text: "Recovered and completed the task" },
+      }),
+    ].join("\n");
+
+    const parsed = parseOpenCodeJsonl(stdout);
+    expect(parsed.sessionId).toBe("session_123");
+    expect(parsed.summary).toBe("Recovered and completed the task");
+    expect(parsed.errorMessage).toBeNull();
+    expect(parsed.toolErrors).toEqual(["File not found: e2b-adapter-result.txt"]);
   });
 
   it("detects unknown session errors", () => {

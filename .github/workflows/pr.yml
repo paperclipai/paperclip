@@ -13,97 +13,106 @@ jobs:
   policy:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      lockfile_regenerated: ${{ steps.regen_lockfile.outputs.regenerated }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Block manual lockfile edits
-        if: github.head_ref != 'chore/refresh-lockfile'
+        if: >-
+          github.head_ref != 'chore/refresh-lockfile' &&
+          github.event.pull_request.user.login != 'dependabot[bot]'
         run: |
-          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")"
+          # Diff the PR branch against its merge base so recent base-branch commits
+          # do not masquerade as changes made by the PR itself.
+          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
           if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
             echo "Do not commit pnpm-lock.yaml in pull requests. CI owns lockfile updates."
             exit 1
           fi
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 9.15.4
           run_install: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
 
       - name: Validate Dockerfile deps stage
+        run: node ./scripts/check-docker-deps-stage.mjs
+
+      - name: Reject git push in adapter/runtime code
+        run: node ./scripts/check-no-git-push.mjs
+
+      - name: Test no-git-push check
+        run: node --test ./scripts/check-no-git-push.test.mjs
+
+      - name: Validate release package manifest
+        run: node ./scripts/release-package-map.mjs check
+
+      - name: Verify release package bootstrap for changed manifests
         run: |
-          missing=0
-
-          # Extract only the deps stage from the Dockerfile
-          deps_stage="$(awk '/^FROM .* AS deps$/{found=1; next} found && /^FROM /{exit} found{print}' Dockerfile)"
-
-          if [ -z "$deps_stage" ]; then
-            echo "::error::Could not extract deps stage from Dockerfile (expected 'FROM ... AS deps')"
-            exit 1
-          fi
-
-          # Derive workspace search roots from pnpm-workspace.yaml (exclude dev-only packages)
-          search_roots="$(grep '^ *- ' pnpm-workspace.yaml | sed 's/^ *- //' | sed 's/\*$//' | grep -v 'examples' | grep -v 'create-paperclip-plugin' | tr '\n' ' ')"
-
-          if [ -z "$search_roots" ]; then
-            echo "::error::Could not derive workspace roots from pnpm-workspace.yaml"
-            exit 1
-          fi
-
-          # Check all workspace package.json files are copied in the deps stage
-          for pkg in $(find $search_roots -maxdepth 2 -name package.json -not -path '*/examples/*' -not -path '*/create-paperclip-plugin/*' -not -path '*/node_modules/*' 2>/dev/null | sort -u); do
-            dir="$(dirname "$pkg")"
-            if ! echo "$deps_stage" | grep -q "^COPY ${dir}/package.json"; then
-              echo "::error::Dockerfile deps stage missing: COPY ${pkg} ${dir}/"
-              missing=1
-            fi
-          done
-
-          # Check patches directory is copied if it exists
-          if [ -d patches ] && ! echo "$deps_stage" | grep -q '^COPY patches/'; then
-            echo "::error::Dockerfile deps stage missing: COPY patches/ patches/"
-            missing=1
-          fi
-
-          if [ "$missing" -eq 1 ]; then
-            echo "Dockerfile deps stage is out of sync. Update it to include the missing files."
-            exit 1
-          fi
+          mapfile -t changed_paths < <(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")
+          PAPERCLIP_RELEASE_BOOTSTRAP_BASE_SHA="${{ github.event.pull_request.base.sha }}" \
+            node ./scripts/check-release-package-bootstrap.mjs "${changed_paths[@]}"
 
       - name: Validate dependency resolution when manifests change
+        id: regen_lockfile
         run: |
-          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")"
+          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
           manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$'
           if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
             pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+            echo "regenerated=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "regenerated=0" >> "$GITHUB_OUTPUT"
           fi
 
-  verify:
+      # Manifest-only PRs (where pnpm-lock.yaml stays at base because the policy
+      # job above blocks committing it) need the regenerated lockfile for the
+      # downstream `pnpm install --frozen-lockfile` steps. Upload it here so
+      # every job consumes the same hash without recomputing.
+      - name: Upload regenerated lockfile for downstream jobs
+        if: steps.regen_lockfile.outputs.regenerated == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-lockfile
+          path: pnpm-lock.yaml
+          retention-days: 1
+          if-no-files-found: error
+
+  typecheck_release_registry:
+    name: Typecheck + Release Registry
     needs: [policy]
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 9.15.4
 
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: pr-lockfile
+          path: .
+
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
@@ -111,19 +120,212 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck
-        run: pnpm -r typecheck
+      - name: Typecheck workspaces whose build scripts skip TypeScript
+        run: pnpm run typecheck:build-gaps
 
-      - name: Run tests
-        run: pnpm test:run
+      - name: Verify release registry test coverage
+        run: pnpm run test:release-registry
+
+  general_tests:
+    name: General tests (${{ matrix.group_label }})
+    needs: [policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: general-server
+            group_label: server
+          - group: general-workspaces-a
+            group_label: workspaces-a
+          - group: general-workspaces-b
+            group_label: workspaces-b
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: pr-lockfile
+          path: .
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run grouped general test suites
+        run: pnpm test:run:general -- --group '${{ matrix.group }}'
+
+  verify:
+    # Preserve the legacy required-check name while the underlying work runs in parallel.
+    name: verify
+    if: ${{ always() }}
+    needs: [typecheck_release_registry, general_tests, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Fail if any split verify lane failed
+        env:
+          TYPECHECK_RELEASE_REGISTRY_RESULT: ${{ needs.typecheck_release_registry.result }}
+          GENERAL_TESTS_RESULT: ${{ needs.general_tests.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "success"
+          test "$GENERAL_TESTS_RESULT" = "success"
+          test "$BUILD_RESULT" = "success"
+
+  build:
+    name: Build
+    needs: [policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: pr-lockfile
+          path: .
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Build
         run: pnpm build
 
-      - name: Release canary dry run
+  verify_serialized_server:
+    name: Verify serialized server suites (${{ matrix.shard_label }})
+    needs: [policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard_index: 0
+            shard_count: 4
+            shard_label: 1/4
+          - shard_index: 1
+            shard_count: 4
+            shard_label: 2/4
+          - shard_index: 2
+            shard_count: 4
+            shard_label: 3/4
+          - shard_index: 3
+            shard_count: 4
+            shard_label: 4/4
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: pr-lockfile
+          path: .
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run serialized server test shard
+        run: pnpm test:run:serialized -- --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }}
+
+  canary_dry_run:
+    name: Canary Dry Run
+    needs: [policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: pr-lockfile
+          path: .
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `release.sh` always executes its Step 2/7 workspace build, even when
+      # `--skip-verify` bypasses the initial verification gate. release.sh
+      # also requires a clean working tree, so any in-place lockfile churn
+      # from `pnpm install --frozen-lockfile` must be reverted first — unless
+      # the policy job uploaded a regenerated lockfile (manifest-changing
+      # PRs), in which case we stage the artifact-restored copy into an
+      # ephemeral local commit so release.sh sees a clean tree and its
+      # workspace build sees a lockfile that matches the manifest.
+      - name: Release canary dry run via release.sh internal build
+        env:
+          USED_ARTIFACT_LOCKFILE: ${{ needs.policy.outputs.lockfile_regenerated || '0' }}
         run: |
           git checkout -B master HEAD
-          git checkout -- pnpm-lock.yaml
+          if [ "$USED_ARTIFACT_LOCKFILE" = "1" ]; then
+            git add pnpm-lock.yaml
+            if ! git diff --cached --quiet; then
+              git -c user.email=ci@paperclip.local -c user.name=CI \
+                commit --no-verify -m "ci(canary): stage regenerated lockfile"
+            fi
+          else
+            git checkout -- pnpm-lock.yaml
+          fi
           ./scripts/release.sh canary --skip-verify --dry-run
 
   e2e:
@@ -133,15 +335,22 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 9.15.4
 
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: pr-lockfile
+          path: .
+
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
@@ -149,11 +358,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build
-        run: pnpm build
-
-      - name: Install Playwright
-        run: npx playwright install --with-deps chromium
+      - name: Verify runner Chrome
+        # GitHub's Ubuntu runner image already ships Google Chrome, so use that
+        # directly for the headless e2e lane instead of downloading Playwright
+        # browser bundles inside the 30 minute job budget.
+        run: google-chrome --version
 
       - name: Generate Paperclip config
         run: |
@@ -173,10 +382,11 @@ jobs:
       - name: Run e2e tests
         env:
           PAPERCLIP_E2E_SKIP_LLM: "true"
+          PAPERCLIP_PLAYWRIGHT_CHANNEL: "chrome"
         run: pnpm run test:e2e
 
       - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: playwright-report

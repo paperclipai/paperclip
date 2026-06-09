@@ -1,0 +1,44 @@
+{
+  "source": {
+    "type": "github",
+    "hostname": "github.com",
+    "owner": "mvanhorn",
+    "repo": "last30days-skill",
+    "ref": "v3.3.0",
+    "commit": "daca71f89eb71d0d56d01a43ed7627aa919dba4f",
+    "path": "skills/last30days"
+  },
+  "files": [
+    "SKILL.md",
+    "agents/openai.yaml",
+    "references/**",
+    "scripts/briefing.py",
+    "scripts/compare.sh",
+    "scripts/last30days.py",
+    "scripts/lib/**",
+    "scripts/setup-keychain.sh",
+    "scripts/store.py",
+    "scripts/watchlist.py"
+  ],
+  "defaultInstall": false,
+  "recommendedForRoles": [
+    "researcher",
+    "marketer",
+    "product-manager",
+    "analyst"
+  ],
+  "requires": [
+    "node",
+    "python3"
+  ],
+  "tags": [
+    "research",
+    "last-30-days",
+    "social-media",
+    "trends",
+    "citations",
+    "reddit",
+    "x",
+    "youtube"
+  ]
+}

@@ -45,6 +45,7 @@ import {
   runDatabaseRestore,
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
+  prepareEmbeddedPostgresNativeRuntime,
 } from "@paperclipai/db";
 import type { Command } from "commander";
 import { ensureAgentJwtSecret, loadPaperclipEnvFile, mergePaperclipEnvEntries, readPaperclipEnvEntries, resolvePaperclipEnvFile } from "../config/env.js";
@@ -93,6 +94,7 @@ type WorktreeInitOptions = {
   dbPort?: number;
   seed?: boolean;
   seedMode?: string;
+  preserveLiveWork?: boolean;
   force?: boolean;
 };
 
@@ -126,6 +128,7 @@ type WorktreeReseedOptions = {
   fromDataDir?: string;
   fromInstance?: string;
   seedMode?: string;
+  preserveLiveWork?: boolean;
   yes?: boolean;
   allowLiveTarget?: boolean;
 };
@@ -137,6 +140,7 @@ type WorktreeRepairOptions = {
   fromDataDir?: string;
   fromInstance?: string;
   seedMode?: string;
+  preserveLiveWork?: boolean;
   noSeed?: boolean;
   allowLiveTarget?: boolean;
 };
@@ -179,11 +183,21 @@ type CopiedGitHooksResult = {
 
 type SeedWorktreeDatabaseResult = {
   backupSummary: string;
+  pausedScheduledRoutines: number;
+  executionQuarantine: SeededWorktreeExecutionQuarantineSummary;
   reboundWorkspaces: Array<{
     name: string;
     fromCwd: string;
     toCwd: string;
   }>;
+};
+
+export type SeededWorktreeExecutionQuarantineSummary = {
+  disabledTimerHeartbeats: number;
+  resetRunningAgents: number;
+  quarantinedInProgressIssues: number;
+  unassignedTodoIssues: number;
+  unassignedReviewIssues: number;
 };
 
 function nonEmpty(value: string | null | undefined): string | null {
@@ -196,6 +210,18 @@ function isCurrentSourceConfigPath(sourceConfigPath: string): boolean {
     return false;
   }
   return path.resolve(currentConfigPath) === path.resolve(sourceConfigPath);
+}
+
+function formatSeededWorktreeExecutionQuarantineSummary(
+  summary: SeededWorktreeExecutionQuarantineSummary,
+): string {
+  return [
+    `disabled timer heartbeats: ${summary.disabledTimerHeartbeats}`,
+    `reset running agents: ${summary.resetRunningAgents}`,
+    `quarantined in-progress issues: ${summary.quarantinedInProgressIssues}`,
+    `unassigned todo issues: ${summary.unassignedTodoIssues}`,
+    `unassigned review issues: ${summary.unassignedReviewIssues}`,
+  ].join(", ");
 }
 
 const WORKTREE_NAME_PREFIX = "paperclip-";
@@ -1034,6 +1060,7 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
       "Embedded PostgreSQL support requires dependency `embedded-postgres`. Reinstall dependencies and try again.",
     );
   }
+  await prepareEmbeddedPostgresNativeRuntime();
 
   const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
   const runningPid = readRunningPostmasterPid(postmasterPidFile);
@@ -1119,6 +1146,133 @@ export async function pauseSeededScheduledRoutines(connectionString: string): Pr
   }
 }
 
+const EMPTY_SEEDED_WORKTREE_EXECUTION_QUARANTINE_SUMMARY: SeededWorktreeExecutionQuarantineSummary = {
+  disabledTimerHeartbeats: 0,
+  resetRunningAgents: 0,
+  quarantinedInProgressIssues: 0,
+  unassignedTodoIssues: 0,
+  unassignedReviewIssues: 0,
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isEnabledValue(value: unknown): boolean {
+  return value === true || value === "true" || value === 1 || value === "1";
+}
+
+function normalizeWorktreeRuntimeConfig(runtimeConfig: unknown): {
+  runtimeConfig: Record<string, unknown>;
+  disabledTimerHeartbeat: boolean;
+  changed: boolean;
+} {
+  const nextRuntimeConfig = isRecord(runtimeConfig) ? { ...runtimeConfig } : {};
+  const heartbeat = isRecord(nextRuntimeConfig.heartbeat) ? { ...nextRuntimeConfig.heartbeat } : null;
+  if (!heartbeat) {
+    return { runtimeConfig: nextRuntimeConfig, disabledTimerHeartbeat: false, changed: false };
+  }
+
+  const disabledTimerHeartbeat = isEnabledValue(heartbeat.enabled);
+  if (heartbeat.enabled !== false) {
+    heartbeat.enabled = false;
+    nextRuntimeConfig.heartbeat = heartbeat;
+    return { runtimeConfig: nextRuntimeConfig, disabledTimerHeartbeat, changed: true };
+  }
+
+  return { runtimeConfig: nextRuntimeConfig, disabledTimerHeartbeat: false, changed: false };
+}
+
+export async function quarantineSeededWorktreeExecutionState(
+  connectionString: string,
+): Promise<SeededWorktreeExecutionQuarantineSummary> {
+  const db = createDb(connectionString);
+  const summary = { ...EMPTY_SEEDED_WORKTREE_EXECUTION_QUARANTINE_SUMMARY };
+  try {
+    await db.transaction(async (tx) => {
+      const seededAgents = await tx
+        .select({
+          id: agents.id,
+          status: agents.status,
+          runtimeConfig: agents.runtimeConfig,
+        })
+        .from(agents);
+
+      for (const agent of seededAgents) {
+        const normalized = normalizeWorktreeRuntimeConfig(agent.runtimeConfig);
+        const nextStatus = agent.status === "running" ? "idle" : agent.status;
+        if (normalized.disabledTimerHeartbeat) {
+          summary.disabledTimerHeartbeats += 1;
+        }
+        if (agent.status === "running") {
+          summary.resetRunningAgents += 1;
+        }
+        if (normalized.changed || nextStatus !== agent.status) {
+          await tx
+            .update(agents)
+            .set({
+              runtimeConfig: normalized.runtimeConfig,
+              status: nextStatus,
+              updatedAt: new Date(),
+            })
+            .where(eq(agents.id, agent.id));
+        }
+      }
+
+      const affectedIssues = await tx
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(
+          and(
+            sql`${issues.assigneeAgentId} is not null`,
+            sql`${issues.assigneeUserId} is null`,
+            inArray(issues.status, ["todo", "in_progress", "in_review"]),
+          ),
+        );
+
+      for (const issue of affectedIssues) {
+        const nextStatus = issue.status === "in_progress" ? "blocked" : issue.status;
+        await tx
+          .update(issues)
+          .set({
+            status: nextStatus,
+            assigneeAgentId: null,
+            checkoutRunId: null,
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            executionWorkspaceId: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(issues.id, issue.id));
+
+        if (issue.status === "in_progress") {
+          summary.quarantinedInProgressIssues += 1;
+          await tx.insert(issueComments).values({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            body:
+              "Quarantined during worktree seed so copied in-flight work does not auto-run in this isolated instance. " +
+              "Reassign or unblock here only if you intentionally want the worktree instance to own this task.",
+          });
+        } else if (issue.status === "todo") {
+          summary.unassignedTodoIssues += 1;
+        } else if (issue.status === "in_review") {
+          summary.unassignedReviewIssues += 1;
+        }
+      }
+    });
+
+    return summary;
+  } finally {
+    await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
+  }
+}
+
 async function seedWorktreeDatabase(input: {
   sourceConfigPath: string;
   sourceConfig: PaperclipConfig;
@@ -1126,6 +1280,7 @@ async function seedWorktreeDatabase(input: {
   targetPaths: WorktreeLocalPaths;
   instanceId: string;
   seedMode: WorktreeSeedMode;
+  preserveLiveWork?: boolean;
 }): Promise<SeedWorktreeDatabaseResult> {
   const seedPlan = resolveWorktreeSeedPlan(input.seedMode);
   const sourceEnvFile = resolvePaperclipEnvFile(input.sourceConfigPath);
@@ -1158,6 +1313,7 @@ async function seedWorktreeDatabase(input: {
       backupDir: path.resolve(input.targetPaths.backupDir, "seed"),
       retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
       filenamePrefix: `${input.instanceId}-seed`,
+      backupEngine: "javascript",
       includeMigrationJournal: true,
       excludeTables: seedPlan.excludedTables,
       nullifyColumns: seedPlan.nullifyColumns,
@@ -1176,7 +1332,10 @@ async function seedWorktreeDatabase(input: {
       backupFile: backup.backupFile,
     });
     await applyPendingMigrations(targetConnectionString);
-    await pauseSeededScheduledRoutines(targetConnectionString);
+    const executionQuarantine = input.preserveLiveWork
+      ? { ...EMPTY_SEEDED_WORKTREE_EXECUTION_QUARANTINE_SUMMARY }
+      : await quarantineSeededWorktreeExecutionState(targetConnectionString);
+    const pausedScheduledRoutines = await pauseSeededScheduledRoutines(targetConnectionString);
     const reboundWorkspaces = await rebindSeededProjectWorkspaces({
       targetConnectionString,
       currentCwd: input.targetPaths.cwd,
@@ -1184,6 +1343,8 @@ async function seedWorktreeDatabase(input: {
 
     return {
       backupSummary: formatDatabaseBackupResult(backup),
+      pausedScheduledRoutines,
+      executionQuarantine,
       reboundWorkspaces,
     };
   } finally {
@@ -1226,7 +1387,12 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   }
 
   if (opts.force) {
-    rmSync(paths.repoConfigDir, { recursive: true, force: true });
+    // Only remove the specific files we're about to rewrite, not the whole
+    // repoConfigDir — that directory can contain sibling state such as
+    // <repo>/.paperclip/worktrees/ holding every repo-managed worktree
+    // checkout, and a recursive rmSync here would nuke them all.
+    rmSync(paths.configPath, { force: true });
+    rmSync(paths.envPath, { force: true });
     rmSync(paths.instanceRoot, { recursive: true, force: true });
   }
 
@@ -1262,6 +1428,8 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   const copiedGitHooks = copyGitHooksToWorktreeGitDir(cwd);
 
   let seedSummary: string | null = null;
+  let seedExecutionQuarantineSummary: SeededWorktreeExecutionQuarantineSummary | null = null;
+  let pausedScheduledRoutineCount: number | null = null;
   let reboundWorkspaceSummary: SeedWorktreeDatabaseResult["reboundWorkspaces"] = [];
   if (opts.seed !== false) {
     if (!sourceConfig) {
@@ -1279,8 +1447,11 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
         targetPaths: paths,
         instanceId,
         seedMode,
+        preserveLiveWork: opts.preserveLiveWork,
       });
       seedSummary = seeded.backupSummary;
+      seedExecutionQuarantineSummary = seeded.executionQuarantine;
+      pausedScheduledRoutineCount = seeded.pausedScheduledRoutines;
       reboundWorkspaceSummary = seeded.reboundWorkspaces;
       spinner.stop(`Seeded isolated worktree database (${seedMode}).`);
     } catch (error) {
@@ -1303,6 +1474,16 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   if (seedSummary) {
     p.log.message(pc.dim(`Seed mode: ${seedMode}`));
     p.log.message(pc.dim(`Seed snapshot: ${seedSummary}`));
+    if (opts.preserveLiveWork) {
+      p.log.warning("Preserved copied live work; this worktree instance may auto-run source-instance assignments.");
+    } else if (seedExecutionQuarantineSummary) {
+      p.log.message(
+        pc.dim(`Seed execution quarantine: ${formatSeededWorktreeExecutionQuarantineSummary(seedExecutionQuarantineSummary)}`),
+      );
+    }
+    if (pausedScheduledRoutineCount != null) {
+      p.log.message(pc.dim(`Paused scheduled routines: ${pausedScheduledRoutineCount}`));
+    }
     for (const rebound of reboundWorkspaceSummary) {
       p.log.message(
         pc.dim(`Rebound workspace ${rebound.name}: ${rebound.fromCwd} -> ${rebound.toCwd}`),
@@ -1387,11 +1568,31 @@ export async function worktreeMakeCommand(nameArg: string, opts: WorktreeMakeOpt
   }
 }
 
+type PnpmInstallInvocation = {
+  command: string;
+  argsPrefix: string[];
+};
+
+export function resolvePnpmInstallInvocation(
+  env: NodeJS.ProcessEnv = process.env,
+  nodeExecPath = process.execPath,
+): PnpmInstallInvocation {
+  const npmExecPath = nonEmpty(env.npm_execpath);
+  if (npmExecPath && npmExecPath.toLowerCase().includes("pnpm")) {
+    if (/\.(cjs|mjs|js)$/i.test(npmExecPath)) {
+      return { command: nodeExecPath, argsPrefix: [npmExecPath] };
+    }
+    return { command: npmExecPath, argsPrefix: [] };
+  }
+  return { command: "pnpm", argsPrefix: [] };
+}
+
 function installDependenciesBestEffort(targetPath: string): void {
   const installSpinner = p.spinner();
   installSpinner.start("Installing dependencies...");
+  const pnpm = resolvePnpmInstallInvocation();
   try {
-    execFileSync("pnpm", ["install"], {
+    execFileSync(pnpm.command, [...pnpm.argsPrefix, "install"], {
       cwd: targetPath,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -2947,11 +3148,20 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
       targetPaths,
       instanceId: targetPaths.instanceId,
       seedMode,
+      preserveLiveWork: opts.preserveLiveWork,
     });
     spinner.stop(`Reseeded ${targetEndpoint.label} (${seedMode}).`);
     p.log.message(pc.dim(`Source: ${source.configPath}`));
     p.log.message(pc.dim(`Target: ${targetEndpoint.configPath}`));
     p.log.message(pc.dim(`Seed snapshot: ${seeded.backupSummary}`));
+    if (opts.preserveLiveWork) {
+      p.log.warning("Preserved copied live work; this worktree instance may auto-run source-instance assignments.");
+    } else {
+      p.log.message(
+        pc.dim(`Seed execution quarantine: ${formatSeededWorktreeExecutionQuarantineSummary(seeded.executionQuarantine)}`),
+      );
+    }
+    p.log.message(pc.dim(`Paused scheduled routines: ${seeded.pausedScheduledRoutines}`));
     for (const rebound of seeded.reboundWorkspaces) {
       p.log.message(
         pc.dim(`Rebound workspace ${rebound.name}: ${rebound.fromCwd} -> ${rebound.toCwd}`),
@@ -3015,6 +3225,7 @@ export async function worktreeRepairCommand(opts: WorktreeRepairOptions): Promis
       fromConfig: source.configPath,
       to: target.rootPath,
       seedMode,
+      preserveLiveWork: opts.preserveLiveWork,
       yes: true,
       allowLiveTarget: opts.allowLiveTarget,
     });
@@ -3047,6 +3258,7 @@ export async function worktreeRepairCommand(opts: WorktreeRepairOptions): Promis
       fromInstance: opts.fromInstance,
       seed: opts.noSeed ? false : true,
       seedMode,
+      preserveLiveWork: opts.preserveLiveWork,
       force: true,
     });
   } finally {
@@ -3070,6 +3282,7 @@ export function registerWorktreeCommands(program: Command): void {
     .option("--server-port <port>", "Preferred server port", (value) => Number(value))
     .option("--db-port <port>", "Preferred embedded Postgres port", (value) => Number(value))
     .option("--seed-mode <mode>", "Seed profile: minimal or full (default: minimal)", "minimal")
+    .option("--preserve-live-work", "Do not quarantine copied agent timers or assigned open issues in the seeded worktree", false)
     .option("--no-seed", "Skip database seeding from the source instance")
     .option("--force", "Replace existing repo-local config and isolated instance data", false)
     .action(worktreeMakeCommand);
@@ -3086,6 +3299,7 @@ export function registerWorktreeCommands(program: Command): void {
     .option("--server-port <port>", "Preferred server port", (value) => Number(value))
     .option("--db-port <port>", "Preferred embedded Postgres port", (value) => Number(value))
     .option("--seed-mode <mode>", "Seed profile: minimal or full (default: minimal)", "minimal")
+    .option("--preserve-live-work", "Do not quarantine copied agent timers or assigned open issues in the seeded worktree", false)
     .option("--no-seed", "Skip database seeding from the source instance")
     .option("--force", "Replace existing repo-local config and isolated instance data", false)
     .action(worktreeInitCommand);
@@ -3125,6 +3339,7 @@ export function registerWorktreeCommands(program: Command): void {
     .option("--from-data-dir <path>", "Source PAPERCLIP_HOME used when deriving the source config")
     .option("--from-instance <id>", "Source instance id when deriving the source config")
     .option("--seed-mode <mode>", "Seed profile: minimal or full (default: full)", "full")
+    .option("--preserve-live-work", "Do not quarantine copied agent timers or assigned open issues in the seeded worktree", false)
     .option("--yes", "Skip the destructive confirmation prompt", false)
     .option("--allow-live-target", "Override the guard that requires the target worktree DB to be stopped first", false)
     .action(worktreeReseedCommand);
@@ -3138,6 +3353,7 @@ export function registerWorktreeCommands(program: Command): void {
     .option("--from-data-dir <path>", "Source PAPERCLIP_HOME used when deriving the source config")
     .option("--from-instance <id>", "Source instance id when deriving the source config (default: default)")
     .option("--seed-mode <mode>", "Seed profile: minimal or full (default: minimal)", "minimal")
+    .option("--preserve-live-work", "Do not quarantine copied agent timers or assigned open issues in the seeded worktree", false)
     .option("--no-seed", "Repair metadata only and skip reseeding when bootstrapping a missing worktree config", false)
     .option("--allow-live-target", "Override the guard that requires the target worktree DB to be stopped first", false)
     .action(worktreeRepairCommand);

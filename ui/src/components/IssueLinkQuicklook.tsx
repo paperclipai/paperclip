@@ -44,7 +44,7 @@ export function IssueQuicklookCard({
   return (
     <div className={cn("space-y-2", compact && "space-y-1.5")}>
       <div className="flex items-start gap-2">
-        <StatusIcon status={issue.status} className="mt-0.5 shrink-0" />
+        <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} className="mt-0.5 shrink-0" />
         <RouterDom.Link
           to={linkTo}
           state={linkState ?? withIssueDetailHeaderSeed(null, issue)}
@@ -75,6 +75,8 @@ export const IssueLinkQuicklook = React.forwardRef<
     issuePathId: string;
     disableIssueQuicklook?: boolean;
     issuePrefetch?: Issue | null;
+    issueQuicklookSide?: React.ComponentProps<typeof PopoverContent>["side"];
+    issueQuicklookAlign?: React.ComponentProps<typeof PopoverContent>["align"];
   }
 >(function IssueLinkQuicklookImpl(
   {
@@ -85,10 +87,13 @@ export const IssueLinkQuicklook = React.forwardRef<
     state,
     disableIssueQuicklook = false,
     issuePrefetch = null,
+    issueQuicklookSide = "top",
+    issueQuicklookAlign = "start",
     onClick,
     onClickCapture,
     onMouseEnter,
     onFocus,
+    onBlur,
     onTouchStart,
     ...props
   },
@@ -119,7 +124,13 @@ export const IssueLinkQuicklook = React.forwardRef<
       }}
       onFocus={(event) => {
         handlePrefetch();
+        setOpen(true);
         onFocus?.(event);
+      }}
+      onBlur={(event) => {
+        // Let clicks inside the portaled quicklook content finish before closing.
+        setTimeout(() => setOpen(false), 0);
+        onBlur?.(event);
       }}
       onTouchStart={(event) => {
         handlePrefetch();
@@ -157,8 +168,8 @@ export const IssueLinkQuicklook = React.forwardRef<
       </PopoverTrigger>
       <PopoverContent
         className="w-72 p-3"
-        side="top"
-        align="start"
+        side={issueQuicklookSide}
+        align={issueQuicklookAlign}
         onMouseEnter={() => setOpen(true)}
         onMouseLeave={() => setOpen(false)}
         onOpenAutoFocus={(event) => event.preventDefault()}
@@ -171,7 +182,7 @@ export const IssueLinkQuicklook = React.forwardRef<
             <div className="h-4 w-full rounded bg-accent/40" />
             <div className="h-4 w-3/4 rounded bg-accent/30" />
             {!isLoading ? (
-              <p className="text-xs text-muted-foreground">Unable to load issue preview.</p>
+              <p className="text-xs text-muted-foreground">Unable to load task preview.</p>
             ) : null}
           </div>
         )}

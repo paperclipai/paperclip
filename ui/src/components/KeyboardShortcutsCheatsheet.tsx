@@ -3,7 +3,21 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 interface ShortcutEntry {
   keys: string[];
   label: string;
+  /** Render keys as a simultaneous chord (joined with "+") rather than a
+   *  "then" sequence. */
+  combo?: boolean;
 }
+
+// Platform-appropriate label for the Cmd/Ctrl modifier so the cheatsheet shows
+// the same key the user actually presses (re-pointed in the collapsible sidebar
+// work — Cmd/Ctrl+B toggles the rail).
+function getPlatformLabel() {
+  if (typeof navigator === "undefined") return "";
+  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+  return nav.userAgentData?.platform || navigator.userAgent || "";
+}
+
+const META_KEY = /Mac|iPhone|iPad|iPod/.test(getPlatformLabel()) ? "⌘" : "Ctrl";
 
 interface ShortcutSection {
   title: string;
@@ -15,7 +29,11 @@ const sections: ShortcutSection[] = [
     title: "Inbox",
     shortcuts: [
       { keys: ["j"], label: "Move down" },
+      { keys: ["↓"], label: "Move down" },
       { keys: ["k"], label: "Move up" },
+      { keys: ["↑"], label: "Move up" },
+      { keys: ["←"], label: "Collapse selected group" },
+      { keys: ["→"], label: "Expand selected group" },
       { keys: ["Enter"], label: "Open selected item" },
       { keys: ["a"], label: "Archive item" },
       { keys: ["y"], label: "Archive item" },
@@ -24,7 +42,7 @@ const sections: ShortcutSection[] = [
     ],
   },
   {
-    title: "Issue detail",
+    title: "Task detail",
     shortcuts: [
       { keys: ["y"], label: "Quick-archive back to inbox" },
       { keys: ["g", "i"], label: "Go to inbox" },
@@ -35,8 +53,9 @@ const sections: ShortcutSection[] = [
     title: "Global",
     shortcuts: [
       { keys: ["/"], label: "Search current page or quick search" },
-      { keys: ["c"], label: "New issue" },
+      { keys: ["c"], label: "New task" },
       { keys: ["["], label: "Toggle sidebar" },
+      { keys: [META_KEY, "B"], label: "Collapse or expand sidebar", combo: true },
       { keys: ["]"], label: "Toggle panel" },
       { keys: ["?"], label: "Show keyboard shortcuts" },
     ],
@@ -48,6 +67,49 @@ function KeyCap({ children }: { children: string }) {
     <kbd className="inline-flex h-6 min-w-6 items-center justify-center rounded border border-border bg-muted px-1.5 font-mono text-xs font-medium text-foreground shadow-[0_1px_0_1px_hsl(var(--border))]">
       {children}
     </kbd>
+  );
+}
+
+export function KeyboardShortcutsCheatsheetContent() {
+  return (
+    <>
+      <div className="divide-y divide-border border-t border-border">
+        {sections.map((section) => (
+          <div key={section.title} className="px-5 py-3">
+            <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              {section.title}
+            </h3>
+            <div className="space-y-1.5">
+              {section.shortcuts.map((shortcut) => (
+                <div
+                  key={shortcut.label + shortcut.keys.join()}
+                  className="flex items-center justify-between gap-4"
+                >
+                  <span className="text-sm text-foreground/90">{shortcut.label}</span>
+                  <div className="flex items-center gap-1">
+                    {shortcut.keys.map((key, i) => (
+                      <span key={key} className="flex items-center gap-1">
+                        {i > 0 && (
+                          <span className="text-xs text-muted-foreground">
+                            {shortcut.combo ? "+" : "then"}
+                          </span>
+                        )}
+                        <KeyCap>{key}</KeyCap>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="border-t border-border px-5 py-3">
+        <p className="text-xs text-muted-foreground">
+          Press <KeyCap>Esc</KeyCap> to close &middot; Shortcuts are disabled in text fields
+        </p>
+      </div>
+    </>
   );
 }
 
@@ -64,38 +126,7 @@ export function KeyboardShortcutsCheatsheet({
         <DialogHeader className="px-5 pt-5 pb-3">
           <DialogTitle className="text-base">Keyboard shortcuts</DialogTitle>
         </DialogHeader>
-        <div className="divide-y divide-border border-t border-border">
-          {sections.map((section) => (
-            <div key={section.title} className="px-5 py-3">
-              <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                {section.title}
-              </h3>
-              <div className="space-y-1.5">
-                {section.shortcuts.map((shortcut) => (
-                  <div
-                    key={shortcut.label + shortcut.keys.join()}
-                    className="flex items-center justify-between gap-4"
-                  >
-                    <span className="text-sm text-foreground/90">{shortcut.label}</span>
-                    <div className="flex items-center gap-1">
-                      {shortcut.keys.map((key, i) => (
-                        <span key={key} className="flex items-center gap-1">
-                          {i > 0 && <span className="text-xs text-muted-foreground">then</span>}
-                          <KeyCap>{key}</KeyCap>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-        <div className="border-t border-border px-5 py-3">
-          <p className="text-xs text-muted-foreground">
-            Press <KeyCap>Esc</KeyCap> to close &middot; Shortcuts are disabled in text fields
-          </p>
-        </div>
+        <KeyboardShortcutsCheatsheetContent />
       </DialogContent>
     </Dialog>
   );

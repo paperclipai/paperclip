@@ -1,6 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
+import { redactCommandText } from "./command-redaction.js";
 import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
@@ -16,6 +21,11 @@ export interface RunProcessResult {
   startedAt: string | null;
 }
 
+export interface TerminalResultCleanupOptions {
+  hasTerminalResult: (output: { stdout: string; stderr: string }) => boolean;
+  graceMs?: number;
+}
+
 interface RunningProcess {
   child: ChildProcess;
   graceSec: number;
@@ -25,10 +35,18 @@ interface RunningProcess {
 interface SpawnTarget {
   command: string;
   args: string[];
+  cwd?: string;
+  cleanup?: () => Promise<void>;
 }
+
+type RemoteExecutionSpec = SshRemoteExecutionSpec;
 
 type ChildProcessWithEvents = ChildProcess & {
   on(event: "error", listener: (err: Error) => void): ChildProcess;
+  on(
+    event: "exit",
+    listener: (code: number | null, signal: NodeJS.Signals | null) => void,
+  ): ChildProcess;
   on(
     event: "close",
     listener: (code: number | null, signal: NodeJS.Signals | null) => void,
@@ -60,16 +78,63 @@ function signalRunningProcess(
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
+const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
+const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
+const PATH_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
+const REDACTED_LOG_VALUE = "***REDACTED***";
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
 ];
+const MATERIALIZED_SKILL_SENTINEL = ".paperclip-materialized-skill.json";
+const MATERIALIZED_SKILL_LOCK_OWNER = "owner.json";
+const MATERIALIZED_SKILL_LOCK_STALE_MS = 30_000;
+
+function expandHomePrefix(value: string): string {
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/")) return path.resolve(os.homedir(), value.slice(2));
+  return value;
+}
+
+export function resolvePaperclipInstanceRootForAdapter(input: {
+  homeDir?: string;
+  instanceId?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): string {
+  const env = input.env ?? process.env;
+  const homeRaw = input.homeDir?.trim() || env.PAPERCLIP_HOME?.trim();
+  const homeDir = path.resolve(homeRaw ? expandHomePrefix(homeRaw) : path.resolve(os.homedir(), ".paperclip"));
+  const instanceId = input.instanceId?.trim() || env.PAPERCLIP_INSTANCE_ID?.trim() || DEFAULT_PAPERCLIP_INSTANCE_ID;
+  if (!PATH_SEGMENT_RE.test(instanceId)) throw new Error(`Invalid PAPERCLIP_INSTANCE_ID '${instanceId}'.`);
+  return path.resolve(homeDir, "instances", instanceId);
+}
+
+export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
+  "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
+  "",
+  "Execution contract:",
+  "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
+  "- Leave durable progress in comments, documents, or work products, then update the issue to a clear final disposition before ending the heartbeat.",
+  "- Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+  "- Final disposition checklist: mark `done` when complete; use `in_review` only with a real reviewer, approval, interaction, or monitor path; use `blocked` only with first-class blockers or a named unblock owner/action; create delegated follow-up issues with blockers when another agent owns the next step; keep `in_progress` only when a live continuation path exists.",
+  "- Prefer the smallest verification that proves the change; do not default to full workspace typecheck/build/test on every heartbeat unless the task scope warrants it.",
+  "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
+  "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
+  "- Create child issues directly when you know what needs to be done; use issue-thread interactions when the board/user must choose suggested tasks, answer structured questions, or confirm a proposal.",
+  "- To ask for that input, create an interaction on the current issue with POST /api/issues/{issueId}/interactions using kind suggest_tasks, ask_user_questions, or request_confirmation. Use continuationPolicy wake_assignee when you need to resume after a response; for request_confirmation this resumes only after acceptance.",
+  "- When you intentionally restart follow-up work on a completed assigned issue, include structured `resume: true` with the POST /api/issues/{issueId}/comments or PATCH /api/issues/{issueId} comment payload. Generic agent comments on closed issues are inert by default.",
+  "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
+  "- If blocked, mark the issue blocked and name the unblock owner and action.",
+  "- Respect budget, pause/cancel, approval gates, and company boundaries.",
+].join("\n");
 
 export interface PaperclipSkillEntry {
   key: string;
   runtimeName: string;
   source: string;
+  sourceStatus?: "available" | "missing";
+  missingDetail?: string | null;
   required?: boolean;
   requiredReason?: string | null;
 }
@@ -77,6 +142,11 @@ export interface PaperclipSkillEntry {
 export interface InstalledSkillTarget {
   targetPath: string | null;
   kind: "symlink" | "directory" | "file";
+}
+
+export interface MaterializedPaperclipSkillCopyResult {
+  copiedFiles: number;
+  skippedSymlinks: string[];
 }
 
 interface PersistentSkillSnapshotOptions {
@@ -91,6 +161,22 @@ interface PersistentSkillSnapshotOptions {
   externalConflictDetail: string;
   externalDetail: string;
   warnings?: string[];
+}
+
+interface RuntimeMountedSkillSnapshotOptions {
+  adapterType: string;
+  availableEntries: PaperclipSkillEntry[];
+  desiredSkills: string[];
+  configuredDetail: string | ((entry: PaperclipSkillEntry) => string | null);
+  missingDetail?: string;
+  mode?: "ephemeral" | "unsupported";
+  supported?: boolean;
+  unsupportedDetail?: string | ((entry: PaperclipSkillEntry) => string | null);
+  warnings?: string[];
+  externalInstalled?: Map<string, InstalledSkillTarget>;
+  externalLocationLabel?: string | null;
+  externalDetail?: string;
+  skillsHome?: string;
 }
 
 function normalizePathSlashes(value: string): string {
@@ -123,6 +209,26 @@ function buildManagedSkillOrigin(entry: { required?: boolean }): Pick<
     originLabel: "Managed by Paperclip",
     readOnly: false,
   };
+}
+
+function isPaperclipSkillSourceMissing(entry: PaperclipSkillEntry) {
+  return entry.sourceStatus === "missing";
+}
+
+function resolvePaperclipSkillMissingDetail(
+  entry: PaperclipSkillEntry,
+  fallback: string,
+) {
+  return entry.missingDetail?.trim() || fallback;
+}
+
+function resolveSkillDetail(
+  detail: string | ((entry: PaperclipSkillEntry) => string | null) | null | undefined,
+  entry: PaperclipSkillEntry,
+): string | null {
+  if (typeof detail === "function") return detail(entry);
+  if (typeof detail === "string") return detail;
+  return null;
 }
 
 function resolveInstalledEntryTarget(
@@ -180,6 +286,22 @@ export function appendWithCap(prev: string, chunk: string, cap = MAX_CAPTURE_BYT
   return combined.length > cap ? combined.slice(combined.length - cap) : combined;
 }
 
+export function appendWithByteCap(prev: string, chunk: string, cap = MAX_CAPTURE_BYTES) {
+  const combined = prev + chunk;
+  const bytes = Buffer.byteLength(combined, "utf8");
+  if (bytes <= cap) return combined;
+
+  const buffer = Buffer.from(combined, "utf8");
+  let start = Math.max(0, bytes - cap);
+  while (start < buffer.length && (buffer[start]! & 0xc0) === 0x80) start += 1;
+  return buffer.subarray(start).toString("utf8");
+}
+
+function resumeReadable(readable: { resume: () => unknown; destroyed?: boolean } | null | undefined) {
+  if (!readable || readable.destroyed) return;
+  readable.resume();
+}
+
 export function resolvePathValue(obj: Record<string, unknown>, dottedPath: string) {
   const parts = dottedPath.split(".");
   let cursor: unknown = obj;
@@ -221,6 +343,7 @@ type PaperclipWakeIssue = {
   identifier: string | null;
   title: string | null;
   status: string | null;
+  workMode: string | null;
   priority: string | null;
 };
 
@@ -236,6 +359,9 @@ type PaperclipWakeExecutionStage = {
   stageType: string | null;
   currentParticipant: PaperclipWakeExecutionPrincipal | null;
   returnAssignee: PaperclipWakeExecutionPrincipal | null;
+  reviewRequest: {
+    instructions: string;
+  } | null;
   lastDecisionOutcome: string | null;
   allowedActions: string[];
 };
@@ -250,11 +376,63 @@ type PaperclipWakeComment = {
   authorId: string | null;
 };
 
+type PaperclipWakeContinuationSummary = {
+  key: string | null;
+  title: string | null;
+  body: string;
+  bodyTruncated: boolean;
+  updatedAt: string | null;
+};
+
+type PaperclipWakeLivenessContinuation = {
+  attempt: number | null;
+  maxAttempts: number | null;
+  sourceRunId: string | null;
+  state: string | null;
+  reason: string | null;
+  instruction: string | null;
+};
+
+type PaperclipWakeChildIssueSummary = {
+  id: string | null;
+  identifier: string | null;
+  title: string | null;
+  status: string | null;
+  priority: string | null;
+  summary: string | null;
+};
+
+type PaperclipWakeBlockerSummary = {
+  id: string | null;
+  identifier: string | null;
+  title: string | null;
+  status: string | null;
+  priority: string | null;
+};
+
+type PaperclipWakeTreeHoldSummary = {
+  holdId: string | null;
+  rootIssueId: string | null;
+  mode: string | null;
+  reason: string | null;
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
   checkedOutByHarness: boolean;
+  dependencyBlockedInteraction: boolean;
+  treeHoldInteraction: boolean;
+  activeTreeHold: PaperclipWakeTreeHoldSummary | null;
+  unresolvedBlockerIssueIds: string[];
+  unresolvedBlockerSummaries: PaperclipWakeBlockerSummary[];
   executionStage: PaperclipWakeExecutionStage | null;
+  continuationSummary: PaperclipWakeContinuationSummary | null;
+  livenessContinuation: PaperclipWakeLivenessContinuation | null;
+  interactionKind: string | null;
+  interactionStatus: string | null;
+  childIssueSummaries: PaperclipWakeChildIssueSummary[];
+  childIssueSummaryTruncated: boolean;
   commentIds: string[];
   latestCommentId: string | null;
   comments: PaperclipWakeComment[];
@@ -271,6 +449,7 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
   const identifier = asString(issue.identifier, "").trim() || null;
   const title = asString(issue.title, "").trim() || null;
   const status = asString(issue.status, "").trim() || null;
+  const workMode = asString(issue.workMode, "").trim() || null;
   const priority = asString(issue.priority, "").trim() || null;
   if (!id && !identifier && !title) return null;
   return {
@@ -278,6 +457,7 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
     identifier,
     title,
     status,
+    workMode,
     priority,
   };
 }
@@ -296,6 +476,71 @@ function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | n
     authorType: asString(author.type, "").trim() || null,
     authorId: asString(author.id, "").trim() || null,
   };
+}
+
+function normalizePaperclipWakeContinuationSummary(value: unknown): PaperclipWakeContinuationSummary | null {
+  const summary = parseObject(value);
+  const body = asString(summary.body, "").trim();
+  if (!body) return null;
+  return {
+    key: asString(summary.key, "").trim() || null,
+    title: asString(summary.title, "").trim() || null,
+    body,
+    bodyTruncated: asBoolean(summary.bodyTruncated, false),
+    updatedAt: asString(summary.updatedAt, "").trim() || null,
+  };
+}
+
+function normalizePaperclipWakeLivenessContinuation(value: unknown): PaperclipWakeLivenessContinuation | null {
+  const continuation = parseObject(value);
+  const attempt = asNumber(continuation.attempt, 0);
+  const maxAttempts = asNumber(continuation.maxAttempts, 0);
+  const sourceRunId = asString(continuation.sourceRunId, "").trim() || null;
+  const state = asString(continuation.state, "").trim() || null;
+  const reason = asString(continuation.reason, "").trim() || null;
+  const instruction = asString(continuation.instruction, "").trim() || null;
+  if (!attempt && !maxAttempts && !sourceRunId && !state && !reason && !instruction) return null;
+  return {
+    attempt: attempt > 0 ? attempt : null,
+    maxAttempts: maxAttempts > 0 ? maxAttempts : null,
+    sourceRunId,
+    state,
+    reason,
+    instruction,
+  };
+}
+
+function normalizePaperclipWakeChildIssueSummary(value: unknown): PaperclipWakeChildIssueSummary | null {
+  const child = parseObject(value);
+  const id = asString(child.id, "").trim() || null;
+  const identifier = asString(child.identifier, "").trim() || null;
+  const title = asString(child.title, "").trim() || null;
+  const status = asString(child.status, "").trim() || null;
+  const priority = asString(child.priority, "").trim() || null;
+  const summary = asString(child.summary, "").trim() || null;
+  if (!id && !identifier && !title && !status && !summary) return null;
+  return { id, identifier, title, status, priority, summary };
+}
+
+function normalizePaperclipWakeBlockerSummary(value: unknown): PaperclipWakeBlockerSummary | null {
+  const blocker = parseObject(value);
+  const id = asString(blocker.id, "").trim() || null;
+  const identifier = asString(blocker.identifier, "").trim() || null;
+  const title = asString(blocker.title, "").trim() || null;
+  const status = asString(blocker.status, "").trim() || null;
+  const priority = asString(blocker.priority, "").trim() || null;
+  if (!id && !identifier && !title && !status) return null;
+  return { id, identifier, title, status, priority };
+}
+
+function normalizePaperclipWakeTreeHoldSummary(value: unknown): PaperclipWakeTreeHoldSummary | null {
+  const hold = parseObject(value);
+  const holdId = asString(hold.holdId, "").trim() || null;
+  const rootIssueId = asString(hold.rootIssueId, "").trim() || null;
+  const mode = asString(hold.mode, "").trim() || null;
+  const reason = asString(hold.reason, "").trim() || null;
+  if (!holdId && !rootIssueId && !mode && !reason) return null;
+  return { holdId, rootIssueId, mode, reason };
 }
 
 function normalizePaperclipWakeExecutionPrincipal(value: unknown): PaperclipWakeExecutionPrincipal | null {
@@ -323,11 +568,14 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
     : [];
   const currentParticipant = normalizePaperclipWakeExecutionPrincipal(stage.currentParticipant);
   const returnAssignee = normalizePaperclipWakeExecutionPrincipal(stage.returnAssignee);
+  const reviewRequestRaw = parseObject(stage.reviewRequest);
+  const reviewInstructions = asString(reviewRequestRaw.instructions, "").trim();
+  const reviewRequest = reviewInstructions ? { instructions: reviewInstructions } : null;
   const stageId = asString(stage.stageId, "").trim() || null;
   const stageType = asString(stage.stageType, "").trim() || null;
   const lastDecisionOutcome = asString(stage.lastDecisionOutcome, "").trim() || null;
 
-  if (!wakeRole && !stageId && !stageType && !currentParticipant && !returnAssignee && !lastDecisionOutcome && allowedActions.length === 0) {
+  if (!wakeRole && !stageId && !stageType && !currentParticipant && !returnAssignee && !reviewRequest && !lastDecisionOutcome && allowedActions.length === 0) {
     return null;
   }
 
@@ -337,6 +585,7 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
     stageType,
     currentParticipant,
     returnAssignee,
+    reviewRequest,
     lastDecisionOutcome,
     allowedActions,
   };
@@ -356,8 +605,26 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
         .map((entry) => entry.trim())
     : [];
   const executionStage = normalizePaperclipWakeExecutionStage(payload.executionStage);
+  const continuationSummary = normalizePaperclipWakeContinuationSummary(payload.continuationSummary);
+  const livenessContinuation = normalizePaperclipWakeLivenessContinuation(payload.livenessContinuation);
+  const childIssueSummaries = Array.isArray(payload.childIssueSummaries)
+    ? payload.childIssueSummaries
+        .map((entry) => normalizePaperclipWakeChildIssueSummary(entry))
+        .filter((entry): entry is PaperclipWakeChildIssueSummary => Boolean(entry))
+    : [];
+  const unresolvedBlockerIssueIds = Array.isArray(payload.unresolvedBlockerIssueIds)
+    ? payload.unresolvedBlockerIssueIds
+        .map((entry) => asString(entry, "").trim())
+        .filter(Boolean)
+    : [];
+  const unresolvedBlockerSummaries = Array.isArray(payload.unresolvedBlockerSummaries)
+    ? payload.unresolvedBlockerSummaries
+        .map((entry) => normalizePaperclipWakeBlockerSummary(entry))
+        .filter((entry): entry is PaperclipWakeBlockerSummary => Boolean(entry))
+    : [];
 
-  if (comments.length === 0 && commentIds.length === 0 && !executionStage && !normalizePaperclipWakeIssue(payload.issue)) {
+  const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
+  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -365,7 +632,18 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     reason: asString(payload.reason, "").trim() || null,
     issue: normalizePaperclipWakeIssue(payload.issue),
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
+    dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
+    treeHoldInteraction: asBoolean(payload.treeHoldInteraction, false),
+    activeTreeHold,
+    unresolvedBlockerIssueIds,
+    unresolvedBlockerSummaries,
     executionStage,
+    continuationSummary,
+    livenessContinuation,
+    interactionKind: asString(payload.interactionKind, "").trim() || null,
+    interactionStatus: asString(payload.interactionStatus, "").trim() || null,
+    childIssueSummaries,
+    childIssueSummaryTruncated: asBoolean(payload.childIssueSummaryTruncated, false),
     commentIds,
     latestCommentId: asString(payload.latestCommentId, "").trim() || null,
     comments,
@@ -381,6 +659,15 @@ export function stringifyPaperclipWakePayload(value: unknown): string | null {
   const normalized = normalizePaperclipWakePayload(value);
   if (!normalized) return null;
   return JSON.stringify(normalized);
+}
+
+export function readPaperclipIssueWorkModeFromContext(value: unknown): string | null {
+  const context = parseObject(value);
+  const issue = parseObject(context.paperclipIssue);
+  const direct = asString(issue.workMode, "").trim();
+  if (direct) return direct;
+  const wake = normalizePaperclipWakePayload(context.paperclipWake);
+  return wake?.issue?.workMode ?? null;
 }
 
 export function renderPaperclipWakePrompt(
@@ -406,6 +693,8 @@ export function renderPaperclipWakePrompt(
         "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
         "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
+        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+        "",
         `- reason: ${normalized.reason ?? "unknown"}`,
         `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
         `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
@@ -421,6 +710,8 @@ export function renderPaperclipWakePrompt(
         "Use this inline wake data first before refetching the issue thread.",
         "Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
+        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+        "",
         `- reason: ${normalized.reason ?? "unknown"}`,
         `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
         `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
@@ -431,11 +722,53 @@ export function renderPaperclipWakePrompt(
   if (normalized.issue?.status) {
     lines.push(`- issue status: ${normalized.issue.status}`);
   }
+  if (normalized.issue?.workMode) {
+    lines.push(`- issue work mode: ${normalized.issue.workMode}`);
+  }
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
   }
+  if (normalized.issue?.workMode === "planning") {
+    const hasWakeComments = normalized.comments.length > 0;
+    const acceptedPlanContinuation =
+      !hasWakeComments &&
+      normalized.interactionKind === "request_confirmation" && normalized.interactionStatus === "accepted";
+    let directive = "Make the plan only. Do not write code or perform implementation work.";
+    if (hasWakeComments) {
+      directive = "Update the plan only. Do not write code or perform implementation work.";
+    }
+    if (acceptedPlanContinuation) {
+      directive = "Create child issues from the approved plan only. Do not write code or perform implementation work on the planning issue.";
+    }
+    lines.push(`- planning directive: ${directive}`);
+    if (acceptedPlanContinuation) {
+      lines.push(
+        "- accepted-plan continuation: you may create child implementation issues from the approved plan, but must not start implementation work on the planning issue itself",
+      );
+    }
+  }
   if (normalized.checkedOutByHarness) {
     lines.push("- checkout: already claimed by the harness for this run");
+  }
+  if (normalized.dependencyBlockedInteraction) {
+    lines.push("- dependency-blocked interaction: yes");
+    lines.push("- execution scope: respond or triage the human comment; do not treat blocker-dependent deliverable work as unblocked");
+    if (normalized.unresolvedBlockerSummaries.length > 0) {
+      const blockers = normalized.unresolvedBlockerSummaries
+        .map((blocker) => `${blocker.identifier ?? blocker.id ?? "unknown"}${blocker.title ? ` ${blocker.title}` : ""}${blocker.status ? ` (${blocker.status})` : ""}`)
+        .join("; ");
+      lines.push(`- unresolved blockers: ${blockers}`);
+    } else if (normalized.unresolvedBlockerIssueIds.length > 0) {
+      lines.push(`- unresolved blocker issue ids: ${normalized.unresolvedBlockerIssueIds.join(", ")}`);
+    }
+  }
+  if (normalized.treeHoldInteraction) {
+    lines.push("- tree-hold interaction: yes");
+    lines.push("- execution scope: respond or triage the human comment; the subtree remains paused until an explicit resume action");
+    if (normalized.activeTreeHold) {
+      const hold = normalized.activeTreeHold;
+      lines.push(`- active tree hold: ${hold.holdId ?? "unknown"}${hold.rootIssueId ? ` rooted at ${hold.rootIssueId}` : ""}${hold.mode ? ` (${hold.mode})` : ""}`);
+    }
   }
   if (normalized.missingCount > 0) {
     lines.push(`- omitted comments: ${normalized.missingCount}`);
@@ -452,6 +785,13 @@ export function renderPaperclipWakePrompt(
     if (executionStage.allowedActions.length > 0) {
       lines.push(`- allowed actions: ${executionStage.allowedActions.join(", ")}`);
     }
+    if (executionStage.reviewRequest) {
+      lines.push(
+        "",
+        "Review request instructions:",
+        executionStage.reviewRequest.instructions,
+      );
+    }
     lines.push("");
     if (executionStage.wakeRole === "reviewer" || executionStage.wakeRole === "approver") {
       lines.push(
@@ -467,6 +807,55 @@ export function renderPaperclipWakePrompt(
         "Address the requested changes on this issue and resubmit when the work is ready.",
         "",
       );
+    }
+  }
+
+  if (normalized.continuationSummary) {
+    lines.push(
+      "",
+      "Issue continuation summary:",
+      normalized.continuationSummary.body,
+    );
+    if (normalized.continuationSummary.bodyTruncated) {
+      lines.push("[continuation summary truncated]");
+    }
+  }
+
+  if (normalized.livenessContinuation) {
+    const continuation = normalized.livenessContinuation;
+    lines.push("", "Run liveness continuation:");
+    if (continuation.attempt) {
+      lines.push(
+        `- attempt: ${continuation.attempt}${continuation.maxAttempts ? `/${continuation.maxAttempts}` : ""}`,
+      );
+    }
+    if (continuation.sourceRunId) {
+      lines.push(`- source run: ${continuation.sourceRunId}`);
+    }
+    if (continuation.state) {
+      lines.push(`- liveness state: ${continuation.state}`);
+    }
+    if (continuation.reason) {
+      lines.push(`- reason: ${continuation.reason}`);
+    }
+    if (continuation.instruction) {
+      lines.push(`- instruction: ${continuation.instruction}`);
+    }
+  }
+
+  if (normalized.childIssueSummaries.length > 0) {
+    lines.push("", "Direct child issue summaries:");
+    for (const child of normalized.childIssueSummaries) {
+      const label = child.identifier ?? child.id ?? "unknown";
+      lines.push(
+        `- ${label}${child.title ? ` ${child.title}` : ""}${child.status ? ` (${child.status})` : ""}`,
+      );
+      if (child.summary) {
+        lines.push(`  ${child.summary}`);
+      }
+    }
+    if (normalized.childIssueSummaryTruncated) {
+      lines.push("[child issue summaries truncated]");
     }
   }
 
@@ -503,9 +892,13 @@ export function renderPaperclipWakePrompt(
 export function redactEnvForLogs(env: Record<string, string>): Record<string, string> {
   const redacted: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
-    redacted[key] = SENSITIVE_ENV_KEY.test(key) ? "***REDACTED***" : value;
+    redacted[key] = SENSITIVE_ENV_KEY.test(key) ? REDACTED_LOG_VALUE : value;
   }
   return redacted;
+}
+
+export function redactCommandTextForLogs(command: string): string {
+  return redactCommandText(command, REDACTED_LOG_VALUE);
 }
 
 export function buildInvocationEnvForLogs(
@@ -529,7 +922,7 @@ export function buildInvocationEnvForLogs(
 
   const resolvedCommand = options.resolvedCommand?.trim();
   if (resolvedCommand) {
-    merged[options.resolvedCommandEnvKey ?? "PAPERCLIP_RESOLVED_COMMAND"] = resolvedCommand;
+    merged[options.resolvedCommandEnvKey ?? "PAPERCLIP_RESOLVED_COMMAND"] = redactCommandTextForLogs(resolvedCommand);
   }
 
   return redactEnvForLogs(merged);
@@ -550,9 +943,230 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
   );
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
-  const apiUrl = process.env.PAPERCLIP_API_URL ?? `http://${runtimeHost}:${runtimePort}`;
+  const apiUrl =
+    process.env.PAPERCLIP_RUNTIME_API_URL ??
+    process.env.PAPERCLIP_API_URL ??
+    `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
   return vars;
+}
+
+export function applyPaperclipWorkspaceEnv(
+  env: Record<string, string>,
+  input: {
+    workspaceCwd?: string | null;
+    workspaceSource?: string | null;
+    workspaceStrategy?: string | null;
+    workspaceId?: string | null;
+    workspaceRepoUrl?: string | null;
+    workspaceRepoRef?: string | null;
+    workspaceBranch?: string | null;
+    workspaceWorktreePath?: string | null;
+    agentHome?: string | null;
+  },
+): Record<string, string> {
+  const mappings = [
+    ["PAPERCLIP_WORKSPACE_CWD", input.workspaceCwd],
+    ["PAPERCLIP_WORKSPACE_SOURCE", input.workspaceSource],
+    ["PAPERCLIP_WORKSPACE_STRATEGY", input.workspaceStrategy],
+    ["PAPERCLIP_WORKSPACE_ID", input.workspaceId],
+    ["PAPERCLIP_WORKSPACE_REPO_URL", input.workspaceRepoUrl],
+    ["PAPERCLIP_WORKSPACE_REPO_REF", input.workspaceRepoRef],
+    ["PAPERCLIP_WORKSPACE_BRANCH", input.workspaceBranch],
+    ["PAPERCLIP_WORKSPACE_WORKTREE_PATH", input.workspaceWorktreePath],
+    ["AGENT_HOME", input.agentHome],
+  ] as const;
+
+  for (const [key, value] of mappings) {
+    if (typeof value === "string" && value.length > 0) {
+      env[key] = value;
+    }
+  }
+
+  return env;
+}
+
+export function shapePaperclipWorkspaceEnvForExecution(input: {
+  workspaceCwd?: string | null;
+  workspaceWorktreePath?: string | null;
+  workspaceHints?: Array<Record<string, unknown>>;
+  executionTargetIsRemote?: boolean;
+  executionCwd?: string | null;
+}): {
+  workspaceCwd: string | null;
+  workspaceWorktreePath: string | null;
+  workspaceHints: Array<Record<string, unknown>>;
+} {
+  const workspaceCwd =
+    typeof input.workspaceCwd === "string" && input.workspaceCwd.trim().length > 0
+      ? input.workspaceCwd.trim()
+      : null;
+  const workspaceWorktreePath =
+    typeof input.workspaceWorktreePath === "string" && input.workspaceWorktreePath.trim().length > 0
+      ? input.workspaceWorktreePath.trim()
+      : null;
+  const workspaceHints = Array.isArray(input.workspaceHints) ? input.workspaceHints : [];
+
+  if (!input.executionTargetIsRemote) {
+    return {
+      workspaceCwd,
+      workspaceWorktreePath,
+      workspaceHints,
+    };
+  }
+
+  const executionCwd =
+    typeof input.executionCwd === "string" && input.executionCwd.trim().length > 0
+      ? input.executionCwd.trim()
+      : null;
+  // On a remote target we must never fall back to the local workspaceCwd —
+  // doing so leaks host paths into the remote env (the exact failure mode
+  // this helper exists to prevent). Callers are expected to resolve
+  // executionCwd via adapterExecutionTargetRemoteCwd before calling this
+  // helper, which always returns a non-empty string. Surface a warning so
+  // future callers don't silently regress to the leak.
+  if (executionCwd === null) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[paperclip] shapePaperclipWorkspaceEnvForExecution called with executionCwd=null on a remote target; " +
+        "stripping workspaceCwd to avoid leaking local paths into the remote environment.",
+    );
+  }
+  const realizedWorkspaceCwd = executionCwd;
+  const localWorkspaceCwd = workspaceCwd ? path.resolve(workspaceCwd) : null;
+  const shapedWorkspaceHints = workspaceHints.map((hint) => {
+    const nextHint = { ...hint };
+    const hintCwd = typeof nextHint.cwd === "string" ? nextHint.cwd.trim() : "";
+    if (!hintCwd) return nextHint;
+
+    if (localWorkspaceCwd && path.resolve(hintCwd) === localWorkspaceCwd) {
+      if (realizedWorkspaceCwd) {
+        nextHint.cwd = realizedWorkspaceCwd;
+      } else {
+        delete nextHint.cwd;
+      }
+      return nextHint;
+    }
+
+    delete nextHint.cwd;
+    return nextHint;
+  });
+
+  return {
+    workspaceCwd: realizedWorkspaceCwd,
+    workspaceWorktreePath: null,
+    workspaceHints: shapedWorkspaceHints,
+  };
+}
+
+export function rewriteWorkspaceCwdEnvVarsForExecution(input: {
+  env: Record<string, unknown>;
+  workspaceCwd?: string | null;
+  executionCwd?: string | null;
+  executionTargetIsRemote?: boolean;
+}): Record<string, string> {
+  const nextEnv = Object.fromEntries(
+    Object.entries(input.env)
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  ) as Record<string, string>;
+  const localWorkspaceCwd = typeof input.workspaceCwd === "string" && input.workspaceCwd.trim().length > 0
+    ? path.resolve(input.workspaceCwd)
+    : null;
+  // executionCwd is a remote path on the target host; we deliberately do not
+  // run `path.resolve` against it because that applies host-Node semantics
+  // (current working directory, host path separator) to a path that lives on
+  // the remote shell. Callers always pass absolute remote paths, so we
+  // forward the trimmed value verbatim.
+  const remoteWorkspaceCwd = typeof input.executionCwd === "string" && input.executionCwd.trim().length > 0
+    ? input.executionCwd.trim()
+    : null;
+
+  if (!input.executionTargetIsRemote || !localWorkspaceCwd || !remoteWorkspaceCwd) {
+    return nextEnv;
+  }
+
+  for (const [key, value] of Object.entries(nextEnv)) {
+    if (!key.endsWith("_WORKSPACE_CWD")) continue;
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    if (path.resolve(trimmed) !== localWorkspaceCwd) continue;
+    nextEnv[key] = remoteWorkspaceCwd;
+  }
+
+  return nextEnv;
+}
+
+export function refreshPaperclipWorkspaceEnvForExecution(input: {
+  env: Record<string, string>;
+  envConfig?: Record<string, unknown>;
+  workspaceCwd?: string | null;
+  workspaceSource?: string | null;
+  workspaceStrategy?: string | null;
+  workspaceId?: string | null;
+  workspaceRepoUrl?: string | null;
+  workspaceRepoRef?: string | null;
+  workspaceBranch?: string | null;
+  workspaceWorktreePath?: string | null;
+  workspaceHints?: Array<Record<string, unknown>>;
+  agentHome?: string | null;
+  executionTargetIsRemote?: boolean;
+  executionCwd?: string | null;
+}): {
+  workspaceCwd: string | null;
+  workspaceWorktreePath: string | null;
+  workspaceHints: Array<Record<string, unknown>>;
+} {
+  const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
+    workspaceCwd: input.workspaceCwd,
+    workspaceWorktreePath: input.workspaceWorktreePath,
+    workspaceHints: input.workspaceHints,
+    executionTargetIsRemote: input.executionTargetIsRemote,
+    executionCwd: input.executionCwd,
+  });
+
+  delete input.env.PAPERCLIP_WORKSPACE_CWD;
+  delete input.env.PAPERCLIP_WORKSPACE_WORKTREE_PATH;
+  delete input.env.PAPERCLIP_WORKSPACES_JSON;
+
+  applyPaperclipWorkspaceEnv(input.env, {
+    workspaceCwd: shapedWorkspaceEnv.workspaceCwd,
+    workspaceSource: input.workspaceSource,
+    workspaceStrategy: input.workspaceStrategy,
+    workspaceId: input.workspaceId,
+    workspaceRepoUrl: input.workspaceRepoUrl,
+    workspaceRepoRef: input.workspaceRepoRef,
+    workspaceBranch: input.workspaceBranch,
+    workspaceWorktreePath: shapedWorkspaceEnv.workspaceWorktreePath,
+    agentHome: input.agentHome,
+  });
+
+  if (shapedWorkspaceEnv.workspaceHints.length > 0) {
+    input.env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(shapedWorkspaceEnv.workspaceHints);
+  }
+
+  const shapedEnvConfig = rewriteWorkspaceCwdEnvVarsForExecution({
+    env: input.envConfig ?? {},
+    workspaceCwd: input.workspaceCwd,
+    executionCwd: shapedWorkspaceEnv.workspaceCwd,
+    executionTargetIsRemote: input.executionTargetIsRemote,
+  });
+  for (const [key, value] of Object.entries(shapedEnvConfig)) {
+    input.env[key] = value;
+  }
+
+  return shapedWorkspaceEnv;
+}
+
+export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...baseEnv };
+  for (const key of Object.keys(env)) {
+    if (!key.startsWith("PAPERCLIP_")) continue;
+    if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
+    if (key === "PAPERCLIP_LISTEN_HOST") continue;
+    if (key === "PAPERCLIP_LISTEN_PORT") continue;
+    delete env[key];
+  }
+  return env;
 }
 
 export function defaultPathForPlatform() {
@@ -603,7 +1217,18 @@ async function resolveCommandPath(command: string, cwd: string, env: NodeJS.Proc
   return null;
 }
 
-export async function resolveCommandForLogs(command: string, cwd: string, env: NodeJS.ProcessEnv): Promise<string> {
+export async function resolveCommandForLogs(
+  command: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  options: {
+    remoteExecution?: RemoteExecutionSpec | null;
+  } = {},
+): Promise<string> {
+  const remote = options.remoteExecution ?? null;
+  if (remote) {
+    return `ssh://${remote.username}@${remote.host}:${remote.port}/${remote.remoteCwd} :: ${command}`;
+  }
   return (await resolveCommandPath(command, cwd, env)) ?? command;
 }
 
@@ -611,6 +1236,13 @@ function quoteForCmd(arg: string) {
   if (!arg.length) return '""';
   const escaped = arg.replace(/"/g, '""');
   return /[\s"&<>|^()]/.test(escaped) ? `"${escaped}"` : escaped;
+}
+
+export function sanitizeSshRemoteEnv(
+  env: Record<string, string>,
+  inheritedEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  return sanitizeRemoteExecutionEnv(env, inheritedEnv);
 }
 
 function resolveWindowsCmdShell(env: NodeJS.ProcessEnv): string {
@@ -623,7 +1255,33 @@ async function resolveSpawnTarget(
   args: string[],
   cwd: string,
   env: NodeJS.ProcessEnv,
+  options: {
+    remoteExecution?: RemoteExecutionSpec | null;
+    remoteEnv?: Record<string, string> | null;
+  } = {},
 ): Promise<SpawnTarget> {
+  const remote = options.remoteExecution ?? null;
+  if (remote) {
+    const sshResolved = await resolveCommandPath("ssh", process.cwd(), env);
+    if (!sshResolved) {
+      throw new Error('Command not found in PATH: "ssh"');
+    }
+    const spawnTarget = await buildSshSpawnTarget({
+      spec: remote,
+      command,
+      args,
+      env: Object.fromEntries(
+        Object.entries(options.remoteEnv ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+      ),
+    });
+    return {
+      command: sshResolved,
+      args: spawnTarget.args,
+      cwd: process.cwd(),
+      cleanup: spawnTarget.cleanup,
+    };
+  }
+
   const resolved = await resolveCommandPath(command, cwd, env);
   const executable = resolved ?? command;
 
@@ -708,6 +1366,20 @@ export async function resolvePaperclipSkillsDir(
   return null;
 }
 
+async function readSkillRequired(skillDir: string): Promise<boolean> {
+  try {
+    const content = await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8");
+    const normalized = content.replace(/\r\n/g, "\n");
+    if (!normalized.startsWith("---\n")) return true;
+    const closing = normalized.indexOf("\n---\n", 4);
+    if (closing < 0) return true;
+    const frontmatter = normalized.slice(4, closing);
+    return !/^\s*required\s*:\s*false\s*$/m.test(frontmatter);
+  } catch {
+    return true;
+  }
+}
+
 export async function listPaperclipSkillEntries(
   moduleDir: string,
   additionalCandidates: string[] = [],
@@ -717,15 +1389,20 @@ export async function listPaperclipSkillEntries(
 
   try {
     const entries = await fs.readdir(root, { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => ({
+    const dirs = entries.filter((entry) => entry.isDirectory());
+    return Promise.all(dirs.map(async (entry) => {
+      const skillDir = path.join(root, entry.name);
+      const required = await readSkillRequired(skillDir);
+      return {
         key: `paperclipai/paperclip/${entry.name}`,
         runtimeName: entry.name,
-        source: path.join(root, entry.name),
-        required: true,
-        requiredReason: "Bundled Paperclip skills are always available for local adapters.",
-      }));
+        source: skillDir,
+        required,
+        requiredReason: required
+          ? "Bundled Paperclip skills are always available for local adapters."
+          : null,
+      };
+    }));
   } catch {
     return [];
   }
@@ -740,6 +1417,120 @@ export async function readInstalledSkillTargets(skillsHome: string): Promise<Map
     out.set(entry.name, resolveInstalledEntryTarget(skillsHome, entry.name, entry, linkedPath));
   }
   return out;
+}
+
+export function buildRuntimeMountedSkillSnapshot(
+  options: RuntimeMountedSkillSnapshotOptions,
+): AdapterSkillSnapshot {
+  const {
+    adapterType,
+    availableEntries,
+    desiredSkills,
+    configuredDetail,
+    missingDetail = "Paperclip cannot find this skill in the local runtime skills directory.",
+    mode = "ephemeral",
+    externalInstalled,
+    externalLocationLabel,
+    externalDetail = "Installed outside Paperclip management.",
+    skillsHome,
+  } = options;
+  const supported = options.supported ?? mode !== "unsupported";
+  const availableByKey = new Map(availableEntries.map((entry) => [entry.key, entry]));
+  const desiredSet = new Set(desiredSkills);
+  const entries: AdapterSkillEntry[] = [];
+  const warnings = [...(options.warnings ?? [])];
+
+  for (const available of availableEntries) {
+    const desired = desiredSet.has(available.key);
+    if (isPaperclipSkillSourceMissing(available)) {
+      entries.push({
+        key: available.key,
+        runtimeName: available.runtimeName,
+        desired,
+        managed: true,
+        state: "missing",
+        sourcePath: null,
+        targetPath: null,
+        detail: resolvePaperclipSkillMissingDetail(available, missingDetail),
+        required: Boolean(available.required),
+        requiredReason: available.requiredReason ?? null,
+        ...buildManagedSkillOrigin(available),
+      });
+      continue;
+    }
+
+    const configured = supported && mode === "ephemeral" && desired;
+    entries.push({
+      key: available.key,
+      runtimeName: available.runtimeName,
+      desired,
+      managed: true,
+      state: configured ? "configured" : "available",
+      sourcePath: available.source,
+      targetPath: null,
+      detail: desired
+        ? configured
+          ? resolveSkillDetail(configuredDetail, available)
+          : resolveSkillDetail(
+              options.unsupportedDetail
+                ?? "Desired state is stored in Paperclip only; this adapter cannot apply skills at runtime.",
+              available,
+            )
+        : null,
+      required: Boolean(available.required),
+      requiredReason: available.requiredReason ?? null,
+      ...buildManagedSkillOrigin(available),
+    });
+  }
+
+  for (const desiredSkill of desiredSkills) {
+    if (availableByKey.has(desiredSkill)) continue;
+    warnings.push(`Desired skill "${desiredSkill}" is not available from the Paperclip skills directory.`);
+    entries.push({
+      key: desiredSkill,
+      runtimeName: null,
+      desired: true,
+      managed: true,
+      state: "missing",
+      sourcePath: null,
+      targetPath: null,
+      detail: missingDetail,
+      origin: "external_unknown",
+      originLabel: "External or unavailable",
+      readOnly: false,
+    });
+  }
+
+  if (externalInstalled) {
+    for (const [name, installedEntry] of externalInstalled.entries()) {
+      if (availableEntries.some((entry) => entry.runtimeName === name)) continue;
+      entries.push({
+        key: name,
+        runtimeName: name,
+        desired: false,
+        managed: false,
+        state: "external",
+        origin: "user_installed",
+        originLabel: "User-installed",
+        locationLabel: skillLocationLabel(externalLocationLabel),
+        readOnly: true,
+        sourcePath: null,
+        targetPath: installedEntry.targetPath ?? (skillsHome ? path.join(skillsHome, name) : null),
+        detail: externalDetail,
+      });
+    }
+  }
+
+  entries.sort((left, right) => left.key.localeCompare(right.key));
+
+  return {
+    adapterType,
+    supported,
+    mode,
+    desiredSkills,
+    entries,
+    warnings,
+  };
 }
 
 export function buildPersistentSkillSnapshot(
@@ -765,6 +1556,26 @@ export function buildPersistentSkillSnapshot(
   for (const available of availableEntries) {
     const installedEntry = installed.get(available.runtimeName) ?? null;
     const desired = desiredSet.has(available.key);
+    if (isPaperclipSkillSourceMissing(available)) {
+      entries.push({
+        key: available.key,
+        runtimeName: available.runtimeName,
+        desired,
+        managed: true,
+        state: "missing",
+        sourcePath: null,
+        targetPath: path.join(skillsHome, available.runtimeName),
+        detail: resolvePaperclipSkillMissingDetail(
+          available,
+          missingDetail,
+        ),
+        required: Boolean(available.required),
+        requiredReason: available.requiredReason ?? null,
+        ...buildManagedSkillOrigin(available),
+      });
+      continue;
+    }
+
     let state: AdapterSkillEntry["state"] = "available";
     let managed = false;
     let detail: string | null = null;
@@ -857,6 +1668,11 @@ function normalizeConfiguredPaperclipRuntimeSkills(value: unknown): PaperclipSki
       key,
       runtimeName,
       source,
+      sourceStatus: entry.sourceStatus === "missing" ? "missing" : "available",
+      missingDetail:
+        typeof entry.missingDetail === "string" && entry.missingDetail.trim().length > 0
+          ? entry.missingDetail.trim()
+          : null,
       required: asBoolean(entry.required, false),
       requiredReason:
         typeof entry.requiredReason === "string" && entry.requiredReason.trim().length > 0
@@ -1012,6 +1828,190 @@ export async function ensurePaperclipSkillSymlink(
   return "repaired";
 }
 
+async function hashSkillDirectory(root: string): Promise<string> {
+  const hash = createHash("sha256");
+
+  async function visit(candidate: string, relativePath: string): Promise<void> {
+    const stat = await fs.lstat(candidate);
+    if (stat.isSymbolicLink()) {
+      hash.update(`symlink:${relativePath}\n`);
+      return;
+    }
+    if (stat.isDirectory()) {
+      hash.update(`dir:${relativePath}\n`);
+      const entries = await fs.readdir(candidate, { withFileTypes: true });
+      entries.sort((left, right) => left.name.localeCompare(right.name));
+      for (const entry of entries) {
+        const childRelativePath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+        await visit(path.join(candidate, entry.name), childRelativePath);
+      }
+      return;
+    }
+    if (stat.isFile()) {
+      hash.update(`file:${relativePath}:${stat.mode}\n`);
+      hash.update(await fs.readFile(candidate));
+      hash.update("\n");
+      return;
+    }
+    hash.update(`other:${relativePath}:${stat.mode}\n`);
+  }
+
+  await visit(root, "");
+  return hash.digest("hex");
+}
+
+async function materializedSkillFingerprintMatches(targetRoot: string, sourceFingerprint: string): Promise<boolean> {
+  try {
+    const raw = JSON.parse(await fs.readFile(path.join(targetRoot, MATERIALIZED_SKILL_SENTINEL), "utf8")) as unknown;
+    const parsed = parseObject(raw);
+    return parsed.version === 1 && parsed.sourceFingerprint === sourceFingerprint;
+  } catch {
+    return false;
+  }
+}
+
+async function acquireMaterializeLock(lockDir: string): Promise<() => Promise<void>> {
+  await fs.mkdir(path.dirname(lockDir), { recursive: true });
+  const deadline = Date.now() + MATERIALIZED_SKILL_LOCK_STALE_MS;
+  while (true) {
+    try {
+      await fs.mkdir(lockDir);
+      await fs.writeFile(
+        path.join(lockDir, MATERIALIZED_SKILL_LOCK_OWNER),
+        `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
+        "utf8",
+      );
+      return async () => {
+        await fs.rm(lockDir, { recursive: true, force: true });
+      };
+    } catch (err) {
+      const code = err && typeof err === "object" ? (err as { code?: unknown }).code : null;
+      if (code !== "EEXIST") throw err;
+      if (await removeStaleMaterializeLock(lockDir, MATERIALIZED_SKILL_LOCK_STALE_MS)) continue;
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for Paperclip skill materialization lock at ${lockDir}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code = err && typeof err === "object" ? (err as { code?: unknown }).code : null;
+    return code === "EPERM";
+  }
+}
+
+async function removeStaleMaterializeLock(lockDir: string, staleMs: number): Promise<boolean> {
+  const ownerPath = path.join(lockDir, MATERIALIZED_SKILL_LOCK_OWNER);
+  let shouldRemove = false;
+  try {
+    const raw = JSON.parse(await fs.readFile(ownerPath, "utf8")) as unknown;
+    const owner = parseObject(raw);
+    const pid = typeof owner.pid === "number" ? owner.pid : 0;
+    const createdAt = typeof owner.createdAt === "string" ? Date.parse(owner.createdAt) : Number.NaN;
+    const ageMs = Number.isFinite(createdAt) ? Date.now() - createdAt : staleMs + 1;
+    shouldRemove = !isPidAlive(pid) || ageMs > staleMs;
+  } catch {
+    const stat = await fs.stat(lockDir).catch(() => null);
+    shouldRemove = !stat || Date.now() - stat.mtimeMs > staleMs;
+  }
+  if (!shouldRemove) return false;
+  await fs.rm(lockDir, { recursive: true, force: true }).catch(() => {});
+  return true;
+}
+
+export async function materializePaperclipSkillCopy(
+  source: string,
+  target: string,
+): Promise<MaterializedPaperclipSkillCopyResult> {
+  const sourceRoot = path.resolve(source);
+  const targetRoot = path.resolve(target);
+  const relativeTarget = path.relative(sourceRoot, targetRoot);
+  const relativeSource = path.relative(targetRoot, sourceRoot);
+  if (
+    !relativeTarget ||
+    (!relativeTarget.startsWith("..") && !path.isAbsolute(relativeTarget)) ||
+    !relativeSource ||
+    (!relativeSource.startsWith("..") && !path.isAbsolute(relativeSource))
+  ) {
+    throw new Error("Refusing to materialize a skill into itself, an ancestor, or one of its descendants.");
+  }
+
+  const rootStat = await fs.lstat(sourceRoot);
+  if (rootStat.isSymbolicLink()) {
+    throw new Error("Refusing to materialize a skill root that is itself a symlink.");
+  }
+  if (!rootStat.isDirectory()) {
+    throw new Error("Paperclip skills must be directories.");
+  }
+
+  const result: MaterializedPaperclipSkillCopyResult = {
+    copiedFiles: 0,
+    skippedSymlinks: [],
+  };
+
+  const lockDir = `${targetRoot}.lock`;
+  const releaseLock = await acquireMaterializeLock(lockDir);
+  const tempRoot = `${targetRoot}.tmp-${process.pid}-${randomUUID()}`;
+
+  async function copyEntry(sourcePath: string, targetPath: string, relativePath: string): Promise<void> {
+    const stat = await fs.lstat(sourcePath);
+    if (stat.isSymbolicLink()) {
+      result.skippedSymlinks.push(relativePath || ".");
+      return;
+    }
+
+    if (stat.isDirectory()) {
+      await fs.mkdir(targetPath, { recursive: true });
+      const entries = await fs.readdir(sourcePath, { withFileTypes: true });
+      entries.sort((left, right) => left.name.localeCompare(right.name));
+      for (const entry of entries) {
+        const childRelativePath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+        await copyEntry(path.join(sourcePath, entry.name), path.join(targetPath, entry.name), childRelativePath);
+      }
+      return;
+    }
+
+    if (stat.isFile()) {
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      await fs.copyFile(sourcePath, targetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
+        await fs.copyFile(sourcePath, targetPath);
+      });
+      await fs.chmod(targetPath, stat.mode).catch(() => {});
+      result.copiedFiles += 1;
+    }
+  }
+
+  try {
+    const sourceFingerprint = await hashSkillDirectory(sourceRoot);
+    if (await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint)) return result;
+    await copyEntry(sourceRoot, tempRoot, "");
+    await fs.writeFile(
+      path.join(tempRoot, MATERIALIZED_SKILL_SENTINEL),
+      `${JSON.stringify({
+        version: 1,
+        sourceFingerprint,
+        copiedFiles: result.copiedFiles,
+        skippedSymlinks: result.skippedSymlinks,
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    if (await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint)) return result;
+    await fs.rm(targetRoot, { recursive: true, force: true });
+    await fs.rename(tempRoot, targetRoot);
+    return result;
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
+    await releaseLock();
+  }
+}
+
 export async function removeMaintainerOnlySkillSymlinks(
   skillsHome: string,
   allowedSkillNames: Iterable<string>,
@@ -1050,7 +2050,19 @@ export async function removeMaintainerOnlySkillSymlinks(
   }
 }
 
-export async function ensureCommandResolvable(command: string, cwd: string, env: NodeJS.ProcessEnv) {
+export async function ensureCommandResolvable(
+  command: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  options: {
+    remoteExecution?: RemoteExecutionSpec | null;
+  } = {},
+) {
+  if (options.remoteExecution) {
+    const resolvedSsh = await resolveCommandPath("ssh", process.cwd(), env);
+    if (resolvedSsh) return;
+    throw new Error('Command not found in PATH: "ssh"');
+  }
   const resolved = await resolveCommandPath(command, cwd, env);
   if (resolved) return;
   if (command.includes("/") || command.includes("\\")) {
@@ -1072,13 +2084,17 @@ export async function runChildProcess(
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+    terminalResultCleanup?: TerminalResultCleanupOptions;
     stdin?: string;
+    remoteExecution?: RemoteExecutionSpec | null;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
-
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const rawMerged: NodeJS.ProcessEnv = { ...process.env, ...opts.env };
+    const rawMerged: NodeJS.ProcessEnv = {
+      ...sanitizeInheritedPaperclipEnv(process.env),
+      ...opts.env,
+    };
 
     // Strip Claude Code nesting-guard env vars so spawned `claude` processes
     // don't refuse to start with "cannot be launched inside another session".
@@ -1096,10 +2112,13 @@ export async function runChildProcess(
     }
 
     const mergedEnv = ensurePathInEnv(rawMerged);
-    void resolveSpawnTarget(command, args, opts.cwd, mergedEnv)
+    void resolveSpawnTarget(command, args, opts.cwd, mergedEnv, {
+      remoteExecution: opts.remoteExecution ?? null,
+      remoteEnv: opts.remoteExecution ? opts.env : null,
+    })
       .then((target) => {
         const child = spawn(target.command, target.args, {
-          cwd: opts.cwd,
+          cwd: target.cwd ?? opts.cwd,
           env: mergedEnv,
           detached: process.platform !== "win32",
           shell: false,
@@ -1121,11 +2140,60 @@ export async function runChildProcess(
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
+        let terminalResultSeen = false;
+        let terminalCleanupStarted = false;
+        let terminalCleanupTimer: NodeJS.Timeout | null = null;
+        let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
+        let terminalResultStdoutScanOffset = 0;
+        let terminalResultStderrScanOffset = 0;
+
+        const clearTerminalCleanupTimers = () => {
+          if (terminalCleanupTimer) clearTimeout(terminalCleanupTimer);
+          if (terminalCleanupKillTimer) clearTimeout(terminalCleanupKillTimer);
+          terminalCleanupTimer = null;
+          terminalCleanupKillTimer = null;
+        };
+
+        const maybeArmTerminalResultCleanup = () => {
+          const terminalCleanup = opts.terminalResultCleanup;
+          if (!terminalCleanup || terminalCleanupStarted || timedOut) return;
+          if (!terminalResultSeen) {
+            const stdoutStart = Math.max(0, terminalResultStdoutScanOffset - TERMINAL_RESULT_SCAN_OVERLAP_CHARS);
+            const stderrStart = Math.max(0, terminalResultStderrScanOffset - TERMINAL_RESULT_SCAN_OVERLAP_CHARS);
+            const scanOutput = {
+              stdout: stdout.slice(stdoutStart),
+              stderr: stderr.slice(stderrStart),
+            };
+            terminalResultStdoutScanOffset = stdout.length;
+            terminalResultStderrScanOffset = stderr.length;
+            if (scanOutput.stdout.length === 0 && scanOutput.stderr.length === 0) return;
+            try {
+              terminalResultSeen = terminalCleanup.hasTerminalResult(scanOutput);
+            } catch (err) {
+              onLogError(err, runId, "failed to inspect terminal adapter output");
+            }
+          }
+          if (!terminalResultSeen) return;
+
+          if (terminalCleanupTimer) return;
+          const graceMs = Math.max(0, terminalCleanup.graceMs ?? 5_000);
+          terminalCleanupTimer = setTimeout(() => {
+            terminalCleanupTimer = null;
+            if (terminalCleanupStarted || timedOut) return;
+            terminalCleanupStarted = true;
+            signalRunningProcess({ child, processGroupId }, "SIGTERM");
+            terminalCleanupKillTimer = setTimeout(() => {
+              terminalCleanupKillTimer = null;
+              signalRunningProcess({ child, processGroupId }, "SIGKILL");
+            }, Math.max(1, opts.graceSec) * 1000);
+          }, graceMs);
+        };
 
         const timeout =
           opts.timeoutSec > 0
             ? setTimeout(() => {
                 timedOut = true;
+                clearTerminalCleanupTimers();
                 signalRunningProcess({ child, processGroupId }, "SIGTERM");
                 setTimeout(() => {
                   signalRunningProcess({ child, processGroupId }, "SIGKILL");
@@ -1134,19 +2202,35 @@ export async function runChildProcess(
             : null;
 
         child.stdout?.on("data", (chunk: unknown) => {
+          const readable = child.stdout;
+          if (!readable) return;
+          readable.pause();
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
+          maybeArmTerminalResultCleanup();
           logChain = logChain
             .then(() => opts.onLog("stdout", text))
-            .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"));
+            .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"))
+            .finally(() => {
+              maybeArmTerminalResultCleanup();
+              resumeReadable(readable);
+            });
         });
 
         child.stderr?.on("data", (chunk: unknown) => {
+          const readable = child.stderr;
+          if (!readable) return;
+          readable.pause();
           const text = String(chunk);
           stderr = appendWithCap(stderr, text);
+          maybeArmTerminalResultCleanup();
           logChain = logChain
             .then(() => opts.onLog("stderr", text))
-            .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"));
+            .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"))
+            .finally(() => {
+              maybeArmTerminalResultCleanup();
+              resumeReadable(readable);
+            });
         });
 
         const stdin = child.stdin;
@@ -1160,7 +2244,9 @@ export async function runChildProcess(
 
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
+          clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
+          void target.cleanup?.();
           const errno = (err as NodeJS.ErrnoException).code;
           const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
           const msg =
@@ -1170,19 +2256,28 @@ export async function runChildProcess(
           reject(new Error(msg));
         });
 
+        child.on("exit", () => {
+          maybeArmTerminalResultCleanup();
+        });
+
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
+          clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
           void logChain.finally(() => {
-            resolve({
-              exitCode: code,
-              signal,
-              timedOut,
-              stdout,
-              stderr,
-              pid: child.pid ?? null,
-              startedAt,
-            });
+            void Promise.resolve()
+              .then(() => target.cleanup?.())
+              .finally(() => {
+              resolve({
+                exitCode: code,
+                signal,
+                timedOut,
+                stdout,
+                stderr,
+                pid: child.pid ?? null,
+                startedAt,
+              });
+              });
           });
         });
       })
