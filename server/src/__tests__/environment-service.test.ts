@@ -1,12 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns } from "@paperclipai/db";
+import {
+  agents,
+  companies,
+  createDb,
+  environmentLeases,
+  environments,
+  executionWorkspaces,
+  heartbeatRuns,
+  projects,
+} from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { environmentService } from "../services/environments.ts";
+import { EnvironmentLeaseConflictError, environmentService } from "../services/environments.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -31,6 +40,8 @@ describeEmbeddedPostgres("environmentService leases", () => {
 
   afterEach(async () => {
     await db.delete(environmentLeases);
+    await db.delete(executionWorkspaces);
+    await db.delete(projects);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(environments);
@@ -87,7 +98,48 @@ describeEmbeddedPostgres("environmentService leases", () => {
       updatedAt: new Date(),
     });
 
-    return { companyId, agentId, environmentId, runId };
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Shared checkout",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared",
+      strategyType: "shared_checkout",
+      name: "rtr-project shared clone",
+      status: "active",
+      providerType: "local_fs",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    return { companyId, agentId, environmentId, runId, projectId, executionWorkspaceId };
+  }
+
+  async function seedRun(
+    companyId: string,
+    agentId: string,
+    status: "queued" | "scheduled_retry" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out" = "running",
+  ): Promise<string> {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "manual",
+      status,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    return runId;
   }
 
   it("acquires and releases a lease for a run", async () => {
@@ -140,6 +192,213 @@ describeEmbeddedPostgres("environmentService leases", () => {
 
     const stillActive = await svc.listLeases(environmentId, { status: "active" });
     expect(stillActive.map((lease) => lease.id)).toEqual([otherLease.id]);
+  });
+
+  it("reuses the existing workspace lease when the same run re-acquires (re-entrant)", async () => {
+    const { companyId, environmentId, runId, executionWorkspaceId } = await seedEnvironment();
+
+    const first = await svc.acquireLease({
+      companyId,
+      environmentId,
+      executionWorkspaceId,
+      issueId: null,
+      heartbeatRunId: runId,
+      leasePolicy: "ephemeral",
+    });
+    const second = await svc.acquireLease({
+      companyId,
+      environmentId,
+      executionWorkspaceId,
+      issueId: null,
+      heartbeatRunId: runId,
+      leasePolicy: "ephemeral",
+    });
+
+    expect(second.id).toBe(first.id);
+    const active = await svc.listLeases(environmentId, { status: "active" });
+    expect(active).toHaveLength(1);
+  });
+
+  it("rejects a second run acquiring the same workspace through a different issue", async () => {
+    const { companyId, agentId, environmentId, runId, executionWorkspaceId } = await seedEnvironment();
+    const otherRunId = await seedRun(companyId, agentId, "running");
+
+    // Distinct heartbeat runs model distinct issue checkouts targeting the same
+    // shared workspace (issueId left null to avoid seeding the issues table; the
+    // single-flight key is environment + execution workspace, not issue).
+    const holder = await svc.acquireLease({
+      companyId,
+      environmentId,
+      executionWorkspaceId,
+      issueId: null,
+      heartbeatRunId: runId,
+      leasePolicy: "ephemeral",
+    });
+
+    await expect(
+      svc.acquireLease({
+        companyId,
+        environmentId,
+        executionWorkspaceId,
+        issueId: null,
+        heartbeatRunId: otherRunId,
+        leasePolicy: "ephemeral",
+      }),
+    ).rejects.toBeInstanceOf(EnvironmentLeaseConflictError);
+
+    const active = await svc.listLeases(environmentId, { status: "active" });
+    expect(active.map((lease) => lease.id)).toEqual([holder.id]);
+  });
+
+  it("enforces single-flight durably at the database level (partial unique index)", async () => {
+    // Defense in depth: even if app-level logic is bypassed, the DB must reject a
+    // second active ephemeral lease for the same (environment, execution workspace).
+    const { companyId, environmentId, runId, executionWorkspaceId } = await seedEnvironment();
+
+    await db.insert(environmentLeases).values({
+      companyId,
+      environmentId,
+      executionWorkspaceId,
+      heartbeatRunId: runId,
+      status: "active",
+      leasePolicy: "ephemeral",
+      acquiredAt: new Date(),
+      lastUsedAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const error = await db
+      .insert(environmentLeases)
+      .values({
+        companyId,
+        environmentId,
+        executionWorkspaceId,
+        heartbeatRunId: runId,
+        status: "active",
+        leasePolicy: "ephemeral",
+        acquiredAt: new Date(),
+        lastUsedAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .then(() => null)
+      .catch((err: unknown) => err);
+
+    expect(error).toBeTruthy();
+    // Drizzle wraps the driver error; the unique_violation (23505) is somewhere
+    // in the cause chain.
+    const codes: unknown[] = [];
+    let cursor: unknown = error;
+    for (let depth = 0; depth < 8 && cursor && typeof cursor === "object"; depth += 1) {
+      codes.push((cursor as { code?: unknown }).code);
+      cursor = (cursor as { cause?: unknown }).cause;
+    }
+    expect(codes).toContain("23505");
+  });
+
+  it("adopts a workspace lease whose holding run has terminated", async () => {
+    const { companyId, agentId, environmentId, runId, executionWorkspaceId } = await seedEnvironment();
+
+    const stale = await svc.acquireLease({
+      companyId,
+      environmentId,
+      executionWorkspaceId,
+      heartbeatRunId: runId,
+      leasePolicy: "ephemeral",
+    });
+    // The previous run died without releasing its lease.
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, runId));
+
+    const adopterRunId = await seedRun(companyId, agentId, "running");
+    const adopted = await svc.acquireLease({
+      companyId,
+      environmentId,
+      executionWorkspaceId,
+      heartbeatRunId: adopterRunId,
+      leasePolicy: "ephemeral",
+    });
+
+    expect(adopted.id).not.toBe(stale.id);
+    expect(adopted.heartbeatRunId).toBe(adopterRunId);
+
+    const active = await svc.listLeases(environmentId, { status: "active" });
+    expect(active.map((lease) => lease.id)).toEqual([adopted.id]);
+
+    const previous = await svc.getLeaseById(stale.id);
+    expect(previous?.status).toBe("expired");
+  });
+
+  it("adopts a workspace lease that has passed its expiry", async () => {
+    const { companyId, agentId, environmentId, runId, executionWorkspaceId } = await seedEnvironment();
+
+    const stale = await svc.acquireLease({
+      companyId,
+      environmentId,
+      executionWorkspaceId,
+      heartbeatRunId: runId,
+      leasePolicy: "ephemeral",
+      expiresAt: new Date(Date.now() - 60_000),
+    });
+
+    const adopterRunId = await seedRun(companyId, agentId, "running");
+    const adopted = await svc.acquireLease({
+      companyId,
+      environmentId,
+      executionWorkspaceId,
+      heartbeatRunId: adopterRunId,
+      leasePolicy: "ephemeral",
+    });
+
+    expect(adopted.id).not.toBe(stale.id);
+    const active = await svc.listLeases(environmentId, { status: "active" });
+    expect(active.map((lease) => lease.id)).toEqual([adopted.id]);
+  });
+
+  it("does not single-flight non-ephemeral (reuse) leases on the same workspace", async () => {
+    const { companyId, agentId, environmentId, runId, executionWorkspaceId } = await seedEnvironment();
+    const otherRunId = await seedRun(companyId, agentId, "running");
+
+    const first = await svc.acquireLease({
+      companyId,
+      environmentId,
+      executionWorkspaceId,
+      heartbeatRunId: runId,
+      leasePolicy: "reuse_by_environment",
+    });
+    const second = await svc.acquireLease({
+      companyId,
+      environmentId,
+      executionWorkspaceId,
+      heartbeatRunId: otherRunId,
+      leasePolicy: "reuse_by_environment",
+    });
+
+    expect(second.id).not.toBe(first.id);
+    const active = await svc.listLeases(environmentId, { status: "active" });
+    expect(active).toHaveLength(2);
+  });
+
+  it("does not single-flight leases without an execution workspace", async () => {
+    const { companyId, agentId, environmentId, runId } = await seedEnvironment();
+    const otherRunId = await seedRun(companyId, agentId, "running");
+
+    const first = await svc.acquireLease({
+      companyId,
+      environmentId,
+      heartbeatRunId: runId,
+      leasePolicy: "ephemeral",
+    });
+    const second = await svc.acquireLease({
+      companyId,
+      environmentId,
+      heartbeatRunId: otherRunId,
+      leasePolicy: "ephemeral",
+    });
+
+    expect(second.id).not.toBe(first.id);
+    const active = await svc.listLeases(environmentId, { status: "active" });
+    expect(active).toHaveLength(2);
   });
 
   it("creates and then reuses the default local environment for a company", async () => {

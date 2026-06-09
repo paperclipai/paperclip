@@ -24,7 +24,7 @@ import type {
   ExecutionWorkspace,
   ExecutionWorkspaceConfig,
 } from "@paperclipai/shared";
-import { environmentService } from "./environments.js";
+import { environmentService, EnvironmentLeaseConflictError } from "./environments.js";
 import {
   environmentRuntimeService,
   buildEnvironmentLeaseContext,
@@ -58,6 +58,7 @@ export type EnvironmentErrorCode =
   | "unsupported_adapter_environment"
   | "probe_failed"
   | "lease_acquire_failed"
+  | "lease_conflict"
   | "workspace_realization_failed"
   | "transport_resolution_failed"
   | "lease_release_failed"
@@ -212,6 +213,20 @@ export function environmentRunOrchestrator(
     try {
       return await environmentRuntime.acquireRunLease(input);
     } catch (err) {
+      // Another live run already holds this shared workspace lease. Surface a
+      // distinct, non-failure code so the caller can defer cleanly instead of
+      // treating it as broken infrastructure.
+      if (err instanceof EnvironmentLeaseConflictError) {
+        throw new EnvironmentRunError(
+          "lease_conflict",
+          `Execution workspace for environment "${input.environment.name}" is already leased by another active run; deferring.`,
+          {
+            environmentId: input.environment.id,
+            driver: input.environment.driver,
+            cause: err,
+          },
+        );
+      }
       throw new EnvironmentRunError(
         "lease_acquire_failed",
         `Failed to acquire lease for environment "${input.environment.name}" (${input.environment.driver}): ${err instanceof Error ? err.message : String(err)}`,

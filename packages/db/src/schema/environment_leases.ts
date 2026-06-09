@@ -1,4 +1,5 @@
-import { index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { environments } from "./environments.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
@@ -42,5 +43,17 @@ export const environmentLeases = pgTable(
     heartbeatRunIdx: index("environment_leases_heartbeat_run_idx").on(table.heartbeatRunId),
     companyLastUsedIdx: index("environment_leases_company_last_used_idx").on(table.companyId, table.lastUsedAt),
     providerLeaseIdx: index("environment_leases_provider_lease_idx").on(table.providerLeaseId),
+    // Single-flight guard: at most one ACTIVE ephemeral lease may hold a given
+    // shared execution workspace at a time. This is the durable, control-plane
+    // enforcement of the workspace/branch single-flight invariant — two
+    // heartbeat runs (even via different issues) cannot concurrently lease the
+    // same local/SSH shared checkout. Scoped to ephemeral leases bound to a
+    // concrete executionWorkspaceId; sandbox/reuse leases and workspace-less
+    // leases are intentionally excluded (see environments.ts acquireLease).
+    activeWorkspaceSingleFlightIdx: uniqueIndex("environment_leases_active_workspace_singleflight_idx")
+      .on(table.environmentId, table.executionWorkspaceId)
+      .where(
+        sql`${table.status} = 'active' and ${table.executionWorkspaceId} is not null and ${table.leasePolicy} = 'ephemeral'`,
+      ),
   }),
 );
