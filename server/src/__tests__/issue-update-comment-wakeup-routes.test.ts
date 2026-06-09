@@ -12,6 +12,7 @@ const mockIssueService = vi.hoisted(() => ({
   getRelationSummaries: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
+  getCurrentScheduledRetry: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -32,6 +33,12 @@ vi.mock("../services/index.js", () => ({
   }),
   accessService: () => ({
     canUser: vi.fn(async () => true),
+    decide: vi.fn(async (input: { action?: string }) => ({
+      allowed: true,
+      action: input.action,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test grant.",
+    })),
     hasPermission: vi.fn(async () => true),
   }),
   agentService: () => ({
@@ -41,6 +48,7 @@ vi.mock("../services/index.js", () => ({
       agent: { id: raw },
     })),
   }),
+  documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
   feedbackService: () => ({
@@ -94,6 +102,12 @@ function registerModuleMocks() {
     }),
     accessService: () => ({
       canUser: vi.fn(async () => true),
+      decide: vi.fn(async (input: { action?: string }) => ({
+        allowed: true,
+        action: input.action,
+        reason: "allow_explicit_grant",
+        explanation: "Allowed by test grant.",
+      })),
       hasPermission: vi.fn(async () => true),
     }),
     agentService: () => ({
@@ -103,6 +117,7 @@ function registerModuleMocks() {
         agent: { id: raw },
       })),
     }),
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
@@ -205,6 +220,7 @@ describe("issue update comment wakeups", () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
   });
 
   it("includes the new comment in assignment wakes from issue updates", async () => {
@@ -292,6 +308,50 @@ describe("issue update comment wakeups", () => {
           taskId: existing.id,
           commentId: "comment-2",
           wakeCommentId: "comment-2",
+          wakeReason: "issue_commented",
+          source: "issue.comment",
+        }),
+      }),
+    );
+  });
+
+  it("wakes the assignee on top-level board issue comments", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-3",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "please handle this top-level thread comment",
+    });
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({
+        body: "please handle this top-level thread comment",
+      });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        source: "automation",
+        reason: "issue_commented",
+        payload: expect.objectContaining({
+          issueId: existing.id,
+          commentId: "comment-3",
+          mutation: "comment",
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId: existing.id,
+          taskId: existing.id,
+          commentId: "comment-3",
+          wakeCommentId: "comment-3",
           wakeReason: "issue_commented",
           source: "issue.comment",
         }),

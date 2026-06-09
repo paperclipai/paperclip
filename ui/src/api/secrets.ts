@@ -2,6 +2,7 @@ import type {
   CompanySecret,
   CompanySecretUsageBinding,
   CompanySecretProviderConfig,
+  SecretProviderConfigDiscoveryPreviewResult,
   RemoteSecretImportPreviewResult,
   RemoteSecretImportResult,
   SecretAccessEvent,
@@ -95,6 +96,14 @@ export interface RemoteImportInput {
   secrets: RemoteImportSelectionInput[];
 }
 
+export interface SecretProviderConfigDiscoveryPreviewInput {
+  provider: SecretProvider;
+  config?: Record<string, unknown>;
+  query?: string | null;
+  nextToken?: string | null;
+  pageSize?: number;
+}
+
 export const secretsApi = {
   list: (companyId: string) => api.get<CompanySecret[]>(`/companies/${companyId}/secrets`),
   providers: (companyId: string) =>
@@ -103,11 +112,21 @@ export const secretsApi = {
     api.get<SecretProviderHealthResponse>(`/companies/${companyId}/secret-providers/health`),
   providerConfigs: (companyId: string) =>
     api.get<CompanySecretProviderConfig[]>(`/companies/${companyId}/secret-provider-configs`),
+  providerConfigDiscoveryPreview: (
+    companyId: string,
+    data: SecretProviderConfigDiscoveryPreviewInput,
+  ) =>
+    api.post<SecretProviderConfigDiscoveryPreviewResult>(
+      `/companies/${companyId}/secret-provider-configs/discovery/preview`,
+      data,
+    ),
   createProviderConfig: (companyId: string, data: CreateSecretProviderConfigInput) =>
     api.post<CompanySecretProviderConfig>(`/companies/${companyId}/secret-provider-configs`, data),
   updateProviderConfig: (id: string, data: UpdateSecretProviderConfigInput) =>
     api.patch<CompanySecretProviderConfig>(`/secret-provider-configs/${id}`, data),
   disableProviderConfig: (id: string) =>
+    api.patch<CompanySecretProviderConfig>(`/secret-provider-configs/${id}`, { status: "disabled" }),
+  removeProviderConfig: (id: string) =>
     api.delete<CompanySecretProviderConfig>(`/secret-provider-configs/${id}`),
   setDefaultProviderConfig: (id: string) =>
     api.post<CompanySecretProviderConfig>(`/secret-provider-configs/${id}/default`, {}),

@@ -227,7 +227,7 @@ export function ProjectWorkspaceSummaryCard({
         {summary.issues.length > 0 ? (
           <div className="space-y-2">
             <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-              Linked issues
+              Linked tasks
             </div>
             <div className="flex flex-wrap gap-2">
               {visibleIssues.map((issue) => (

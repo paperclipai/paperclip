@@ -210,6 +210,56 @@ describe("worktree config repair", () => {
     expect(repairedConfig.database.embeddedPostgresPort).toBe(54331);
   });
 
+  it("ignores stale migrated env paths when the dev runner resolved the local config", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-migrated-env-"));
+    const worktreeRoot = path.join(tempRoot, "PAP-9940-what-can-we-learn");
+    const paperclipDir = path.join(worktreeRoot, ".paperclip");
+    const configPath = path.join(paperclipDir, "config.json");
+    const envPath = path.join(paperclipDir, ".env");
+    const oldHome = "/old/home/.paperclip-worktrees";
+    const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");
+
+    await fs.mkdir(paperclipDir, { recursive: true });
+    await fs.writeFile(configPath, JSON.stringify(buildLegacyConfig(oldHome), null, 2) + "\n", "utf8");
+    await fs.writeFile(
+      envPath,
+      [
+        "# Paperclip environment variables",
+        "PAPERCLIP_HOME=/old/home/.paperclip-worktrees",
+        "PAPERCLIP_INSTANCE_ID=pap-9940-what-can-we-learn",
+        "PAPERCLIP_CONFIG=/old/home/paperclip/.paperclip/worktrees/PAP-9940-what-can-we-learn/.paperclip/config.json",
+        "PAPERCLIP_CONTEXT=/old/home/.paperclip-worktrees/context.json",
+        "PAPERCLIP_IN_WORKTREE=true",
+        "PAPERCLIP_WORKTREE_NAME=PAP-9940-what-can-we-learn",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    process.chdir(worktreeRoot);
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_CONFIG = configPath;
+    process.env.PAPERCLIP_WORKTREES_DIR = isolatedHome;
+    delete process.env.PAPERCLIP_HOME;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    delete process.env.PAPERCLIP_CONTEXT;
+
+    const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
+    const repairedConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
+    const repairedEnv = await fs.readFile(envPath, "utf8");
+    const instanceRoot = path.join(isolatedHome, "instances", "pap-9940-what-can-we-learn");
+
+    expect(result).toEqual({
+      repairedConfig: true,
+      repairedEnv: true,
+    });
+    expect(repairedConfig.database.embeddedPostgresDataDir).toBe(path.join(instanceRoot, "db"));
+    expect(repairedConfig.secrets.localEncrypted.keyFilePath).toBe(path.join(instanceRoot, "secrets", "master.key"));
+    expect(repairedEnv).toContain(`PAPERCLIP_HOME=${JSON.stringify(isolatedHome)}`);
+    expect(repairedEnv).toContain(`PAPERCLIP_CONFIG=${JSON.stringify(configPath)}`);
+    expect(repairedEnv).not.toContain("/old/home");
+  });
+
   it("does not persist transient runtime home overrides over repo-local worktree env", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-runtime-override-"));
     const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");
@@ -508,6 +558,8 @@ describe("worktree config repair", () => {
     process.env.PAPERCLIP_HOME = isolatedHome;
     process.env.PAPERCLIP_INSTANCE_ID = "pap-878-create-a-mine-tab-in-inbox";
     process.env.PAPERCLIP_CONFIG = configPath;
+    delete process.env.PORT;
+    delete process.env.DATABASE_URL;
 
     maybePersistWorktreeRuntimePorts({
       serverPort: 3103,
@@ -590,6 +642,8 @@ describe("worktree config repair", () => {
     process.env.PAPERCLIP_HOME = isolatedHome;
     process.env.PAPERCLIP_INSTANCE_ID = "pap-125-public-base-url";
     process.env.PAPERCLIP_CONFIG = configPath;
+    delete process.env.PORT;
+    delete process.env.DATABASE_URL;
 
     maybePersistWorktreeRuntimePorts({
       serverPort: 3103,

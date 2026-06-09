@@ -25,6 +25,7 @@ export type RecoveryCardCardState = RecoveryDisplayState;
 export const deriveRecoveryCardState = deriveRecoveryDisplayState;
 
 export type RecoveryResolveOutcome =
+  | "todo"
   | "done"
   | "in_review"
   | "false_positive_done"
@@ -44,19 +45,22 @@ export interface IssueRecoveryActionCardProps {
 
 const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
   missing_disposition: "Missing Disposition",
-  stranded_assigned_issue: "Stranded Issue",
+  stranded_assigned_issue: "Stranded Task",
+  workspace_validation: "Workspace Validation",
   active_run_watchdog: "Active Watchdog",
   issue_graph_liveness: "Graph Liveness",
 };
 
 const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
-  missing_disposition: "This issue's run finished, but no next step was chosen.",
+  missing_disposition: "This task's run finished, but no next step was chosen.",
   stranded_assigned_issue:
-    "Paperclip retried this issue's last run and it still has no live execution path.",
+    "Paperclip retried this task's last run and it still has no live execution path.",
+  workspace_validation:
+    "Paperclip stopped this run because the task's git workspace could not be validated.",
   active_run_watchdog:
     "The active run has been silent. Recovery is observing without interrupting it.",
   issue_graph_liveness:
-    "Paperclip detected this issue lost a live action path. A recovery owner needs to act.",
+    "Paperclip detected this task lost a live action path. A recovery owner needs to act.",
 };
 
 const STATE_TONE: Record<RecoveryCardCardState, {
@@ -168,6 +172,7 @@ function readWakePolicySummary(action: IssueRecoveryAction): string | null {
   if (type === "wake_owner") return "Corrective wake queued";
   if (type === "board_escalation") return "Escalated to board";
   if (type === "manual") return "Manual";
+  if (type === "manual_repair_required") return "Manual repair required";
   if (type === "monitor") {
     const interval = readEvidenceString(policy.intervalLabel);
     return interval ? `Monitor scheduled · ${interval}` : "Monitor scheduled";
@@ -293,8 +298,13 @@ const RESOLVE_OPTIONS: Array<{
   boardOnly?: boolean;
 }> = [
   {
+    outcome: "todo",
+    label: "Try again",
+    description: "Dismiss recovery and return the source task to todo.",
+  },
+  {
     outcome: "done",
-    label: "Mark issue done",
+    label: "Mark task done",
     description: "Restore by recording the requested work as complete.",
   },
   {
@@ -305,14 +315,14 @@ const RESOLVE_OPTIONS: Array<{
   {
     outcome: "false_positive_done",
     label: "False positive, done",
-    description: "Dismiss recovery and mark the source issue complete.",
+    description: "Dismiss recovery and mark the source task complete.",
     destructive: true,
     boardOnly: true,
   },
   {
     outcome: "false_positive_in_review",
     label: "False positive, review",
-    description: "Dismiss recovery and send the source issue for review.",
+    description: "Dismiss recovery and send the source task for review.",
     destructive: true,
     boardOnly: true,
   },

@@ -123,7 +123,17 @@ vi.mock("./IssueRow", () => ({
 }));
 
 vi.mock("./KanbanBoard", () => ({
-  KanbanBoard: (props: { issues: Issue[] }) => {
+  KANBAN_BOARD_HIGH_VOLUME_THRESHOLD: 100,
+  KANBAN_COLD_STATUSES: ["backlog", "done", "cancelled"],
+  KANBAN_COLUMN_DEFAULT_PAGE_SIZE: 10,
+  KANBAN_COLUMN_PAGE_SIZE_OPTIONS: [10, 25, 50],
+  KanbanBoard: (props: {
+    issues: Issue[];
+    compactCards?: boolean;
+    collapsedStatuses?: string[];
+    initialVisibleCount?: number;
+    revealIncrement?: number;
+  }) => {
     mockKanbanBoard(props);
     return (
       <div data-testid="kanban-board">
@@ -442,12 +452,12 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      const button = container.querySelector<HTMLButtonElement>('button[aria-label="New issue in Feature Branch"]');
+      const button = container.querySelector<HTMLButtonElement>('button[aria-label="New task in Feature Branch"]');
       expect(button).not.toBeNull();
     });
 
     await act(async () => {
-      const button = container.querySelector<HTMLButtonElement>('button[aria-label="New issue in Feature Branch"]');
+      const button = container.querySelector<HTMLButtonElement>('button[aria-label="New task in Feature Branch"]');
       button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await Promise.resolve();
     });
@@ -874,7 +884,7 @@ describe("IssuesList", () => {
       container,
     );
 
-    const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement | null;
+    const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement | null;
     expect(input).not.toBeNull();
     const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
     expect(valueSetter).toBeTypeOf("function");
@@ -1011,6 +1021,110 @@ describe("IssuesList", () => {
     });
   });
 
+  it("uses compact cards and collapsed cold lanes for high-volume boards", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ viewMode: "board" }),
+    );
+
+    const backlogIssues = Array.from({ length: 101 }, (_, index) =>
+      createIssue({
+        id: `issue-backlog-${index + 1}`,
+        identifier: `PAP-${index + 1}`,
+        title: `Backlog issue ${index + 1}`,
+        status: "backlog",
+      }),
+    );
+
+    mockIssuesApi.list.mockImplementation((_companyId, filters) => {
+      if (filters?.status === "backlog") return Promise.resolve(backlogIssues);
+      return Promise.resolve([]);
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
+        compactCards: true,
+        collapsedStatuses: expect.arrayContaining(["backlog", "done", "cancelled"]),
+        initialVisibleCount: 10,
+        revealIncrement: 10,
+      }));
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("lets board users choose the per-column page size", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ viewMode: "board" }),
+    );
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue({ id: "issue-page-size", title: "Page size issue" })]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
+        initialVisibleCount: 10,
+        revealIncrement: 10,
+      }));
+    });
+
+    const pageSizeButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.getAttribute("title") === "Cards per column",
+    );
+    expect(pageSizeButton).toBeTruthy();
+
+    act(() => {
+      pageSizeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    let option25: HTMLButtonElement | undefined;
+    await waitForAssertion(() => {
+      option25 = Array.from(document.body.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("25 per column"),
+      );
+      expect(option25).toBeTruthy();
+    });
+
+    act(() => {
+      option25?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
+        initialVisibleCount: 25,
+        revealIncrement: 25,
+      }));
+    });
+
+    expect(localStorage.getItem("paperclip:test-issues:company-1")).toContain("\"boardColumnPageSize\":25");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("shows a refinement hint when a board column hits its server cap", async () => {
     localStorage.setItem(
       "paperclip:test-issues:company-1",
@@ -1043,7 +1157,7 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Some board columns are showing up to 200 issues. Refine filters or search to reveal the rest.");
+      expect(container.textContent).toContain("Some board columns are showing up to 200 tasks. Refine filters or search to reveal the rest.");
     });
 
     act(() => {
@@ -1073,7 +1187,7 @@ describe("IssuesList", () => {
 
     await waitForAssertion(() => {
       expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
-      expect(container.textContent).toContain("Rendering 100 of 220 issues");
+      expect(container.textContent).toContain("Rendering 100 of 220 tasks");
     });
 
     act(() => {
@@ -1112,7 +1226,7 @@ describe("IssuesList", () => {
 
     await waitForAssertion(() => {
       expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(250);
-      expect(container.textContent).toContain("Rendering 250 of 420 issues");
+      expect(container.textContent).toContain("Rendering 250 of 420 tasks");
     });
 
     act(() => {
@@ -1555,13 +1669,13 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement | null;
+      const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement | null;
       expect(input).not.toBeNull();
       input?.focus();
       expect(document.activeElement).toBe(input);
     });
 
-    const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement;
+    const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement;
     act(() => {
       input.dispatchEvent(new KeyboardEvent("keydown", {
         key: "Enter",
@@ -1591,13 +1705,13 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement | null;
+      const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement | null;
       expect(input).not.toBeNull();
       input?.focus();
       expect(document.activeElement).toBe(input);
     });
 
-    const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement;
+    const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement;
     act(() => {
       input.dispatchEvent(new KeyboardEvent("keydown", {
         key: "Escape",

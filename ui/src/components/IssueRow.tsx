@@ -8,7 +8,11 @@ import {
   withIssueDetailHeaderSeed,
 } from "../lib/issueDetailBreadcrumb";
 import { cn } from "../lib/utils";
-import { deriveActiveRecoveryDisplayState, RECOVERY_CHIP_DEFAULT_TONE } from "../lib/recovery-display";
+import {
+  deriveActiveRecoveryDisplayState,
+  RECOVERY_CHIP_DEFAULT_TONE,
+  recoveryChipLabel,
+} from "../lib/recovery-display";
 import { StatusIcon } from "./StatusIcon";
 import { productivityReviewTriggerLabel } from "./ProductivityReviewBadge";
 import { hasAssignedBacklogBlocker } from "../lib/issue-blockers";
@@ -85,14 +89,6 @@ export function IssueRow({
       {checklistStepNumber}.
     </span>
   ) : null;
-  const planningModeIndicator = issue.workMode === "planning" ? (
-    <span
-      className="ml-1.5 inline-flex shrink-0 items-center rounded-full border border-amber-500/60 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
-      title="This issue is in planning mode."
-    >
-      Planning
-    </span>
-  ) : null;
   const recoveryAction = issue.activeRecoveryAction ?? null;
   const recoveryIndicator = recoveryAction ? renderRecoveryChip(recoveryAction, selected) : null;
   const parkedBlockerIndicator = hasAssignedBacklogBlocker(issue.blockedBy) ? (
@@ -126,7 +122,6 @@ export function IssueRow({
       <span className="flex shrink-0 items-center gap-1 pt-px sm:hidden">
         {mobileLeading ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} className={selectedStatusClass} />}
         {productivityReviewIndicator}
-        {planningModeIndicator}
         {parkedBlockerIndicator}
         {recoveryIndicator}
       </span>
@@ -153,7 +148,6 @@ export function IssueRow({
               <span className="shrink-0 font-mono text-xs text-muted-foreground">
                 {identifier}
               </span>
-              {planningModeIndicator}
               {parkedBlockerIndicator}
               {recoveryIndicator}
             </>
@@ -181,6 +175,7 @@ export function IssueRow({
           {showUnreadDot ? (
             <button
               type="button"
+              data-slot="icon-button"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -210,6 +205,7 @@ export function IssueRow({
           ) : onArchive ? (
             <button
               type="button"
+              data-slot="icon-button"
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -241,21 +237,23 @@ function renderRecoveryChip(action: IssueRecoveryAction, selected: boolean): Rea
   if (!state) return null;
   const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
   const Icon = tone.icon;
+  const label = recoveryChipLabel(state, action.kind);
   return (
     <span
       data-testid="issue-row-recovery-indicator"
       data-recovery-state={state}
+      data-recovery-kind={action.kind}
       role="status"
-      aria-label={tone.label}
+      aria-label={label}
       className={cn(
         "ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border px-2 py-0.5 text-[10px] font-medium",
         tone.className,
         selected ? "!border-muted-foreground !text-muted-foreground" : null,
       )}
-      title={`${tone.label} — open the source issue to act.`}
+      title={`${label} — open the source task to act.`}
     >
       <Icon className="h-2.5 w-2.5" aria-hidden />
-      {tone.label}
+      {label}
     </span>
   );
 }

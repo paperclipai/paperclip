@@ -1,6 +1,7 @@
 export { healthRoutes } from "./health.js";
 export { companyRoutes } from "./companies.js";
 export { companySkillRoutes } from "./company-skills.js";
+export { teamsCatalogRoutes } from "./teams-catalog.js";
 export { agentRoutes } from "./agents.js";
 export { projectRoutes } from "./projects.js";
 export { issueRoutes } from "./issues.js";
@@ -14,8 +15,10 @@ export { activityRoutes } from "./activity.js";
 export { dashboardRoutes } from "./dashboard.js";
 export { sidebarBadgeRoutes } from "./sidebar-badges.js";
 export { sidebarPreferenceRoutes } from "./sidebar-preferences.js";
+export { resourceMembershipRoutes } from "./resource-memberships.js";
 export { inboxDismissalRoutes } from "./inbox-dismissals.js";
 export { llmRoutes } from "./llms.js";
 export { accessRoutes } from "./access.js";
 export { instanceSettingsRoutes } from "./instance-settings.js";
 export { instanceDatabaseBackupRoutes } from "./instance-database-backups.js";
+export { cloudUpstreamRoutes } from "./cloud-upstreams.js";

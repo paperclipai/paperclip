@@ -8,6 +8,7 @@ import type {
   RoutineTriggerSigningMode,
   RoutineVariableType,
 } from "../constants.js";
+import type { EnvBinding } from "./secrets.js";
 
 export interface RoutineProjectSummary {
   id: string;
@@ -45,6 +46,8 @@ export interface RoutineVariable {
   options: string[];
 }
 
+export type RoutineEnvConfig = Record<string, EnvBinding>;
+
 export interface Routine {
   id: string;
   companyId: string;
@@ -59,6 +62,7 @@ export interface Routine {
   concurrencyPolicy: string;
   catchUpPolicy: string;
   variables: RoutineVariable[];
+  env?: RoutineEnvConfig | null;
   latestRevisionId: string | null;
   latestRevisionNumber: number;
   createdByAgentId: string | null;
@@ -98,6 +102,7 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   concurrencyPolicy: RoutineConcurrencyPolicy;
   catchUpPolicy: RoutineCatchUpPolicy;
   variables: RoutineVariable[];
+  env: RoutineEnvConfig | null;
 }
 
 export interface RoutineRevisionSnapshotTriggerV1 {
@@ -169,6 +174,7 @@ export interface RoutineRun {
   source: string;
   status: string;
   triggeredAt: Date;
+  routineRevisionId?: string | null;
   idempotencyKey: string | null;
   triggerPayload: Record<string, unknown> | null;
   dispatchFingerprint: string | null;

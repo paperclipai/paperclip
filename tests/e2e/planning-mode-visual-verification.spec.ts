@@ -61,7 +61,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   await page.getByRole("button", { name: "Next" }).click();
 
   await expect(page.locator("h3", { hasText: "Ready to launch" })).toBeVisible({ timeout: 30_000 });
-  await page.getByRole("button", { name: "Create & Open Issue" }).click();
+  await page.getByRole("button", { name: "Create & Open Task" }).click();
   await expect(page).toHaveURL(/\/issues\//, { timeout: 30_000 });
 
   const openedIssueUrl = page.url();
@@ -119,7 +119,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
 
   await page.goto(`/${companyPrefix}/issues`);
   await expect(page.locator(issueLinkSelector)).toBeVisible();
-  await expect(page.locator(issueLinkSelector)).toContainText("Planning");
+  await expect(page.locator(issueLinkSelector)).not.toContainText("Planning");
   await page.screenshot({
     path: `${screenshotDir}/desktop-planning-row-${timestamp}.png`,
     fullPage: true,
@@ -149,7 +149,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
 
   await page.goto(`/${companyPrefix}/issues`);
   await expect(page.locator(issueLinkSelector)).toBeVisible();
-  await expect(page.locator(issueLinkSelector)).toContainText("Planning");
+  await expect(page.locator(issueLinkSelector)).not.toContainText("Planning");
   await page.screenshot({
     path: `${screenshotDir}/mobile-planning-row-${timestamp}.png`,
     fullPage: true,

@@ -198,6 +198,10 @@ fi
 
 set_cleanup_trap
 
+# The release flow already prepares ui/dist before packaging. Reuse that output
+# so server prepack does not rebuild the UI a second time during preview/publish.
+export PAPERCLIP_RELEASE_REUSE_UI_DIST=1
+
 if [ "$skip_verify" = false ]; then
   release_info ""
   release_info "==> Step 1/7: Verification gate..."
@@ -254,7 +258,7 @@ else
     [ -z "$pkg_dir" ] && continue
     release_info "  Publishing $pkg_name@$pkg_version"
     cd "$REPO_ROOT/$pkg_dir"
-    pnpm publish --no-git-checks --tag "$DIST_TAG" --access public
+    publish_package_to_npm "$DIST_TAG" "$pkg_name" "$pkg_version"
   done <<< "$VERSIONED_PACKAGE_INFO"
   release_info "  ✓ Published all packages under dist-tag $DIST_TAG"
 fi

@@ -1227,7 +1227,7 @@ export function CompanyImport() {
           </select>
         </Field>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             size="sm"
             variant="outline"
@@ -1287,7 +1287,7 @@ export function CompanyImport() {
           />
 
           {/* Import button — below renames */}
-          <div className="mx-5 mt-3 flex justify-end">
+          <div className="mx-5 mt-3 flex flex-wrap justify-end gap-2">
             <Button
               size="sm"
               onClick={() => importMutation.mutate()}
@@ -1319,8 +1319,8 @@ export function CompanyImport() {
           )}
 
           {/* Two-column layout */}
-          <div className="grid h-[calc(100vh-16rem)] gap-0 xl:grid-cols-[19rem_minmax(0,1fr)]">
-            <aside className="flex flex-col border-r border-border overflow-hidden">
+          <div className="grid gap-4 xl:h-[calc(100vh-16rem)] xl:grid-cols-[19rem_minmax(0,1fr)] xl:gap-0">
+            <aside className="flex max-h-[24rem] flex-col overflow-hidden border-b border-border xl:max-h-none xl:border-b-0 xl:border-r">
               <div className="border-b border-border px-4 py-3 shrink-0">
                 <h2 className="text-base font-semibold">Package files</h2>
               </div>
@@ -1339,7 +1339,7 @@ export function CompanyImport() {
                 />
               </div>
             </aside>
-            <div className="min-w-0 overflow-y-auto pl-6">
+            <div className="min-w-0 overflow-y-auto xl:pl-6">
               <ImportPreviewPane
                 selectedFile={selectedFile}
                 content={previewContent}
