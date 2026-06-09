@@ -4535,3 +4535,114 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(record?.childIssues.every((child) => typeof child.title === "string")).toBe(true);
   });
 });
+
+describeEmbeddedPostgres("issueService.release preserves assigneeAgentId for routine_execution", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-release-assignee-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("preserves assigneeAgentId when originKind is routine_execution", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "TestAgent",
+      role: "engineer",
+      title: "Test",
+      status: "running",
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: "TEST-1",
+      title: "Routine test issue",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      originKind: "routine_execution",
+      originId: "routine-1",
+      priority: "medium",
+    });
+
+    const released = await svc.release(issueId, agentId);
+    expect(released).not.toBeNull();
+    expect(released!.status).toBe("todo");
+    expect(released!.assigneeAgentId).toBe(agentId);
+  });
+
+  it("clears assigneeAgentId for non-routine_execution issues", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "TestAgent",
+      role: "engineer",
+      title: "Test",
+      status: "running",
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: "TEST-2",
+      title: "Manual test issue",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      originKind: "manual",
+      originId: issueId,
+      priority: "medium",
+    });
+
+    const released = await svc.release(issueId, agentId);
+    expect(released).not.toBeNull();
+    expect(released!.status).toBe("todo");
+    expect(released!.assigneeAgentId).toBeNull();
+  });
+});
