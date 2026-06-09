@@ -25,6 +25,7 @@ export interface UpdateCompanyAwaitingHumanSettingsRequest {
   provider?: AwaitingHumanProvider | null;
   providerConfig?: AwaitingHumanProviderConfig | null;
   clickupPersonalToken?: string | null;
+  connectionTestMode?: "channel" | "reviewers";
 }
 
 export interface ClickUpAwaitingHumanConnectionTestResult {

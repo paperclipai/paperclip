@@ -5,6 +5,7 @@ import {
   detectClickUpAwaitingHumanBridgeEvents,
   detectClickUpAwaitingHumanBridgeEventsAfterMessage,
   getClickUpChatMessageReplies,
+  sendClickUpTransportTestMessage,
   sendAwaitingHumanNotification,
   sendAwaitingHumanNotificationReply,
   uploadClickUpReviewFile,
@@ -567,6 +568,69 @@ describe("sendAwaitingHumanNotificationReply", () => {
     expect(body.content).toContain("Please approve or reject this landing page plan.");
     expect(body.content).toContain("Reply with: approve or reject");
     expect(body.content).not.toMatch(/…$/);
+  });
+});
+
+describe("sendClickUpTransportTestMessage reviewer mentions", () => {
+  it("renders reviewer mention links when reviewer testing is requested", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      text: async () => JSON.stringify({ id: "message-reviewers" }),
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await sendClickUpTransportTestMessage({
+      title: "Bizbox ClickUp reviewer mention test",
+      summary: "Bizbox completed a reviewer mention test for ClickUp.",
+      body: "The configured bridge successfully delivered a reviewer mention test payload to the target ClickUp channel.",
+      link: "https://bizbox.example/company/settings/awaiting-human",
+      cta: "No action is required.",
+      reviewerMentions: [
+        { label: "Primary reviewer", userId: "primary-user-id" },
+        { label: "Secondary reviewer", userId: "secondary-user-id" },
+      ],
+    }, {
+      personalToken: "token-123",
+      workspaceId: "workspace-1",
+      channelId: "channel-9",
+    });
+
+    expect(result.status).toBe("sent");
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.content).toContain("Reviewer mention test:");
+    expect(body.content).toContain("Primary reviewer: clickup://user/primary-user-id");
+    expect(body.content).toContain("Secondary reviewer: clickup://user/secondary-user-id");
+  });
+
+  it("omits the reviewer section when no reviewer mentions are configured", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      text: async () => JSON.stringify({ id: "message-reviewers" }),
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await sendClickUpTransportTestMessage({
+      title: "Bizbox ClickUp reviewer mention test",
+      summary: "Bizbox completed a reviewer mention test for ClickUp.",
+      body: "The configured bridge successfully delivered a reviewer mention test payload to the target ClickUp channel.",
+      link: "https://bizbox.example/company/settings/awaiting-human",
+      cta: "No action is required.",
+      reviewerMentions: [
+        { label: "Primary reviewer", userId: null },
+        { label: "Secondary reviewer", userId: undefined },
+      ],
+    }, {
+      personalToken: "token-123",
+      workspaceId: "workspace-1",
+      channelId: "channel-9",
+    });
+
+    expect(result.status).toBe("sent");
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.content).not.toContain("Reviewer mention test:");
+    expect(body.content).not.toContain("not configured");
   });
 });
 
