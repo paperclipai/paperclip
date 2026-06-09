@@ -575,7 +575,10 @@ export function workflowService(db: Db) {
         error: WORKFLOW_INTERRUPTED_ERROR,
         finishedAt: now,
         updatedAt: now,
-      }).where(inArray(workflowRuns.id, runIds)).returning({ id: workflowRuns.id });
+      }).where(and(
+        inArray(workflowRuns.id, runIds),
+        inArray(workflowRuns.status, ["queued", "running", "awaiting_human"]),
+      )).returning({ id: workflowRuns.id });
       const failedRunIds = rows.map((row) => row.id);
       await db.update(workflowRunPhases).set({
         status: "failed",
