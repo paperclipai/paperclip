@@ -828,7 +828,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, input.issueId))
       .then((rows) => rows[0] ?? null);
-    expect(sourceIssue?.status).toBe("blocked");
+    // ALAA-965: the recovery service no longer parks an issue in
+    // status=blocked with an empty blockedBy[] set. None of the heartbeat
+    // recovery fixtures seed an unresolved blocker on the source issue, so the
+    // recovery write falls back to "todo" and the recovery action's wake is
+    // what restores the live execution path.
+    expect(sourceIssue?.status).toBe("todo");
 
     return action;
   }
@@ -1117,13 +1122,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryOfRunId: runId,
     });
 
+    // ALAA-965: the only seeded blocker on this issue is `done`, so
+    // `existingUnresolvedBlockerIssueIds` returns []. The recovery write
+    // therefore falls back to "todo" instead of producing the old
+    // blocked-with-empty-blockers state.
     const blockedIssue = await waitForValue(async () =>
       db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
         const issue = rows[0] ?? null;
-        return issue?.status === "blocked" ? issue : null;
+        return issue?.status === "todo" ? issue : null;
       })
     );
-    expect(blockedIssue?.status).toBe("blocked");
+    expect(blockedIssue?.status).toBe("todo");
     expect(blockedIssue?.executionRunId).toBeNull();
     expect(blockedIssue?.checkoutRunId).toBeNull();
     if (!continuationRun?.id) throw new Error("Expected continuation recovery run to exist");
@@ -1195,10 +1204,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]?.status).toBe("failed");
 
+    // ALAA-965: the recovery issue has no unresolved blockers of its own, so
+    // the in-place escalation now writes status=todo (instead of the old
+    // blocked-with-empty-blockers state).
     const recoveryIssue = await waitForValue(async () =>
       db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
         const issue = rows[0] ?? null;
-        return issue?.status === "blocked" ? issue : null;
+        return issue?.status === "todo" ? issue : null;
       })
     );
     expect(recoveryIssue?.assigneeAgentId).toBe(agentId);
@@ -1379,10 +1391,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       },
     });
 
+    // ALAA-965: workspace-validation recovery now writes status=todo when no
+    // unresolved blockers exist.
     const issue = await waitForValue(async () =>
       db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
         const row = rows[0] ?? null;
-        return row?.status === "blocked" ? row : null;
+        return row?.status === "todo" ? row : null;
       }),
     );
     expect(issue?.executionRunId).toBeNull();
@@ -1773,7 +1787,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(JSON.stringify(recoveryAction.evidence)).not.toContain("sk-test-successful-handoff-secret");
 
     const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
-    expect(sourceIssue?.status).toBe("blocked");
+    // ALAA-965: no unresolved blockers exist on this source issue, so the
+    // recovery write falls back to "todo".
+    expect(sourceIssue?.status).toBe("todo");
     await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
@@ -2219,7 +2235,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.issueIds).toEqual([issueId]);
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("blocked");
+    // ALAA-965: the recovery service no longer parks an issue in
+    // status=blocked with an empty blockedBy[] set; with no unresolved
+    // blockers seeded the escalation falls back to "todo".
+    expect(issue?.status).toBe("todo");
 
     const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
       companyId,
@@ -2286,9 +2305,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
     expect(recoveryIssues).toHaveLength(1);
+    // ALAA-965: the in-place recovery write falls back to "todo" when there
+    // are no unresolved blockers on the recovery issue itself.
     expect(recoveryIssues[0]).toMatchObject({
       id: issueId,
-      status: "blocked",
+      status: "todo",
       parentId: sourceIssueId,
       originId: sourceIssueId,
       originRunId: sourceRunId,
@@ -2614,7 +2635,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.issueIds).toEqual([issueId]);
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("blocked");
+    // ALAA-965: the recovery service no longer parks an issue in
+    // status=blocked with an empty blockedBy[] set; with no unresolved
+    // blockers seeded the escalation falls back to "todo".
+    expect(issue?.status).toBe("todo");
 
     const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
       companyId,
@@ -2740,7 +2764,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.issueIds).toEqual([issueId]);
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("blocked");
+    // ALAA-965: the recovery service no longer parks an issue in
+    // status=blocked with an empty blockedBy[] set; with no unresolved
+    // blockers seeded the escalation falls back to "todo".
+    expect(issue?.status).toBe("todo");
 
     await expectSourceScopedStrandedRecoveryAction({
       companyId,
@@ -2877,7 +2904,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.issueIds).toEqual([issueId]);
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("blocked");
+    // ALAA-965: the recovery service no longer parks an issue in
+    // status=blocked with an empty blockedBy[] set; with no unresolved
+    // blockers seeded the escalation falls back to "todo".
+    expect(issue?.status).toBe("todo");
 
     await expectSourceScopedStrandedRecoveryAction({
       companyId,
@@ -3004,7 +3034,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.issueIds).toEqual([issueId]);
 
     const recoveryIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
-    expect(recoveryIssue?.status).toBe("blocked");
+    // ALAA-965: the recovery issue has no unresolved blockers on itself, so
+    // the in-place escalation now falls back to status=todo.
+    expect(recoveryIssue?.status).toBe("todo");
     expect(recoveryIssue?.assigneeAgentId).toBe(agentId);
     expect(recoveryIssue?.originKind).toBe("stranded_issue_recovery");
     expect(recoveryIssue?.originId).toBe(sourceIssueId);
@@ -3218,7 +3250,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.issueIds).toEqual([issueId]);
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("blocked");
+    // ALAA-965: the recovery service no longer parks an issue in
+    // status=blocked with an empty blockedBy[] set; with no unresolved
+    // blockers seeded the escalation falls back to "todo".
+    expect(issue?.status).toBe("todo");
 
     const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
       companyId,

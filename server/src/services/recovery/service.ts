@@ -2210,7 +2210,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: "todo" | "in_progress";
     latestRun: LatestIssueRun;
   }) {
-    const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
+    // ALAA-965: never produce status=blocked with an empty blockedBy[] set.
+    // Read existing unresolved blockers; if none, fall back to status=todo so
+    // the issue surfaces for normal assignment rather than rotting in a
+    // blocked-without-blocker state that no agent can clear.
+    const existingBlockers = await existingUnresolvedBlockerIssueIds(
+      input.issue.companyId,
+      input.issue.id,
+    );
+    const nextStatus: "blocked" | "todo" = existingBlockers.length > 0 ? "blocked" : "todo";
+    const updated = await issuesSvc.update(input.issue.id, { status: nextStatus });
     if (!updated) return null;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
@@ -2236,7 +2245,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       entityId: input.issue.id,
       details: {
         identifier: input.issue.identifier,
-        status: "blocked",
+        status: nextStatus,
         previousStatus: input.previousStatus,
         source: "recovery.reconcile_stranded_recovery_issue",
         latestRunId: input.latestRun?.id ?? null,
@@ -2311,8 +2320,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    // ALAA-965: don't produce status=blocked with an empty blockedBy[] set.
+    const nextStatus: "blocked" | "todo" = blockerIds.length > 0 ? "blocked" : "todo";
     const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
+      status: nextStatus,
       blockedByIssueIds: blockerIds,
       assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
     });
@@ -2402,7 +2413,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       entityId: input.issue.id,
       details: {
         identifier: input.issue.identifier,
-        status: "blocked",
+        // ALAA-965: log the status actually written, which may be "todo" when
+        // there are no live blockers.
+        status: nextStatus,
         previousStatus: input.previousStatus,
         source: input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
           ? "recovery.reconcile_successful_run_handoff_missing_state"
@@ -2442,8 +2455,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         (currentIssue.status !== "blocked" ||
           currentIssue.assigneeAgentId !== recoveryAction.ownerAgentId)
       ) {
+        // ALAA-965: don't re-block with an empty blockedBy[] set.
+        const reblockStatus: "blocked" | "todo" = blockerIds.length > 0 ? "blocked" : "todo";
         const reblocked = await issuesSvc.update(input.issue.id, {
-          status: "blocked",
+          status: reblockStatus,
           blockedByIssueIds: blockerIds,
           assigneeAgentId: recoveryAction.ownerAgentId,
         });

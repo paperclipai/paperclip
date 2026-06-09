@@ -308,8 +308,11 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
 
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    // ALAA-965: no live blockers were seeded, so the escalated issue must not
+    // be parked in `status=blocked` with an empty blockedBy[] set. It falls
+    // back to `todo` so a fresh assignment cycle can run.
     expect(updatedIssue).toMatchObject({
-      status: "blocked",
+      status: "todo",
     });
     const recoveryIssues = await db
       .select()
@@ -408,7 +411,11 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
 
     const [afterFirst] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
-    expect(afterFirst?.status).toBe("blocked");
+    // ALAA-965: enqueueWakeup synchronously flipped the issue to "in_progress",
+    // so the re-block path runs. With no live blockers it must fall back to
+    // "todo" rather than parking the issue in `status=blocked` + empty
+    // blockedBy[].
+    expect(afterFirst?.status).toBe("todo");
     expect(afterFirst?.assigneeAgentId).toBe(coderId);
 
     const secondLatestRun = {
@@ -437,7 +444,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       attemptCount: 2,
     });
     const [afterSecond] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
-    expect(afterSecond?.status).toBe("blocked");
+    // ALAA-965: same invariant — no live blockers => "todo", not "blocked".
+    expect(afterSecond?.status).toBe("todo");
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
     expect(comments).toHaveLength(1);
@@ -485,7 +493,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
     expect(recoveryIssues).toHaveLength(1);
-    expect(recoveryIssues[0]?.status).toBe("blocked");
+    // ALAA-965: the in-place recovery-issue escalation respects the same
+    // invariant — without seeded blockers, the recovery issue must not be
+    // parked in `status=blocked` with no blockers.
+    expect(recoveryIssues[0]?.status).toBe("todo");
   });
 
   it("exposes active recovery actions on the issue read API", async () => {
@@ -1136,6 +1147,179 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       status: "resolved",
       outcome: "false_positive",
       resolutionNote: "Recovery signal was stale; return to review.",
+    });
+  });
+
+  describe("ALAA-965: never produce status=blocked with empty blockedBy[]", () => {
+    async function seedBlockerOnSourceIssue(input: {
+      companyId: string;
+      sourceIssueId: string;
+      prefix: string;
+    }) {
+      const blockerIssueId = randomUUID();
+      await db.insert(issues).values({
+        id: blockerIssueId,
+        companyId: input.companyId,
+        title: "Live blocker",
+        status: "in_progress",
+        priority: "medium",
+        issueNumber: 99,
+        identifier: `${input.prefix}-99`,
+      });
+      await db.insert(issueRelations).values({
+        id: randomUUID(),
+        companyId: input.companyId,
+        issueId: blockerIssueId,
+        relatedIssueId: input.sourceIssueId,
+        type: "blocks",
+      });
+      return blockerIssueId;
+    }
+
+    it("escalateStrandedAssignedIssue (initial write) keeps status=blocked when a live blocker exists", async () => {
+      const { companyId, coderId, sourceIssueId, sourceIssue, prefix } = await seedCompany();
+      const blockerIssueId = await seedBlockerOnSourceIssue({ companyId, sourceIssueId, prefix });
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+      await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun: {
+          id: randomUUID(),
+          agentId: coderId,
+          status: "failed",
+          error: "adapter failed",
+          errorCode: "adapter_failed",
+          contextSnapshot: { retryReason: "issue_continuation_needed" },
+          livenessState: "needs_followup",
+        },
+        comment: "Automatic continuation recovery failed.",
+      });
+
+      const [updated] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(updated?.status).toBe("blocked");
+      const blockerRows = await db
+        .select()
+        .from(issueRelations)
+        .where(and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, sourceIssueId),
+          eq(issueRelations.type, "blocks"),
+        ));
+      expect(blockerRows.map((row) => row.issueId)).toContain(blockerIssueId);
+    });
+
+    it("escalateStrandedAssignedIssue (initial write) falls back to status=todo when no blocker exists", async () => {
+      const { coderId, sourceIssueId, sourceIssue } = await seedCompany();
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+      await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun: {
+          id: randomUUID(),
+          agentId: coderId,
+          status: "failed",
+          error: "adapter failed",
+          errorCode: "adapter_failed",
+          contextSnapshot: { retryReason: "issue_continuation_needed" },
+          livenessState: "needs_followup",
+        },
+        comment: "Automatic continuation recovery failed.",
+      });
+
+      const [updated] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(updated?.status).toBe("todo");
+    });
+
+    it("escalateStrandedAssignedIssue (re-block path) keeps status=blocked when a live blocker exists", async () => {
+      const { companyId, managerId, coderId, sourceIssueId, sourceIssue, prefix } = await seedCompany();
+      await seedBlockerOnSourceIssue({ companyId, sourceIssueId, prefix });
+      // Pause the manager so the recovery owner falls back to the source
+      // assignee (coder), which is the prerequisite for the re-block path to
+      // run (recoveryAction.ownerAgentId === input.issue.assigneeAgentId).
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, managerId));
+      // Force the re-block path: enqueueWakeup synchronously flips the issue
+      // back to in_progress so the post-write check sees a stale status.
+      const enqueueWakeup = vi.fn(async () => {
+        await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, sourceIssueId));
+        return null;
+      });
+      const recovery = recoveryService(db, { enqueueWakeup });
+
+      await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun: {
+          id: randomUUID(),
+          agentId: coderId,
+          status: "failed",
+          error: "adapter failed",
+          errorCode: "adapter_failed",
+          contextSnapshot: { retryReason: "issue_continuation_needed" },
+          livenessState: "needs_followup",
+        },
+      });
+
+      const [afterReblock] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(afterReblock?.status).toBe("blocked");
+    });
+
+    it("escalateStrandedRecoveryIssueInPlace keeps status=blocked when a live blocker exists on the recovery issue", async () => {
+      const { companyId, managerId, sourceIssueId, prefix } = await seedCompany();
+      const recoveryIssueId = randomUUID();
+      await db.insert(issues).values({
+        id: recoveryIssueId,
+        companyId,
+        title: "Recover stalled issue",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: managerId,
+        parentId: sourceIssueId,
+        issueNumber: 2,
+        identifier: `${prefix}-2`,
+        originKind: "stranded_issue_recovery",
+        originId: sourceIssueId,
+        originFingerprint: `stranded_issue_recovery:${sourceIssueId}`,
+      });
+      // Seed a live blocker on the recovery issue itself.
+      const blockerIssueId = randomUUID();
+      await db.insert(issues).values({
+        id: blockerIssueId,
+        companyId,
+        title: "Recovery-issue blocker",
+        status: "in_progress",
+        priority: "medium",
+        issueNumber: 3,
+        identifier: `${prefix}-3`,
+      });
+      await db.insert(issueRelations).values({
+        id: randomUUID(),
+        companyId,
+        issueId: blockerIssueId,
+        relatedIssueId: recoveryIssueId,
+        type: "blocks",
+      });
+
+      const [recoveryIssue] = await db.select().from(issues).where(eq(issues.id, recoveryIssueId));
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+      await recovery.escalateStrandedAssignedIssue({
+        issue: recoveryIssue!,
+        previousStatus: "in_progress",
+        latestRun: {
+          id: randomUUID(),
+          agentId: managerId,
+          status: "failed",
+          error: "adapter failed",
+          errorCode: "adapter_failed",
+          contextSnapshot: { retryReason: "issue_continuation_needed" },
+          livenessState: "needs_followup",
+        },
+      });
+
+      const [updated] = await db.select().from(issues).where(eq(issues.id, recoveryIssueId));
+      expect(updated?.status).toBe("blocked");
     });
   });
 
