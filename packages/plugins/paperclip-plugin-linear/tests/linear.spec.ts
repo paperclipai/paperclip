@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { markDuplicate } from "../src/linear.js";
+import { listOpenIssues, markDuplicate } from "../src/linear.js";
 
 // gql() (linear.ts:222) calls fetch(LINEAR_API, {..., body: JSON.stringify({query, variables})}),
 // checks res.ok, then res.json() -> { data, errors }. Mock that contract.
@@ -52,5 +52,25 @@ describe("markDuplicate", () => {
     ]);
     const res = await markDuplicate(fetch, "tok", "dupe-id", "keeper-id");
     expect(res).toEqual({ success: true, issueRelationId: null, alreadyRelated: true });
+  });
+});
+
+describe("listOpenIssues", () => {
+  it("excludes both Linear canceled spellings from open issue import", async () => {
+    const fetch = mockFetch([
+      {
+        data: {
+          issues: {
+            nodes: [],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      },
+    ]);
+
+    await listOpenIssues(fetch, "tok", "team-1");
+
+    const body = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(body.query).toContain('"completed", "canceled", "cancelled"');
   });
 });

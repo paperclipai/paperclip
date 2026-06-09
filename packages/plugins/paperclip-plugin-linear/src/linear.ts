@@ -593,7 +593,7 @@ export async function listOpenIssues(
       issues(
         filter: {
           team: { id: { eq: $teamId } }
-          state: { type: { nin: ["completed", "cancelled"] } }
+          state: { type: { nin: ["completed", "canceled", "cancelled"] } }
         }
         first: 50
         after: $after

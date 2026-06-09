@@ -407,7 +407,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
                   id
                   key
                   issueCount
-                  issues(filter: { state: { type: { nin: ["completed", "cancelled"] } } }, first: 250) {
+                  issues(filter: { state: { type: { nin: ["completed", "canceled", "cancelled"] } } }, first: 250) {
                     nodes { id }
                   }
                 }
@@ -639,7 +639,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
       };
       const statusMap: Record<string, string> = {
         backlog: "backlog", unstarted: "todo", started: "in_progress",
-        completed: "done", cancelled: "cancelled",
+        completed: "done", canceled: "cancelled", cancelled: "cancelled",
       };
 
       while (hasMore) {
@@ -649,7 +649,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
           body: JSON.stringify({
             query: `query($teamId: ID!, $after: String) {
               issues(
-                filter: { team: { id: { eq: $teamId } }, state: { type: { nin: ["completed", "cancelled"] } } }
+                filter: { team: { id: { eq: $teamId } }, state: { type: { nin: ["completed", "canceled", "cancelled"] } } }
                 first: 50
                 after: $after
                 orderBy: updatedAt
@@ -1034,7 +1034,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
 
       const statusMap: Record<string, string> = {
         backlog: "backlog", unstarted: "todo", started: "in_progress",
-        completed: "done", cancelled: "cancelled",
+        completed: "done", canceled: "cancelled", cancelled: "cancelled",
       };
       const priorityMap: Record<number, string> = {
         0: "low", 1: "critical", 2: "high", 3: "medium", 4: "low",
@@ -1483,7 +1483,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
       if (type === "Issue" && action === "update") {
         const statusMap: Record<string, string> = {
           backlog: "backlog", unstarted: "todo", started: "in_progress",
-          completed: "done", cancelled: "cancelled",
+          completed: "done", canceled: "cancelled", cancelled: "cancelled",
         };
         const priorityMap: Record<number, string> = {
           0: "low", 1: "critical", 2: "high", 3: "medium", 4: "low",
@@ -1597,7 +1597,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
           if (!existing) {
             const statusMap: Record<string, string> = {
               backlog: "backlog", unstarted: "todo", started: "in_progress",
-              completed: "done", cancelled: "cancelled",
+              completed: "done", canceled: "cancelled", cancelled: "cancelled",
             };
             const priorityMap: Record<number, string> = {
               0: "low", 1: "critical", 2: "high", 3: "medium", 4: "low",
