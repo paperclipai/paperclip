@@ -173,7 +173,9 @@ const AgentRunCard = memo(function AgentRunCard({
 }) {
   // Signature components: the run's life state drives the eyes + heartbeat spine.
   const faceState = runLiveState(run.status);
-  const cad = liveCadence(run.agentId);
+  // Seed by run id (not agent id) so two run cards for the SAME agent don't
+  // blink/pulse in unison — each card gets its own cadence.
+  const cad = liveCadence(run.id);
   return (
     <div className={cn(
       "relative flex h-[320px] flex-col overflow-hidden rounded-xl border",

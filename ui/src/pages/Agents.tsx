@@ -9,7 +9,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
-import { agentLiveState } from "../lib/status-colors";
+import { agentLiveState, liveCadence } from "../lib/status-colors";
 import { AgentPortrait } from "../components/AgentPortrait";
 import { HeartbeatSpine } from "../components/HeartbeatSpine";
 import { EntityRow } from "../components/EntityRow";
@@ -266,8 +266,12 @@ export function Agents() {
       {/* List view */}
       {effectiveView === "list" && filtered.length > 0 && (
         <div className="border border-border">
-          {filtered.map((agent, agentIndex) => {
-            const liveState = agentLiveState(agent.status);
+          {filtered.map((agent) => {
+            // The agent is alive NOW if it has a streaming run — that's the same
+            // signal the "N working" counter uses; agent.status alone says "active"
+            // (→ grey) even mid-run, so a working agent looked idle. Live run wins.
+            const liveState = liveRunByAgent.has(agent.id) ? "running" : agentLiveState(agent.status);
+            const cad = liveCadence(agent.id);
             return (
               <EntityRow
                 key={agent.id}
@@ -281,11 +285,7 @@ export function Agents() {
                   // Wrapper carries the absolute positioning (the spine's own base
                   // CSS is position:relative, which would override an `absolute` class).
                   <span className="pointer-events-none absolute inset-y-0 left-0 flex">
-                    <HeartbeatSpine
-                      state={liveState}
-                      beat={2.1 + (agentIndex % 5) * 0.28}
-                      delay={(agentIndex % 7) * 0.36}
-                    />
+                    <HeartbeatSpine state={liveState} beat={cad.beat} delay={cad.delay} />
                   </span>
                 }
                 leading={
@@ -294,6 +294,8 @@ export function Agents() {
                     name={agent.name}
                     state={liveState}
                     size={28}
+                    look={cad.look}
+                    scan={cad.scan}
                   />
                 }
                 trailing={
@@ -385,8 +387,9 @@ function OrgTreeNode({
   tab: FilterTab;
 }) {
   const agent = agentMap.get(node.id);
-  // Stable per-agent cadence so the roster shimmers arrhythmically.
-  const seed = [...node.id].reduce((a, c) => a + c.charCodeAt(0), 0);
+  // Live run = working NOW (wins over agent.status, which reads "active"→grey mid-run).
+  const liveState = liveRunByAgent.has(node.id) ? "running" : agentLiveState(node.status);
+  const cad = liveCadence(node.id);
 
   return (
     <div style={{ paddingLeft: depth * 24 }}>
@@ -397,17 +400,15 @@ function OrgTreeNode({
         {/* The signature heartbeat spine on the box's left edge (wrapper carries the
             absolute positioning; the spine's base CSS is position:relative). */}
         <span className="pointer-events-none absolute inset-y-0 left-0 flex">
-          <HeartbeatSpine
-            state={agentLiveState(node.status)}
-            beat={2.1 + (seed % 5) * 0.28}
-            delay={(seed % 7) * 0.36}
-          />
+          <HeartbeatSpine state={liveState} beat={cad.beat} delay={cad.delay} />
         </span>
         <AgentPortrait
           src={null}
           name={node.name}
-          state={agentLiveState(node.status)}
+          state={liveState}
           size={24}
+          look={cad.look}
+          scan={cad.scan}
           className="shrink-0"
         />
         <div className="flex-1 min-w-0">

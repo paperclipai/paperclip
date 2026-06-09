@@ -33,6 +33,9 @@ export interface AgentPortraitProps {
   pip?: boolean;
   /** Show the status ring. Default true. */
   ring?: boolean;
+  /** Per-agent eye cadence (seconds) so a roster never blinks/scans in unison. */
+  look?: number;
+  scan?: number;
   className?: string;
 }
 
@@ -43,6 +46,8 @@ export function AgentPortrait({
   size = 48,
   pip = true,
   ring = true,
+  look,
+  scan,
   className,
 }: AgentPortraitProps) {
   const dataState = state === "thinking" ? "running" : state;
@@ -53,6 +58,8 @@ export function AgentPortrait({
       <AgentFace
         state={state as AgentFaceState}
         size={size}
+        look={look}
+        scan={scan}
         className={className}
         title={name}
       />
