@@ -2354,7 +2354,7 @@ export function issueRoutes(
     }
     const offset = parsedOffset ?? 0;
 
-    const rawResult = await svc.list(companyId, {
+    const listedIssues = await svc.list(companyId, {
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
@@ -2388,9 +2388,13 @@ export function issueRoutes(
       sortField: sortField === "updated" ? "updated" : undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
     });
-    const result = await actorCanReadCompanyScope(req, companyId)
-      ? rawResult
-      : await filterIssuesForActor(req, rawResult);
+    const visibleIssues = await actorCanReadCompanyScope(req, companyId)
+      ? listedIssues
+      : await filterIssuesForActor(req, listedIssues);
+    const result = await Promise.all(visibleIssues.map(async (issue) => {
+      const reconciled = await svc.reconcileAutoCloseFromMergedPullRequestReference(issue.id);
+      return reconciled?.issue ?? issue;
+    }));
     const issueIds = result.map((issue) => issue.id);
     const [handoffStates, recoveryActionByIssue] = await Promise.all([
       listSuccessfulRunHandoffStates(db, companyId, issueIds),
@@ -2702,13 +2706,15 @@ export function issueRoutes(
 
   router.get("/issues/:id", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
+    let issue = await svc.getById(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const reconciled = await svc.reconcileAutoCloseFromMergedPullRequestReference(issue.id);
+    issue = reconciled?.issue ?? issue;
     const [
       { project, goal },
       ancestors,
@@ -3698,8 +3704,31 @@ export function issueRoutes(
       entityId: issue.id,
       details: { workProductId: product.id, type: product.type, provider: product.provider },
     });
+    const autoClosed = await svc.autoCloseFromMergedPullRequestWorkProduct({
+      issueId: issue.id,
+      workProduct: product,
+    });
+    if (autoClosed) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: actor.runId,
+        action: "issue.auto_closed_from_merged_pull_request",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          workProductId: product.id,
+          repo: `${autoClosed.pullRequest.repo.owner}/${autoClosed.pullRequest.repo.repo}`,
+          pullNumber: autoClosed.pullRequest.pullNumber,
+          mergedAt: autoClosed.pullRequest.mergedAt,
+          mergeCommitSha: autoClosed.pullRequest.mergeCommitSha,
+        },
+      });
+    }
     await revalidateActiveSourceRecoveryAfterCommittedWrite({
-      issue,
+      issue: autoClosed?.issue ?? issue,
       trigger: "work_product",
       actor,
       workProductChanged: true,
@@ -3903,8 +3932,31 @@ export function issueRoutes(
       entityId: existing.issueId,
       details: { workProductId: product.id, changedKeys: Object.keys(req.body).sort() },
     });
+    const autoClosed = await svc.autoCloseFromMergedPullRequestWorkProduct({
+      issueId: existing.issueId,
+      workProduct: product,
+    });
+    if (autoClosed) {
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: actor.runId,
+        action: "issue.auto_closed_from_merged_pull_request",
+        entityType: "issue",
+        entityId: existing.issueId,
+        details: {
+          workProductId: product.id,
+          repo: `${autoClosed.pullRequest.repo.owner}/${autoClosed.pullRequest.repo.repo}`,
+          pullNumber: autoClosed.pullRequest.pullNumber,
+          mergedAt: autoClosed.pullRequest.mergedAt,
+          mergeCommitSha: autoClosed.pullRequest.mergeCommitSha,
+        },
+      });
+    }
     await revalidateActiveSourceRecoveryAfterCommittedWrite({
-      issue,
+      issue: autoClosed?.issue ?? issue,
       trigger: "work_product",
       actor,
       workProductChanged: true,

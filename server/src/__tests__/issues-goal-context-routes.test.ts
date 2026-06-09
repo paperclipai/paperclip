@@ -9,6 +9,7 @@ const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
   getRelationSummaries: vi.fn(),
   findMentionedProjectIds: vi.fn(),
+  reconcileAutoCloseFromMergedPullRequestReference: vi.fn(async () => null),
   getCommentCursor: vi.fn(),
   getComment: vi.fn(),
   listBlockerAttention: vi.fn(),

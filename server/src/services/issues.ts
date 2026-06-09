@@ -75,6 +75,7 @@ import { redactSensitiveText } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
+import { ghFetch, gitHubApiBase } from "./github-fetch.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
@@ -100,6 +101,14 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
 const DELETED_ISSUE_COMMENT_BODY = "";
+const REPO_BACKED_TERMINAL_GATE_CODE = "repo_backed_terminal_state_gate_failed";
+const TERMINAL_GATE_NON_CODE_DELIVERABLES = new Set([
+  "decision",
+  "diagnostic",
+  "report",
+  "artifact",
+  "investigation",
+]);
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -129,6 +138,432 @@ function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+type RepoCoordinates = {
+  host: string;
+  owner: string;
+  repo: string;
+};
+
+type PullRequestReference = {
+  repo: RepoCoordinates;
+  pullNumber: number;
+  url: string | null;
+};
+
+type PullRequestDetails = {
+  repo: RepoCoordinates;
+  pullNumber: number;
+  url: string | null;
+  merged: boolean;
+  mergedAt: string | null;
+  mergeCommitSha: string | null;
+};
+
+function normalizeRepoHost(host: string) {
+  const normalized = host.trim().toLowerCase();
+  if (normalized === "github.com" || normalized.startsWith("github.com-")) {
+    return "github.com";
+  }
+  return normalized;
+}
+
+function parseRepoCoordinates(rawUrl: string | null | undefined): RepoCoordinates | null {
+  const trimmed = rawUrl?.trim();
+  if (!trimmed) return null;
+  try {
+    const sshMatch = trimmed.match(/^git@([^:]+):([^/]+)\/(.+?)(?:\.git)?$/i);
+    if (sshMatch) {
+      return {
+        host: normalizeRepoHost(sshMatch[1]!),
+        owner: sshMatch[2]!,
+        repo: sshMatch[3]!.replace(/\.git$/i, ""),
+      };
+    }
+
+    const parsed = new URL(trimmed);
+    const parts = parsed.pathname.replace(/\/+$/, "").split("/").filter(Boolean);
+    if (parts.length < 2) return null;
+    return {
+      host: normalizeRepoHost(parsed.hostname),
+      owner: parts[0]!,
+      repo: parts[1]!.replace(/\.git$/i, ""),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseSubjectRepoCoordinates(rawValue: string | null | undefined): RepoCoordinates | null {
+  const trimmed = rawValue?.trim();
+  if (!trimmed) return null;
+  const simple = trimmed.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
+  if (simple) {
+    return {
+      host: "github.com",
+      owner: simple[1]!,
+      repo: simple[2]!,
+    };
+  }
+  const withHost = trimmed.match(/^github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/i);
+  if (withHost) {
+    return {
+      host: "github.com",
+      owner: withHost[1]!,
+      repo: withHost[2]!,
+    };
+  }
+  return parseRepoCoordinates(trimmed);
+}
+
+function repoCoordinatesEqual(expected: RepoCoordinates | null, actual: RepoCoordinates | null) {
+  if (!expected || !actual) return false;
+  return expected.host === actual.host && expected.owner === actual.owner && expected.repo === actual.repo;
+}
+
+function repoLabel(repo: RepoCoordinates) {
+  return `${repo.owner}/${repo.repo}`;
+}
+
+function parsePullRequestReferenceFromUrl(rawUrl: string | null | undefined): PullRequestReference | null {
+  const trimmed = rawUrl?.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    const host = normalizeRepoHost(parsed.hostname);
+    const parts = parsed.pathname.replace(/\/+$/, "").split("/").filter(Boolean);
+    if (parts.length < 4 || parts[2] !== "pull") return null;
+    const pullNumber = Number.parseInt(parts[3] ?? "", 10);
+    if (!Number.isFinite(pullNumber) || pullNumber <= 0) return null;
+    return {
+      repo: {
+        host,
+        owner: parts[0]!,
+        repo: parts[1]!.replace(/\.git$/i, ""),
+      },
+      pullNumber,
+      url: `https://${host}/${parts[0]}/${parts[1]!.replace(/\.git$/i, "")}/pull/${pullNumber}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function serializePullRequestReference(ref: PullRequestReference) {
+  return `${ref.repo.host}/${ref.repo.owner}/${ref.repo.repo}#${ref.pullNumber}`;
+}
+
+function extractReferencedPullRequests(
+  text: string | null | undefined,
+  fallbackRepo: RepoCoordinates,
+): PullRequestReference[] {
+  if (!text) return [];
+  const matches = new Map<string, PullRequestReference>();
+  const urlPattern = /https?:\/\/github(?:\.com|\.com-[^\s/]+)\/[^\s)]+\/pull\/\d+/gi;
+  for (const match of text.matchAll(urlPattern)) {
+    const parsed = parsePullRequestReferenceFromUrl(match[0]);
+    if (!parsed) continue;
+    matches.set(serializePullRequestReference(parsed), parsed);
+  }
+  for (const match of text.matchAll(/\bPR\s*#(\d+)\b|(^|[^\w/])#(\d+)\b/gim)) {
+    const rawValue = match[1] ?? match[3] ?? "";
+    const pullNumber = Number.parseInt(rawValue, 10);
+    if (!Number.isFinite(pullNumber) || pullNumber <= 0) continue;
+    const ref: PullRequestReference = {
+      repo: fallbackRepo,
+      pullNumber,
+      url: null,
+    };
+    matches.set(serializePullRequestReference(ref), ref);
+  }
+  return Array.from(matches.values());
+}
+
+function extractMatchingPullRequestNumbers(text: string | null | undefined, repo: RepoCoordinates): number[] {
+  return extractReferencedPullRequests(text, repo)
+    .filter((ref) => repoCoordinatesEqual(ref.repo, repo))
+    .map((ref) => ref.pullNumber);
+}
+
+function parseTerminalGateDeliverable(value: string | null | undefined): TerminalGateDeliverable | null {
+  const normalized = value?.trim().toLowerCase();
+  switch (normalized) {
+    case "code":
+    case "decision":
+    case "audit":
+    case "diagnostic":
+    case "qa":
+    case "ops":
+    case "governance":
+      return normalized;
+    default:
+      return null;
+  }
+}
+
+function parseRoutineExecutionDeliverableLabel(value: string | null | undefined): RoutineExecutionDeliverableLabel | null {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized?.startsWith("deliverable:")) return null;
+  const candidate = normalized.slice("deliverable:".length).trim();
+  if (!candidate) return null;
+  if (candidate === "doc") return "doc";
+  return parseTerminalGateDeliverable(candidate);
+}
+
+function parseTerminalGateDocumentEvidence(value: string | null | undefined): TerminalGateDocumentEvidence | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/^document:([a-z0-9][a-z0-9_-]{0,63})#rev:(\d+)$/i);
+  if (!match) return null;
+  const revisionNumber = Number.parseInt(match[2] ?? "", 10);
+  if (!Number.isFinite(revisionNumber) || revisionNumber <= 0) return null;
+  return {
+    key: match[1]!,
+    revisionNumber,
+  };
+}
+
+function extractTerminalGateSignalsFromText(text: string | null | undefined): Partial<TerminalGateSignals> {
+  const signals: Partial<TerminalGateSignals> = {};
+  if (!text) return signals;
+  const fieldPrefix = String.raw`(?:\[[^\]\r\n]+\]\s*:\s*)?`;
+  const deliverableMatch = text.match(new RegExp(`^\\s*${fieldPrefix}deliverable\\s*:\\s*([^\\n\\r]+)\\s*$`, "im"));
+  const subjectRepoMatch = text.match(new RegExp(`^\\s*${fieldPrefix}subjectRepo\\s*:\\s*([^\\n\\r]+)\\s*$`, "im"));
+  const terminalEvidenceMatch = text.match(new RegExp(`^\\s*${fieldPrefix}terminalEvidence\\s*:\\s*([^\\n\\r]+)\\s*$`, "im"));
+  const deliverable = parseTerminalGateDeliverable(deliverableMatch?.[1] ?? null);
+  const subjectRepo = parseSubjectRepoCoordinates(subjectRepoMatch?.[1] ?? null);
+  const terminalEvidence = parseTerminalGateDocumentEvidence(terminalEvidenceMatch?.[1] ?? null);
+  if (deliverable) signals.deliverable = deliverable;
+  if (subjectRepo) signals.subjectRepo = subjectRepo;
+  if (terminalEvidence) signals.terminalEvidence = terminalEvidence;
+  return signals;
+}
+
+function mergeTerminalGateSignals(
+  description: string | null | undefined,
+  latestAgentComment: string | null | undefined,
+): TerminalGateSignals {
+  const descriptionSignals = extractTerminalGateSignalsFromText(description);
+  const latestCommentSignals = extractTerminalGateSignalsFromText(latestAgentComment);
+  return {
+    deliverable: latestCommentSignals.deliverable ?? descriptionSignals.deliverable ?? null,
+    subjectRepo: latestCommentSignals.subjectRepo ?? descriptionSignals.subjectRepo ?? null,
+    terminalEvidence: latestCommentSignals.terminalEvidence ?? descriptionSignals.terminalEvidence ?? null,
+  };
+}
+
+function hasRoutineExecutionCodeHints(text: string | null | undefined) {
+  if (!text) return false;
+  return /\bPR\s*#\d+\b|https?:\/\/github\.com\/[^\s]+\/pull\/\d+|\b(?:src|server|packages|ui|scripts|lib|app)\/|\b[a-z0-9_.-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|sql|sh|ya?ml)\b/i.test(text);
+}
+
+function canAutoExemptRoutineExecutionTerminalClose(input: {
+  originKind: string | null | undefined;
+  signals: TerminalGateSignals;
+  description: string | null | undefined;
+  latestAgentComment: string | null | undefined;
+  labelNames: string[];
+}) {
+  if (input.originKind !== "routine_execution") return false;
+  const explicitLabelDeliverable = input.labelNames
+    .map((name) => parseRoutineExecutionDeliverableLabel(name))
+    .find((value): value is RoutineExecutionDeliverableLabel => Boolean(value))
+    ?? null;
+  if (explicitLabelDeliverable === "code") return false;
+  if (explicitLabelDeliverable) return true;
+  if (input.signals.deliverable === "code") return false;
+  if (input.signals.deliverable && TERMINAL_GATE_NON_CODE_DELIVERABLES.has(input.signals.deliverable)) {
+    return false;
+  }
+  return !hasRoutineExecutionCodeHints(input.description) && !hasRoutineExecutionCodeHints(input.latestAgentComment);
+}
+
+function readTerminalStateExemption(value: unknown) {
+  if (!value || typeof value !== "object") return null;
+  const exemption = (value as Record<string, unknown>).terminalStateExemption;
+  if (!exemption || typeof exemption !== "object") return null;
+  const record = exemption as Record<string, unknown>;
+  const kind = typeof record.kind === "string" ? record.kind.trim() : "";
+  const reason = typeof record.reason === "string" ? record.reason.trim() : "";
+  const grantedByUserId = typeof record.grantedByUserId === "string" ? record.grantedByUserId.trim() : "";
+  const grantedByAgentId = typeof record.grantedByAgentId === "string" ? record.grantedByAgentId.trim() : "";
+  if (kind !== REPO_BACKED_TERMINAL_GATE_EXEMPTION_KIND || !reason) return null;
+  if (!grantedByUserId && !grantedByAgentId) return null;
+  return {
+    kind,
+    reason,
+    grantedByUserId: grantedByUserId || null,
+    grantedByAgentId: grantedByAgentId || null,
+    createdAt: typeof record.createdAt === "string" ? record.createdAt : null,
+  };
+}
+
+async function resolveIssueRepoBinding(input: {
+  dbOrTx: any;
+  companyId: string;
+  projectId: string | null;
+  projectWorkspaceId: string | null;
+  executionWorkspaceId: string | null;
+}) {
+  if (input.executionWorkspaceId) {
+    const executionWorkspace = await input.dbOrTx
+      .select({ repoUrl: executionWorkspaces.repoUrl })
+      .from(executionWorkspaces)
+      .where(
+        and(
+          eq(executionWorkspaces.id, input.executionWorkspaceId),
+          eq(executionWorkspaces.companyId, input.companyId),
+        ),
+      )
+      .then((rows: Array<{ repoUrl: string | null }>) => rows[0] ?? null);
+    const executionRepo = parseRepoCoordinates(executionWorkspace?.repoUrl ?? null);
+    if (executionRepo) return executionRepo;
+  }
+
+  if (input.projectWorkspaceId) {
+    const workspace = await input.dbOrTx
+      .select({ repoUrl: projectWorkspaces.repoUrl })
+      .from(projectWorkspaces)
+      .where(
+        and(
+          eq(projectWorkspaces.id, input.projectWorkspaceId),
+          eq(projectWorkspaces.companyId, input.companyId),
+        ),
+      )
+      .then((rows: Array<{ repoUrl: string | null }>) => rows[0] ?? null);
+    const workspaceRepo = parseRepoCoordinates(workspace?.repoUrl ?? null);
+    if (workspaceRepo) return workspaceRepo;
+  }
+
+  if (!input.projectId) return null;
+  const primaryWorkspace = await input.dbOrTx
+    .select({ repoUrl: projectWorkspaces.repoUrl })
+    .from(projectWorkspaces)
+    .where(
+      and(
+        eq(projectWorkspaces.companyId, input.companyId),
+        eq(projectWorkspaces.projectId, input.projectId),
+        eq(projectWorkspaces.isPrimary, true),
+      ),
+    )
+    .then((rows: Array<{ repoUrl: string | null }>) => rows[0] ?? null);
+  return parseRepoCoordinates(primaryWorkspace?.repoUrl ?? null);
+}
+
+async function verifyMergedPullRequestForRepo(input: {
+  repo: RepoCoordinates;
+  pullNumber: number;
+}) {
+  const details = await fetchPullRequestDetails(input);
+  return details.merged;
+}
+
+async function fetchPullRequestDetails(input: {
+  repo: RepoCoordinates;
+  pullNumber: number;
+}): Promise<PullRequestDetails> {
+  const headers: Record<string, string> = {
+    accept: "application/vnd.github+json",
+  };
+  const token =
+    process.env.GITHUB_TOKEN?.trim()
+    || process.env.GITHUB_TOKEN_PERSONAL?.trim()
+    || process.env.GH_TOKEN?.trim()
+    || "";
+  if (token) headers.authorization = `Bearer ${token}`;
+  const response = await ghFetch(
+    `${gitHubApiBase(input.repo.host)}/repos/${input.repo.owner}/${input.repo.repo}/pulls/${input.pullNumber}`,
+    { headers },
+  );
+  if (!response.ok) {
+    throw new Error(`GitHub returned ${response.status} while verifying pull #${input.pullNumber}.`);
+  }
+  const payload = await response.json() as {
+    html_url?: string;
+    merge_commit_sha?: string | null;
+    merged?: boolean;
+    merged_at?: string | null;
+  };
+  return {
+    repo: input.repo,
+    pullNumber: input.pullNumber,
+    url: typeof payload.html_url === "string" ? payload.html_url : null,
+    merged: payload.merged === true,
+    mergedAt: typeof payload.merged_at === "string" ? payload.merged_at : null,
+    mergeCommitSha: typeof payload.merge_commit_sha === "string" ? payload.merge_commit_sha : null,
+  };
+}
+
+function hasUnansweredCloseBlockingThreadComment(comments: Array<{
+  body: string | null;
+  authorAgentId: string | null;
+  authorUserId: string | null;
+  authorType?: string | null;
+}>) {
+  let pendingMarker = false;
+  for (const comment of comments) {
+    const body = comment.body ?? "";
+    if (/^\s*(?:\[[^\]\r\n]+\]\s*:\s*)?\[(?:DAN|NEEDS-FIX)\]/im.test(body)) {
+      pendingMarker = true;
+      continue;
+    }
+    if (!pendingMarker) continue;
+    if (comment.authorType === "system") continue;
+    if (comment.authorAgentId || comment.authorUserId) {
+      pendingMarker = false;
+    }
+  }
+  return pendingMarker;
+}
+
+async function recordRepoBackedTerminalGateComment(input: {
+  dbHandle: Db;
+  issueId: string;
+  companyId: string;
+  body: string;
+}) {
+  await input.dbHandle.insert(issueComments).values({
+    companyId: input.companyId,
+    issueId: input.issueId,
+    authorAgentId: null,
+    authorUserId: null,
+    authorType: "system",
+    body: input.body,
+    presentation: {
+      kind: "system_notice",
+      tone: "warning",
+      title: "Repo-backed terminal-state gate",
+      detailsDefaultOpen: false,
+    },
+  });
+  await input.dbHandle
+    .update(issues)
+    .set({ updatedAt: new Date() })
+    .where(eq(issues.id, input.issueId));
+}
+
+async function issueDocumentRevisionExists(input: {
+  dbOrTx: any;
+  companyId: string;
+  issueId: string;
+  key: string;
+  revisionNumber: number;
+}) {
+  const row = await input.dbOrTx
+    .select({ documentId: issueDocuments.documentId })
+    .from(issueDocuments)
+    .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+    .innerJoin(documentRevisions, eq(documentRevisions.documentId, documents.id))
+    .where(and(
+      eq(issueDocuments.companyId, input.companyId),
+      eq(issueDocuments.issueId, input.issueId),
+      eq(issueDocuments.key, input.key),
+      eq(documentRevisions.companyId, input.companyId),
+      eq(documentRevisions.revisionNumber, input.revisionNumber),
+    ))
+    .then((rows: Array<{ documentId: string }>) => rows[0] ?? null);
+  return Boolean(row);
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
@@ -3795,7 +4230,105 @@ export function issueService(db: Db) {
     });
   }
 
-  return {
+  async function resolveMergedPullRequestDetailsForThreadAutoClose(issue: typeof issues.$inferSelect) {
+    if (!["todo", "in_progress", "in_review"].includes(issue.status)) return null;
+
+    const repoBinding = await resolveIssueRepoBinding({
+      dbOrTx: db,
+      companyId: issue.companyId,
+      projectId: issue.projectId,
+      projectWorkspaceId: issue.projectWorkspaceId,
+      executionWorkspaceId: issue.executionWorkspaceId,
+    });
+    if (!repoBinding) return null;
+
+    const issueLabelRows = await db
+      .select({ name: labels.name })
+      .from(issueLabels)
+      .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+      .where(eq(issueLabels.issueId, issue.id));
+    const latestAgentComment = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(and(
+        eq(issueComments.issueId, issue.id),
+        sql`${issueComments.authorAgentId} is not null`,
+      ))
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+      .limit(1)
+      .then((rows: Array<{ body: string }>) => rows[0]?.body ?? null);
+    const gateSignals = mergeTerminalGateSignals(issue.description, latestAgentComment);
+    if (canAutoExemptRoutineExecutionTerminalClose({
+      originKind: issue.originKind,
+      signals: gateSignals,
+      description: issue.description,
+      latestAgentComment,
+      labelNames: issueLabelRows.map((row) => row.name),
+    })) {
+      return null;
+    }
+    if (gateSignals.deliverable && TERMINAL_GATE_NON_CODE_DELIVERABLES.has(gateSignals.deliverable)) {
+      return null;
+    }
+
+    const verificationRepo = gateSignals.subjectRepo ?? repoBinding;
+    const commentRows = await db
+      .select({
+        body: issueComments.body,
+        authorAgentId: issueComments.authorAgentId,
+        authorUserId: issueComments.authorUserId,
+        authorType: issueComments.authorType,
+      })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issue.id))
+      .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+    if (hasUnansweredCloseBlockingThreadComment(commentRows)) {
+      return null;
+    }
+
+    const pullReferences = new Map<string, PullRequestReference>();
+    for (const ref of extractReferencedPullRequests(issue.description, verificationRepo)) {
+      pullReferences.set(serializePullRequestReference(ref), ref);
+    }
+    for (const row of commentRows) {
+      for (const ref of extractReferencedPullRequests(row.body, verificationRepo)) {
+        pullReferences.set(serializePullRequestReference(ref), ref);
+      }
+    }
+
+    let firstVerificationError: unknown = null;
+    for (const ref of pullReferences.values()) {
+      try {
+        const details = await fetchPullRequestDetails({ repo: ref.repo, pullNumber: ref.pullNumber });
+        if (details.merged) return details;
+      } catch (error) {
+        firstVerificationError ??= error;
+      }
+    }
+
+    if (firstVerificationError) {
+      logger.warn(
+        { issueId: issue.id, error: firstVerificationError },
+        "Thread-only auto-close skipped: merged PR details could not be verified.",
+      );
+    }
+    return null;
+  }
+
+  function buildMergedPullRequestAutoCloseComment(input: {
+    issue: { id: string; identifier: string | null };
+    pullRequest: PullRequestDetails;
+    fallbackUrl?: string | null;
+  }) {
+    return [
+      `Paperclip auto-closed ${input.issue.identifier ?? input.issue.id} after verifying merged PR ${input.pullRequest.url ?? input.fallbackUrl ?? `#${input.pullRequest.pullNumber}`}.`,
+      `PR: ${repoLabel(input.pullRequest.repo)} #${input.pullRequest.pullNumber}`,
+      `mergedAt: ${input.pullRequest.mergedAt ?? "unknown"}`,
+      `commit: ${input.pullRequest.mergeCommitSha ?? "unknown"}`,
+    ].join("\n");
+  }
+
+  const service = {
     clearExecutionRunIfTerminal,
 
     list: async (companyId: string, filters?: IssueFilters) => {
@@ -5013,6 +5546,10 @@ export function issueService(db: Db) {
         issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
       const nextExecutionWorkspaceId =
         issueData.executionWorkspaceId !== undefined ? issueData.executionWorkspaceId : existing.executionWorkspaceId;
+      const nextExecutionState =
+        issueData.executionState !== undefined ? issueData.executionState : existing.executionState;
+      const nextDescription =
+        issueData.description !== undefined ? issueData.description : existing.description;
       const nextExecutionWorkspacePreference =
         issueData.executionWorkspacePreference !== undefined
           ? issueData.executionWorkspacePreference
@@ -5043,6 +5580,142 @@ export function issueService(db: Db) {
       if (nextExecutionWorkspaceId) {
         if (!validatedExecutionWorkspace) {
           await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
+        }
+      }
+
+      const nextStatus = issueData.status ?? existing.status;
+      const requiresRepoBackedTerminalGate =
+        !actorUserId && (nextStatus === "done" || (nextStatus === "in_review" && Boolean(nextAssigneeUserId)));
+      if (requiresRepoBackedTerminalGate) {
+        const explicitExemption = readTerminalStateExemption(nextExecutionState);
+        if (!explicitExemption) {
+          const repoBinding = await resolveIssueRepoBinding({
+            dbOrTx,
+            companyId: existing.companyId,
+            projectId: nextProjectId,
+            projectWorkspaceId: nextProjectWorkspaceId,
+            executionWorkspaceId: nextExecutionWorkspaceId,
+          });
+          if (repoBinding) {
+            const issueLabelRows = nextLabelIds !== undefined
+              ? await dbOrTx
+                .select({ name: labels.name })
+                .from(labels)
+                .where(and(
+                  eq(labels.companyId, existing.companyId),
+                  inArray(labels.id, nextLabelIds),
+                ))
+              : await dbOrTx
+                .select({ name: labels.name })
+                .from(issueLabels)
+                .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+                .where(eq(issueLabels.issueId, existing.id));
+            const latestAgentComment = await dbOrTx
+              .select({ body: issueComments.body })
+              .from(issueComments)
+              .where(and(
+                eq(issueComments.issueId, existing.id),
+                sql`${issueComments.authorAgentId} is not null`,
+              ))
+              .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+              .limit(1)
+              .then((rows: Array<{ body: string }>) => rows[0]?.body ?? null);
+            const gateSignals = mergeTerminalGateSignals(nextDescription, latestAgentComment);
+            if (canAutoExemptRoutineExecutionTerminalClose({
+              originKind: existing.originKind,
+              signals: gateSignals,
+              description: nextDescription,
+              latestAgentComment,
+              labelNames: issueLabelRows.map((row: { name: string }) => row.name),
+            })) {
+              // Routine execution issues can terminate without PR proof when they are
+              // plainly operational and carry no code-deliverable signal.
+            } else {
+              const verificationRepo = gateSignals.subjectRepo ?? repoBinding;
+              if (gateSignals.deliverable && TERMINAL_GATE_NON_CODE_DELIVERABLES.has(gateSignals.deliverable)) {
+                const evidence = gateSignals.terminalEvidence;
+                const evidenceExists = evidence
+                  ? await issueDocumentRevisionExists({
+                      dbOrTx,
+                      companyId: existing.companyId,
+                      issueId: existing.id,
+                      key: evidence.key,
+                      revisionNumber: evidence.revisionNumber,
+                    })
+                  : false;
+                if (!evidenceExists) {
+                  const reason = evidence
+                    ? `Paperclip refused a terminal transition for repo-backed ${gateSignals.deliverable} issue ${existing.identifier ?? existing.id} because terminalEvidence document:${evidence.key}#rev:${evidence.revisionNumber} does not resolve to an issue document revision.`
+                    : `Paperclip refused a terminal transition for repo-backed ${gateSignals.deliverable} issue ${existing.identifier ?? existing.id} because structured terminalEvidence is required.`;
+                  await recordRepoBackedTerminalGateComment({
+                    dbHandle: db,
+                    issueId: existing.id,
+                    companyId: existing.companyId,
+                    body: reason,
+                  });
+                  throw unprocessable(
+                    "Repo-backed non-code terminal transitions require document-backed terminalEvidence.",
+                    {
+                      code: REPO_BACKED_TERMINAL_GATE_CODE,
+                      repo: repoLabel(verificationRepo),
+                      missing: "terminal_evidence",
+                    },
+                  );
+                }
+              } else {
+                const commentBodies = await dbOrTx
+                  .select({ body: issueComments.body })
+                  .from(issueComments)
+                  .where(eq(issueComments.issueId, existing.id));
+                const pullReferences = new Map<string, PullRequestReference>();
+                for (const ref of extractReferencedPullRequests(nextDescription, verificationRepo)) {
+                  pullReferences.set(serializePullRequestReference(ref), ref);
+                }
+                for (const row of commentBodies) {
+                  for (const ref of extractReferencedPullRequests(row.body, verificationRepo)) {
+                    pullReferences.set(serializePullRequestReference(ref), ref);
+                  }
+                }
+
+                let verifiedMergedPull = false;
+                let verificationFailure: string | null = null;
+                for (const ref of pullReferences.values()) {
+                  try {
+                    if (await verifyMergedPullRequestForRepo({ repo: ref.repo, pullNumber: ref.pullNumber })) {
+                      verifiedMergedPull = true;
+                      break;
+                    }
+                  } catch (error) {
+                    verificationFailure = error instanceof Error ? error.message : String(error);
+                    break;
+                  }
+                }
+
+                if (!verifiedMergedPull) {
+                  const targetRepoLabel = repoLabel(verificationRepo);
+                  const reason = verificationFailure
+                    ? `Paperclip could not verify a merged PR for repo-backed issue close on ${targetRepoLabel}: ${verificationFailure}`
+                    : pullReferences.size === 0
+                      ? `Paperclip refused a terminal transition for repo-backed issue ${existing.identifier ?? existing.id} because the issue thread does not reference any PR URL for ${targetRepoLabel}.`
+                      : `Paperclip refused a terminal transition for repo-backed issue ${existing.identifier ?? existing.id} because none of the referenced PRs for ${targetRepoLabel} are verified merged.`;
+                  await recordRepoBackedTerminalGateComment({
+                    dbHandle: db,
+                    issueId: existing.id,
+                    companyId: existing.companyId,
+                    body: reason,
+                  });
+                  throw unprocessable(
+                    "Repo-backed issues may only move to a terminal state after a verified merged PR or explicit exemption.",
+                    {
+                      code: REPO_BACKED_TERMINAL_GATE_CODE,
+                      repo: targetRepoLabel,
+                      missing: verificationFailure ? "merged_pr_verification_failed" : "merged_pr",
+                    },
+                  );
+                }
+              }
+            }
+          }
         }
       }
 
@@ -5906,6 +6579,125 @@ export function issueService(db: Db) {
       return redactIssueComment(comment, currentUserRedactionOptions.enabled);
     },
 
+    reconcileAutoCloseFromMergedPullRequestReference: async (issueId: string) => {
+      const issue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+      if (!issue) return null;
+
+      const details = await resolveMergedPullRequestDetailsForThreadAutoClose(issue);
+      if (!details) return null;
+
+      try {
+        await service.addComment(
+          issueId,
+          buildMergedPullRequestAutoCloseComment({ issue, pullRequest: details }),
+          {},
+          {
+            authorType: "system",
+            presentation: {
+              kind: "system_notice",
+              tone: "info",
+              title: "Merged pull request auto-close",
+              detailsDefaultOpen: false,
+            },
+          },
+        );
+        const updatedIssue = await service.update(issueId, { status: "done" });
+        return updatedIssue
+          ? {
+              issue: updatedIssue,
+              pullRequest: details,
+            }
+          : null;
+      } catch (error) {
+        logger.warn({ issueId, error }, "Thread-only auto-close failed after merged PR verification.");
+        return null;
+      }
+    },
+
+    autoCloseFromMergedPullRequestWorkProduct: async (input: {
+      issueId: string;
+      workProduct: {
+        type: string;
+        status: string;
+        url?: string | null;
+      };
+    }) => {
+      if (input.workProduct.type !== "pull_request" || input.workProduct.status !== "merged") {
+        return null;
+      }
+      const pullRef = parsePullRequestReferenceFromUrl(input.workProduct.url ?? null);
+      if (!pullRef) return null;
+
+      let details: PullRequestDetails;
+      try {
+        details = await fetchPullRequestDetails({ repo: pullRef.repo, pullNumber: pullRef.pullNumber });
+      } catch (error) {
+        logger.warn({ issueId: input.issueId, error }, "Auto-close skipped: merged PR details could not be verified.");
+        return null;
+      }
+      if (!details.merged) return null;
+
+      const issue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+      if (!issue || !["todo", "in_progress", "in_review"].includes(issue.status)) {
+        return null;
+      }
+
+      const commentRows = await db
+        .select({
+          body: issueComments.body,
+          authorAgentId: issueComments.authorAgentId,
+          authorUserId: issueComments.authorUserId,
+          authorType: issueComments.authorType,
+        })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, input.issueId))
+        .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+      if (hasUnansweredCloseBlockingThreadComment(commentRows)) {
+        return null;
+      }
+
+      const evidenceComment = buildMergedPullRequestAutoCloseComment({
+        issue,
+        pullRequest: details,
+        fallbackUrl: input.workProduct.url ?? null,
+      });
+
+      try {
+        await service.addComment(
+          input.issueId,
+          evidenceComment,
+          {},
+          {
+            authorType: "system",
+            presentation: {
+              kind: "system_notice",
+              tone: "info",
+              title: "Merged pull request auto-close",
+              detailsDefaultOpen: false,
+            },
+          },
+        );
+        const updatedIssue = await service.update(input.issueId, { status: "done" });
+        return updatedIssue
+          ? {
+              issue: updatedIssue,
+              pullRequest: details,
+            }
+          : null;
+      } catch (error) {
+        logger.warn({ issueId: input.issueId, error }, "Auto-close failed after merged PR verification.");
+        return null;
+      }
+    },
+
     createAttachment: async (input: {
       issueId: string;
       issueCommentId?: string | null;
@@ -6258,4 +7050,5 @@ export function issueService(db: Db) {
       }));
     },
   };
+  return service;
 }
