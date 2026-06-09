@@ -114,3 +114,44 @@ Re-measured **warm**, all three return in **0.13–0.34s**. So the ~7s is pure c
 7. **Verify discipline:** re-run this exact browse measurement after the fix (cold LCP 8.0s is the baseline to beat). Deploy to PREVIEW, browse Auth + Dashboard + IssueDetail + an editor dialog before `vercel promote`. Never run `pnpm dev`/Vite.
 
 **Headline:** the app isn't slow because of React — it's slow because the first request after idle cold-starts a heavyweight serverless function for ~7s and the UI waits on it. Fix cold-start first (rec 1–3); do the bundle diet second (rec 4–6).
+
+---
+
+## 2026-06-08 20:55 ET — RED (cold-boot hang) / overall YELLOW
+
+Second audit. Focus: user reports loading is faster but **login, logout, and some tab-to-tab navigation still lag.** Re-ran health check + authenticated UX QA (Chrome cookies, real session, read-only). **Big wins landed since 06-05; one RED reliability defect remains: cold serverless boots hang 10s–300s and block the authenticated app.**
+
+### What improved since the last audit (verified live)
+- **Unauthenticated cold-load LCP: 8.0s → 1.2s.** `/auth` now fires only `health` + `get-session` (~160ms each). The `/api/adapters` + `/api/companies` storm is gone. Confirms commits `533d74f5`, `6dd0f4fd` (gate authed queries on `/auth`), `20db8689` (kill 401/403 retry storm).
+- **Prod is no longer behind HEAD** — push-to-deploy wired (`53f9cff9`); prod = HEAD `e1595149`, `source: git`. Last audit's YELLOW resolved.
+- **Function region moved to `pdx1`** (co-located with Supabase us-west-2) — `bffc1fa3`. P0 DB pool cap to 1 shipped (`30e5790c`, was hitting `EMAXCONN 200`).
+- **Warm performance is good:** authed dashboard FCP/LCP **680ms**; tab-to-tab nav **283–372ms** click→idle; per-route API calls **200–260ms**.
+
+### 🔴 RED — cold serverless boots hang 10s–300s (blocks login & nav)
+Reproducible, even on the lightest endpoint (`/api/health`), so the stall is in the function's **cold init / module-import**, not the route handler:
+- **`/api/health` × 10 with cache-buster: 7/10 hung past a 10s cap** (curl `HTTP 000`), then 3 returned in ~0.3s once an instance warmed.
+- Earlier in the same session: **`/api/health → 504 after 300,130ms`** — a boot hung to the full Vercel 300s `maxDuration` ceiling.
+- On the **authenticated dashboard**, `/api/health` and `/api/auth/get-session` were left **`pending` >15s** (networkidle timed out). The authed shell can't render its nav until `get-session` resolves → the app shows a blank/loading state, or **bounces back to `/auth`** when the cold call 401s. During this audit the live session dropped to the sign-in page mid-measurement — a likely mechanism for "login is still an issue."
+- Vercel runtime logs carry `boot-timing: module-import …` instrumentation (team is already measuring this) — confirms cold module-import is a known hot path; the `1e854ad4` "bound cold-start ops so a boot can't hang to 300s" fix is **not fully holding** (a 300s/504 still occurred).
+
+**Suspected cause:** the serverless function bundle drags heavy server-only deps into cold init (repo has `sqlite3` ~219MB, `@anthropic-ai/claude-agent-sdk` ~205MB, `embedded-postgres` ~145MB, `playwright-core`, `codex-acp`), and/or a DB connect at module scope that blocks when the transaction pooler (capped to 1 connection per instance) is contended. Pages like Issues fan out **6+ parallel company-scoped queries**; against a pool-of-1 that serializes or forces fresh cold instances — amplifying the hang under navigation.
+
+**User-facing mapping:**
+- *Loading/login lag* → authed shell blocks on `get-session`, which hangs on cold boot (and may 401-bounce to `/auth`).
+- *Tab-to-tab lag (intermittent)* → routes that hit a cold instance or queue on the pool-of-1; warm = 300ms, cold = multi-second to hang.
+- *Logout* → not exercised live (would end the real session). Warm endpoint latency `/api/auth/sign-out` = 0.20s; any logout lag shares the same cold-boot path.
+
+### Health check (Tier 1/2)
+- Tier 1: root 200, health 200 (`bootstrapStatus=ready`) — when warm. **Caveat: intermittent cold-boot 504s (see RED).**
+- DB: 24/60 conns (40%), both ports answer. Heartbeat: 0 runs/12h (loop idle). **Agents: Sol now `status='error'`** (was `paused` — the known sandbox-home blocker, surfaced in-UI as "Sol failed after 5 minutes"); Ti Claude `idle`. Budgets 37%/23% — fine.
+
+### Recommendations (RED first)
+1. **Stop cold boots from hanging (RED).**
+   a. **Hard-cap every boot-path I/O.** Any DB connect / network call on the cold path (module scope or first-request init, incl. `get-session` and `health`) must have an aggressive timeout (e.g. 2–3s) and fail fast — `health` especially must never touch a blocking resource. Verify the `1e854ad4` bound actually covers the module-import + first-connect path; a 300s/504 still slipped through.
+   b. **Shrink the function cold init.** Keep `sqlite3`, `embedded-postgres`, `claude-agent-sdk`, `playwright-core`, `codex-acp` **out** of the Vercel request-path bundle (they belong on the Railway worker). Lazy-`import()` heavy modules inside the handlers that actually need them so they're not evaluated on every cold boot.
+   c. **Keep instances warm.** Confirm Fluid Compute is on; add a Vercel cron warmer hitting `/api/health` + `get-session` every few minutes so real users rarely hit a cold instance.
+2. **Don't bounce authenticated users to `/auth` on a transient `get-session` failure.** Distinguish "session invalid (401 with a real body)" from "request timed out / network error" — on timeout, retry/backoff and keep the shell, don't redirect to login. This is the most likely fix for "login is still an issue."
+3. **Reduce per-route fan-out against the pool-of-1.** Issues fires 6+ parallel queries; batch/coalesce server-side or raise the pooled connection budget safely (the `:5432` session pooler, not `:6543`) so parallel route loads don't serialize or trigger cold instances.
+4. **(Carried) bundle diet** — route-split `App.tsx` (still 53 static imports, `index` 2.06MB raw) + lazy the editor. Helps first-paint and parse; does not fix the cold-boot hang. Lower priority than 1–3.
+
+**Verdict:** Overall YELLOW, with a **RED reliability defect** (cold-boot hang) that owns the login/nav lag the user still feels. Unauthenticated loading and warm performance are now good. Opening a GitHub issue for the cold-boot hang (RED). Read-only audit; no code changed.
