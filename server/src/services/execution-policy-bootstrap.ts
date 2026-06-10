@@ -5,10 +5,11 @@
  * sandbox provider purely via environment variables, with no manual product-API
  * calls. On startup we:
  *   1. Parse `PAPERCLIP_EXECUTION_MODE` (+ `PAPERCLIP_K8S_*`) from the env.
- *   2. Persist `executionMode` into instance general settings (so the per-run
- *      heartbeat guard enforces it).
- *   3. Idempotently ensure a configured Kubernetes sandbox environment for every
+ *   2. Idempotently ensure a configured Kubernetes sandbox environment for every
  *      company (mirrors `ensureLocalEnvironment`).
+ *   3. Persist `executionMode` into instance general settings (so the per-run
+ *      heartbeat guard enforces it) — only after every company provisioned, so
+ *      a failed bootstrap never leaves a stale enforced policy behind.
  *
  * The boot hook is *configuration convenience*; the actual security gate is the
  * per-run guard in the heartbeat (see `execution-allowlist.ts`). Even with no
@@ -25,10 +26,23 @@ import { instanceSettingsService } from "./instance-settings.js";
 
 export type ExecutionPolicyBootstrapEnv = Record<string, string | undefined>;
 
-export interface ExecutionPolicyBootstrap {
+export interface KubernetesExecutionPolicyBootstrap {
   executionMode: Extract<InstanceExecutionMode, "kubernetes">;
   kubernetesConfig: KubernetesEnvironmentConfigInput;
 }
+
+/**
+ * Explicit `PAPERCLIP_EXECUTION_MODE=any` — unlike an absent variable, this
+ * persists the cleared policy so an operator can roll back a previously
+ * bootstrapped `kubernetes` mode purely via env config.
+ */
+export interface ClearedExecutionPolicyBootstrap {
+  executionMode: Extract<InstanceExecutionMode, "any">;
+}
+
+export type ExecutionPolicyBootstrap =
+  | KubernetesExecutionPolicyBootstrap
+  | ClearedExecutionPolicyBootstrap;
 
 function parseBool(value: string | undefined): boolean | undefined {
   if (value === undefined) return undefined;
@@ -48,16 +62,19 @@ function parseList(value: string | undefined): string[] | undefined {
 }
 
 /**
- * Parse the forced-execution-mode env config. Returns null when execution is
- * unrestricted (no env, or `PAPERCLIP_EXECUTION_MODE=any`). Throws on an
- * unrecognized mode so a misconfigured deployment fails loudly instead of
- * silently allowing local execution.
+ * Parse the forced-execution-mode env config. Returns null when the variable
+ * is absent (env config not in use — never touch DB-managed settings). An
+ * explicit `PAPERCLIP_EXECUTION_MODE=any` returns a cleared-policy bootstrap
+ * that persists `executionMode=any`, so removing a forced policy is possible
+ * via env config alone. Throws on an unrecognized mode so a misconfigured
+ * deployment fails loudly instead of silently allowing local execution.
  */
 export function parseExecutionPolicyBootstrapEnv(
   env: ExecutionPolicyBootstrapEnv,
 ): ExecutionPolicyBootstrap | null {
   const raw = env.PAPERCLIP_EXECUTION_MODE?.trim();
-  if (!raw || raw === "any") return null;
+  if (!raw) return null;
+  if (raw === "any") return { executionMode: "any" };
   if (raw !== "kubernetes") {
     throw new Error(
       `PAPERCLIP_EXECUTION_MODE must be "kubernetes" or "any" (got "${raw}").`,
@@ -112,18 +129,30 @@ export function parseExecutionPolicyBootstrapEnv(
 }
 
 /**
- * Apply the parsed bootstrap to the database: persist `executionMode` into
- * instance settings and ensure a configured Kubernetes environment for every
- * company. Idempotent; safe to call on every boot.
+ * Apply the parsed bootstrap to the database. For `kubernetes`, ensure a
+ * configured Kubernetes environment for every company FIRST and persist
+ * `executionMode` only once all companies succeeded — a provisioning failure
+ * therefore aborts startup without leaving a stale enforced policy behind
+ * (which would otherwise survive an env-var rollback and block every run with
+ * "no managed Kubernetes environment is configured"). For an explicit `any`,
+ * persist the cleared policy. Idempotent; safe to call on every boot.
  */
 export async function applyExecutionPolicyBootstrap(
   db: Db,
   bootstrap: ExecutionPolicyBootstrap,
 ): Promise<{ executionMode: InstanceExecutionMode; companiesConfigured: number }> {
   const instanceSettings = instanceSettingsService(db);
-  const environments = environmentService(db);
 
-  await instanceSettings.updateGeneral({ executionMode: bootstrap.executionMode });
+  if (bootstrap.executionMode === "any") {
+    await instanceSettings.updateGeneral({ executionMode: "any" });
+    logger.info(
+      { executionMode: "any" },
+      "cleared forced execution policy (PAPERCLIP_EXECUTION_MODE=any)",
+    );
+    return { executionMode: "any", companiesConfigured: 0 };
+  }
+
+  const environments = environmentService(db);
 
   const companyIds = await instanceSettings.listCompanyIds();
   let configured = 0;
@@ -141,6 +170,14 @@ export async function applyExecutionPolicyBootstrap(
     }
   }
 
+  if (failedCompanyIds.length > 0) {
+    throw new Error(
+      `execution-policy bootstrap: ${failedCompanyIds.length} of ${companyIds.length} companies failed to get a managed Kubernetes environment under executionMode=${bootstrap.executionMode}; refusing to start without persisting the policy (companies: ${failedCompanyIds.join(", ")})`,
+    );
+  }
+
+  await instanceSettings.updateGeneral({ executionMode: bootstrap.executionMode });
+
   logger.info(
     {
       executionMode: bootstrap.executionMode,
@@ -151,12 +188,6 @@ export async function applyExecutionPolicyBootstrap(
     },
     "applied forced Kubernetes execution policy",
   );
-
-  if (failedCompanyIds.length > 0) {
-    throw new Error(
-      `execution-policy bootstrap: ${failedCompanyIds.length} of ${companyIds.length} companies failed to get a managed Kubernetes environment under executionMode=${bootstrap.executionMode}; refusing to start (companies: ${failedCompanyIds.join(", ")})`,
-    );
-  }
 
   return { executionMode: bootstrap.executionMode, companiesConfigured: configured };
 }

@@ -42,10 +42,12 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
     expect(parseExecutionPolicyBootstrapEnv(env({}))).toBeNull();
   });
 
-  it("returns null when execution mode is explicitly any", () => {
+  it("returns a cleared-policy bootstrap when execution mode is explicitly any", () => {
+    // Unlike an absent variable, explicit "any" must persist the reset so a
+    // previously bootstrapped kubernetes policy can be rolled back via env.
     expect(
       parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "any" })),
-    ).toBeNull();
+    ).toEqual({ executionMode: "any" });
   });
 
   it("parses the forced kubernetes policy with a job/gvisor/cilium config", () => {
@@ -61,8 +63,8 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
       }),
     );
     expect(parsed).not.toBeNull();
-    expect(parsed?.executionMode).toBe("kubernetes");
-    expect(parsed?.kubernetesConfig).toMatchObject({
+    if (parsed?.executionMode !== "kubernetes") throw new Error("expected a kubernetes bootstrap");
+    expect(parsed.kubernetesConfig).toMatchObject({
       backend: "job",
       inCluster: true,
       runtimeClassName: "gvisor",
@@ -76,9 +78,10 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
     const parsed = parseExecutionPolicyBootstrapEnv(
       env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }),
     );
-    expect(parsed?.kubernetesConfig.inCluster).toBe(false);
-    expect(parsed?.kubernetesConfig.runtimeClassName).toBeUndefined();
-    expect(parsed?.kubernetesConfig.egressAllowFqdns).toBeUndefined();
+    if (parsed?.executionMode !== "kubernetes") throw new Error("expected a kubernetes bootstrap");
+    expect(parsed.kubernetesConfig.inCluster).toBe(false);
+    expect(parsed.kubernetesConfig.runtimeClassName).toBeUndefined();
+    expect(parsed.kubernetesConfig.egressAllowFqdns).toBeUndefined();
   });
 
   it("throws on an unknown execution mode", () => {
@@ -118,5 +121,31 @@ describe("applyExecutionPolicyBootstrap", () => {
 
     // It keeps going past the failure (attempts all three companies).
     expect(ensureKubernetesEnvironment).toHaveBeenCalledTimes(3);
+    // The enforced policy must NOT be persisted when provisioning failed —
+    // otherwise a failed bootstrap leaves a stale executionMode=kubernetes
+    // that survives an env-var rollback and blocks every run.
+    expect(updateGeneral).not.toHaveBeenCalled();
+  });
+
+  it("persists executionMode only after every company provisioned", async () => {
+    listCompanyIds.mockResolvedValue(["c1", "c2"]);
+    ensureKubernetesEnvironment.mockResolvedValue({ id: "env" });
+
+    await applyExecutionPolicyBootstrap(fakeDb, bootstrap);
+
+    expect(updateGeneral).toHaveBeenCalledTimes(1);
+    expect(updateGeneral).toHaveBeenCalledWith({ executionMode: "kubernetes" });
+    expect(updateGeneral.mock.invocationCallOrder[0]).toBeGreaterThan(
+      ensureKubernetesEnvironment.mock.invocationCallOrder[1]!,
+    );
+  });
+
+  it("persists the cleared policy for an explicit any bootstrap without touching environments", async () => {
+    const result = await applyExecutionPolicyBootstrap(fakeDb, { executionMode: "any" });
+
+    expect(result).toEqual({ executionMode: "any", companiesConfigured: 0 });
+    expect(updateGeneral).toHaveBeenCalledWith({ executionMode: "any" });
+    expect(listCompanyIds).not.toHaveBeenCalled();
+    expect(ensureKubernetesEnvironment).not.toHaveBeenCalled();
   });
 });
