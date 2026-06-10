@@ -21,6 +21,8 @@ import {
   shouldDeferFollowupWakeForSameIssue,
   stripHostWorkspaceProvisionForLowTrustSandbox,
   stripWorkspaceRuntimeFromExecutionRunConfig,
+  shouldResetTaskSessionForModelChange,
+  stripConfiguredModelFromSessionParams,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
@@ -923,6 +925,87 @@ describe("shouldDeferFollowupWakeForSameIssue", () => {
         forceFreshSession: false,
       }),
     ).toBe(false);
+  });
+});
+
+describe("shouldResetTaskSessionForModelChange", () => {
+  it("resets when configured model differs from persisted session model", () => {
+    expect(
+      shouldResetTaskSessionForModelChange({
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: {
+          sessionId: "thread-1",
+          __paperclipConfiguredModel: "opencode/mimo-v2-pro-free",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("does not reset when models match", () => {
+    expect(
+      shouldResetTaskSessionForModelChange({
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: {
+          sessionId: "thread-1",
+          __paperclipConfiguredModel: "gpt-5.4-mini",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("does not reset when persisted session model is missing", () => {
+    expect(
+      shouldResetTaskSessionForModelChange({
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: {
+          sessionId: "thread-1",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("does not reset when configured model is missing", () => {
+    expect(
+      shouldResetTaskSessionForModelChange({
+        configuredModel: null,
+        taskSessionParams: {
+          sessionId: "thread-1",
+          __paperclipConfiguredModel: "gpt-5.4-mini",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("does not reset when task session params are missing", () => {
+    expect(
+      shouldResetTaskSessionForModelChange({
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: null,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("stripConfiguredModelFromSessionParams", () => {
+  it("removes the internal model key from persisted session params", () => {
+    expect(
+      stripConfiguredModelFromSessionParams({
+        sessionId: "thread-1",
+        __paperclipConfiguredModel: "gpt-5.4-mini",
+      }),
+    ).toEqual({ sessionId: "thread-1" });
+  });
+
+  it("returns null when session params are missing", () => {
+    expect(stripConfiguredModelFromSessionParams(null)).toBeNull();
+    expect(stripConfiguredModelFromSessionParams(undefined)).toBeNull();
+  });
+
+  it("returns a copy without mutating the input", () => {
+    const input = { sessionId: "thread-1", __paperclipConfiguredModel: "gpt-5.4-mini" };
+    const result = stripConfiguredModelFromSessionParams(input);
+    expect(result).not.toBe(input);
+    expect(input.__paperclipConfiguredModel).toBe("gpt-5.4-mini");
   });
 });
 
