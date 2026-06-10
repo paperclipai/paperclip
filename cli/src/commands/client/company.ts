@@ -1226,7 +1226,7 @@ export function registerCompanyCommands(program: Command): void {
           const ctx = resolveCommandContext(opts);
           const include = parseInclude(opts.include);
           const exported = await ctx.api.post<CompanyPortabilityExportResult>(
-            `/api/companies/${companyId}/export`,
+            `/api/companies/${companyId}/exports`,
             {
               include,
               skills: parseCsvValues(opts.skills),

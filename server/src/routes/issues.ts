@@ -1390,6 +1390,109 @@ export function issueRoutes(
     const requestedAssigneePatchProvided =
       req.body.assigneeAgentId !== undefined || req.body.assigneeUserId !== undefined;
 
+    // --- GitHub Auto-Close Guard ---
+    if (requestedStatus === "done" && !isClosed) {
+      const defaultRepo = process.env.PAPERCLIP_GITHUB_REPO ?? "";
+      if (defaultRepo) {
+        const description = existing.description ?? "";
+        const [defaultOwner, defaultName] = defaultRepo.includes("/")
+          ? defaultRepo.split("/", 2)
+          : ["paperclipai", "paperclip"];
+        const GH_SHORT_REF_RE = /\bGH#(\d+)\b/i;
+        const GH_EXPLICIT_LINE_RE = /(?:^|\n)\s*(?:linked\s+github\s+issue|github\s+issue\s+link|linked\s+gh)\s*:\s*(.+)$/gim;
+        const GH_URL_REF_RE = /https?:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/issues\/(\d+)\b/i;
+        const GH_REPO_REF_RE = /\b([^/\s#]+)\/([^/\s#]+)#(\d+)\b/i;
+        const linkedRefs = [];
+        const seen = new Set();
+        for (const lineMatch of description.matchAll(GH_EXPLICIT_LINE_RE)) {
+          const value = (lineMatch[1] ?? "").trim();
+          if (!value) continue;
+          const urlMatch = value.match(GH_URL_REF_RE);
+          if (urlMatch) {
+            const owner = (urlMatch[1] ?? "").trim();
+            const repo = (urlMatch[2] ?? "").trim();
+            const issueNumber = Number(urlMatch[3] ?? "");
+            if (owner && repo && Number.isFinite(issueNumber) && issueNumber > 0) {
+              const key = `${owner}/${repo}#${issueNumber}`;
+              if (!seen.has(key)) { seen.add(key); linkedRefs.push({ owner, repo, issueNumber }); }
+            }
+            continue;
+          }
+          const repoMatch = value.match(GH_REPO_REF_RE);
+          if (repoMatch) {
+            const owner = (repoMatch[1] ?? "").trim();
+            const repo = (repoMatch[2] ?? "").trim();
+            const issueNumber = Number(repoMatch[3] ?? "");
+            if (owner && repo && Number.isFinite(issueNumber) && issueNumber > 0) {
+              const key = `${owner}/${repo}#${issueNumber}`;
+              if (!seen.has(key)) { seen.add(key); linkedRefs.push({ owner, repo, issueNumber }); }
+            }
+            continue;
+          }
+          const shortMatch = value.match(GH_SHORT_REF_RE);
+          if (shortMatch) {
+            const issueNumber = Number(shortMatch[1] ?? "");
+            if (Number.isFinite(issueNumber) && issueNumber > 0) {
+              const key = `${defaultOwner}/${defaultName}#${issueNumber}`;
+              if (!seen.has(key)) { seen.add(key); linkedRefs.push({ owner: defaultOwner, repo: defaultName, issueNumber }); }
+            }
+          }
+        }
+        if (linkedRefs.length > 0) {
+          const results = await Promise.all(
+            linkedRefs.map(async (ref) => {
+              try {
+                const endpoint = `https://api.github.com/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}/issues/${ref.issueNumber}`;
+                const response = await fetch(endpoint, {
+                  headers: {
+                    Accept: "application/vnd.github+json",
+                    ...(process.env.GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}),
+                    "User-Agent": "paperclip-auto-close-guard",
+                  },
+                });
+                if (!response.ok) return null;
+                const payload = (await response.json()) as { state?: string };
+                const state = (payload.state ?? "").toLowerCase();
+                return state === "open" ? "open" : state === "closed" ? "closed" : null;
+              } catch { return null; }
+            })
+          );
+          const openRefs = linkedRefs.filter((_, i) => results[i] === "open");
+          if (openRefs.length > 0) {
+            await logActivity(db, {
+              companyId: existing.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "issue.status_transition_blocked",
+              entityType: "issue",
+              entityId: existing.id,
+              details: {
+                source: "automation",
+                reason: "linked_github_issue_open",
+                fromStatus: existing.status,
+                requestedStatus: "done",
+                linkedIssues: openRefs.map((r) => `${r.owner}/${r.repo}#${r.issueNumber}`),
+              },
+            });
+            res.status(409).json({
+              error: "Cannot mark issue as done while linked GitHub issue is still open",
+              linkedIssues: openRefs.map((r) => ({
+                owner: r.owner,
+                repo: r.repo,
+                issueNumber: r.issueNumber,
+                url: `https://github.com/${r.owner}/${r.repo}/issues/${r.issueNumber}`,
+              })),
+            });
+            return;
+          }
+        }
+      }
+    }
+    // --- End GitHub Auto-Close Guard ---
+
+
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,
       policy: nextExecutionPolicy,
