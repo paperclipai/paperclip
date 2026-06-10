@@ -50,8 +50,8 @@ const PAPERCLIP_SERVER_NAMESPACE = "paperclip";
 // Name of the ServiceAccount created inside each tenant namespace by ensureTenant.
 const TENANT_SERVICE_ACCOUNT = "paperclip-tenant-sa";
 
-// Resource quota defaults applied to every tenant namespace (M4b; tunable via
-// config in a future milestone).
+// Resource quota defaults applied to every tenant namespace (tunable via
+// config in a future iteration).
 const DEFAULT_RESOURCE_QUOTA = {
   pods: "20",
   requestsCpu: "10",
@@ -68,9 +68,10 @@ function deriveTenantNamespace(config: KubernetesProviderConfig, companyId: stri
 }
 
 function generateBootstrapToken(): string {
-  // TODO: paperclip-server's actual callback auth scheme is separate and out
-  // of scope for this plugin. This per-run random token is stored in the
-  // per-run Secret and consumed by paperclip-agent-shim for initial registration.
+  // TODO: tighten once the agent runtime shim (companion images PR) lands its
+  // callback auth scheme; paperclip-server's callback auth is out of scope for
+  // this plugin. For now this per-run random token is stored in the per-run
+  // Secret and read by the runtime image entrypoint for initial registration.
   return randomBytes(32).toString("hex");
 }
 
@@ -312,7 +313,7 @@ const plugin = definePlugin({
     // For sandbox-cr backend, the Sandbox CR owns the Secret.
     // NOTE: For sandbox-cr, if the Secret outlives the Sandbox due to a cluster
     // quirk, the release() call will still clean it up via namespace GC or
-    // explicit delete in a future milestone.
+    // explicit delete in a future iteration.
     await createPerRunSecret(clients, {
       namespace,
       secretName,
