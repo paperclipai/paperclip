@@ -48,6 +48,7 @@ import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
+import { companyService } from "./services/companies.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
 import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
@@ -122,6 +123,33 @@ export function shouldEnablePrivateHostnameGuard(opts: {
     opts.deploymentExposure === "private" &&
     (opts.deploymentMode === "local_trusted" || opts.deploymentMode === "authenticated")
   );
+}
+
+function companyReferenceRewriteMiddleware(db: Db): express.RequestHandler {
+  const companies = companyService(db);
+  return async (req, _res, next) => {
+    const match = /^\/companies\/([^/?#]+)(?=\/|$)/.exec(req.url);
+    if (!match) {
+      next();
+      return;
+    }
+
+    try {
+      const rawSegment = match[1];
+      const companyRef = decodeURIComponent(rawSegment);
+      const company = await companies.resolveReference(companyRef);
+      if (!company) {
+        next();
+        return;
+      }
+      if (rawSegment !== company.id) {
+        req.url = req.url.replace(`/companies/${rawSegment}`, `/companies/${encodeURIComponent(company.id)}`);
+      }
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
 }
 
 export async function createApp(
@@ -201,6 +229,7 @@ export async function createApp(
   // Mount API routes
   const api = Router();
   api.use(boardMutationGuard());
+  api.use(companyReferenceRewriteMiddleware(db));
   api.use(
     "/health",
     healthRoutes(db, {

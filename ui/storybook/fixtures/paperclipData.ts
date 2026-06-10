@@ -1257,6 +1257,9 @@ export const storybookSidebarBadges: SidebarBadges = {
 
 export const storybookDashboardSummary: DashboardSummary = {
   companyId: "company-storybook",
+  generatedAt: "2026-04-20T12:00:00.000Z",
+  sourceStatus: "complete",
+  partialErrors: [],
   agents: {
     active: 3,
     running: 1,
@@ -1297,6 +1300,33 @@ export const storybookDashboardSummary: DashboardSummary = {
     { date: "2026-04-19", succeeded: 5, failed: 0, other: 1, total: 6 },
     { date: "2026-04-20", succeeded: 4, failed: 0, other: 2, total: 6 },
   ],
+  issueActivity: [
+    { date: "2026-04-07", byPriority: { critical: 0, high: 1, medium: 0, low: 0 }, byStatus: { backlog: 0, todo: 1, in_progress: 0, in_review: 0, done: 0, blocked: 0, cancelled: 0 }, total: 1 },
+    { date: "2026-04-08", byPriority: { critical: 0, high: 0, medium: 1, low: 0 }, byStatus: { backlog: 0, todo: 0, in_progress: 1, in_review: 0, done: 0, blocked: 0, cancelled: 0 }, total: 1 },
+    { date: "2026-04-09", byPriority: { critical: 1, high: 0, medium: 0, low: 0 }, byStatus: { backlog: 0, todo: 0, in_progress: 0, in_review: 0, done: 0, blocked: 1, cancelled: 0 }, total: 1 },
+    { date: "2026-04-10", byPriority: { critical: 0, high: 1, medium: 1, low: 0 }, byStatus: { backlog: 0, todo: 1, in_progress: 0, in_review: 1, done: 0, blocked: 0, cancelled: 0 }, total: 2 },
+    { date: "2026-04-11", byPriority: { critical: 0, high: 0, medium: 0, low: 1 }, byStatus: { backlog: 1, todo: 0, in_progress: 0, in_review: 0, done: 0, blocked: 0, cancelled: 0 }, total: 1 },
+    { date: "2026-04-12", byPriority: { critical: 0, high: 0, medium: 0, low: 0 }, byStatus: { backlog: 0, todo: 0, in_progress: 0, in_review: 0, done: 0, blocked: 0, cancelled: 0 }, total: 0 },
+    { date: "2026-04-13", byPriority: { critical: 0, high: 0, medium: 2, low: 0 }, byStatus: { backlog: 0, todo: 1, in_progress: 1, in_review: 0, done: 0, blocked: 0, cancelled: 0 }, total: 2 },
+    { date: "2026-04-14", byPriority: { critical: 1, high: 1, medium: 0, low: 0 }, byStatus: { backlog: 0, todo: 0, in_progress: 0, in_review: 1, done: 0, blocked: 1, cancelled: 0 }, total: 2 },
+    { date: "2026-04-15", byPriority: { critical: 0, high: 0, medium: 1, low: 1 }, byStatus: { backlog: 1, todo: 0, in_progress: 1, in_review: 0, done: 0, blocked: 0, cancelled: 0 }, total: 2 },
+    { date: "2026-04-16", byPriority: { critical: 0, high: 1, medium: 0, low: 0 }, byStatus: { backlog: 0, todo: 1, in_progress: 0, in_review: 0, done: 0, blocked: 0, cancelled: 0 }, total: 1 },
+    { date: "2026-04-17", byPriority: { critical: 1, high: 0, medium: 1, low: 0 }, byStatus: { backlog: 0, todo: 0, in_progress: 1, in_review: 0, done: 0, blocked: 1, cancelled: 0 }, total: 2 },
+    { date: "2026-04-18", byPriority: { critical: 0, high: 0, medium: 1, low: 0 }, byStatus: { backlog: 0, todo: 0, in_progress: 0, in_review: 1, done: 0, blocked: 0, cancelled: 0 }, total: 1 },
+    { date: "2026-04-19", byPriority: { critical: 0, high: 1, medium: 0, low: 0 }, byStatus: { backlog: 0, todo: 1, in_progress: 0, in_review: 0, done: 0, blocked: 0, cancelled: 0 }, total: 1 },
+    { date: "2026-04-20", byPriority: { critical: 1, high: 0, medium: 2, low: 1 }, byStatus: { backlog: 1, todo: 1, in_progress: 1, in_review: 0, done: 0, blocked: 1, cancelled: 0 }, total: 4 },
+  ],
+  recentIssues: storybookIssues.slice(0, 10).map((issue) => ({
+    id: issue.id,
+    identifier: issue.identifier,
+    title: issue.title,
+    status: issue.status,
+    priority: issue.priority,
+    assigneeAgentId: issue.assigneeAgentId,
+    assigneeUserId: issue.assigneeUserId,
+    createdAt: new Date(issue.createdAt).toISOString(),
+    updatedAt: new Date(issue.updatedAt).toISOString(),
+  })),
 };
 
 export const storybookLiveRuns: LiveRunForIssue[] = [

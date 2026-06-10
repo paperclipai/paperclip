@@ -1603,6 +1603,22 @@ export function issueRoutes(
     return (req.actor.companyIds ?? []).includes(companyId);
   }
 
+  async function resolveCompanyRouteId(req: Request) {
+    const companyRef = req.params.companyId as string;
+    const canResolveFromDatabase = typeof (db as { select?: unknown }).select === "function";
+    const resolveReference = (companiesSvc as { resolveReference?: (reference: string) => Promise<{ id: string } | null> }).resolveReference;
+    if (canResolveFromDatabase && typeof resolveReference === "function") {
+      const company = await companiesSvc.resolveReference(companyRef);
+      if (!company) throw notFound("Company not found");
+      assertCompanyAccess(req, company.id);
+      return company.id;
+    }
+    if (actorCanAccessCompany(req, companyRef)) {
+      return companyRef;
+    }
+    throw notFound("Company not found");
+  }
+
   type TaskAssignmentAuthorizationScope = {
     issueId?: string | null;
     projectId?: string | null;
@@ -2268,8 +2284,7 @@ export function issueRoutes(
   });
 
   router.get("/companies/:companyId/search", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    const companyId = await resolveCompanyRouteId(req);
     const companyScopeDecision = await access.decide({
       actor: req.actor,
       action: "company_scope:read",
@@ -2296,8 +2311,7 @@ export function issueRoutes(
   });
 
   router.get("/companies/:companyId/issues", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    const companyId = await resolveCompanyRouteId(req);
     const assigneeUserFilterRaw = req.query.assigneeUserId as string | undefined;
     const touchedByUserFilterRaw = req.query.touchedByUserId as string | undefined;
     const inboxArchivedByUserFilterRaw = req.query.inboxArchivedByUserId as string | undefined;
@@ -2437,8 +2451,7 @@ export function issueRoutes(
   });
 
   router.get("/companies/:companyId/issues/count", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    const companyId = await resolveCompanyRouteId(req);
     const attention = req.query.attention as string | undefined;
     const hasPlanDocument = parseOptionalBooleanQuery(req.query.hasPlanDocument);
     if (attention !== "blocked") {
@@ -2521,15 +2534,13 @@ export function issueRoutes(
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    const companyId = await resolveCompanyRouteId(req);
     const result = await svc.listLabels(companyId);
     res.json(result);
   });
 
   router.post("/companies/:companyId/labels", validate(createIssueLabelSchema), async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    const companyId = await resolveCompanyRouteId(req);
     const label = await svc.createLabel(companyId, req.body);
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -4178,8 +4189,7 @@ export function issueRoutes(
   });
 
   router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validate(createIssueSchema), async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    const companyId = await resolveCompanyRouteId(req);
     if (await assertLowTrustControlPlaneDenied(req, res, companyId, null)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (req.actor.type === "agent" && !req.body.parentId) {
@@ -6904,9 +6914,8 @@ export function issueRoutes(
   });
 
   router.post("/companies/:companyId/issues/:issueId/attachments", async (req, res) => {
-    const companyId = req.params.companyId as string;
+    const companyId = await resolveCompanyRouteId(req);
     const issueId = req.params.issueId as string;
-    assertCompanyAccess(req, companyId);
     const issue = await svc.getById(issueId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });

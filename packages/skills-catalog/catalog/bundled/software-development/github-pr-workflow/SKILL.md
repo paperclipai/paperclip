@@ -15,6 +15,8 @@ tags:
 
 Ship a PR a reviewer can land without follow-up clarifying questions. The aim is high signal in the title and body, evidence the change works, and clean replies when feedback comes in.
 
+Core rule: use the repository's PR contract first. If `.github/PULL_REQUEST_TEMPLATE.md` exists, it is the required PR body structure. Do not replace it with the fallback structure below.
+
 ## When to use
 
 - You are about to open a PR for a change that is functionally complete.
@@ -32,6 +34,10 @@ Ship a PR a reviewer can land without follow-up clarifying questions. The aim is
 - Squash WIP commits into reviewable units. Prefer one commit per logical change; do not force one-commit-per-PR if the work is genuinely multi-step.
 - Confirm tests, typecheck, and lint pass locally. Note any deliberate skips in the PR body.
 - Remove debug prints, commented-out code, and `TODO` markers that are not tracked.
+- Inspect `git status --short` and `git diff --stat`. Do not include unrelated dirty files, local env files, generated bundles, or lockfile churn unless the repository explicitly wants them.
+- Confirm no secrets, tokens, passwords, customer data, or machine-local paths are introduced in commits or screenshots.
+- Compare the planned PR title and body against `git diff --name-only` and `git diff --stat`. The title/body must describe the actual diff, not a previous run, an intended follow-up, or a copied CI fix.
+- Repository lint wins over stylistic task wording. If a task asks for section comments such as `// AAA: Arrange`, but the repo linter flags them as commented-out code, keep the test intent in names/docstrings/table cases instead of adding lint-rejected comments.
 
 ## PR title
 
@@ -41,6 +47,31 @@ Ship a PR a reviewer can land without follow-up clarifying questions. The aim is
 - No trailing period.
 
 ## PR body
+
+### Repository template mode
+
+If the repository contains `.github/PULL_REQUEST_TEMPLATE.md`:
+
+1. Read `.github/PULL_REQUEST_TEMPLATE.md` before drafting the PR.
+2. Read `CONTRIBUTING.md` and `AGENTS.md` when they exist.
+3. If `.github/workflows/` exists, inspect the relevant PR/CI workflow names so the verification section matches real gates.
+4. Copy the template's section headings exactly.
+5. Fill every required section with concrete content. Do not leave placeholders, empty bullets, or unchecked items that should be checked.
+6. Never recycle a title or PR body from another branch. Every mentioned file, workflow, status, and risk must exist in the current diff or be explicitly marked out of scope.
+7. Keep state assertions literal: if the PR body says `DRAFT`, the PR must actually be draft; if a checkbox says a gate passed, the command or CI check must have actually passed and be named.
+
+For Paperclip repositories, the required sections are:
+
+- `## Thinking Path`
+- `## What Changed`
+- `## Verification`
+- `## Risks`
+- `## Model Used`
+- `## Checklist`
+
+### Fallback mode
+
+Use this fallback only when the repository has no PR template:
 
 Use this structure:
 
@@ -69,6 +100,8 @@ Skip the `Risk and rollback` section only for clearly trivial PRs (typos, docs).
 - For UI work, include screenshots of the golden path and one edge case. Tag dark and light mode if the project supports both.
 - For migrations, include a dry-run plan and reversal steps.
 - For performance changes, include a before/after measurement, not adjectives.
+- Never fabricate test results, screenshots, benchmark numbers, review approvals, compliance evidence, or live verification. If a command was not run, say it was not run and why.
+- For local UI changes, include the exact URL and viewport(s) used for manual verification when possible.
 
 ## Replying to review comments
 

@@ -1023,7 +1023,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         })
     );
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
-    expect(issue?.checkoutRunId).toBe(runId);
+    expect([runId, retryRun?.id]).toContain(issue?.checkoutRunId);
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {

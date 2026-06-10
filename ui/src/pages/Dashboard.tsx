@@ -4,7 +4,6 @@ import { useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
 import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
-import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
@@ -20,19 +19,14 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { AlertTriangle, Bot, CircleDot, Clock3, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
-import type { Agent, Issue } from "@paperclipai/shared";
+import type { Agent } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
-
-function getRecentIssues(issues: Issue[]): Issue[] {
-  return [...issues]
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-}
 
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
@@ -43,7 +37,7 @@ export function Dashboard() {
   const hydratedActivityRef = useRef(false);
   const activityAnimationTimersRef = useRef<number[]>([]);
 
-  const { data: agents } = useQuery({
+  const { data: agents, error: agentsError } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -59,25 +53,19 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
-  const { data: activity } = useQuery({
+  const { data: activity, error: activityError } = useQuery({
     queryKey: [...queryKeys.activity(selectedCompanyId!), { limit: DASHBOARD_ACTIVITY_LIMIT }],
     queryFn: () => activityApi.list(selectedCompanyId!, { limit: DASHBOARD_ACTIVITY_LIMIT }),
     enabled: !!selectedCompanyId,
   });
 
-  const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
-
-  const { data: projects } = useQuery({
+  const { data: projects, error: projectsError } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
-  const { data: companyMembers } = useQuery({
+  const { data: companyMembers, error: companyMembersError } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -88,8 +76,10 @@ export function Dashboard() {
     [companyMembers?.users],
   );
 
-  const recentIssues = issues ? getRecentIssues(issues) : [];
+  const recentIssues = data?.recentIssues ?? [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
+  const auxiliaryErrors = [agentsError, activityError, projectsError, companyMembersError]
+    .filter((item): item is Error => item instanceof Error);
 
   useEffect(() => {
     for (const timer of activityAnimationTimersRef.current) {
@@ -154,17 +144,17 @@ export function Dashboard() {
 
   const entityNameMap = useMemo(() => {
     const map = new Map<string, string>();
-    for (const i of issues ?? []) map.set(`issue:${i.id}`, i.identifier ?? i.id.slice(0, 8));
+    for (const i of recentIssues) map.set(`issue:${i.id}`, i.identifier ?? i.id.slice(0, 8));
     for (const a of agents ?? []) map.set(`agent:${a.id}`, a.name);
     for (const p of projects ?? []) map.set(`project:${p.id}`, p.name);
     return map;
-  }, [issues, agents, projects]);
+  }, [recentIssues, agents, projects]);
 
   const entityTitleMap = useMemo(() => {
     const map = new Map<string, string>();
-    for (const i of issues ?? []) map.set(`issue:${i.id}`, i.title);
+    for (const i of recentIssues) map.set(`issue:${i.id}`, i.title);
     return map;
-  }, [issues]);
+  }, [recentIssues]);
 
   const agentName = (id: string | null) => {
     if (!id || !agents) return null;
@@ -192,10 +182,60 @@ export function Dashboard() {
   }
 
   const hasNoAgents = agents !== undefined && agents.length === 0;
+  const generatedAtLabel = data ? timeAgo(data.generatedAt) : null;
+  const agentsDescription = data
+    ? `${data.agents.running} running, ${data.agents.paused} paused, ${data.agents.error} errors`
+    : "";
+  const tasksDescription = data
+    ? `${data.tasks.open} open, ${data.tasks.blocked} blocked`
+    : "";
+  const costsDescription = data
+    ? data.costs.monthBudgetCents > 0
+      ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
+      : "No monthly budget configured"
+    : "";
+  const totalPendingApprovals = data ? data.pendingApprovals + data.budgets.pendingApprovals : 0;
+  const approvalsDescription = data
+    ? totalPendingApprovals > 0
+      ? `${data.pendingApprovals} approvals and ${data.budgets.pendingApprovals} budget overrides waiting`
+      : "No pending board approvals"
+    : "";
 
   return (
     <div className="space-y-6">
       {error && <p className="text-sm text-destructive">{error.message}</p>}
+
+      {data && (
+        <div className={cn(
+          "flex flex-col gap-2 rounded-lg border px-3 py-2 text-xs sm:flex-row sm:items-center sm:justify-between",
+          data.sourceStatus === "partial"
+            ? "border-amber-300 bg-amber-50 text-amber-950 dark:border-amber-500/25 dark:bg-amber-950/50 dark:text-amber-100"
+            : "border-border bg-muted/20 text-muted-foreground",
+        )}>
+          <div className="flex items-center gap-2">
+            {data.sourceStatus === "partial" ? (
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+            ) : (
+              <Clock3 className="h-3.5 w-3.5 shrink-0" aria-hidden />
+            )}
+            <span>
+              Dashboard data {data.sourceStatus === "partial" ? "partially loaded" : "complete"} · updated {generatedAtLabel}
+            </span>
+          </div>
+          {data.partialErrors.length > 0 && (
+            <span className="truncate sm:max-w-[55%]" title={data.partialErrors.map((item) => `${item.source}: ${item.message}`).join("; ")}>
+              {data.partialErrors.map((item) => item.source).join(", ")} unavailable
+            </span>
+          )}
+        </div>
+      )}
+
+      {auxiliaryErrors.length > 0 && (
+        <div className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-950 dark:border-amber-500/25 dark:bg-amber-950/50 dark:text-amber-100" role="status">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span>Some dashboard side panels failed to load: {auxiliaryErrors.map((item) => item.message).join("; ")}</span>
+        </div>
+      )}
 
       {hasNoAgents && (
         <div className="flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-500/25 dark:bg-amber-950/60">
@@ -243,6 +283,7 @@ export function Dashboard() {
               value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
               label="Agents Enabled"
               to="/agents"
+              descriptionText={agentsDescription}
               description={
                 <span>
                   {data.agents.running} running{", "}
@@ -256,6 +297,7 @@ export function Dashboard() {
               value={data.tasks.inProgress}
               label="Tasks In Progress"
               to="/issues"
+              descriptionText={tasksDescription}
               description={
                 <span>
                   {data.tasks.open} open{", "}
@@ -268,24 +310,22 @@ export function Dashboard() {
               value={formatCents(data.costs.monthSpendCents)}
               label="Month Spend"
               to="/costs"
+              descriptionText={costsDescription}
               description={
                 <span>
-                  {data.costs.monthBudgetCents > 0
-                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                    : "Unlimited budget"}
+                  {costsDescription}
                 </span>
               }
             />
             <MetricCard
               icon={ShieldCheck}
-              value={data.pendingApprovals + data.budgets.pendingApprovals}
+              value={totalPendingApprovals}
               label="Pending Approvals"
               to="/approvals"
+              descriptionText={approvalsDescription}
               description={
                 <span>
-                  {data.budgets.pendingApprovals > 0
-                    ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
-                    : "Awaiting board review"}
+                  {approvalsDescription}
                 </span>
               }
             />
@@ -296,10 +336,10 @@ export function Dashboard() {
               <RunActivityChart activity={data.runActivity} />
             </ChartCard>
             <ChartCard title="Tasks by Priority" subtitle="Last 14 days">
-              <PriorityChart issues={issues ?? []} />
+              <PriorityChart activity={data.issueActivity} />
             </ChartCard>
             <ChartCard title="Tasks by Status" subtitle="Last 14 days">
-              <IssueStatusChart issues={issues ?? []} />
+              <IssueStatusChart activity={data.issueActivity} />
             </ChartCard>
             <ChartCard title="Success Rate" subtitle="Last 14 days">
               <SuccessRateChart activity={data.runActivity} />

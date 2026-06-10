@@ -134,6 +134,12 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
     expect(searchRes.body.map((issue: { identifier: string }) => issue.identifier)).toContain("LNG-1");
   });
 
+  it("lists issues by company issue prefix without treating it as a UUID", async () => {
+    const listRes = await request(app).get("/api/companies/LNG/issues").query({ status: "todo" });
+    expect(listRes.status, JSON.stringify(listRes.body)).toBe(200);
+    expect(listRes.body.map((issue: { identifier: string }) => issue.identifier)).toContain("LNG-1");
+  });
+
   it("preserves multilingual comment bodies", async () => {
     const commentRes = await request(app)
       .post("/api/issues/LNG-1/comments")

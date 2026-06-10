@@ -147,13 +147,14 @@ describe("ActiveAgentsPanel", () => {
     });
     await flushReact();
 
-    expect(mockHeartbeatsApi.liveRunsForCompany).toHaveBeenCalledWith("company-1", {
+    expect(mockHeartbeatsApi.liveRunsForCompany).toHaveBeenNthCalledWith(1, "company-1", undefined);
+    expect(mockHeartbeatsApi.liveRunsForCompany).toHaveBeenNthCalledWith(2, "company-1", {
       minCount: 4,
       limit: undefined,
     });
 
     const moreLink = [...container.querySelectorAll("a")].find((anchor) =>
-      anchor.textContent?.includes("more active/recent"),
+      anchor.textContent?.includes("more live/recent"),
     );
     expect(moreLink?.getAttribute("href")).toBe("/dashboard/live");
 
@@ -184,11 +185,14 @@ describe("ActiveAgentsPanel", () => {
     });
     await flushReact();
 
-    expect(mockHeartbeatsApi.liveRunsForCompany).toHaveBeenCalledWith("company-1", {
+    expect(mockHeartbeatsApi.liveRunsForCompany).toHaveBeenNthCalledWith(1, "company-1", {
+      limit: 50,
+    });
+    expect(mockHeartbeatsApi.liveRunsForCompany).toHaveBeenNthCalledWith(2, "company-1", {
       minCount: 50,
       limit: 50,
     });
-    expect(container.textContent).not.toContain("more active/recent");
+    expect(container.textContent).not.toContain("more live/recent");
 
     await act(async () => {
       root.unmount();

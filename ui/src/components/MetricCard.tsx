@@ -7,12 +7,16 @@ interface MetricCardProps {
   value: string | number;
   label: string;
   description?: ReactNode;
+  descriptionText?: string;
   to?: string;
   onClick?: () => void;
 }
 
-export function MetricCard({ icon: Icon, value, label, description, to, onClick }: MetricCardProps) {
+export function MetricCard({ icon: Icon, value, label, description, descriptionText, to, onClick }: MetricCardProps) {
   const isClickable = !!(to || onClick);
+  const accessibleLabel = descriptionText
+    ? `${label}: ${value}. ${descriptionText}`
+    : `${label}: ${value}`;
 
   const inner = (
     <div className={`h-full px-4 py-4 sm:px-5 sm:py-5 rounded-lg transition-colors${isClickable ? " hover:bg-accent/50 cursor-pointer" : ""}`}>
@@ -25,17 +29,19 @@ export function MetricCard({ icon: Icon, value, label, description, to, onClick 
             {label}
           </p>
           {description && (
-            <div className="text-xs text-muted-foreground/70 mt-1.5 hidden sm:block">{description}</div>
+            <div className="mt-1.5 text-[11px] leading-snug text-muted-foreground/75 sm:text-xs">
+              {description}
+            </div>
           )}
         </div>
-        <Icon className="h-4 w-4 text-muted-foreground/50 shrink-0 mt-1.5" />
+        <Icon className="h-4 w-4 text-muted-foreground/50 shrink-0 mt-1.5" aria-hidden />
       </div>
     </div>
   );
 
   if (to) {
     return (
-      <Link to={to} className="no-underline text-inherit h-full" onClick={onClick}>
+      <Link to={to} className="no-underline text-inherit h-full" onClick={onClick} aria-label={accessibleLabel}>
         {inner}
       </Link>
     );
@@ -43,9 +49,14 @@ export function MetricCard({ icon: Icon, value, label, description, to, onClick 
 
   if (onClick) {
     return (
-      <div className="h-full" onClick={onClick}>
+      <button
+        type="button"
+        className="h-full w-full appearance-none bg-transparent p-0 text-left text-inherit"
+        onClick={onClick}
+        aria-label={accessibleLabel}
+      >
         {inner}
-      </div>
+      </button>
     );
   }
 
