@@ -390,7 +390,6 @@ async function updateExistingPaperclipIssueFromLinear(
   const patch: Record<string, unknown> = {
     title: params.linearIssue.title,
     priority: params.priority,
-    status: params.status,
     originKind: ORIGIN_KIND_SELF,
     originId: params.linearIssue.id,
   };
@@ -398,6 +397,18 @@ async function updateExistingPaperclipIssueFromLinear(
   if (params.projectId && issue.projectId !== params.projectId) patch.projectId = params.projectId;
   if (params.labelIds.length > 0) patch.labelIds = params.labelIds;
   if (!issue.assigneeUserId && params.assigneeUserId) patch.assigneeUserId = params.assigneeUserId;
+  if (
+    params.status !== "in_progress"
+    || params.assigneeUserId
+    || issue.assigneeUserId
+    || issue.assigneeAgentId
+  ) {
+    patch.status = params.status;
+  } else {
+    ctx.logger.info(
+      `Skipped in_progress status sync for ${params.linearIssue.identifier}: Linear assignee is not mapped to a Paperclip user`,
+    );
+  }
 
   try {
     await ctx.issues.update(issue.id, patch as Parameters<typeof ctx.issues.update>[1], companyId);
@@ -413,6 +424,24 @@ async function updateExistingPaperclipIssueFromLinear(
       `Linear import relinked ${params.linearIssue.identifier} but could not move Paperclip issue ${issue.identifier ?? issue.id} to the Linear project: ${err}`,
     );
   }
+}
+
+async function applyImportedLinearStatus(
+  ctx: PluginContext,
+  issueId: string,
+  companyId: string,
+  status: string,
+  assigneeUserId: string | undefined,
+  identifier: string,
+): Promise<void> {
+  if (status === "backlog") return;
+  if (status === "in_progress" && !assigneeUserId) {
+    ctx.logger.info(
+      `Skipped in_progress status sync for ${identifier}: Linear assignee is not mapped to a Paperclip user`,
+    );
+    return;
+  }
+  await ctx.issues.update(issueId, { status: status as Issue["status"] }, companyId);
 }
 
 async function createPluginLinkForExistingPaperclipIssue(
@@ -1058,9 +1087,7 @@ const plugin = definePlugin({
         },
       });
 
-      if (status !== "backlog") {
-        await ctx.issues.update(created.id, { status: status as any }, companyId);
-      }
+      await applyImportedLinearStatus(ctx, created.id, companyId, status, assigneeUserId, linearIssue.identifier);
 
       recentlyCreatedFromLinear.add(created.id);
       setTimeout(() => recentlyCreatedFromLinear.delete(created.id), 10_000);
@@ -1663,6 +1690,8 @@ async function handleWebhookEvent(
       const state = data.state as Record<string, unknown> | undefined;
       const stateType = (state?.type as string) ?? link.lastLinearStateType;
       const stateName = (state?.name as string) ?? stateType;
+      const webhookAssignee =
+        (data.assignee as { name?: string | null; email?: string | null } | null | undefined) ?? null;
 
       const fakeIssue: linear.LinearIssue = {
         id: linearIssueId,
@@ -1672,7 +1701,9 @@ async function handleWebhookEvent(
         state: { name: stateName, type: stateType },
         priority: (data.priority as number) ?? 0,
         url: link.linearUrl,
-        assignee: null,
+        assignee: webhookAssignee?.email
+          ? { name: webhookAssignee.name ?? "", email: webhookAssignee.email }
+          : null,
         labels: { nodes: [] },
         project: null,
         createdAt: "",
@@ -1907,11 +1938,7 @@ async function handleWebhookEvent(
           ...(identifier ? { linkedLinearIssue: { id: linearIssueId, identifier } } : {}),
         });
 
-        if (status !== "backlog") {
-          await ctx.issues.update(created.id, {
-            status: status as any,
-          }, companyId);
-        }
+        await applyImportedLinearStatus(ctx, created.id, companyId, status, assigneeUserId, identifier ?? linearIssueId);
 
         const url = dataUrl ?? (identifier ? `https://linear.app/issue/${identifier}` : "");
 
@@ -2640,11 +2667,7 @@ async function runImport(ctx: PluginContext): Promise<{
           },
         });
 
-        if (status !== "backlog") {
-          await ctx.issues.update(created.id, {
-            status: status as any,
-          }, companyId);
-        }
+        await applyImportedLinearStatus(ctx, created.id, companyId, status, assigneeUserId, linearIssue.identifier);
 
         await sync.createLink(ctx, {
           paperclipIssueId: created.id,

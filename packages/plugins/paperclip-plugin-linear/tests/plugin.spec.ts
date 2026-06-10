@@ -1927,7 +1927,7 @@ describe("paperclip-plugin-linear", () => {
       const updated = await harness.ctx.issues.get("paperclip-host-linked", "comp-1");
       expect(updated).toMatchObject({
         title: "Supply Portal backend register endpoint",
-        status: "in_progress",
+        status: "backlog",
         priority: "high",
         originKind: "plugin:paperclip-plugin-linear",
         originId: "lin-issue-host-linked",

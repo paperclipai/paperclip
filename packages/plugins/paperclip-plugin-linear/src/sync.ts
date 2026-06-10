@@ -161,6 +161,29 @@ function linearPriorityToPaperclip(priority: number): "critical" | "high" | "med
   return map[priority] ?? "medium";
 }
 
+async function resolvePaperclipUserIdForLinearAssignee(
+  ctx: PluginContext,
+  assignee: linear.LinearIssue["assignee"],
+): Promise<string | undefined> {
+  const normalized = assignee?.email?.trim().toLowerCase();
+  if (!normalized) return undefined;
+
+  const stateKey = `linear-user-by-email:${normalized}`;
+  const cached = await ctx.state.get({ scopeKind: "instance", stateKey });
+  if (typeof cached === "string" && cached.length > 0) return cached;
+  if (cached === "") return undefined;
+
+  try {
+    const user = await ctx.users.findByEmail(normalized);
+    const userId = user?.id ?? null;
+    await ctx.state.set({ scopeKind: "instance", stateKey }, userId ?? "");
+    return userId ?? undefined;
+  } catch (err) {
+    ctx.logger.warn(`Failed to resolve user by email ${normalized}: ${err}`);
+    return undefined;
+  }
+}
+
 export async function syncFromLinear(
   ctx: PluginContext,
   link: IssueLink,
@@ -169,12 +192,28 @@ export async function syncFromLinear(
   if (link.syncDirection === "paperclip-to-linear") return;
 
   const patch: Record<string, unknown> = {};
+  let linkNeedsUpdate = false;
 
   // Sync status
   const newStateType = linearIssue.state.type;
   if (newStateType !== link.lastLinearStateType) {
-    patch.status = linearStateToPaperclipStatus(newStateType);
-    link.lastLinearStateType = newStateType;
+    const status = linearStateToPaperclipStatus(newStateType);
+    if (status === "in_progress") {
+      const assigneeUserId = await resolvePaperclipUserIdForLinearAssignee(ctx, linearIssue.assignee);
+      if (assigneeUserId) {
+        patch.assigneeUserId = assigneeUserId;
+        patch.status = status;
+        link.lastLinearStateType = newStateType;
+      } else {
+        ctx.logger.info(
+          `Skipped in_progress status sync for ${linearIssue.identifier}: Linear assignee is not mapped to a Paperclip user`,
+        );
+      }
+    } else {
+      patch.status = status;
+      link.lastLinearStateType = newStateType;
+    }
+    linkNeedsUpdate = true;
   }
 
   // Sync priority if available
@@ -187,7 +226,10 @@ export async function syncFromLinear(
     patch.title = linearIssue.title;
   }
 
-  if (Object.keys(patch).length === 0) return;
+  if (Object.keys(patch).length === 0) {
+    if (linkNeedsUpdate) await updateLink(ctx, link);
+    return;
+  }
 
   await ctx.issues.update(link.paperclipIssueId, patch as Parameters<typeof ctx.issues.update>[1], link.paperclipCompanyId);
   await updateLink(ctx, link);
