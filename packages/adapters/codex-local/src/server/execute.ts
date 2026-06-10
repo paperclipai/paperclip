@@ -876,7 +876,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // Restore the managed config.toml so PAPERCLIP_CODEX_PROVIDERS changes
     // (or removal) between runs never leave stale provider routing behind.
     // If a run dies before reaching this, the next prepareCodexRuntimeConfig
-    // strips the stale managed blocks.
+    // restores the original from the pre-run backup written at prepare time.
     await preparedRuntimeConfig.cleanup();
   }
 }

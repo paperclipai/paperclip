@@ -259,6 +259,62 @@ describe("prepareCodexRuntimeConfig", () => {
     }
   });
 
+  it("escapes DEL (U+007F) in emitted TOML strings", async () => {
+    const del = String.fromCharCode(0x7f);
+    const home = await makeCodexHome();
+    const prepared = await prepareCodexRuntimeConfig({
+      env: {
+        PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
+          providers: { gw: { base_url: "http://gw.example/v1", name: `del${del}name` } },
+        }),
+      },
+      codexHome: home,
+    });
+
+    const content = await readConfigToml(home);
+    expect(content).not.toContain(del);
+    expect(content).toContain("u007fname");
+    await prepared.cleanup();
+  });
+
+  it("restores user provider sections from the pre-run backup after an interrupted run", async () => {
+    const userConfig = [
+      'model = "gpt-5.1-codex"',
+      "",
+      "[model_providers.bifrost]",
+      'base_url = "http://user.example/v1"',
+      "",
+    ].join("\n");
+    const home = await makeCodexHome(userConfig);
+    // Simulate a crash: the merge excises the user's same-name provider
+    // section (the managed definition must win), and cleanup() never runs.
+    await prepareCodexRuntimeConfig({
+      env: { PAPERCLIP_CODEX_PROVIDERS: JSON.stringify(BIFROST_PROVIDERS) },
+      codexHome: home,
+    });
+    expect(await readConfigToml(home)).toContain('env_key = "OPENAI_API_KEY"');
+
+    const prepared = await prepareCodexRuntimeConfig({ env: {}, codexHome: home });
+    expect(prepared.notes.some((n) => n.includes("backup"))).toBe(true);
+    expect(await readConfigToml(home)).toBe(userConfig);
+    await expect(fs.access(path.join(home, "config.toml.paperclip-backup"))).rejects.toThrow();
+    await prepared.cleanup();
+  });
+
+  it("removes the pre-run backup on cleanup", async () => {
+    const home = await makeCodexHome('approval_policy = "never"\n');
+    const prepared = await prepareCodexRuntimeConfig({
+      env: { PAPERCLIP_CODEX_PROVIDERS: JSON.stringify(BIFROST_PROVIDERS) },
+      codexHome: home,
+    });
+    const backupPath = path.join(home, "config.toml.paperclip-backup");
+    expect(await fs.readFile(backupPath, "utf8")).toBe('approval_policy = "never"\n');
+
+    await prepared.cleanup();
+    expect(await readConfigToml(home)).toBe('approval_policy = "never"\n');
+    await expect(fs.access(backupPath)).rejects.toThrow();
+  });
+
   it("skips the merge and surfaces a note when CODEX_HOME is explicitly configured", async () => {
     const prepared = await prepareCodexRuntimeConfig({
       env: { PAPERCLIP_CODEX_PROVIDERS: JSON.stringify(BIFROST_PROVIDERS) },

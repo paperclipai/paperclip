@@ -118,7 +118,8 @@ function parseCodexProvidersConfig(
 }
 
 function escapeTomlString(value: string): string {
-  return value.replace(/[\\"\u0000-\u001f]/g, (char) => {
+  // TOML 1.0 basic strings require escaping U+0000-U+001F and U+007F (DEL).
+  return value.replace(/[\\"\u0000-\u001f\u007f]/g, (char) => {
     switch (char) {
       case "\\":
         return "\\\\";
@@ -277,6 +278,15 @@ async function readFileOrNull(filePath: string): Promise<string | null> {
   return fs.readFile(filePath, "utf8").catch(() => null);
 }
 
+// Pre-run backup of the original config.toml, written before the merged file.
+// If a run dies without reaching cleanup() (a setup throw between prepare and
+// execution, SIGKILL, ...), the next prepare restores the original from this
+// backup with full fidelity -- including user [model_providers.*] sections the
+// merge excised, which block-stripping alone cannot bring back.
+function configTomlBackupPath(configTomlPath: string): string {
+  return `${configTomlPath}.paperclip-backup`;
+}
+
 // Merge custom Codex model providers supplied via PAPERCLIP_CODEX_PROVIDERS
 // into the managed CODEX_HOME's config.toml.
 //
@@ -290,9 +300,10 @@ async function readFileOrNull(filePath: string): Promise<string | null> {
 // The merge preserves any existing config.toml content (seeded from the shared
 // ~/.codex by prepareManagedCodexHome): managed content lives between marker
 // comments and conflicting pre-existing definitions are excised so the managed
-// definitions win. cleanup() restores the original file; if a run crashes
-// before cleanup, the next prepare strips the stale managed blocks (including
-// when PAPERCLIP_CODEX_PROVIDERS is no longer set).
+// definitions win. cleanup() restores the original file; if a run dies before
+// cleanup, the next prepare restores the original from the pre-run backup file
+// written alongside config.toml (including when PAPERCLIP_CODEX_PROVIDERS is
+// no longer set), falling back to stripping the stale managed blocks.
 //
 // When the adapter config explicitly sets env.CODEX_HOME (a user-managed home),
 // pass codexHome: null -- the file is left untouched and a note is surfaced.
@@ -309,16 +320,31 @@ export async function prepareCodexRuntimeConfig(input: {
   );
 
   if (!parsed) {
-    // Self-heal stale managed blocks left behind by a crashed run.
+    // Self-heal state left behind by a crashed run (cleanup() never ran).
     if (input.codexHome) {
       const configTomlPath = path.join(input.codexHome, "config.toml");
+      const reason = notes.length === 0 ? " (PAPERCLIP_CODEX_PROVIDERS is no longer set)" : "";
+      const backupPath = configTomlBackupPath(configTomlPath);
+      const backup = await readFileOrNull(backupPath);
+      if (backup !== null) {
+        // Full-fidelity restore: the backup is the pre-run original, including
+        // any user provider sections the crashed run's merge excised.
+        await fs.writeFile(configTomlPath, backup, "utf8");
+        await fs.rm(backupPath, { force: true });
+        return {
+          notes: [
+            ...notes,
+            `Restored "${configTomlPath}" from its pre-run backup, removing stale Paperclip-managed model providers left by an interrupted run${reason}.`,
+          ],
+          cleanup: async () => {},
+        };
+      }
+      // Fallback for pre-backup stale state: strip the managed blocks.
       const existing = await readFileOrNull(configTomlPath);
       if (existing !== null) {
         const stripped = stripManagedCodexProviderBlocks(existing);
         if (stripped !== existing) {
           await fs.writeFile(configTomlPath, stripped, "utf8");
-          const reason =
-            notes.length === 0 ? " (PAPERCLIP_CODEX_PROVIDERS is no longer set)" : "";
           return {
             notes: [
               ...notes,
@@ -342,7 +368,10 @@ export async function prepareCodexRuntimeConfig(input: {
   }
 
   const configTomlPath = path.join(input.codexHome, "config.toml");
-  const original = await readFileOrNull(configTomlPath);
+  const backupPath = configTomlBackupPath(configTomlPath);
+  // A surviving backup from an interrupted run is the true pre-run content;
+  // the current config.toml would still carry that run's managed blocks.
+  const original = (await readFileOrNull(backupPath)) ?? (await readFileOrNull(configTomlPath));
   const providerNames = Object.keys(parsed.providers);
   const base = stripConflictingDefinitions(
     stripManagedCodexProviderBlocks(original ?? ""),
@@ -350,6 +379,9 @@ export async function prepareCodexRuntimeConfig(input: {
     parsed.modelProvider !== null,
   );
   await fs.mkdir(input.codexHome, { recursive: true });
+  // Persist the original BEFORE writing the merged file so a run that never
+  // reaches cleanup() can be restored by the next prepare.
+  await fs.writeFile(backupPath, original ?? "", "utf8");
   await fs.writeFile(configTomlPath, buildMergedConfigToml(base, parsed), "utf8");
 
   return {
@@ -364,6 +396,7 @@ export async function prepareCodexRuntimeConfig(input: {
       } else {
         await fs.writeFile(configTomlPath, original, "utf8");
       }
+      await fs.rm(backupPath, { force: true });
     },
   };
 }
