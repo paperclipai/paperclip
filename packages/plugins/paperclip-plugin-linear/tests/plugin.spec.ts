@@ -840,7 +840,6 @@ describe("paperclip-plugin-linear", () => {
         title: "Paperclip mirror: LUC-1001",
         subtitle: "LUC-1001 - Test issue",
         iconUrl: "https://paperclip.test/favicon-32x32.png",
-        displayIconUrl: "https://paperclip.test/favicon-32x32.png",
         groupBySource: true,
         metadata: {
           source: "paperclip",
@@ -1878,7 +1877,6 @@ describe("paperclip-plugin-linear", () => {
         title: "Paperclip mirror: LUC-W100",
         subtitle: "LUC-W100 - Webhook create",
         iconUrl: "https://paperclip.test/favicon-32x32.png",
-        displayIconUrl: "https://paperclip.test/favicon-32x32.png",
         groupBySource: true,
         metadata: {
           source: "paperclip",

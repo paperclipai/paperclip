@@ -266,7 +266,7 @@ async function writePaperclipBackLink(
       url: paperclipUrl,
       title: `Paperclip mirror: ${paperclipIdentifier}`,
       subtitle: title ? `${paperclipIdentifier} - ${title}` : "Open in Paperclip",
-      ...(iconUrl ? { iconUrl, displayIconUrl: iconUrl } : {}),
+      ...(iconUrl ? { iconUrl } : {}),
       groupBySource: true,
       metadata: {
         source: "paperclip",
