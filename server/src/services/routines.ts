@@ -942,6 +942,7 @@ export function routineService(
     executor: Db = db,
     dispatchFingerprint?: string | null,
     origin?: { kind: string; id: string | null },
+    excludeIssueId?: string | null,
   ) {
     const fingerprintCondition = routineExecutionFingerprintCondition(dispatchFingerprint);
     const originKind = origin?.kind ?? "routine_execution";
@@ -956,7 +957,7 @@ export function routineService(
           eq(issues.originId, originId),
           inArray(issues.status, OPEN_ISSUE_STATUSES),
           isNull(issues.hiddenAt),
-          isNotNull(issues.executionRunId),
+          ...(excludeIssueId ? [sql`${issues.id} <> ${excludeIssueId}`] : []),
           ...(fingerprintCondition ? [fingerprintCondition] : []),
         ),
       )
@@ -1241,14 +1242,14 @@ export function routineService(
         : undefined;
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
-      const coalesceIntoExistingExecutionIssue = async () => {
+      const coalesceIntoExistingExecutionIssue = async (excludeIssueId?: string | null) => {
         const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
           kind: issueOriginKind,
           id: issueOriginId,
         }) ?? await findOpenExecutionIssue(input.routine, txDb, dispatchFingerprint, {
           kind: issueOriginKind,
           id: issueOriginId,
-        });
+        }, excludeIssueId);
         if (!existingIssue) return null;
         const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
         if (manualRunnerUserId) {
@@ -1286,30 +1287,8 @@ export function routineService(
             id: issueOriginId,
           });
         if (activeIssue) {
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
-          if (manualRunnerUserId) {
-            await touchIssueForUserInbox(txDb, {
-              companyId: input.routine.companyId,
-              issueId: activeIssue.id,
-              userId: manualRunnerUserId,
-              touchedAt: triggeredAt,
-            });
-          }
-          const updated = await finalizeRun(createdRun.id, {
-            status,
-            linkedIssueId: activeIssue.id,
-            coalescedIntoRunId: activeIssue.originRunId,
-            completedAt: triggeredAt,
-          }, txDb);
-          await updateRoutineTouchedState({
-            routineId: input.routine.id,
-            triggerId: input.trigger?.id ?? null,
-            triggeredAt,
-            status,
-            issueId: activeIssue.id,
-            nextRunAt,
-          }, txDb);
-          return updated ?? createdRun;
+          const coalescedRun = await coalesceIntoExistingExecutionIssue();
+          if (coalescedRun) return coalescedRun;
         }
 
         try {
@@ -1361,10 +1340,14 @@ export function routineService(
             throw error;
           }
 
-          await txDb.delete(issues).where(eq(issues.id, createdIssue.id));
+          const losingIssue = createdIssue;
+          const coalescedRun = await coalesceIntoExistingExecutionIssue(losingIssue.id);
+          if (!coalescedRun) {
+            createdIssue = null;
+            throw error;
+          }
+          await txDb.delete(issues).where(eq(issues.id, losingIssue.id));
           createdIssue = null;
-          const coalescedRun = await coalesceIntoExistingExecutionIssue();
-          if (!coalescedRun) throw error;
           return coalescedRun;
         }
         const updated = await finalizeRun(createdRun.id, {

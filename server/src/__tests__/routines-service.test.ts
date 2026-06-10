@@ -624,6 +624,37 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     ]);
   });
 
+  it("keeps the created issue for diagnostics when uniqueness coalescing finds no winner", async () => {
+    const { routine, svc } = await seedFixture({
+      wakeup: async () => {
+        throw {
+          code: "23505",
+          constraint: "issues_open_routine_execution_uq",
+          message: "duplicate open routine execution",
+        };
+      },
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+
+    expect(run.status).toBe("failed");
+    const routineIssues = await db
+      .select({
+        id: issues.id,
+        hiddenAt: issues.hiddenAt,
+        originRunId: issues.originRunId,
+      })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+
+    expect(routineIssues).toEqual([
+      expect.objectContaining({
+        hiddenAt: null,
+        originRunId: run.id,
+      }),
+    ]);
+  });
+
   it("coalesces only when the existing routine issue has a live execution run", async () => {
     const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();
