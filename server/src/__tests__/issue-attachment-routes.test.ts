@@ -474,7 +474,10 @@ describe("issue attachment routes", () => {
     const app = await createApp(storage, { companyIds: ["company-2"], source: "session" });
     const res = await request(app).get("/api/attachments/attachment-1/content");
 
-    expect(res.status).toBe(403);
+    // Cross-tenant reads return 404 (not 403) so the status code cannot be
+    // used as an existence oracle for other tenants' attachment ids.
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Attachment not found");
     expect(storage.getObject).not.toHaveBeenCalled();
   });
 
