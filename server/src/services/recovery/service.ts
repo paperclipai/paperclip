@@ -64,6 +64,17 @@ import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js"
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
+
+// Quota/rate-limit/usage-limit errors are external blockers, not internal stalls.
+// These error codes are set by adapters that classify upstream quota exhaustion.
+const QUOTA_CLASS_ERROR_CODES = new Set([
+  "codex_transient_upstream",
+  "claude_transient_upstream",
+  "gemini_transient_upstream",
+]);
+// Fallback text match for adapter_failed runs whose error body names the quota.
+const QUOTA_CLASS_ERROR_TEXT_RE =
+  /(?:usage[-\s_]?limit|rate[-\s_]?limit(?:ed)?|quota[-\s_]?(?:exceed|exhaust)|over[-\s_]?quota|you(?:'|')ve hit your usage limit)/i;
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
@@ -147,6 +158,14 @@ function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
     return " Latest retry failure details were withheld from the issue thread; inspect the linked run for evidence.";
   }
   return null;
+}
+
+function isQuotaClassRun(run: LatestIssueRun): boolean {
+  if (!run) return false;
+  const errorCode = readNonEmptyString(run.errorCode);
+  if (errorCode && QUOTA_CLASS_ERROR_CODES.has(errorCode)) return true;
+  const errorText = readNonEmptyString(run.error);
+  return errorCode === "adapter_failed" && Boolean(errorText && QUOTA_CLASS_ERROR_TEXT_RE.test(errorText));
 }
 
 function didAutomaticRecoveryFail(
@@ -2454,6 +2473,48 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
+  async function markQuotaBlockedIssue(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: NonNullable<LatestIssueRun>;
+    previousStatus: "todo" | "in_progress";
+  }) {
+    const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
+    if (!updated) return null;
+    const prefix = await getCompanyIssuePrefix(input.issue.companyId);
+    const sourceIssue = issueUiLink({ identifier: input.issue.identifier, id: input.issue.id }, prefix);
+    const runLink = `[\`${input.latestRun.id}\`](/${prefix}/agents/${input.latestRun.agentId}/runs/${input.latestRun.id})`;
+    const comment = [
+      `Paperclip detected a quota or rate-limit error on ${sourceIssue} and moved it to \`blocked\`.`,
+      "",
+      "This is an external blocker (provider quota exhausted or rate limited), not an internal execution stall.",
+      "No recovery issue was created — fix the quota situation and then manually unblock this issue.",
+      "",
+      `- Previous status: \`${input.previousStatus}\``,
+      `- Latest run: ${runLink}`,
+      `- Error code: \`${input.latestRun.errorCode ?? "adapter_failed"}\``,
+    ].join("\n");
+    await issuesSvc.addComment(input.issue.id, comment, {});
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        status: "blocked",
+        previousStatus: input.previousStatus,
+        source: "recovery.quota_blocked",
+        latestRunId: input.latestRun.id,
+        latestRunErrorCode: input.latestRun.errorCode ?? null,
+      },
+    });
+    return updated;
+  }
+
   async function reconcileStrandedAssignedIssues() {
     const candidates = await db
       .select()
@@ -2508,6 +2569,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           issue,
           previousStatus: issue.status as "todo" | "in_progress",
           latestRun,
+        });
+        if (updated) {
+          result.escalated += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
+      // Quota/rate-limit errors are external blockers. Block the source issue
+      // without spawning a recovery issue — these are never internal stalls.
+      if (isQuotaClassRun(latestRun)) {
+        const updated = await markQuotaBlockedIssue({
+          issue,
+          latestRun: latestRun!,
+          previousStatus: issue.status as "todo" | "in_progress",
         });
         if (updated) {
           result.escalated += 1;

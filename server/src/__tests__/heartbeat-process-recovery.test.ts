@@ -2166,6 +2166,85 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     },
   );
 
+  it.each([
+    // transient-upstream error codes set by adapters when quota is exhausted
+    ["failed", "codex_transient_upstream", null],
+    ["failed", "claude_transient_upstream", null],
+    // adapter_failed with error text naming usage/rate-limit
+    ["failed", "adapter_failed", "You've hit your usage limit for o4-mini. Switch to another model now, or try again at 9:00 PM."],
+    ["failed", "adapter_failed", "rate_limit_error: Rate limit reached for requests"],
+    ["failed", "adapter_failed", "quota_exceeded: daily quota exhausted"],
+  ] as const)(
+    "blocks the source issue without spawning a recovery issue for quota-class run (%s/%s)",
+    async (runStatus, runErrorCode, runError) => {
+      const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus,
+        runErrorCode,
+        runError,
+      });
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result.escalated).toBe(1);
+      expect(result.issueIds).toEqual([issueId]);
+
+      // No retry run should be queued.
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs).toHaveLength(1);
+
+      // Source issue should be blocked.
+      const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      expect(issue?.status).toBe("blocked");
+
+      // No stranded_issue_recovery child should exist.
+      const recoveries = await db
+        .select()
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.originKind, "stranded_issue_recovery"),
+            eq(issues.originId, issueId),
+          ),
+        );
+      expect(recoveries).toHaveLength(0);
+
+      // A comment explaining the quota block should be present.
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      expect(comments).toHaveLength(1);
+      expect(comments[0]?.body).toContain("quota or rate-limit error");
+    },
+  );
+
+  it("does not re-block a quota-class issue that is already blocked", async () => {
+    // Verify that blocked issues are skipped by reconcileStrandedAssignedIssues
+    // (they are excluded from the candidates query).
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "codex_transient_upstream",
+    });
+    const heartbeat = heartbeatService(db);
+
+    // First pass: should block the issue.
+    await heartbeat.reconcileStrandedAssignedIssues();
+    const afterFirst = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(afterFirst?.status).toBe("blocked");
+
+    // Second pass: blocked issue must not appear in candidates.
+    const result2 = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result2.issueIds).not.toContain(issueId);
+
+    const recoveries = await db
+      .select()
+      .from(issues)
+      .where(
+        and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")),
+      );
+    expect(recoveries).toHaveLength(0);
+  });
+
   it("still re-enqueues stranded assigned todo recovery when an old queued wake exists", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "todo",
