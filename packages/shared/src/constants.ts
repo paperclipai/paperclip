@@ -597,10 +597,10 @@ export const FINANCE_UNITS = [
 ] as const;
 export type FinanceUnit = (typeof FINANCE_UNITS)[number];
 
-export const BUDGET_SCOPE_TYPES = ["company", "agent", "project"] as const;
+export const BUDGET_SCOPE_TYPES = ["company", "agent", "project", "issue"] as const;
 export type BudgetScopeType = (typeof BUDGET_SCOPE_TYPES)[number];
 
-export const BUDGET_METRICS = ["billed_cents"] as const;
+export const BUDGET_METRICS = ["billed_cents", "total_tokens"] as const;
 export type BudgetMetric = (typeof BUDGET_METRICS)[number];
 
 export const BUDGET_WINDOW_KINDS = ["calendar_month_utc", "lifetime"] as const;
@@ -673,8 +673,16 @@ export const LIVE_EVENT_TYPES = [
   "plugin.ui.updated",
   "plugin.worker.crashed",
   "plugin.worker.restarted",
+  "issue.status.changed",
+  "plan.state.changed",
+  "budget.threshold",
+  "killswitch.engaged",
+  "killswitch.released",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
+
+export const PLAN_STATES = ["draft", "activating", "active", "stopped", "completed"] as const;
+export type PlanState = (typeof PLAN_STATES)[number];
 
 export const PRINCIPAL_TYPES = ["user", "agent"] as const;
 export type PrincipalType = (typeof PRINCIPAL_TYPES)[number];
