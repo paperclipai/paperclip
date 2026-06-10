@@ -3043,8 +3043,7 @@ function prReviewOutputHasGithubAuthExpiry(text: string) {
     // bare `\btoken\b`, so anchor on the whole identifier.
     /\b(?:gh_token|github_token)\b[\s\S]{0,30}\bexpir\w*/i.test(text) ||
     /\btoken\b[\s\S]{0,30}\bexpir\w*[\s\S]{0,60}\b(?:github|gh\b|graphql|rest\b|401|bad\s+credentials|post(?:ed|ing)?|publish|push)\b/i.test(text) ||
-    /\bmid-run\b[\s\S]{0,30}\btoken[-\s]?expir\w*/i.test(text) ||
-    /\btoken[-\s]expiry\b/i.test(text)
+    /\bmid-run\b[\s\S]{0,30}\btoken[-\s]?expir\w*[\s\S]{0,80}\b(?:github|gh\b|graphql|rest\b|401|bad\s+credentials|post(?:ed|ing)?|publish|push)\b/i.test(text)
   ) {
     return true;
   }

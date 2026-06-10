@@ -661,6 +661,15 @@ describe("evaluatePrReviewCompletionEvidence", () => {
     ).toMatchObject({ status: "missing", errorCode: "pr_review_output_missing" });
   });
 
+  it("BLO-9657: reviewed token-expiry content without a GitHub publish failure stays missing", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(authExpiryCtx, {
+        summary:
+          "Diff fetched for Blockcast/paperclip#230 at head 1672bf45; no review has been posted. The diff changes an application token-expiry scheduler and mid-run token expiry tests for the app's own auth layer.",
+      }),
+    ).toMatchObject({ status: "missing", errorCode: "pr_review_output_missing" });
+  });
+
   // Precedence guard: a genuinely posted review that merely mentions an earlier,
   // recovered 401 must stay `posted_review` (the posted-marker checks run first).
   it("BLO-8215: a posted review that recovered from an earlier 401 stays posted_review", () => {
