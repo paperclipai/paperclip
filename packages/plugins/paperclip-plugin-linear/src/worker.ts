@@ -1005,30 +1005,45 @@ const plugin = definePlugin({
       return await runFullSync(ctx);
     });
 
-    // One-time bounded backfill: write the Paperclip back-link attachment for
-    // already-mirrored issues that predate paperclipBaseUrl. Idempotent (Linear
-    // dedupes the attachment by URL), bounded per run, and resumable via an
-    // offset cursor in instance state.
+    // One-time bounded backfill: write Paperclip back-links for already-mirrored
+    // issues/projects that predate paperclipBaseUrl. Idempotent (Linear dedupes
+    // by URL/external link), bounded per run, and resumable via offset cursors
+    // in instance state.
     ctx.actions.register(ACTION_KEYS.backfillBackLinks, async (params: any) => {
       const { companyId } = params as { companyId: string };
 
       if (!(await resolvePaperclipBaseUrl(ctx))) {
-        return { backfilled: 0, done: true, note: "paperclipBaseUrl not set; nothing to do" };
+        return {
+          backfilled: 0,
+          issueBackfilled: 0,
+          projectBackfilled: 0,
+          done: true,
+          projectsDone: true,
+          note: "paperclipBaseUrl not set; nothing to do",
+        };
       }
       const token = await resolveToken(ctx);
-      const maxPerRun = Math.max(1, Number((params as { maxPerRun?: number })?.maxPerRun ?? 100));
-      const pageSize = Math.min(25, maxPerRun);
+      const options = params as {
+        maxPerRun?: number;
+        maxIssueBacklinksPerRun?: number;
+        maxProjectBacklinksPerRun?: number;
+      };
+      const defaultMaxPerRun = Math.max(1, Number(options.maxPerRun ?? 100));
+      const maxIssueBacklinks = Math.max(1, Number(options.maxIssueBacklinksPerRun ?? defaultMaxPerRun));
+      const maxProjectBacklinks = Math.max(1, Number(options.maxProjectBacklinksPerRun ?? defaultMaxPerRun));
+      const issuePageSize = Math.min(25, maxIssueBacklinks);
+      const projectPageSize = Math.min(25, maxProjectBacklinks);
 
       const cursorKey = { scopeKind: "instance" as const, stateKey: "backfill-backlink-offset" };
       let offset = Number((await ctx.state.get(cursorKey)) ?? 0) || 0;
 
-      let backfilled = 0;
+      let issueBackfilled = 0;
       let done = false;
-      while (backfilled < maxPerRun) {
+      while (issueBackfilled < maxIssueBacklinks) {
         const page = await ctx.issues.list({
           companyId,
           originKindPrefix: ORIGIN_KIND_SELF,
-          limit: Math.min(pageSize, maxPerRun - backfilled),
+          limit: Math.min(issuePageSize, maxIssueBacklinks - issueBackfilled),
           offset,
         });
         if (page.length === 0) { offset = 0; done = true; break; } // swept clean -> reset cursor
@@ -1041,14 +1056,51 @@ const plugin = definePlugin({
             ctx, token, link.linearIssueId, link.linearIdentifier,
             issue.identifier ?? null, issue.id, issue.title ?? null, companyId,
           );
-          backfilled++;
-          if (backfilled >= maxPerRun) break;
+          issueBackfilled++;
+          if (issueBackfilled >= maxIssueBacklinks) break;
         }
         await ctx.state.set(cursorKey, offset);
         await new Promise((r) => setTimeout(r, 250)); // backoff between pages (Linear rate limits)
       }
       await ctx.state.set(cursorKey, offset);
-      return { backfilled, offset, done };
+
+      const projectCursorKey = { scopeKind: "instance" as const, stateKey: "backfill-project-backlink-offset" };
+      let projectOffset = Number((await ctx.state.get(projectCursorKey)) ?? 0) || 0;
+
+      let projectBackfilled = 0;
+      let projectsDone = false;
+      while (projectBackfilled < maxProjectBacklinks) {
+        const page = await ctx.state.list({
+          scopeKind: "instance",
+          namespace: "default",
+          stateKeyPrefix: STATE_KEYS.projectLinkPrefix,
+          limit: Math.min(projectPageSize, maxProjectBacklinks - projectBackfilled),
+          offset: projectOffset,
+        });
+        if (page.entries.length === 0) { projectOffset = 0; projectsDone = true; break; }
+
+        for (const entry of page.entries) {
+          projectOffset++;
+          if (!isProjectLink(entry.value)) continue;
+          if (entry.value.paperclipCompanyId !== companyId) continue;
+          await writePaperclipProjectBackLink(ctx, token, entry.value);
+          projectBackfilled++;
+          if (projectBackfilled >= maxProjectBacklinks) break;
+        }
+        await ctx.state.set(projectCursorKey, projectOffset);
+        await new Promise((r) => setTimeout(r, 250)); // backoff between pages (Linear rate limits)
+      }
+      await ctx.state.set(projectCursorKey, projectOffset);
+
+      return {
+        backfilled: issueBackfilled + projectBackfilled,
+        issueBackfilled,
+        projectBackfilled,
+        offset,
+        projectOffset,
+        done,
+        projectsDone,
+      };
     });
 
     /** Link a Paperclip issue to a Linear issue (UI counterpart of the link tool). */
@@ -3544,6 +3596,16 @@ function isIssueLink(value: unknown): value is sync.IssueLink {
     && typeof candidate.syncDirection === "string";
 }
 
+function isProjectLink(value: unknown): value is sync.ProjectLink {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<sync.ProjectLink>;
+  return typeof candidate.paperclipProjectId === "string"
+    && typeof candidate.paperclipCompanyId === "string"
+    && typeof candidate.linearProjectId === "string"
+    && typeof candidate.linearProjectName === "string"
+    && typeof candidate.syncDirection === "string";
+}
+
 async function runFullSync(ctx: PluginContext): Promise<{
   synced: number;
   errors: number;
@@ -3766,6 +3828,7 @@ async function runProjectSync(
     try {
       const existing = await sync.getProjectLinkByLinear(ctx, lp.id);
       if (existing) {
+        await writePaperclipProjectBackLink(ctx, token, existing);
         if (!supportsUpdate) {
           skippedDrift++;
           continue;
@@ -3786,7 +3849,6 @@ async function runProjectSync(
           errors++;
           continue;
         }
-        await writePaperclipProjectBackLink(ctx, token, existing);
         synced++;
         continue;
       }

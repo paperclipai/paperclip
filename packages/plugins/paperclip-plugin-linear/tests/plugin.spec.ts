@@ -2705,6 +2705,87 @@ describe("paperclip-plugin-linear", () => {
       expect(calls[1]![2]).toMatchObject({ url: "https://paperclip.test/BLO/issues/BLO-2" });
     });
 
+    it("backfills Linear project external links from stored Paperclip project bindings", async () => {
+      harness = createTestHarness({
+        manifest,
+        config: {
+          linearClientId: "client-id-123",
+          linearClientSecret: "client-secret-456",
+          teamId: "team-1",
+          syncComments: true,
+          syncDirection: "bidirectional",
+          paperclipBaseUrl: "https://paperclip.test",
+          linearBacklinkBestEffort: true,
+        },
+      });
+      await plugin.definition.setup(harness.ctx);
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      harness.seed({
+        companies: [
+          {
+            id: "comp-1",
+            name: "Blockcast",
+            issuePrefix: "BLO",
+          } as never,
+        ],
+        projects: [
+          {
+            id: "pc-proj-1",
+            companyId: "comp-1",
+            urlKey: "cloud-service",
+            name: "Cloud Service",
+            description: "Paperclip project description",
+            status: "active",
+          } as never,
+        ],
+      });
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: `${STATE_KEYS.projectLinkPrefix}pc-proj-1` },
+        {
+          paperclipProjectId: "pc-proj-1",
+          paperclipCompanyId: "comp-1",
+          linearProjectId: "lin-proj-1",
+          linearProjectName: "Cloud Service",
+          syncDirection: "bidirectional",
+          lastSyncAt: new Date().toISOString(),
+          lastLinearState: "started",
+        },
+      );
+
+      const { attachmentLinkURL, ensureProjectLink } = await import("../src/linear.js");
+      (attachmentLinkURL as ReturnType<typeof vi.fn>).mockClear();
+      (ensureProjectLink as ReturnType<typeof vi.fn>).mockClear();
+
+      const result = await harness.performAction<{
+        backfilled: number;
+        issueBackfilled: number;
+        projectBackfilled: number;
+        projectsDone: boolean;
+      }>(
+        ACTION_KEYS.backfillBackLinks,
+        { companyId: "comp-1" },
+      );
+
+      expect(result.issueBackfilled).toBe(0);
+      expect(result.projectBackfilled).toBe(1);
+      expect(result.backfilled).toBe(1);
+      expect(result.projectsDone).toBe(true);
+      expect(attachmentLinkURL).not.toHaveBeenCalled();
+      expect(ensureProjectLink).toHaveBeenCalledTimes(1);
+      expect(ensureProjectLink).toHaveBeenCalledWith(
+        expect.any(Function),
+        "lin_token_123",
+        {
+          projectId: "lin-proj-1",
+          url: "https://paperclip.test/BLO/projects/cloud-service",
+          label: "Paperclip project",
+        },
+      );
+    });
+
     it("bounded + resumable: respects maxPerRun=1 and advances the offset cursor", async () => {
       harness = createTestHarness({
         manifest,
