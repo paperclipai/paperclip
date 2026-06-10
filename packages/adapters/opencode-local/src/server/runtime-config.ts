@@ -58,13 +58,13 @@ function parseProviderConfig(
     parsed = JSON.parse(raw);
   } catch {
     // Surface the misconfiguration instead of silently dropping the provider
-    // block — an unparseable value would otherwise be undiagnosable.
-    notes.push("PAPERCLIP_OPENCODE_PROVIDERS contains invalid JSON — providers block ignored.");
+    // block; an unparseable value would otherwise be undiagnosable.
+    notes.push("PAPERCLIP_OPENCODE_PROVIDERS contains invalid JSON; custom providers ignored.");
     return null;
   }
   if (!isPlainObject(parsed)) {
     notes.push(
-      "PAPERCLIP_OPENCODE_PROVIDERS is not a JSON object — providers block ignored.",
+      "PAPERCLIP_OPENCODE_PROVIDERS is set but is not a JSON object; custom providers ignored.",
     );
     return null;
   }
