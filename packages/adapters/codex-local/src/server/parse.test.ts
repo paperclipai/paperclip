@@ -137,5 +137,19 @@ describe("isCodexTransientUpstreamError", () => {
         ].join("\n"),
       }),
     ).toBe(false);
+    expect(
+      isCodexTransientUpstreamError({
+        errorMessage: [
+          "Error running remote compact task: {",
+          '  "error": {',
+          '    "message": "Your input exceeds the context window of this model. Please adjust your input and try again.",',
+          '    "type": "invalid_request_error",',
+          '    "param": "input",',
+          '    "code": "context_length_exceeded"',
+          "  }",
+          "}",
+        ].join("\n"),
+      }),
+    ).toBe(false);
   });
 });

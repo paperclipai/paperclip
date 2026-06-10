@@ -8,6 +8,8 @@ import {
 const CODEX_TRANSIENT_UPSTREAM_RE =
   /(?:we(?:'|’)re\s+currently\s+experiencing\s+high\s+demand|temporary\s+errors|rate[-\s]?limit(?:ed)?|too\s+many\s+requests|\b429\b|server\s+overloaded|service\s+unavailable|try\s+again\s+later)/i;
 const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
+const CODEX_REMOTE_COMPACT_INPUT_TOO_LARGE_RE =
+  /(?:remote\s+compact\s+task|compact_remote|pre-sampling\s+compact)[\s\S]*(?:context_length_exceeded|input\s+exceeds\s+the\s+context\s+window|failing_compaction_request_model_visible_bytes)/i;
 const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 
@@ -252,10 +254,19 @@ export function isCodexTransientUpstreamError(input: {
 }): boolean {
   const haystack = buildCodexErrorHaystack(input);
 
+  if (isCodexRemoteCompactInputTooLargeError(input)) return false;
   if (extractCodexRetryNotBefore(input) != null) return true;
   if (!CODEX_TRANSIENT_UPSTREAM_RE.test(haystack)) return false;
   // Keep automatic retries scoped to the observed remote-compaction/high-demand
   // failure shape, plus explicit usage-limit windows that tell us when retrying
   // becomes safe again.
   return CODEX_REMOTE_COMPACTION_RE.test(haystack) || /high\s+demand|temporary\s+errors/i.test(haystack);
+}
+
+export function isCodexRemoteCompactInputTooLargeError(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  return CODEX_REMOTE_COMPACT_INPUT_TOO_LARGE_RE.test(buildCodexErrorHaystack(input));
 }

@@ -41,6 +41,7 @@ import {
 import {
   parseCodexJsonl,
   extractCodexRetryNotBefore,
+  isCodexRemoteCompactInputTooLargeError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
 } from "./parse.js";
@@ -177,6 +178,9 @@ type CodexTransientFallbackMode =
   | "fresh_session"
   | "fresh_session_safer_invocation";
 
+const CODEX_RECOVERY_HANDOFF_MAX_CHARS = 12_000;
+const CODEX_RECOVERY_HANDOFF_SECTION_MAX_CHARS = 4_000;
+
 function readCodexTransientFallbackMode(context: Record<string, unknown>): CodexTransientFallbackMode | null {
   const value = asString(context.codexTransientFallbackMode, "").trim();
   switch (value) {
@@ -196,6 +200,109 @@ function fallbackModeUsesSaferInvocation(mode: CodexTransientFallbackMode | null
 
 function fallbackModeUsesFreshSession(mode: CodexTransientFallbackMode | null): boolean {
   return mode === "fresh_session" || mode === "fresh_session_safer_invocation";
+}
+
+function truncateCodexRecoveryHandoffText(value: string | null | undefined, maxChars = CODEX_RECOVERY_HANDOFF_SECTION_MAX_CHARS): string {
+  const normalized = value?.trim();
+  if (!normalized) return "";
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 80)).trimEnd()}\n[paperclip truncated bounded recovery handoff section: ${normalized.length} chars]`;
+}
+
+function sanitizeBoundedRecoveryContinuationSummary(value: string | null | undefined): string {
+  const normalized = value?.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return "";
+
+  const nonEmptyLines = normalized
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const repeatedLineCount = new Map<string, number>();
+  for (const line of nonEmptyLines) {
+    if (line.length < 80) continue;
+    repeatedLineCount.set(line, (repeatedLineCount.get(line) ?? 0) + 1);
+  }
+
+  const hasTranscriptMarkers =
+    /(^|\n)\s*(system|developer|user|assistant|tool|commentary|observation)\s*:/im.test(normalized) ||
+    /<\|(?:system|developer|user|assistant|tool|commentary|observation)[^>]*\|>/i.test(normalized) ||
+    /(^|\n)\s*```/.test(normalized);
+  const hasOversizedLines = normalized.split("\n").some((line) => line.trim().length > 500);
+  const hasRepeatedConversationContent = /(.{16,}?)(?:\1){4,}/s.test(normalized);
+  const hasRepeatedLongLines = Array.from(repeatedLineCount.values()).some((count) => count >= 3);
+
+  if (hasTranscriptMarkers || hasOversizedLines || hasRepeatedConversationContent || hasRepeatedLongLines) {
+    return [
+      "[paperclip omitted unsafe continuation-summary body from bounded recovery handoff]",
+      "Use Paperclip issue/run metadata APIs to rebuild the minimum context needed.",
+    ].join("\n");
+  }
+
+  return truncateCodexRecoveryHandoffText(normalized, 1_500);
+}
+
+function readContextString(context: Record<string, unknown>, key: string): string | null {
+  const value = asString(context[key], "").trim();
+  return value.length > 0 ? value : null;
+}
+
+function isRecoveryOrContinuationContext(context: Record<string, unknown>): boolean {
+  const wakeReason = readContextString(context, "wakeReason") ?? "";
+  const retryReason = readContextString(context, "retryReason") ?? "";
+  const source = readContextString(context, "source") ?? "";
+  return /(?:recovery|continuation)/i.test(`${wakeReason}\n${retryReason}\n${source}`);
+}
+
+function buildBoundedCodexRecoveryHandoffPrompt(input: {
+  context: Record<string, unknown>;
+  previousSessionId: string | null;
+  errorMessage: string;
+  sessionHandoffNote: string;
+}): string {
+  const wake = parseObject(input.context.paperclipWake);
+  const wakeIssue = parseObject(wake.issue);
+  const continuationSummary = parseObject(input.context.paperclipContinuationSummary);
+  const wakeContinuationSummary = parseObject(wake.continuationSummary);
+  const livenessContinuation = parseObject(wake.livenessContinuation);
+  const issueId = asString(wakeIssue.id, readContextString(input.context, "issueId") ?? readContextString(input.context, "taskId") ?? "unknown");
+  const issueIdentifier = asString(wakeIssue.identifier, "");
+  const issueTitle = asString(wakeIssue.title, "");
+  const issueStatus = asString(wakeIssue.status, "");
+  const continuationSummaryBody =
+    asString(continuationSummary.body, "").trim() ||
+    asString(wakeContinuationSummary.body, "").trim();
+  const sanitizedContinuationSummaryBody = sanitizeBoundedRecoveryContinuationSummary(continuationSummaryBody);
+  const livenessInstruction = asString(livenessContinuation.instruction, "").trim();
+  const lines = [
+    "Paperclip bounded recovery handoff:",
+    input.previousSessionId ? `- Previous Codex session: ${input.previousSessionId}` : "",
+    "- Reason: Codex remote compaction rejected the previous resumed session because its context exceeded the model window.",
+    "- Safety: this fresh-session handoff intentionally omits raw transcript and full issue-thread content.",
+    `- Wake reason: ${readContextString(input.context, "wakeReason") ?? "unknown"}`,
+    `- Retry reason: ${readContextString(input.context, "retryReason") ?? "unknown"}`,
+    `- Source: ${readContextString(input.context, "source") ?? "unknown"}`,
+    `- Retry of run: ${readContextString(input.context, "retryOfRunId") ?? "none"}`,
+    `- Source issue: ${[issueIdentifier, issueTitle].filter(Boolean).join(" ") || issueId}${issueStatus ? ` (${issueStatus})` : ""}`,
+    "",
+    "Previous compaction failure:",
+    truncateCodexRecoveryHandoffText(input.errorMessage, 1_500),
+    "",
+    sanitizedContinuationSummaryBody
+      ? `Bounded continuation summary:\n${sanitizedContinuationSummaryBody}`
+      : "",
+    livenessInstruction
+      ? `\nRun liveness instruction:\n${truncateCodexRecoveryHandoffText(livenessInstruction, 1_500)}`
+      : "",
+    input.sessionHandoffNote
+      ? `\nExisting handoff note:\n${truncateCodexRecoveryHandoffText(input.sessionHandoffNote, 1_500)}`
+      : "",
+    "",
+    "Next action:",
+    "- Continue from this bounded summary only.",
+    "- Inspect source issue/run metadata through Paperclip APIs if needed; do not assume raw transcript context is available.",
+    "- Restore a live execution path or record a valid disposition before ending the heartbeat.",
+  ].filter(Boolean);
+  return truncateCodexRecoveryHandoffText(lines.join("\n"), CODEX_RECOVERY_HANDOFF_MAX_CHARS);
 }
 
 function buildCodexTransientHandoffNote(input: {
@@ -677,7 +784,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     heartbeatPromptChars: renderedPrompt.length,
   };
 
-  const runAttempt = async (resumeSessionId: string | null) => {
+  const runAttempt = async (
+    resumeSessionId: string | null,
+    promptForAttempt = prompt,
+    promptMetricsForAttempt = promptMetrics,
+    commandNotesForAttempt = commandNotes,
+  ) => {
     const execArgs = buildCodexExecArgs(
       forceSaferInvocation ? { ...config, fastMode: false } : config,
       {
@@ -688,8 +800,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const args = execArgs.args;
     const commandNotesWithFastMode =
       execArgs.fastModeIgnoredReason == null
-        ? commandNotes
-        : [...commandNotes, execArgs.fastModeIgnoredReason];
+        ? commandNotesForAttempt
+        : [...commandNotesForAttempt, execArgs.fastModeIgnoredReason];
     if (onMeta) {
       await onMeta({
         adapterType: "codex_local",
@@ -697,12 +809,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         cwd: effectiveExecutionCwd,
         commandNotes: commandNotesWithFastMode,
         commandArgs: args.map((value, idx) => {
-          if (idx === args.length - 1 && value !== "-") return `<prompt ${prompt.length} chars>`;
+          if (idx === args.length - 1 && value !== "-") return `<prompt ${promptForAttempt.length} chars>`;
           return value;
         }),
         env: loggedEnv,
-        prompt,
-        promptMetrics,
+        prompt: promptForAttempt,
+        promptMetrics: promptMetricsForAttempt,
         context,
       });
     }
@@ -710,7 +822,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       cwd,
       env,
-      stdin: prompt,
+      stdin: promptForAttempt,
       timeoutSec,
       graceSec,
       onSpawn,
@@ -838,6 +950,46 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
       );
       const retry = await runAttempt(null);
+      return toResult(retry, true, true);
+    }
+    const initialErrorMessage = initial.parsed.errorMessage ?? initial.proc.stderr;
+    if (
+      sessionId &&
+      !initial.proc.timedOut &&
+      (initial.proc.exitCode ?? 0) !== 0 &&
+      isRecoveryOrContinuationContext(context) &&
+      isCodexRemoteCompactInputTooLargeError({
+        stdout: initial.proc.stdout,
+        stderr: initial.rawStderr,
+        errorMessage: initialErrorMessage,
+      })
+    ) {
+      const boundedPrompt = buildBoundedCodexRecoveryHandoffPrompt({
+        context,
+        previousSessionId: sessionId,
+        errorMessage: initialErrorMessage,
+        sessionHandoffNote,
+      });
+      await onLog(
+        "stdout",
+        `[paperclip] Codex remote compaction input exceeded the model window while resuming "${sessionId}"; retrying once with a fresh bounded recovery handoff (${boundedPrompt.length} chars).\n`,
+      );
+      const retry = await runAttempt(
+        null,
+        boundedPrompt,
+        {
+          promptChars: boundedPrompt.length,
+          instructionsChars: 0,
+          bootstrapPromptChars: 0,
+          wakePromptChars: 0,
+          sessionHandoffChars: 0,
+          heartbeatPromptChars: 0,
+        },
+        [
+          ...commandNotes,
+          "Codex remote compaction exceeded the model context window; retried with a fresh bounded recovery handoff.",
+        ],
+      );
       return toResult(retry, true, true);
     }
 

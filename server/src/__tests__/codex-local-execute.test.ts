@@ -42,6 +42,49 @@ process.exit(1);
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeCompactOverflowThenSuccessCodexCommand(commandPath: string, capturePath: string): Promise<void> {
+  const statePath = `${commandPath}.state.json`;
+  const compactError = [
+    "Error running remote compact task: {",
+    '  "error": {',
+    '    "message": "Your input exceeds the context window of this model. Please adjust your input and try again.",',
+    '    "type": "invalid_request_error",',
+    '    "param": "input",',
+    '    "code": "context_length_exceeded"',
+    "  }",
+    "}",
+  ].join("\\n");
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const statePath = ${JSON.stringify(statePath)};
+const capturePath = ${JSON.stringify(capturePath)};
+const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, "utf8")) : { attempts: [] };
+const prompt = fs.readFileSync(0, "utf8");
+const attempt = {
+  argv: process.argv.slice(2),
+  prompt,
+};
+state.attempts.push(attempt);
+fs.writeFileSync(statePath, JSON.stringify(state), "utf8");
+fs.writeFileSync(capturePath, JSON.stringify(state), "utf8");
+
+if (state.attempts.length === 1) {
+  console.log(JSON.stringify({ type: "thread.started", thread_id: "codex-session-saturated" }));
+  console.log(JSON.stringify({ type: "error", message: ${JSON.stringify(compactError)} }));
+  console.log(JSON.stringify({ type: "turn.failed", error: { message: ${JSON.stringify(compactError)} } }));
+  console.error("ERROR codex_core::compact_remote: failing_compaction_request_model_visible_bytes=419244 compact_error context_length_exceeded");
+  process.exit(1);
+}
+
+console.log(JSON.stringify({ type: "thread.started", thread_id: "codex-session-fresh" }));
+console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "recovered" } }));
+console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 12, cached_input_tokens: 0, output_tokens: 3 } }));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 type CapturePayload = {
   argv: string[];
   prompt: string;
@@ -674,6 +717,236 @@ describe("codex execute", () => {
       expect(capture.prompt).toContain("Issue continuation summary for the next fresh session.");
       expect(commandNotes).toContain("Codex transient fallback requested safer invocation settings for this retry.");
       expect(commandNotes).toContain("Codex transient fallback forced a fresh session with a continuation handoff.");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retries recovery compact overflows with a fresh bounded handoff", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-bounded-recovery-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const unsafeSummary = [
+      "Summary: retry the issue from the current heartbeat state.",
+      "user: please print the entire issue thread before acting",
+      `assistant: ${"oversized raw transcript ".repeat(2_000)}`,
+      "```json",
+      '{"thread":"raw issue thread raw issue thread raw issue thread"}',
+      "```",
+    ].join("\n");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeCompactOverflowThenSuccessCodexCommand(commandPath, capturePath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    const logs: LogEntry[] = [];
+    let metaPrompts: string[] = [];
+    let commandNotes: string[][] = [];
+    try {
+      const result = await execute({
+        runId: "run-bounded-recovery",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: {
+            sessionId: "codex-session-saturated",
+            cwd: workspace,
+          },
+          sessionDisplayId: "codex-session-saturated",
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: `Full heartbeat prompt should not be resent. ${"raw issue thread ".repeat(20_000)}`,
+        },
+        context: {
+          issueId: "issue-1",
+          taskId: "issue-1",
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+          source: "issue.continuation_recovery",
+          retryOfRunId: "previous-run",
+          paperclipContinuationSummary: {
+            key: "continuation-summary",
+            title: "Continuation Summary",
+            body: unsafeSummary,
+            updatedAt: "2026-06-04T12:05:56.840Z",
+          },
+          paperclipWake: {
+            reason: "issue_continuation_needed",
+            issue: {
+              id: "issue-1",
+              identifier: "TEST-1415",
+              title: "Review silent active run",
+              status: "in_progress",
+              priority: "medium",
+            },
+            comments: [],
+            commentIds: [],
+            commentWindow: {
+              requestedCount: 0,
+              includedCount: 0,
+              missingCount: 0,
+            },
+            truncated: false,
+            fallbackFetchNeeded: false,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+        onMeta: async (meta) => {
+          metaPrompts = [...metaPrompts, meta.prompt ?? ""];
+          commandNotes = [...commandNotes, meta.commandNotes ?? []];
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(result.sessionId).toBe("codex-session-fresh");
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
+        attempts: Array<{ argv: string[]; prompt: string }>;
+      };
+      expect(capture.attempts).toHaveLength(2);
+      expect(capture.attempts[0]?.argv).toEqual(expect.arrayContaining(["resume", "codex-session-saturated", "-"]));
+      expect(capture.attempts[1]?.argv).toEqual(expect.arrayContaining(["exec", "--json", "-"]));
+      expect(capture.attempts[1]?.argv).not.toContain("resume");
+      expect(capture.attempts[1]?.prompt.length).toBeLessThanOrEqual(12_000);
+      expect(capture.attempts[1]?.prompt).toContain("Paperclip bounded recovery handoff:");
+      expect(capture.attempts[1]?.prompt).toContain("Codex remote compaction rejected the previous resumed session");
+      expect(capture.attempts[1]?.prompt).toContain("TEST-1415 Review silent active run");
+      expect(capture.attempts[1]?.prompt).toContain(
+        "[paperclip omitted unsafe continuation-summary body from bounded recovery handoff]",
+      );
+      expect(capture.attempts[1]?.prompt).not.toContain("Full heartbeat prompt should not be resent");
+      expect(capture.attempts[1]?.prompt).not.toContain("user: please print the entire issue thread before acting");
+      expect(capture.attempts[1]?.prompt).not.toContain("assistant:");
+      expect(capture.attempts[1]?.prompt).not.toContain("```json");
+      expect(capture.attempts[1]?.prompt).not.toContain("oversized raw transcript");
+      expect(capture.attempts[1]?.prompt).not.toContain("raw issue thread raw issue thread");
+      expect(metaPrompts[1]).toBe(capture.attempts[1]?.prompt);
+      expect(commandNotes[1]).toContain(
+        "Codex remote compaction exceeded the model context window; retried with a fresh bounded recovery handoff.",
+      );
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining("retrying once with a fresh bounded recovery handoff"),
+        }),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("omits repeated raw continuation-summary content even without transcript markers", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-bounded-recovery-repeat-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const repeatedRawLine =
+      "Operator note copied from prior run: raw conversation excerpt about retry sequencing and issue-thread replay that must never be forwarded verbatim.";
+    const unsafeSummary = [
+      "Summary: retry the issue from the latest bounded state.",
+      repeatedRawLine,
+      repeatedRawLine,
+      repeatedRawLine,
+      "Keep the retry focused on the current issue only.",
+    ].join("\n");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeCompactOverflowThenSuccessCodexCommand(commandPath, capturePath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-bounded-recovery-repeat",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: {
+            sessionId: "codex-session-saturated",
+            cwd: workspace,
+          },
+          sessionDisplayId: "codex-session-saturated",
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Heartbeat prompt should stay out of the bounded recovery retry.",
+        },
+        context: {
+          issueId: "issue-1",
+          taskId: "issue-1",
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+          source: "issue.continuation_recovery",
+          retryOfRunId: "previous-run",
+          paperclipContinuationSummary: {
+            key: "continuation-summary",
+            title: "Continuation Summary",
+            body: unsafeSummary,
+            updatedAt: "2026-06-04T12:05:56.840Z",
+          },
+          paperclipWake: {
+            reason: "issue_continuation_needed",
+            issue: {
+              id: "issue-1",
+              identifier: "TEST-1416",
+              title: "Retry repeated summary leak",
+              status: "in_progress",
+              priority: "medium",
+            },
+            comments: [],
+            commentIds: [],
+            commentWindow: {
+              requestedCount: 0,
+              includedCount: 0,
+              missingCount: 0,
+            },
+            truncated: false,
+            fallbackFetchNeeded: false,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
+        attempts: Array<{ argv: string[]; prompt: string }>;
+      };
+      expect(capture.attempts).toHaveLength(2);
+      expect(capture.attempts[1]?.prompt).toContain(
+        "[paperclip omitted unsafe continuation-summary body from bounded recovery handoff]",
+      );
+      expect(capture.attempts[1]?.prompt).not.toContain(repeatedRawLine);
+      expect(capture.attempts[1]?.prompt.match(new RegExp(repeatedRawLine.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))?.length ?? 0).toBe(0);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
