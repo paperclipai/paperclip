@@ -23,9 +23,11 @@ import {
   isSessionNotFoundResponse,
   looksLikeInitializeRequest,
   extractUpstreamSessionId,
+  buildDefaultInitializePayload,
+  buildInitializedNotificationPayload,
 } from "./session-keepalive.js";
 
-interface GatewayState {
+export interface GatewayState {
   upstreams: UpstreamMap;
   sessions: Map<string, SessionStore>;
 }
@@ -60,6 +62,47 @@ export function buildInitializeReplayHeaders(
   headers["content-type"] = "application/json";
   headers.accept = "application/json, text/event-stream";
   return headers;
+}
+
+function isSuccess(status: number): boolean {
+  return status >= 200 && status < 300;
+}
+
+async function notifyUpstreamInitialized(
+  upstreamUrl: string,
+  inboundHeaders: http.IncomingHttpHeaders,
+  upstreamSessionId: string,
+): Promise<boolean> {
+  const result = await forward(
+    upstreamUrl,
+    "POST",
+    buildInitializeReplayHeaders(inboundHeaders),
+    buildInitializedNotificationPayload(),
+    upstreamSessionId,
+  );
+  if (isSuccess(result.status)) return true;
+  // eslint-disable-next-line no-console
+  console.warn(`[mcp-gateway] upstream initialized notification failed: status=${result.status}`);
+  return false;
+}
+
+async function createUpstreamSession(
+  upstreamUrl: string,
+  inboundHeaders: http.IncomingHttpHeaders,
+  initializePayload: Buffer,
+): Promise<string | null> {
+  const initializeResult = await forward(
+    upstreamUrl,
+    "POST",
+    buildInitializeReplayHeaders(inboundHeaders),
+    initializePayload,
+    null,
+  );
+  const initializeBody = initializeResult.body.toString("utf8");
+  const upstreamSessionId = extractUpstreamSessionId(initializeResult.headers, initializeBody);
+  if (!isSuccess(initializeResult.status) || !upstreamSessionId) return null;
+  await notifyUpstreamInitialized(upstreamUrl, inboundHeaders, upstreamSessionId);
+  return upstreamSessionId;
 }
 
 async function forward(
@@ -188,7 +231,8 @@ async function handleRequest(
         );
         const replayBody = replayInitResult.body.toString("utf8");
         const newUpstreamId = extractUpstreamSessionId(replayInitResult.headers, replayBody);
-        if (replayInitResult.status >= 200 && replayInitResult.status < 300 && newUpstreamId) {
+        if (isSuccess(replayInitResult.status) && newUpstreamId) {
+          await notifyUpstreamInitialized(matched.upstreamUrl, req.headers, newUpstreamId);
           store.rotateUpstream(clientSessionId, newUpstreamId);
           // Retry the original call with the new upstream id.
           const retryResult = await forward(
@@ -211,13 +255,40 @@ async function handleRequest(
     // Client supplied a sessionId we don't know — treat as new init below.
   }
 
-  // No (known) session id: forward as-is. If this is an initialize call,
-  // capture the response sessionId for future replay.
-  const result = await forward(matched.upstreamUrl, req.method ?? "POST", req.headers, body, null);
+  const requestMethod = req.method ?? "POST";
+  const isInitializeRequest = looksLikeInitializeRequest(bodyText);
+
+  if (!isInitializeRequest && requestMethod !== "GET" && requestMethod !== "HEAD" && body.length > 0) {
+    const initializePayload = buildDefaultInitializePayload();
+    const upstreamSessionId = await createUpstreamSession(matched.upstreamUrl, req.headers, initializePayload);
+    if (upstreamSessionId) {
+      const record = store.createInitialized({
+        clientSessionId,
+        upstreamSessionId,
+        initializePayload,
+      });
+      const retryResult = await forward(
+        matched.upstreamUrl,
+        requestMethod,
+        req.headers,
+        body,
+        upstreamSessionId,
+      );
+      writeResponse(res, retryResult, record.clientSessionId);
+      return;
+    }
+  }
+
+  // No (known) session id. If this is an initialize call, capture the
+  // response sessionId for future replay, and immediately complete the
+  // upstream lifecycle so clients that omit notifications/initialized do
+  // not leave the upstream session stuck in its initialization phase.
+  const result = await forward(matched.upstreamUrl, requestMethod, req.headers, body, null);
   const text = result.body.toString("utf8");
-  if (looksLikeInitializeRequest(bodyText) && result.status >= 200 && result.status < 300) {
+  if (isInitializeRequest && isSuccess(result.status)) {
     const upstreamId = extractUpstreamSessionId(result.headers, text);
     if (upstreamId) {
+      await notifyUpstreamInitialized(matched.upstreamUrl, req.headers, upstreamId);
       const record = store.createInitialized({
         clientSessionId,
         upstreamSessionId: upstreamId,
@@ -228,6 +299,12 @@ async function handleRequest(
     }
   }
   writeResponse(res, result, clientSessionId ?? null);
+}
+
+export function createGatewayServer(state: GatewayState): http.Server {
+  return http.createServer((req, res) => {
+    handleRequest(req, res, state).catch((e) => safeOnError(e, req, res));
+  });
 }
 
 function safeOnError(e: unknown, req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -251,9 +328,7 @@ function main(): void {
   const port = Number.parseInt(process.env.PORT ?? "8080", 10);
   const state: GatewayState = { upstreams, sessions: new Map() };
 
-  const server = http.createServer((req, res) => {
-    handleRequest(req, res, state).catch((e) => safeOnError(e, req, res));
-  });
+  const server = createGatewayServer(state);
 
   server.listen(port, () => {
     // eslint-disable-next-line no-console

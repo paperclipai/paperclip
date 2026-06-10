@@ -145,19 +145,54 @@ export function isSessionNotFoundResponse(statusCode: number, bodyText: string):
 
 export const MCP_SESSION_HEADER = "mcp-session-id";
 
+export const DEFAULT_MCP_PROTOCOL_VERSION = "2024-11-05";
+
+/**
+ * Compatibility init for clients that call a tool before this gateway
+ * has seen their initialize request. The response is never exposed to
+ * the client; it only creates a valid upstream session to carry the
+ * original request.
+ */
+export function buildDefaultInitializePayload(
+  protocolVersion = DEFAULT_MCP_PROTOCOL_VERSION,
+): Buffer {
+  return Buffer.from(JSON.stringify({
+    jsonrpc: "2.0",
+    id: 0,
+    method: "initialize",
+    params: {
+      protocolVersion,
+      capabilities: {},
+      clientInfo: {
+        name: "paperclip-mcp-gateway",
+        version: "0",
+      },
+    },
+  }));
+}
+
+export function buildInitializedNotificationPayload(): Buffer {
+  return Buffer.from(JSON.stringify({
+    jsonrpc: "2.0",
+    method: "notifications/initialized",
+    params: {},
+  }));
+}
+
 /**
  * MCP `initialize` requests are JSON-RPC messages with `method:"initialize"`.
- * We need to recognize them in the request body so we can cache the
- * payload for replay. The body is JSON; we don't strictly parse for
- * efficiency, but check for the substring as a coarse signal — the
- * gateway forwards even when we can't classify, only the cache
- * decision is affected.
+ * We need to recognize them in the request body so we can decide whether
+ * a request can be forwarded as the first upstream lifecycle message.
  */
 export function looksLikeInitializeRequest(bodyText: string): boolean {
   if (bodyText.length === 0) return false;
-  // Cheap substring check — actual content-type validation happens
-  // when we try to parse for the response sessionId.
-  return bodyText.includes('"method"') && bodyText.includes('"initialize"');
+  try {
+    const message = JSON.parse(bodyText) as unknown;
+    if (!message || typeof message !== "object" || Array.isArray(message)) return false;
+    return (message as { method?: unknown }).method === "initialize";
+  } catch {
+    return false;
+  }
 }
 
 /**

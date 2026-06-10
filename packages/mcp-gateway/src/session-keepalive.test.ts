@@ -5,6 +5,9 @@ import {
   looksLikeInitializeRequest,
   extractUpstreamSessionId,
   MCP_SESSION_HEADER,
+  DEFAULT_MCP_PROTOCOL_VERSION,
+  buildDefaultInitializePayload,
+  buildInitializedNotificationPayload,
 } from "./session-keepalive.js";
 
 describe("SessionStore", () => {
@@ -95,8 +98,44 @@ describe("looksLikeInitializeRequest", () => {
     expect(looksLikeInitializeRequest('{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}')).toBe(false);
   });
 
+  it("does not match initialize strings outside the top-level method", () => {
+    expect(
+      looksLikeInitializeRequest(
+        '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x","arguments":{"note":"initialize"}}}',
+      ),
+    ).toBe(false);
+  });
+
   it("returns false for empty body", () => {
     expect(looksLikeInitializeRequest("")).toBe(false);
+  });
+});
+
+describe("compatibility handshake payloads", () => {
+  it("builds a default initialize payload", () => {
+    const payload = JSON.parse(buildDefaultInitializePayload().toString("utf8"));
+    expect(payload).toMatchObject({
+      jsonrpc: "2.0",
+      id: 0,
+      method: "initialize",
+      params: {
+        protocolVersion: DEFAULT_MCP_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: {
+          name: "paperclip-mcp-gateway",
+          version: "0",
+        },
+      },
+    });
+  });
+
+  it("builds an initialized notification payload", () => {
+    const payload = JSON.parse(buildInitializedNotificationPayload().toString("utf8"));
+    expect(payload).toEqual({
+      jsonrpc: "2.0",
+      method: "notifications/initialized",
+      params: {},
+    });
   });
 });
 
