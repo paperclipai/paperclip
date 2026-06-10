@@ -464,6 +464,8 @@ The recovery service owns this contract:
 
 Suspicious silence creates a medium-priority watchdog recovery action for the selected recovery owner. Critical silence raises that recovery action to high priority and, when issue-backed evaluation is needed for correctness, blocks the source issue on the explicit evaluation task without cancelling the active process.
 
+Watchdog evaluation dedup is keyed by `(companyId, originRunId)` for 24 hours, even if the earlier evaluation thread was already closed. Severity is intentionally not part of that dedup key: a critical escalation updates or reopens the existing watchdog thread instead of creating a second sibling issue for the same run.
+
 Watchdog decisions are explicit operator/recovery-owner decisions:
 
 - `snooze` records an operator-chosen future quiet-until time and suppresses scan-created review work during that window

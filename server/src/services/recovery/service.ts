@@ -67,6 +67,7 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "ti
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
+const STALE_RUN_EVALUATION_DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
@@ -844,6 +845,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  async function findRecentClosedStaleRunEvaluation(companyId: string, runId: string, now: Date) {
+    const dedupSince = new Date(now.getTime() - STALE_RUN_EVALUATION_DEDUP_WINDOW_MS);
+    const [row] = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        priority: issues.priority,
+        assigneeAgentId: issues.assigneeAgentId,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+          gt(issues.updatedAt, dedupSince),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.id))
+      .limit(1);
+    return row ?? null;
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -1531,6 +1559,73 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
       }
       return { kind: "existing" as const, evaluationIssueId: existing.id };
+    }
+
+    // Dedup uses (companyId, originRunId) for 24h regardless of prior terminal status.
+    // Severity is not part of the dedup key; it only controls whether we escalate the
+    // same thread back into an actionable review instead of creating a sibling ticket.
+    const recentClosed = await findRecentClosedStaleRunEvaluation(input.run.companyId, input.run.id, input.now);
+    if (recentClosed) {
+      if (level === "critical" && recentClosed.priority !== "high") {
+        const ownerAgentId = recentClosed.assigneeAgentId ??
+          await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
+        await issuesSvc.update(recentClosed.id, {
+          status: "todo",
+          priority: "high",
+          assigneeAgentId: ownerAgentId,
+        });
+        await issuesSvc.addComment(recentClosed.id, [
+          "Critical output silence threshold crossed after a recent terminal evaluation.",
+          "",
+          `- Run: \`${input.run.id}\``,
+          `- Silent for: ${formatDuration(evidence.silenceAgeMs)}`,
+          `- Last output at: ${input.run.lastOutputAt?.toISOString() ?? "none recorded"}`,
+          "",
+          "Paperclip reopened this existing watchdog thread instead of creating a duplicate sibling issue.",
+        ].join("\n"), { runId: input.run.id });
+        const reopened = await db
+          .select({
+            id: issues.id,
+            status: issues.status,
+            priority: issues.priority,
+            identifier: issues.identifier,
+            assigneeAgentId: issues.assigneeAgentId,
+          })
+          .from(issues)
+          .where(eq(issues.id, recentClosed.id))
+          .then((rows) => rows[0] ?? null);
+        if (reopened) {
+          await ensureSourceIssueBlockedByStaleEvaluation({
+            sourceIssue,
+            evaluationIssue: reopened,
+            run: input.run,
+          });
+          if (reopened.assigneeAgentId) {
+            await deps.enqueueWakeup(reopened.assigneeAgentId, {
+              source: "assignment",
+              triggerDetail: "system",
+              reason: "issue_assigned",
+              payload: {
+                issueId: reopened.id,
+                staleRunId: input.run.id,
+                sourceIssueId: sourceIssue?.id ?? null,
+              },
+              requestedByActorType: "system",
+              requestedByActorId: null,
+              contextSnapshot: {
+                issueId: reopened.id,
+                taskId: reopened.id,
+                wakeReason: "issue_assigned",
+                source: STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND,
+                staleRunId: input.run.id,
+                sourceIssueId: sourceIssue?.id ?? null,
+              },
+            });
+          }
+        }
+        return { kind: "escalated" as const, evaluationIssueId: recentClosed.id };
+      }
+      return { kind: "existing" as const, evaluationIssueId: recentClosed.id };
     }
 
     const ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
