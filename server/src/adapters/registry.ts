@@ -4,6 +4,7 @@ import type {
   AdapterRuntimeCommandSpec,
   ServerAdapterModule,
 } from "./types.js";
+import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
 import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
@@ -655,6 +656,10 @@ export function getServerAdapter(type: string): ServerAdapterModule {
 }
 
 export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+  const declaredModels = parseAdapterModelsEnv();
+  if (declaredModels && declaredModels[type]?.length) {
+    return declaredModels[type].map((m) => ({ id: m.id, label: m.label ?? m.id }));
+  }
   const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
   if (adapter.listModels) {

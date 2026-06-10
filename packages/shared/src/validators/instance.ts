@@ -31,6 +31,9 @@ export const instanceGeneralSettingsSchema = z.object({
     DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   ),
   backupRetention: backupRetentionPolicySchema.default(DEFAULT_BACKUP_RETENTION),
+  // Execution policy. Absent/"any" = unrestricted; "kubernetes" forces the
+  // Kubernetes sandbox provider and denies local/ssh execution (cloud_tenant).
+  executionMode: z.enum(["kubernetes", "any"]).optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.partial();
