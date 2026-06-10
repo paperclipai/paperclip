@@ -55,6 +55,54 @@ describe("codex managed home", () => {
     }
   });
 
+  it("still throws on EEXIST when a raced-in auth symlink points elsewhere", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-home-"));
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const paperclipHome = path.join(root, "paperclip-home");
+    const managedCodexHome = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "codex-home",
+    );
+    const sharedAuth = path.join(sharedCodexHome, "auth.json");
+    const wrongAuth = path.join(sharedCodexHome, "other-auth.json");
+    const managedAuth = path.join(managedCodexHome, "auth.json");
+
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    await fs.writeFile(sharedAuth, '{"token":"shared"}\n', "utf8");
+    await fs.writeFile(wrongAuth, '{"token":"other"}\n', "utf8");
+
+    const originalSymlink = fs.symlink.bind(fs);
+    vi.spyOn(fs, "symlink").mockImplementationOnce(async (_source, target, type) => {
+      await originalSymlink(wrongAuth, target, type);
+      const error = new Error("file already exists") as NodeJS.ErrnoException;
+      error.code = "EEXIST";
+      throw error;
+    });
+
+    try {
+      await expect(
+        prepareManagedCodexHome(
+          {
+            CODEX_HOME: sharedCodexHome,
+            PAPERCLIP_HOME: paperclipHome,
+            PAPERCLIP_INSTANCE_ID: "default",
+          },
+          async () => {},
+          "company-1",
+        ),
+      ).rejects.toMatchObject({ code: "EEXIST" });
+
+      expect((await fs.lstat(managedAuth)).isSymbolicLink()).toBe(true);
+      expect(await fs.readlink(managedAuth)).toBe(wrongAuth);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   // Regression for #5028: older Paperclip versions copied auth.json into the
   // managed home instead of symlinking. After upgrading to the symlink-based
   // logic, the stale regular file at the target stayed in place and every
