@@ -100,6 +100,7 @@ import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
+  recoveryService,
 } from "../services/recovery/index.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -359,6 +360,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
     await db.delete(documents);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueRelations);
     await db.delete(issueRecoveryActions);
     await db.delete(issueTreeHoldMembers);
@@ -569,6 +571,275 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     return { environmentId, leaseId };
   }
+
+  it("routes stale operator-owned issue interactions to the board surface without agent wakeups", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PC",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "DevOps",
+      role: "devops",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Needs operator answer",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: "PC-1",
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      payload: { version: 1, questions: [] },
+      updatedAt: new Date("2026-05-15T20:00:00.000Z"),
+    });
+
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const result = await recovery.reconcileStalledIssueThreadInteractions({
+      now: new Date("2026-05-15T20:11:00.000Z"),
+      thresholdMs: 10 * 60 * 1000,
+    });
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      operatorRouted: 1,
+      agentWoken: 0,
+      skipped: 0,
+      interactionIds: [interactionId],
+      issueIds: [issueId],
+    });
+    await expect(db.select().from(agentWakeupRequests)).resolves.toHaveLength(0);
+    const events = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(events).toEqual([
+      expect.objectContaining({
+        actorType: "system",
+        action: "issue.thread_interaction_operator_waiting",
+        details: expect.objectContaining({
+          interactionId,
+          resolver: "operator_board",
+        }),
+      }),
+    ]);
+
+    const secondResult = await recovery.reconcileStalledIssueThreadInteractions({
+      now: new Date("2026-05-15T20:22:00.000Z"),
+      thresholdMs: 10 * 60 * 1000,
+    });
+
+    expect(secondResult).toMatchObject({
+      scanned: 1,
+      operatorRouted: 0,
+      agentWoken: 0,
+      skipped: 1,
+      interactionIds: [interactionId],
+      issueIds: [issueId],
+    });
+    await expect(db.select().from(activityLog).where(eq(activityLog.entityId, issueId))).resolves.toHaveLength(1);
+  });
+
+  it("skips self-created pending interactions when recent external unblock evidence is in flight", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PC",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Engineer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Needs external source",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: "PC-1",
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      payload: { version: 1, questions: [] },
+      updatedAt: new Date("2026-05-15T20:00:00.000Z"),
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      authorType: "agent",
+      body: "External source unblock is in flight: pinged source owner via Telegram for the ESX file.",
+      createdAt: new Date("2026-05-15T20:05:00.000Z"),
+      updatedAt: new Date("2026-05-15T20:05:00.000Z"),
+    });
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const result = await recovery.reconcileStalledIssueThreadInteractions({
+      now: new Date("2026-05-15T20:11:00.000Z"),
+      thresholdMs: 10 * 60 * 1000,
+    });
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      operatorRouted: 0,
+      agentWoken: 0,
+      skipped: 1,
+      interactionIds: [interactionId],
+      issueIds: [issueId],
+    });
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    await expect(db.select().from(agentWakeupRequests)).resolves.toHaveLength(0);
+    await expect(db.select().from(activityLog).where(eq(activityLog.entityId, issueId))).resolves.toHaveLength(0);
+  });
+
+  it("wakes stale agent-owned issue interactions through the system recovery actor", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PC",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Engineer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Needs agent follow-up",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: "PC-1",
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "suggest_tasks",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      payload: { version: 1, tasks: [] },
+      updatedAt: new Date("2026-05-15T20:00:00.000Z"),
+    });
+
+    const wakeupId = randomUUID();
+    const enqueueWakeup = vi.fn(async (targetAgentId: string, opts: any) => {
+      await db.insert(agentWakeupRequests).values({
+        id: wakeupId,
+        companyId,
+        agentId: targetAgentId,
+        source: opts.source,
+        triggerDetail: opts.triggerDetail,
+        reason: opts.reason,
+        payload: opts.payload,
+        status: "queued",
+        requestedByActorType: opts.requestedByActorType,
+        requestedByActorId: opts.requestedByActorId,
+        contextSnapshot: opts.contextSnapshot,
+      });
+      return {
+        id: randomUUID(),
+        companyId,
+        agentId: targetAgentId,
+        invocationSource: opts.source,
+        triggerDetail: opts.triggerDetail,
+        status: "queued",
+        contextSnapshot: opts.contextSnapshot,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as any;
+    });
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const result = await recovery.reconcileStalledIssueThreadInteractions({
+      now: new Date("2026-05-15T20:11:00.000Z"),
+      thresholdMs: 10 * 60 * 1000,
+    });
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      operatorRouted: 0,
+      agentWoken: 1,
+      skipped: 0,
+      interactionIds: [interactionId],
+      issueIds: [issueId],
+    });
+    expect(enqueueWakeup).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        reason: "issue_interaction_stalled",
+      }),
+    );
+    const wakeups = await db.select().from(agentWakeupRequests);
+    expect(wakeups).toEqual([
+      expect.objectContaining({
+        agentId,
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        reason: "issue_interaction_stalled",
+        payload: expect.objectContaining({
+          issueId,
+          interactionId,
+          mutation: "stalled_interaction_recovery",
+        }),
+      }),
+    ]);
+  });
 
   async function seedStrandedIssueFixture(input: {
     status: "todo" | "in_progress";

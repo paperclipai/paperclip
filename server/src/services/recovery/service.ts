@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -10,8 +10,8 @@ import {
 import {
   agents,
   agentWakeupRequests,
-  approvals,
   activityLog,
+  approvals,
   companies,
   heartbeatRunEvents,
   heartbeatRunWatchdogDecisions,
@@ -328,6 +328,13 @@ function unwrapDatabaseConflictError(error: unknown) {
   };
 }
 
+function isOperatorResolvedInteractionKind(kind: string) {
+  return kind === "ask_user_questions" || kind === "request_confirmation";
+}
+
+const EXTERNAL_UNBLOCK_COMMENT_PATTERN =
+  "(telegram|\\bdm\\b|direct message|external channel|external owner|source owner|outreach|pinged|messaged|slack|teams)";
+
 function isStrandedIssueRecoveryIssue(issue: Pick<typeof issues.$inferSelect, "originKind">) {
   return isStrandedIssueRecoveryOriginKind(issue.originKind);
 }
@@ -584,6 +591,239 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => Boolean(rows[0]));
   }
 
+  async function hasQueuedInteractionWake(companyId: string, issueId: string, interactionId: string) {
+    return db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          sql`${agentWakeupRequests.payload} ->> 'interactionId' = ${interactionId}`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  async function hasLoggedOperatorWaitingInteraction(companyId: string, issueId: string, interactionId: string) {
+    return db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          eq(activityLog.action, "issue.thread_interaction_operator_waiting"),
+          sql`${activityLog.details}->>'interactionId' = ${interactionId}`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  async function hasRecentExternalUnblockEvidence(input: {
+    companyId: string;
+    issueId: string;
+    windowStart: Date;
+    now: Date;
+  }) {
+    return db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, input.companyId),
+          eq(issueComments.issueId, input.issueId),
+          gte(issueComments.createdAt, input.windowStart),
+          lte(issueComments.createdAt, input.now),
+          sql`(
+            ${issueComments.authorUserId} is not null
+            or lower(${issueComments.body}) ~ ${EXTERNAL_UNBLOCK_COMMENT_PATTERN}
+          )`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  async function isSelfCreatedInteractionWithExternalUnblockInFlight(input: {
+    interaction: {
+      companyId: string;
+      issueId: string;
+      createdByAgentId: string | null;
+      assigneeAgentId: string | null;
+    };
+    windowStart: Date;
+    now: Date;
+  }) {
+    if (!input.interaction.createdByAgentId) return false;
+    if (input.interaction.createdByAgentId !== input.interaction.assigneeAgentId) return false;
+
+    return hasRecentExternalUnblockEvidence({
+      companyId: input.interaction.companyId,
+      issueId: input.interaction.issueId,
+      windowStart: input.windowStart,
+      now: input.now,
+    });
+  }
+
+  async function reconcileStalledIssueThreadInteractions(opts?: {
+    now?: Date;
+    thresholdMs?: number;
+    runId?: string | null;
+  }) {
+    const now = opts?.now ?? new Date();
+    const thresholdMs = Math.max(60_000, Math.floor(opts?.thresholdMs ?? 10 * 60 * 1000));
+    const cutoff = new Date(now.getTime() - thresholdMs);
+    const candidates = await db
+      .select({
+        id: issueThreadInteractions.id,
+        companyId: issueThreadInteractions.companyId,
+        issueId: issueThreadInteractions.issueId,
+        kind: issueThreadInteractions.kind,
+        status: issueThreadInteractions.status,
+        continuationPolicy: issueThreadInteractions.continuationPolicy,
+        createdByAgentId: issueThreadInteractions.createdByAgentId,
+        createdByUserId: issueThreadInteractions.createdByUserId,
+        sourceCommentId: issueThreadInteractions.sourceCommentId,
+        sourceRunId: issueThreadInteractions.sourceRunId,
+        updatedAt: issueThreadInteractions.updatedAt,
+        issueIdentifier: issues.identifier,
+        issueStatus: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        projectId: issues.projectId,
+      })
+      .from(issueThreadInteractions)
+      .innerJoin(issues, eq(issueThreadInteractions.issueId, issues.id))
+      .where(
+        and(
+          eq(issueThreadInteractions.status, "pending"),
+          lt(issueThreadInteractions.updatedAt, cutoff),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .orderBy(asc(issueThreadInteractions.updatedAt))
+      .limit(100);
+
+    const result = {
+      scanned: candidates.length,
+      operatorRouted: 0,
+      agentWoken: 0,
+      skipped: 0,
+      interactionIds: [] as string[],
+      issueIds: [] as string[],
+    };
+    const seenIssues = new Set<string>();
+
+    for (const interaction of candidates) {
+      result.interactionIds.push(interaction.id);
+      if (!seenIssues.has(interaction.issueId)) {
+        seenIssues.add(interaction.issueId);
+        result.issueIds.push(interaction.issueId);
+      }
+
+      if (
+        await isSelfCreatedInteractionWithExternalUnblockInFlight({
+          interaction,
+          windowStart: cutoff,
+          now,
+        })
+      ) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (isOperatorResolvedInteractionKind(interaction.kind)) {
+        if (await hasLoggedOperatorWaitingInteraction(interaction.companyId, interaction.issueId, interaction.id)) {
+          result.skipped += 1;
+          continue;
+        }
+        result.operatorRouted += 1;
+        await logActivity(db, {
+          companyId: interaction.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: null,
+          runId: opts?.runId ?? null,
+          action: "issue.thread_interaction_operator_waiting",
+          entityType: "issue",
+          entityId: interaction.issueId,
+          details: {
+            source: "recovery.reconcile_stalled_issue_thread_interactions",
+            interactionId: interaction.id,
+            interactionKind: interaction.kind,
+            interactionStatus: interaction.status,
+            issueIdentifier: interaction.issueIdentifier,
+            ageMs: Math.max(0, now.getTime() - interaction.updatedAt.getTime()),
+            resolver: "operator_board",
+          },
+        });
+        continue;
+      }
+
+      const agentId = interaction.assigneeAgentId ?? interaction.createdByAgentId;
+      if (!agentId) {
+        result.skipped += 1;
+        continue;
+      }
+      const agent = await getAgent(agentId);
+      if (!agent || agent.companyId !== interaction.companyId || !(await isAgentInvokable(agent))) {
+        result.skipped += 1;
+        continue;
+      }
+      if (await hasQueuedInteractionWake(interaction.companyId, interaction.issueId, interaction.id)) {
+        result.skipped += 1;
+        continue;
+      }
+      if (
+        await isInvocationBudgetBlocked(
+          { id: interaction.issueId, companyId: interaction.companyId, projectId: interaction.projectId },
+          agentId,
+        )
+      ) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const queued = await deps.enqueueWakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_interaction_stalled",
+        payload: {
+          issueId: interaction.issueId,
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          mutation: "stalled_interaction_recovery",
+        },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: {
+          issueId: interaction.issueId,
+          taskId: interaction.issueId,
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          interactionStatus: interaction.status,
+          sourceCommentId: interaction.sourceCommentId ?? null,
+          sourceRunId: interaction.sourceRunId ?? null,
+          wakeReason: "issue_interaction_stalled",
+          source: "recovery.reconcile_stalled_issue_thread_interactions",
+        },
+      });
+      if (queued) {
+        result.agentWoken += 1;
+      } else {
+        result.skipped += 1;
+      }
+    }
+
+    return result;
+  }
+
   async function enqueueStrandedIssueRecovery(input: {
     issueId: string;
     agentId: string;
@@ -647,7 +887,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
   }
 
-  async function isInvocationBudgetBlocked(issue: typeof issues.$inferSelect, agentId: string) {
+  async function isInvocationBudgetBlocked(
+    issue: Pick<typeof issues.$inferSelect, "id" | "companyId" | "projectId">,
+    agentId: string,
+  ) {
     const budgetBlock = await budgets.getInvocationBlock(issue.companyId, agentId, {
       issueId: issue.id,
       projectId: issue.projectId,
@@ -3611,6 +3854,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
+    reconcileStalledIssueThreadInteractions,
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileIssueGraphLiveness,
     readRecoveryTimerIntervalMs,

@@ -138,6 +138,8 @@ import {
 } from "../services/trust-preset-resolver.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const MAX_COMPANY_INTERACTION_LIMIT = 500;
+const COMPANY_INTERACTION_STATUSES = new Set(["pending", "accepted", "rejected", "answered", "cancelled"]);
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -2518,6 +2520,37 @@ export function issueRoutes(
 
     const count = await svc.count(companyId, blockedCountFilters);
     res.json({ count });
+  });
+
+  router.get("/companies/:companyId/interactions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const status =
+      typeof req.query.status === "string" && req.query.status.trim().length > 0
+        ? req.query.status.trim()
+        : null;
+    if (status && !COMPANY_INTERACTION_STATUSES.has(status)) {
+      res.status(400).json({
+        error: `Invalid status value. Allowed: ${Array.from(COMPANY_INTERACTION_STATUSES).join(", ")}`,
+      });
+      return;
+    }
+    const limitRaw =
+      typeof req.query.limit === "string" && req.query.limit.trim().length > 0
+        ? Number(req.query.limit)
+        : null;
+    const limit =
+      limitRaw && Number.isFinite(limitRaw) && limitRaw > 0
+        ? Math.min(Math.floor(limitRaw), MAX_COMPANY_INTERACTION_LIMIT)
+        : MAX_COMPANY_INTERACTION_LIMIT;
+
+    const interactions = await issueThreadInteractionService(db).listForCompany({
+      companyId,
+      status,
+      limit,
+    });
+    res.json(interactions);
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {

@@ -4086,6 +4086,7 @@ registerCurrentRoute({
 for (const route of [
   ["get", "/api/companies/import/jobs/{jobId}", "Get company import job status"],
   ["get", "/api/companies/{companyId}/search", "Search company data"],
+  ["get", "/api/companies/{companyId}/interactions", "List issue thread interactions in a company"],
   ["get", "/api/companies/{companyId}/issues/count", "Count issues in a company"],
 ] as const) {
   registerCurrentRoute({

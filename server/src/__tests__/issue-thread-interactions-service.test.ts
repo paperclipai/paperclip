@@ -67,6 +67,101 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await tempDb?.cleanup();
   });
 
+  it("lists pending interactions within one company only", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const issueId = randomUUID();
+    const otherIssueId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        title: "Company issue",
+        status: "in_progress",
+        priority: "medium",
+      },
+      {
+        id: otherIssueId,
+        companyId: otherCompanyId,
+        title: "Other company issue",
+        status: "in_progress",
+        priority: "medium",
+      },
+    ]);
+
+    const pending = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      title: "Proceed?",
+      payload: {
+        version: 1,
+        prompt: "Proceed?",
+      },
+    }, {
+      userId: "local-board",
+    });
+    const accepted = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      title: "Accepted?",
+      payload: {
+        version: 1,
+        prompt: "Accepted?",
+      },
+    }, {
+      userId: "local-board",
+    });
+    await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+    }, accepted.id, {}, {
+      userId: "local-board",
+    });
+    await interactionsSvc.create({
+      id: otherIssueId,
+      companyId: otherCompanyId,
+    }, {
+      kind: "request_confirmation",
+      title: "Other?",
+      payload: {
+        version: 1,
+        prompt: "Other?",
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const listed = await interactionsSvc.listForCompany({
+      companyId,
+      status: "pending",
+      limit: 100,
+    });
+
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.id).toBe(pending.id);
+    expect(listed[0]?.companyId).toBe(companyId);
+    expect(listed[0]?.status).toBe("pending");
+  });
+
   async function seedConfirmationIssue(title = "Comment supersede") {
     const companyId = randomUUID();
     const goalId = randomUUID();

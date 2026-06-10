@@ -1526,6 +1526,49 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(comments.map((comment) => comment.id)).toEqual([firstCommentId]);
   });
 
+  it("reuses unchanged agent Board access recommendations instead of inserting duplicates", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const body = [
+      "ESCALATION: NOX-785 board-answer blocker.",
+      "The API returned `403 Board access required`.",
+      "Decision required: resolve interaction f20b5a0f-7edc-402b-ba69-ff007928e01e with option `accept_attempted_e2e`.",
+    ].join("\n");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "NOX-CLONE",
+      role: "manager",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Board access issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const first = await svc.addComment(issueId, body, { agentId });
+    const second = await svc.addComment(issueId, body, { agentId });
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+
+    expect(second.id).toBe(first.id);
+    expect(comments).toHaveLength(1);
+  });
+
   it("paginates later comments in ascending order from an anchor comment", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();

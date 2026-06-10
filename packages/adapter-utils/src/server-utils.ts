@@ -417,6 +417,26 @@ type PaperclipWakeTreeHoldSummary = {
   reason: string | null;
 };
 
+type PaperclipWakeCppBoardEscalationContext = {
+  bindingContexts: Array<{
+    source: string | null;
+    constraints: string | null;
+    reviewGate: string | null;
+  }>;
+  latestOverride: {
+    commentId: string | null;
+    issueId: string | null;
+    author: string | null;
+    optionId: string | null;
+    bodyExcerpt: string | null;
+    createdAt: string | null;
+  } | null;
+  bannedOptions: Array<{
+    optionId: string | null;
+    reason: string | null;
+  }>;
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
@@ -429,6 +449,7 @@ type PaperclipWakePayload = {
   executionStage: PaperclipWakeExecutionStage | null;
   continuationSummary: PaperclipWakeContinuationSummary | null;
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
+  cppBoardEscalationContext: PaperclipWakeCppBoardEscalationContext | null;
   interactionKind: string | null;
   interactionStatus: string | null;
   childIssueSummaries: PaperclipWakeChildIssueSummary[];
@@ -543,6 +564,47 @@ function normalizePaperclipWakeTreeHoldSummary(value: unknown): PaperclipWakeTre
   return { holdId, rootIssueId, mode, reason };
 }
 
+function normalizePaperclipWakeCppBoardEscalationContext(value: unknown): PaperclipWakeCppBoardEscalationContext | null {
+  const context = parseObject(value);
+  const bindingContexts = Array.isArray(context.bindingContexts)
+    ? context.bindingContexts
+        .map((entry) => {
+          const binding = parseObject(entry);
+          const source = asString(binding.source, "").trim() || null;
+          const constraints = asString(binding.constraints, "").trim() || null;
+          const reviewGate = asString(binding.reviewGate, "").trim() || null;
+          if (!source && !constraints && !reviewGate) return null;
+          return { source, constraints, reviewGate };
+        })
+        .filter((entry): entry is { source: string | null; constraints: string | null; reviewGate: string | null } => Boolean(entry))
+    : [];
+  const overrideRaw = parseObject(context.latestOverride);
+  const bodyExcerpt = asString(overrideRaw.bodyExcerpt, "").trim() || null;
+  const latestOverride = bodyExcerpt
+    ? {
+        commentId: asString(overrideRaw.commentId, "").trim() || null,
+        issueId: asString(overrideRaw.issueId, "").trim() || null,
+        author: asString(overrideRaw.author, "").trim() || null,
+        optionId: asString(overrideRaw.optionId, "").trim() || null,
+        bodyExcerpt,
+        createdAt: asString(overrideRaw.createdAt, "").trim() || null,
+      }
+    : null;
+  const bannedOptions = Array.isArray(context.bannedOptions)
+    ? context.bannedOptions
+        .map((entry) => {
+          const option = parseObject(entry);
+          const optionId = asString(option.optionId, "").trim() || null;
+          const reason = asString(option.reason, "").trim() || null;
+          if (!optionId && !reason) return null;
+          return { optionId, reason };
+        })
+        .filter((entry): entry is { optionId: string | null; reason: string | null } => Boolean(entry))
+    : [];
+  if (bindingContexts.length === 0 && !latestOverride && bannedOptions.length === 0) return null;
+  return { bindingContexts, latestOverride, bannedOptions };
+}
+
 function normalizePaperclipWakeExecutionPrincipal(value: unknown): PaperclipWakeExecutionPrincipal | null {
   const principal = parseObject(value);
   const typeRaw = asString(principal.type, "").trim().toLowerCase();
@@ -607,6 +669,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   const executionStage = normalizePaperclipWakeExecutionStage(payload.executionStage);
   const continuationSummary = normalizePaperclipWakeContinuationSummary(payload.continuationSummary);
   const livenessContinuation = normalizePaperclipWakeLivenessContinuation(payload.livenessContinuation);
+  const cppBoardEscalationContext = normalizePaperclipWakeCppBoardEscalationContext(payload.cppBoardEscalationContext);
   const childIssueSummaries = Array.isArray(payload.childIssueSummaries)
     ? payload.childIssueSummaries
         .map((entry) => normalizePaperclipWakeChildIssueSummary(entry))
@@ -624,7 +687,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     : [];
 
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
-  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !cppBoardEscalationContext && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -640,6 +703,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     executionStage,
     continuationSummary,
     livenessContinuation,
+    cppBoardEscalationContext,
     interactionKind: asString(payload.interactionKind, "").trim() || null,
     interactionStatus: asString(payload.interactionStatus, "").trim() || null,
     childIssueSummaries,
@@ -768,6 +832,38 @@ export function renderPaperclipWakePrompt(
     if (normalized.activeTreeHold) {
       const hold = normalized.activeTreeHold;
       lines.push(`- active tree hold: ${hold.holdId ?? "unknown"}${hold.rootIssueId ? ` rooted at ${hold.rootIssueId}` : ""}${hold.mode ? ` (${hold.mode})` : ""}`);
+    }
+  }
+  if (normalized.cppBoardEscalationContext) {
+    const context = normalized.cppBoardEscalationContext;
+    lines.push(
+      "",
+      "CPP board-answer sweep context:",
+      "- Treat binding parent/blocker Constraints / Risks and Review Gate text as current input before recommending an answer.",
+      "- Latest Nox/Cameron/local-board override comments supersede autonomous sweep recommendations unless a newer explicit board/user decision changes the state.",
+      "- If the same `403 Board access required` recommendation was already posted for the same interaction and option, do not post another escalation comment.",
+    );
+    if (context.bindingContexts.length > 0) {
+      lines.push("Binding issue text:");
+      for (const binding of context.bindingContexts) {
+        lines.push(`- ${binding.source ?? "unknown issue"}`);
+        if (binding.constraints) lines.push(`  Constraints / Risks: ${binding.constraints}`);
+        if (binding.reviewGate) lines.push(`  Review Gate: ${binding.reviewGate}`);
+      }
+    }
+    if (context.latestOverride) {
+      const override = context.latestOverride;
+      lines.push(
+        "Latest override comment:",
+        `- ${override.createdAt ?? "unknown time"} ${override.author ?? "unknown author"}${override.optionId ? ` option \`${override.optionId}\`` : ""}${override.commentId ? ` comment ${override.commentId}` : ""}`,
+        `  ${override.bodyExcerpt ?? ""}`,
+      );
+    }
+    if (context.bannedOptions.length > 0) {
+      lines.push("Banned/deprioritized options from binding context:");
+      for (const option of context.bannedOptions) {
+        lines.push(`- ${option.optionId ?? "unknown option"}: ${option.reason ?? "blocked by binding context"}`);
+      }
     }
   }
   if (normalized.missingCount > 0) {

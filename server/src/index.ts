@@ -743,6 +743,12 @@ export async function startServer(): Promise<StartedServer> {
         }
       })
       .then(async () => {
+        const reconciled = await heartbeat.reconcileStalledIssueThreadInteractions();
+        if (reconciled.operatorRouted > 0 || reconciled.agentWoken > 0) {
+          logger.warn({ ...reconciled }, "startup stalled interaction reconciliation routed pending interactions");
+        }
+      })
+      .then(async () => {
         const reconciled = await heartbeat.reconcileIssueGraphLiveness();
         if (reconciled.escalationsCreated > 0) {
           logger.warn({ ...reconciled }, "startup issue-graph liveness reconciliation created escalations");
@@ -806,6 +812,12 @@ export async function startServer(): Promise<StartedServer> {
               { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
               "periodic heartbeat recovery changed assigned issue state",
             );
+          }
+        })
+        .then(async () => {
+          const reconciled = await heartbeat.reconcileStalledIssueThreadInteractions();
+          if (reconciled.operatorRouted > 0 || reconciled.agentWoken > 0) {
+            logger.warn({ ...reconciled }, "periodic stalled interaction reconciliation routed pending interactions");
           }
         })
         .then(async () => {

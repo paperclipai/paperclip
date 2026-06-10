@@ -745,6 +745,27 @@ export function issueThreadInteractionService(db: Db) {
       return rows.map((row) => hydrateInteraction(row));
     },
 
+    listForCompany: async (args: {
+      companyId: string;
+      status?: string | null;
+      limit?: number | null;
+    }) => {
+      const predicates = [eq(issueThreadInteractions.companyId, args.companyId)];
+      const status = args.status?.trim();
+      if (status) {
+        predicates.push(eq(issueThreadInteractions.status, status));
+      }
+
+      const query = db
+        .select()
+        .from(issueThreadInteractions)
+        .where(and(...predicates))
+        .orderBy(asc(issueThreadInteractions.createdAt), asc(issueThreadInteractions.id));
+
+      const rows = typeof args.limit === "number" ? await query.limit(args.limit) : await query;
+      return rows.map((row) => hydrateInteraction(row));
+    },
+
     getById: async (interactionId: string) => {
       const row = await db
         .select()

@@ -155,6 +155,14 @@ vi.mock("../services/index.js", () => ({
       skipped: 0,
       issueIds: [],
     })),
+    reconcileStalledIssueThreadInteractions: vi.fn(async () => ({
+      scanned: 0,
+      operatorRouted: 0,
+      agentWoken: 0,
+      skipped: 0,
+      interactionIds: [],
+      issueIds: [],
+    })),
     tickTimers: vi.fn(async () => ({ enqueued: 0 })),
   })),
   instanceSettingsService: vi.fn(() => ({

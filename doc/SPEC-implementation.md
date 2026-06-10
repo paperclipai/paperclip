@@ -618,6 +618,7 @@ All endpoints are under `/api` and return JSON.
 
 - `GET /companies/:companyId/issues`
 - `POST /companies/:companyId/issues`
+- `GET /companies/:companyId/interactions?status=pending&limit=100`
 - `GET /issues/:issueId`
 - `PATCH /issues/:issueId`
 - `GET /issues/:issueId/documents`

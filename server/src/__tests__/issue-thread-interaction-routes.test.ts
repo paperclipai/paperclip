@@ -11,6 +11,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockInteractionService = vi.hoisted(() => ({
   listForIssue: vi.fn(),
+  listForCompany: vi.fn(),
   create: vi.fn(),
   acceptInteraction: vi.fn(),
   acceptSuggestedTasks: vi.fn(),
@@ -176,6 +177,7 @@ describe.sequential("issue thread interaction routes", () => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(createIssue());
     mockInteractionService.listForIssue.mockResolvedValue([]);
+    mockInteractionService.listForCompany.mockResolvedValue([]);
     mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
     mockInteractionService.create.mockResolvedValue({
       id: "interaction-1",
@@ -381,6 +383,49 @@ describe.sequential("issue thread interaction routes", () => {
         }),
       }),
     );
+  });
+
+  it("lists company interactions with bounded status filtering", async () => {
+    mockInteractionService.listForCompany.mockResolvedValue([
+      { id: "interaction-1", kind: "request_confirmation", status: "pending" },
+    ]);
+    const app = await createApp();
+
+    const res = await request(app).get("/api/companies/company-1/interactions?status=pending&limit=1000");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      { id: "interaction-1", kind: "request_confirmation", status: "pending" },
+    ]);
+    expect(mockInteractionService.listForCompany).toHaveBeenCalledWith({
+      companyId: "company-1",
+      status: "pending",
+      limit: 500,
+    });
+  });
+
+  it("rejects unknown company interaction statuses", async () => {
+    const app = await createApp();
+
+    const res = await request(app).get("/api/companies/company-1/interactions?status=foo&limit=100");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Invalid status value");
+    expect(mockInteractionService.listForCompany).not.toHaveBeenCalled();
+  });
+
+  it("rejects company interaction enumeration across company boundaries", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "other-company",
+      runId: "run-1",
+    });
+
+    const res = await request(app).get("/api/companies/company-1/interactions?status=pending&limit=100");
+
+    expect(res.status).toBe(403);
+    expect(mockInteractionService.listForCompany).not.toHaveBeenCalled();
   });
 
   it("accepts suggested tasks and wakes created assignees plus the current assignee", async () => {

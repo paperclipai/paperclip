@@ -86,6 +86,7 @@ import {
   RECOVERY_ORIGIN_KINDS,
 } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
+import { findUnchangedBoardAccessRecommendation } from "./cpp-board-escalation.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -5845,6 +5846,34 @@ export function issueService(db: Db) {
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
+      if (actor.agentId) {
+        const recentComments = await db
+          .select({
+            id: issueComments.id,
+            issueId: issueComments.issueId,
+            body: issueComments.body,
+            authorAgentId: issueComments.authorAgentId,
+            authorUserId: issueComments.authorUserId,
+            authorType: issueComments.authorType,
+            createdAt: issueComments.createdAt,
+          })
+          .from(issueComments)
+          .where(and(eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issueId)))
+          .orderBy(desc(issueComments.createdAt))
+          .limit(25);
+        const unchangedRecommendation = findUnchangedBoardAccessRecommendation(redactedBody, recentComments);
+        if (unchangedRecommendation) {
+          const existingId = unchangedRecommendation.id;
+          const existing = existingId
+            ? await db
+              .select()
+              .from(issueComments)
+              .where(eq(issueComments.id, existingId))
+              .then((rows) => rows[0] ?? null)
+            : null;
+          if (existing) return redactIssueComment(existing, currentUserRedactionOptions.enabled);
+        }
+      }
       const [comment] = await db
         .insert(issueComments)
         .values({

@@ -119,6 +119,7 @@ import {
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
+import { buildCppBoardEscalationContext } from "./cpp-board-escalation.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
@@ -2447,6 +2448,12 @@ export async function buildPaperclipWakePayload(input: {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
+  const cppBoardEscalationContext = await collectCppBoardEscalationWakeContext({
+    db: input.db,
+    companyId: input.companyId,
+    issueId,
+    contextSnapshot: input.contextSnapshot,
+  });
   if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
 
   const commentRows =
@@ -2643,6 +2650,7 @@ export async function buildPaperclipWakePayload(input: {
           updatedAt: safeContinuationSummary.updatedAt.toISOString(),
         }
       : null,
+    cppBoardEscalationContext,
     commentIds,
     latestCommentId: commentIds[commentIds.length - 1] ?? null,
     comments,
@@ -2659,6 +2667,115 @@ export async function buildPaperclipWakePayload(input: {
 
 function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
   return deriveTaskKey(run.contextSnapshot as Record<string, unknown> | null, null);
+}
+
+function isCppBoardEscalationWake(contextSnapshot: Record<string, unknown>) {
+  const reason = readNonEmptyString(contextSnapshot.wakeReason);
+  const interactionKind = readNonEmptyString(contextSnapshot.interactionKind);
+  if (reason === "issue_interaction_stalled") return true;
+  return Boolean(interactionKind && (interactionKind === "ask_user_questions" || interactionKind === "request_confirmation"));
+}
+
+async function collectCppBoardEscalationWakeContext(input: {
+  db: Db;
+  companyId: string;
+  issueId: string | null;
+  contextSnapshot: Record<string, unknown>;
+}) {
+  if (!input.issueId || !isCppBoardEscalationWake(input.contextSnapshot)) return null;
+
+  const relatedIssueIds = new Set<string>([input.issueId]);
+  const unresolvedBlockerIssueIds = Array.isArray(input.contextSnapshot.unresolvedBlockerIssueIds)
+    ? input.contextSnapshot.unresolvedBlockerIssueIds.filter((value): value is string => typeof value === "string" && value.length > 0)
+    : [];
+  for (const blockerId of unresolvedBlockerIssueIds) relatedIssueIds.add(blockerId);
+
+  const blockerRows = await input.db
+    .select({ issueId: issueRelations.issueId })
+    .from(issueRelations)
+    .where(and(
+      eq(issueRelations.companyId, input.companyId),
+      eq(issueRelations.relatedIssueId, input.issueId),
+      eq(issueRelations.type, "blocks"),
+    ));
+  for (const blocker of blockerRows) relatedIssueIds.add(blocker.issueId);
+
+  const sourceIssueRows = await input.db
+    .select({
+      id: issues.id,
+      parentId: issues.parentId,
+      identifier: issues.identifier,
+      title: issues.title,
+      description: issues.description,
+    })
+    .from(issues)
+    .where(and(eq(issues.companyId, input.companyId), inArray(issues.id, Array.from(relatedIssueIds))));
+
+  const initialParentIds = Array.from(
+    new Set(sourceIssueRows.map((issue) => issue.parentId).filter((id): id is string => Boolean(id))),
+  ).filter((id) => !relatedIssueIds.has(id));
+  const seenParents = new Set<string>();
+  const queue: string[] = [];
+  if (initialParentIds.length > 0) {
+    const parentRows = await input.db
+      .select({
+        id: issues.id,
+        parentId: issues.parentId,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, input.companyId), inArray(issues.id, initialParentIds)));
+    for (const parent of parentRows) {
+      if (seenParents.size >= 6 || seenParents.has(parent.id) || relatedIssueIds.has(parent.id)) continue;
+      seenParents.add(parent.id);
+      relatedIssueIds.add(parent.id);
+      if (parent.parentId) queue.push(parent.parentId);
+    }
+  }
+  while (queue.length > 0 && seenParents.size < 6) {
+    const parentId = queue.shift();
+    if (!parentId || seenParents.has(parentId) || relatedIssueIds.has(parentId)) continue;
+    seenParents.add(parentId);
+    relatedIssueIds.add(parentId);
+    const parent = await input.db
+      .select({
+        id: issues.id,
+        parentId: issues.parentId,
+        identifier: issues.identifier,
+        title: issues.title,
+        description: issues.description,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, input.companyId), eq(issues.id, parentId)))
+      .then((rows) => rows[0] ?? null);
+    if (parent?.parentId) queue.push(parent.parentId);
+  }
+
+  const issueRows = await input.db
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      title: issues.title,
+      description: issues.description,
+    })
+    .from(issues)
+    .where(and(eq(issues.companyId, input.companyId), inArray(issues.id, Array.from(relatedIssueIds))));
+
+  const comments = await input.db
+    .select({
+      id: issueComments.id,
+      issueId: issueComments.issueId,
+      body: issueComments.body,
+      authorAgentId: issueComments.authorAgentId,
+      authorUserId: issueComments.authorUserId,
+      authorType: issueComments.authorType,
+      createdAt: issueComments.createdAt,
+    })
+    .from(issueComments)
+    .where(and(eq(issueComments.companyId, input.companyId), inArray(issueComments.issueId, Array.from(relatedIssueIds))))
+    .orderBy(desc(issueComments.createdAt))
+    .limit(40);
+
+  return buildCppBoardEscalationContext({ issues: issueRows, comments });
 }
 
 function isSameTaskScope(left: string | null, right: string | null) {
@@ -7475,6 +7592,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.reconcileStrandedAssignedIssues();
   }
 
+  async function reconcileStalledIssueThreadInteractions(opts?: {
+    now?: Date;
+    thresholdMs?: number;
+    runId?: string | null;
+  }) {
+    return recovery.reconcileStalledIssueThreadInteractions(opts);
+  }
+
   function issueIdFromRunContext(contextSnapshot: unknown) {
     const context = parseObject(contextSnapshot);
     return readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
@@ -11096,6 +11221,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     reconcileStrandedAssignedIssues,
+
+    reconcileStalledIssueThreadInteractions,
 
     buildIssueGraphLivenessAutoRecoveryPreview,
 
