@@ -24,6 +24,8 @@ export const TOOL_NAMES = {
   link: "link-linear-issue",
   unlink: "unlink-linear-issue",
   create: "create-linear-issue",
+  listIssueLabels: "list-linear-issue-labels",
+  listProjectLabels: "list-linear-project-labels",
   markDuplicate: "mark-duplicate",
 } as const;
 

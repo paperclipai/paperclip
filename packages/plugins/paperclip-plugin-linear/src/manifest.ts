@@ -207,6 +207,48 @@ const manifest: PaperclipPluginManifestV1 = {
       },
     },
     {
+      name: TOOL_NAMES.listIssueLabels,
+      displayName: "List Linear Issue Labels",
+      description:
+        "List Linear issue labels visible to the connected workspace. Use this before setting or matching issue labels.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "Optional case-insensitive substring filter for label name.",
+          },
+          teamId: {
+            type: "string",
+            description: "Optional Linear team ID filter.",
+          },
+          limit: {
+            type: "number",
+            description: "Maximum labels to return, capped at 500.",
+          },
+        },
+      },
+    },
+    {
+      name: TOOL_NAMES.listProjectLabels,
+      displayName: "List Linear Project Labels",
+      description:
+        "List Linear project labels visible to the connected workspace. Use this before setting or matching project labels.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "Optional case-insensitive substring filter for label name.",
+          },
+          limit: {
+            type: "number",
+            description: "Maximum labels to return, capped at 500.",
+          },
+        },
+      },
+    },
+    {
       name: TOOL_NAMES.resolveBinding,
       displayName: "Resolve Linear Binding",
       description:

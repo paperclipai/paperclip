@@ -59,6 +59,21 @@ vi.mock("../src/linear.js", () => ({
     enabled: true,
   }),
   listIssuesByIds: vi.fn().mockResolvedValue([]),
+  listIssueLabels: vi.fn().mockResolvedValue([
+    {
+      id: "issue-label-1",
+      name: "bug",
+      color: "#d73a49",
+      team: { id: "team-1", key: "LUC", name: "Lucitra" },
+    },
+  ]),
+  listProjectLabels: vi.fn().mockResolvedValue([
+    {
+      id: "project-label-1",
+      name: "backend",
+      color: "#0366d6",
+    },
+  ]),
   createIssue: vi.fn().mockResolvedValue({
     id: "lin-iss-new",
     identifier: "LUC-43",
@@ -491,6 +506,62 @@ describe("paperclip-plugin-linear", () => {
 
       expect(result.content).toContain("LUC-43");
       expect((result.data as any).identifier).toBe("LUC-43");
+    });
+  });
+
+  describe("tool: list-linear-issue-labels", () => {
+    it("lists issue labels with optional filters", async () => {
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      const { listIssueLabels } = await import("../src/linear.js");
+
+      const result = await harness.executeTool(TOOL_NAMES.listIssueLabels, {
+        query: "bug",
+        teamId: "team-1",
+        limit: 25,
+      });
+
+      expect(result.content).toContain("Found 1 Linear issue labels");
+      expect((result.data as any).labels[0]).toMatchObject({
+        id: "issue-label-1",
+        name: "bug",
+        color: "#d73a49",
+        team: { id: "team-1", key: "LUC", name: "Lucitra" },
+      });
+      expect(listIssueLabels).toHaveBeenCalledWith(
+        expect.any(Function),
+        "lin_token_123",
+        { query: "bug", teamId: "team-1", limit: 25 },
+      );
+    });
+  });
+
+  describe("tool: list-linear-project-labels", () => {
+    it("lists project labels with optional filters", async () => {
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      const { listProjectLabels } = await import("../src/linear.js");
+
+      const result = await harness.executeTool(TOOL_NAMES.listProjectLabels, {
+        query: "back",
+        limit: 10,
+      });
+
+      expect(result.content).toContain("Found 1 Linear project labels");
+      expect((result.data as any).labels[0]).toMatchObject({
+        id: "project-label-1",
+        name: "backend",
+        color: "#0366d6",
+      });
+      expect(listProjectLabels).toHaveBeenCalledWith(
+        expect.any(Function),
+        "lin_token_123",
+        { query: "back", limit: 10 },
+      );
     });
   });
 

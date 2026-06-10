@@ -1517,6 +1517,89 @@ const plugin = definePlugin({
     );
 
     ctx.tools.register(
+      TOOL_NAMES.listIssueLabels,
+      {
+        displayName: "List Linear Issue Labels",
+        description: "List Linear issue labels visible to the connected workspace",
+        parametersSchema: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+            teamId: { type: "string" },
+            limit: { type: "number" },
+          },
+        },
+      },
+      async (params: any) => {
+        const {
+          query,
+          teamId,
+          limit,
+        } = params as { query?: string; teamId?: string; limit?: number };
+        const token = await resolveToken(ctx);
+        const labels = await linear.listIssueLabels(ctx.http.fetch.bind(ctx.http), token, {
+          query,
+          teamId: teamId?.trim() || undefined,
+          limit,
+        });
+
+        return {
+          content: `Found ${labels.length} Linear issue labels`,
+          data: {
+            total_count: labels.length,
+            labels: labels.map((label) => ({
+              id: label.id,
+              name: label.name,
+              color: label.color,
+              team: label.team
+                ? {
+                    id: label.team.id,
+                    name: label.team.name,
+                    key: label.team.key,
+                  }
+                : null,
+            })),
+          },
+        };
+      },
+    );
+
+    ctx.tools.register(
+      TOOL_NAMES.listProjectLabels,
+      {
+        displayName: "List Linear Project Labels",
+        description: "List Linear project labels visible to the connected workspace",
+        parametersSchema: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+            limit: { type: "number" },
+          },
+        },
+      },
+      async (params: any) => {
+        const { query, limit } = params as { query?: string; limit?: number };
+        const token = await resolveToken(ctx);
+        const labels = await linear.listProjectLabels(ctx.http.fetch.bind(ctx.http), token, {
+          query,
+          limit,
+        });
+
+        return {
+          content: `Found ${labels.length} Linear project labels`,
+          data: {
+            total_count: labels.length,
+            labels: labels.map((label) => ({
+              id: label.id,
+              name: label.name,
+              color: label.color,
+            })),
+          },
+        };
+      },
+    );
+
+    ctx.tools.register(
       TOOL_NAMES.resolveBinding,
       {
         displayName: "Resolve Linear Binding",

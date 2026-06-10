@@ -222,9 +222,38 @@ export interface LinearTeam {
   key: string;
 }
 
+export interface LinearIssueLabel {
+  id: string;
+  name: string;
+  color: string;
+  team: LinearTeam | null;
+}
+
+export interface LinearProjectLabel {
+  id: string;
+  name: string;
+  color: string;
+}
+
 export interface LinearSearchResult {
   issues: LinearIssue[];
   totalCount: number;
+}
+
+interface LinearLabelsPage<T> {
+  pageInfo: { hasNextPage: boolean; endCursor: string | null };
+  nodes: T[];
+}
+
+function normalizeListLimit(limit: number | undefined, fallback = 100): number {
+  if (!Number.isFinite(limit)) return fallback;
+  return Math.max(1, Math.min(Math.floor(limit as number), 500));
+}
+
+function labelNameMatches(label: { name: string }, query?: string): boolean {
+  const needle = query?.trim().toLowerCase();
+  if (!needle) return true;
+  return label.name.toLowerCase().includes(needle);
 }
 
 async function gql<T>(
@@ -296,6 +325,77 @@ export async function searchIssues(
     issues: data.issues.nodes,
     totalCount: data.issues.nodes.length,
   };
+}
+
+export async function listIssueLabels(
+  fetch: LinearFetch,
+  token: string,
+  options: { teamId?: string; query?: string; limit?: number } = {},
+): Promise<LinearIssueLabel[]> {
+  const limit = normalizeListLimit(options.limit);
+  const labels: LinearIssueLabel[] = [];
+  let after: string | null = null;
+
+  do {
+    const data: {
+      issueLabels: LinearLabelsPage<LinearIssueLabel>;
+    } = await gql(fetch, token, `
+      query ListIssueLabels($after: String) {
+        issueLabels(first: 100, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes { id name color team { id name key } }
+        }
+      }
+    `, { after });
+
+    for (const label of data.issueLabels.nodes) {
+      if (options.teamId && label.team?.id !== options.teamId) continue;
+      if (!labelNameMatches(label, options.query)) continue;
+      labels.push(label);
+      if (labels.length >= limit) return labels;
+    }
+
+    after = data.issueLabels.pageInfo.hasNextPage
+      ? data.issueLabels.pageInfo.endCursor
+      : null;
+  } while (after);
+
+  return labels;
+}
+
+export async function listProjectLabels(
+  fetch: LinearFetch,
+  token: string,
+  options: { query?: string; limit?: number } = {},
+): Promise<LinearProjectLabel[]> {
+  const limit = normalizeListLimit(options.limit);
+  const labels: LinearProjectLabel[] = [];
+  let after: string | null = null;
+
+  do {
+    const data: {
+      projectLabels: LinearLabelsPage<LinearProjectLabel>;
+    } = await gql(fetch, token, `
+      query ListProjectLabels($after: String) {
+        projectLabels(first: 100, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes { id name color }
+        }
+      }
+    `, { after });
+
+    for (const label of data.projectLabels.nodes) {
+      if (!labelNameMatches(label, options.query)) continue;
+      labels.push(label);
+      if (labels.length >= limit) return labels;
+    }
+
+    after = data.projectLabels.pageInfo.hasNextPage
+      ? data.projectLabels.pageInfo.endCursor
+      : null;
+  } while (after);
+
+  return labels;
 }
 
 export async function getIssue(

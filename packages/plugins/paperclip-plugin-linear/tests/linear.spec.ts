@@ -2,8 +2,10 @@ import { describe, it, expect, vi } from "vitest";
 import {
   attachmentLinkURL,
   ensureProjectLink,
+  listIssueLabels,
   listIssuesByIds,
   listOpenIssues,
+  listProjectLabels,
   markDuplicate,
 } from "../src/linear.js";
 
@@ -116,6 +118,84 @@ describe("listIssuesByIds", () => {
     const body = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
     expect(body.query).toContain("query ListIssuesByIds($ids: [ID!]!, $first: Int!)");
     expect(body.variables).toEqual({ ids: ["issue-1"], first: 1 });
+  });
+});
+
+describe("listIssueLabels", () => {
+  it("lists Linear issue labels and filters client-side", async () => {
+    const fetch = mockFetch([
+      {
+        data: {
+          issueLabels: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [
+              {
+                id: "label-1",
+                name: "Bug",
+                color: "#d73a49",
+                team: { id: "team-1", name: "Lucitra", key: "LUC" },
+              },
+              {
+                id: "label-2",
+                name: "Design",
+                color: "#6f42c1",
+                team: { id: "team-2", name: "Design", key: "DSN" },
+              },
+            ],
+          },
+        },
+      },
+    ]);
+
+    const labels = await listIssueLabels(fetch, "tok", {
+      teamId: "team-1",
+      query: "bug",
+      limit: 10,
+    });
+
+    expect(labels).toEqual([
+      {
+        id: "label-1",
+        name: "Bug",
+        color: "#d73a49",
+        team: { id: "team-1", name: "Lucitra", key: "LUC" },
+      },
+    ]);
+    const body = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(body.query).toContain("query ListIssueLabels($after: String)");
+    expect(body.query).toContain("issueLabels(first: 100, after: $after)");
+    expect(body.variables).toEqual({ after: null });
+  });
+});
+
+describe("listProjectLabels", () => {
+  it("lists Linear project labels and filters client-side", async () => {
+    const fetch = mockFetch([
+      {
+        data: {
+          projectLabels: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [
+              { id: "label-1", name: "Backend", color: "#0366d6" },
+              { id: "label-2", name: "Frontend", color: "#28a745" },
+            ],
+          },
+        },
+      },
+    ]);
+
+    const labels = await listProjectLabels(fetch, "tok", {
+      query: "back",
+      limit: 10,
+    });
+
+    expect(labels).toEqual([
+      { id: "label-1", name: "Backend", color: "#0366d6" },
+    ]);
+    const body = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(body.query).toContain("query ListProjectLabels($after: String)");
+    expect(body.query).toContain("projectLabels(first: 100, after: $after)");
+    expect(body.variables).toEqual({ after: null });
   });
 });
 
