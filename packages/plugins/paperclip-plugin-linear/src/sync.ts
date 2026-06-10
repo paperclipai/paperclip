@@ -419,6 +419,7 @@ export interface ProjectLink {
   syncDirection: "bidirectional" | "linear-to-paperclip" | "paperclip-to-linear";
   lastSyncAt: string;
   lastLinearState: string;
+  lastLinearDescription?: string | null;
 }
 
 function projectLinkStateKey(paperclipProjectId: string): string {
@@ -484,6 +485,7 @@ export async function createProjectLink(
     syncDirection: params.syncDirection,
     lastSyncAt: new Date().toISOString(),
     lastLinearState: params.linearState,
+    lastLinearDescription: null,
   };
 
   await ctx.state.set(
@@ -565,7 +567,12 @@ export async function syncProjectFromLinear(
   }
 
   if (linearProject.description !== undefined) {
-    patch.description = stripPaperclipProjectBacklink(linearProject.description) ?? undefined;
+    const linearDescription = stripPaperclipProjectBacklink(linearProject.description) ?? null;
+    const hasSeenDescription = Object.prototype.hasOwnProperty.call(link, "lastLinearDescription");
+    if (!hasSeenDescription || linearDescription !== (link.lastLinearDescription ?? null)) {
+      patch.description = linearDescription ?? undefined;
+      link.lastLinearDescription = linearDescription;
+    }
   }
 
   const newState = linearProject.state?.toLowerCase() ?? link.lastLinearState;

@@ -3782,6 +3782,9 @@ async function runFullSync(ctx: PluginContext): Promise<{
       if (projResult.skippedCreate > 0) {
         sdkSkipNotes.push(`${projResult.skippedCreate} create skipped (no projects.create)`);
       }
+      if (projResult.skippedOtherCompany > 0) {
+        sdkSkipNotes.push(`${projResult.skippedOtherCompany} skipped (other company)`);
+      }
       const skipSuffix = sdkSkipNotes.length > 0 ? `, ${sdkSkipNotes.join(", ")}` : "";
       ctx.logger.info(
         `Project sync: ${projResult.synced} synced, ${projResult.created} created, ${projResult.errors} errors${skipSuffix}`,
@@ -3809,7 +3812,7 @@ async function runProjectSync(
   companyId: string,
   teamId: string,
   token: string,
-): Promise<{ synced: number; created: number; errors: number; skippedDrift: number; skippedCreate: number }> {
+): Promise<{ synced: number; created: number; errors: number; skippedDrift: number; skippedCreate: number; skippedOtherCompany: number }> {
   const fetch = ctx.http.fetch.bind(ctx.http);
   const linearProjects = await linear.listProjects(fetch, token, teamId);
   const existingProjectsByName = new Map<string, { id: string; name: string }>();
@@ -3854,6 +3857,7 @@ async function runProjectSync(
   let errors = 0;
   let skippedDrift = 0;
   let skippedCreate = 0;
+  let skippedOtherCompany = 0;
 
   for (const lp of linearProjects) {
     // Don't mirror the goal-bridge project back — it's Paperclip-managed and
@@ -3863,6 +3867,10 @@ async function runProjectSync(
     try {
       const existing = await sync.getProjectLinkByLinear(ctx, lp.id);
       if (existing) {
+        if (existing.paperclipCompanyId !== companyId) {
+          skippedOtherCompany++;
+          continue;
+        }
         await writePaperclipProjectBackLink(ctx, token, existing);
         if (!supportsUpdate) {
           skippedDrift++;
@@ -3966,7 +3974,7 @@ async function runProjectSync(
     }
   }
 
-  return { synced, created, errors, skippedDrift, skippedCreate };
+  return { synced, created, errors, skippedDrift, skippedCreate, skippedOtherCompany };
 }
 
 // ---------------------------------------------------------------------------

@@ -120,7 +120,7 @@ const syncModule = vi.hoisted(() => ({
   syncToLinear: vi.fn().mockResolvedValue(undefined),
   syncFromLinear: vi.fn().mockResolvedValue(undefined),
   syncProjectToLinear: vi.fn().mockResolvedValue(undefined),
-  syncProjectFromLinear: vi.fn().mockResolvedValue(undefined),
+  syncProjectFromLinear: vi.fn().mockResolvedValue("updated"),
   isHostWriteUnavailableError: vi.fn().mockImplementation((err: unknown) => String(err).includes("missing, expired, or unknown invocation scope")),
   isPaperclipIssueNotFoundError: vi.fn().mockImplementation((err: unknown) => String(err).includes("Issue not found")),
   bridgeCommentToLinear: vi.fn().mockResolvedValue(undefined),
@@ -163,7 +163,7 @@ describe("paperclip-plugin-linear", () => {
     syncModule.syncToLinear.mockResolvedValue(undefined);
     syncModule.syncFromLinear.mockResolvedValue(undefined);
     syncModule.syncProjectToLinear.mockResolvedValue(undefined);
-    syncModule.syncProjectFromLinear.mockResolvedValue(undefined);
+    syncModule.syncProjectFromLinear.mockResolvedValue("updated");
     syncModule.isHostWriteUnavailableError.mockImplementation((err: unknown) => String(err).includes("missing, expired, or unknown invocation scope"));
     syncModule.isPaperclipIssueNotFoundError.mockImplementation((err: unknown) => String(err).includes("Issue not found"));
     syncModule.bridgeCommentToLinear.mockResolvedValue(undefined);
@@ -1184,6 +1184,82 @@ describe("paperclip-plugin-linear", () => {
 
       expect(result.synced).toBe(0);
       expect(result.errors).toBe(0);
+    });
+
+    it("skips project drift for links outside the scoped Paperclip company", async () => {
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthTeamId },
+        "team-1",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+
+      const { listProjects } = await import("../src/linear.js");
+      (listProjects as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        {
+          id: "lin-proj-current",
+          name: "Current company project",
+          description: "Current description",
+          state: "started",
+          url: "https://linear.app/test/project/current",
+        },
+        {
+          id: "lin-proj-other",
+          name: "Other company project",
+          description: "Other description",
+          state: "started",
+          url: "https://linear.app/test/project/other",
+        },
+      ]);
+
+      const currentLink = {
+        paperclipProjectId: "pc-proj-current",
+        paperclipCompanyId: "comp-1",
+        linearProjectId: "lin-proj-current",
+        linearProjectName: "Current company project",
+        syncDirection: "bidirectional" as const,
+        lastSyncAt: new Date().toISOString(),
+        lastLinearState: "started",
+        lastLinearDescription: "Current description",
+      };
+      const otherCompanyLink = {
+        paperclipProjectId: "pc-proj-other",
+        paperclipCompanyId: "comp-2",
+        linearProjectId: "lin-proj-other",
+        linearProjectName: "Other company project",
+        syncDirection: "bidirectional" as const,
+        lastSyncAt: new Date().toISOString(),
+        lastLinearState: "started",
+        lastLinearDescription: "Other description",
+      };
+
+      syncModule.getProjectLinkByLinear.mockImplementation(async (_ctx: unknown, linearProjectId: string) => {
+        if (linearProjectId === "lin-proj-current") return currentLink;
+        if (linearProjectId === "lin-proj-other") return otherCompanyLink;
+        return null;
+      });
+
+      await harness.performAction(ACTION_KEYS.triggerSync);
+
+      expect(syncModule.syncProjectFromLinear).toHaveBeenCalledTimes(1);
+      expect(syncModule.syncProjectFromLinear).toHaveBeenCalledWith(
+        expect.anything(),
+        currentLink,
+        expect.objectContaining({ id: "lin-proj-current" }),
+      );
+      expect(
+        harness.logs.some(
+          (entry) =>
+            entry.level === "info"
+            && entry.message.includes("Project sync: 1 synced, 0 created, 0 errors, 1 skipped (other company)"),
+        ),
+      ).toBe(true);
     });
   });
 
