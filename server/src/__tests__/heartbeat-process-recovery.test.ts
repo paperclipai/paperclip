@@ -2003,6 +2003,42 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("treats run cancellation as a deliberate veto and queues no recovery retry for the bound issue", async () => {
+    const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
+      agentStatus: "running",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const cancelled = await heartbeat.cancelRun(runId);
+    expect(cancelled?.status).toBe("cancelled");
+
+    // A cancellation must not feed itself another run: no recovery run and no
+    // recovery wakeup should be queued off the cancelled run (#7841).
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.id).toBe(wakeupRequestId);
+    expect(wakeups.some((wakeup) => wakeup.reason === "issue_continuation_needed")).toBe(false);
+
+    // The execution lock is released but the issue is left as-is, not retried.
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.executionRunId).toBeNull();
+  });
+
   it("dispatches assigned todo work with no prior run as a normal assignment wake", async () => {
     const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
     const heartbeat = heartbeatService(db);
