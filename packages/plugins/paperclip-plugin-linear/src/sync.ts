@@ -49,6 +49,20 @@ function linearStateKey(linearIssueId: string): string {
   return `${STATE_KEYS.linearPrefix}${linearIssueId}`;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isIssueLink(value: unknown): value is IssueLink {
+  return isRecord(value)
+    && typeof value.paperclipIssueId === "string"
+    && typeof value.paperclipCompanyId === "string"
+    && typeof value.linearIssueId === "string"
+    && typeof value.linearIdentifier === "string"
+    && typeof value.linearUrl === "string"
+    && typeof value.syncDirection === "string";
+}
+
 export async function getLink(
   ctx: PluginContext,
   paperclipIssueId: string,
@@ -57,8 +71,8 @@ export async function getLink(
     scopeKind: "instance",
     stateKey: linkStateKey(paperclipIssueId),
   });
-  if (!raw) return null;
-  return raw as IssueLink;
+  if (!isIssueLink(raw)) return null;
+  return raw;
 }
 
 export async function getLinkByLinear(
@@ -71,7 +85,9 @@ export async function getLinkByLinear(
   });
   if (!raw) return null;
   const paperclipIssueId = String(raw);
-  return getLink(ctx, paperclipIssueId);
+  const link = await getLink(ctx, paperclipIssueId);
+  if (!link || link.linearIssueId !== linearIssueId) return null;
+  return link;
 }
 
 export async function createLink(
@@ -360,6 +376,15 @@ function linearProjectStateKey(linearProjectId: string): string {
   return `${STATE_KEYS.projectLinearPrefix}${linearProjectId}`;
 }
 
+function isProjectLink(value: unknown): value is ProjectLink {
+  return isRecord(value)
+    && typeof value.paperclipProjectId === "string"
+    && typeof value.paperclipCompanyId === "string"
+    && typeof value.linearProjectId === "string"
+    && typeof value.linearProjectName === "string"
+    && typeof value.syncDirection === "string";
+}
+
 export async function getProjectLink(
   ctx: PluginContext,
   paperclipProjectId: string,
@@ -368,8 +393,8 @@ export async function getProjectLink(
     scopeKind: "instance",
     stateKey: projectLinkStateKey(paperclipProjectId),
   });
-  if (!raw) return null;
-  return raw as ProjectLink;
+  if (!isProjectLink(raw)) return null;
+  return raw;
 }
 
 export async function getProjectLinkByLinear(
@@ -382,7 +407,9 @@ export async function getProjectLinkByLinear(
   });
   if (!raw) return null;
   const paperclipProjectId = String(raw);
-  return getProjectLink(ctx, paperclipProjectId);
+  const link = await getProjectLink(ctx, paperclipProjectId);
+  if (!link || link.linearProjectId !== linearProjectId) return null;
+  return link;
 }
 
 export async function createProjectLink(

@@ -2,7 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import { STATE_KEYS } from "../src/constants.js";
-import { syncFromLinear, type IssueLink } from "../src/sync.js";
+import {
+  getLink,
+  getLinkByLinear,
+  getProjectLink,
+  getProjectLinkByLinear,
+  syncFromLinear,
+  type IssueLink,
+  type ProjectLink,
+} from "../src/sync.js";
 import type { LinearIssue } from "../src/linear.js";
 
 function makeLink(overrides: Partial<IssueLink> = {}): IssueLink {
@@ -37,6 +45,85 @@ function makeLinearIssue(overrides: Partial<LinearIssue> = {}): LinearIssue {
     ...overrides,
   };
 }
+
+function makeProjectLink(overrides: Partial<ProjectLink> = {}): ProjectLink {
+  return {
+    paperclipProjectId: "pc-proj-1",
+    paperclipCompanyId: "comp-1",
+    linearProjectId: "lin-proj-1",
+    linearProjectName: "Linear Project",
+    syncDirection: "bidirectional",
+    lastSyncAt: "2026-06-10T00:00:00.000Z",
+    lastLinearState: "started",
+    ...overrides,
+  };
+}
+
+describe("link lookup", () => {
+  it("ignores malformed issue forward link state", async () => {
+    const harness = createTestHarness({ manifest });
+    await harness.ctx.state.set(
+      { scopeKind: "instance", stateKey: `${STATE_KEYS.linkPrefix}pc-1` },
+      JSON.stringify(makeLink({ paperclipIssueId: "pc-1", linearIssueId: "lin-1" })),
+    );
+
+    await expect(getLink(harness.ctx, "pc-1")).resolves.toBeNull();
+  });
+
+  it("ignores stale Linear issue reverse keys that point at a different forward link", async () => {
+    const harness = createTestHarness({ manifest });
+    await harness.ctx.state.set(
+      { scopeKind: "instance", stateKey: `${STATE_KEYS.linkPrefix}pc-1` },
+      makeLink({ paperclipIssueId: "pc-1", linearIssueId: "lin-current" }),
+    );
+    await harness.ctx.state.set(
+      { scopeKind: "instance", stateKey: `${STATE_KEYS.linearPrefix}lin-stale` },
+      "pc-1",
+    );
+    await harness.ctx.state.set(
+      { scopeKind: "instance", stateKey: `${STATE_KEYS.linearPrefix}lin-current` },
+      "pc-1",
+    );
+
+    await expect(getLinkByLinear(harness.ctx, "lin-stale")).resolves.toBeNull();
+    await expect(getLinkByLinear(harness.ctx, "lin-current")).resolves.toMatchObject({
+      paperclipIssueId: "pc-1",
+      linearIssueId: "lin-current",
+    });
+  });
+
+  it("ignores malformed project forward link state", async () => {
+    const harness = createTestHarness({ manifest });
+    await harness.ctx.state.set(
+      { scopeKind: "instance", stateKey: `${STATE_KEYS.projectLinkPrefix}pc-proj-1` },
+      JSON.stringify(makeProjectLink({ paperclipProjectId: "pc-proj-1", linearProjectId: "lin-proj-1" })),
+    );
+
+    await expect(getProjectLink(harness.ctx, "pc-proj-1")).resolves.toBeNull();
+  });
+
+  it("ignores stale Linear project reverse keys that point at a different forward link", async () => {
+    const harness = createTestHarness({ manifest });
+    await harness.ctx.state.set(
+      { scopeKind: "instance", stateKey: `${STATE_KEYS.projectLinkPrefix}pc-proj-1` },
+      makeProjectLink({ paperclipProjectId: "pc-proj-1", linearProjectId: "lin-proj-current" }),
+    );
+    await harness.ctx.state.set(
+      { scopeKind: "instance", stateKey: `${STATE_KEYS.projectLinearPrefix}lin-proj-stale` },
+      "pc-proj-1",
+    );
+    await harness.ctx.state.set(
+      { scopeKind: "instance", stateKey: `${STATE_KEYS.projectLinearPrefix}lin-proj-current` },
+      "pc-proj-1",
+    );
+
+    await expect(getProjectLinkByLinear(harness.ctx, "lin-proj-stale")).resolves.toBeNull();
+    await expect(getProjectLinkByLinear(harness.ctx, "lin-proj-current")).resolves.toMatchObject({
+      paperclipProjectId: "pc-proj-1",
+      linearProjectId: "lin-proj-current",
+    });
+  });
+});
 
 describe("syncFromLinear", () => {
   it("does not push in_progress to an unassigned Paperclip issue", async () => {
