@@ -6471,6 +6471,12 @@ export function issueRoutes(
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
+    // Only the assignee (or an agent with checkout management override) may
+    // trigger state transitions via comment flags. Plain comments are already
+    // allowed by assertAgentIssueCommentAllowed above.
+    if (reopenRequested || resumeRequested) {
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    }
     if (resumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
     if (resumeRequested !== true && reopenRequested === true && req.actor.type === "agent") {
       if (!(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
