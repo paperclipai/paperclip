@@ -78,6 +78,7 @@ export type AuthorizationDecision = {
     | "allow_legacy_agent_creator"
     | "allow_self"
     | "allow_company_agent"
+    | "allow_company_member"
     | "allow_simple_company_member"
     | "allow_manager_chain"
     | "deny_unauthenticated"
@@ -954,6 +955,27 @@ export function authorizationService(db: Db) {
             action: input.action,
             reason: "allow_simple_company_member",
             explanation: "Allowed by simple mode company-wide task assignment default.",
+          });
+        }
+      }
+      // Active human company members get read visibility into the shared
+      // company workspace (projects, agents, issues, scope) — mirrors the
+      // same-company agent visibility granted at `allow_company_agent`.
+      // Privileged company-wide actions (runtime:manage, secrets:read) are
+      // intentionally excluded and still require an explicit grant.
+      if (
+        companyId &&
+        (input.action === "project:read" ||
+          input.action === "agent:read" ||
+          input.action === "issue:read" ||
+          input.action === "company_scope:read")
+      ) {
+        const membership = await getActiveMembership(companyId, "user", input.actor.userId);
+        if (membership) {
+          return allow({
+            action: input.action,
+            reason: "allow_company_member",
+            explanation: "Allowed by standard same-company member visibility.",
           });
         }
       }
