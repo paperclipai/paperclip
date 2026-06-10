@@ -35,7 +35,7 @@ if (!SupertestTest.prototype.__paperclipLoopbackPatched) {
     }
 
     const host = listeningAddress.address === "::"
-      ? "[::1]"
+      ? "127.0.0.1"
       : listeningAddress.address === "0.0.0.0"
         ? "127.0.0.1"
         : listeningAddress.address;

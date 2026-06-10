@@ -6624,7 +6624,17 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    // Creator-can-comment: the agent that filed an issue may append plain
+    // comments after triage hands it off. Reopen/resume/interrupt still gated.
+    const actorAgentIdForCreatorBypass =
+      req.actor.type === "agent" ? req.actor.agentId ?? null : null;
+    const isPlainCreatorComment =
+      actorAgentIdForCreatorBypass !== null
+      && issue.createdByAgentId === actorAgentIdForCreatorBypass
+      && req.body.reopen !== true
+      && req.body.resume !== true
+      && req.body.interrupt !== true;
+    if (!isPlainCreatorComment && !(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
