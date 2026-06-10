@@ -50,20 +50,30 @@ function expandEnvPlaceholders<T>(value: T, resolve: (name: string) => string | 
 function parseProviderConfig(
   raw: unknown,
   resolveEnv: (name: string) => string | undefined,
+  notes: string[],
 ): Record<string, unknown> | null {
   if (typeof raw !== "string" || raw.trim().length === 0) return null;
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw);
-    if (!isPlainObject(parsed)) return null;
-    // Only keep provider entries that are themselves objects.
-    const providers: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(parsed)) {
-      if (isPlainObject(value)) providers[key] = expandEnvPlaceholders(value, resolveEnv);
-    }
-    return Object.keys(providers).length > 0 ? providers : null;
+    parsed = JSON.parse(raw);
   } catch {
+    // Surface the misconfiguration instead of silently dropping the provider
+    // block — an unparseable value would otherwise be undiagnosable.
+    notes.push("PAPERCLIP_OPENCODE_PROVIDERS contains invalid JSON — providers block ignored.");
     return null;
   }
+  if (!isPlainObject(parsed)) {
+    notes.push(
+      "PAPERCLIP_OPENCODE_PROVIDERS is not a JSON object — providers block ignored.",
+    );
+    return null;
+  }
+  // Only keep provider entries that are themselves objects.
+  const providers: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (isPlainObject(value)) providers[key] = expandEnvPlaceholders(value, resolveEnv);
+  }
+  return Object.keys(providers).length > 0 ? providers : null;
 }
 
 async function readJsonObject(filepath: string): Promise<Record<string, unknown>> {
@@ -141,6 +151,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   const gatewayProviders = parseProviderConfig(
     input.env.PAPERCLIP_OPENCODE_PROVIDERS ?? process.env.PAPERCLIP_OPENCODE_PROVIDERS,
     resolveEnv,
+    notes,
   );
   const existingProvider = isPlainObject(existingConfig.provider) ? existingConfig.provider : {};
   const nextProvider = gatewayProviders
