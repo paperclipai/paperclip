@@ -83,11 +83,12 @@ spec:
         - name: gateway
           # Pin to a specific build. Bump after `kubectl apply -f ...` +
           # `kubectl set image` proves the new image healthy across all
-          # routes. Latest verified rollout: 2026-05-09 (sha-11e28a6f
-          # adds method/url/cause to request-handler error log so the
-          # SSE-style HeadersTimeoutErrors that show up every ~5min
-          # become attributable to a specific upstream).
-          image: harbor.blockcast.net/paperclip-mcp-gateway/paperclip-mcp-gateway:sha-11e28a6
+          # routes. Latest verified rollout: 2026-06-10 (sha-6de713e
+          # adds BLO-9659 unknown-session guard — bootstraps a fresh
+          # upstream session for non-initialize calls arriving before
+          # any session is established, eliminating the
+          # `method invalid during initialization` race on k8s MCP).
+          image: harbor.blockcast.net/paperclip-mcp-gateway/paperclip-mcp-gateway:sha-6de713e
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
