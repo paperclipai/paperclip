@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "finn-pitch",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["server.mjs"],
+      "port": 4321,
+      "autoPort": true
+    }
+  ]
+}

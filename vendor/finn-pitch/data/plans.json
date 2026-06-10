@@ -1,0 +1,93 @@
+{
+  "PLANS": [
+    {
+      "id": "starter",
+      "name": "Starter",
+      "ratePerCredit": {
+        "inr": 10,
+        "usd": 0.12
+      },
+      "minRecharge": {
+        "inr": 2000,
+        "usd": 24
+      },
+      "maxCreditsAtMin": 200,
+      "signupGraceCredits": 50,
+      "concurrentCalls": 2,
+      "tagline": "Pay as you go. Best for testing.",
+      "perks": [
+        "Up to 2 concurrent calls",
+        "Email support",
+        "50 free AI credits at signup"
+      ]
+    },
+    {
+      "id": "pro",
+      "name": "Pro",
+      "ratePerCredit": {
+        "inr": 7,
+        "usd": 0.08
+      },
+      "minRecharge": {
+        "inr": 10000,
+        "usd": 160
+      },
+      "maxCreditsAtMin": 2000,
+      "concurrentCalls": 20,
+      "tagline": "For growing teams.",
+      "perks": [
+        "Up to 20 concurrent calls",
+        "Priority email support",
+        "Advanced analytics"
+      ]
+    },
+    {
+      "id": "growth",
+      "name": "Growth",
+      "ratePerCredit": {
+        "inr": 6,
+        "usd": 0.06
+      },
+      "minRecharge": {
+        "inr": 50000,
+        "usd": 600
+      },
+      "maxCreditsAtMin": 10000,
+      "concurrentCalls": 100,
+      "tagline": "Scale outbound and inbound at volume.",
+      "perks": [
+        "Up to 100 concurrent calls",
+        "Dedicated account manager",
+        "Custom integrations"
+      ]
+    },
+    {
+      "id": "enterprise",
+      "name": "Enterprise",
+      "ratePerCredit": {
+        "inr": 0,
+        "usd": 0
+      },
+      "minRecharge": {
+        "inr": 0,
+        "usd": 0
+      },
+      "maxCreditsAtMin": 0,
+      "contactSalesOnly": true,
+      "concurrentCalls": "Unlimited",
+      "tagline": "Custom pricing for the largest workloads.",
+      "perks": [
+        "Custom per-credit pricing",
+        "Custom minimum recharge",
+        "Unlimited concurrent calls",
+        "SLA + dedicated support",
+        "Compliance & security review"
+      ]
+    }
+  ],
+  "PHONE_NUMBER_PRICE": {
+    "inr": 400,
+    "usd": 5
+  },
+  "PHONE_NUMBER_PRICE_INR": 400
+}

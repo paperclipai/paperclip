@@ -1,0 +1,207 @@
+{
+  "_README": "Finn's numbers for the INVESTOR deck. REAL = sourced from company sales deck (founder, customers, tech, ROI, pricing, problem). _assumed = placeholder, replace before sending. Raise amount/valuation are REAL (founder-confirmed). Run: node lib/investor.mjs",
+
+  "_assumed": "Still estimates: traction.growthRate (22% MoM), netRevenueRetention (130%), useOfFunds split, raise.milestones (18-mo projected targets). REAL: MRR $5K, ARR $60K, 100K calls/mo, team 6, 6 deployments, raise $2M/$10M, founder, customers, tech, pricing, market.",
+
+  "oneLiner": "Finn is the AI Voice Workflow Orchestrator — thousands of concurrent calls that reason, act, and write back to your systems in real time.",
+  "hq": "HSR, Bangalore",
+
+  "thesis": {
+    "wedge": "AI voice workflows",
+    "category": "Tele-CRM",
+    "promise": "Fewer missed conversations, lower cost, faster conversion"
+  },
+  "positioning": "Not another voice agent — the workflow execution layer.",
+
+  "structuralGap": {
+    "headline": "Customer data does not act.",
+    "sub": "Companies have CRM, forms, calendars, tickets, payment systems, and customer records. But turning that data into actual customer conversations still depends on humans.",
+    "record": { "title": "Systems of record", "sub": "They store context.", "items": ["Leads and accounts", "Tickets and appointments", "Customer history", "Passive repository"] },
+    "gap": "Human middleware gap",
+    "action": { "title": "Systems of action", "sub": "They move communication.", "items": ["Phone systems and IVRs", "Call centers and BPOs", "Manual follow-up", "Labor-heavy execution"] }
+  },
+
+  "productFlow": {
+    "headline": "From lead to completed outcome — without human swivel.",
+    "sub": "One workflow, end to end. Same pattern across qualification, support, collections, COD verification, and surveys.",
+    "steps": [
+      { "n": "Ingest", "d": "Lead, missed call, form, ticket, or campaign list enters Finn with context." },
+      { "n": "Plan", "d": "Applies eligibility, priority, language, consent, time window, and fallback policy." },
+      { "n": "Engage", "d": "The AI agent calls or answers, adapts tone and pacing, handles interruptions." },
+      { "n": "Transact", "d": "Qualifies intent, handles objections, books slots, verifies details, or collects payments." },
+      { "n": "Update", "d": "Writes structured outcomes back to the CRM, calendar, EMR, ERP, or ticketing tool." },
+      { "n": "Improve", "d": "Outcome data improves the next call, template, escalation rule, and config." }
+    ],
+    "rows": [
+      { "k": "Data", "v": "Lead source · CRM history · customer intent" },
+      { "k": "Rules", "v": "Consent · routing · SLA · compliance" },
+      { "k": "Voice", "v": "Low-latency AI conversation" },
+      { "k": "Action", "v": "Booked · qualified · resolved · updated" }
+    ]
+  },
+
+  "beachhead": {
+    "vertical": "Healthcare / dental",
+    "why": "Urgent, repetitive front-desk workflows — high call volume, measurable ROI.",
+    "workflows": ["Appointment booking", "Scan reminders", "Lead verification", "Status updates", "Insurance questions", "Follow-up"],
+    "altWedges": "Alt wedges: fintech collections/onboarding · e-commerce COD verification · recruitment screening.",
+    "criteria": [
+      "High pain — missed or delayed calls destroy revenue or throughput",
+      "Repeatable workflow — same playbook across customers, enabling templates",
+      "Measurable ROI — bookings, containment, collections, conversion easy to quantify",
+      "Expansion path — land in one workflow, then add reminders, support, follow-up, collections, surveys",
+      "Defensibility — compliance, call data, escalation rules, integrations become sticky over time"
+    ]
+  },
+
+  "raise": {
+    "round": "Seed",
+    "amount": "$2M",
+    "valuationOrCap": "$10M pre-money",
+    "instrument": "SAFE",
+    "useOfFunds": [
+      { "bucket": "Engineering & Product", "pct": "45", "detail": "Core orchestrator, latency, reliability" },
+      { "bucket": "Go-to-market", "pct": "30", "detail": "Enterprise sales + pilot conversion" },
+      { "bucket": "Voice infra & R&D", "pct": "15", "detail": "Telephony, model tuning, scale" },
+      { "bucket": "Ops & G&A", "pct": "10", "detail": "Compliance (SOC2), finance, hiring" }
+    ],
+    "timeline": "~18 months runway to Series A metrics",
+    "thesis": "The round buys de-risking, not buzzwords — tied to measurable milestones.",
+    "milestones": [
+      "$1M+ ARR",
+      "1M+ production calls / month",
+      "20+ enterprise customers",
+      "75%+ gross margin",
+      "SOC 2 Type II",
+      "Repeatable sales in healthcare / dental"
+    ]
+  },
+
+  "problem": {
+    "headline": "The crippling cost of manual call handling",
+    "points": [
+      "Missed call = lost revenue — businesses mishandle ~25% of inbound calls, losing high-value leads.",
+      "High cost & slow — traditional voice support runs >₹200/min; BPO/IVR rollouts take 3–6 months.",
+      "Poor CX & churn — long holds and rigid menus drive customers away; US businesses lose ~$75B/year to bad phone service."
+    ]
+  },
+
+  "traction": {
+    "headline": "Strong outcomes, early monetization",
+    "bridge": "Pilots ran deliberately under-priced to prove outcomes. Now converting to paid contracts — the proof is ahead of the revenue.",
+    "customers": "6 live deployments",
+    "callsPerMonth": "100K calls / month",
+    "mrr": "$5K",
+    "arr": "$60K",
+    "growthRate": "22% MoM",
+    "netRevenueRetention": "130%",
+    "outcomeMetrics": [
+      "Orbit Wallet: abandonment 30% → 5%",
+      "Snazzy: conversion 65% → 82%",
+      "Frinks AI: 70% of support calls contained",
+      "Frinks AI: 800+ man-hours saved / mo"
+    ],
+    "logos": ["Orbit Wallet", "Frinks AI", "Snazzy", "Pillar Bridge", "TOFA", "RocketSDR"],
+    "pilotsOrLOIs": "5 paid pilots + 3 signed LOIs"
+  },
+
+  "proof": [
+    { "quote": "Call abandonment down to 5% from ~30%. 75–80% of inbound calls fully handled. 24/7 AI coverage replaced 80+ offshore agents.", "author": "Shikha Chouksey", "role": "COO & Cofounder, Orbit Wallet", "csat": "4.8/5" },
+    { "quote": "70% of production-support calls now contained. 800+ man-hours saved every month. Wait time under 30 seconds.", "author": "David Johnson", "role": "Head of HR, Frinks AI", "csat": "4.4/5" },
+    { "quote": "Conversion rate up from 65% to 82%. Agent workload reduced 40%. Lead response under 2 minutes.", "author": "Ayush Pateria", "role": "CEO & Cofounder, Snazzy", "csat": "" }
+  ],
+
+  "roiProof": [
+    { "stat": "<6 mo", "label": "payback — break even in 60–90 days; 331% ROI over 3 years" },
+    { "stat": "3×", "label": "qualified leads vs human agents; 25% higher call success" },
+    { "stat": "45%", "label": "lower cost per call; ~₹4.2L/mo saved per client" },
+    { "stat": "+10", "label": "CSAT points post-deployment (avg 4.3/5)" }
+  ],
+
+  "tech": {
+    "name": "Voice Workflow Orchestrator™",
+    "stack": "Streaming ASR + LLM + TTS · 46 languages live · 100+ voices",
+    "latency": "<400ms end-to-end voice loop",
+    "scale": "Scales to 100K+ calls/day capacity · 99.9% SLA · multi-tenant",
+    "compliance": "HIPAA · GDPR · SOC 2 · data residency · per-call audit"
+  },
+
+  "pricing": {
+    "model": "Wallet-based — top up once, pay per AI credit. Credits never expire",
+    "pilot": "50 free AI credits at signup · phone numbers ₹400 / $5 each, billed separately",
+    "tiers": [
+      { "plan": "Starter", "rate": "₹10 / $0.12", "concurrent": "2 concurrent calls" },
+      { "plan": "Pro", "rate": "₹7 / $0.08", "concurrent": "20 concurrent calls" },
+      { "plan": "Growth", "rate": "₹6 / $0.06", "concurrent": "100 concurrent calls" },
+      { "plan": "Enterprise", "rate": "Custom", "concurrent": "Unlimited" }
+    ],
+    "stages": [
+      { "stage": "Now", "pkg": "Platform fee + usage", "prove": "Charge for orchestration, integrations, analytics, compliance, and voice minutes." },
+      { "stage": "Next", "pkg": "Workflow packages", "prove": "Package by use case: booked appointments, qualified leads, resolved support, recovered payments." },
+      { "stage": "Later", "pkg": "Outcome pricing", "prove": "Move from cost-per-minute to price-per-business-outcome as attribution improves." },
+      { "stage": "Proof needed", "pkg": "Unit economics", "prove": "COGS/min, gross margin, implementation hours, support burden, CAC payback, NRR." }
+    ]
+  },
+
+  "unitEconomics": {
+    "cac": "",
+    "ltv": "",
+    "paybackMonths": "2.4",
+    "grossMarginPct": "70",
+    "note": "Payback ~72 days avg across live deployments."
+  },
+
+  "market": {
+    "tam": "$444B",
+    "samLabel": "AI + Voice + Automation infra for call handling, 2025",
+    "sam": "$9.9B",
+    "somLabel": "1% over next 3 years",
+    "som": "$100M",
+    "framing": "$444B global contact center market ripe for agentic disruption",
+    "segments": [
+      { "name": "Global Contact Center Market", "from": "$444B ('25)", "to": "$496B ('27)", "cagr": "5.6%", "note": "A vast, fragmented greenfield ripe for AI transformation." },
+      { "name": "Contact Center Software Market", "from": "$40.9B ('25)", "to": "$149.6B ('30)", "cagr": "23.9%", "note": "AI tools poised to transform customer service." },
+      { "name": "Voice AI Market", "from": "$7.6B ('25)", "to": "$47.5B ('34)", "cagr": "34.8%", "note": "Explosive growth driven by enterprise demand." },
+      { "name": "Indian Voice AI Market", "from": "$0.6B ('25)", "to": "$4.9B ('33)", "cagr": "28.7%", "note": "Rapid local acceleration." }
+    ],
+    "adoption": "27.3% of enterprises have AI tools in customer service, but voice-agent deployments remain <5%.",
+    "sources": []
+  },
+
+  "team": {
+    "founders": [
+      { "name": "Digvijay Shekhawat", "role": "Founder & CEO", "cred": "LNM IIT. Co-founded CreepEx (NLP chat game, 100K+ downloads pre-ChatGPT). Led Product at BrightClass — voice & vision AI adopted by 10,000+ institutions. CPO at Snazzy (YC '21)." }
+    ],
+    "journey": [
+      { "stage": "Built", "title": "Early conversational AI", "detail": "CreepEx: NLP-driven interactive game with human-like dialogue, 100K+ organic downloads — pre-ChatGPT." },
+      { "stage": "Scaled", "title": "Enterprise AI at national scale", "detail": "Led Product at BrightClass: voice & vision AI adopted by 10,000+ institutions, six-figure revenue." },
+      { "stage": "Learned", "title": "Problem surfaced at YC", "detail": "CPO at Snazzy (YC '21): saw experts waste weeks on manual lead verification & scheduling — repeatable across industries." },
+      { "stage": "Launched", "title": "Built Finn to fix it", "detail": "Founded Finn to automate routine calls with no-code AI voice agents, freeing experts for high-impact work." }
+    ],
+    "headcount": "Team of 6",
+    "composition": "6 across engineering, voice infra & GTM",
+    "advisors": [],
+    "keyHires": "Post-raise: senior voice/ML engineer, founding account executive, customer-success lead"
+  },
+
+  "competition": {
+    "matrix": [
+      { "category": "Voice-agent APIs", "sells": "Developer tools for calls", "edge": "Customer still builds workflows, integrations, QA, escalation, and compliance." },
+      { "category": "AI voice platforms", "sells": "Voice layer and dashboards", "edge": "Less focused on packaged vertical outcomes and system writeback." },
+      { "category": "CRM / service incumbents", "sells": "Native agents inside CRM suites", "edge": "Tied to incumbent clouds; not optimized for cross-system phone execution." },
+      { "category": "BPO / call centers", "sells": "Human execution", "edge": "Expensive, inconsistent, hard to scale for spikes and long-tail workflows." },
+      { "category": "Legacy IVR / CCaaS", "sells": "Routing and containment", "edge": "Rigid menus, poor customer experience, slow workflow changes." }
+    ],
+    "rivals": ["Voice-agent APIs", "AI voice platforms", "CRM / service incumbents", "BPO / call centers", "Legacy IVR / CCaaS"],
+    "moatTagline": "The LLM is not the moat. The moat is the workflow system around it.",
+    "moat": "A Voice Workflow Orchestrator™ that reasons, acts, and writes back to systems in real time — not a single-turn bot. Sub-400ms voice loop, 46 languages, function-calling + RAG in-call, live human handoff, 100K+ calls/day at 99.9% SLA, HIPAA/GDPR/SOC 2.",
+    "flywheel": ["Conversation outcome data", "Vertical workflow templates", "Latency orchestration", "Integration depth", "Enterprise control plane", "Expansion flywheel"]
+  },
+
+  "whyNow": "Real-time LLMs crossed the latency + reasoning threshold for live phone calls. 27.3% of enterprises adopted AI in customer service, yet <5% run voice agents — the wedge is open now, before incumbents retool.",
+
+  "visionHeadline": "From AI voice workflows to Tele-CRM.",
+  "vision": "Every enterprise phone line becomes an autonomous agent that closes the loop end to end — the system that turns customer records into revenue actions.",
+
+  "existingInvestors": []
+}

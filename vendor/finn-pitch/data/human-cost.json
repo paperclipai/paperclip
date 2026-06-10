@@ -1,0 +1,13 @@
+{
+  "REP_DAY_COST": {
+    "inr": 2800,
+    "usd": 300
+  },
+  "DIALS_PER_REP_DAY": 80,
+  "CONNECT_RATE": 0.12,
+  "AVG_CALL_MIN": 1,
+  "WORKDAYS_PER_MONTH": 22,
+  "CONNECTS_PER_REP_DAY": 9.6,
+  "CONNECTS_PER_REP_MONTH": 211.2,
+  "DIALS_PER_CONNECT": 8
+}

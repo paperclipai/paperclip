@@ -1,0 +1,284 @@
+{
+  "INDUSTRIES": [
+    {
+      "title": "Healthcare",
+      "desc": "AI agents for patient ops and scheduling",
+      "href": "/solutions/healthcare",
+      "tags": [
+        "regulated",
+        "b2c",
+        "high-volume"
+      ],
+      "featured": true
+    },
+    {
+      "title": "Financial Services",
+      "desc": "AI agents for compliant banking ops",
+      "href": "/solutions/financial-services",
+      "tags": [
+        "regulated",
+        "b2c",
+        "high-volume"
+      ],
+      "featured": true
+    },
+    {
+      "title": "Insurance",
+      "desc": "AI claims, renewals, and policy support",
+      "href": "/solutions/insurance",
+      "tags": [
+        "regulated",
+        "b2c"
+      ],
+      "featured": true
+    },
+    {
+      "title": "Real Estate",
+      "desc": "Speed-to-lead, dormant reactivation, showings",
+      "href": "/solutions/real-estate",
+      "tags": [
+        "b2c",
+        "high-volume"
+      ],
+      "featured": true
+    },
+    {
+      "title": "Retail & Consumer",
+      "desc": "AI that connects shelf to shopper",
+      "href": "/solutions/retail",
+      "tags": [
+        "b2c",
+        "high-volume"
+      ],
+      "featured": true
+    },
+    {
+      "title": "Home Services",
+      "desc": "AI dispatch, scheduling, and follow-up",
+      "href": "/solutions/home-services",
+      "tags": [
+        "b2c"
+      ],
+      "featured": true
+    },
+    {
+      "title": "Logistics",
+      "desc": "AI quoting, tracking, and maintenance",
+      "href": "/solutions/logistics",
+      "tags": [
+        "b2b",
+        "high-volume"
+      ]
+    },
+    {
+      "title": "Travel & Hospitality",
+      "desc": "AI concierge and booking support",
+      "href": "/solutions/travel",
+      "tags": [
+        "b2c"
+      ]
+    },
+    {
+      "title": "Debt Collection",
+      "desc": "FDCPA-compliant outbound recovery",
+      "href": "/solutions/debt-collection",
+      "tags": [
+        "regulated",
+        "b2c",
+        "high-volume"
+      ]
+    },
+    {
+      "title": "Mortgage",
+      "desc": "Pre-qual borrowers, book LO meetings, TRID-aware",
+      "href": "/solutions/mortgage",
+      "tags": [
+        "regulated",
+        "b2c",
+        "high-volume"
+      ]
+    },
+    {
+      "title": "SaaS",
+      "desc": "Demo booking, trial activation, webinar reminders",
+      "href": "/solutions/saas",
+      "tags": [
+        "b2b"
+      ]
+    },
+    {
+      "title": "Recruitment",
+      "desc": "Interview scheduling, screening, offer nurture",
+      "href": "/solutions/recruitment",
+      "tags": [
+        "b2b",
+        "b2c"
+      ]
+    },
+    {
+      "title": "Legal",
+      "desc": "Inbound case intake, conflict checks, paid consults",
+      "href": "/solutions/legal",
+      "tags": [
+        "regulated",
+        "b2c"
+      ]
+    },
+    {
+      "title": "Automotive",
+      "desc": "Service ops, sales follow-up, lease-end campaigns",
+      "href": "/solutions/automotive",
+      "tags": [
+        "b2c",
+        "high-volume"
+      ]
+    },
+    {
+      "title": "Fintech",
+      "desc": "Fraud verification, KYC follow-up, dispute support",
+      "href": "/solutions/fintech",
+      "tags": [
+        "regulated",
+        "b2c",
+        "high-volume"
+      ]
+    },
+    {
+      "title": "Education",
+      "desc": "Admissions reception, enrollment nurture, retention",
+      "href": "/solutions/education",
+      "tags": [
+        "b2c",
+        "high-volume"
+      ]
+    },
+    {
+      "title": "Hospitality",
+      "desc": "Reservations, event RSVPs, guest feedback loops",
+      "href": "/solutions/hospitality",
+      "tags": [
+        "b2c",
+        "high-volume"
+      ]
+    },
+    {
+      "title": "Wellness",
+      "desc": "Salon + spa booking, gap fill, lapsed-guest revival",
+      "href": "/solutions/wellness",
+      "tags": [
+        "b2c"
+      ]
+    },
+    {
+      "title": "Customer Success",
+      "desc": "NPS surveys, churn save, outage notifications",
+      "href": "/solutions/customer-success",
+      "tags": [
+        "b2b",
+        "b2c"
+      ]
+    },
+    {
+      "title": "Solar",
+      "desc": "Homeowner qualification, bill intake, consult booking",
+      "href": "/solutions/solar",
+      "tags": [
+        "b2c",
+        "regulated"
+      ]
+    },
+    {
+      "title": "Non-profit",
+      "desc": "Donor reactivation, EOY campaigns, volunteer engagement",
+      "href": "/solutions/non-profit",
+      "tags": [
+        "b2c"
+      ]
+    }
+  ],
+  "INDUSTRY_TAGS": [
+    {
+      "id": "all",
+      "label": "All"
+    },
+    {
+      "id": "high-volume",
+      "label": "High Volume"
+    },
+    {
+      "id": "regulated",
+      "label": "Regulated"
+    },
+    {
+      "id": "b2c",
+      "label": "B2C"
+    },
+    {
+      "id": "b2b",
+      "label": "B2B"
+    }
+  ],
+  "FEATURED_INDUSTRIES": [
+    {
+      "title": "Healthcare",
+      "desc": "AI agents for patient ops and scheduling",
+      "href": "/solutions/healthcare",
+      "tags": [
+        "regulated",
+        "b2c",
+        "high-volume"
+      ],
+      "featured": true
+    },
+    {
+      "title": "Financial Services",
+      "desc": "AI agents for compliant banking ops",
+      "href": "/solutions/financial-services",
+      "tags": [
+        "regulated",
+        "b2c",
+        "high-volume"
+      ],
+      "featured": true
+    },
+    {
+      "title": "Insurance",
+      "desc": "AI claims, renewals, and policy support",
+      "href": "/solutions/insurance",
+      "tags": [
+        "regulated",
+        "b2c"
+      ],
+      "featured": true
+    },
+    {
+      "title": "Real Estate",
+      "desc": "Speed-to-lead, dormant reactivation, showings",
+      "href": "/solutions/real-estate",
+      "tags": [
+        "b2c",
+        "high-volume"
+      ],
+      "featured": true
+    },
+    {
+      "title": "Retail & Consumer",
+      "desc": "AI that connects shelf to shopper",
+      "href": "/solutions/retail",
+      "tags": [
+        "b2c",
+        "high-volume"
+      ],
+      "featured": true
+    },
+    {
+      "title": "Home Services",
+      "desc": "AI dispatch, scheduling, and follow-up",
+      "href": "/solutions/home-services",
+      "tags": [
+        "b2c"
+      ],
+      "featured": true
+    }
+  ]
+}

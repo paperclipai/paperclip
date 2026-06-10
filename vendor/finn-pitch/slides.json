@@ -1,0 +1,239 @@
+{
+  "deckTitle": "Finn for GITAM — Every Admissions Call Answered",
+  "slides": [
+    {
+      "id": "title",
+      "headline": "Finn for GITAM",
+      "accent": "Admissions, answered.",
+      "subhead": "The voice orchestration layer for GITAM's inbound admissions, enrollment, and student support lines.",
+      "bullets": [],
+      "stat": null,
+      "speakerNotes": "Finn is the voice layer purpose-built for institutions like GITAM. One platform across admissions reception, enrollment nurture, and student retention calls."
+    },
+    {
+      "id": "problem",
+      "headline": "Counselling lines buckle when applications spike",
+      "accent": "Peak season. Every season.",
+      "subhead": "Admissions desks lose the highest-intent callers during the windows that decide the intake.",
+      "bullets": [
+        "Cut-off week floods — parents and applicants call across Telugu, Hindi, Tamil, Kannada, English. Most hit voicemail or hold music.",
+        "Repetitive triage — fee structure, hostel, scholarship, eligibility, deadline questions consume counsellor hours that should go to qualified leads.",
+        "After-hours drop-off — applicants research at night and on weekends. The desk is closed. The competition's chatbot is not."
+      ],
+      "stat": {
+        "value": "40%",
+        "label": "of admissions enquiries lost to abandoned or unanswered calls in peak weeks"
+      },
+      "speakerNotes": "GITAM's admissions team is fighting a queueing problem, not a quality problem. The intent is there — the bandwidth isn't."
+    },
+    {
+      "id": "solution",
+      "headline": "One voice layer across every GITAM inbound line",
+      "accent": "Counsellor-grade. At scale.",
+      "subhead": "Finn picks up every call, in the caller's language, and writes the conversation back to your admissions CRM.",
+      "bullets": [
+        "Always-on enrollment advisor — answers fee, course, eligibility, hostel, scholarship questions grounded in GITAM's own prospectus and FAQs.",
+        "Warm handoff to human counsellors — the moment a caller is qualified or sentiment turns, Finn transfers with full context.",
+        "Structured data back to your CRM — every call captured as a lead record, with intent, programme of interest, and next-step booked."
+      ],
+      "stat": null,
+      "speakerNotes": "Finn isn't replacing counsellors. It's making sure the qualified caller actually reaches one."
+    },
+    {
+      "id": "how_it_works",
+      "headline": "Three steps to a live GITAM admissions agent",
+      "accent": "Days, not quarters.",
+      "subhead": "",
+      "bullets": [
+        "Build — Configure the Enrollment Advisor persona in a no-code editor. Upload GITAM prospectus, fee sheets, programme pages as the knowledge base.",
+        "Deploy — Attach to your existing admissions hotline or a new number. Route inbound 24×7 across Visakhapatnam, Hyderabad, Bengaluru campus lines.",
+        "Analyze — Every call transcribed, sentiment-scored, searchable. Pickup, programme interest, conversion to counsellor handoff on one dashboard."
+      ],
+      "stat": null,
+      "speakerNotes": "Go-live in days. No telephony rip-and-replace. Numbers stay yours."
+    },
+    {
+      "id": "roi",
+      "headline": "Finn handles eight admissions calls for the cost of one counsellor minute",
+      "accent": "Outcomes, not minutes.",
+      "subhead": "Modelled on ~5,000 inbound enquiry calls/month on the Growth plan.",
+      "bullets": [],
+      "stat": null,
+      "speakerNotes": "Walk the panel through the comparison. The cost line drops; the connect rate climbs. Same counsellor team, more qualified conversations."
+    },
+    {
+      "id": "demo",
+      "headline": "A parent calls at 9:47pm asking about B.Tech CSE fees",
+      "accent": "Live. Right now.",
+      "subhead": "Watch the Enrollment Advisor handle a real GITAM-style admissions enquiry end-to-end.",
+      "bullets": [
+        "Caller — Parent of a Class XII student. Opens in Telugu. Asks about B.Tech CSE fee structure, scholarship eligibility, and hostel availability at the Visakhapatnam campus.",
+        "Finn — Greets in Telugu, switches to English mid-call when asked. Pulls live fee data, walks through merit scholarship slabs, confirms hostel availability, offers to book a campus visit.",
+        "Outcome — Campus visit slot booked on the admissions calendar. Lead written to CRM tagged 'B.Tech CSE / Vizag / scholarship intent / hot'. Counsellor pinged to follow up by 10am."
+      ],
+      "stat": null,
+      "speakerNotes": "This is the call you're losing today. Finn doesn't just answer it — it qualifies, books, and hands off."
+    },
+    {
+      "id": "capabilities",
+      "headline": "Built for the admissions desk",
+      "accent": "Every line covered.",
+      "subhead": "",
+      "bullets": [
+        "Sub-400ms latency — Caller hears a response in under half a second. No awkward AI pause.",
+        "46 languages, mid-call switching — Telugu, Hindi, Tamil, Kannada, English. Same persona, one call.",
+        "Knowledge base + RAG — Grounded in GITAM's prospectus, fee circulars, programme pages. No hallucinated dates.",
+        "Calendar booking in-call — Books campus visits, counsellor slots, open-day registrations without leaving the call.",
+        "Warm transfer — Hot leads and unhappy callers routed to a counsellor with the conversation summary attached.",
+        "Voicemail + silence detection — Knows when it's a real applicant vs a dropped line. Doesn't waste credits."
+      ],
+      "stat": null,
+      "speakerNotes": "Six capabilities, each mapped to a real admissions desk failure mode."
+    },
+    {
+      "id": "dashboard",
+      "headline": "What your admissions head sees on Monday morning",
+      "accent": "The desk, measured.",
+      "subhead": "Every call transcribed, tagged, and searchable across campuses and programmes.",
+      "bullets": [
+        "Pickup by campus and shift — See where Visakhapatnam, Hyderabad, Bengaluru lines are dropping calls and when.",
+        "Conversion by programme — Which programmes convert enquiry to campus visit. B.Tech vs BBA vs Pharm.D, side by side.",
+        "Searchable transcripts — Find every caller who asked about a specific scholarship, programme, or competitor by name.",
+        "Sentiment + intent tagging — Hot leads surfaced automatically. Frustrated callers flagged for counsellor follow-up."
+      ],
+      "stat": null,
+      "speakerNotes": "The admissions head stops guessing what the desk did last week. They see it."
+    },
+    {
+      "id": "integrations",
+      "headline": "Plugs into the stack GITAM already runs",
+      "accent": "No rip. No replace.",
+      "subhead": "",
+      "bullets": [
+        "CRM — Writes lead records, call summaries, and next-step tasks into your admissions CRM (Salesforce, Zoho, LeadSquared, or internal).",
+        "Calendar — Books campus visits and counsellor slots into Google Calendar or Outlook in real time.",
+        "Telephony — Keep your existing numbers via BYOC SIP. Inbound lines, IVR replacement, warm transfer to counsellor desks.",
+        "Comms — Drops follow-up brochures and forms over WhatsApp, SMS, or email the moment the call ends."
+      ],
+      "stat": null,
+      "speakerNotes": "Finn slots into your existing admissions workflow. Numbers, CRM, calendar — all of it stays where it is."
+    },
+    {
+      "id": "compliance",
+      "headline": "Enterprise controls for an Indian university",
+      "accent": "India-resident. Audit-ready.",
+      "subhead": "",
+      "bullets": [
+        "Data residency in India — Call recordings, transcripts, and applicant PII stored on Indian infrastructure.",
+        "Consent + DNC management — Every caller hears Finn identify as AI on request. DNC lists honoured across campaigns.",
+        "Audit trail per call — Full transcript, model decisions, function calls, and handoffs logged for every interaction.",
+        "Number health monitoring — Degraded numbers auto-paused. SOC 2, HIPAA, GDPR controls available at the platform layer.",
+        "PII redaction — Applicant phone, fee, scholarship details masked in transcripts before they reach analytics."
+      ],
+      "stat": null,
+      "speakerNotes": "Built for the controls a university registrar and a CISO both need to sign off."
+    },
+    {
+      "id": "proof",
+      "headline": "What a similar India deployment looks like",
+      "accent": "Already shipping.",
+      "subhead": "RocketSDR used Finn to cover a 24×7 helpline and stop drop-offs at the moment of decision.",
+      "bullets": [],
+      "stat": null,
+      "speakerNotes": "Different industry, same shape of problem — high-intent inbound, narrow decision window, language diversity. The pattern holds for admissions."
+    },
+    {
+      "id": "pricing",
+      "headline": "Wallet-based. Pay per credit. Credits never expire",
+      "accent": "Top up. Talk.",
+      "subhead": "All plans billed in INR with 18% GST. Phone numbers billed separately.",
+      "bullets": [
+        "Starter — ₹10 per credit. 2 concurrent calls. For piloting a single admissions line.",
+        "Pro — ₹7 per credit. 20 concurrent calls. For a single-campus admissions desk.",
+        "Growth — ₹6 per credit. 100 concurrent calls. Recommended for GITAM's multi-campus peak intake.",
+        "Enterprise — Custom rate. Unlimited concurrent calls. For all-India campaigns and full-cycle student support."
+      ],
+      "stat": null,
+      "speakerNotes": "Recommendation for GITAM is Growth during evaluation, with a path to Enterprise as inbound consolidates across campuses."
+    },
+    {
+      "id": "cta",
+      "headline": "Two weeks to a live GITAM admissions agent",
+      "accent": "Pilot. Then scale.",
+      "subhead": "A bounded evaluation on one campus line, measured against your current desk.",
+      "bullets": [
+        "Week 1 — Build the Enrollment Advisor on GITAM prospectus, fee sheets, and programme pages. Voice and language QA with your team.",
+        "Week 2 — Go live on one inbound number at the Visakhapatnam campus. Measure pickup, conversion to counsellor handoff, and CSAT.",
+        "Decision point — Review against your current desk's numbers. Expand to Hyderabad and Bengaluru lines on approval."
+      ],
+      "stat": null,
+      "speakerNotes": "A real evaluation, not a slideware promise. One campus, two weeks, your numbers next to ours."
+    }
+  ],
+  "_answers": {
+    "clientName": "GITAM",
+    "clientWebsite": "https://www.gitam.edu/",
+    "clientType": "enterprise",
+    "useCase": "inbound_support",
+    "industry": "Education",
+    "region": "india",
+    "format": "leavebehind",
+    "length": "standard",
+    "primaryMetric": "",
+    "competitor": "",
+    "stage": "eval",
+    "notes": ""
+  },
+  "_ctx": {
+    "roi": {
+      "region": "india",
+      "sym": "₹",
+      "planId": "growth",
+      "rate": 6,
+      "monthlyCalls": 5000,
+      "callMin": 1,
+      "human": {
+        "cost": 175000,
+        "costFmt": "₹1.8L",
+        "connects": 600,
+        "repDays": 63,
+        "connectRate": 0.12
+      },
+      "finn": {
+        "cost": 30000,
+        "costFmt": "₹30.0K",
+        "connects": 1900,
+        "credits": 5000,
+        "connectRate": 0.38
+      },
+      "savings": 145000,
+      "savingsFmt": "₹1.4L",
+      "savingsPct": 83,
+      "uplift": 3.2,
+      "perConnectHuman": "₹292",
+      "perCallFinn": "₹6.00"
+    },
+    "testimonial": {
+      "id": "rocketsdr",
+      "quote": "RocketSDR improved candidate experience and reduced offer drop-offs with Finn 24×7 AI helpline and proactive escalations.",
+      "author": "Shivansh",
+      "role": "Head of Engineering, RocketSDR",
+      "company": "RocketSDR",
+      "image": "/_static/homepage/c3.svg"
+    },
+    "industry": {
+      "title": "Education",
+      "desc": "Admissions reception, enrollment nurture, retention",
+      "href": "/solutions/education",
+      "tags": [
+        "b2c",
+        "high-volume"
+      ]
+    },
+    "playbook": {
+      "name": "Enrollment Advisor",
+      "role": "AI Enrollment Advisor"
+    }
+  },
+  "_clientLogo": "/asset/client-logos/gitam.edu.png"
+}

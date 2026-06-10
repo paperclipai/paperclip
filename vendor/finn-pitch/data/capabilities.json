@@ -1,0 +1,4609 @@
+{
+  "CAPABILITIES": [
+    {
+      "title": "AI Agent Capabilities",
+      "desc": "Voice, chat, and multimodal agent tooling",
+      "href": "/platform/capabilities"
+    },
+    {
+      "title": "Observability & Evals",
+      "desc": "Monitor, score, and improve every call",
+      "href": "/platform/observability"
+    },
+    {
+      "title": "AI Agent Orchestration",
+      "desc": "Route, escalate, and coordinate agents at scale",
+      "href": "/platform/orchestration"
+    },
+    {
+      "title": "Integrations",
+      "desc": "CRMs, dialers, ticketing, and custom APIs",
+      "href": "/platform/integrations"
+    },
+    {
+      "title": "Security & Trust",
+      "desc": "HIPAA, GDPR, SOC 2, and enterprise controls",
+      "href": "/platform/security"
+    }
+  ],
+  "CAPABILITY_PAGES": {
+    "capabilities": {
+      "slug": "capabilities",
+      "eyebrow": "Voice intelligence",
+      "hero": "Voice that thinks.\nAt the speed of a heartbeat.",
+      "lead": "Sub-second latency. 46 languages. Function calling, RAG, and real-time speech detection — the substrate every Finn agent runs on.",
+      "stats": [
+        {
+          "value": "<400ms",
+          "label": "End-to-end latency"
+        },
+        {
+          "value": "46",
+          "label": "Languages live today"
+        },
+        {
+          "value": "99.99%",
+          "label": "Inference uptime"
+        },
+        {
+          "value": "∞",
+          "label": "Concurrent calls"
+        }
+      ],
+      "pillarsEyebrow": "Core capabilities",
+      "pillarsHeading": "Five primitives.\nEvery conversation built on top.",
+      "pillarsLead": "The model layer is a commodity. The infrastructure around it isn't — and that's where Finn earns the call.",
+      "pillars": [
+        {
+          "title": "Sub-second voice loop",
+          "body": "Streaming ASR + LLM + TTS in a single hot pipeline. No turn-by-turn lag. Customers hear a human cadence, not a robot."
+        },
+        {
+          "title": "Function calling, in-call",
+          "body": "Pull from your CRM, fire webhooks, run business logic mid-conversation. The agent never says 'one moment please.'"
+        },
+        {
+          "title": "Multilingual by default",
+          "body": "Switch language mid-call. Hindi to English to Tamil — same agent, same voice persona, same context."
+        },
+        {
+          "title": "Knowledge base + RAG",
+          "body": "Upload PDFs, sitemaps, FAQs. Finn grounds every answer in your data. No hallucinated SLAs."
+        },
+        {
+          "title": "Voice library",
+          "body": "100+ voices across accents and languages. Clone your own brand voice in under a minute."
+        },
+        {
+          "title": "Real-time speech detection",
+          "body": "Interrupt handling, silence detection, voicemail discrimination — built in, not bolted on."
+        }
+      ],
+      "closingEyebrow": "Under the hood",
+      "closingHeading": "Built for the real world.\nNot the demo.",
+      "closingBody": "Every component above is benchmarked on production traffic — 50M+ minutes shipped, 250+ peak concurrent calls, customers on five continents.",
+      "gradient": [
+        "#86c277",
+        "#435E35"
+      ],
+      "sections": [
+        {
+          "eyebrow": "the voice loop",
+          "heading": "Streaming ASR, LLM, and TTS in a single hot pipe.",
+          "body": "Most stacks chain providers in series and pay the latency tax at every hop. Finn runs streaming speech-to-text, model inference, and text-to-speech in one fused pipeline — sub-400ms end-to-end. Customers hear a real cadence, not a stop-and-wait.",
+          "bullets": [
+            "Streaming ASR via Deepgram, AssemblyAI, or first-party",
+            "GPT-4o, Claude, Gemini, or self-hosted Llama under the hood",
+            "ElevenLabs, PlayHT, Cartesia, and 100+ voices ready",
+            "Interrupt handling + voicemail detection out-of-the-box"
+          ],
+          "mockupId": "voice-loop",
+          "snapSrc": "/_static/snaps/voice-loop.html"
+        },
+        {
+          "eyebrow": "knowledge, in-call",
+          "heading": "Grounded answers. No hallucinated SLAs.",
+          "body": "Upload PDFs, sitemaps, FAQs, internal docs. Finn embeds, chunks, and retrieves the right passage every turn. Source citations attach to every answer for human review.",
+          "bullets": [
+            "PDFs, URLs, Notion, Confluence — same import flow",
+            "Per-Finn knowledge bases, isolated per workspace",
+            "Auto re-index on doc change, no manual rebuilds",
+            "Source-link attribution surfaced in PCA"
+          ],
+          "mockupId": "knowledge-base",
+          "snapSrc": "/_static/snaps/knowledge-base.html"
+        },
+        {
+          "eyebrow": "voices and languages",
+          "heading": "46 languages. 100+ voices. Switch mid-call.",
+          "body": "Multilingual is not a feature — it's the default. Pick a voice, pick a language, ship to any region. Clone your own brand voice in under a minute.",
+          "bullets": [
+            "Hindi, Tamil, Spanish, Portuguese, Arabic — and 40+ more",
+            "Brand voice cloning from a 60-second sample",
+            "Language switching mid-conversation, same persona",
+            "Voice preview library, accent-tagged and gender-balanced"
+          ],
+          "mockupId": "voice-library",
+          "snapSrc": "/_static/snaps/voice-library.html"
+        }
+      ]
+    },
+    "observability": {
+      "slug": "observability",
+      "eyebrow": "Observability & evals",
+      "hero": "Every call,\nmeasured.",
+      "lead": "Recordings, transcripts, sentiment, outcomes — captured automatically. Spot drift, prove ROI, ship improvements in days not quarters.",
+      "stats": [
+        {
+          "value": "100%",
+          "label": "Calls auto-transcribed"
+        },
+        {
+          "value": "0",
+          "label": "Manual QA hours"
+        },
+        {
+          "value": "15+",
+          "label": "Built-in evals"
+        },
+        {
+          "value": "7d",
+          "label": "Avg time-to-improvement"
+        }
+      ],
+      "pillarsEyebrow": "Observability primitives",
+      "pillarsHeading": "See what happened.\nFix what didn't.",
+      "pillarsLead": "Voice ops without observability is hope-driven engineering. Finn ships the entire instrumentation layer with the platform.",
+      "pillars": [
+        {
+          "title": "Auto-transcribed calls",
+          "body": "Every conversation captured, indexed, and searchable. Speaker diarisation, timestamps, redactions for PII."
+        },
+        {
+          "title": "Post-call analysis (PCA)",
+          "body": "Outcome tags, intent extraction, sentiment, dispute flags — generated automatically per call. No human in the loop."
+        },
+        {
+          "title": "Built-in eval suite",
+          "body": "Score every call against your custom rubric. Adherence, tone, accuracy, compliance — track them call-over-call."
+        },
+        {
+          "title": "Drift detection",
+          "body": "Catch the silent regression. We alert when model behaviour shifts, vocabulary changes, or outcomes slide."
+        },
+        {
+          "title": "Live conversation playback",
+          "body": "Audio sync'd with transcript and PCA highlights. Replay any moment, share with one click."
+        },
+        {
+          "title": "Real-time dashboards",
+          "body": "Today's outcomes, sentiment heatmap, agent-level performance — live, not yesterday's."
+        }
+      ],
+      "closingEyebrow": "Outcome-first",
+      "closingHeading": "You can't improve\nwhat you can't see.",
+      "closingBody": "Finn doesn't just run the calls. It tells you which ones converted, which ones leaked, and what to change tomorrow.",
+      "gradient": [
+        "#FD7FAD",
+        "#9a3412"
+      ],
+      "sections": [
+        {
+          "eyebrow": "every call, instrumented",
+          "heading": "Auto-transcribed. Speaker-diarised. Searchable.",
+          "body": "The first job of observability is full coverage. Finn captures every audio call, generates a speaker-aware transcript, redacts PII, and indexes the lot — usable in under sixty seconds from call hang-up.",
+          "bullets": [
+            "100% transcript coverage, no manual upload",
+            "Speaker diarisation + timestamp anchors",
+            "Auto-PII redaction (card, SSN, custom regex)",
+            "Full-text search across all transcripts"
+          ],
+          "mockupId": "observability-dashboard",
+          "snapSrc": "/_static/snaps/dashboard-performance.html",
+          "snapAspect": 1.4545454545454546
+        },
+        {
+          "eyebrow": "post-call analysis",
+          "heading": "Outcomes, sentiment, and intent — auto-tagged.",
+          "body": "Every call ships with a structured outcome record. Sentiment delta, intent classification, dispute flags, hand-off reasons — generated by the model, not by human QA. Wire it into your CRM and act tomorrow.",
+          "bullets": [
+            "Outcome taxonomy you define, model-enforced",
+            "Sentiment scored per turn + per call",
+            "Auto-flagged exceptions for human review",
+            "PCA payload pushed via webhook to your stack"
+          ],
+          "mockupId": "transcript-pca",
+          "snapSrc": "/_static/snaps/transcript-pca.html"
+        },
+        {
+          "eyebrow": "evals + drift",
+          "heading": "Score the agent against your rubric. Continuously.",
+          "body": "Build a custom eval suite — adherence, tone, accuracy, compliance — and Finn scores every call. Drift detection alerts when behaviour shifts. Closed-loop feedback into prompt + workflow updates.",
+          "bullets": [
+            "Custom rubrics, LLM-judge backed",
+            "Adversarial pre-deployment tests",
+            "Production drift detection + alerts",
+            "Human feedback feeds back into the system"
+          ],
+          "mockupId": "evals-board",
+          "snapSrc": "/_static/snaps/evals-board.html"
+        }
+      ]
+    },
+    "orchestration": {
+      "slug": "orchestration",
+      "eyebrow": "Agent orchestration",
+      "hero": "Workflows that\nbend, not break.",
+      "lead": "Drag-and-drop call flows, conditional branching, human handoff, multi-agent coordination — orchestration that survives the production messy real world.",
+      "stats": [
+        {
+          "value": "Visual",
+          "label": "Workflow editor"
+        },
+        {
+          "value": "0",
+          "label": "Code required"
+        },
+        {
+          "value": "Live",
+          "label": "Human handoff"
+        },
+        {
+          "value": "API",
+          "label": "Plus webhooks + CRM"
+        }
+      ],
+      "pillarsEyebrow": "Orchestration primitives",
+      "pillarsHeading": "Compose any call flow.\nIn minutes.",
+      "pillarsLead": "The hard part of voice AI isn't the AI — it's the workflow around it. Routing, escalation, fallback, state. Finn ships them all.",
+      "pillars": [
+        {
+          "title": "Drag-and-drop workflow editor",
+          "body": "Visual call flows. Variables, branches, loops, transfers — every node configurable, no JSON spelunking."
+        },
+        {
+          "title": "Conditional routing",
+          "body": "Route by intent, sentiment, audience segment, time of day. Send VIPs to live agents, others to self-serve."
+        },
+        {
+          "title": "Live human handoff",
+          "body": "Warm transfer with full context — the human picks up where Finn left off. No 'can you repeat your account number?'"
+        },
+        {
+          "title": "Multi-agent coordination",
+          "body": "Specialist agents for specialist tasks. Triage → Booking → Confirmation, all under one orchestrator."
+        },
+        {
+          "title": "Voicemail + fallback",
+          "body": "Detect voicemail, drop tailored messages. Failed call? Auto-retry with backoff. Unreachable? Queue for tomorrow."
+        },
+        {
+          "title": "Variables + memory",
+          "body": "Persist caller state across nodes and across calls. Build genuinely stateful conversations."
+        }
+      ],
+      "closingEyebrow": "Production-grade",
+      "closingHeading": "Survive contact\nwith reality.",
+      "closingBody": "Real customers say weird things, hang up mid-sentence, call back twice. Finn's orchestration was designed against that — not for happy paths.",
+      "gradient": [
+        "#FDB87A",
+        "#9a3412"
+      ],
+      "sections": [
+        {
+          "eyebrow": "workflows as visual code",
+          "heading": "Drag a node, ship a flow. No code spelunking.",
+          "body": "The workflow editor exposes every primitive — say, branch, capture, function call, transfer, hang-up — as draggable nodes. Variables persist across nodes. Conditional routing splits the path. Whatever business logic runs in your head, it runs in the editor.",
+          "bullets": [
+            "Visual canvas with say/capture/branch/call/transfer",
+            "Variables persisted across nodes + calls",
+            "Conditional routing on intent, sentiment, segment",
+            "Version control + diff view per workflow"
+          ],
+          "mockupId": "workflow-editor",
+          "snapSrc": "/_static/snaps/workflow-editor.html"
+        },
+        {
+          "eyebrow": "human in the loop",
+          "heading": "Warm transfer with full context.",
+          "body": "When the conversation needs a human, Finn doesn't dump the caller on a cold queue. It hands off the call summary, the structured outcome, and the captured fields — so the human picks up where Finn left off, not from scratch.",
+          "bullets": [
+            "Warm transfer with full call summary attached",
+            "Skill-based routing to specialist agents",
+            "Hold music + ETA on extended transfers",
+            "Auto-fallback to voicemail or callback queue"
+          ],
+          "mockupId": "live-transfer",
+          "snapSrc": "/_static/snaps/live-transfer.html"
+        },
+        {
+          "eyebrow": "multi-agent coordination",
+          "heading": "Specialist agents for specialist tasks.",
+          "body": "One agent for triage. Another for booking. A third for confirmation. Stitch them together with an orchestrator that hands state between them — same call, same caller, escalating context.",
+          "bullets": [
+            "Per-skill agents, shared workspace context",
+            "Orchestrator-driven hand-offs",
+            "Persistent caller state across the whole conversation",
+            "Independent evals + rollouts per specialist"
+          ],
+          "mockupId": "multi-agent",
+          "snapSrc": "/_static/snaps/multi-agent.html"
+        }
+      ]
+    },
+    "integrations": {
+      "slug": "integrations",
+      "eyebrow": "Integrations",
+      "hero": "Plugs into\nwhat you already run.",
+      "lead": "CRMs, dialers, ticketing, calendars, helpdesks — and any system you can hit with an HTTP request. Webhooks both ways, API everywhere.",
+      "stats": [
+        {
+          "value": "100+",
+          "label": "Pre-built connectors"
+        },
+        {
+          "value": "REST",
+          "label": "Plus webhooks + SDK"
+        },
+        {
+          "value": "OAuth",
+          "label": "Or API keys"
+        },
+        {
+          "value": "Custom",
+          "label": "Function calling on tap"
+        }
+      ],
+      "pillarsEyebrow": "Integration primitives",
+      "pillarsHeading": "If it has an API,\nit talks to Finn.",
+      "pillarsLead": "We don't lock you into our stack. The agent runs in your workflow, syncs to your systems, fires into your downstream tools.",
+      "pillars": [
+        {
+          "title": "100+ pre-built connectors",
+          "body": "Salesforce, HubSpot, Zendesk, Zoho, Calendly, Twilio, Plivo, Razorpay, Stripe, Shopify — and growing weekly."
+        },
+        {
+          "title": "Webhooks both ways",
+          "body": "Trigger Finn from any system. Fire downstream events on call completion, transfer, voicemail, custom signals."
+        },
+        {
+          "title": "Function calling",
+          "body": "Define a function, Finn invokes it mid-call. Pull live order status, check inventory, write to your DB."
+        },
+        {
+          "title": "REST API + SDK",
+          "body": "Programmatically launch campaigns, fetch transcripts, manage audiences. TypeScript, Python, cURL — all first-class."
+        },
+        {
+          "title": "Telephony bring-your-own",
+          "body": "Use Finn's numbers or BYOC via SIP trunk. Twilio, Plivo, Telnyx — your choice, your contract."
+        },
+        {
+          "title": "Custom auth + secrets",
+          "body": "OAuth, API keys, mutual TLS — store credentials in our encrypted vault, never in your prompts."
+        }
+      ],
+      "closingEyebrow": "Open by design",
+      "closingHeading": "No walled gardens.\nNo lock-in.",
+      "closingBody": "Export every transcript, recording, and call event. Build whatever you want downstream. We're the call infrastructure, not the data hostage-taker.",
+      "gradient": [
+        "#7c3aed",
+        "#3730a3"
+      ],
+      "sections": [
+        {
+          "eyebrow": "the connector library",
+          "heading": "100+ ready-made connectors. Plus everything else.",
+          "body": "Salesforce, HubSpot, Zendesk, Zoho, Calendly, Razorpay, Stripe, Shopify, Twilio, Plivo, Telnyx — wired and tested. Anything not on the list? REST endpoint or webhook gets you there in minutes.",
+          "bullets": [
+            "CRM: Salesforce, HubSpot, Zoho, Follow Up Boss",
+            "Telephony BYOC: Twilio, Plivo, Telnyx via SIP",
+            "Payments: Razorpay, Stripe, Dodo",
+            "Support: Zendesk, Intercom, Freshdesk"
+          ],
+          "mockupId": "integration-grid",
+          "snapSrc": "/_static/snaps/integration-grid.html"
+        },
+        {
+          "eyebrow": "function calling",
+          "heading": "Real-time tool use, mid-conversation.",
+          "body": "Define a function with a JSON schema. Finn invokes it during the call when the conversation calls for it — pull live order status, check inventory, write to your DB. The agent never says 'one moment please.'",
+          "bullets": [
+            "OpenAPI / JSON schema function definitions",
+            "Sub-second function execution loop",
+            "Built-in retry, timeout, fallback handling",
+            "Per-function auth + secret vault"
+          ],
+          "mockupId": "function-call",
+          "snapSrc": "/_static/snaps/function-call.html"
+        },
+        {
+          "eyebrow": "webhooks + api",
+          "heading": "Programmatic everywhere. SDK + REST + webhooks.",
+          "body": "Launch campaigns, fetch transcripts, manage audiences via REST. Subscribe to call events via webhook. TypeScript + Python SDKs first-class. Build whatever you want around the platform.",
+          "bullets": [
+            "REST API for every dashboard action",
+            "Webhooks on call.start, .end, .transfer, custom",
+            "TypeScript + Python SDKs (npm + pypi)",
+            "OpenAPI spec + Postman collection published"
+          ],
+          "mockupId": "webhook-flow",
+          "snapSrc": "/_static/snaps/webhook-flow.html"
+        }
+      ]
+    },
+    "security": {
+      "slug": "security",
+      "eyebrow": "Security & trust",
+      "hero": "Built for\nthe regulated few.",
+      "lead": "SOC 2, HIPAA, GDPR, ISO 27001 — compliance isn't a checkbox, it's how the platform was designed. From key management to data residency.",
+      "stats": [
+        {
+          "value": "SOC 2",
+          "label": "Type II audited"
+        },
+        {
+          "value": "HIPAA",
+          "label": "BAA on request"
+        },
+        {
+          "value": "GDPR",
+          "label": "& DPDP-compliant"
+        },
+        {
+          "value": "256-bit",
+          "label": "AES at rest + in transit"
+        }
+      ],
+      "pillarsEyebrow": "Security primitives",
+      "pillarsHeading": "Compliance is\nthe floor, not the ceiling.",
+      "pillarsLead": "Voice is regulated. Healthcare, finance, insurance, legal — Finn was built to run there from day one.",
+      "pillars": [
+        {
+          "title": "End-to-end encryption",
+          "body": "AES-256 at rest, TLS 1.3 in transit. Recordings, transcripts, PII — all encrypted by default."
+        },
+        {
+          "title": "Data residency",
+          "body": "Pick where your data lives. US, EU, India regions available — no data leaves the chosen geography."
+        },
+        {
+          "title": "Audit trails",
+          "body": "Every API call, every config change, every data access — logged, immutable, exportable."
+        },
+        {
+          "title": "PII redaction",
+          "body": "Auto-redact card numbers, SSNs, account IDs from transcripts. Custom regex for industry-specific patterns."
+        },
+        {
+          "title": "Role-based access",
+          "body": "Granular permissions per user, per workspace. SSO via SAML or OIDC. SCIM provisioning for enterprise."
+        },
+        {
+          "title": "Compliance frameworks",
+          "body": "SOC 2 Type II, HIPAA BAAs, GDPR DPA, ISO 27001 — documents available under NDA in under 24 hours."
+        }
+      ],
+      "closingEyebrow": "Trust, not promises",
+      "closingHeading": "Audit-grade,\nfrom call one.",
+      "closingBody": "Security is what you ship, not what you say. Every Finn deployment carries the same controls the regulated incumbents use — without their procurement cycle.",
+      "gradient": [
+        "#0f766e",
+        "#1e3a8a"
+      ],
+      "sections": [
+        {
+          "eyebrow": "encryption + access",
+          "heading": "End-to-end. Defense in depth.",
+          "body": "AES-256 at rest. TLS 1.3 in transit. Per-workspace KMS keys. SSO via SAML or OIDC. SCIM provisioning. Role-based access control granular down to the field level.",
+          "bullets": [
+            "AES-256 at rest, TLS 1.3 in transit",
+            "Per-workspace encryption keys via KMS",
+            "SAML / OIDC SSO + SCIM auto-provisioning",
+            "Field-level RBAC with audit trail"
+          ],
+          "mockupId": "security-ledger",
+          "snapSrc": "/_static/snaps/security-ledger.html"
+        },
+        {
+          "eyebrow": "compliance frameworks",
+          "heading": "SOC 2. HIPAA. GDPR. ISO 27001.",
+          "body": "Audited annually. Documents under NDA in 24 hours. We've shipped into healthcare, fintech, insurance, and legal — the regulated workloads were the design constraint, not an afterthought.",
+          "bullets": [
+            "SOC 2 Type II — audited annually",
+            "HIPAA BAA on request, healthcare-ready",
+            "GDPR + India DPDP — region-aware",
+            "ISO 27001 + NIST CSF mapped"
+          ],
+          "mockupId": "compliance-badges",
+          "snapSrc": "/_static/snaps/compliance-badges.html"
+        },
+        {
+          "eyebrow": "data residency",
+          "heading": "Your data, in your geography.",
+          "body": "Pick where your data lives — US, EU, or India regions available today. No data leaves the chosen region. Per-workspace residency, even within a single tenant.",
+          "bullets": [
+            "US, EU, India regions live now",
+            "Per-workspace residency boundaries",
+            "Audit trails of every data access",
+            "Right-to-deletion + export on demand"
+          ],
+          "mockupId": "data-residency",
+          "snapSrc": "/_static/snaps/data-residency.html"
+        }
+      ]
+    }
+  },
+  "FEATURE_CATEGORIES": [
+    "Core",
+    "Comms",
+    "Voice & turn-taking",
+    "Routing & telephony",
+    "Calendar & booking",
+    "Ops & compliance",
+    "Analytics & insights"
+  ],
+  "FEATURES": [
+    {
+      "title": "Workflow Editor",
+      "desc": "Drag-and-drop call flow builder",
+      "href": "/platform/features/workflow-editor",
+      "category": "Core"
+    },
+    {
+      "title": "Knowledge Base",
+      "desc": "Feed agents with docs and FAQs",
+      "href": "/platform/features/knowledge-base",
+      "category": "Core"
+    },
+    {
+      "title": "Voice Library",
+      "desc": "100+ voices across 46 languages",
+      "href": "/platform/features/voice-library",
+      "category": "Core"
+    },
+    {
+      "title": "Live Transfer",
+      "desc": "Warm handoff to human agents",
+      "href": "/platform/features/live-transfer",
+      "category": "Core"
+    },
+    {
+      "title": "Post-call Analysis",
+      "desc": "Auto-tagged outcomes and sentiment",
+      "href": "/platform/features/post-call-analysis",
+      "category": "Core"
+    },
+    {
+      "title": "Batch Calling",
+      "desc": "Outbound campaigns at scale",
+      "href": "/platform/features/batch-calling",
+      "category": "Core"
+    },
+    {
+      "title": "Branded Call ID",
+      "desc": "Your name + logo on the caller ID",
+      "href": "/platform/features/branded-call-id",
+      "category": "Core"
+    },
+    {
+      "title": "SMS Follow-up",
+      "desc": "Fire texts from any call node",
+      "href": "/platform/features/sms-follow-up",
+      "category": "Comms"
+    },
+    {
+      "title": "WhatsApp Follow-up",
+      "desc": "Verified business profile + rich media",
+      "href": "/platform/features/whatsapp-follow-up",
+      "category": "Comms"
+    },
+    {
+      "title": "Email Follow-up",
+      "desc": "Authenticated sends with open + click tracking",
+      "href": "/platform/features/email-follow-up",
+      "category": "Comms"
+    },
+    {
+      "title": "Telegram Follow-up",
+      "desc": "Reach customers where they actually chat",
+      "href": "/platform/features/telegram-follow-up",
+      "category": "Comms"
+    },
+    {
+      "title": "Voicemail Detection",
+      "desc": "Distinguish human from machine in 1.2s",
+      "href": "/platform/features/voicemail-detection",
+      "category": "Voice & turn-taking"
+    },
+    {
+      "title": "Real-time Interruption",
+      "desc": "Finn yields the floor in under 80ms",
+      "href": "/platform/features/realtime-interruption",
+      "category": "Voice & turn-taking"
+    },
+    {
+      "title": "Mid-call Language Switch",
+      "desc": "46 languages, hot-swap per turn",
+      "href": "/platform/features/mid-call-language-switch",
+      "category": "Voice & turn-taking"
+    },
+    {
+      "title": "Silence Handling",
+      "desc": "Tiered prompts before graceful exit",
+      "href": "/platform/features/silence-handling",
+      "category": "Voice & turn-taking"
+    },
+    {
+      "title": "Custom Pronunciation",
+      "desc": "SKUs, drugs, brand terms — said right",
+      "href": "/platform/features/custom-pronunciation",
+      "category": "Voice & turn-taking"
+    },
+    {
+      "title": "IVR Digit Press",
+      "desc": "Navigate legacy phone trees automatically",
+      "href": "/platform/features/ivr-digit-press",
+      "category": "Routing & telephony"
+    },
+    {
+      "title": "Business Hours Routing",
+      "desc": "Route by time of day + caller timezone",
+      "href": "/platform/features/business-hours-routing",
+      "category": "Routing & telephony"
+    },
+    {
+      "title": "Skill-based Queues",
+      "desc": "Match callers to the right specialist",
+      "href": "/platform/features/skill-based-queues",
+      "category": "Routing & telephony"
+    },
+    {
+      "title": "Hold-music Alternative",
+      "desc": "Productive conversation, not muzak",
+      "href": "/platform/features/hold-music-alternative",
+      "category": "Routing & telephony"
+    },
+    {
+      "title": "BYOC SIP Trunk",
+      "desc": "Bring your existing carrier",
+      "href": "/platform/features/byoc-sip-trunk",
+      "category": "Routing & telephony"
+    },
+    {
+      "title": "Multi-line Concurrency",
+      "desc": "Thousands of simultaneous calls",
+      "href": "/platform/features/multi-line-concurrency",
+      "category": "Routing & telephony"
+    },
+    {
+      "title": "Calendar Sync",
+      "desc": "Two-way Google + Outlook integration",
+      "href": "/platform/features/calendar-sync",
+      "category": "Calendar & booking"
+    },
+    {
+      "title": "Cal.com Integration",
+      "desc": "Book through Cal.com + Calendly event types",
+      "href": "/platform/features/calcom-integration",
+      "category": "Calendar & booking"
+    },
+    {
+      "title": "Conditional Slot Logic",
+      "desc": "Route bookings by intent + tier + geography",
+      "href": "/platform/features/conditional-slot-logic",
+      "category": "Calendar & booking"
+    },
+    {
+      "title": "Reschedule on No-show",
+      "desc": "Auto-callback within 5 minutes of a miss",
+      "href": "/platform/features/reschedule-on-noshow",
+      "category": "Calendar & booking"
+    },
+    {
+      "title": "Appointment Reminders",
+      "desc": "Multi-channel, two-way response handling",
+      "href": "/platform/features/appointment-reminders",
+      "category": "Calendar & booking"
+    },
+    {
+      "title": "Audience CSV Upload",
+      "desc": "Drop a sheet, dial in minutes",
+      "href": "/platform/features/audience-csv-upload",
+      "category": "Ops & compliance"
+    },
+    {
+      "title": "A/B Test Workflows",
+      "desc": "Split traffic, measure conversion + sentiment",
+      "href": "/platform/features/ab-test-workflows",
+      "category": "Ops & compliance"
+    },
+    {
+      "title": "Evals Scoring",
+      "desc": "100% call coverage against your rubric",
+      "href": "/platform/features/evals-scoring",
+      "category": "Ops & compliance"
+    },
+    {
+      "title": "Per-Finn Redaction",
+      "desc": "PII stripped before storage",
+      "href": "/platform/features/per-finn-redaction",
+      "category": "Ops & compliance"
+    },
+    {
+      "title": "Data Residency",
+      "desc": "US, EU, India, AU, Canada — lock it",
+      "href": "/platform/features/data-residency-picker",
+      "category": "Ops & compliance"
+    },
+    {
+      "title": "Sentiment Timeline",
+      "desc": "Per-turn emotion + inflection detection",
+      "href": "/platform/features/sentiment-timeline",
+      "category": "Analytics & insights"
+    },
+    {
+      "title": "Conversation Tagging",
+      "desc": "Custom tags auto-applied to every call",
+      "href": "/platform/features/conversation-tagging",
+      "category": "Analytics & insights"
+    },
+    {
+      "title": "Funnel Analytics",
+      "desc": "Per-node drop-off across the workflow",
+      "href": "/platform/features/funnel-analytics",
+      "category": "Analytics & insights"
+    },
+    {
+      "title": "Cost per Outcome",
+      "desc": "CFO-ready ROI per workflow + cohort",
+      "href": "/platform/features/cost-per-outcome",
+      "category": "Analytics & insights"
+    },
+    {
+      "title": "Audit Log Export",
+      "desc": "SIEM-streamed, immutable, 7yr retention",
+      "href": "/platform/features/audit-log-export",
+      "category": "Analytics & insights"
+    }
+  ],
+  "FEATURE_PAGES": {
+    "workflow-editor": {
+      "slug": "workflow-editor",
+      "eyebrow": "Orchestration",
+      "hero": "Drag a node.\nShip a flow.",
+      "lead": "Visual call flow editor — say, capture, branch, function call, transfer. No code spelunking. Variables persist across nodes and across calls.",
+      "stats": [
+        {
+          "value": "Visual",
+          "label": "Drag-and-drop canvas"
+        },
+        {
+          "value": "0",
+          "label": "Code required"
+        },
+        {
+          "value": "Versioned",
+          "label": "Diff + rollback"
+        },
+        {
+          "value": "Live",
+          "label": "Hot deploy"
+        }
+      ],
+      "gradient": [
+        "#FDB87A",
+        "#9a3412"
+      ],
+      "closingEyebrow": "Compose any call flow",
+      "closingHeading": "From idea to live call,\nin minutes.",
+      "closingBody": "Every node is configurable. Every connection conditional. Build the flow your business actually runs — not the demo's happy path.",
+      "heroMockupSrc": "/_static/snaps/workflow-editor.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Three steps from\nblank canvas to live call.",
+      "howSteps": [
+        {
+          "title": "Drop nodes on the canvas",
+          "body": "Say, capture, branch, function call, transfer — every primitive available as a draggable node. Connect them with arrows.",
+          "mockupId": "workflow-editor"
+        },
+        {
+          "title": "Wire conditional logic",
+          "body": "Branch on intent, captured values, sentiment, time of day. Variables persist across nodes and across calls.",
+          "mockupId": "multi-agent"
+        },
+        {
+          "title": "Deploy to a phone number",
+          "body": "Hot-deploy without dropping calls in flight. Versioned + reversible — roll back in one click if the new flow misbehaves.",
+          "mockupId": "observability-dashboard"
+        }
+      ],
+      "benefitsEyebrow": "Built-in",
+      "benefitsHeading": "Everything the workflow needs,\nin the editor.",
+      "benefits": [
+        {
+          "title": "Hot deploy + rollback",
+          "body": "Push changes without dropping live calls. Roll back to any prior version in one click."
+        },
+        {
+          "title": "Variables that travel",
+          "body": "Captured fields persist across nodes, calls, and agents. No state stitching."
+        },
+        {
+          "title": "Conditional everything",
+          "body": "Branch on intent, captured value, sentiment, hours, geography — any signal the call exposes."
+        },
+        {
+          "title": "Diff view per change",
+          "body": "See exactly what changed between versions. Audit-ready, no spelunking through commits."
+        }
+      ],
+      "integrations": [
+        "Salesforce",
+        "HubSpot",
+        "Calendly",
+        "Twilio",
+        "Zendesk",
+        "Slack"
+      ],
+      "customerQuoteId": "snazzy",
+      "faqs": [
+        {
+          "question": "Do I need to write code?",
+          "answer": "No. The workflow editor is a visual canvas — drag nodes, connect them with arrows, configure each node in a side panel. Function-call nodes optionally take JSON schemas, but the editor never asks you to write a line of code."
+        },
+        {
+          "question": "What happens to in-flight calls when I deploy a new version?",
+          "answer": "In-flight calls finish on the version they started on. New calls start on the latest deploy. No dropped calls, no surprised callers."
+        },
+        {
+          "question": "Can I roll back if a new version misbehaves?",
+          "answer": "Yes. Every save creates a versioned snapshot. Roll back to any prior version with one click — the diff view shows you exactly what changed."
+        },
+        {
+          "question": "How are variables shared between nodes?",
+          "answer": "Anything captured by a `capture` node is available to every downstream node in the same call. Persistent variables (caller name, last-call context) survive across calls and across agents."
+        },
+        {
+          "question": "Does the editor support conditional branching?",
+          "answer": "Yes — branch on intent, captured values, sentiment, time of day, audience segment, or any custom signal exposed in your workflow. Branches can route to different sub-flows or transfer to specific human queues."
+        }
+      ],
+      "relatedIndustries": [
+        "/solutions/real-estate",
+        "/solutions/healthcare",
+        "/solutions/financial-services"
+      ]
+    },
+    "knowledge-base": {
+      "slug": "knowledge-base",
+      "eyebrow": "Conversation intelligence",
+      "hero": "Grounded answers.\nEvery turn.",
+      "lead": "Upload PDFs, sitemaps, FAQs, internal docs. Finn embeds, chunks, and retrieves the right passage every turn. Source citations attached to every answer.",
+      "stats": [
+        {
+          "value": "PDF / URL / API",
+          "label": "Source types"
+        },
+        {
+          "value": "Auto",
+          "label": "Re-indexing"
+        },
+        {
+          "value": "Per-Finn",
+          "label": "Workspace isolation"
+        },
+        {
+          "value": "Cited",
+          "label": "Every answer"
+        }
+      ],
+      "gradient": [
+        "#86c277",
+        "#435E35"
+      ],
+      "closingEyebrow": "RAG, done right",
+      "closingHeading": "No hallucinated SLAs.\nNo made-up policies.",
+      "closingBody": "Knowledge base grounds every response in your actual data. If the answer isn't there, Finn says so — and routes the caller to someone who knows.",
+      "heroMockupSrc": "/_static/snaps/knowledge-base.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "From your docs\nto grounded answers.",
+      "howSteps": [
+        {
+          "title": "Upload anything",
+          "body": "PDFs, sitemaps, FAQ pages, public APIs, Notion exports — drop them in. Auto-detected source type, no schema config.",
+          "mockupId": "knowledge-base"
+        },
+        {
+          "title": "Chunk + embed + index",
+          "body": "Smart chunking respects document structure. Re-embeds on source change. Per-Finn workspace isolation — your agent never sees another team's data.",
+          "mockupId": "multi-agent"
+        },
+        {
+          "title": "Retrieve + cite mid-call",
+          "body": "Sub-200ms retrieval per turn. Citations attached to every answer so QA can audit the source. If the answer isn't there, Finn says so.",
+          "mockupId": "voice-loop"
+        }
+      ],
+      "benefitsEyebrow": "Grounded by design",
+      "benefitsHeading": "Every answer\ntraceable to a source.",
+      "benefits": [
+        {
+          "title": "Source citations on every reply",
+          "body": "QA and compliance can audit any answer back to the exact passage. No black-box responses."
+        },
+        {
+          "title": "Auto re-indexing on change",
+          "body": "Update a PDF, push a doc change — the knowledge base re-indexes. No stale answers."
+        },
+        {
+          "title": "Per-Finn workspace isolation",
+          "body": "Sales finn never sees support docs. HR never sees billing PII. Strict separation per agent."
+        },
+        {
+          "title": "Refuses to hallucinate",
+          "body": "If the answer isn't in the corpus, Finn says so — and routes the caller to someone who knows."
+        }
+      ],
+      "integrations": [
+        "Notion",
+        "Salesforce",
+        "HubSpot",
+        "Zendesk",
+        "Slack",
+        "Intercom"
+      ],
+      "customerQuoteId": "orbit",
+      "faqs": [
+        {
+          "question": "What document formats are supported?",
+          "answer": "PDFs, Markdown, HTML pages, sitemaps, Notion exports, Google Docs, public REST endpoints. Anything text-based — we extract, chunk, and embed automatically."
+        },
+        {
+          "question": "How fast is retrieval mid-call?",
+          "answer": "Sub-200ms per query in the steady state. Retrieval runs in parallel with LLM inference so it doesn't add latency to the voice loop."
+        },
+        {
+          "question": "What happens when a source document changes?",
+          "answer": "Sources are polled on a schedule (default daily, configurable). Changed documents are re-chunked and re-embedded automatically. In-flight calls finish on the prior version."
+        },
+        {
+          "question": "Can different Finns share or isolate knowledge bases?",
+          "answer": "Both. You can scope a knowledge base to one Finn, share it across a team, or attach multiple knowledge bases to a single Finn with priority weighting."
+        },
+        {
+          "question": "What if the answer isn't in the knowledge base?",
+          "answer": "Finn says so and either escalates to a human, takes a callback request, or routes to a different specialist agent — your choice, configured per Finn."
+        }
+      ],
+      "relatedIndustries": [
+        "/solutions/healthcare",
+        "/solutions/insurance",
+        "/solutions/legal",
+        "/solutions/saas"
+      ]
+    },
+    "voice-library": {
+      "slug": "voice-library",
+      "eyebrow": "Voice & language",
+      "hero": "100+ voices.\n46 languages.",
+      "lead": "Pick a stock voice or clone your own in 60 seconds. Switch language mid-call. Tune accent, pace, pronunciation per finn.",
+      "stats": [
+        {
+          "value": "100+",
+          "label": "Stock voices"
+        },
+        {
+          "value": "46",
+          "label": "Languages"
+        },
+        {
+          "value": "60s",
+          "label": "Clone time"
+        },
+        {
+          "value": "Per-finn",
+          "label": "Voice + tone"
+        }
+      ],
+      "gradient": [
+        "#FD7FAD",
+        "#9a3412"
+      ],
+      "closingEyebrow": "Your brand, your voice",
+      "closingHeading": "Sound like you.\nNot a robot.",
+      "closingBody": "Brand voice cloning from a 60-second sample. Custom pronunciation for SKUs, names, and jargon. Preview every voice before deploying.",
+      "heroMockupSrc": "/_static/snaps/voice-library.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Pick a voice.\nOr clone yours.",
+      "howSteps": [
+        {
+          "title": "Browse the library",
+          "body": "100+ stock voices across 46 languages. Filter by accent, age, tone, gender. Preview every voice with a real sample before assigning.",
+          "mockupId": "voice-library"
+        },
+        {
+          "title": "Clone in 60 seconds",
+          "body": "Upload a 60-second sample of your spokesperson, agent, or brand voice. Cloned voice ready to deploy. Consent + watermarking built in.",
+          "mockupId": "voice-library"
+        },
+        {
+          "title": "Tune per Finn",
+          "body": "Adjust pace, pitch, pause length, accent strength. Add custom pronunciations for SKUs, drug names, technical jargon. Per-Finn voice profile.",
+          "mockupId": "voice-library"
+        }
+      ],
+      "benefitsEyebrow": "Voice that feels human",
+      "benefitsHeading": "Tuned for trust.\nNot for novelty.",
+      "benefits": [
+        {
+          "title": "Sub-second TTS",
+          "body": "Streaming synthesis — speech starts before the LLM finishes generating. No awkward dead air mid-response."
+        },
+        {
+          "title": "Cloned with consent",
+          "body": "Voice cloning requires written consent + audio watermarking. Compliant with EU AI Act + state biometric laws."
+        },
+        {
+          "title": "Custom pronunciation library",
+          "body": "Override how Finn says any word. SKUs, drug names, addresses, brand terms — all rendered the way you want."
+        },
+        {
+          "title": "Mid-call language switch",
+          "body": "Caller responds in Spanish? Finn switches mid-turn. No re-routing, no second agent."
+        }
+      ],
+      "integrations": [
+        "ElevenLabs",
+        "OpenAI",
+        "Microsoft Teams",
+        "Twilio",
+        "Plivo",
+        "Telnyx"
+      ],
+      "customerQuoteId": "frinks",
+      "faqs": [
+        {
+          "question": "How long does voice cloning take?",
+          "answer": "60 seconds of clean audio + a written consent form = a cloned voice ready to deploy within 5 minutes. Quality scales with sample length; we recommend 2-3 minutes for production use."
+        },
+        {
+          "question": "What languages are supported?",
+          "answer": "46 languages including English (multiple accents), Spanish, Mandarin, Hindi, Arabic, Portuguese, French, German, Japanese, Korean, and most major European + Asian languages. Real-time accent + dialect handling."
+        },
+        {
+          "question": "Can Finn switch languages mid-call?",
+          "answer": "Yes. Caller can respond in any supported language and Finn detects + switches automatically. No re-routing or second agent required."
+        },
+        {
+          "question": "How do I add custom pronunciations?",
+          "answer": "Add words to a per-Finn pronunciation dictionary. Specify the spelling and the phonetic or audio sample you want Finn to render. Useful for SKUs, drug names, technical jargon."
+        },
+        {
+          "question": "What's the latency for voice synthesis?",
+          "answer": "Streaming TTS starts speech within ~100ms of the LLM beginning to generate. Full sub-second voice loop end-to-end."
+        }
+      ],
+      "relatedIndustries": [
+        "/solutions/hospitality",
+        "/solutions/travel",
+        "/solutions/retail"
+      ]
+    },
+    "live-transfer": {
+      "slug": "live-transfer",
+      "eyebrow": "Routing & handoff",
+      "hero": "Warm transfer\nwith full context.",
+      "lead": "When the call needs a human, Finn doesn't dump the caller on a cold queue. It hands off the summary, the captured fields, and the next-step intent.",
+      "stats": [
+        {
+          "value": "Warm",
+          "label": "Full context handoff"
+        },
+        {
+          "value": "Skill-based",
+          "label": "Route to specialist"
+        },
+        {
+          "value": "Fallback",
+          "label": "Voicemail / callback"
+        },
+        {
+          "value": "Live",
+          "label": "Mid-call escalation"
+        }
+      ],
+      "gradient": [
+        "#0f766e",
+        "#1e3a8a"
+      ],
+      "closingEyebrow": "Human in the loop",
+      "closingHeading": "No 'can you repeat\nyour account number?'",
+      "closingBody": "The human picks up where Finn left off — with the call summary, the structured outcome, and the captured fields already loaded.",
+      "heroMockupSrc": "/_static/snaps/live-transfer.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Escalate clean.\nLand warm.",
+      "howSteps": [
+        {
+          "title": "Detect the moment",
+          "body": "Caller asks for a human, sentiment drops, intent maps to a high-touch path, or your business rules say escalate. Finn surfaces the signal in real time.",
+          "mockupId": "live-transfer"
+        },
+        {
+          "title": "Match to the right human",
+          "body": "Skill-based routing picks the right queue, agent, or rep. Falls back to voicemail or scheduled callback when no one's available.",
+          "mockupId": "multi-agent"
+        },
+        {
+          "title": "Warm handoff with context",
+          "body": "Human picks up with the call summary, captured fields, sentiment timeline, and proposed next step already on screen. Caller never repeats themselves.",
+          "mockupId": "live-transfer"
+        }
+      ],
+      "benefitsEyebrow": "Built for real call centers",
+      "benefitsHeading": "Wired into\nyour existing stack.",
+      "benefits": [
+        {
+          "title": "Skill-based routing",
+          "body": "Route to the right specialist by language, tier, queue, or any custom signal. Not just round-robin."
+        },
+        {
+          "title": "Voicemail + callback fallback",
+          "body": "When no human's available, Finn books a callback or takes a voicemail. No dropped calls."
+        },
+        {
+          "title": "Whisper coaching",
+          "body": "Optional: human gets a 5-second audio summary in their ear before the caller comes through."
+        },
+        {
+          "title": "Outcome captured on handoff",
+          "body": "Structured outcome + captured fields pushed to your CRM the moment the transfer completes."
+        }
+      ],
+      "integrations": [
+        "Twilio",
+        "Plivo",
+        "Telnyx",
+        "Zendesk",
+        "Salesforce",
+        "Slack"
+      ],
+      "customerQuoteId": "tofa",
+      "faqs": [
+        {
+          "question": "What carriers support live transfer?",
+          "answer": "Twilio, Plivo, Telnyx, plus SIP trunk-based BYOC. Most US, EU, and APAC carriers are supported via these providers."
+        },
+        {
+          "question": "How does the human get the context?",
+          "answer": "On transfer pickup, the human sees a one-page summary: caller name, intent, captured fields, sentiment timeline, and Finn's proposed next step. Pushed via screen-pop into your existing CRM or helpdesk."
+        },
+        {
+          "question": "What happens if no one's available to take the call?",
+          "answer": "Finn books a callback at the caller's preferred time, takes a voicemail, or escalates to a different queue based on your fallback rules."
+        },
+        {
+          "question": "Can Finn transfer to an external phone number?",
+          "answer": "Yes — Finn can warm-transfer to any phone number (your call center, an on-call rep, a partner). The handoff includes a verbal context summary spoken to the receiver before the caller is bridged in."
+        },
+        {
+          "question": "Does the caller hear hold music during transfer?",
+          "answer": "Finn keeps the caller engaged with a short status update (\"Connecting you with a senior specialist now…\") rather than dumping them on dead air or generic hold music."
+        }
+      ],
+      "relatedIndustries": [
+        "/solutions/healthcare",
+        "/solutions/insurance",
+        "/solutions/financial-services"
+      ]
+    },
+    "post-call-analysis": {
+      "slug": "post-call-analysis",
+      "eyebrow": "Quality & ops",
+      "hero": "Every call,\nauto-tagged.",
+      "lead": "Outcome, sentiment, intent, dispute flags — generated automatically per call. No human QA required. Wire it into your CRM, act tomorrow.",
+      "stats": [
+        {
+          "value": "100%",
+          "label": "Coverage"
+        },
+        {
+          "value": "0",
+          "label": "Manual QA hours"
+        },
+        {
+          "value": "Custom",
+          "label": "Outcome taxonomy"
+        },
+        {
+          "value": "Webhook",
+          "label": "CRM push"
+        }
+      ],
+      "gradient": [
+        "#FD7FAD",
+        "#9a3412"
+      ],
+      "closingEyebrow": "Outcomes you can act on",
+      "closingHeading": "Stop guessing\nwhat happened.",
+      "closingBody": "PCA tags every call against your custom outcome taxonomy. Sentiment per turn. Dispute auto-flagged. Pushed to your stack on call end.",
+      "heroMockupSrc": "/_static/snaps/transcript-pca.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Tag the call.\nAct on the outcome.",
+      "howSteps": [
+        {
+          "title": "Define your outcome taxonomy",
+          "body": "Pick from templates (sales qualified, payment confirmed, dispute raised) or define your own. Per-workflow taxonomy with mutually exclusive labels.",
+          "mockupId": "transcript-pca"
+        },
+        {
+          "title": "Auto-tag on call end",
+          "body": "PCA runs the moment the call disconnects. Outcome, sentiment per turn, intent, captured fields, and dispute flags — all generated automatically.",
+          "mockupId": "evals-board"
+        },
+        {
+          "title": "Push to your stack",
+          "body": "Webhook fires with structured payload to your CRM, helpdesk, data warehouse, or Slack channel. Act on the outcome before the rep finishes their next call.",
+          "mockupId": "webhook-flow"
+        }
+      ],
+      "benefitsEyebrow": "QA on autopilot",
+      "benefitsHeading": "From hours of\nlistening to zero.",
+      "benefits": [
+        {
+          "title": "100% call coverage",
+          "body": "Every call tagged. Not a 5% sample. Not the obvious wins. The escalations, the no-shows, the disputes — all surfaced."
+        },
+        {
+          "title": "Custom taxonomy per workflow",
+          "body": "Sales workflow tags differently than collections. Define outcomes that match how your team thinks about the work."
+        },
+        {
+          "title": "Sentiment per turn",
+          "body": "Spot the exact moment a call went sideways. Coach reps on what worked, drop the prompts that didn't."
+        },
+        {
+          "title": "Dispute auto-flag",
+          "body": "Caller raises a TCPA, GDPR, or service complaint — PCA flags + freezes the call for compliance review."
+        }
+      ],
+      "integrations": [
+        "Salesforce",
+        "HubSpot",
+        "Slack",
+        "Zendesk",
+        "Notion",
+        "Linear"
+      ],
+      "customerQuoteId": "snazzy",
+      "faqs": [
+        {
+          "question": "How quickly does PCA run after call end?",
+          "answer": "Within 30 seconds of disconnect. Outcome, sentiment, transcript, and structured fields all available via webhook + dashboard within that window."
+        },
+        {
+          "question": "Can I customize the outcome taxonomy?",
+          "answer": "Yes. Define your own mutually exclusive outcomes per workflow. We provide templates for common verticals (sales, support, collections, healthcare) as starting points."
+        },
+        {
+          "question": "Where do PCA results get sent?",
+          "answer": "Anywhere you have a webhook endpoint — CRM, helpdesk, data warehouse, Slack, Linear, your own internal API. Multiple destinations per workflow supported."
+        },
+        {
+          "question": "Is the full transcript stored?",
+          "answer": "Yes. Full word-level transcript with speaker diarization, timestamps, and confidence scores. Stored per your data retention policy."
+        },
+        {
+          "question": "Can I disable PCA on sensitive workflows?",
+          "answer": "Yes. PCA can be disabled per workflow or per call (e.g. HIPAA-restricted flows). Captured fields and outcome can be redacted before storage."
+        }
+      ],
+      "relatedIndustries": [
+        "/solutions/fintech",
+        "/solutions/debt-collection",
+        "/solutions/insurance"
+      ]
+    },
+    "batch-calling": {
+      "slug": "batch-calling",
+      "eyebrow": "Outbound ops",
+      "hero": "Outbound campaigns.\nAt any scale.",
+      "lead": "Upload an audience CSV, pick a workflow, hit go. Smart retry, DNC scrubbing, time-zone-aware dialing, concurrency throttling — all built in.",
+      "stats": [
+        {
+          "value": "CSV / API",
+          "label": "Audience upload"
+        },
+        {
+          "value": "Smart",
+          "label": "Retry + backoff"
+        },
+        {
+          "value": "DNC",
+          "label": "Scrub on dial"
+        },
+        {
+          "value": "TZ-aware",
+          "label": "Dial windows"
+        }
+      ],
+      "gradient": [
+        "#86c277",
+        "#435E35"
+      ],
+      "closingEyebrow": "Volume without burnout",
+      "closingHeading": "Reach every contact.\nIn their window.",
+      "closingBody": "From 100 calls to 100,000 — same workflow, same orchestrator, same observability. Pause, resume, throttle from one panel.",
+      "heroMockupSrc": "/_static/snaps/csv-audience.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Upload audience.\nLet Finn dial.",
+      "howSteps": [
+        {
+          "title": "Upload an audience",
+          "body": "Drop a CSV, push via API, or sync from your CRM. We auto-map columns to variables and validate phone formats + DNC status on import.",
+          "mockupId": "function-call"
+        },
+        {
+          "title": "Pick a workflow",
+          "body": "Attach any workflow from the editor — sales qualification, payment reminder, appointment confirmation, survey. Same workflow scales from 100 to 100,000 calls.",
+          "mockupId": "workflow-editor"
+        },
+        {
+          "title": "Throttle, pause, observe live",
+          "body": "Real-time dashboard shows answered / no-answer / voicemail / busy. Pause the campaign instantly, adjust concurrency, drill into individual call transcripts.",
+          "mockupId": "observability-dashboard"
+        }
+      ],
+      "benefitsEyebrow": "Compliance + scale, built-in",
+      "benefitsHeading": "Dial fast.\nDial right.",
+      "benefits": [
+        {
+          "title": "Smart retry + backoff",
+          "body": "No-answer + busy lines get retried with exponential backoff and time-of-day adjustments. Voicemail-detected calls drop without burning a retry."
+        },
+        {
+          "title": "DNC scrub on every dial",
+          "body": "National + state DNC lists checked before every connect. Per-account opt-out lists synced in real time. TCPA-safe by default."
+        },
+        {
+          "title": "Time-zone-aware windows",
+          "body": "Dial only during legal calling windows in the contact's timezone. Configurable per state for stricter regimes (e.g. CA, MA)."
+        },
+        {
+          "title": "Concurrency throttling",
+          "body": "Cap how many calls run in parallel — from 5 to 5,000. Avoid blowing up your downstream CRM or compliance limits."
+        }
+      ],
+      "integrations": [
+        "Salesforce",
+        "HubSpot",
+        "Twilio",
+        "Plivo",
+        "Zapier",
+        "Slack"
+      ],
+      "customerQuoteId": "orbit",
+      "faqs": [
+        {
+          "question": "What's the maximum campaign size?",
+          "answer": "No hard cap. Customers run 50,000-call campaigns regularly; we've ramped to 250,000-call days on enterprise plans. Concurrency is what gets sized, not total contacts."
+        },
+        {
+          "question": "How does Finn handle voicemail?",
+          "answer": "Voicemail detection is built in. You configure per-workflow whether to leave a message, drop the call silently, or schedule a retry. Detection latency is ~1.2s."
+        },
+        {
+          "question": "Is DNC scrubbing automatic?",
+          "answer": "Yes. National + state DNC lists are checked on every dial. Per-account opt-out lists sync in real time. Calls to scrubbed numbers are skipped (not retried)."
+        },
+        {
+          "question": "Can I pause a campaign mid-run?",
+          "answer": "Yes — one click. In-flight calls finish, queued calls pause. Resume, adjust concurrency, or cancel from the same panel."
+        },
+        {
+          "question": "How is timezone determined for each contact?",
+          "answer": "Auto-detected from area code by default, overrideable via a CSV column or CRM field. Dial windows respect state-level calling-window laws (CA 8a-9p, MA 8a-8p, etc.)."
+        }
+      ]
+    },
+    "branded-call-id": {
+      "slug": "branded-call-id",
+      "eyebrow": "Telephony trust",
+      "hero": "Your brand name.\nOn the caller ID.",
+      "lead": "Pickup rates jump 30-60% when the caller sees a verified business name instead of an unknown number. Branded Caller ID gets you that lift on every dial.",
+      "stats": [
+        {
+          "value": "+30-60%",
+          "label": "Pickup lift"
+        },
+        {
+          "value": "Verified",
+          "label": "STIR/SHAKEN A-attestation"
+        },
+        {
+          "value": "Logo + reason",
+          "label": "Rich call presentation"
+        },
+        {
+          "value": "US + global",
+          "label": "Carrier coverage"
+        }
+      ],
+      "gradient": [
+        "#7c3aed",
+        "#3730a3"
+      ],
+      "closingEyebrow": "Trust on every dial",
+      "closingHeading": "Stop being\n'Unknown.'",
+      "closingBody": "Branded Caller ID surfaces your name, logo, and call reason on supported carriers. STIR/SHAKEN attested. Spam-likely labels avoided. More pickups, fewer wasted dials.",
+      "heroMockupSrc": "/_static/snaps/caller-id-card.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Verify your brand.\nLand on every screen.",
+      "howSteps": [
+        {
+          "title": "Verify your business",
+          "body": "One-time registration with the call-trust analytics providers (TNS, Hiya, First Orion). We handle the paperwork — you provide the EIN, domain, and brand assets.",
+          "mockupId": "security-ledger"
+        },
+        {
+          "title": "Carrier registration",
+          "body": "Your verified name + logo + call reason get pushed to T-Mobile, AT&T, Verizon, and global carrier networks. Updates propagate within 24-48 hours.",
+          "mockupId": "compliance-badges"
+        },
+        {
+          "title": "Track pickup lift",
+          "body": "Dashboard surfaces pickup-rate delta vs unbranded calls per region + carrier. A/B test brand presentation per campaign.",
+          "mockupId": "observability-dashboard"
+        }
+      ],
+      "benefitsEyebrow": "Pickup, attested",
+      "benefitsHeading": "Stop landing\nas 'Spam Likely.'",
+      "benefits": [
+        {
+          "title": "STIR/SHAKEN A-attestation",
+          "body": "Highest attestation level — carriers trust your call origination. No 'Scam Likely' tag on T-Mobile, AT&T, or Verizon."
+        },
+        {
+          "title": "Logo + call reason",
+          "body": "On supported handsets (iOS 17+, Pixel, Samsung), caller sees your logo + a one-line reason for the call. Built-in trust signal."
+        },
+        {
+          "title": "Reputation monitoring",
+          "body": "We monitor your number's reputation across analytics providers + flag spam-labeling proactively. Auto-remediation built in."
+        },
+        {
+          "title": "Multi-region carrier coverage",
+          "body": "US (T-Mobile, AT&T, Verizon), UK, EU, India, Australia carrier networks. Coverage expands monthly."
+        }
+      ],
+      "integrations": [
+        "Twilio",
+        "Plivo",
+        "Telnyx",
+        "Salesforce",
+        "HubSpot",
+        "Slack"
+      ],
+      "customerQuoteId": "frinks",
+      "faqs": [
+        {
+          "question": "How long does verification take?",
+          "answer": "Typically 3-5 business days end-to-end. We handle the paperwork; you provide EIN, business address, domain, and brand assets (logo, call reasons)."
+        },
+        {
+          "question": "What's the typical pickup lift?",
+          "answer": "30-60% lift on US calls within 30 days, depending on industry and prior reputation. Healthcare and financial services see the highest delta because of pre-existing spam labeling."
+        },
+        {
+          "question": "Which carriers and handsets support branded display?",
+          "answer": "T-Mobile, AT&T, Verizon, US Cellular, plus most major global carriers. Display surfaces on iOS 17+, Pixel devices, and Samsung One UI 5+. Older handsets see the verified name without the logo."
+        },
+        {
+          "question": "What if my number gets flagged as 'Spam Likely'?",
+          "answer": "We monitor your reputation across the three major analytics providers (TNS, Hiya, First Orion) and remediate flagging automatically. Most cases clear within 48 hours."
+        },
+        {
+          "question": "Does this work for outbound campaigns or only single calls?",
+          "answer": "Both. Branded Caller ID is per-number — every dial from a verified number surfaces the brand. Pairs naturally with Batch Calling for outbound campaigns."
+        }
+      ]
+    },
+    "sms-follow-up": {
+      "slug": "sms-follow-up",
+      "eyebrow": "Comms",
+      "hero": "SMS that lands\nbefore the caller hangs up.",
+      "lead": "Finn fires the right text mid-call or right after — confirmation, payment link, document, calendar invite. Templated, personalized, delivered.",
+      "stats": [
+        {
+          "value": "<2s",
+          "label": "Delivery latency"
+        },
+        {
+          "value": "Templated",
+          "label": "Per-workflow body"
+        },
+        {
+          "value": "Variable",
+          "label": "Merge caller fields"
+        },
+        {
+          "value": "Logged",
+          "label": "Per-call audit trail"
+        }
+      ],
+      "gradient": [
+        "#0f766e",
+        "#1e3a8a"
+      ],
+      "closingEyebrow": "Calls + texts, one workflow",
+      "closingHeading": "Stop juggling\ntwo platforms.",
+      "closingBody": "SMS is a node in the workflow editor, not a separate tool. Same orchestrator, same delivery logs, same compliance posture.",
+      "heroMockupSrc": "/_static/snaps/sms-thread.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Trigger from any node.\nDelivered in seconds.",
+      "howSteps": [
+        {
+          "title": "Drop an SMS node in the flow",
+          "body": "Same drag-and-drop editor. SMS sits next to capture, branch, transfer. Configure body, sender ID, link tracking in a side panel.",
+          "mockupId": "workflow-editor"
+        },
+        {
+          "title": "Merge caller fields into the body",
+          "body": "Reference any captured variable — name, amount, slot, link. Templates are versioned + previewable so the rep sees exactly what the caller gets.",
+          "mockupId": "function-call"
+        },
+        {
+          "title": "Deliver + track",
+          "body": "Sub-2-second delivery via your carrier. Status (delivered, read, clicked) writes back to the call timeline + your CRM.",
+          "mockupId": "webhook-flow"
+        }
+      ],
+      "benefitsEyebrow": "Built for the moment",
+      "benefitsHeading": "Real-time SMS,\ncompliance-clean.",
+      "benefits": [
+        {
+          "title": "Mid-call delivery",
+          "body": "Send while the caller is still on the line — payment link, address, document. No 'I'll text you later.'"
+        },
+        {
+          "title": "TCPA-safe consent",
+          "body": "Verbal consent captured + logged before any outbound SMS. Opt-out keywords (STOP, UNSUBSCRIBE) auto-honored across the account."
+        },
+        {
+          "title": "Per-workflow templates",
+          "body": "Sales template, support template, payment template — each versioned, previewable, audit-logged."
+        },
+        {
+          "title": "Link tracking + write-back",
+          "body": "Short links per recipient. Click + delivery events fire webhooks to your CRM in real time."
+        }
+      ],
+      "integrations": [
+        "Twilio",
+        "Plivo",
+        "Telnyx",
+        "Salesforce",
+        "HubSpot",
+        "Slack"
+      ],
+      "customerQuoteId": "tofa",
+      "faqs": [
+        {
+          "question": "Can Finn send SMS during a live call?",
+          "answer": "Yes. SMS nodes can fire mid-call — typical use cases are payment links, calendar invites, document delivery, or 2FA codes the caller needs in the same session."
+        },
+        {
+          "question": "How does TCPA + consent get handled?",
+          "answer": "Verbal consent is captured + logged before any outbound SMS. STOP / UNSUBSCRIBE replies auto-suppress the recipient across the entire account, not just the workflow."
+        },
+        {
+          "question": "Which carriers and countries are supported?",
+          "answer": "US + Canada (Twilio, Plivo, Telnyx), UK, EU, India, Australia. Long codes, short codes, and toll-free messaging supported. 10DLC registration handled for US sending."
+        },
+        {
+          "question": "Can I personalize per recipient?",
+          "answer": "Yes. Any captured variable can be merged into the SMS body — caller name, amount, slot, custom fields from your CRM. Templates support conditional blocks (`{{if hasAccount}}…{{/if}}`)."
+        },
+        {
+          "question": "Where do delivery + click events show up?",
+          "answer": "On the call timeline in the dashboard + via webhook to your CRM or data warehouse. Salesforce, HubSpot, Slack, and custom webhooks all first-class."
+        }
+      ]
+    },
+    "whatsapp-follow-up": {
+      "slug": "whatsapp-follow-up",
+      "eyebrow": "Comms",
+      "hero": "WhatsApp messages,\nfrom the same workflow.",
+      "lead": "Verified business profile. Rich media. Templated post-call follow-up with documents, payment links, and booking confirmations.",
+      "stats": [
+        {
+          "value": "Business API",
+          "label": "Verified profile"
+        },
+        {
+          "value": "Rich media",
+          "label": "Docs, links, video"
+        },
+        {
+          "value": "Templated",
+          "label": "Approved per use case"
+        },
+        {
+          "value": "Read receipts",
+          "label": "Engagement signals"
+        }
+      ],
+      "gradient": [
+        "#16ce7d",
+        "#0f766e"
+      ],
+      "closingEyebrow": "Where your customers actually read",
+      "closingHeading": "WhatsApp is the inbox.\nMeet them there.",
+      "closingBody": "85% read rate within 5 minutes. Triggered from any call workflow with full variable merging + audit-logged consent.",
+      "heroMockupSrc": "/_static/snaps/webhook-flow.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Verified profile.\nApproved templates. Live in days.",
+      "howSteps": [
+        {
+          "title": "Onboard your business profile",
+          "body": "WhatsApp Business API verification — we handle Meta paperwork. Verified green-tick profile with your logo and call-back number.",
+          "mockupId": "security-ledger"
+        },
+        {
+          "title": "Approve message templates",
+          "body": "Pre-approve templates per use case (confirmation, reminder, payment, support). Approval cycle ~24h. Variable slots stay flexible.",
+          "mockupId": "knowledge-base"
+        },
+        {
+          "title": "Fire from any call node",
+          "body": "WhatsApp node in the editor next to SMS. Mid-call or post-call. Rich media (PDF, image, location) attached automatically based on context.",
+          "mockupId": "webhook-flow"
+        }
+      ],
+      "benefitsEyebrow": "Verified, compliant, rich",
+      "benefitsHeading": "Trust signals\nthe inbox respects.",
+      "benefits": [
+        {
+          "title": "85% read rate",
+          "body": "WhatsApp messages get opened — within 5 minutes typically. Compare to ~20% for email."
+        },
+        {
+          "title": "Rich media attachments",
+          "body": "PDF invoices, location pins, booking confirmations, product images. Sent natively in the conversation."
+        },
+        {
+          "title": "Two-way conversation handoff",
+          "body": "Customer replies route back to a human or a chat agent. No dead-end one-way blasts."
+        },
+        {
+          "title": "Multi-language templates",
+          "body": "Approve templates in 46 languages. Sent in the caller's preferred language automatically."
+        }
+      ],
+      "integrations": [
+        "WhatsApp",
+        "Twilio",
+        "Salesforce",
+        "HubSpot",
+        "Zendesk",
+        "Slack"
+      ],
+      "customerQuoteId": "orbit",
+      "faqs": [
+        {
+          "question": "How long does WhatsApp Business onboarding take?",
+          "answer": "Typically 3-5 business days for Meta verification + green-tick. We handle the paperwork; you provide business documents (incorporation cert, address, domain, logo)."
+        },
+        {
+          "question": "Why do templates need pre-approval?",
+          "answer": "WhatsApp requires templates for any business-initiated outbound message (utility, marketing, authentication). Approval is one-time per template; ~24h turnaround from Meta."
+        },
+        {
+          "question": "Can I attach files?",
+          "answer": "Yes. PDFs, images, videos, audio, location pins, contact cards. Attached natively to the WhatsApp message — no external link."
+        },
+        {
+          "question": "What happens when the customer replies?",
+          "answer": "Replies route to a human chat agent, a Finn chat workflow, or your existing helpdesk. No dead-end blasts — two-way conversation supported by default."
+        },
+        {
+          "question": "Is opt-in required?",
+          "answer": "Yes. WhatsApp requires opt-in before the first outbound business message. Finn captures + logs verbal consent during the call before triggering the first WhatsApp send."
+        }
+      ]
+    },
+    "email-follow-up": {
+      "slug": "email-follow-up",
+      "eyebrow": "Comms",
+      "hero": "Email follow-up,\non send.",
+      "lead": "Templated emails fired from any call node. Variables merged, attachments wired, delivery + open + click logged back to the call.",
+      "stats": [
+        {
+          "value": "Templated",
+          "label": "Per-workflow body"
+        },
+        {
+          "value": "Attached",
+          "label": "PDFs, invoices, contracts"
+        },
+        {
+          "value": "Tracked",
+          "label": "Open + click + reply"
+        },
+        {
+          "value": "SPF/DKIM",
+          "label": "Authenticated send"
+        }
+      ],
+      "gradient": [
+        "#7c3aed",
+        "#3730a3"
+      ],
+      "closingEyebrow": "Calls + email, one trail",
+      "closingHeading": "Same call, same thread.\nSame audit trail.",
+      "closingBody": "Email triggered from the workflow lands in the call timeline. Sales reps see what was sent. Compliance sees what was logged.",
+      "heroMockupSrc": "/_static/snaps/webhook-flow.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Fire from any node.\nAuthenticated, tracked, attached.",
+      "howSteps": [
+        {
+          "title": "Author + version templates",
+          "body": "HTML or plain text. Variables merged from captured fields. Per-workflow template library. Preview every email before deploying.",
+          "mockupId": "knowledge-base"
+        },
+        {
+          "title": "Wire attachments",
+          "body": "Attach PDFs, contracts, invoices — generated on the fly from the call's structured data. Or pick from your document library.",
+          "mockupId": "function-call"
+        },
+        {
+          "title": "Send + track",
+          "body": "Sent from your verified domain with SPF/DKIM/DMARC. Delivery, open, click, reply — all events fire back to the call timeline + your CRM.",
+          "mockupId": "webhook-flow"
+        }
+      ],
+      "benefitsEyebrow": "Deliverable + auditable",
+      "benefitsHeading": "Lands in the inbox.\nNot in spam.",
+      "benefits": [
+        {
+          "title": "From your domain, authenticated",
+          "body": "SPF, DKIM, DMARC configured on setup. Mails come from yourcompany.com, not a generic shared domain."
+        },
+        {
+          "title": "Conditional bodies",
+          "body": "Different templates fire based on call outcome — sale-closed vs callback-scheduled get different copy."
+        },
+        {
+          "title": "Reply routing",
+          "body": "Replies route to the right human, queue, or CRM record. Tied back to the original call thread."
+        },
+        {
+          "title": "Bounce + suppression management",
+          "body": "Hard bounces auto-suppress. Soft bounces retry with backoff. Compliance-grade unsubscribe handling."
+        }
+      ],
+      "integrations": [
+        "Gmail",
+        "Salesforce",
+        "HubSpot",
+        "Mailchimp",
+        "Sendgrid",
+        "Slack"
+      ],
+      "customerQuoteId": "snazzy",
+      "faqs": [
+        {
+          "question": "Can Finn send email during a live call?",
+          "answer": "Yes. Email nodes can fire mid-call — typical use cases are sending a contract, invoice, calendar invite, or document the caller needs to see in the same session."
+        },
+        {
+          "question": "How is deliverability handled?",
+          "answer": "Sent from your verified domain with SPF, DKIM, and DMARC configured. We manage IP warming, suppression lists, and bounce handling. Typical inbox placement >98%."
+        },
+        {
+          "question": "Can I attach generated documents?",
+          "answer": "Yes. PDFs, contracts, invoices, and receipts can be generated from the call's structured data and attached automatically. Or pick from a pre-uploaded document library."
+        },
+        {
+          "question": "Where do open + click events show up?",
+          "answer": "On the call timeline in the dashboard, plus webhooks to your CRM / data warehouse on every event (delivered, opened, clicked, replied, bounced, unsubscribed)."
+        },
+        {
+          "question": "How are replies handled?",
+          "answer": "Replies route to a human inbox, a Finn chat workflow, or your existing CRM record. Threading is preserved so the conversation stays tied to the original call."
+        }
+      ]
+    },
+    "telegram-follow-up": {
+      "slug": "telegram-follow-up",
+      "eyebrow": "Comms",
+      "hero": "Telegram bots,\nfor calls that need a chat.",
+      "lead": "Trigger Telegram messages from any call node. Reach customers in markets where Telegram is the dominant channel — India, Brazil, MENA, Eastern Europe.",
+      "stats": [
+        {
+          "value": "Bot API",
+          "label": "Official integration"
+        },
+        {
+          "value": "Rich media",
+          "label": "Docs, links, polls"
+        },
+        {
+          "value": "Two-way",
+          "label": "Reply handling built in"
+        },
+        {
+          "value": "700M+",
+          "label": "Reachable users"
+        }
+      ],
+      "gradient": [
+        "#26A5E4",
+        "#1e3a8a"
+      ],
+      "closingEyebrow": "Meet customers where they live",
+      "closingHeading": "Telegram in India.\nWhatsApp in LATAM. Done.",
+      "closingBody": "Wire Telegram alongside SMS, WhatsApp, and email. Pick channels per region or per persona. Same orchestrator, same compliance posture.",
+      "heroMockupSrc": "/_static/snaps/webhook-flow.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "One bot.\nEvery workflow.",
+      "howSteps": [
+        {
+          "title": "Connect your Telegram bot",
+          "body": "BotFather token in 30 seconds. Or let us provision a dedicated bot tied to your brand profile.",
+          "mockupId": "security-ledger"
+        },
+        {
+          "title": "Drop Telegram nodes",
+          "body": "Same workflow editor as SMS + WhatsApp + email. Configure body, attachments, inline buttons, polls.",
+          "mockupId": "workflow-editor"
+        },
+        {
+          "title": "Two-way conversation handoff",
+          "body": "User replies to the bot route to a human agent or a Finn chat workflow. Conversation threaded to the originating call.",
+          "mockupId": "webhook-flow"
+        }
+      ],
+      "benefitsEyebrow": "Built for emerging markets",
+      "benefitsHeading": "Where SMS bounces.\nTelegram lands.",
+      "benefits": [
+        {
+          "title": "700M+ active users globally",
+          "body": "Dominant chat platform in India, Brazil, Russia, Iran, parts of MENA + Eastern Europe. Reach customers SMS misses."
+        },
+        {
+          "title": "Inline buttons + polls",
+          "body": "Send polls, quick-reply buttons, web app launches — interactive surfaces SMS can't match."
+        },
+        {
+          "title": "Rich media + files up to 2GB",
+          "body": "Send PDFs, videos, location, audio — natively in the chat. No external link fallback."
+        },
+        {
+          "title": "Free at any scale",
+          "body": "Telegram Bot API has no per-message cost. Run 1,000 or 1,000,000 messages — same flat platform fee."
+        }
+      ],
+      "integrations": [
+        "Salesforce",
+        "HubSpot",
+        "Zendesk",
+        "Slack",
+        "Notion",
+        "Zapier"
+      ],
+      "customerQuoteId": "frinks",
+      "faqs": [
+        {
+          "question": "Why use Telegram over SMS?",
+          "answer": "Telegram is the dominant chat channel in many markets (India, Russia, Iran, Brazil, parts of MENA + Eastern Europe). Free at any volume, supports rich media, polls, inline buttons, files up to 2GB. SMS still wins for universal reach in US/EU."
+        },
+        {
+          "question": "Do I need my own bot or do you provide one?",
+          "answer": "Both options. Bring your own BotFather token in 30 seconds, or let us provision a dedicated bot tied to your verified brand profile (custom name, avatar, description)."
+        },
+        {
+          "question": "Can users start a conversation with the bot?",
+          "answer": "Yes. Inbound Telegram messages route to a Finn chat workflow, a human agent, or your existing helpdesk — same handoff logic as voice."
+        },
+        {
+          "question": "What's the cost compared to WhatsApp?",
+          "answer": "Telegram Bot API has no per-message charge. WhatsApp charges per conversation window (utility, marketing, authentication tiers). Telegram wins on cost at high volume in supported regions."
+        },
+        {
+          "question": "Can I send polls and inline buttons?",
+          "answer": "Yes. Telegram's interactive surfaces (inline keyboards, polls, quizzes, web app buttons) are first-class node options in the workflow editor."
+        }
+      ]
+    },
+    "voicemail-detection": {
+      "slug": "voicemail-detection",
+      "eyebrow": "Voice & turn-taking",
+      "hero": "Voicemail detected.\nIn 1.2 seconds.",
+      "lead": "Finn distinguishes human pickup from machine in under 1.5 seconds. Drop silently, leave a templated message, or schedule a retry — your choice, per workflow.",
+      "stats": [
+        {
+          "value": "<1.5s",
+          "label": "Detection latency"
+        },
+        {
+          "value": "97%",
+          "label": "Accuracy"
+        },
+        {
+          "value": "3 modes",
+          "label": "Drop / leave / retry"
+        },
+        {
+          "value": "Per-workflow",
+          "label": "Templated messages"
+        }
+      ],
+      "gradient": [
+        "#0f766e",
+        "#1e3a8a"
+      ],
+      "closingEyebrow": "Stop wasting dials",
+      "closingHeading": "Detect machines.\nReach humans.",
+      "closingBody": "Voicemail detection runs on every outbound dial. Configurable behavior per campaign. No more half-cooked messages mid-greeting.",
+      "heroMockupSrc": "/_static/snaps/voice-loop.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Listen.\nClassify. Act.",
+      "howSteps": [
+        {
+          "title": "Real-time audio classification",
+          "body": "Acoustic + cadence model detects machine greetings in the first ~1.2 seconds. Tuned across US + international voicemail systems.",
+          "mockupId": "voice-loop"
+        },
+        {
+          "title": "Pick the policy",
+          "body": "Drop silently (preserve retry budget), leave a templated message after the beep, or mark for callback scheduling.",
+          "mockupId": "workflow-editor"
+        },
+        {
+          "title": "Log + adjust",
+          "body": "Per-call detection event logged. Aggregate dashboard shows machine-rate per campaign so you can tune dial windows + retry logic.",
+          "mockupId": "observability-dashboard"
+        }
+      ],
+      "benefitsEyebrow": "Tuned for real outbound",
+      "benefitsHeading": "Detect early.\nAct decisively.",
+      "benefits": [
+        {
+          "title": "Sub-1.5s detection",
+          "body": "Decision made before the greeting finishes — no awkward 'hello hello hello' from Finn."
+        },
+        {
+          "title": "Beep-aware delivery",
+          "body": "When leaving a message, Finn waits for the beep — no clipped intros."
+        },
+        {
+          "title": "Configurable per workflow",
+          "body": "Sales campaigns drop voicemail. Collections leave a compliance-required notice. Same engine."
+        },
+        {
+          "title": "Retry-budget aware",
+          "body": "Drops don't burn a retry. Beeped messages do. All policy-driven."
+        }
+      ],
+      "integrations": [
+        "Twilio",
+        "Plivo",
+        "Telnyx",
+        "Salesforce",
+        "HubSpot",
+        "Zapier"
+      ],
+      "customerQuoteId": "orbit",
+      "faqs": [
+        {
+          "question": "How accurate is voicemail detection?",
+          "answer": "~97% accuracy in the steady state across US + major international carriers. Continuously retrained on edge cases (carrier-specific greetings, foreign-language voicemail systems)."
+        },
+        {
+          "question": "What's the detection latency?",
+          "answer": "Under 1.5 seconds in 95% of cases. Finn won't speak until the classification settles, so the caller never hears overlapping greetings."
+        },
+        {
+          "question": "Can I leave different messages per campaign?",
+          "answer": "Yes — per-workflow templates with variable merging. Sales template, collections template, appointment-reminder template, all separately versioned."
+        },
+        {
+          "question": "What happens when detection is uncertain?",
+          "answer": "Configurable per workflow — default is to treat as human (better caller experience). Can be flipped to skip+retry for high-volume outbound."
+        },
+        {
+          "question": "Does this affect retry budgets?",
+          "answer": "Silent drops don't consume a retry. Voicemails left after the beep mark the contact as 'reached' so they don't get re-called the same day."
+        }
+      ]
+    },
+    "realtime-interruption": {
+      "slug": "realtime-interruption",
+      "eyebrow": "Voice & turn-taking",
+      "hero": "Interrupt Finn.\nFinn yields.",
+      "lead": "Natural turn-taking — when the caller speaks over Finn, Finn stops mid-word. No talking over each other. No awkward pauses.",
+      "stats": [
+        {
+          "value": "<80ms",
+          "label": "Yield latency"
+        },
+        {
+          "value": "Natural",
+          "label": "Mid-word handoff"
+        },
+        {
+          "value": "No clipping",
+          "label": "Resumes cleanly"
+        },
+        {
+          "value": "Per-turn",
+          "label": "Tunable thresholds"
+        }
+      ],
+      "gradient": [
+        "#FDB87A",
+        "#9a3412"
+      ],
+      "closingEyebrow": "Conversation, not monologue",
+      "closingHeading": "Yields like a human.\nNot a kiosk.",
+      "closingBody": "Real-time barge-in detection — Finn drops the floor the instant the caller speaks. No more 'press 1 to interrupt.'",
+      "heroMockupSrc": "/_static/snaps/voice-loop.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Listen even\nwhile speaking.",
+      "howSteps": [
+        {
+          "title": "Bidirectional audio stream",
+          "body": "Finn's mic stays open during synthesis. VAD detects caller voice the instant they start.",
+          "mockupId": "voice-loop"
+        },
+        {
+          "title": "Yield mid-word",
+          "body": "Under 80ms from detected voice to TTS stop. No mid-sentence collisions.",
+          "mockupId": "voice-loop"
+        },
+        {
+          "title": "Resume context-aware",
+          "body": "Acknowledges interruption, processes what the caller said, picks up the right thread. No 'as I was saying.'",
+          "mockupId": "multi-agent"
+        }
+      ],
+      "benefitsEyebrow": "Reads like real conversation",
+      "benefitsHeading": "Caller leads.\nFinn follows.",
+      "benefits": [
+        {
+          "title": "Sub-80ms yield",
+          "body": "Faster than human reaction time. Finn drops the floor before the caller registers they're talking over."
+        },
+        {
+          "title": "Clean resume",
+          "body": "Tracks what was said + what was cut off. Acknowledges + adapts. No robotic 'one moment please.'"
+        },
+        {
+          "title": "Tunable barge-in threshold",
+          "body": "Per-workflow VAD sensitivity. Quiet caller in a quiet room vs busy contact center — both work."
+        },
+        {
+          "title": "False-positive resistant",
+          "body": "Trained to distinguish caller voice from ambient noise, music, cross-talk. Finn doesn't yield to a sneeze."
+        }
+      ],
+      "integrations": [
+        "Twilio",
+        "Plivo",
+        "Telnyx",
+        "ElevenLabs",
+        "OpenAI",
+        "Microsoft Teams"
+      ],
+      "customerQuoteId": "tofa",
+      "faqs": [
+        {
+          "question": "What's the technical latency for barge-in?",
+          "answer": "Sub-80ms from detected voice onset to TTS halt. Faster than the caller can perceive their own interruption."
+        },
+        {
+          "question": "How does Finn handle the interruption content?",
+          "answer": "Captures what the caller said, processes it against the conversation context, and responds appropriately — apology, clarification, branch to new topic, whatever fits."
+        },
+        {
+          "question": "Can I tune sensitivity per workflow?",
+          "answer": "Yes. Quiet inbound support calls use a low threshold. Noisy outbound to mobile users uses a higher threshold to ignore ambient noise."
+        },
+        {
+          "question": "What about cross-talk on bad connections?",
+          "answer": "Echo cancellation + caller-voice classification filter cross-talk + line noise. Finn doesn't yield to its own voice bouncing back."
+        },
+        {
+          "question": "Does this work across all telephony providers?",
+          "answer": "Yes — Twilio, Plivo, Telnyx, BYOC SIP trunk. Requires bidirectional streaming audio, which all major providers support."
+        }
+      ]
+    },
+    "mid-call-language-switch": {
+      "slug": "mid-call-language-switch",
+      "eyebrow": "Voice & turn-taking",
+      "hero": "Caller switches language.\nFinn switches too.",
+      "lead": "Detect language at every turn. Switch synthesis + transcription mid-call. No re-routing, no second agent, no awkward 'hold while I transfer you.'",
+      "stats": [
+        {
+          "value": "46",
+          "label": "Languages"
+        },
+        {
+          "value": "Per-turn",
+          "label": "Detection cadence"
+        },
+        {
+          "value": "Mid-sentence",
+          "label": "Switch latency"
+        },
+        {
+          "value": "Preserved",
+          "label": "Context + state"
+        }
+      ],
+      "gradient": [
+        "#86c277",
+        "#435E35"
+      ],
+      "closingEyebrow": "Built for multilingual markets",
+      "closingHeading": "One agent.\nEvery language.",
+      "closingBody": "Mid-call language switch keeps the conversation natural. Captured fields, intent, sentiment — all preserved across language transitions.",
+      "heroMockupSrc": "/_static/snaps/voice-library.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Detect.\nSwitch. Continue.",
+      "howSteps": [
+        {
+          "title": "Per-turn language detection",
+          "body": "Every caller turn classified for language. Sub-200ms classification overhead.",
+          "mockupId": "voice-loop"
+        },
+        {
+          "title": "Hot-swap TTS + ASR",
+          "body": "Synthesis + transcription models swap mid-conversation. Voice persona preserved across languages (when supported).",
+          "mockupId": "voice-library"
+        },
+        {
+          "title": "Continue with full context",
+          "body": "Captured fields, intent, sentiment, workflow position all preserved. No restart, no apology.",
+          "mockupId": "multi-agent"
+        }
+      ],
+      "benefitsEyebrow": "Natural multilingual flow",
+      "benefitsHeading": "No transfer.\nNo restart.",
+      "benefits": [
+        {
+          "title": "46 languages supported",
+          "body": "Major European, Asian, MENA, Latin American languages. New languages added monthly."
+        },
+        {
+          "title": "Same voice across languages",
+          "body": "Cloned voices that span multiple languages keep the same persona. Caller doesn't hear a new agent."
+        },
+        {
+          "title": "Workflow-agnostic",
+          "body": "Any workflow inherits multilingual support. Per-finn configuration if you want to lock to one language."
+        },
+        {
+          "title": "Captured fields translated on capture",
+          "body": "Caller answers in Spanish, Finn captures the structured value in your workflow's canonical language."
+        }
+      ],
+      "integrations": [
+        "ElevenLabs",
+        "OpenAI",
+        "Salesforce",
+        "HubSpot",
+        "Zendesk",
+        "Slack"
+      ],
+      "customerQuoteId": "frinks",
+      "faqs": [
+        {
+          "question": "Which languages are supported?",
+          "answer": "46 languages including English (multiple accents), Spanish, Mandarin, Hindi, Tamil, Arabic, Portuguese, French, German, Japanese, Korean, and most major European + Asian languages."
+        },
+        {
+          "question": "How quickly does the switch happen?",
+          "answer": "Mid-sentence — typically <300ms from detected language change to first response in the new language. Caller experiences it as natural."
+        },
+        {
+          "question": "Is the conversation context preserved?",
+          "answer": "Yes — captured fields, intent, sentiment, workflow position all carry across the language switch. No restart, no 'let me get my colleague.'"
+        },
+        {
+          "question": "Can I lock a Finn to one language?",
+          "answer": "Yes. Per-finn configuration if your business operates in one language only. Default is auto-detect across all 46."
+        },
+        {
+          "question": "Does the voice change with the language?",
+          "answer": "Cloned voices that support multiple languages (most of our library) keep the same persona across all of them. Stock voices may switch to a native speaker for that language."
+        }
+      ]
+    },
+    "silence-handling": {
+      "slug": "silence-handling",
+      "eyebrow": "Voice & turn-taking",
+      "hero": "Awkward silence?\nFinn prompts.",
+      "lead": "Configurable silence policies — gentle prompt after 3s, second prompt after 6s, graceful exit after 10s. Per-workflow tuning. No more dead air.",
+      "stats": [
+        {
+          "value": "Configurable",
+          "label": "Per-workflow timers"
+        },
+        {
+          "value": "Tiered",
+          "label": "Prompts → exit"
+        },
+        {
+          "value": "Context-aware",
+          "label": "Different per turn"
+        },
+        {
+          "value": "Logged",
+          "label": "Silence events tagged"
+        }
+      ],
+      "gradient": [
+        "#7c3aed",
+        "#3730a3"
+      ],
+      "closingEyebrow": "Keep the call alive",
+      "closingHeading": "Silence doesn't\nkill the call.",
+      "closingBody": "Smart silence handling fills the gap without nagging. Different policies for capture turns (be patient) vs decision turns (re-prompt fast).",
+      "heroMockupSrc": "/_static/snaps/voice-loop.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Wait.\nThen prompt. Then exit.",
+      "howSteps": [
+        {
+          "title": "Detect silence",
+          "body": "VAD measures speech absence per turn. Threshold tunable — quieter inbound vs noisy mobile outbound.",
+          "mockupId": "voice-loop"
+        },
+        {
+          "title": "Tiered prompts",
+          "body": "First gentle prompt at 3s ('Are you still there?'). Second at 6s ('I can call back if now isn't good.'). Graceful exit at 10s.",
+          "mockupId": "workflow-editor"
+        },
+        {
+          "title": "Log + classify",
+          "body": "Silence events tagged on the call timeline + PCA output. Helps spot bad audio paths, distracted callers, system issues.",
+          "mockupId": "transcript-pca"
+        }
+      ],
+      "benefitsEyebrow": "Tuned per turn type",
+      "benefitsHeading": "Patience where it pays.\nPrompts where it doesn't.",
+      "benefits": [
+        {
+          "title": "Per-turn-type timers",
+          "body": "Capture turns (caller thinking) get 6s. Decision turns (yes/no) get 3s. Configured per workflow."
+        },
+        {
+          "title": "Three-tier prompts",
+          "body": "Soft → medium → graceful exit. Caller never feels rushed or stranded."
+        },
+        {
+          "title": "Custom prompt phrases",
+          "body": "Default English phrases included. Replace with your brand voice + tone, per language."
+        },
+        {
+          "title": "Audit-friendly",
+          "body": "Every silence event tagged so you can spot bad audio routes or recurring caller-side issues."
+        }
+      ],
+      "integrations": [
+        "Twilio",
+        "Plivo",
+        "Telnyx",
+        "Salesforce",
+        "HubSpot",
+        "Zendesk"
+      ],
+      "customerQuoteId": "snazzy",
+      "faqs": [
+        {
+          "question": "What are the default silence timers?",
+          "answer": "3s gentle prompt → 6s second prompt → 10s graceful exit with retry-callback offer. All adjustable per workflow + per turn type."
+        },
+        {
+          "question": "Can I customize the prompt phrases?",
+          "answer": "Yes — replace defaults with your brand voice + tone. Different phrases per language, per workflow."
+        },
+        {
+          "question": "How is silence different from a pause?",
+          "answer": "Pauses are <500ms (natural turn-taking). Silence kicks in only when speech is absent past the configured threshold for the current turn type."
+        },
+        {
+          "question": "Does silence handling work during interruption?",
+          "answer": "Yes — if the caller interrupts then goes quiet mid-thought, Finn waits the configured threshold before re-prompting, not just barreling forward."
+        },
+        {
+          "question": "Are silence events logged?",
+          "answer": "Yes — every silence trigger tagged on the call timeline + included in PCA output. Useful for spotting bad audio paths or recurring caller-side issues."
+        }
+      ]
+    },
+    "custom-pronunciation": {
+      "slug": "custom-pronunciation",
+      "eyebrow": "Voice & turn-taking",
+      "hero": "SKUs, drugs, names.\nPronounced right.",
+      "lead": "Per-finn pronunciation dictionary. Override any word — SKUs, drug names, technical jargon, brand terms — with phonetic spelling or audio sample.",
+      "stats": [
+        {
+          "value": "Per-finn",
+          "label": "Dictionary scoping"
+        },
+        {
+          "value": "Phonetic + audio",
+          "label": "Two input modes"
+        },
+        {
+          "value": "Versioned",
+          "label": "Diff + rollback"
+        },
+        {
+          "value": "Live update",
+          "label": "No re-deploy"
+        }
+      ],
+      "gradient": [
+        "#FD7FAD",
+        "#9a3412"
+      ],
+      "closingEyebrow": "Sound right every time",
+      "closingHeading": "Stop mispronouncing\nyour own product.",
+      "closingBody": "Build a pronunciation dictionary in minutes. Audio samples for tricky words. Phonetic for the rest. Versioned + audit-logged.",
+      "heroMockupSrc": "/_static/snaps/voice-library.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Add a word.\nFinn never says it wrong again.",
+      "howSteps": [
+        {
+          "title": "Add via dashboard or API",
+          "body": "Paste the misspoken word. Provide a phonetic spelling (IPA or ARPAbet) or upload a 1-second audio sample.",
+          "mockupId": "voice-library"
+        },
+        {
+          "title": "Scope it",
+          "body": "Per-finn (only one agent uses it) or per-account (all finns share). Versioned so changes are auditable.",
+          "mockupId": "multi-agent"
+        },
+        {
+          "title": "Live-apply",
+          "body": "Pronunciation updates apply to in-flight calls within seconds. No re-deploy, no dropped calls.",
+          "mockupId": "voice-loop"
+        }
+      ],
+      "benefitsEyebrow": "Brand-grade pronunciation",
+      "benefitsHeading": "Yours.\nNot Wikipedia's.",
+      "benefits": [
+        {
+          "title": "Phonetic or audio sample",
+          "body": "IPA/ARPAbet for predictable terms. Upload a real audio clip for tricky names + product SKUs."
+        },
+        {
+          "title": "Per-finn scoping",
+          "body": "Sales finn says 'Acme' one way; legal finn might say it differently. No collision."
+        },
+        {
+          "title": "Versioned dictionary",
+          "body": "Diff view per change. Roll back. Audit-ready for compliance + brand teams."
+        },
+        {
+          "title": "Live updates",
+          "body": "Add a word, fix a mispronunciation, apply to all in-flight calls within seconds."
+        }
+      ],
+      "integrations": [
+        "ElevenLabs",
+        "OpenAI",
+        "Salesforce",
+        "HubSpot",
+        "Notion",
+        "Linear"
+      ],
+      "customerQuoteId": "frinks",
+      "faqs": [
+        {
+          "question": "What formats can I provide?",
+          "answer": "Phonetic (IPA or ARPAbet), or upload a 1-second audio sample of the correct pronunciation. Audio takes precedence when both are provided."
+        },
+        {
+          "question": "How is the dictionary scoped?",
+          "answer": "Per-finn by default. Optional account-wide dictionary for shared brand terms. Per-workflow overrides supported."
+        },
+        {
+          "question": "Are pronunciation changes versioned?",
+          "answer": "Yes — every dictionary edit creates a versioned snapshot. Diff view shows exactly what changed. One-click rollback."
+        },
+        {
+          "question": "Do updates apply mid-call?",
+          "answer": "Yes — dictionary changes apply to in-flight calls within seconds. No re-deploy. No dropped calls."
+        },
+        {
+          "question": "How many words can the dictionary hold?",
+          "answer": "Soft cap at 5,000 entries per finn (more available on enterprise). Performance is unaffected at any reasonable size."
+        }
+      ]
+    },
+    "ivr-digit-press": {
+      "slug": "ivr-digit-press",
+      "eyebrow": "Routing & telephony",
+      "hero": "Press 1 for sales.\nFinn presses it.",
+      "lead": "Finn navigates legacy IVR menus on outbound calls — presses digits, listens for the right branch, gets the human or system you actually need.",
+      "stats": [
+        {
+          "value": "DTMF",
+          "label": "Tone generation"
+        },
+        {
+          "value": "Auto-detect",
+          "label": "Menu prompts"
+        },
+        {
+          "value": "Branchable",
+          "label": "Conditional paths"
+        },
+        {
+          "value": "Logged",
+          "label": "Every press recorded"
+        }
+      ],
+      "gradient": [
+        "#7c3aed",
+        "#3730a3"
+      ],
+      "closingEyebrow": "Beat the menu maze",
+      "closingHeading": "Stop burning reps\non phone trees.",
+      "closingBody": "Finn handles the 'press 1, press 2' navigation automatically — your reps land on the human, not the hold queue.",
+      "heroMockupSrc": "/_static/snaps/workflow-editor.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Listen.\nDecide. Press.",
+      "howSteps": [
+        {
+          "title": "Detect the menu",
+          "body": "ASR transcribes the IVR prompt in real time. Workflow matches against expected branches.",
+          "mockupId": "voice-loop"
+        },
+        {
+          "title": "Generate DTMF tones",
+          "body": "Sub-100ms tone generation for the right digit. Or speak the choice if the IVR accepts voice.",
+          "mockupId": "function-call"
+        },
+        {
+          "title": "Branch or escalate",
+          "body": "Conditional logic on what comes next — human pickup, voicemail, second menu, hold queue. All handled.",
+          "mockupId": "workflow-editor"
+        }
+      ],
+      "benefitsEyebrow": "Built for real-world phone systems",
+      "benefitsHeading": "Every IVR.\nFully navigated.",
+      "benefits": [
+        {
+          "title": "DTMF + voice navigation",
+          "body": "Generates tones for digit-press menus. Speaks choices for voice-driven IVRs. Both work."
+        },
+        {
+          "title": "Conditional branching",
+          "body": "Different paths based on what the IVR says. 'Account number?' → speak it. 'Press 1?' → press it."
+        },
+        {
+          "title": "Hold-queue tolerance",
+          "body": "When the IVR drops Finn into a queue, Finn waits patiently + signals when a human picks up."
+        },
+        {
+          "title": "Every press logged",
+          "body": "Audit trail of every digit + every spoken response. QA-ready transcript."
+        }
+      ],
+      "integrations": [
+        "Twilio",
+        "Plivo",
+        "Telnyx",
+        "Salesforce",
+        "HubSpot",
+        "Slack"
+      ],
+      "customerQuoteId": "orbit",
+      "faqs": [
+        {
+          "question": "What's the use case for IVR navigation?",
+          "answer": "Outbound calls to legacy systems — utilities, insurers, hospitals, government agencies that haven't modernized. Finn navigates their menus so your reps don't have to."
+        },
+        {
+          "question": "How does Finn know which digit to press?",
+          "answer": "ASR transcribes the IVR prompt in real time. Workflow logic matches expected branches ('For sales, press 1' → 1)."
+        },
+        {
+          "question": "Can Finn handle voice-driven IVRs?",
+          "answer": "Yes — Finn speaks the menu choice ('Sales') in addition to DTMF tones. Both modes supported per workflow."
+        },
+        {
+          "question": "What happens when the IVR drops Finn in a hold queue?",
+          "answer": "Finn waits patiently with periodic VAD checks. When a human picks up, Finn detects + signals the workflow to take the next action (escalate to your rep, deliver the message, etc.)."
+        },
+        {
+          "question": "Is the navigation auditable?",
+          "answer": "Yes — every digit press + spoken response logged with timestamp. Full transcript available on the call timeline."
+        }
+      ]
+    },
+    "business-hours-routing": {
+      "slug": "business-hours-routing",
+      "eyebrow": "Routing & telephony",
+      "hero": "9-5 in Mumbai.\n9-5 in Manhattan.",
+      "lead": "Route inbound calls by time of day + caller timezone. Business hours go to humans, after-hours to Finn, holidays to a custom message. All in one config.",
+      "stats": [
+        {
+          "value": "Per-region",
+          "label": "Hours config"
+        },
+        {
+          "value": "Holiday-aware",
+          "label": "Country calendars"
+        },
+        {
+          "value": "Overflow",
+          "label": "Fallback to Finn"
+        },
+        {
+          "value": "Editable live",
+          "label": "No re-deploy"
+        }
+      ],
+      "gradient": [
+        "#0f766e",
+        "#1e3a8a"
+      ],
+      "closingEyebrow": "Coverage without burnout",
+      "closingHeading": "Finn covers nights.\nHumans cover days.",
+      "closingBody": "Smart business-hours routing keeps reps focused during their shift + lets Finn handle everything else — overflow, after-hours, holidays.",
+      "heroMockupSrc": "/_static/snaps/workflow-editor.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Detect.\nRoute. Cover.",
+      "howSteps": [
+        {
+          "title": "Define your schedule",
+          "body": "Per-region business hours, holiday calendar, lunch breaks if you want. Multiple schedules per finn.",
+          "mockupId": "workflow-editor"
+        },
+        {
+          "title": "Detect caller timezone",
+          "body": "Inbound caller area code + locale data → timezone. Inbound from a Mumbai number routes against IST hours.",
+          "mockupId": "function-call"
+        },
+        {
+          "title": "Route the call",
+          "body": "In hours → human queue. Out of hours → Finn handles it. Holiday → custom message + callback offer.",
+          "mockupId": "multi-agent"
+        }
+      ],
+      "benefitsEyebrow": "Coverage that thinks",
+      "benefitsHeading": "Right call.\nRight time.",
+      "benefits": [
+        {
+          "title": "Multiple schedules per finn",
+          "body": "Sales hours, support hours, escalation hours — different rules, same workflow."
+        },
+        {
+          "title": "Country holiday calendars",
+          "body": "Built-in calendars for US, UK, EU, India, Australia, more. Manual overrides for company-specific dates."
+        },
+        {
+          "title": "Overflow handling",
+          "body": "When the queue fills during business hours, Finn picks up the overflow instead of letting calls drop."
+        },
+        {
+          "title": "Live-editable",
+          "body": "Update hours mid-week — applies to in-flight calls within seconds. No re-deploy."
+        }
+      ],
+      "integrations": [
+        "Twilio",
+        "Plivo",
+        "Telnyx",
+        "Salesforce",
+        "HubSpot",
+        "Zendesk"
+      ],
+      "customerQuoteId": "tofa",
+      "faqs": [
+        {
+          "question": "How is caller timezone detected?",
+          "answer": "Area code mapping for US/Canada (~95% accurate). International caller ID + country code for global. Override via CRM lookup when caller is known."
+        },
+        {
+          "question": "Can I configure different schedules per workflow?",
+          "answer": "Yes. Sales workflow uses sales hours. Support workflow uses support hours. Different finns can share or split schedules."
+        },
+        {
+          "question": "How are holidays handled?",
+          "answer": "Built-in country holiday calendars (US, UK, EU, India, Australia, more). Override any date for company-specific closures (e.g. company offsites)."
+        },
+        {
+          "question": "What happens during overflow?",
+          "answer": "When the human queue fills past your threshold, Finn picks up the overflow + handles or schedules callback. No dropped calls."
+        },
+        {
+          "question": "Can I switch routing mid-shift?",
+          "answer": "Yes — manual override from the dashboard. Useful for emergencies, all-hands meetings, weather closures."
+        }
+      ]
+    },
+    "skill-based-queues": {
+      "slug": "skill-based-queues",
+      "eyebrow": "Routing & telephony",
+      "hero": "Route by skill.\nNot by random.",
+      "lead": "Match callers to specialists based on intent, language, account tier, geography — any signal. Skill-based queues turn round-robin into real targeting.",
+      "stats": [
+        {
+          "value": "Multi-signal",
+          "label": "Routing inputs"
+        },
+        {
+          "value": "Weighted",
+          "label": "Skill priorities"
+        },
+        {
+          "value": "Per-call",
+          "label": "Decision granularity"
+        },
+        {
+          "value": "Dashboard",
+          "label": "Queue + agent stats"
+        }
+      ],
+      "gradient": [
+        "#FDB87A",
+        "#9a3412"
+      ],
+      "closingEyebrow": "Right specialist, first time",
+      "closingHeading": "Stop transferring twice.\nLand it on the first try.",
+      "closingBody": "Skill-based routing matches the caller to the right specialist on first connect. Fewer transfers, faster resolutions, happier callers + agents.",
+      "heroMockupSrc": "/_static/snaps/multi-agent.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Inspect.\nMatch. Connect.",
+      "howSteps": [
+        {
+          "title": "Define skill tags",
+          "body": "Per-agent: languages spoken, tier authority, vertical expertise, account ownership. Per-queue: required skills.",
+          "mockupId": "workflow-editor"
+        },
+        {
+          "title": "Inspect the call",
+          "body": "Caller intent, captured fields, account tier, language — surfaced before the routing decision.",
+          "mockupId": "transcript-pca"
+        },
+        {
+          "title": "Pick the best match",
+          "body": "Weighted matching with fallback rules. Routes to top-skill match available; ladders down if no match free.",
+          "mockupId": "multi-agent"
+        }
+      ],
+      "benefitsEyebrow": "Smarter queue logic",
+      "benefitsHeading": "One queue.\nMany decisions.",
+      "benefits": [
+        {
+          "title": "Multi-signal matching",
+          "body": "Skill, tier, language, geography, account ownership — all available as routing inputs."
+        },
+        {
+          "title": "Weighted priorities",
+          "body": "'Language match > skill match > availability' — tunable per workflow."
+        },
+        {
+          "title": "Ladder fallback",
+          "body": "No skill match free? Falls back to next-best with a configurable ladder. No caller stranded."
+        },
+        {
+          "title": "Live queue dashboard",
+          "body": "Real-time view of queue depth, wait times, agent availability per skill. Adjustable mid-shift."
+        }
+      ],
+      "integrations": [
+        "Salesforce",
+        "HubSpot",
+        "Zendesk",
+        "Slack",
+        "Twilio",
+        "Plivo"
+      ],
+      "customerQuoteId": "snazzy",
+      "faqs": [
+        {
+          "question": "How are skill tags managed?",
+          "answer": "Per-agent profile in the dashboard. Add/remove skills, set proficiency levels, define availability windows. Bulk-import from your existing HR or workforce-management system."
+        },
+        {
+          "question": "What signals can drive routing?",
+          "answer": "Intent (from voice analysis), captured fields (account number, product), language detected, geography (caller area code), CRM-derived signals (tier, owner, history), custom workflow flags."
+        },
+        {
+          "question": "How does the fallback ladder work?",
+          "answer": "Configurable per workflow. Default: prefer exact skill match → 1-level-down match → any available. Can be tightened (queue forever) or loosened (any-skill ok) per business rule."
+        },
+        {
+          "question": "Can I see queue stats in real time?",
+          "answer": "Yes — dashboard shows queue depth per skill, wait times per tier, agent utilization. Filter + drill in. Adjustable thresholds + alerts."
+        },
+        {
+          "question": "What if no agent matches?",
+          "answer": "Configurable: leave on hold with periodic check-in, schedule callback, route to Finn for first-pass handling + escalate later."
+        }
+      ]
+    },
+    "hold-music-alternative": {
+      "slug": "hold-music-alternative",
+      "eyebrow": "Routing & telephony",
+      "hero": "Hold music?\nFinn talks instead.",
+      "lead": "Replace generic hold music with branded micro-interactions — status updates, quick captures, FAQ answers — while the caller waits for a human.",
+      "stats": [
+        {
+          "value": "Conversational",
+          "label": "Not muzak"
+        },
+        {
+          "value": "Captures fields",
+          "label": "Useful wait time"
+        },
+        {
+          "value": "Status updates",
+          "label": "Real ETA"
+        },
+        {
+          "value": "Per-queue",
+          "label": "Custom script"
+        }
+      ],
+      "gradient": [
+        "#FD7FAD",
+        "#9a3412"
+      ],
+      "closingEyebrow": "Wait time, productive",
+      "closingHeading": "Turn dead air\ninto live conversation.",
+      "closingBody": "Hold-music alternative keeps the caller engaged + warms them up for the human. Faster handoff, higher CSAT, no muzak fatigue.",
+      "heroMockupSrc": "/_static/snaps/voice-loop.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Engage.\nCapture. Hand off.",
+      "howSteps": [
+        {
+          "title": "Detect hold state",
+          "body": "When a caller enters a queue, Finn picks up the conversation — status, ETA, branded intro.",
+          "mockupId": "live-transfer"
+        },
+        {
+          "title": "Capture useful info",
+          "body": "Pre-collect fields the human will need anyway — account number, reason for call, urgency. Saves the rep 30 seconds.",
+          "mockupId": "transcript-pca"
+        },
+        {
+          "title": "Hand off when available",
+          "body": "Human picks up with the captured fields + Finn's summary pre-loaded. Caller doesn't repeat themselves.",
+          "mockupId": "live-transfer"
+        }
+      ],
+      "benefitsEyebrow": "Wait time worth listening to",
+      "benefitsHeading": "Engaged callers.\nFaster handoffs.",
+      "benefits": [
+        {
+          "title": "Pre-captures the obvious",
+          "body": "Account number, reason for call, urgency — collected during hold so the rep doesn't start from scratch."
+        },
+        {
+          "title": "Real-time ETA updates",
+          "body": "'2 callers ahead of you' beats 'thank you for your patience' on loop."
+        },
+        {
+          "title": "Per-queue scripts",
+          "body": "Different hold scripts for sales vs support vs collections. Brand voice consistent across them all."
+        },
+        {
+          "title": "Reduced abandon rate",
+          "body": "Engaged callers stay on the line. Typical 25-40% drop in abandons vs muzak baseline."
+        }
+      ],
+      "integrations": [
+        "Twilio",
+        "Plivo",
+        "Telnyx",
+        "Zendesk",
+        "Salesforce",
+        "Slack"
+      ],
+      "customerQuoteId": "frinks",
+      "faqs": [
+        {
+          "question": "How is this different from a normal IVR?",
+          "answer": "IVRs are decision menus you press through. Hold-music alternative is a live conversation that fills wait time productively — collecting fields, surfacing status, answering quick FAQs while the queue moves."
+        },
+        {
+          "question": "Does it actually reduce abandon rates?",
+          "answer": "Typical customers see 25-40% drop in queue abandons vs muzak baseline. Engaged callers stay on the line."
+        },
+        {
+          "question": "Can the captured info be pushed to the rep?",
+          "answer": "Yes — handoff includes the fields Finn captured + a one-line summary, screen-popped into your CRM or helpdesk."
+        },
+        {
+          "question": "What if the queue is empty when Finn finishes hold-script?",
+          "answer": "Configurable: route immediately, loop to a different script, offer callback, switch to ambient hold music as fallback."
+        },
+        {
+          "question": "Can I customize the script per queue?",
+          "answer": "Yes — every queue can have its own hold workflow. Different tone for VIP queue vs general support."
+        }
+      ]
+    },
+    "byoc-sip-trunk": {
+      "slug": "byoc-sip-trunk",
+      "eyebrow": "Routing & telephony",
+      "hero": "Bring your own\ncarrier.",
+      "lead": "Don't want to switch telephony providers? Wire Finn into your existing Twilio, Plivo, Telnyx, or any SIP trunk. Same observability, same workflow.",
+      "stats": [
+        {
+          "value": "Twilio + Plivo + Telnyx",
+          "label": "First-class"
+        },
+        {
+          "value": "Any SIP trunk",
+          "label": "Generic support"
+        },
+        {
+          "value": "Same dashboard",
+          "label": "BYOC + native"
+        },
+        {
+          "value": "No lock-in",
+          "label": "Switch anytime"
+        }
+      ],
+      "gradient": [
+        "#86c277",
+        "#435E35"
+      ],
+      "closingEyebrow": "Your carrier, your contract",
+      "closingHeading": "Keep your numbers.\nKeep your rates.",
+      "closingBody": "Bring-your-own-carrier (BYOC) gets you Finn's intelligence on top of telephony you already trust. No number porting, no contract change.",
+      "heroMockupSrc": "/_static/snaps/integration-grid.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Wire once.\nUse everywhere.",
+      "howSteps": [
+        {
+          "title": "Connect your provider",
+          "body": "Twilio, Plivo, Telnyx — paste credentials, point your numbers at Finn's SIP endpoint. ~10 minutes setup.",
+          "mockupId": "integration-grid"
+        },
+        {
+          "title": "Map numbers to workflows",
+          "body": "Per-number routing to a Finn workflow. Mix BYOC numbers + Finn-provided numbers in the same account.",
+          "mockupId": "workflow-editor"
+        },
+        {
+          "title": "Same observability",
+          "body": "Dashboard treats BYOC + Finn numbers identically. Same call logs, transcripts, PCA, costs, audits.",
+          "mockupId": "observability-dashboard"
+        }
+      ],
+      "benefitsEyebrow": "Open by design",
+      "benefitsHeading": "No carrier lock-in.\nEver.",
+      "benefits": [
+        {
+          "title": "Major providers first-class",
+          "body": "Twilio, Plivo, Telnyx have one-click setup + full feature parity (DTMF, SMS, MMS, transfers)."
+        },
+        {
+          "title": "Generic SIP trunk fallback",
+          "body": "Any SIP-compatible provider works. Your enterprise PBX, your in-house Asterisk, your weird legacy stack — all supported."
+        },
+        {
+          "title": "Per-number routing",
+          "body": "Mix BYOC and Finn-provided numbers in one account. Route each number to a different workflow."
+        },
+        {
+          "title": "Unified billing observability",
+          "body": "Finn platform fees billed by us. Carrier minutes billed by your carrier. Cost dashboard shows both."
+        }
+      ],
+      "integrations": [
+        "Twilio",
+        "Plivo",
+        "Telnyx",
+        "Salesforce",
+        "HubSpot",
+        "Slack"
+      ],
+      "customerQuoteId": "orbit",
+      "faqs": [
+        {
+          "question": "Which carriers does BYOC support?",
+          "answer": "Twilio, Plivo, Telnyx as first-class (one-click setup, full feature parity). Any SIP-compatible carrier via generic SIP trunk integration."
+        },
+        {
+          "question": "Do I need to port my numbers?",
+          "answer": "No. Your numbers stay with your carrier. We just point your SIP routing at Finn's endpoint for inbound calls + handle outbound through your carrier's API."
+        },
+        {
+          "question": "Are SMS / MMS supported under BYOC?",
+          "answer": "Yes — first-class for Twilio, Plivo, Telnyx. Generic SIP carriers depend on what they support; usually voice-only."
+        },
+        {
+          "question": "How is billing split?",
+          "answer": "Finn platform fees billed by us. Carrier voice minutes + SMS billed directly by your carrier on your existing contract. No double-charging."
+        },
+        {
+          "question": "Can I mix BYOC + Finn-provided numbers?",
+          "answer": "Yes. Common pattern: BYOC for established main numbers (preserve reputation + branded ID); Finn-provided for new outbound campaigns + experimental flows."
+        }
+      ]
+    },
+    "multi-line-concurrency": {
+      "slug": "multi-line-concurrency",
+      "eyebrow": "Routing & telephony",
+      "hero": "1,000 calls\nat once. Same finn.",
+      "lead": "Unlimited concurrent calls per Finn — capped only by your plan. No queues, no busy signals, no 'all our agents are helping other customers.'",
+      "stats": [
+        {
+          "value": "Unlimited",
+          "label": "Concurrent calls per finn"
+        },
+        {
+          "value": "Per-plan",
+          "label": "Account-level cap"
+        },
+        {
+          "value": "Per-second",
+          "label": "Billing granularity"
+        },
+        {
+          "value": "Live throttle",
+          "label": "Adjust mid-campaign"
+        }
+      ],
+      "gradient": [
+        "#7c3aed",
+        "#3730a3"
+      ],
+      "closingEyebrow": "Capacity without queues",
+      "closingHeading": "Stop saying\n'we're experiencing high volume.'",
+      "closingBody": "Finn scales to whatever you throw at it. Spike day, holiday rush, ad-driven surge — same response time, same quality, no queue.",
+      "heroMockupSrc": "/_static/snaps/observability-dashboard.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Scale up.\nScale down. Auto.",
+      "howSteps": [
+        {
+          "title": "Account-level concurrency cap",
+          "body": "Set or buy concurrency per plan. Cap shared across all finns OR partitioned per finn — your call.",
+          "mockupId": "observability-dashboard"
+        },
+        {
+          "title": "Live throttle controls",
+          "body": "Mid-campaign throttle — limit outbound concurrency to keep your downstream CRM, support team, or compliance window stable.",
+          "mockupId": "workflow-editor"
+        },
+        {
+          "title": "Per-second billing",
+          "body": "Pay only for active call seconds. Idle concurrency capacity = free. Spike days don't bankrupt you.",
+          "mockupId": "transcript-pca"
+        }
+      ],
+      "benefitsEyebrow": "Built for spikes",
+      "benefitsHeading": "No queues.\nNo busy signals.",
+      "benefits": [
+        {
+          "title": "Unlimited per-finn concurrency",
+          "body": "One finn can answer 10 calls or 10,000 simultaneously. No per-agent provisioning."
+        },
+        {
+          "title": "Live throttle",
+          "body": "Cap outbound concurrency to protect downstream systems. Adjustable mid-campaign."
+        },
+        {
+          "title": "Per-second billing",
+          "body": "Idle capacity = free. Only active call seconds billed. Spike days stay affordable."
+        },
+        {
+          "title": "Cross-region capacity",
+          "body": "Capacity allocated dynamically across regions for lowest-latency routing."
+        }
+      ],
+      "integrations": [
+        "Twilio",
+        "Plivo",
+        "Telnyx",
+        "Salesforce",
+        "HubSpot",
+        "Zapier"
+      ],
+      "customerQuoteId": "tofa",
+      "faqs": [
+        {
+          "question": "Is there a hard cap on concurrent calls?",
+          "answer": "Per-plan caps that scale on demand. Most starter accounts come with 25 concurrent; enterprise customers run thousands. Burstable on request."
+        },
+        {
+          "question": "How is concurrency billed?",
+          "answer": "Per-second active call time. Idle concurrency capacity is free — you pay only when calls are actually live."
+        },
+        {
+          "question": "Can I cap concurrency per finn?",
+          "answer": "Yes — partition account-level capacity across finns, or share a single pool. Useful for protecting downstream systems (CRM rate limits, support team capacity)."
+        },
+        {
+          "question": "What happens when the cap is hit?",
+          "answer": "Configurable per workflow: queue + retry, drop with callback offer, divert to voicemail, throttle outbound rate. No silent dropped calls."
+        },
+        {
+          "question": "How does Finn handle regional latency at scale?",
+          "answer": "Capacity allocated dynamically across regions so calls route to the lowest-latency edge. Sub-second voice loop maintained globally."
+        }
+      ]
+    },
+    "calendar-sync": {
+      "slug": "calendar-sync",
+      "eyebrow": "Calendar & booking",
+      "hero": "Books on the calendar\ncallers actually use.",
+      "lead": "Two-way sync with Google Calendar, Outlook, Office 365. Read live availability, write confirmed bookings, fire invite emails — all mid-call.",
+      "stats": [
+        {
+          "value": "Google + Outlook",
+          "label": "Native sync"
+        },
+        {
+          "value": "Two-way",
+          "label": "Read + write"
+        },
+        {
+          "value": "Mid-call",
+          "label": "Sub-second slot check"
+        },
+        {
+          "value": "Per-rep",
+          "label": "Round-robin or specific"
+        }
+      ],
+      "gradient": [
+        "#0f766e",
+        "#1e3a8a"
+      ],
+      "closingEyebrow": "No more double-bookings",
+      "closingHeading": "Read live.\nBook live.",
+      "closingBody": "Calendar sync prevents double-bookings + ensures the caller leaves with a confirmed slot, an invite email, and the right rep blocked out.",
+      "heroMockupSrc": "/_static/snaps/calendar-book.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Check.\nOffer. Book.",
+      "howSteps": [
+        {
+          "title": "Connect Google / Outlook",
+          "body": "OAuth flow — pick which calendars to sync. Per-rep or per-resource calendars supported.",
+          "mockupId": "integration-grid"
+        },
+        {
+          "title": "Read availability mid-call",
+          "body": "Finn queries free/busy in real time. Offers 2-3 slots that match caller constraints + rep availability.",
+          "mockupId": "function-call"
+        },
+        {
+          "title": "Write the booking",
+          "body": "Caller picks a slot. Finn books it, fires the invite email, blocks the rep's calendar — all before hang-up.",
+          "mockupId": "workflow-editor"
+        }
+      ],
+      "benefitsEyebrow": "Wired into your calendar stack",
+      "benefitsHeading": "Real availability.\nReal bookings.",
+      "benefits": [
+        {
+          "title": "Native Google + Outlook + O365",
+          "body": "First-class OAuth integration. No middleware, no Zapier glue, no stale availability."
+        },
+        {
+          "title": "Round-robin or specific rep",
+          "body": "Book the next available rep, or pin to a specific named rep if the caller asked."
+        },
+        {
+          "title": "Buffer + drive-time aware",
+          "body": "Pre-call buffers, post-call buffers, drive-time between in-person appointments — all configurable per workflow."
+        },
+        {
+          "title": "Auto-invite + reminder emails",
+          "body": "ICS invite fires on book. Reminder emails + SMS scheduled automatically."
+        }
+      ],
+      "integrations": [
+        "Google Calendar",
+        "Microsoft Teams",
+        "Calendly",
+        "Cal.com",
+        "Salesforce",
+        "HubSpot"
+      ],
+      "customerQuoteId": "snazzy",
+      "faqs": [
+        {
+          "question": "Which calendar systems are supported?",
+          "answer": "Google Calendar, Outlook, Office 365, iCloud Calendar, plus Cal.com + Calendly as scheduling-layer integrations. Two-way sync (read + write) on all."
+        },
+        {
+          "question": "Can Finn book on specific reps' calendars?",
+          "answer": "Yes — round-robin across a pool, or pinned to a specific rep when caller asked for them. Per-rep availability windows + skill matching supported."
+        },
+        {
+          "question": "How fast is the slot check?",
+          "answer": "Sub-second — Finn queries free/busy from the calendar API in real time. No stale 'best guesses.'"
+        },
+        {
+          "question": "What about buffers and drive time?",
+          "answer": "Pre-call + post-call buffers, drive-time between in-person appointments, and per-rep custom rules all configurable per workflow."
+        },
+        {
+          "question": "Does the booking fire an invite email?",
+          "answer": "Yes — ICS invite + reminder emails + optional SMS reminders all fire automatically on booking. Per-workflow templates."
+        }
+      ]
+    },
+    "calcom-integration": {
+      "slug": "calcom-integration",
+      "eyebrow": "Calendar & booking",
+      "hero": "Cal.com + Calendly,\nwired in.",
+      "lead": "If your team already lives in Cal.com or Calendly, Finn books through your existing event types. Same links, same rules, same logs.",
+      "stats": [
+        {
+          "value": "Native API",
+          "label": "Both platforms"
+        },
+        {
+          "value": "Event-type-aware",
+          "label": "Round-robin, group, etc"
+        },
+        {
+          "value": "Existing rules",
+          "label": "Honored as-is"
+        },
+        {
+          "value": "Single source",
+          "label": "No duplicate booking logic"
+        }
+      ],
+      "gradient": [
+        "#86c277",
+        "#435E35"
+      ],
+      "closingEyebrow": "Use what you already use",
+      "closingHeading": "Don't rebuild scheduling.\nWire it in.",
+      "closingBody": "Cal.com + Calendly integration preserves your existing scheduling rules, branding, and reporting. Finn just hands the slot via voice.",
+      "heroMockupSrc": "/_static/snaps/integration-grid.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Connect.\nMap. Book.",
+      "howSteps": [
+        {
+          "title": "Connect via API key",
+          "body": "Paste Cal.com or Calendly API key. We pull your event types automatically.",
+          "mockupId": "integration-grid"
+        },
+        {
+          "title": "Map event types to workflows",
+          "body": "Per-workflow: 'discovery call' → 30-min event type. 'demo' → 45-min event type. Different finns can use different event types.",
+          "mockupId": "workflow-editor"
+        },
+        {
+          "title": "Book via voice",
+          "body": "Caller picks a slot, Finn books through Cal.com/Calendly API. Existing booking rules (buffers, host assignment, reminders) all honored.",
+          "mockupId": "function-call"
+        }
+      ],
+      "benefitsEyebrow": "Preserves your scheduling stack",
+      "benefitsHeading": "Same rules.\nSame reporting.",
+      "benefits": [
+        {
+          "title": "Event-type aware",
+          "body": "Round-robin, group, collective, fixed-host — all event types supported. Finn picks the right slot per event-type rules."
+        },
+        {
+          "title": "Existing branding preserved",
+          "body": "Confirmation emails + reschedule pages stay in your Cal.com/Calendly branding. No surprise system in the inbox."
+        },
+        {
+          "title": "Bookings appear in your dashboard",
+          "body": "Finn-booked appointments show in Cal.com/Calendly admin. Same reports, same workflows downstream."
+        },
+        {
+          "title": "Reschedule + cancel via voice",
+          "body": "Caller calls back to reschedule? Finn looks up the existing booking + handles the change through Cal.com API."
+        }
+      ],
+      "integrations": [
+        "Cal.com",
+        "Calendly",
+        "Google Calendar",
+        "Microsoft Teams",
+        "Salesforce",
+        "HubSpot"
+      ],
+      "customerQuoteId": "orbit",
+      "faqs": [
+        {
+          "question": "Why use Cal.com or Calendly instead of native calendar sync?",
+          "answer": "If your team already lives in one of these tools, the booking experience (event types, branding, reporting, reminders) is preserved end-to-end. Finn just adds voice as a booking channel."
+        },
+        {
+          "question": "Which event types work?",
+          "answer": "All major Cal.com + Calendly types — round-robin, group, collective, fixed-host. Finn picks the right slot per the event-type's existing rules."
+        },
+        {
+          "question": "Are bookings tracked in my Cal.com/Calendly admin?",
+          "answer": "Yes — Finn-booked appointments appear in your admin dashboard like any other booking. Same reports, same workflows downstream."
+        },
+        {
+          "question": "Can Finn handle reschedules?",
+          "answer": "Yes — if the caller calls back to reschedule, Finn looks up the existing booking + handles change through the platform API."
+        },
+        {
+          "question": "What about cancellations?",
+          "answer": "Same flow — voice cancellation hits the Cal.com/Calendly API + fires whatever cancel-flow you have configured (rep notification, refund, etc.)."
+        }
+      ]
+    },
+    "conditional-slot-logic": {
+      "slug": "conditional-slot-logic",
+      "eyebrow": "Calendar & booking",
+      "hero": "Right slot.\nRight rep. Every time.",
+      "lead": "Conditional booking logic — match the caller to the right calendar based on intent, geography, account tier, product, or any captured field.",
+      "stats": [
+        {
+          "value": "Multi-signal",
+          "label": "Routing inputs"
+        },
+        {
+          "value": "Fallback ladders",
+          "label": "If no exact match"
+        },
+        {
+          "value": "Per-workflow",
+          "label": "Custom logic"
+        },
+        {
+          "value": "Live-editable",
+          "label": "Tweak mid-campaign"
+        }
+      ],
+      "gradient": [
+        "#FDB87A",
+        "#9a3412"
+      ],
+      "closingEyebrow": "Smarter than round-robin",
+      "closingHeading": "Stop sending\neveryone to the same calendar.",
+      "closingBody": "Conditional slot logic books the right caller with the right rep on the first try. Higher conversion, fewer rescheduled handoffs.",
+      "heroMockupSrc": "/_static/snaps/workflow-editor.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Detect.\nBranch. Book.",
+      "howSteps": [
+        {
+          "title": "Capture decision signals",
+          "body": "Intent, geography, account tier, product interest, language — captured fields drive the routing decision.",
+          "mockupId": "transcript-pca"
+        },
+        {
+          "title": "Branch to the right calendar",
+          "body": "Enterprise lead → senior rep calendar. SMB lead → SDR calendar. Spanish speaker → Spanish-speaking rep.",
+          "mockupId": "workflow-editor"
+        },
+        {
+          "title": "Book with fallback ladder",
+          "body": "No exact match available in the window? Falls back to next-best calendar per configurable ladder.",
+          "mockupId": "function-call"
+        }
+      ],
+      "benefitsEyebrow": "Booking logic that thinks",
+      "benefitsHeading": "Targeted.\nNot generic.",
+      "benefits": [
+        {
+          "title": "Multi-signal routing",
+          "body": "Match on intent, tier, geography, product, language — any captured field."
+        },
+        {
+          "title": "Per-workflow rules",
+          "body": "Sales has one rule set. Support has another. Different finns, different logic."
+        },
+        {
+          "title": "Fallback ladders",
+          "body": "No exact match? Ladder gracefully down to next-best. Never strands a caller without a slot."
+        },
+        {
+          "title": "Live A/B test",
+          "body": "Test 'route by tier' vs 'route by intent' — measure conversion per branch in PCA."
+        }
+      ],
+      "integrations": [
+        "Google Calendar",
+        "Cal.com",
+        "Calendly",
+        "Salesforce",
+        "HubSpot",
+        "Slack"
+      ],
+      "customerQuoteId": "tofa",
+      "faqs": [
+        {
+          "question": "What signals can drive booking decisions?",
+          "answer": "Intent (from voice analysis), geography (area code or stated location), account tier (CRM lookup), product interest (captured field), language detected, custom workflow flags."
+        },
+        {
+          "question": "How is fallback handled?",
+          "answer": "Configurable per workflow. Default: prefer exact match → next-best tier → any available with 24h. Can be tightened (no fallback, callback offer) or loosened per business rule."
+        },
+        {
+          "question": "Can I A/B test routing rules?",
+          "answer": "Yes — split traffic across branches + measure conversion + show-rate in PCA. Useful for tuning round-robin pools or testing new routing signals."
+        },
+        {
+          "question": "Are rules editable mid-campaign?",
+          "answer": "Yes — live edit from the dashboard. Changes apply to in-flight calls within seconds. No re-deploy."
+        },
+        {
+          "question": "Can I see which rule fired for a given booking?",
+          "answer": "Yes — every booking logs the decision path (which signals were captured, which branch fired, what the fallback was). Audit-ready."
+        }
+      ]
+    },
+    "reschedule-on-noshow": {
+      "slug": "reschedule-on-noshow",
+      "eyebrow": "Calendar & booking",
+      "hero": "No-show?\nFinn reschedules.",
+      "lead": "When a caller misses an appointment, Finn calls back within minutes, acknowledges the miss, offers a new slot — and books it.",
+      "stats": [
+        {
+          "value": "<5 min",
+          "label": "Callback after miss"
+        },
+        {
+          "value": "Auto-detect",
+          "label": "From calendar status"
+        },
+        {
+          "value": "Templated",
+          "label": "Apology + reslot"
+        },
+        {
+          "value": "Multi-attempt",
+          "label": "Configurable retries"
+        }
+      ],
+      "gradient": [
+        "#FD7FAD",
+        "#9a3412"
+      ],
+      "closingEyebrow": "Recovery, automated",
+      "closingHeading": "Don't lose\nthe lead to a no-show.",
+      "closingBody": "No-show recovery runs automatically. Most rebooked within the same day. Conversion lift typically 12-20% on missed-appointment cohorts.",
+      "heroMockupSrc": "/_static/snaps/calendar-book.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Detect.\nCall back. Reslot.",
+      "howSteps": [
+        {
+          "title": "Detect the miss",
+          "body": "Calendar status check 10 min after slot start — marked no-show? Triggers the workflow.",
+          "mockupId": "function-call"
+        },
+        {
+          "title": "Friendly callback",
+          "body": "Finn calls within 5 minutes. Acknowledges the miss without guilt-tripping. Offers new slots.",
+          "mockupId": "voice-loop"
+        },
+        {
+          "title": "Reslot or escalate",
+          "body": "Books a new slot if caller picks one. If declined or unreachable, queues a follow-up callback or escalates to a rep.",
+          "mockupId": "workflow-editor"
+        }
+      ],
+      "benefitsEyebrow": "Save the booking",
+      "benefitsHeading": "Most no-shows\nrecover same day.",
+      "benefits": [
+        {
+          "title": "5-minute callback",
+          "body": "Strike while the caller's intent is still warm. Same-day rebook rates ~60% in steady state."
+        },
+        {
+          "title": "Templated, non-guilty tone",
+          "body": "'Looks like we missed each other — happens. Want to try again?' Not 'You missed your appointment.'"
+        },
+        {
+          "title": "Configurable retry ladder",
+          "body": "1st attempt 5min after miss. 2nd attempt 2hrs. 3rd attempt next day. All tunable per workflow."
+        },
+        {
+          "title": "Escalation rules",
+          "body": "After N misses, escalate to a human rep, mark lead cold, or trigger nurture drip — your choice."
+        }
+      ],
+      "integrations": [
+        "Google Calendar",
+        "Cal.com",
+        "Calendly",
+        "Salesforce",
+        "HubSpot",
+        "Twilio"
+      ],
+      "customerQuoteId": "frinks",
+      "faqs": [
+        {
+          "question": "How is a no-show detected?",
+          "answer": "Calendar status check 10 minutes after slot start time. If marked 'no-show' (manually or via CRM integration), the recovery workflow fires."
+        },
+        {
+          "question": "What's the typical recovery rate?",
+          "answer": "60% same-day rebook rate in steady state. Industries with high time-sensitivity (healthcare appointments, mortgage call-backs) see higher; loose-funnel sales see lower."
+        },
+        {
+          "question": "How quickly does Finn call back?",
+          "answer": "5 minutes after detected miss by default. Tunable from 1 minute (aggressive) to several hours (passive recovery)."
+        },
+        {
+          "question": "Does this work for in-person appointments?",
+          "answer": "Yes — works equally well for in-person, video, or phone appointments. Recovery flow is channel-agnostic."
+        },
+        {
+          "question": "What if the caller never picks up the recovery call?",
+          "answer": "Configurable retry ladder (default 5min → 2hr → next day). After N misses, escalate to human, drop to nurture drip, or mark cold per workflow."
+        }
+      ]
+    },
+    "appointment-reminders": {
+      "slug": "appointment-reminders",
+      "eyebrow": "Calendar & booking",
+      "hero": "Show up rates,\nlifted.",
+      "lead": "Automated appointment reminders via voice, SMS, WhatsApp, or email — 24h before, 1h before, configurable. Caller can confirm, reschedule, or cancel inline.",
+      "stats": [
+        {
+          "value": "Multi-channel",
+          "label": "Voice + SMS + Email + WhatsApp"
+        },
+        {
+          "value": "Two-way",
+          "label": "Confirm / reschedule inline"
+        },
+        {
+          "value": "+30-50%",
+          "label": "Show-up rate lift"
+        },
+        {
+          "value": "Per-workflow",
+          "label": "Cadence + channel"
+        }
+      ],
+      "gradient": [
+        "#7c3aed",
+        "#3730a3"
+      ],
+      "closingEyebrow": "Cut the no-show rate",
+      "closingHeading": "Reminders that\nactually get a response.",
+      "closingBody": "Multi-channel appointment reminders with two-way response handling. Typical 30-50% reduction in no-show rates within 30 days.",
+      "heroMockupSrc": "/_static/snaps/calendar-book.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Send.\nConfirm. Adjust.",
+      "howSteps": [
+        {
+          "title": "Configure the cadence",
+          "body": "24h reminder, 1h reminder, day-of voice call — pick the combination per workflow. Templated body + channel.",
+          "mockupId": "workflow-editor"
+        },
+        {
+          "title": "Send via right channel",
+          "body": "SMS for quick confirms. Voice for high-value or high-risk appointments. WhatsApp where it's the dominant channel.",
+          "mockupId": "webhook-flow"
+        },
+        {
+          "title": "Handle responses two-way",
+          "body": "'Confirmed' → mark + skip subsequent reminders. 'Reschedule' → trigger booking flow. 'Cancel' → free the slot + offer to rebook later.",
+          "mockupId": "function-call"
+        }
+      ],
+      "benefitsEyebrow": "Multi-channel by design",
+      "benefitsHeading": "Right channel.\nRight cadence.",
+      "benefits": [
+        {
+          "title": "Voice + SMS + WhatsApp + email",
+          "body": "Different appointment types want different channels. Configurable per workflow."
+        },
+        {
+          "title": "Two-way response",
+          "body": "'STOP' opts out. 'RESCHEDULE' fires the booking flow. 'CONFIRMED' marks + suppresses follow-ups."
+        },
+        {
+          "title": "Show-up rate lift",
+          "body": "Typical 30-50% reduction in no-show rates within 30 days."
+        },
+        {
+          "title": "Cadence templates",
+          "body": "Healthcare default, sales-demo default, hospitality default — pre-built cadences for common verticals."
+        }
+      ],
+      "integrations": [
+        "Twilio",
+        "WhatsApp",
+        "Gmail",
+        "Cal.com",
+        "Calendly",
+        "Salesforce"
+      ],
+      "customerQuoteId": "snazzy",
+      "faqs": [
+        {
+          "question": "Which channels are supported for reminders?",
+          "answer": "Voice calls, SMS, WhatsApp, email — pick one or any combination per workflow. Different appointment types can use different channels."
+        },
+        {
+          "question": "What's the typical no-show reduction?",
+          "answer": "30-50% reduction within 30 days for most customers. Higher for healthcare + high-value B2B appointments; lower for low-friction consumer bookings."
+        },
+        {
+          "question": "Can callers confirm or reschedule via the reminder?",
+          "answer": "Yes — two-way handling. SMS 'CONFIRMED' marks + suppresses. 'RESCHEDULE' fires the booking workflow. Voice reminders accept verbal confirm/reschedule/cancel."
+        },
+        {
+          "question": "Are there pre-built cadences for common industries?",
+          "answer": "Yes — healthcare, sales-demo, hospitality, consumer-service templates. Customize body + timing per workflow."
+        },
+        {
+          "question": "How does cadence interact with calendar updates?",
+          "answer": "If the appointment moves (rep reschedules from their side), reminder cadence auto-recalculates from the new slot time."
+        }
+      ]
+    },
+    "audience-csv-upload": {
+      "slug": "audience-csv-upload",
+      "eyebrow": "Ops & compliance",
+      "hero": "Upload a CSV.\nDial in minutes.",
+      "lead": "Drop a CSV, map columns to workflow variables, validate phones + DNC, hit go. From spreadsheet to live outbound campaign in under five minutes.",
+      "stats": [
+        {
+          "value": "CSV / API / CRM",
+          "label": "Upload paths"
+        },
+        {
+          "value": "Auto-map",
+          "label": "Column → variable"
+        },
+        {
+          "value": "Validated",
+          "label": "Phone format + DNC"
+        },
+        {
+          "value": "Live preview",
+          "label": "Sample 10 before launch"
+        }
+      ],
+      "gradient": [
+        "#86c277",
+        "#435E35"
+      ],
+      "closingEyebrow": "From sheet to live calls",
+      "closingHeading": "Stop wrangling.\nStart dialing.",
+      "closingBody": "Audience upload handles the messy part — column mapping, phone validation, DNC scrub, timezone inference — so you go from CSV to launched campaign without IT involvement.",
+      "heroMockupSrc": "/_static/snaps/csv-audience.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Drop.\nMap. Validate. Go.",
+      "howSteps": [
+        {
+          "title": "Drop the file",
+          "body": "CSV, XLSX, or push via API. Up to 1M rows per upload. Sub-30s import.",
+          "mockupId": "function-call"
+        },
+        {
+          "title": "Auto-map columns",
+          "body": "Phone, name, custom fields auto-detected + mapped to workflow variables. Manual override if needed.",
+          "mockupId": "workflow-editor"
+        },
+        {
+          "title": "Validate + launch",
+          "body": "Phone format check, DNC scrub, timezone inference, opt-out cross-check. Preview 10 sample calls. Hit go.",
+          "mockupId": "multi-agent"
+        }
+      ],
+      "benefitsEyebrow": "Audience-ops without friction",
+      "benefitsHeading": "Self-serve.\nIT-optional.",
+      "benefits": [
+        {
+          "title": "Auto column mapping",
+          "body": "Phone, name, email, custom fields detected by header name + content. Override when needed."
+        },
+        {
+          "title": "Built-in validation",
+          "body": "E.164 phone format check, DNC scrub, opt-out cross-reference, timezone inference — all on import."
+        },
+        {
+          "title": "Sample preview",
+          "body": "Preview 10 sample calls with merged variables before launching. Catch template bugs before they go out."
+        },
+        {
+          "title": "CRM auto-sync",
+          "body": "Schedule recurring imports from Salesforce, HubSpot, or any CRM. New leads dialed automatically."
+        }
+      ],
+      "integrations": [
+        "Salesforce",
+        "HubSpot",
+        "Zapier",
+        "Notion",
+        "Airtable",
+        "Slack"
+      ],
+      "customerQuoteId": "orbit",
+      "faqs": [
+        {
+          "question": "What file formats are supported?",
+          "answer": "CSV (recommended), XLSX, JSON. Up to 1M rows per upload. Larger volumes via API push."
+        },
+        {
+          "question": "How does column mapping work?",
+          "answer": "Auto-detection by header name + content sniffing (phone numbers, emails, names). Manual override per column. Mappings remembered per workflow for repeat uploads."
+        },
+        {
+          "question": "Is DNC scrubbing automatic?",
+          "answer": "Yes — national + state DNC lists checked on import. Per-account opt-out lists cross-referenced. Bad numbers flagged + excluded before dial."
+        },
+        {
+          "question": "Can I sync from my CRM instead of uploading?",
+          "answer": "Yes — first-class Salesforce, HubSpot, Zoho. Generic webhook + REST for any other system. Schedule recurring syncs (hourly, daily) or push on-demand."
+        },
+        {
+          "question": "What about row-level errors?",
+          "answer": "Each row validated independently. Bad rows surfaced in a per-import report — fix + re-import the failed subset, valid rows dial without blocking."
+        }
+      ]
+    },
+    "ab-test-workflows": {
+      "slug": "ab-test-workflows",
+      "eyebrow": "Ops & compliance",
+      "hero": "A/B test\nwhole workflows.",
+      "lead": "Split traffic between two workflow versions, measure conversion + sentiment per branch, ship the winner. Statistical significance built in.",
+      "stats": [
+        {
+          "value": "Per-workflow",
+          "label": "Versioned variants"
+        },
+        {
+          "value": "Configurable %",
+          "label": "Traffic split"
+        },
+        {
+          "value": "Stat sig",
+          "label": "Auto-detected"
+        },
+        {
+          "value": "Multi-metric",
+          "label": "Conv + CSAT + duration"
+        }
+      ],
+      "gradient": [
+        "#FDB87A",
+        "#9a3412"
+      ],
+      "closingEyebrow": "Improve scientifically",
+      "closingHeading": "Stop guessing.\nStart testing.",
+      "closingBody": "A/B test workflows ship variants in parallel + measure what actually works. No more 'I think this prompt is better.'",
+      "heroMockupSrc": "/_static/snaps/evals-board.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Split.\nMeasure. Ship.",
+      "howSteps": [
+        {
+          "title": "Create the variant",
+          "body": "Clone the live workflow, change what you want to test — prompt wording, voice, branching, sequence. Versioned snapshot.",
+          "mockupId": "workflow-editor"
+        },
+        {
+          "title": "Split traffic",
+          "body": "Configurable % split (50/50, 90/10 for risky changes). Per-call random assignment, no caller sees both.",
+          "mockupId": "multi-agent"
+        },
+        {
+          "title": "Track + decide",
+          "body": "Live dashboard shows conversion, CSAT, call duration, abandon rate per branch. Stat sig auto-detected. Ship winner with one click.",
+          "mockupId": "evals-board"
+        }
+      ],
+      "benefitsEyebrow": "Iterate with proof",
+      "benefitsHeading": "Real lift.\nNot vibes.",
+      "benefits": [
+        {
+          "title": "Multi-metric tracking",
+          "body": "Conversion, sentiment, call duration, abandon rate, escalation rate — all measured per branch automatically."
+        },
+        {
+          "title": "Stat sig detection",
+          "body": "Built-in chi-square / t-test stat sig. Surface 'variant B wins (95% confidence)' when enough data lands."
+        },
+        {
+          "title": "Per-call random assignment",
+          "body": "Each caller gets one branch consistently. No caller experiences both during the test."
+        },
+        {
+          "title": "One-click promotion",
+          "body": "Pick the winner from the dashboard. Auto-promotes variant to 100% traffic + retires the loser."
+        }
+      ],
+      "integrations": [
+        "Salesforce",
+        "HubSpot",
+        "Slack",
+        "Notion",
+        "Linear",
+        "Zendesk"
+      ],
+      "customerQuoteId": "snazzy",
+      "faqs": [
+        {
+          "question": "What can I A/B test?",
+          "answer": "Any workflow change — prompt wording, voice persona, branching logic, capture order, escalation rules. Even entire workflows if they handle the same intent."
+        },
+        {
+          "question": "How is stat sig calculated?",
+          "answer": "Built-in chi-square (for binary metrics like conversion) + t-test (for continuous metrics like call duration). Surfaces 'variant B wins at 95% confidence' when enough data lands."
+        },
+        {
+          "question": "Does the same caller ever get both variants?",
+          "answer": "No — per-call random assignment is sticky to the contact ID. Repeat callers get the same branch consistently across calls."
+        },
+        {
+          "question": "How long do tests typically run?",
+          "answer": "Depends on volume + effect size. Small-effect tests on low-volume workflows = weeks. Big-effect tests on high-volume campaigns = hours. Dashboard estimates time-to-significance live."
+        },
+        {
+          "question": "Can I run more than 2 variants?",
+          "answer": "Yes — N-way splits (A/B/C/D) supported. Stat sig math accounts for multiple-comparison correction automatically."
+        }
+      ]
+    },
+    "evals-scoring": {
+      "slug": "evals-scoring",
+      "eyebrow": "Ops & compliance",
+      "hero": "Score every call.\nAgainst your own rubric.",
+      "lead": "Define quality criteria — script adherence, tone, compliance phrases, captured fields — and Finn scores every call automatically. No human QA sampling.",
+      "stats": [
+        {
+          "value": "Custom rubric",
+          "label": "Per-workflow criteria"
+        },
+        {
+          "value": "100%",
+          "label": "Call coverage"
+        },
+        {
+          "value": "LLM-judged",
+          "label": "Plus rule-based"
+        },
+        {
+          "value": "Trend tracking",
+          "label": "Per-workflow drift detection"
+        }
+      ],
+      "gradient": [
+        "#FD7FAD",
+        "#9a3412"
+      ],
+      "closingEyebrow": "QA at scale",
+      "closingHeading": "Replace 5% sampling\nwith 100% coverage.",
+      "closingBody": "Evals scoring runs against every call, surfaces drift the moment it happens, and gives you a per-workflow quality dashboard that updates in real time.",
+      "heroMockupSrc": "/_static/snaps/evals-board.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Define.\nScore. Track.",
+      "howSteps": [
+        {
+          "title": "Build the rubric",
+          "body": "Per-workflow criteria — required phrases, prohibited phrases, tone, compliance disclosures, capture completeness. LLM-judged + rule-based mixed.",
+          "mockupId": "evals-board"
+        },
+        {
+          "title": "Auto-score every call",
+          "body": "PCA pipeline runs scoring at call end. Sub-30s from call disconnect to full score breakdown.",
+          "mockupId": "transcript-pca"
+        },
+        {
+          "title": "Track drift live",
+          "body": "Dashboard shows score trends per workflow. Alerts on drops below threshold. Compare across cohorts, time windows, rep assignments.",
+          "mockupId": "observability-dashboard"
+        }
+      ],
+      "benefitsEyebrow": "QA-grade quality, automated",
+      "benefitsHeading": "Catch drift.\nProve compliance.",
+      "benefits": [
+        {
+          "title": "Custom rubrics per workflow",
+          "body": "Sales workflow scores differently than collections. Build the criteria that match how your team defines quality."
+        },
+        {
+          "title": "LLM-judged + rule-based",
+          "body": "Subjective criteria (tone, empathy) judged by LLM. Objective criteria (required phrases) matched by rules. Best of both."
+        },
+        {
+          "title": "100% call coverage",
+          "body": "Every call scored. Not a 5% sample. Drift surfaces immediately, not weeks later."
+        },
+        {
+          "title": "Compliance audit trail",
+          "body": "Required-phrase compliance auto-tracked + reportable. Useful for TCPA, GDPR, HIPAA disclosures."
+        }
+      ],
+      "integrations": [
+        "Salesforce",
+        "HubSpot",
+        "Slack",
+        "Notion",
+        "Linear",
+        "Zendesk"
+      ],
+      "customerQuoteId": "tofa",
+      "faqs": [
+        {
+          "question": "What can I score against?",
+          "answer": "Anything observable in the transcript or call metadata — required phrases, prohibited words, tone, sentiment, capture completeness, workflow path taken, duration, escalation outcome."
+        },
+        {
+          "question": "How are subjective criteria like 'empathy' scored?",
+          "answer": "LLM judges with calibrated prompts. Each workflow's rubric can include subjective criteria that are scored against examples + rubric language you define."
+        },
+        {
+          "question": "How accurate is automated scoring?",
+          "answer": "Calibrated against human QA samples — typically 85-92% agreement with human scorers in the steady state. Outliers surfaced for human review."
+        },
+        {
+          "question": "Can I see trending over time?",
+          "answer": "Yes — per-workflow score trends, per-rep, per-cohort, per-time-window. Set alert thresholds for drift detection."
+        },
+        {
+          "question": "Is the rubric versioned?",
+          "answer": "Yes — rubric changes are versioned. Past calls scored against the rubric that was active when they happened. Re-score on demand if rubric changes."
+        }
+      ]
+    },
+    "per-finn-redaction": {
+      "slug": "per-finn-redaction",
+      "eyebrow": "Ops & compliance",
+      "hero": "PII out\nbefore it goes anywhere.",
+      "lead": "Per-finn redaction rules strip credit cards, SSNs, account numbers, PHI from transcripts + logs the moment they're captured. Compliance-ready by default.",
+      "stats": [
+        {
+          "value": "Auto-detect",
+          "label": "PII patterns"
+        },
+        {
+          "value": "Custom",
+          "label": "Per-finn rules"
+        },
+        {
+          "value": "Pre-storage",
+          "label": "Redacted before write"
+        },
+        {
+          "value": "Reversible",
+          "label": "Per role + audit"
+        }
+      ],
+      "gradient": [
+        "#7c3aed",
+        "#3730a3"
+      ],
+      "closingEyebrow": "Compliance, built-in",
+      "closingHeading": "Don't leak\nwhat you don't need.",
+      "closingBody": "Per-finn redaction keeps PII out of transcripts, logs, analytics, and exports. HIPAA, PCI, GDPR, DPDP — handled the right way.",
+      "heroMockupSrc": "/_static/snaps/security-ledger.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Detect.\nRedact. Store.",
+      "howSteps": [
+        {
+          "title": "Define what to redact",
+          "body": "Per-finn rules: credit card, SSN, account number, medical record, custom regex. Built-in templates for HIPAA / PCI / GDPR baselines.",
+          "mockupId": "security-ledger"
+        },
+        {
+          "title": "Auto-detect + redact",
+          "body": "Pattern detection runs on the live transcript + captured fields. Matches replaced with token (`[CC]`, `[SSN]`) before storage.",
+          "mockupId": "transcript-pca"
+        },
+        {
+          "title": "Role-based reveal",
+          "body": "Authorized roles can reveal redacted values via audit-logged request. Everyone else sees only the token. Full audit trail.",
+          "mockupId": "compliance-badges"
+        }
+      ],
+      "benefitsEyebrow": "PII-safe by default",
+      "benefitsHeading": "Captured.\nNever leaked.",
+      "benefits": [
+        {
+          "title": "Pre-storage redaction",
+          "body": "PII never lands in transcripts, logs, analytics, or exports. Reduces breach blast radius + audit scope."
+        },
+        {
+          "title": "Custom regex rules",
+          "body": "Industry-specific patterns — medical record numbers, account IDs, insurance member IDs — defined per finn."
+        },
+        {
+          "title": "Role-based reveal",
+          "body": "Compliance officer can reveal a redacted SSN with audit trail. Analyst sees only token. Engineer sees only token."
+        },
+        {
+          "title": "Templates for common regimes",
+          "body": "HIPAA baseline, PCI baseline, GDPR baseline — pre-built rules to flip on per finn."
+        }
+      ],
+      "integrations": [
+        "Salesforce",
+        "HubSpot",
+        "Notion",
+        "Linear",
+        "Zendesk",
+        "Slack"
+      ],
+      "customerQuoteId": "snazzy",
+      "faqs": [
+        {
+          "question": "What PII can Finn auto-detect?",
+          "answer": "Credit card numbers (Luhn-validated), SSN, US/EU phone numbers, email addresses, IBANs, medical record numbers, custom regex patterns. Templates for HIPAA / PCI / GDPR baselines."
+        },
+        {
+          "question": "Where does redaction happen?",
+          "answer": "Before storage. The unredacted value never lands in your transcripts, logs, analytics, or exports — only the redaction token (`[CC]`, `[SSN]`)."
+        },
+        {
+          "question": "Can authorized users see the original value?",
+          "answer": "Yes — role-based reveal. Compliance officers can reveal via audit-logged request. Audit trail captures who revealed what, when."
+        },
+        {
+          "question": "Does redaction affect the live call?",
+          "answer": "No — Finn still uses the unredacted value during the call (e.g. to verify a credit card with your payment processor). Redaction is post-call, pre-storage."
+        },
+        {
+          "question": "Is the redaction regime configurable per finn?",
+          "answer": "Yes — each finn has its own rules. HIPAA-restricted health finn uses one set; sales finn uses a lighter set. No cross-contamination."
+        }
+      ]
+    },
+    "data-residency-picker": {
+      "slug": "data-residency-picker",
+      "eyebrow": "Ops & compliance",
+      "hero": "Pick the region.\nLock it in.",
+      "lead": "US, EU, India, Australia, Canada — pick the region your data lives in. Call recordings, transcripts, analytics all stay within the chosen jurisdiction.",
+      "stats": [
+        {
+          "value": "5 regions",
+          "label": "Available"
+        },
+        {
+          "value": "Per-account",
+          "label": "Lock at provisioning"
+        },
+        {
+          "value": "Audit-ready",
+          "label": "Residency attestation"
+        },
+        {
+          "value": "SCC + DPF",
+          "label": "Cross-border safeguards"
+        }
+      ],
+      "gradient": [
+        "#0f766e",
+        "#1e3a8a"
+      ],
+      "closingEyebrow": "Sovereignty without friction",
+      "closingHeading": "Data stays\nwhere you put it.",
+      "closingBody": "Data residency picker locks your storage region at provisioning. Recordings, transcripts, analytics, and backups all stay within jurisdiction. Audit + attestation ready.",
+      "heroMockupSrc": "/_static/snaps/data-residency.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Pick.\nLock. Attest.",
+      "howSteps": [
+        {
+          "title": "Pick at provisioning",
+          "body": "US, EU, India, Australia, Canada. Choose at account creation; lock prevents accidental cross-region writes downstream.",
+          "mockupId": "data-residency"
+        },
+        {
+          "title": "All data stays in-region",
+          "body": "Recordings, transcripts, captured fields, PCA outputs, backups — all in-region. Cross-region access requires explicit cross-border safeguards.",
+          "mockupId": "security-ledger"
+        },
+        {
+          "title": "Audit + attestation",
+          "body": "Per-account residency attestation document available on demand. SOC 2 + ISO 27001 audits cover regional separation.",
+          "mockupId": "compliance-badges"
+        }
+      ],
+      "benefitsEyebrow": "Compliance-grade residency",
+      "benefitsHeading": "5 regions.\nNo loopholes.",
+      "benefits": [
+        {
+          "title": "Per-account region lock",
+          "body": "Region chosen at provisioning + locked. Prevents accidental cross-region writes via API or admin error."
+        },
+        {
+          "title": "Full data scope",
+          "body": "Recordings, transcripts, captured fields, PCA, backups, analytics — all in-region. No 'metadata exception.'"
+        },
+        {
+          "title": "Cross-border safeguards",
+          "body": "Standard Contractual Clauses (SCCs), EU-US Data Privacy Framework (DPF), India DPDP-compliant. Auditable cross-border transfer logs."
+        },
+        {
+          "title": "Residency attestation",
+          "body": "On-demand attestation document for your compliance team. Useful for vendor reviews + regulatory filings."
+        }
+      ],
+      "integrations": [
+        "Salesforce",
+        "HubSpot",
+        "Zendesk",
+        "Notion",
+        "Linear",
+        "Slack"
+      ],
+      "customerQuoteId": "frinks",
+      "faqs": [
+        {
+          "question": "Which regions are available?",
+          "answer": "US (us-east-1 + us-west-2), EU (eu-west-1 in Ireland + eu-central-1 in Frankfurt), India (ap-south-1 in Mumbai), Australia (ap-southeast-2 in Sydney), Canada (ca-central-1)."
+        },
+        {
+          "question": "Can I change region after provisioning?",
+          "answer": "Region is locked after account creation to prevent accidental cross-region writes. Migration to a different region is a manual, audit-logged operation handled by our compliance team on request."
+        },
+        {
+          "question": "What data is covered by residency?",
+          "answer": "All of it — call recordings, transcripts, captured fields, PCA outputs, analytics, backups. No 'metadata exception.'"
+        },
+        {
+          "question": "How are cross-border accesses handled?",
+          "answer": "When in-region engineers can't resolve an issue, cross-region access is requested with audit-logged justification + customer notification. SCCs + DPF + DPDP safeguards in place for any transfers."
+        },
+        {
+          "question": "Can I get a residency attestation document?",
+          "answer": "Yes — on-demand from your account settings. PDF + signed copy for compliance + vendor reviews. SOC 2 + ISO 27001 audits cover regional separation independently."
+        }
+      ]
+    },
+    "sentiment-timeline": {
+      "slug": "sentiment-timeline",
+      "eyebrow": "Analytics & insights",
+      "hero": "Sentiment\nper turn.",
+      "lead": "See the exact moment a call went sideways. Per-turn sentiment scoring surfaces the trigger word, the dropped tone, the recovery — coaching-ready.",
+      "stats": [
+        {
+          "value": "Per-turn",
+          "label": "Granularity"
+        },
+        {
+          "value": "Multi-axis",
+          "label": "Emotion + valence"
+        },
+        {
+          "value": "Auto-tagged",
+          "label": "On call end"
+        },
+        {
+          "value": "Searchable",
+          "label": "Filter by sentiment shift"
+        }
+      ],
+      "gradient": [
+        "#FD7FAD",
+        "#9a3412"
+      ],
+      "closingEyebrow": "Coach the moment",
+      "closingHeading": "Stop reading summaries.\nWatch the inflection.",
+      "closingBody": "Sentiment timeline shows where calls go right + wrong. Coach reps on what worked. Drop prompts that didn't.",
+      "heroMockupSrc": "/_static/snaps/transcript-pca.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Score.\nVisualize. Search.",
+      "howSteps": [
+        {
+          "title": "Score per turn",
+          "body": "Each caller + agent turn scored on emotion + valence. Sub-30s from call end to full timeline.",
+          "mockupId": "transcript-pca"
+        },
+        {
+          "title": "Visual timeline",
+          "body": "Call transcript overlaid with sentiment curve. Inflection points highlighted with the trigger turn.",
+          "mockupId": "evals-board"
+        },
+        {
+          "title": "Filter + cohort",
+          "body": "Search calls by sentiment shift ('calls that started positive + ended negative'). Build cohorts. Compare across reps + workflows.",
+          "mockupId": "observability-dashboard"
+        }
+      ],
+      "benefitsEyebrow": "Inflection-point analysis",
+      "benefitsHeading": "See the moment.\nFix the prompt.",
+      "benefits": [
+        {
+          "title": "Per-turn granularity",
+          "body": "Not a single call-level score — every turn scored so you see what specifically moved the needle."
+        },
+        {
+          "title": "Multi-axis emotion",
+          "body": "Not just positive / negative — emotion families (anger, confusion, satisfaction, urgency) tracked independently."
+        },
+        {
+          "title": "Inflection detection",
+          "body": "Auto-surfaces the turn where sentiment shifted. Coaching surface for reps + prompt-tuning surface for workflow owners."
+        },
+        {
+          "title": "Searchable + cohortable",
+          "body": "'Show me calls that went negative in the first 30 seconds.' Build cohorts. Compare across reps, workflows, regions."
+        }
+      ],
+      "integrations": [
+        "Salesforce",
+        "HubSpot",
+        "Slack",
+        "Notion",
+        "Linear",
+        "Zendesk"
+      ],
+      "customerQuoteId": "tofa",
+      "faqs": [
+        {
+          "question": "How granular is the sentiment scoring?",
+          "answer": "Per-turn — each caller + agent utterance gets an independent sentiment score on multiple axes (valence + emotion family)."
+        },
+        {
+          "question": "What signals drive sentiment scoring?",
+          "answer": "Acoustic (pitch, pace, volume), lexical (word choice), conversational (turn-taking dynamics). Multi-modal model tuned on call-center data."
+        },
+        {
+          "question": "Can I search for specific sentiment patterns?",
+          "answer": "Yes — search filters like 'started positive, ended negative' or 'sentiment dropped after escalation request.' Build cohorts from these queries."
+        },
+        {
+          "question": "Is sentiment scored in real time during the call?",
+          "answer": "Yes — available via webhook during the call for real-time escalation triggers ('caller anger detected → escalate to human')."
+        },
+        {
+          "question": "How does this differ from post-call analysis?",
+          "answer": "PCA tags outcomes + structured fields per call. Sentiment timeline is the moment-to-moment emotional curve within each call. Complementary."
+        }
+      ]
+    },
+    "conversation-tagging": {
+      "slug": "conversation-tagging",
+      "eyebrow": "Analytics & insights",
+      "hero": "Tag every call.\nFind every pattern.",
+      "lead": "Custom tags applied automatically per call — by intent, outcome, dispute type, product mentioned. Searchable, filterable, exportable.",
+      "stats": [
+        {
+          "value": "Custom taxonomy",
+          "label": "Per-workflow tags"
+        },
+        {
+          "value": "Auto-applied",
+          "label": "On call end"
+        },
+        {
+          "value": "Multi-tag",
+          "label": "Not exclusive"
+        },
+        {
+          "value": "Bulk export",
+          "label": "CSV + webhook"
+        }
+      ],
+      "gradient": [
+        "#7c3aed",
+        "#3730a3"
+      ],
+      "closingEyebrow": "Searchable conversation data",
+      "closingHeading": "Stop reading\nrandom transcripts.",
+      "closingBody": "Conversation tagging makes call data queryable. 'Show me all calls where caller mentioned competitor X.' 'Filter to calls flagged as billing disputes.'",
+      "heroMockupSrc": "/_static/snaps/transcript-pca.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Define.\nAuto-tag. Filter.",
+      "howSteps": [
+        {
+          "title": "Define your taxonomy",
+          "body": "Per-workflow tags — intent types, dispute categories, competitor mentions, escalation triggers. Mix LLM-judged + rule-based.",
+          "mockupId": "evals-board"
+        },
+        {
+          "title": "Auto-tag on call end",
+          "body": "PCA pipeline applies tags within 30s of call end. Multi-tag (not mutually exclusive) by default.",
+          "mockupId": "transcript-pca"
+        },
+        {
+          "title": "Search + export",
+          "body": "Filter calls by any tag combination. Bulk export to CSV, push to webhook, build cohorts for retraining workflows.",
+          "mockupId": "observability-dashboard"
+        }
+      ],
+      "benefitsEyebrow": "Conversation data, queryable",
+      "benefitsHeading": "Find what matters.\nFast.",
+      "benefits": [
+        {
+          "title": "Custom tag taxonomy",
+          "body": "Per-workflow tags. Sales tags differently than support. Different finns, different schemas."
+        },
+        {
+          "title": "Multi-tag, not exclusive",
+          "body": "A call can be 'billing dispute' + 'tier 1 escalation' + 'competitor mention.' Reality is multi-faceted."
+        },
+        {
+          "title": "LLM + rule-based mix",
+          "body": "Subjective tags (caller frustration) judged by LLM. Objective tags (mentioned 'cancel') matched by rules."
+        },
+        {
+          "title": "Bulk operations",
+          "body": "Find tagged calls in bulk — export CSV, push to webhook, retrain on subset, A/B test against alternates."
+        }
+      ],
+      "integrations": [
+        "Salesforce",
+        "HubSpot",
+        "Slack",
+        "Notion",
+        "Linear",
+        "Zendesk"
+      ],
+      "customerQuoteId": "snazzy",
+      "faqs": [
+        {
+          "question": "What kinds of tags can I define?",
+          "answer": "Anything observable in the transcript — intent types, dispute categories, competitor mentions, escalation triggers, product references, sentiment shifts, captured field values."
+        },
+        {
+          "question": "How accurate is automated tagging?",
+          "answer": "LLM-judged tags: 85-92% agreement with human taggers in steady state. Rule-based tags: 100% deterministic. Outliers surfaced for human review."
+        },
+        {
+          "question": "Can a call have multiple tags?",
+          "answer": "Yes — multi-tag by default. A call can be 'billing dispute' + 'tier 1 escalation' + 'recovered' simultaneously."
+        },
+        {
+          "question": "Are tags retroactive?",
+          "answer": "New tags apply forward by default. Retroactive backfill against historical calls available on demand."
+        },
+        {
+          "question": "Where can tagged calls be exported?",
+          "answer": "Bulk CSV download, webhook push on tag application, direct push to your CRM or data warehouse, SQL access on enterprise."
+        }
+      ]
+    },
+    "funnel-analytics": {
+      "slug": "funnel-analytics",
+      "eyebrow": "Analytics & insights",
+      "hero": "Funnel.\nPer workflow.",
+      "lead": "See where callers drop off. Visualize the workflow as a funnel — every node, every branch, every captured field. Pinpoint the leak.",
+      "stats": [
+        {
+          "value": "Per-node",
+          "label": "Conversion + drop-off"
+        },
+        {
+          "value": "Branch breakdown",
+          "label": "Conditional paths"
+        },
+        {
+          "value": "Cohort filter",
+          "label": "By tag + region + tier"
+        },
+        {
+          "value": "Time-series",
+          "label": "Trends over weeks"
+        }
+      ],
+      "gradient": [
+        "#FDB87A",
+        "#9a3412"
+      ],
+      "closingEyebrow": "Find the leak",
+      "closingHeading": "Workflows visualized.\nDrop-offs spotted.",
+      "closingBody": "Funnel analytics turns every workflow into a Sankey diagram. Drop-off points obvious. Fix priorities clear.",
+      "heroMockupSrc": "/_static/snaps/observability-dashboard.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Visualize.\nSegment. Compare.",
+      "howSteps": [
+        {
+          "title": "Auto-built funnel",
+          "body": "Workflow editor surfaces double as analytics nodes. Funnel auto-built — no instrumentation needed.",
+          "mockupId": "workflow-editor"
+        },
+        {
+          "title": "Drop-off per node",
+          "body": "Each node shows entry / completion / drop-off counts + rates. Branch splits surface conditional path conversion.",
+          "mockupId": "observability-dashboard"
+        },
+        {
+          "title": "Cohort + time-series",
+          "body": "Filter by tag, region, tier, time window. Compare funnels across cohorts (campaign A vs B, region X vs Y, tier 1 vs 2).",
+          "mockupId": "evals-board"
+        }
+      ],
+      "benefitsEyebrow": "Funnel-grade workflow analysis",
+      "benefitsHeading": "Every node.\nEvery drop-off.",
+      "benefits": [
+        {
+          "title": "Auto-instrumented",
+          "body": "Funnel built automatically from the workflow. No 'track event' calls. Add a node, get the funnel."
+        },
+        {
+          "title": "Branch-aware",
+          "body": "Conditional branches surface as Sankey-style splits. See which paths win + which lose."
+        },
+        {
+          "title": "Cohort comparison",
+          "body": "Compare campaign A vs B, region X vs Y, tier 1 vs 2 — same funnel, different cohorts side-by-side."
+        },
+        {
+          "title": "Time-series drift",
+          "body": "Funnel snapshots over time. Spot when a conversion drop started + correlate with workflow changes."
+        }
+      ],
+      "integrations": [
+        "Salesforce",
+        "HubSpot",
+        "Notion",
+        "Slack",
+        "Linear",
+        "Zendesk"
+      ],
+      "customerQuoteId": "orbit",
+      "faqs": [
+        {
+          "question": "Do I need to instrument anything?",
+          "answer": "No — funnel is auto-built from the workflow editor. Every node is automatically a measurable step. Add a node, the funnel updates."
+        },
+        {
+          "question": "How are conditional branches handled?",
+          "answer": "Surfaced as Sankey-style splits. See conversion + drop-off per branch independently. Useful for tuning conditional routing."
+        },
+        {
+          "question": "Can I compare funnels across cohorts?",
+          "answer": "Yes — side-by-side comparison of campaign A vs B, region X vs Y, tier 1 vs 2, time window 1 vs 2. Same funnel, different cohorts."
+        },
+        {
+          "question": "Is there time-series tracking?",
+          "answer": "Yes — funnel snapshots over rolling windows. Spot when a conversion drop started + correlate with workflow versions, prompt changes, campaign launches."
+        },
+        {
+          "question": "Can I export funnel data?",
+          "answer": "Yes — CSV download per filter view, plus SQL access on enterprise. Funnel-level webhooks fire on significant drift detection."
+        }
+      ]
+    },
+    "cost-per-outcome": {
+      "slug": "cost-per-outcome",
+      "eyebrow": "Analytics & insights",
+      "hero": "Cost per outcome.\nNot per minute.",
+      "lead": "Stop measuring 'cost per call.' Start measuring 'cost per qualified lead,' 'cost per booked demo,' 'cost per recovered payment.' That's the metric that matters.",
+      "stats": [
+        {
+          "value": "Per outcome",
+          "label": "Custom denominators"
+        },
+        {
+          "value": "Auto-tracked",
+          "label": "From PCA tags"
+        },
+        {
+          "value": "Cohort filter",
+          "label": "Region, workflow, rep"
+        },
+        {
+          "value": "Webhook + CSV",
+          "label": "Push to your BI"
+        }
+      ],
+      "gradient": [
+        "#86c277",
+        "#435E35"
+      ],
+      "closingEyebrow": "ROI you can defend",
+      "closingHeading": "Stop guessing.\nStart proving.",
+      "closingBody": "Cost per outcome surfaces what each successful outcome actually costs — across workflows, campaigns, regions. CFO-ready ROI tracking.",
+      "heroMockupSrc": "/_static/snaps/observability-dashboard.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Tag.\nDivide. Compare.",
+      "howSteps": [
+        {
+          "title": "Define outcome",
+          "body": "Per-workflow outcome tags (qualified lead, booked demo, payment recovered). PCA pipeline tags every call against these.",
+          "mockupId": "transcript-pca"
+        },
+        {
+          "title": "Auto-calculate cost per outcome",
+          "body": "Total spend (Finn fees + carrier minutes) / count of successful outcomes. Updated live as calls complete.",
+          "mockupId": "observability-dashboard"
+        },
+        {
+          "title": "Cohort + compare",
+          "body": "Filter by region, campaign, rep, time window. Compare CPO across cohorts. Spot which segments win + which leak.",
+          "mockupId": "evals-board"
+        }
+      ],
+      "benefitsEyebrow": "ROI-grade analytics",
+      "benefitsHeading": "The metric\nyour CFO asks about.",
+      "benefits": [
+        {
+          "title": "Custom outcome denominators",
+          "body": "Sales workflow: cost per qualified lead. Support workflow: cost per resolved ticket. Defined per workflow."
+        },
+        {
+          "title": "All-in cost included",
+          "body": "Finn platform fees + carrier minutes + SMS + email — everything attributable to a successful outcome."
+        },
+        {
+          "title": "Cohort comparison",
+          "body": "Compare CPO across regions, campaigns, reps, time windows. Find what's working + what's leaking."
+        },
+        {
+          "title": "Push to your BI",
+          "body": "Webhook + CSV exports for Looker, Tableau, Snowflake, Mode. CPO available wherever your team already analyzes."
+        }
+      ],
+      "integrations": [
+        "Salesforce",
+        "HubSpot",
+        "Notion",
+        "Slack",
+        "Linear",
+        "Zendesk"
+      ],
+      "customerQuoteId": "tofa",
+      "faqs": [
+        {
+          "question": "How is 'outcome' defined?",
+          "answer": "Per-workflow outcome tags (qualified lead, booked demo, payment recovered, ticket resolved). PCA pipeline tags every call against these — you pick the rubric."
+        },
+        {
+          "question": "What costs are included?",
+          "answer": "Finn platform fees + carrier minutes + SMS + email send fees + any usage-based add-ons. All-in cost attributable to the workflow."
+        },
+        {
+          "question": "Can I compare CPO across cohorts?",
+          "answer": "Yes — region, campaign, rep, time window, tag combinations. Side-by-side comparison + trend over time."
+        },
+        {
+          "question": "Can CPO data feed my BI tool?",
+          "answer": "Yes — webhook on outcome events + CSV exports. Native connectors for Looker, Tableau, Snowflake, Mode in development."
+        },
+        {
+          "question": "What about long-tail outcomes (e.g. converted 30 days later)?",
+          "answer": "Webhook-based attribution lets you mark conversions retroactively. CPO recalculates with the new denominator. Useful for delayed funnels."
+        }
+      ]
+    },
+    "audit-log-export": {
+      "slug": "audit-log-export",
+      "eyebrow": "Analytics & insights",
+      "hero": "Every action,\nlogged + exportable.",
+      "lead": "User actions, admin changes, workflow deploys, data accesses, role grants — all logged with timestamp + actor. Bulk export for SIEM, compliance, audit.",
+      "stats": [
+        {
+          "value": "100% coverage",
+          "label": "All actions logged"
+        },
+        {
+          "value": "Real-time",
+          "label": "Live stream available"
+        },
+        {
+          "value": "7+ year retention",
+          "label": "Per compliance regime"
+        },
+        {
+          "value": "SIEM-ready",
+          "label": "JSON + CEF formats"
+        }
+      ],
+      "gradient": [
+        "#0f766e",
+        "#1e3a8a"
+      ],
+      "closingEyebrow": "Compliance-grade audit",
+      "closingHeading": "Audit trail\nyour SOC team will love.",
+      "closingBody": "Audit log export streams every action to your SIEM, archives to long-term storage, supports point-in-time queries for compliance investigations.",
+      "heroMockupSrc": "/_static/snaps/security-ledger.html",
+      "heroMockupAspect": 1.4545454545454546,
+      "howEyebrow": "How it works",
+      "howHeading": "Log.\nStream. Retain.",
+      "howSteps": [
+        {
+          "title": "100% action coverage",
+          "body": "Every user action, admin change, workflow deploy, data access logged with timestamp + actor + diff.",
+          "mockupId": "security-ledger"
+        },
+        {
+          "title": "Stream to SIEM",
+          "body": "Real-time push to Splunk, Datadog, Sumo, Elastic. JSON + CEF formats supported.",
+          "mockupId": "webhook-flow"
+        },
+        {
+          "title": "Long-term retention",
+          "body": "Default 7-year retention. Configurable per compliance regime (HIPAA 6yr, SOX 7yr, GDPR variable). Immutable archive.",
+          "mockupId": "compliance-badges"
+        }
+      ],
+      "benefitsEyebrow": "SOC-team-grade audit",
+      "benefitsHeading": "Investigations.\nResolved fast.",
+      "benefits": [
+        {
+          "title": "100% action coverage",
+          "body": "User actions, admin changes, workflow deploys, data accesses, role grants — all logged. No exceptions."
+        },
+        {
+          "title": "Real-time SIEM streaming",
+          "body": "Push to Splunk, Datadog, Sumo, Elastic in real time. JSON + CEF formats supported."
+        },
+        {
+          "title": "Point-in-time queries",
+          "body": "Reconstruct exact system state at any past timestamp. Useful for breach investigations + compliance audits."
+        },
+        {
+          "title": "Immutable archive",
+          "body": "WORM-style storage prevents tampering. Hash chains for cryptographic integrity verification."
+        }
+      ],
+      "integrations": [
+        "Salesforce",
+        "HubSpot",
+        "Slack",
+        "Notion",
+        "Linear",
+        "Zendesk"
+      ],
+      "customerQuoteId": "frinks",
+      "faqs": [
+        {
+          "question": "What actions are logged?",
+          "answer": "Every user action (login, view, edit, delete), admin change (role grant, account setting), workflow change (deploy, rollback, edit), data access (transcript view, recording download), API call."
+        },
+        {
+          "question": "How are logs delivered to my SIEM?",
+          "answer": "Real-time webhook stream in JSON or CEF format. First-class connectors for Splunk, Datadog, Sumo Logic, Elastic. Generic webhook supports any SIEM."
+        },
+        {
+          "question": "How long are logs retained?",
+          "answer": "Default 7 years. Configurable per compliance regime (HIPAA 6yr, SOX 7yr, GDPR variable). Immutable archive — logs can't be deleted or modified."
+        },
+        {
+          "question": "Can I query historical state?",
+          "answer": "Yes — point-in-time queries reconstruct exact system state at any past timestamp. Useful for 'what did this workflow look like on March 5?' or breach investigations."
+        },
+        {
+          "question": "Is the audit log itself tamper-evident?",
+          "answer": "Yes — WORM-style storage + hash chains. Each entry includes a cryptographic hash of the prior entry, making tampering detectable + provable."
+        }
+      ]
+    }
+  }
+}

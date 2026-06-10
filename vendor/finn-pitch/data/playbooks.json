@@ -1,0 +1,808 @@
+{
+  "PLAYBOOKS": [
+    {
+      "id": "lead-qualification-seller",
+      "name": "Lead Qualification - Seller",
+      "description": "Meet Jessica, an AI assistant dedicated to real estate seller engagement. Jessica's primary objective is to gather essential details about properties and their owners' goals, whether for selling or renting. Through structured conversations, Jessica provides real estate teams with the insights they need to tailor their approach.",
+      "emoji": "🏡",
+      "category": "Real Estate",
+      "features": [
+        "Lead qualification",
+        "Seller evaluation",
+        "Property assessment",
+        "Follow-up scheduling"
+      ],
+      "type": "Outbound",
+      "role": "AI Seller Engagement Agent",
+      "industrySlug": "real-estate",
+      "persona": "Jessica"
+    },
+    {
+      "id": "lead-qualification-buyer",
+      "name": "Lead Qualification - Buyer",
+      "description": "Meet Paul, an AI assistant designed for real estate lead qualification. Paul's primary responsibility is to engage with potential buyers who have expressed interest in purchasing property and determine their level of readiness, motivation, and qualification as viable leads.",
+      "emoji": "🏡",
+      "category": "Real Estate",
+      "features": [
+        "Buyer qualification",
+        "Budget assessment",
+        "Property matching",
+        "Appointment booking"
+      ],
+      "type": "Outbound",
+      "role": "AI Buyer Qualification Agent",
+      "industrySlug": "real-estate",
+      "persona": "Paul"
+    },
+    {
+      "id": "property-reconnector",
+      "name": "Property Reconnector",
+      "description": "Meet Alex, an AI representative for your Real Estate company. Alex's primary goal is to reconnect with past leads who previously showed interest in buying or selling property but may not have converted at the time.",
+      "emoji": "🔄",
+      "category": "Real Estate",
+      "features": [
+        "Lead reconnection",
+        "Follow-up calls",
+        "Interest assessment",
+        "Appointment scheduling"
+      ],
+      "type": "Outbound",
+      "role": "AI Dormant Lead Reactivation Agent",
+      "industrySlug": "real-estate",
+      "persona": "Alex"
+    },
+    {
+      "id": "sales-appointment-scheduler",
+      "name": "Sales Appointment Scheduler",
+      "description": "Meet Allen, a virtual assistant for your Real Estate company. His primary goal is to schedule appointments for potential customers who have shown interest in Real Estate services.",
+      "emoji": "📅",
+      "category": "Real Estate",
+      "features": [
+        "Appointment scheduling",
+        "Customer engagement",
+        "Follow-up management",
+        "Calendar coordination"
+      ],
+      "type": "Outbound",
+      "role": "AI Appointment Scheduler",
+      "industrySlug": "real-estate",
+      "persona": "Allen"
+    },
+    {
+      "id": "rental-tenant-inquiry",
+      "name": "Rental Tenant Inquiry",
+      "description": "Meet Hana, a leasing assistant. Hana fields inbound rental inquiries, qualifies prospects against listing requirements, and books viewings.",
+      "emoji": "🏘️",
+      "category": "Real Estate",
+      "features": [
+        "Listing inquiry",
+        "Qualification",
+        "Viewing booking",
+        "Availability check"
+      ],
+      "type": "Inbound",
+      "role": "AI Leasing Assistant",
+      "industrySlug": "real-estate",
+      "persona": "Hana"
+    },
+    {
+      "id": "move-out-scheduling",
+      "name": "Move-out Scheduling",
+      "description": "Meet Owen, a property coordinator. Owen schedules tenant move-outs, walkthrough inspections, and confirms key-return logistics.",
+      "emoji": "🚪",
+      "category": "Real Estate",
+      "features": [
+        "Move-out date",
+        "Walkthrough scheduling",
+        "Key return",
+        "Deposit info"
+      ],
+      "type": "Outbound",
+      "role": "AI Property Coordinator",
+      "industrySlug": "real-estate",
+      "persona": "Owen"
+    },
+    {
+      "id": "mortgage-receptionist",
+      "name": "Mortgage Receptionist",
+      "description": "Meet Michael, an AI assistant for your mortgage company, committed to streamlining your customer interactions and enhancing operational efficiency.",
+      "emoji": "🏦",
+      "category": "Mortgage",
+      "features": [
+        "Customer inquiry handling",
+        "Appointment scheduling",
+        "Loan information",
+        "Document collection"
+      ],
+      "type": "Inbound",
+      "role": "AI Mortgage Receptionist",
+      "industrySlug": "mortgage",
+      "persona": "Michael"
+    },
+    {
+      "id": "mortgage-lead-qualifier",
+      "name": "Mortgage Lead Qualifier",
+      "description": "Meet Emma, an AI representative for your mortgage company. Her primary role is to gather essential details about properties and their owners' goals for mortgage assistance.",
+      "emoji": "🔍",
+      "category": "Mortgage",
+      "features": [
+        "Credit assessment",
+        "Income verification",
+        "Property evaluation",
+        "Pre-qualification"
+      ],
+      "type": "Outbound",
+      "role": "AI Mortgage Lead Qualifier",
+      "industrySlug": "mortgage",
+      "persona": "Emma"
+    },
+    {
+      "id": "customer-support-insurance",
+      "name": "Customer Support",
+      "description": "Meet Sophie, an AI representative for your Insurance Company, specializing in addressing customer inquiries and providing comprehensive support.",
+      "emoji": "🛡️",
+      "category": "Insurance",
+      "features": [
+        "Policy inquiries",
+        "Claims support",
+        "Coverage information",
+        "Customer assistance"
+      ],
+      "type": "Inbound",
+      "role": "AI Insurance Support Agent",
+      "industrySlug": "insurance",
+      "persona": "Sophie"
+    },
+    {
+      "id": "claims-receptionist",
+      "name": "Claims Receptionist",
+      "description": "Meet Beto, an AI assistant for your insurance company, specializing in handling claims inquiries and providing comprehensive claims support.",
+      "emoji": "📋",
+      "category": "Insurance",
+      "features": [
+        "Claims processing",
+        "Status updates",
+        "Documentation assistance",
+        "Customer support"
+      ],
+      "type": "Inbound",
+      "role": "AI Claims Receptionist",
+      "industrySlug": "insurance",
+      "persona": "Beto"
+    },
+    {
+      "id": "policy-renewal-upselling",
+      "name": "Policy Renewal and Upselling",
+      "description": "Meet PolicyPro, an AI assistant for insurance companies focused on policy renewals and upselling additional coverage options.",
+      "emoji": "📄",
+      "category": "Insurance",
+      "features": [
+        "Policy renewals",
+        "Coverage analysis",
+        "Upselling opportunities",
+        "Customer retention"
+      ],
+      "type": "Outbound",
+      "role": "AI Renewals Agent",
+      "industrySlug": "insurance",
+      "persona": "PolicyPro"
+    },
+    {
+      "id": "restaurant-appointment-scheduler",
+      "name": "Restaurant Appointment Scheduler",
+      "description": "Meet Laura, an AI assistant for Gourmet Table, a fine dining establishment committed to providing exceptional culinary experiences.",
+      "emoji": "🍽️",
+      "category": "Hospitality",
+      "features": [
+        "Reservation management",
+        "Table booking",
+        "Special requests",
+        "Dining coordination"
+      ],
+      "type": "Inbound",
+      "role": "AI Reservations Assistant",
+      "industrySlug": "hospitality",
+      "persona": "Laura"
+    },
+    {
+      "id": "event-demand-generator",
+      "name": "Event Demand Generator",
+      "description": "Meet Riley, an AI representative for your events, dedicated to ensuring that your venue maintains optimal bookings and event engagement.",
+      "emoji": "🎪",
+      "category": "Hospitality",
+      "features": [
+        "Event promotion",
+        "Booking management",
+        "Customer engagement",
+        "Revenue optimization"
+      ],
+      "type": "Outbound",
+      "role": "AI Event Promotion Agent",
+      "industrySlug": "hospitality",
+      "persona": "Riley"
+    },
+    {
+      "id": "customer-support-dealership",
+      "name": "Customer Support",
+      "description": "Introducing Samantha, an AI assistant for automotive dealership customer service, dedicated to enhancing customer satisfaction and streamlining service operations.",
+      "emoji": "🚗",
+      "category": "Car Dealership",
+      "features": [
+        "Service inquiries",
+        "Appointment booking",
+        "Vehicle information",
+        "Customer assistance"
+      ],
+      "type": "Inbound",
+      "role": "AI Dealership Support Agent",
+      "industrySlug": "automotive",
+      "persona": "Samantha"
+    },
+    {
+      "id": "special-offers-upsell",
+      "name": "Special Offers and Promo Up-Sell",
+      "description": "Introducing Arthur, a virtual assistant for promotional campaigns. Arthur's primary role is to present special offers and upsell opportunities to existing customers.",
+      "emoji": "🎯",
+      "category": "Car Dealership",
+      "features": [
+        "Promotional campaigns",
+        "Upselling strategies",
+        "Customer retention",
+        "Special offers"
+      ],
+      "type": "Outbound",
+      "role": "AI Promotions Agent",
+      "industrySlug": "automotive",
+      "persona": "Arthur"
+    },
+    {
+      "id": "service-reminder",
+      "name": "Service Reminder",
+      "description": "Meet ServiceBot, an AI assistant specialized in service reminders and maintenance scheduling for automotive services.",
+      "emoji": "🔔",
+      "category": "Car Dealership",
+      "features": [
+        "Service reminders",
+        "Maintenance scheduling",
+        "Customer notifications",
+        "Follow-up calls"
+      ],
+      "type": "Outbound",
+      "role": "AI Service Reminder Agent",
+      "industrySlug": "automotive",
+      "persona": "ServiceBot"
+    },
+    {
+      "id": "healthcare-receptionist",
+      "name": "Healthcare Receptionist",
+      "description": "Meet Jessica, an AI assistant for your Healthcare company, dedicated to improving patient experience and operational efficiency in medical settings.",
+      "emoji": "🏥",
+      "category": "Healthcare",
+      "features": [
+        "Appointment scheduling",
+        "Patient inquiries",
+        "Medical information",
+        "Insurance verification"
+      ],
+      "type": "Inbound",
+      "role": "AI Healthcare Receptionist",
+      "industrySlug": "healthcare",
+      "persona": "Jessica"
+    },
+    {
+      "id": "patient-intake-specialist",
+      "name": "Patient Intake Specialist",
+      "description": "Meet Dr. Assist, an AI receptionist for medical practices, streamlining patient intake and providing comprehensive healthcare support.",
+      "emoji": "🩺",
+      "category": "Healthcare",
+      "features": [
+        "Patient registration",
+        "Medical history",
+        "Insurance verification",
+        "Appointment coordination"
+      ],
+      "type": "Inbound",
+      "role": "AI Patient Intake Specialist",
+      "industrySlug": "healthcare",
+      "persona": "Assist"
+    },
+    {
+      "id": "healthcare-lead-qualification",
+      "name": "Healthcare Lead Qualification",
+      "description": "Meet Timmy, a professional voice AI assistant for healthcare services. Timmy engages with prospective patients and routes qualified leads to your care team.",
+      "emoji": "💉",
+      "category": "Healthcare",
+      "features": [
+        "Service interest",
+        "Insurance check",
+        "Symptom triage",
+        "Care-team routing"
+      ],
+      "type": "Outbound",
+      "role": "AI Patient Lead Qualifier",
+      "industrySlug": "healthcare",
+      "persona": "Timmy"
+    },
+    {
+      "id": "patient-screening",
+      "name": "Patient Screening",
+      "description": "Meet Nora, an AI assistant for clinical pre-screening. Nora gathers symptom and eligibility details before patients meet with a clinician.",
+      "emoji": "📝",
+      "category": "Healthcare",
+      "features": [
+        "Symptom check",
+        "Eligibility screen",
+        "Risk flagging",
+        "Triage handoff"
+      ],
+      "type": "Inbound",
+      "role": "AI Clinical Pre-Screener",
+      "industrySlug": "healthcare",
+      "persona": "Nora"
+    },
+    {
+      "id": "college-receptionist",
+      "name": "College Receptionist",
+      "description": "Meet Brian, the dedicated College AI Receptionist for your college or school, committed to enhancing student experience and operational efficiency.",
+      "emoji": "🎓",
+      "category": "Education",
+      "features": [
+        "Student inquiries",
+        "Admission information",
+        "Course details",
+        "Campus assistance"
+      ],
+      "type": "Inbound",
+      "role": "AI College Receptionist",
+      "industrySlug": "education",
+      "persona": "Brian"
+    },
+    {
+      "id": "enrollment-advisor",
+      "name": "Enrollment Advisor",
+      "description": "Meet Advisor, an AI assistant for educational institutions, helping prospective students with enrollment processes and academic inquiries.",
+      "emoji": "📚",
+      "category": "Education",
+      "features": [
+        "Enrollment guidance",
+        "Program information",
+        "Application assistance",
+        "Student support"
+      ],
+      "type": "Inbound",
+      "role": "AI Enrollment Advisor",
+      "industrySlug": "education",
+      "persona": "Advisor"
+    },
+    {
+      "id": "recruiting-appointment-scheduler",
+      "name": "Recruiting Appointment Scheduler",
+      "description": "Meet Drew, an AI Recruiter for your company. His primary role is to schedule interviews and manage candidate communications throughout the recruitment process.",
+      "emoji": "📅",
+      "category": "Recruitment",
+      "features": [
+        "Interview scheduling",
+        "Candidate communication",
+        "Calendar management",
+        "Follow-up automation"
+      ],
+      "type": "Outbound",
+      "role": "AI Recruiter",
+      "industrySlug": "recruitment",
+      "persona": "Drew"
+    },
+    {
+      "id": "interview-scheduler",
+      "name": "Interview Scheduler",
+      "description": "Say hello to Beatrice, a virtual assistant for managing interview schedules. Beatrice's primary role is to coordinate interviews between candidates and hiring managers.",
+      "emoji": "👔",
+      "category": "Recruitment",
+      "features": [
+        "Interview coordination",
+        "Schedule management",
+        "Automated reminders",
+        "Calendar integration"
+      ],
+      "type": "Outbound",
+      "role": "AI Interview Scheduler",
+      "industrySlug": "recruitment",
+      "persona": "Beatrice"
+    },
+    {
+      "id": "talent-scout",
+      "name": "Talent Scout",
+      "description": "Meet Scout, an AI assistant specialized in talent acquisition and recruitment for various industries and positions.",
+      "emoji": "🌟",
+      "category": "Recruitment",
+      "features": [
+        "Talent sourcing",
+        "Candidate screening",
+        "Skills assessment",
+        "Interview coordination"
+      ],
+      "type": "Outbound",
+      "role": "AI Talent Scout",
+      "industrySlug": "recruitment",
+      "persona": "Scout"
+    },
+    {
+      "id": "appointment-reminder",
+      "name": "Appointment Reminder",
+      "description": "Meet RemindBot, an AI assistant specialized in appointment reminders and scheduling confirmations across various service industries.",
+      "emoji": "⏰",
+      "category": "Recruitment",
+      "features": [
+        "Appointment reminders",
+        "Schedule confirmations",
+        "Automated notifications",
+        "Calendar sync"
+      ],
+      "type": "Outbound",
+      "role": "AI Appointment Reminder Agent",
+      "industrySlug": "recruitment",
+      "persona": "RemindBot"
+    },
+    {
+      "id": "utility-scout",
+      "name": "Utility Scout",
+      "description": "Meet Scout, a professional Voice AI assistant for utility companies. Scout's primary role is to engage with potential customers for energy consultation services.",
+      "emoji": "⚡",
+      "category": "Solar",
+      "features": [
+        "Energy assessment",
+        "Cost analysis",
+        "Service scheduling",
+        "Customer education"
+      ],
+      "type": "Outbound",
+      "role": "AI Solar Consultant",
+      "industrySlug": "solar",
+      "persona": "Scout"
+    },
+    {
+      "id": "retail-customer-service",
+      "name": "Retail Customer Service",
+      "description": "Meet ShopBot, an AI assistant for retail businesses, providing comprehensive customer support and enhancing shopping experiences.",
+      "emoji": "🛍️",
+      "category": "Retail",
+      "features": [
+        "Product inquiries",
+        "Order tracking",
+        "Return assistance",
+        "Customer support"
+      ],
+      "type": "Inbound",
+      "role": "AI Retail Support Agent",
+      "industrySlug": "retail",
+      "persona": "ShopBot"
+    },
+    {
+      "id": "cart-abandonment-recovery",
+      "name": "Cart Abandonment Recovery",
+      "description": "Meet Robin, a retail recovery agent. Robin reaches out to shoppers who left items in their cart and helps them complete the purchase.",
+      "emoji": "🛒",
+      "category": "Retail",
+      "features": [
+        "Cart recovery",
+        "Coupon offer",
+        "Stock check",
+        "Checkout assist"
+      ],
+      "type": "Outbound",
+      "role": "AI Recovery Agent",
+      "industrySlug": "retail",
+      "persona": "Robin"
+    },
+    {
+      "id": "payment-reminder",
+      "name": "Payment Reminder",
+      "description": "Meet Casey, a polite AR assistant. Casey calls on outstanding invoices, confirms payment intent, and offers quick pay options without sounding heavy-handed.",
+      "emoji": "💳",
+      "category": "Finance",
+      "features": [
+        "Invoice reminder",
+        "Pay options",
+        "Promise to pay",
+        "Dispute capture"
+      ],
+      "type": "Outbound",
+      "role": "AI AR Assistant",
+      "industrySlug": "financial-services",
+      "persona": "Casey"
+    },
+    {
+      "id": "loan-repayment-reminder",
+      "name": "Loan Repayment Reminder",
+      "description": "Meet Jordan, a loan servicing agent. Jordan reminds borrowers of upcoming or missed repayments and surfaces hardship options when needed.",
+      "emoji": "💰",
+      "category": "Finance",
+      "features": [
+        "Payment reminder",
+        "Hardship intake",
+        "Promise to pay",
+        "Auto-debit setup"
+      ],
+      "type": "Outbound",
+      "role": "AI Loan Servicing Agent",
+      "industrySlug": "financial-services",
+      "persona": "Jordan"
+    },
+    {
+      "id": "bank-fraud-confirm",
+      "name": "Bank Fraud Verification",
+      "description": "Meet Vault, a fraud-verification agent. Vault calls customers to confirm or deny suspicious transactions and flags genuine fraud to the security team.",
+      "emoji": "🔐",
+      "category": "Fintech",
+      "features": [
+        "Transaction confirm",
+        "Fraud flag",
+        "Card lock request",
+        "Escalation"
+      ],
+      "type": "Outbound",
+      "role": "AI Fraud Verification Agent",
+      "industrySlug": "fintech",
+      "persona": "Vault"
+    },
+    {
+      "id": "demo-booking-saas",
+      "name": "SaaS Demo Booking",
+      "description": "Meet Avery, a SaaS sales coordinator. Avery turns inbound leads into booked 30-minute product demos with the right account executive.",
+      "emoji": "🖥️",
+      "category": "SaaS",
+      "features": [
+        "Demo scheduling",
+        "AE routing",
+        "ICP qualification",
+        "Calendar sync"
+      ],
+      "type": "Outbound",
+      "role": "AI Sales Coordinator",
+      "industrySlug": "saas",
+      "persona": "Avery"
+    },
+    {
+      "id": "free-trial-followup",
+      "name": "Free Trial Follow-up",
+      "description": "Meet Theo, a trial activation guide. Theo checks in mid-trial, surfaces blockers, and helps users get to value before the trial ends.",
+      "emoji": "✨",
+      "category": "SaaS",
+      "features": [
+        "Activation check",
+        "Use case discovery",
+        "Demo upsell",
+        "Convert to paid"
+      ],
+      "type": "Outbound",
+      "role": "AI Trial Activation Guide",
+      "industrySlug": "saas",
+      "persona": "Theo"
+    },
+    {
+      "id": "webinar-reminder",
+      "name": "Webinar Reminder",
+      "description": "Meet Pixel, a webinar concierge. Pixel reminds registrants of an upcoming session, shares the join link, and collects last-minute questions.",
+      "emoji": "🎤",
+      "category": "SaaS",
+      "features": [
+        "Session reminder",
+        "Q&A intake",
+        "Join link",
+        "RSVP confirm"
+      ],
+      "type": "Outbound",
+      "role": "AI Webinar Concierge",
+      "industrySlug": "saas",
+      "persona": "Pixel"
+    },
+    {
+      "id": "nps-csat-survey",
+      "name": "NPS / CSAT Survey",
+      "description": "Meet Iris, a friendly survey agent. Iris runs a quick 2-3 question NPS or CSAT loop after a service event and captures verbatim feedback.",
+      "emoji": "📊",
+      "category": "Customer Success",
+      "features": [
+        "NPS score",
+        "CSAT score",
+        "Verbatim capture",
+        "Detractor flag"
+      ],
+      "type": "Outbound",
+      "role": "AI Survey Agent",
+      "industrySlug": "customer-success",
+      "persona": "Iris"
+    },
+    {
+      "id": "subscription-winback",
+      "name": "Subscription Win-Back",
+      "description": "Meet Maya, a retention specialist. Maya reaches out to recently cancelled subscribers, listens to the reason, and offers tailored win-back options.",
+      "emoji": "🔁",
+      "category": "Customer Success",
+      "features": [
+        "Churn reason",
+        "Save offer",
+        "Reactivation",
+        "Permanent opt-out"
+      ],
+      "type": "Outbound",
+      "role": "AI Retention Specialist",
+      "industrySlug": "customer-success",
+      "persona": "Maya"
+    },
+    {
+      "id": "outage-notification",
+      "name": "Outage Notification",
+      "description": "Meet Sentinel, an incident-comm agent. Sentinel calls affected customers during an outage, shares status, and captures impact reports for the on-call team.",
+      "emoji": "🚨",
+      "category": "Customer Success",
+      "features": [
+        "Status update",
+        "Impact capture",
+        "ETA share",
+        "Restoration confirm"
+      ],
+      "type": "Outbound",
+      "role": "AI Incident Comms Agent",
+      "industrySlug": "customer-success",
+      "persona": "Sentinel"
+    },
+    {
+      "id": "post-call-feedback",
+      "name": "Post-call Feedback",
+      "description": "Meet Echo, a feedback agent. Echo calls immediately after a service interaction to capture a quick rating and a verbatim quote.",
+      "emoji": "🎯",
+      "category": "Customer Success",
+      "features": [
+        "Quick rating",
+        "Verbatim quote",
+        "Agent flag",
+        "Trend tracking"
+      ],
+      "type": "Outbound",
+      "role": "AI Feedback Agent",
+      "industrySlug": "customer-success",
+      "persona": "Echo"
+    },
+    {
+      "id": "voicemail-drop",
+      "name": "Voicemail Drop",
+      "description": "Meet Whisper, a voicemail-only outreach agent. Whisper leaves a short, warm voicemail when a contact doesn't answer — no live conversation.",
+      "emoji": "📣",
+      "category": "Customer Success",
+      "features": [
+        "Brief script",
+        "Callback ask",
+        "DNC capture",
+        "Tone consistency"
+      ],
+      "type": "Outbound",
+      "role": "AI Voicemail Agent",
+      "industrySlug": "customer-success",
+      "persona": "Whisper"
+    },
+    {
+      "id": "delivery-confirmation",
+      "name": "Delivery Confirmation",
+      "description": "Meet Felix, a logistics coordinator. Felix confirms delivery windows with recipients, captures gate or access notes, and reschedules when needed.",
+      "emoji": "📦",
+      "category": "Logistics",
+      "features": [
+        "Window confirm",
+        "Reschedule",
+        "Access notes",
+        "Failed-delivery flag"
+      ],
+      "type": "Outbound",
+      "role": "AI Logistics Coordinator",
+      "industrySlug": "logistics",
+      "persona": "Felix"
+    },
+    {
+      "id": "legal-intake",
+      "name": "Legal Intake",
+      "description": "Meet Quinn, a law firm intake assistant. Quinn screens inbound case inquiries, confirms practice-area fit, and books consultations.",
+      "emoji": "⚖️",
+      "category": "Legal",
+      "features": [
+        "Case screening",
+        "Conflict check",
+        "Consult booking",
+        "Practice-area match"
+      ],
+      "type": "Inbound",
+      "role": "AI Intake Assistant",
+      "industrySlug": "legal",
+      "persona": "Quinn"
+    },
+    {
+      "id": "salon-spa-appointment",
+      "name": "Salon & Spa Booking",
+      "description": "Meet Iris, a salon and spa concierge. Iris books appointments, suggests services, and confirms preferences for upcoming visits.",
+      "emoji": "💇",
+      "category": "Wellness",
+      "features": [
+        "Service selection",
+        "Stylist preference",
+        "Booking confirm",
+        "Reschedule"
+      ],
+      "type": "Inbound",
+      "role": "AI Salon Concierge",
+      "industrySlug": "wellness",
+      "persona": "Iris"
+    },
+    {
+      "id": "home-services-dispatch",
+      "name": "Home Services Dispatch",
+      "description": "Meet Dax, a dispatcher for home services like HVAC, plumbing, and electrical. Dax triages emergencies, schedules visits, and confirms technician arrival.",
+      "emoji": "🔧",
+      "category": "Home Services",
+      "features": [
+        "Emergency triage",
+        "Visit scheduling",
+        "Issue summary",
+        "Tech ETA"
+      ],
+      "type": "Inbound",
+      "role": "AI Dispatcher",
+      "industrySlug": "home-services",
+      "persona": "Dax"
+    },
+    {
+      "id": "travel-itinerary-confirmation",
+      "name": "Travel Itinerary Confirmation",
+      "description": "Meet Lila, a travel concierge. Lila confirms flights, hotel check-ins, and ground transport ahead of a customer's trip.",
+      "emoji": "✈️",
+      "category": "Travel",
+      "features": [
+        "Flight confirm",
+        "Hotel check-in",
+        "Ground transport",
+        "Special requests"
+      ],
+      "type": "Outbound",
+      "role": "AI Travel Concierge",
+      "industrySlug": "travel",
+      "persona": "Lila"
+    },
+    {
+      "id": "donation-outreach",
+      "name": "Donor Outreach",
+      "description": "Meet Hope, a non-profit donor relations agent. Hope reaches out to past supporters with a warm update and an invitation to give again.",
+      "emoji": "🤝",
+      "category": "Non-profit",
+      "features": [
+        "Mission update",
+        "Soft ask",
+        "Recurring giving",
+        "Volunteer interest"
+      ],
+      "type": "Outbound",
+      "role": "AI Donor Relations Agent",
+      "industrySlug": "non-profit",
+      "persona": "Hope"
+    }
+  ],
+  "PLAYBOOK_CATEGORIES": [
+    "Car Dealership",
+    "Customer Success",
+    "Education",
+    "Finance",
+    "Fintech",
+    "Healthcare",
+    "Home Services",
+    "Hospitality",
+    "Insurance",
+    "Legal",
+    "Logistics",
+    "Mortgage",
+    "Non-profit",
+    "Real Estate",
+    "Recruitment",
+    "Retail",
+    "SaaS",
+    "Solar",
+    "Travel",
+    "Wellness"
+  ]
+}

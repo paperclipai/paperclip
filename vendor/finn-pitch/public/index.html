@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finn Pitch Maker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="app">
+  <aside class="panel">
+    <header class="brand">
+      <div class="logo">F<span class="dot">.</span></div>
+      <div>
+        <h1>Finn Pitch Maker</h1>
+        <p>AI-written decks, tailored per client.</p>
+      </div>
+    </header>
+
+    <form id="form">
+      <label>Client / company name
+        <input name="clientName" required placeholder="Acme Logistics" />
+      </label>
+
+      <label>Company website <span class="opt">optional — we'll grab their logo</span>
+        <input name="clientWebsite" type="text" inputmode="url" placeholder="acme.com" autocomplete="off" />
+      </label>
+
+      <label>Audience
+        <input class="combo" name="clientType" list="audiences" value="Enterprise buyer"
+               placeholder="Type or pick…" autocomplete="off" required />
+        <datalist id="audiences">
+          <option value="Enterprise buyer"></option>
+          <option value="SMB"></option>
+          <option value="Investor"></option>
+        </datalist>
+      </label>
+
+      <label>Primary use case
+        <input class="combo" name="useCase" list="usecases" value="Inbound support"
+               placeholder="Type or pick…" autocomplete="off" required />
+        <datalist id="usecases">
+          <option value="Inbound support"></option>
+          <option value="Receptionist / front desk"></option>
+          <option value="Outbound sales"></option>
+          <option value="Collections / recovery"></option>
+          <option value="Scheduling / reminders"></option>
+          <option value="Lead qualification"></option>
+          <option value="Renewals / retention"></option>
+          <option value="Surveys / feedback"></option>
+        </datalist>
+      </label>
+
+      <label>Industry / vertical
+        <input class="combo" name="industry" list="industries" placeholder="Type or pick…" autocomplete="off" />
+        <datalist id="industries">
+          <option value="Healthcare"></option>
+          <option value="Financial Services"></option>
+          <option value="Insurance"></option>
+          <option value="Real Estate"></option>
+          <option value="Retail &amp; Consumer"></option>
+          <option value="Home Services"></option>
+          <option value="Logistics"></option>
+          <option value="Travel &amp; Hospitality"></option>
+          <option value="Debt Collection"></option>
+          <option value="Mortgage"></option>
+          <option value="SaaS"></option>
+          <option value="Recruitment"></option>
+          <option value="Legal"></option>
+          <option value="Automotive"></option>
+          <option value="Fintech"></option>
+          <option value="Education"></option>
+          <option value="Hospitality"></option>
+          <option value="Wellness"></option>
+          <option value="Customer Success"></option>
+          <option value="Solar"></option>
+          <option value="Non-profit"></option>
+        </datalist>
+      </label>
+
+      <div class="row">
+        <label>Region
+          <select name="region">
+            <option value="india">India (INR)</option>
+            <option value="intl">US &amp; Intl (USD)</option>
+          </select>
+        </label>
+        <label>Format
+          <select name="format">
+            <option value="live">Live pitch</option>
+            <option value="leavebehind">Leave-behind</option>
+          </select>
+        </label>
+      </div>
+
+      <label>Length
+        <select name="length">
+          <option value="short">Short (~10 min)</option>
+          <option value="standard" selected>Standard (~20 min)</option>
+          <option value="deep">Deep dive (~30 min)</option>
+        </select>
+      </label>
+
+      <label>Metric they care most about
+        <input class="combo" name="primaryMetric" list="metrics" placeholder="Type or pick…" autocomplete="off" />
+        <datalist id="metrics">
+          <option value="pickup rate"></option>
+          <option value="connect rate"></option>
+          <option value="conversion rate"></option>
+          <option value="qualified leads"></option>
+          <option value="cost per lead"></option>
+          <option value="response time"></option>
+          <option value="first-call resolution"></option>
+          <option value="CSAT"></option>
+          <option value="show rate"></option>
+          <option value="collection rate"></option>
+          <option value="answer rate"></option>
+        </datalist>
+      </label>
+
+      <div class="row">
+        <label>Competitor (optional)
+          <input name="competitor" placeholder="" />
+        </label>
+        <label>Decision stage
+          <select name="stage">
+            <option value="cold">Cold intro</option>
+            <option value="eval" selected>Active evaluation</option>
+            <option value="closing">Closing</option>
+          </select>
+        </label>
+      </div>
+
+      <label>Notes (optional)
+        <textarea name="notes" rows="2" placeholder="Anything to weave in…"></textarea>
+      </label>
+
+      <button type="submit" id="go">Generate deck</button>
+      <p class="hint">Runs local Claude — takes ~30–60s.</p>
+    </form>
+
+    <section class="recent">
+      <h2>Recent decks</h2>
+      <ul id="list"></ul>
+    </section>
+  </aside>
+
+  <main class="stage">
+    <div id="empty" class="empty">
+      <div class="empty-card">
+        <div class="big">🎤</div>
+        <p>Fill the form → generate → deck previews here.</p>
+      </div>
+    </div>
+    <div id="loading" class="loading hidden">
+      <div class="spinner"></div>
+      <p id="loadMsg">Calling Claude…</p>
+    </div>
+    <div id="preview" class="preview hidden">
+      <div class="preview-bar">
+        <span id="deckTitle"></span>
+        <span class="actions">
+          <a id="exportPdf" title="Download 16:9 PDF">⤓ PDF</a>
+          <a id="dlHtml" title="Download self-contained HTML">⤓ HTML</a>
+          <a id="openNew" target="_blank">Open full ↗</a>
+        </span>
+      </div>
+      <iframe id="frame" title="deck preview"></iframe>
+      <div id="shots" class="shots-bar"></div>
+    </div>
+  </main>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

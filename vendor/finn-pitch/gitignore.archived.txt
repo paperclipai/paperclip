@@ -1,0 +1,10 @@
+node_modules/
+# generated decks + working files
+dist/*.html
+dist/*.json
+slides.json
+answers.json
+.DS_Store
+# generated per-client logos scraped from websites (not part of the snapshot)
+assets/client-logos/
+# keep: data/ and assets/ ARE committed (the standalone snapshot)

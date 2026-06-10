@@ -1,0 +1,196 @@
+{
+  "templateUseCaseMappings": {
+    "hr-recruiter": {
+      "templateId": "hr-recruiter",
+      "tempFinnName": "HR Recruiter Assistant",
+      "finnName": "HR Recruiter Assistant",
+      "useCase": "HR & Recruitment"
+    },
+    "customer-support": {
+      "templateId": "customer-support",
+      "tempFinnName": "Customer Support Assistant",
+      "finnName": "Customer Support Assistant",
+      "useCase": "Customer Service"
+    },
+    "sales-assistant": {
+      "templateId": "sales-assistant",
+      "tempFinnName": "Sales Assistant",
+      "finnName": "Sales Assistant",
+      "useCase": "Sales & Lead Generation"
+    },
+    "training-coach": {
+      "templateId": "training-coach",
+      "tempFinnName": "Training Coach",
+      "finnName": "Training Coach",
+      "useCase": "Training & Development"
+    },
+    "marketing-specialist": {
+      "templateId": "marketing-specialist",
+      "tempFinnName": "Marketing Specialist",
+      "finnName": "Marketing Specialist",
+      "useCase": "Marketing & Content"
+    },
+    "ecommerce-assistant": {
+      "templateId": "ecommerce-assistant",
+      "tempFinnName": "E-commerce Assistant",
+      "finnName": "E-commerce Assistant",
+      "useCase": "E-commerce Support"
+    },
+    "lead-qualification-seller": {
+      "templateId": "lead-qualification-seller",
+      "tempFinnName": "Lead Qualification - Seller",
+      "finnName": "Lead Qualification - Seller",
+      "useCase": "Lead Qualification - Seller"
+    },
+    "lead-qualification-buyer": {
+      "templateId": "lead-qualification-buyer",
+      "tempFinnName": "Lead Qualification - Buyer",
+      "finnName": "Lead Qualification - Buyer",
+      "useCase": "Lead Qualification-Buyer"
+    },
+    "property-reconnector": {
+      "templateId": "property-reconnector",
+      "tempFinnName": "Property Reconnector",
+      "finnName": "Property Reconnector",
+      "useCase": "Property Reconnector"
+    },
+    "sales-appointment-scheduler": {
+      "templateId": "sales-appointment-scheduler",
+      "tempFinnName": "Sales Appointment Scheduler",
+      "finnName": "Sales Appointment Scheduler",
+      "useCase": "Sales Appointment Scheduler"
+    },
+    "healthcare-lead-qualification": {
+      "templateId": "healthcare-lead-qualification",
+      "tempFinnName": "Healthcare Lead Qualification",
+      "finnName": "Healthcare Lead Qualification",
+      "useCase": "Healthcare"
+    },
+    "patient-screening": {
+      "templateId": "patient-screening",
+      "tempFinnName": "Recruitment Screening",
+      "finnName": "Recruitment Screening",
+      "useCase": "Patient Screening"
+    },
+    "mortgage-lead-qualifier": {
+      "templateId": "mortgage-lead-qualifier",
+      "tempFinnName": "Mortgage Lead Qualifier",
+      "finnName": "Mortgage Lead Qualifier",
+      "useCase": "Mortgage Lead Qualifier"
+    },
+    "recruiting-appointment-scheduler": {
+      "templateId": "recruiting-appointment-scheduler",
+      "tempFinnName": "Recruiting Appointment Scheduler",
+      "finnName": "Recruiting Appointment Scheduler",
+      "useCase": "Recruiting Appointment Scheduler"
+    },
+    "utility-scout": {
+      "templateId": "utility-scout",
+      "tempFinnName": "Utility Scout",
+      "finnName": "Utility Scout",
+      "useCase": "Utility Scout"
+    },
+    "special-offers-upsell": {
+      "templateId": "special-offers-upsell",
+      "tempFinnName": "Special Offers and Promo Up-Sell",
+      "finnName": "Special Offers and Promo Up-Sell",
+      "useCase": "Special Offers and Promo Up-Sell"
+    },
+    "interview-scheduler": {
+      "templateId": "interview-scheduler",
+      "tempFinnName": "Interview Scheduler",
+      "finnName": "Interview Scheduler",
+      "useCase": "Interview Scheduler"
+    },
+    "service-reminder": {
+      "templateId": "service-reminder",
+      "tempFinnName": "Service Reminder",
+      "finnName": "Service Reminder",
+      "useCase": "Service Reminder"
+    },
+    "talent-scout": {
+      "templateId": "talent-scout",
+      "tempFinnName": "Talent Scout",
+      "finnName": "Talent Scout",
+      "useCase": "Talent Scout"
+    },
+    "policy-renewal-upselling": {
+      "templateId": "policy-renewal-upselling",
+      "tempFinnName": "Policy Renewal and Upselling",
+      "finnName": "Policy Renewal and Upselling",
+      "useCase": "Policy Renewal and Upselling"
+    },
+    "appointment-reminder": {
+      "templateId": "appointment-reminder",
+      "tempFinnName": "Appointment Reminder",
+      "finnName": "Appointment Reminder",
+      "useCase": "Appointment Reminder"
+    },
+    "event-demand-generator": {
+      "templateId": "event-demand-generator",
+      "tempFinnName": "Event Demand Generator",
+      "finnName": "Event Demand Generator",
+      "useCase": "Event Demand Generator"
+    },
+    "claims-receptionist": {
+      "templateId": "claims-receptionist",
+      "tempFinnName": "Claims Receptionist",
+      "finnName": "Claims Receptionist",
+      "useCase": "Claims Receptionist"
+    },
+    "college-receptionist": {
+      "templateId": "college-receptionist",
+      "tempFinnName": "College Receptionist",
+      "finnName": "College Receptionist",
+      "useCase": "College Receptionist"
+    },
+    "customer-support-insurance": {
+      "templateId": "customer-support-insurance",
+      "tempFinnName": "Customer Support",
+      "finnName": "Customer Support",
+      "useCase": "Customer Support"
+    },
+    "customer-support-dealership": {
+      "templateId": "customer-support-dealership",
+      "tempFinnName": "Customer Support",
+      "finnName": "Customer Support",
+      "useCase": "Customer Support"
+    },
+    "enrollment-advisor": {
+      "templateId": "enrollment-advisor",
+      "tempFinnName": "Enrollment Advisor",
+      "finnName": "Enrollment Advisor",
+      "useCase": "Enrollment Advisor"
+    },
+    "healthcare-receptionist": {
+      "templateId": "healthcare-receptionist",
+      "tempFinnName": "Healthcare Receptionist",
+      "finnName": "Healthcare Receptionist",
+      "useCase": "Healthcare Receptionist"
+    },
+    "mortgage-receptionist": {
+      "templateId": "mortgage-receptionist",
+      "tempFinnName": "Mortgage Receptionist",
+      "finnName": "Mortgage Receptionist",
+      "useCase": "Mortgage Receptionist"
+    },
+    "patient-intake-specialist": {
+      "templateId": "patient-intake-specialist",
+      "tempFinnName": "Patient Intake Specialist",
+      "finnName": "Patient Intake Specialist",
+      "useCase": "Patient Intake Specialist"
+    },
+    "restaurant-appointment-scheduler": {
+      "templateId": "restaurant-appointment-scheduler",
+      "tempFinnName": "Restaurant Appointment Scheduler",
+      "finnName": "Restaurant Appointment Scheduler",
+      "useCase": "Restaurant Appointment Scheduler"
+    },
+    "retail-customer-service": {
+      "templateId": "retail-customer-service",
+      "tempFinnName": "Retail Customer Service",
+      "finnName": "Retail Customer Service",
+      "useCase": "Retail Customer Service"
+    }
+  }
+}

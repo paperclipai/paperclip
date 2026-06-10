@@ -1,0 +1,15 @@
+{
+  "clientName": "Linear",
+  "clientWebsite": "linear.app",
+  "clientType": "smb",
+  "useCase": "outbound_sales",
+  "industry": "SaaS",
+  "region": "intl",
+  "format": "live",
+  "length": "standard",
+  "primaryMetric": "pickup rate",
+  "monthlyCalls": "6000",
+  "competitor": "",
+  "stage": "cold",
+  "notes": "PLG motion, lots of free-trial signups that go cold without a human touch."
+}

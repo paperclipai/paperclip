@@ -1,0 +1,24 @@
+{
+  "name": "finn-pitch",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "AI-generated pitch deck maker for Finn — local Claude CLI driven, outputs self-contained HTML decks.",
+  "bin": {
+    "finn-pitch": "./cli.mjs"
+  },
+  "scripts": {
+    "ui": "node server.mjs",
+    "sync": "node lib/sync.mjs",
+    "new": "node cli.mjs",
+    "intake": "node lib/intake.mjs",
+    "generate": "node lib/generate.mjs",
+    "render": "node lib/render.mjs"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^7.2.0",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0"
+  }
+}
