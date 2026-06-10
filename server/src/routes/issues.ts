@@ -5703,22 +5703,25 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
-    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+    const { isIdempotent, ...updated } = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
 
-    await logActivity(db, {
-      companyId: issue.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "issue.checked_out",
-      entityType: "issue",
-      entityId: issue.id,
-      details: { agentId: req.body.agentId },
-    });
+    if (!isIdempotent) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.checked_out",
+        entityType: "issue",
+        entityId: issue.id,
+        details: { agentId: req.body.agentId },
+      });
+    }
 
     if (
+      !isIdempotent &&
       shouldWakeAssigneeOnCheckout({
         actorType: req.actor.type,
         actorAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
