@@ -71,6 +71,7 @@ export const STATE_KEYS = {
   linkPrefix: "link:",
   linearPrefix: "linear:",
   oauthToken: "oauth-token", // legacy — kept for migration
+  oauthActor: "oauth-actor",
   secretTokenRef: "secret-token-ref",
   clientSecretRef: "client-secret-ref",
   oauthTeamId: "oauth-team-id",
@@ -97,6 +98,7 @@ export const LINEAR_OAUTH = {
   authorizeUrl: "https://linear.app/oauth/authorize",
   tokenUrl: "https://api.linear.app/oauth/token",
   revokeUrl: "https://api.linear.app/oauth/revoke",
+  actor: "app",
   scopes: ["read", "write", "admin"],
 } as const;
 
@@ -104,6 +106,7 @@ export const DEFAULT_CONFIG = {
   linearTokenRef: "",
   linearClientId: "",
   linearClientSecret: "",
+  linearOAuthActor: "user",
   teamId: "",
   defaultProjectId: "",
   paperclipBaseUrl: "https://paperclip.blockcast.net",

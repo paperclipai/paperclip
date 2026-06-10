@@ -225,6 +225,7 @@ describe("paperclip-plugin-linear", () => {
       expect(result.authorizeUrl).toContain(LINEAR_OAUTH.authorizeUrl);
       expect(result.authorizeUrl).toContain("client_id=client-id-123");
       expect(result.authorizeUrl).toContain("response_type=code");
+      expect(result.authorizeUrl).toContain("actor=app");
       expect(result.state).toBeTruthy();
     });
 
@@ -269,6 +270,10 @@ describe("paperclip-plugin-linear", () => {
         stateKey: STATE_KEYS.oauthToken,
       });
       expect(token).toBe("lin_token_123");
+      expect(harness.getState({
+        scopeKind: "instance",
+        stateKey: STATE_KEYS.oauthActor,
+      })).toBe("app");
     });
 
     it("registers the Linear webhook with the configured signing secret", async () => {
@@ -853,6 +858,56 @@ describe("paperclip-plugin-linear", () => {
       });
       expect(callArg.metadata.attributes).toContainEqual({ name: "Paperclip issue", value: "LUC-1001" });
       expect(callArg.metadata.attributes).toContainEqual({ name: "Linear issue", value: "LUC-1" });
+      expect(callArg.createAsUser).toBeUndefined();
+      expect(callArg.displayIconUrl).toBeUndefined();
+    });
+
+    it("uses app actor attribution when the OAuth token was authorized as the app", async () => {
+      harness = createTestHarness({
+        manifest,
+        config: {
+          linearClientId: "client-id-123",
+          linearClientSecret: "client-secret-456",
+          teamId: "team-1",
+          syncComments: true,
+          syncDirection: "bidirectional",
+          paperclipBaseUrl: "https://paperclip.test",
+          linearBacklinkBestEffort: true,
+        },
+      });
+      await plugin.definition.setup(harness.ctx);
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthActor },
+        "app",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+
+      vi.spyOn(harness.ctx.issues, "list").mockResolvedValue([] as never);
+      vi.spyOn(harness.ctx.issues, "create").mockResolvedValue({
+        id: "pcp-iss-app-actor",
+        identifier: "LUC-1006",
+      } as never);
+      vi.spyOn(harness.ctx.issues, "update").mockResolvedValue(undefined as never);
+
+      const { attachmentLinkURL } = await import("../src/linear.js");
+      (attachmentLinkURL as ReturnType<typeof vi.fn>).mockClear();
+
+      await harness.performAction(ACTION_KEYS.importIssue, { linearRef: "LUC-1" });
+
+      const callArg = (attachmentLinkURL as ReturnType<typeof vi.fn>).mock.calls[0]![2];
+      expect(callArg).toMatchObject({
+        issueId: "lin-iss-1",
+        url: "https://paperclip.test/LUC/issues/LUC-1006",
+        createAsUser: "Paperclip",
+        displayIconUrl: "https://paperclip.test/favicon-32x32.png",
+      });
     });
 
     it("skips the back-link when paperclipBaseUrl is explicitly empty", async () => {

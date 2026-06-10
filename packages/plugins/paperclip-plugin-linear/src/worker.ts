@@ -73,6 +73,7 @@ const recentlyCreatedFromLinear = new Set<string>();
 // goal.created event → would push back to Linear as a duplicate initiative.
 const recentlyCreatedGoalFromLinear = new Set<string>();
 const inFlightInitiativeCreates = new Set<string>();
+const LINEAR_APP_ACTOR_NAME = "Paperclip";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -100,6 +101,15 @@ async function resolvePaperclipBaseUrl(ctx: PluginContext): Promise<string | nul
   return normalizePaperclipBaseUrl(
     (config.paperclipBaseUrl as string | undefined) ?? DEFAULT_CONFIG.paperclipBaseUrl,
   );
+}
+
+async function resolveLinearOAuthActor(ctx: PluginContext, config?: Record<string, unknown>): Promise<"app" | "user"> {
+  if ((config?.linearOAuthActor as string | undefined) === "app") return "app";
+  const stored = await ctx.state.get({
+    scopeKind: "instance",
+    stateKey: STATE_KEYS.oauthActor,
+  });
+  return stored === "app" ? "app" : "user";
 }
 
 async function resolveCompanyPrefix(
@@ -259,6 +269,7 @@ async function writePaperclipBackLink(
   const paperclipUrl = await buildPaperclipIssueUrl(ctx, paperclipCompanyId, paperclipIdentifier);
   if (!paperclipUrl) return;
   const iconUrl = await buildPaperclipIconUrl(ctx);
+  const actorMode = await resolveLinearOAuthActor(ctx, config);
   const title = paperclipTitle?.trim() ?? "";
   try {
     await linear.attachmentLinkURL(ctx.http.fetch.bind(ctx.http), token, {
@@ -267,6 +278,10 @@ async function writePaperclipBackLink(
       title: `Paperclip mirror: ${paperclipIdentifier}`,
       subtitle: title ? `${paperclipIdentifier} - ${title}` : "Open in Paperclip",
       ...(iconUrl ? { iconUrl } : {}),
+      ...(actorMode === "app" ? {
+        createAsUser: LINEAR_APP_ACTOR_NAME,
+        ...(iconUrl ? { displayIconUrl: iconUrl } : {}),
+      } : {}),
       groupBySource: true,
       metadata: {
         source: "paperclip",
@@ -714,6 +729,7 @@ const plugin = definePlugin({
       authUrl.searchParams.set("response_type", "code");
       authUrl.searchParams.set("scope", LINEAR_OAUTH.scopes.join(","));
       authUrl.searchParams.set("state", stateToken);
+      authUrl.searchParams.set("actor", LINEAR_OAUTH.actor);
       authUrl.searchParams.set("prompt", "consent");
 
       return { authorizeUrl: authUrl.toString(), state: stateToken };
@@ -760,6 +776,10 @@ const plugin = definePlugin({
         await ctx.state.set(
           { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
           token,
+        );
+        await ctx.state.set(
+          { scopeKind: "instance", stateKey: STATE_KEYS.oauthActor },
+          LINEAR_OAUTH.actor,
         );
 
         // Detect first team
@@ -850,6 +870,7 @@ const plugin = definePlugin({
 
       // Clear all OAuth state
       await ctx.state.delete({ scopeKind: "instance", stateKey: STATE_KEYS.oauthToken });
+      await ctx.state.delete({ scopeKind: "instance", stateKey: STATE_KEYS.oauthActor });
       await ctx.state.delete({ scopeKind: "instance", stateKey: STATE_KEYS.oauthTeamId });
       await ctx.state.delete({ scopeKind: "instance", stateKey: STATE_KEYS.oauthTeamKey });
       await ctx.state.delete({ scopeKind: "instance", stateKey: STATE_KEYS.connected });

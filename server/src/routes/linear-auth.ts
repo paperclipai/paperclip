@@ -22,6 +22,7 @@ const LINEAR_REVOKE_URL = "https://api.linear.app/oauth/revoke";
 
 const LINEAR_SECRET_NAME = "linear-oauth-token";
 const SCOPES = ["read", "write", "admin"];
+const LINEAR_OAUTH_ACTOR = "app";
 
 // In-memory CSRF state store (short-lived, cleared on use)
 const pendingStates = new Map<string, { companyId: string; createdAt: number }>();
@@ -95,6 +96,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
       response_type: "code",
       scope: SCOPES.join(","),
       state,
+      actor: LINEAR_OAUTH_ACTOR,
       prompt: "consent",
     });
 
@@ -269,6 +271,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
         if (plugin) {
           const configJson = {
             linearTokenRef: secretId,
+            linearOAuthActor: LINEAR_OAUTH_ACTOR,
             teamId,
             syncComments: true,
             syncDirection: "bidirectional",

@@ -80,6 +80,14 @@ const manifest: PaperclipPluginManifestV1 = {
         description:
           "Alternative to OAuth: a secret UUID for a Linear personal API key. Leave blank if using OAuth.",
       },
+      linearOAuthActor: {
+        type: "string",
+        title: "Linear OAuth actor",
+        enum: ["user", "app"],
+        description:
+          "Tracks whether the stored OAuth token was authorized as the Linear user or as the app. OAuth connect sets this to app; leave user for manually supplied tokens.",
+        default: DEFAULT_CONFIG.linearOAuthActor,
+      },
       linearWebhookSigningSecret: {
         type: "string",
         title: "Linear Webhook Signing Secret",

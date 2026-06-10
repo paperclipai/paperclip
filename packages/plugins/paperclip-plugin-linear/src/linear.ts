@@ -427,6 +427,8 @@ export async function attachmentLinkURL(
     title: string;
     subtitle?: string;
     iconUrl?: string;
+    createAsUser?: string;
+    displayIconUrl?: string;
     metadata?: Record<string, unknown>;
     groupBySource?: boolean;
   },
@@ -437,6 +439,8 @@ export async function attachmentLinkURL(
     title: input.title,
     ...(input.subtitle ? { subtitle: input.subtitle } : {}),
     ...(input.iconUrl ? { iconUrl: input.iconUrl } : {}),
+    ...(input.createAsUser ? { createAsUser: input.createAsUser } : {}),
+    ...(input.displayIconUrl ? { displayIconUrl: input.displayIconUrl } : {}),
     ...(input.metadata ? { metadata: input.metadata } : {}),
     ...(input.groupBySource !== undefined ? { groupBySource: input.groupBySource } : {}),
   };

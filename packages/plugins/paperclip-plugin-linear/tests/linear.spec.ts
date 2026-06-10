@@ -131,6 +131,8 @@ describe("Paperclip backlink helpers", () => {
       title: "Paperclip mirror: BLO-1",
       subtitle: "Open in Paperclip",
       iconUrl: "https://paperclip.test/favicon-32x32.png",
+      createAsUser: "Paperclip",
+      displayIconUrl: "https://paperclip.test/favicon-32x32.png",
       groupBySource: true,
       metadata: { source: "paperclip" },
     });
@@ -143,6 +145,8 @@ describe("Paperclip backlink helpers", () => {
       title: "Paperclip mirror: BLO-1",
       subtitle: "Open in Paperclip",
       iconUrl: "https://paperclip.test/favicon-32x32.png",
+      createAsUser: "Paperclip",
+      displayIconUrl: "https://paperclip.test/favicon-32x32.png",
       groupBySource: true,
       metadata: { source: "paperclip" },
     });
