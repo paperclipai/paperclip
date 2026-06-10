@@ -107,3 +107,34 @@ Please include screenshots if possible if you have a visible change. (use someth
 Questions? Just ask in #dev — we're happy to help.
 
 Happy hacking!
+
+---
+
+## ValAdrien OS fork — internal PR workflow (Korije reviewer)
+
+> This section governs the `ValDola-stack/valadrien-os` fork. It supersedes the upstream
+> **Greptile** reference above: our fork's automated reviewer is **Korije**, an in-OS agent.
+
+`rebrand/valadrien-os` is the production branch (push-to-deploy via Vercel), so changes land
+through **pull requests**, not direct commits.
+
+1. **Branch** off `rebrand/valadrien-os` — `git checkout -b <type>/<short-desc>`.
+2. **Commit** in logical commits; **open a PR** against `rebrand/valadrien-os` (Vercel builds a
+   preview deploy for the branch).
+3. **Korije reviews it automatically.** A GitHub `pull_request` webhook wakes **Korije** (the
+   Code Reviewer agent); within a minute or two it posts a CodeRabbit-style advisory review.
+   - **v1 reviews land in the OS, not on the GitHub PR:** look for a `Review PR #N` issue
+     (`VAL-<n>`, assigned to Korije) in ValAdrien OS — the verdict + findings are a comment there.
+   - The review is **advisory** — Korije flags `[blocking]` / `[should-fix]` / `[nit]` and never
+     approves, merges, or pushes. A human decides.
+4. **Address blocking findings** (push commits — Korije re-reviews the new head) or reply why they
+   don't apply.
+5. **Merge** to `rebrand/valadrien-os` when satisfied (this deploys to production); delete the branch.
+
+**Reviews for:** correctness/bugs → security (secrets, authz, tenant-scoping) → tests →
+conventions & `DESIGN.md` (GLASSHOUSE) → scope/risk. Skips lint/format nits.
+
+**Current limits:** wired to this repo only; OS-side reviews only (posting onto the GitHub PR
+needs a worker write token — later); cloud engineers (Sol/Bati) can open PRs once git push
+credentials are on the Railway worker, until then PRs come from local dev. Full wiring:
+`docs/pr-reviewer-spec.md`.
