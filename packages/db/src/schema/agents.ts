@@ -26,6 +26,14 @@ export const agents = pgTable(
     adapterType: text("adapter_type").notNull().default("process"),
     adapterConfig: jsonb("adapter_config").$type<Record<string, unknown>>().notNull().default({}),
     runtimeConfig: jsonb("runtime_config").$type<Record<string, unknown>>().notNull().default({}),
+    // DB-backed instruction bundle (source of truth across the Vercel control plane and the
+    // Railway runtime, which don't share a filesystem). When set, the instructions service reads
+    // it directly and the heartbeat run resolver materializes it to disk before execution.
+    // Null = legacy filesystem-only bundle (back-compat fallback).
+    instructionBundle: jsonb("instruction_bundle").$type<{
+      entryFile: string;
+      files: Array<{ path: string; content: string }>;
+    } | null>(),
     defaultEnvironmentId: uuid("default_environment_id").references(() => environments.id, { onDelete: "set null" }),
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
     spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),

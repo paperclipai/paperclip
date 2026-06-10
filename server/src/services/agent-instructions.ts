@@ -1,7 +1,15 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { eq } from "drizzle-orm";
+import { type Db, agents as agentsTable } from "@valadrien-os/db";
 import { notFound, unprocessable } from "../errors.js";
 import { resolveHomeAwarePath, resolveValadrienOsInstanceRoot } from "../home-paths.js";
+
+/** Shape of the DB-backed instruction bundle (agents.instruction_bundle). */
+type InstructionBundleData = {
+  entryFile: string;
+  files: Array<{ path: string; content: string }>;
+};
 
 const ENTRY_FILE_DEFAULT = "AGENTS.md";
 const MODE_KEY = "instructionsBundleMode";
@@ -32,6 +40,8 @@ type AgentLike = {
   companyId: string;
   name: string;
   adapterConfig: unknown;
+  /** DB-backed bundle; when present it is the source of truth (overrides filesystem). */
+  instructionBundle?: InstructionBundleData | null;
 };
 
 type AgentInstructionsFileSummary = {
@@ -451,8 +461,110 @@ export function syncInstructionsBundleConfigFromFilePath(
   return applyBundleConfig(next, { mode, rootPath, entryFile });
 }
 
-export function agentInstructionsService() {
+/**
+ * Write a DB-backed instruction bundle to the local filesystem so the adapter executor (which
+ * reads `instructionsFilePath` via fs.readFile) sees it. Runs on the Railway runtime right before
+ * execution; the DB is the source of truth, disk is a per-run materialization. No-op when the
+ * bundle is empty (legacy filesystem-only agents are untouched).
+ */
+export async function materializeInstructionBundleToDisk(
+  bundle: InstructionBundleData | null | undefined,
+  rootPath: string | null | undefined,
+): Promise<void> {
+  if (!bundle || !Array.isArray(bundle.files) || bundle.files.length === 0 || !rootPath) return;
+  await fs.mkdir(rootPath, { recursive: true });
+  const wanted = new Set(
+    bundle.files
+      .filter((file) => file && typeof file.path === "string")
+      .map((file) => normalizeRelativeFilePath(file.path)),
+  );
+  // Remove stale on-disk files no longer in the DB bundle so disk mirrors the source of truth.
+  for (const existing of await listFilesRecursive(rootPath)) {
+    if (wanted.has(existing)) continue;
+    try {
+      await fs.rm(resolvePathWithinRoot(rootPath, existing), { force: true });
+    } catch {
+      // ignore (best-effort cleanup; a bad/escaping path is skipped rather than fatal)
+    }
+  }
+  for (const file of bundle.files) {
+    if (!file || typeof file.path !== "string" || typeof file.content !== "string") continue;
+    let absolutePath: string;
+    try {
+      // resolvePathWithinRoot throws on any path escaping rootPath (traversal guard); skip such a
+      // file instead of aborting the whole run. Bundles are trusted, but defense-in-depth is cheap.
+      absolutePath = resolvePathWithinRoot(rootPath, file.path);
+    } catch {
+      continue;
+    }
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    await fs.writeFile(absolutePath, file.content, "utf8");
+  }
+}
+
+export function agentInstructionsService(db?: Db) {
+  // ---- DB-backed bundle (source of truth when agents.instruction_bundle is set) ----
+  // Why: the UI/API runs on the Vercel control plane, the agent runtime on Railway; they do
+  // not share a filesystem. A DB-backed bundle is readable/writable from both planes, so the
+  // instruction viewer/editor works regardless of where the files physically live.
+  function readDbBundle(agent: AgentLike): InstructionBundleData | null {
+    const bundle = agent.instructionBundle;
+    if (!bundle || !Array.isArray(bundle.files)) return null;
+    const files = bundle.files
+      .filter((file) => file && typeof file.path === "string" && typeof file.content === "string")
+      .map((file) => ({ path: normalizeRelativeFilePath(file.path), content: file.content }));
+    if (files.length === 0) return null;
+    const requestedEntry = normalizeRelativeFilePath(bundle.entryFile || ENTRY_FILE_DEFAULT);
+    const entryFile = files.some((file) => file.path === requestedEntry) ? requestedEntry : files[0]!.path;
+    return { entryFile, files };
+  }
+
+  function dbFileDetail(relativePath: string, content: string, entryFile: string): AgentInstructionsFileDetail {
+    const normalizedPath = normalizeRelativeFilePath(relativePath);
+    return {
+      path: normalizedPath,
+      size: Buffer.byteLength(content, "utf8"),
+      language: inferLanguage(normalizedPath),
+      markdown: isMarkdown(normalizedPath),
+      isEntryFile: normalizedPath === entryFile,
+      editable: true,
+      deprecated: false,
+      virtual: false,
+      content,
+    };
+  }
+
+  function dbBundleResponse(agent: AgentLike, dbBundle: InstructionBundleData): AgentInstructionsBundle {
+    const state = deriveBundleState(agent);
+    const rootPath = state.rootPath ?? resolveManagedInstructionsRoot(agent);
+    const summaries: AgentInstructionsFileSummary[] = dbBundle.files.map((file) => {
+      const { content: _content, ...summary } = dbFileDetail(file.path, file.content, dbBundle.entryFile);
+      return summary;
+    });
+    return toBundle(agent, {
+      ...state,
+      mode: state.mode ?? "managed",
+      rootPath,
+      entryFile: dbBundle.entryFile,
+      resolvedEntryPath: path.resolve(rootPath, dbBundle.entryFile),
+      legacyPromptTemplateActive: false,
+      legacyBootstrapPromptTemplateActive: false,
+      warnings: [],
+    }, summaries);
+  }
+
+  async function persistDbBundle(agent: AgentLike, dbBundle: InstructionBundleData): Promise<InstructionBundleData> {
+    if (!db) throw unprocessable("Editing instruction bundles requires a database connection");
+    await db
+      .update(agentsTable)
+      .set({ instructionBundle: dbBundle, updatedAt: new Date() })
+      .where(eq(agentsTable.id, agent.id));
+    return dbBundle;
+  }
+
   async function getBundle(agent: AgentLike): Promise<AgentInstructionsBundle> {
+    const dbBundle = readDbBundle(agent);
+    if (dbBundle) return dbBundleResponse(agent, dbBundle);
     const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
     if (!state.rootPath) return toBundle(agent, state, []);
     const stat = await statIfExists(state.rootPath);
@@ -468,6 +580,13 @@ export function agentInstructionsService() {
   }
 
   async function readFile(agent: AgentLike, relativePath: string): Promise<AgentInstructionsFileDetail> {
+    const dbBundle = readDbBundle(agent);
+    if (dbBundle) {
+      const normalizedPath = normalizeRelativeFilePath(relativePath);
+      const found = dbBundle.files.find((file) => file.path === normalizedPath);
+      if (!found) throw notFound("Instructions file not found");
+      return dbFileDetail(found.path, found.content, dbBundle.entryFile);
+    }
     const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
     if (relativePath === LEGACY_PROMPT_TEMPLATE_PATH) {
       const content = asString(state.config[PROMPT_KEY]);
@@ -606,6 +725,24 @@ export function agentInstructionsService() {
     file: AgentInstructionsFileDetail;
     adapterConfig: Record<string, unknown>;
   }> {
+    const dbBundle = readDbBundle(agent);
+    if (dbBundle) {
+      // DB-backed bundles are the source of truth and have no legacy promptTemplate pseudo-file;
+      // reject it here so writeFile matches deleteFile's behaviour and the invariant holds.
+      if (relativePath === LEGACY_PROMPT_TEMPLATE_PATH) {
+        throw unprocessable("Cannot edit the legacy promptTemplate pseudo-file on a DB-backed bundle");
+      }
+      const normalizedPath = normalizeRelativeFilePath(relativePath);
+      const files = dbBundle.files.filter((file) => file.path !== normalizedPath);
+      files.push({ path: normalizedPath, content });
+      const nextBundle = await persistDbBundle(agent, { entryFile: dbBundle.entryFile, files });
+      const nextAgent: AgentLike = { ...agent, instructionBundle: nextBundle };
+      return {
+        bundle: await getBundle(nextAgent),
+        file: await readFile(nextAgent, normalizedPath),
+        adapterConfig: asRecord(agent.adapterConfig),
+      };
+    }
     const current = deriveBundleState(agent);
     if (relativePath === LEGACY_PROMPT_TEMPLATE_PATH) {
       const adapterConfig: Record<string, unknown> = {
@@ -636,6 +773,23 @@ export function agentInstructionsService() {
     bundle: AgentInstructionsBundle;
     adapterConfig: Record<string, unknown>;
   }> {
+    const dbBundle = readDbBundle(agent);
+    if (dbBundle) {
+      if (relativePath === LEGACY_PROMPT_TEMPLATE_PATH) {
+        throw unprocessable("Cannot delete the legacy promptTemplate pseudo-file");
+      }
+      const normalizedPath = normalizeRelativeFilePath(relativePath);
+      if (normalizedPath === dbBundle.entryFile) {
+        throw unprocessable("Cannot delete the bundle entry file");
+      }
+      const files = dbBundle.files.filter((file) => file.path !== normalizedPath);
+      if (files.length === dbBundle.files.length) throw notFound("Instructions file not found");
+      const nextBundle = await persistDbBundle(agent, { entryFile: dbBundle.entryFile, files });
+      return {
+        bundle: await getBundle({ ...agent, instructionBundle: nextBundle }),
+        adapterConfig: asRecord(agent.adapterConfig),
+      };
+    }
     const derived = deriveBundleState(agent);
     const state = await recoverManagedBundleState(agent, derived);
     if (relativePath === LEGACY_PROMPT_TEMPLATE_PATH) {

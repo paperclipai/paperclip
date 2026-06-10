@@ -64,6 +64,7 @@ import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@valadrien-os/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
+import { materializeInstructionBundleToDisk } from "./agent-instructions.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
@@ -7218,6 +7219,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       routineEnv: routineEnvContext.env,
       secretsSvc,
     });
+    // Materialize a DB-backed instruction bundle to disk so the adapter executor (which reads
+    // instructionsFilePath via fs.readFile) sees it. The DB is the source of truth across the
+    // Vercel control plane / Railway runtime filesystem split; disk is a per-run cache. No-op for
+    // legacy filesystem-only agents (instructionBundle null).
+    const instructionsRootForBundle =
+      typeof resolvedConfig.instructionsRootPath === "string" && resolvedConfig.instructionsRootPath
+        ? resolvedConfig.instructionsRootPath
+        : typeof resolvedConfig.instructionsFilePath === "string" && resolvedConfig.instructionsFilePath
+          ? path.dirname(resolvedConfig.instructionsFilePath)
+          : null;
+    if ((agent.instructionBundle?.files?.length ?? 0) > 0 && !instructionsRootForBundle) {
+      // The DB bundle is the source of truth but the adapter config has no path to materialize
+      // it to — the executor would read nothing. Surface it loudly instead of silently no-op'ing.
+      logger.error(
+        { agentId: agent.id, runId: run.id },
+        "agent has a DB instruction bundle but adapter config has no instructionsRootPath/instructionsFilePath; instructions will NOT be materialized for this run",
+      );
+    }
+    await materializeInstructionBundleToDisk(agent.instructionBundle ?? null, instructionsRootForBundle);
     if (secretManifest.length > 0) {
       context.valadrienOsSecrets = {
         manifest: secretManifest,

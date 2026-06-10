@@ -645,6 +645,13 @@
       "when": 1780440000000,
       "tag": "0091_backfill_managed_infra_entitlements",
       "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1781061926969,
+      "tag": "0092_goofy_beast",
+      "breakpoints": true
     }
   ]
 }
