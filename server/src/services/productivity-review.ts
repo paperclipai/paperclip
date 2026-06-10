@@ -115,6 +115,11 @@ type EnqueueWakeup = (
 
 const MONITOR_SCHEDULED_SUPPRESSION_ACTORS = new Set(["assignee", "board"]);
 
+type ProductivityReviewServiceDeps = {
+  enqueueWakeup?: EnqueueWakeup;
+  beforeCreateOrUpdateReview?: (evidence: ProductivityReviewEvidence) => Promise<void> | void;
+};
+
 function productivityReviewFingerprint(sourceIssueId: string) {
   return `productivity-review:${sourceIssueId}`;
 }
@@ -158,6 +163,23 @@ function truncateInline(value: string | null | undefined, max = 260) {
 
 function readPositiveInteger(value: number, fallback: number) {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+function isActiveProductivityReviewUniqueConflict(error: unknown) {
+  let current: unknown = error;
+  while (current && typeof current === "object") {
+    const maybe = current as { code?: string; constraint?: string; message?: string; cause?: unknown };
+    if (
+      maybe.code === "23505" &&
+      (maybe.constraint === "issues_active_productivity_review_uq" ||
+        typeof maybe.message === "string" && maybe.message.includes("issues_active_productivity_review_uq"))
+    ) {
+      return true;
+    }
+    if (!maybe.cause || maybe.cause === current) return false;
+    current = maybe.cause;
+  }
+  return false;
 }
 
 function coerceDate(value: Date | string | null | undefined) {
@@ -239,7 +261,7 @@ function formatTrigger(trigger: ProductivityReviewTrigger) {
   return "Long active duration";
 }
 
-export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: EnqueueWakeup }) {
+export function productivityReviewService(db: Db, deps?: ProductivityReviewServiceDeps) {
   const issuesSvc = issueService(db);
   const budgets = budgetService(db);
 
@@ -257,6 +279,34 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .from(agents)
       .where(eq(agents.id, agentId))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function evaluateSourceReviewability(sourceIssue: IssueRow, sourceAgentId: string) {
+    const current = await db
+      .select({
+        status: issues.status,
+        hiddenAt: issues.hiddenAt,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        originKind: issues.originKind,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, sourceIssue.companyId), eq(issues.id, sourceIssue.id)))
+      .then((rows) => rows[0] ?? null);
+    const status = current?.status ?? null;
+    const reviewable = Boolean(
+      current &&
+        !current.hiddenAt &&
+        !current.assigneeUserId &&
+        current.assigneeAgentId === sourceAgentId &&
+        ["todo", "in_progress"].includes(current.status) &&
+        current.originKind !== PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+    );
+    // BLO-6243: a source that has reached a terminal status (done/cancelled) — including via
+    // a race between candidate selection and this recheck — is a post-terminal sweep artifact,
+    // not a work-stoppage signal. Surface it distinctly so the caller can suppress + audit it.
+    const terminal = status === "done" || status === "cancelled";
+    return { reviewable, terminal, status };
   }
 
   function isAgentInvokable(agent: AgentRow | null | undefined) {
@@ -947,13 +997,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         requestDepth: clampIssueRequestDepth(evidence.sourceIssue.requestDepth + 1),
       });
     } catch (error) {
-      const maybe = error as { code?: string; constraint?: string; message?: string };
-      const uniqueConflict = maybe.code === "23505" &&
-        (
-          maybe.constraint === "issues_active_productivity_review_uq" ||
-          typeof maybe.message === "string" && maybe.message.includes("issues_active_productivity_review_uq")
-        );
-      if (!uniqueConflict) throw error;
+      if (!isActiveProductivityReviewUniqueConflict(error)) throw error;
       const raced = await findOpenProductivityReview(evidence.sourceIssue.companyId, evidence.sourceIssue.id);
       if (!raced) throw error;
       return { kind: "existing" as const, reviewIssueId: raced.id };
@@ -1090,6 +1134,32 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     return { kind: "created" as const, escalationIssueId: escalation.id };
   }
 
+  // BLO-6243: record a suppressed terminal-source review as an audit-only decision. No review
+  // issue is created and no wake comment is enqueued — this is purely an attributable trace so
+  // the suppression is observable rather than an indistinguishable generic skip.
+  async function recordTerminalSourceSuppression(
+    evidence: ProductivityReviewEvidence,
+    sourceStatus: string | null,
+  ) {
+    await logActivity(db, {
+      companyId: evidence.sourceIssue.companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "issue.productivity_review_suppressed",
+      entityType: "issue",
+      entityId: evidence.sourceIssue.id,
+      agentId: evidence.sourceAgent.id,
+      details: {
+        source: "productivity_review.reconcile",
+        decision: "suppress_terminal_source",
+        sourceIssueId: evidence.sourceIssue.id,
+        sourceStatus,
+        trigger: evidence.trigger,
+        noCommentStreak: evidence.noCommentStreak,
+      },
+    });
+  }
+
   async function reconcileProductivityReviews(opts?: {
     now?: Date;
     companyId?: string;
@@ -1124,6 +1194,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       monitorScheduledSuppressed: 0,
       closedSuppressedMonitorReviews: 0,
       skipped: 0,
+      suppressedTerminalSource: 0,
       failed: 0,
       reviewIssueIds: [] as string[],
       failedIssueIds: [] as string[],
@@ -1143,6 +1214,21 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       }
       if (isProductivityReviewOptedOut(candidate)) {
         result.optedOut += 1;
+        continue;
+      }
+      const sourceAgent = await getAgent(candidate.assigneeAgentId);
+      if (!sourceAgent || sourceAgent.companyId !== candidate.companyId) {
+        result.skipped += 1;
+        continue;
+      }
+      const evidence = await collectEvidence(candidate, sourceAgent, thresholds, now);
+      if (!evidence) {
+        result.skipped += 1;
+        continue;
+      }
+      if (isMonitorScheduledSuppression(evidence)) {
+        await recordMonitorScheduledSuppression(evidence);
+        result.monitorScheduledSuppressed += 1;
         continue;
       }
       if (await findRecentResolvedProductivityReview(candidate.companyId, candidate.id, thresholds, now)) {
@@ -1171,27 +1257,23 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         result.snoozed += 1;
         continue;
       }
-      const sourceAgent = await getAgent(candidate.assigneeAgentId);
-      if (!sourceAgent || sourceAgent.companyId !== candidate.companyId) {
-        result.skipped += 1;
-        continue;
-      }
-      const evidence = await collectEvidence(candidate, sourceAgent, thresholds, now);
-      if (!evidence) {
-        result.skipped += 1;
-        continue;
-      }
-      if (isMonitorScheduledSuppression(evidence)) {
-        await recordMonitorScheduledSuppression(evidence);
-        result.monitorScheduledSuppressed += 1;
-        continue;
-      }
       let prefix = prefixCache.get(candidate.companyId);
       if (!prefix) {
         prefix = await getCompanyIssuePrefix(candidate.companyId);
         prefixCache.set(candidate.companyId, prefix);
       }
       try {
+        await deps?.beforeCreateOrUpdateReview?.(evidence);
+        const reviewability = await evaluateSourceReviewability(candidate, sourceAgent.id);
+        if (!reviewability.reviewable) {
+          if (reviewability.terminal) {
+            await recordTerminalSourceSuppression(evidence, reviewability.status);
+            result.suppressedTerminalSource += 1;
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
         const outcome = await createOrUpdateReview(evidence, { prefix });
         if (outcome.kind === "created") result.created += 1;
         else if (outcome.kind === "updated") result.updated += 1;

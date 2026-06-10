@@ -532,7 +532,7 @@ function truncateByCodePoint(value: string, maxChars: number): string {
 
 function decodeDatabaseTextPreview(value: string | null | undefined, maxChars: number): string | null {
   if (value == null) return null;
-  return truncateByCodePoint(Buffer.from(value, "base64").toString("utf8"), maxChars);
+  return truncateByCodePoint(value, maxChars);
 }
 
 function chunkList<T>(values: T[], size: number): T[][] {
@@ -2404,7 +2404,11 @@ const BLOCKED_INBOX_ACTIVE_RUN_STATUSES = ["queued", "running"] as const;
 const BLOCKED_INBOX_ACTIVE_WAKE_STATUSES = ["queued", "deferred_issue_execution"] as const;
 const BLOCKED_INBOX_PENDING_INTERACTION_STATUSES = ["pending"] as const;
 const BLOCKED_INBOX_PENDING_APPROVAL_STATUSES = ["pending", "revision_requested"] as const;
-const BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS = ["harness_liveness_escalation", "stranded_issue_recovery"] as const;
+const BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS = [
+  RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+  RECOVERY_ORIGIN_KINDS.issueProductivityReview,
+  RECOVERY_ORIGIN_KINDS.strandedIssueRecovery,
+] as const;
 const BLOCKED_INBOX_SUCCESSFUL_RUN_HANDOFF_ACTIONS = [
   "issue.successful_run_handoff_required",
   "issue.successful_run_handoff_resolved",
@@ -2839,13 +2843,16 @@ async function listIssueBlockedInboxAttentionMap(
     .filter((issue) => BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS.includes(issue.originKind as typeof BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS[number]))
     .flatMap((issue) => {
       const entries = [{ companyId, issueId: issue.id, status: issue.status }];
-      if (issue.originKind === "harness_liveness_escalation") {
+      if (issue.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation) {
         const parsed = parseIssueGraphLivenessIncidentKey(issue.originId);
         if (parsed?.companyId === companyId) {
           entries.push({ companyId, issueId: parsed.issueId, status: issue.status });
           entries.push({ companyId, issueId: parsed.leafIssueId, status: issue.status });
         }
-      } else if (issue.originKind === "stranded_issue_recovery" && issue.originId) {
+      } else if (
+        (issue.originKind === RECOVERY_ORIGIN_KINDS.issueProductivityReview ||
+          issue.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery) && issue.originId
+      ) {
         entries.push({ companyId, issueId: issue.originId, status: issue.status });
       }
       return entries;
@@ -2932,13 +2939,16 @@ async function listIssueBlockedInboxAttentionMap(
     if (BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS.includes(row.originKind as typeof BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS[number])) {
       let sourceIssue: IssueBlockedInboxIssueRef | null = null;
       let leafIssue: IssueBlockedInboxIssueRef | null = null;
-      if (row.originKind === "harness_liveness_escalation") {
+      if (row.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation) {
         const parsed = parseIssueGraphLivenessIncidentKey(row.originId);
         if (parsed?.companyId === companyId) {
           sourceIssue = issueRef(issuesById.get(parsed.issueId));
           leafIssue = issueRef(issuesById.get(parsed.leafIssueId));
         }
-      } else if (row.originKind === "stranded_issue_recovery" && row.originId) {
+      } else if (
+        (row.originKind === RECOVERY_ORIGIN_KINDS.issueProductivityReview ||
+          row.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery) && row.originId
+      ) {
         sourceIssue = issueRef(issuesById.get(row.originId));
       }
       result.set(row.id, attentionBase({
