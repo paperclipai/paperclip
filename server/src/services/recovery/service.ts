@@ -2330,15 +2330,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
-    // ALAA-965: never produce status=blocked with empty blockedBy[]. When the
-    // recovery action has no owner (board-escalation path) and there are no
-    // first-class blockers on the source, falling back to `todo` keeps the
-    // assignee able to re-claim once a live execution path returns, instead
-    // of stranding the issue in a misleading 'blocked + empty' state that
-    // requires a manual sweep to reset. When a recovery owner exists, the
-    // recovery action itself is the live "blocker", so we keep `blocked`.
-    const initialStatus: "blocked" | "todo" =
-      recoveryAction.ownerAgentId !== null || blockerIds.length > 0 ? "blocked" : "todo";
+    // ALAA-965: never produce status=blocked with empty blockedBy[]. The
+    // Board UI footer ("Work on this issue is blocked until it is moved back
+    // to todo") is purely data-driven on status='blocked' + empty blockedBy,
+    // so a recovery owner on the assignee field does not excuse the state.
+    // `blocked` is written only when first-class blockers exist; otherwise we
+    // fall back to `todo` so the owner (or original assignee) can re-claim
+    // the issue without a manual sweep.
+    const initialStatus: "blocked" | "todo" = blockerIds.length > 0 ? "blocked" : "todo";
     const updated = await issuesSvc.update(input.issue.id, {
       status: initialStatus,
       blockedByIssueIds: blockerIds,
@@ -2466,18 +2465,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .from(issues)
         .where(eq(issues.id, input.issue.id))
         .limit(1);
+      // ALAA-965: re-fetch the unresolved blocker list instead of reusing the
+      // early `blockerIds` capture — blockers may have resolved (or appeared)
+      // during the comment/activity writes above, and replaying the stale list
+      // would re-attach phantom blocker references. The intended status obeys
+      // the same invariant as the initial write: `blocked` only with
+      // first-class blockers, `todo` otherwise.
+      const refreshedBlockerIds = await existingUnresolvedBlockerIssueIds(
+        input.issue.companyId,
+        input.issue.id,
+      );
+      const intendedStatus: "blocked" | "todo" =
+        refreshedBlockerIds.length > 0 ? "blocked" : "todo";
       if (
         currentIssue &&
-        (currentIssue.status !== "blocked" ||
+        (currentIssue.status !== intendedStatus ||
           currentIssue.assigneeAgentId !== recoveryAction.ownerAgentId)
       ) {
-        // This branch only runs when recoveryAction.ownerAgentId === input.issue.assigneeAgentId
-        // (truthy by the outer guard), so the ALAA-965 invariant is already
-        // satisfied by the recovery action — keep `blocked` here regardless of
-        // blockerIds, to mirror the initial-write logic above.
         const reblocked = await issuesSvc.update(input.issue.id, {
-          status: "blocked",
-          blockedByIssueIds: blockerIds,
+          status: intendedStatus,
+          blockedByIssueIds: refreshedBlockerIds,
           assigneeAgentId: recoveryAction.ownerAgentId,
         });
         if (reblocked) return reblocked;
