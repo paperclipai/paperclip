@@ -83,7 +83,8 @@ ENV NODE_ENV=production \
   OPENCODE_ALLOW_ALL_MODELS=true \
   GEMINI_SANDBOX=false
 
-VOLUME ["/paperclip"]
+# NOTE: Docker VOLUME is unsupported on Railway — persistence is provided by a
+# Railway Volume mounted at /paperclip instead (see `railway volume`).
 EXPOSE 3100
 
 ENTRYPOINT ["docker-entrypoint.sh"]
