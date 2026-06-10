@@ -1,4 +1,8 @@
 import type { PaperclipMcpConfig } from "./config.js";
+import {
+  absolutizePaperclipLinksInJson,
+  paperclipPublicBaseUrl,
+} from "./paperclip-links.js";
 
 export class PaperclipApiError extends Error {
   readonly status: number;
@@ -195,6 +199,6 @@ export class PaperclipApiClient {
       });
     }
 
-    return parsedBody as T;
+    return absolutizePaperclipLinksInJson(parsedBody, paperclipPublicBaseUrl(this.config)) as T;
   }
 }

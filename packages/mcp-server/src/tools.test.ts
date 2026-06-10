@@ -2,18 +2,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PaperclipApiClient } from "./client.js";
 import { createToolDefinitions } from "./tools.js";
 
-function makeClient() {
+function makeClient(overrides: Partial<ConstructorParameters<typeof PaperclipApiClient>[0]> = {}) {
   return new PaperclipApiClient({
     apiUrl: "http://localhost:3100/api",
     apiKey: "token-123",
     companyId: "11111111-1111-1111-1111-111111111111",
     agentId: "22222222-2222-2222-2222-222222222222",
     runId: "33333333-3333-3333-3333-333333333333",
+    ...overrides,
   });
 }
 
-function getTool(name: string) {
-  const tool = createToolDefinitions(makeClient()).find((candidate) => candidate.name === name);
+function getTool(name: string, client = makeClient()) {
+  const tool = createToolDefinitions(client).find((candidate) => candidate.name === name);
   if (!tool) throw new Error(`Missing tool ${name}`);
   return tool;
 }
@@ -87,6 +88,44 @@ describe("paperclip MCP tools", () => {
       "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/issues",
     );
     expect(response.content[0]?.text).toContain("issue-1");
+  });
+
+  it("absolutizes Paperclip issue links before returning MCP issue data", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({
+        identifier: "BLO-9728",
+        description:
+          "Depends on [BLO-9703](/BLO/issues/BLO-9703) and [PCL-2127](/issues/PCL-2127#document-runbook). Keep `/api/issues/{id}` literal.",
+        relatedWork: {
+          outbound: [
+            {
+              sources: [
+                {
+                  href: "/issues/BLO-9728#comment-abc",
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipGetIssue", makeClient({
+      publicUrl: "https://paperclip.blockcast.net/",
+    }));
+    const response = await tool.execute({
+      issueId: "BLO-9728",
+      company: "11111111-1111-1111-1111-111111111111",
+    });
+    const text = response.content[0]?.text ?? "";
+
+    expect(text).toContain("[BLO-9703](https://paperclip.blockcast.net/BLO/issues/BLO-9703)");
+    expect(text).toContain("[PCL-2127](https://paperclip.blockcast.net/PCL/issues/PCL-2127#document-runbook)");
+    expect(text).toContain("https://paperclip.blockcast.net/BLO/issues/BLO-9728#comment-abc");
+    expect(text).toContain("Keep `/api/issues/{id}` literal.");
+    expect(text).not.toContain("](/BLO/issues/");
+    expect(text).not.toContain("\": \"/issues/BLO-9728");
   });
 
   it("uses default agent id for checkout requests", async () => {
