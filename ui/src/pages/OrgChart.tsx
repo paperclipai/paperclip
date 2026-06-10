@@ -9,7 +9,9 @@ import { agentUrl, cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { AgentIcon } from "../components/AgentIconPicker";
+import { AgentPortrait } from "../components/AgentPortrait";
+import { HeartbeatSpine } from "../components/HeartbeatSpine";
+import { agentLiveState, liveCadence } from "../lib/status-colors";
 import { Download, Maximize2, Minus, Network, Plus, Upload } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@valadrien-os/shared";
 
@@ -605,14 +607,15 @@ export function OrgChart() {
           {allNodes.map((node) => {
             const agent = agentMap.get(node.id);
             const dotColor = statusDotColor[node.status] ?? defaultDotColor;
+            const liveState = agentLiveState(node.status);
+            const cad = liveCadence(node.id);
 
             return (
               <div
                 key={node.id}
                 data-org-card
                 className={cn(
-                  "absolute bg-card border border-border rounded-[3px] hover:border-primary/45 transition-colors duration-150 cursor-pointer select-none",
-                  node.status === "running" && "border-l-2 border-l-primary",
+                  "absolute overflow-hidden bg-card border border-border rounded-[3px] hover:border-primary/45 transition-colors duration-150 cursor-pointer select-none",
                 )}
                 style={{
                   left: node.x,
@@ -628,12 +631,22 @@ export function OrgChart() {
                   e.stopPropagation();
                 }}
               >
+                {/* Heartbeat spine on the card's left edge */}
+                <span className="pointer-events-none absolute inset-y-0 left-0 flex">
+                  <HeartbeatSpine state={liveState} beat={cad.beat} delay={cad.delay} />
+                </span>
                 <div className="flex items-center px-4 py-3 gap-3">
-                  {/* Agent icon + status dot */}
+                  {/* Agent portrait (framed eyes + status ring) + granular status dot */}
                   <div className="relative shrink-0">
-                    <div className="w-9 h-9 rounded-[3px] border border-border bg-background flex items-center justify-center">
-                      <AgentIcon icon={agent?.icon} className="h-4.5 w-4.5 text-foreground/70" />
-                    </div>
+                    <AgentPortrait
+                      src={null}
+                      name={node.name}
+                      state={liveState}
+                      size={36}
+                      look={cad.look}
+                      scan={cad.scan}
+                      pip={false}
+                    />
                     <span
                       className={cn(
                         "absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-card",

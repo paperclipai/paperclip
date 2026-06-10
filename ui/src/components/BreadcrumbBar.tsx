@@ -8,6 +8,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { dashboardApi } from "../api/dashboard";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, formatCents } from "../lib/utils";
+import { CostTape } from "./CostTape";
 import { Button } from "@/components/ui/button";
 import {
   Breadcrumb,
@@ -68,7 +69,7 @@ function InstrumentStrip({ companyId }: { companyId: string }) {
       </span>
       {summary ? (
         <span className="inline-flex items-center gap-1.5 rounded-[3px] border border-border px-2 py-1 font-mono text-[11px] text-muted-foreground">
-          mo <span className="text-primary">{formatCents(summary.costs.monthSpendCents)}</span>
+          mo <CostTape text={formatCents(summary.costs.monthSpendCents)} className="text-primary" />
         </span>
       ) : null}
     </div>

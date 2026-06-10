@@ -18,6 +18,8 @@ export interface AgentFaceProps {
   /** Vary per-agent so a roster never blinks in unison. Seconds. */
   look?: number;
   scan?: number;
+  /** Eyes only (no own border/background) so it can sit inside a portrait frame. */
+  chromeless?: boolean;
   className?: string;
   title?: string;
 }
@@ -27,6 +29,7 @@ export function AgentFace({
   size = 36,
   look,
   scan,
+  chromeless,
   className,
   title,
 }: AgentFaceProps) {
@@ -37,13 +40,13 @@ export function AgentFace({
 
   return (
     <div
-      className={cn("agent-face", className)}
+      className={cn("agent-face", chromeless && "af-chromeless", className)}
       data-state={dataState}
       title={title}
       style={
         {
-          width: size,
-          height: Math.round(size * 0.78),
+          width: chromeless ? "100%" : size,
+          height: chromeless ? "100%" : Math.round(size * 0.78),
           ["--af-look" as string]: `${lookDur}s`,
           ["--af-scan" as string]: `${scanDur}s`,
         } as React.CSSProperties

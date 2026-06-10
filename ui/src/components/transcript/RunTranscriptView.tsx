@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { TranscriptEntry } from "../../adapters";
 import { MarkdownBody } from "../MarkdownBody";
+import { ThinkingCursor } from "../ThinkingCursor";
 import { cn, formatTokens } from "../../lib/utils";
 import {
   Check,
@@ -659,15 +660,8 @@ function TranscriptMessageBlock({
       >
         {block.text}
       </MarkdownBody>
-      {block.streaming && (
-        <div className="mt-2 inline-flex items-center gap-1 text-[10px] font-medium italic text-muted-foreground">
-          <span className="relative flex h-1.5 w-1.5">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-70" />
-            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-current" />
-          </span>
-          Streaming
-        </div>
-      )}
+      {/* Thinking cursor — the live "composing now" block at the end of the stream. */}
+      {block.streaming && <ThinkingCursor className="-mt-[0.9em] ml-0.5" />}
     </div>
   );
 }

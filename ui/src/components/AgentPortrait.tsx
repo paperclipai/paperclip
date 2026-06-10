@@ -53,16 +53,27 @@ export function AgentPortrait({
   const dataState = state === "thinking" ? "running" : state;
 
   if (!src) {
-    // No generated identity yet → the living eyes stand in.
+    // No generated identity yet → the living eyes stand in, but keep the portrait
+    // FRAME (border + status ring + corner pip) so it reads as an identity tile,
+    // not bare floating eyes.
     return (
-      <AgentFace
-        state={state as AgentFaceState}
-        size={size}
-        look={look}
-        scan={scan}
-        className={className}
+      <div
+        className={cn("agent-portrait", className)}
+        data-state={dataState}
+        style={
+          {
+            width: size,
+            height: size,
+            ["--ap-c" as string]: STATUS_VAR[state],
+          } as React.CSSProperties
+        }
         title={name}
-      />
+      >
+        <AgentFace state={state as AgentFaceState} chromeless look={look} scan={scan} />
+        {dataState === "running" && <div className="ap-scan" />}
+        {ring && <span className="ap-ring" />}
+        {pip && <span className="ap-pip" />}
+      </div>
     );
   }
 

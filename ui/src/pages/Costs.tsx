@@ -13,6 +13,7 @@ import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSi
 import { budgetsApi } from "../api/budgets";
 import { costsApi } from "../api/costs";
 import { BillerSpendCard } from "../components/BillerSpendCard";
+import { CostTape } from "../components/CostTape";
 import { BudgetIncidentCard } from "../components/BudgetIncidentCard";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { EmptyState } from "../components/EmptyState";
@@ -604,8 +605,8 @@ export function Costs() {
                   <div className="font-mono text-[10.5px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
                     {PRESET_LABELS[preset]} · total spend
                   </div>
-                  <div className="mt-1.5 font-serif text-4xl font-medium tabular-nums leading-none text-primary lg:text-5xl">
-                    {formatCents(spendData?.summary.spendCents ?? 0)}
+                  <div className="mt-1.5 text-4xl font-medium leading-none text-primary lg:text-5xl">
+                    <CostTape text={formatCents(spendData?.summary.spendCents ?? 0)} />
                   </div>
                   <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-muted-foreground">
                     {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0 ? (

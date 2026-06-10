@@ -1148,6 +1148,25 @@ span.valadrien-os-project-mention-chip {
 .agent-portrait[data-state="idle"] { filter: grayscale(.9) brightness(.62); }
 .agent-portrait[data-state="blocked"]::after { content: ""; position: absolute; inset: 0; background: var(--status-error); opacity: .07; }
 @keyframes ap-scan { 0%{top:-30%} 100%{top:110%} }
+/* Chromeless face — eyes only, fills the portrait frame (no own border/bg). */
+.agent-face.af-chromeless { border: 0; background: transparent; border-radius: 0; }
+
+/* ----- Thinking cursor: the live "composing now" block on a run-stream line ----- */
+.thinking-cursor {
+  display: inline-block; width: 0.5em; height: 1.1em; vertical-align: -0.18em; margin-left: 2px;
+  background: var(--status-running);
+  box-shadow: 0 0 8px color-mix(in oklch, var(--status-running) 60%, transparent);
+  animation: tc-blink 1.05s steps(2, jump-none) infinite;
+}
+@keyframes tc-blink { 0%,49.9%{opacity:1} 50%,100%{opacity:0} }
+
+/* ----- Cost tape: each digit flashes teal (~420ms) as it ticks ----- */
+.cost-digit { display: inline-block; }
+.cost-digit-flash { animation: cost-flash .42s ease-out; }
+@keyframes cost-flash {
+  0% { color: var(--status-running); text-shadow: 0 0 10px color-mix(in oklch, var(--status-running) 65%, transparent); }
+  100% { color: inherit; text-shadow: none; }
+}
 
 /* ----- Org collaboration wire: joint-work link, pulse travels from parent ----- */
 .org-collab-wire { position: absolute; top: 0; left: 50%; width: 6px; height: var(--ocw-h, 22px); transform: translateX(-50%); overflow: hidden; pointer-events: none; z-index: 1; }
@@ -1161,6 +1180,8 @@ span.valadrien-os-project-mention-chip {
 @media (prefers-reduced-motion: reduce) {
   .agent-face .af-eyes, .agent-face .af-eye, .agent-face .af-scan,
   .heartbeat-spine[data-state="running"]::after, .heartbeat-spine .hs-pulse,
-  .agent-portrait .ap-scan, .org-collab-wire::after { animation: none; }
+  .agent-portrait .ap-scan, .org-collab-wire::after,
+  .thinking-cursor, .cost-digit-flash { animation: none; }
   .agent-face .af-scan, .heartbeat-spine .hs-pulse, .agent-portrait .ap-scan, .org-collab-wire::after { display: none; }
+  .thinking-cursor { opacity: 1; } /* steady block, no blink */
 }
