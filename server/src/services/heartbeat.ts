@@ -49,6 +49,7 @@ import {
   projectWorkspaces,
   routineRevisions,
   routineRuns,
+  routineTriggers,
   routines,
   workspaceOperations,
 } from "@paperclipai/db";
@@ -230,6 +231,14 @@ const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_r
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
+const ROUTINE_BACKLOG_PARK_SYSTEM_WAKE_REASONS = new Set([
+  "issue_assigned",
+  "issue_assignment_recovery",
+  "issue_blockers_resolved",
+  "issue_children_completed",
+  "issue_continuation_needed",
+  RUN_LIVENESS_CONTINUATION_REASON,
+]);
 export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
@@ -2160,6 +2169,14 @@ function shouldAutoCheckoutIssueForWake(input: {
   return true;
 }
 
+function isSystemRoutineBacklogParkWake(contextSnapshot: Record<string, unknown> | null | undefined) {
+  const wakeTriggerDetail = readNonEmptyString(contextSnapshot?.wakeTriggerDetail);
+  if (wakeTriggerDetail !== "system") return false;
+
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  return Boolean(wakeReason && ROUTINE_BACKLOG_PARK_SYSTEM_WAKE_REASONS.has(wakeReason));
+}
+
 function shouldQueueFollowupForRunningIssueWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   wakeCommentId: string | null;
@@ -3187,6 +3204,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function hasActiveScheduledRoutineLoop(
+    dbOrTx: Pick<Db, "select">,
+    companyId: string,
+    issueId: string,
+  ) {
+    return dbOrTx
+      .select({ id: routineTriggers.id })
+      .from(routineTriggers)
+      .innerJoin(
+        routines,
+        and(
+          eq(routines.companyId, routineTriggers.companyId),
+          eq(routines.id, routineTriggers.routineId),
+        ),
+      )
+      .where(
+        and(
+          eq(routineTriggers.companyId, companyId),
+          eq(routineTriggers.kind, "schedule"),
+          eq(routineTriggers.enabled, true),
+          sql`${routineTriggers.nextRunAt} > now()`,
+          eq(routines.status, "active"),
+          eq(routines.parentIssueId, issueId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
   }
 
   async function getRoutineEnvForExecutionIssue(
@@ -7693,9 +7739,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issueDependencyReadiness = issueId
       ? await issuesSvc.listDependencyReadiness(agent.companyId, [issueId]).then((rows) => rows.get(issueId) ?? null)
       : null;
+    const shouldKeepRoutineBacklogParked = Boolean(
+      issueId &&
+      issueContext?.status === "backlog" &&
+      isSystemRoutineBacklogParkWake(context) &&
+      await hasActiveScheduledRoutineLoop(db, agent.companyId, issueId),
+    );
     if (
       issueId &&
       issueContext &&
+      !shouldKeepRoutineBacklogParked &&
       shouldAutoCheckoutIssueForWake({
         contextSnapshot: context,
         issueStatus: issueContext.status,
@@ -10032,6 +10085,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             triggerDetail,
             reason: "issue_execution_issue_not_found",
             payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
+        if (
+          issue.status === "backlog" &&
+          isSystemRoutineBacklogParkWake(enrichedContextSnapshot) &&
+          await hasActiveScheduledRoutineLoop(tx, issue.companyId, issue.id)
+        ) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "routine_backlog_parked",
+            payload: {
+              ...(payload ?? {}),
+              issueId,
+            },
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,

@@ -22,6 +22,8 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routines,
+  routineTriggers,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -71,6 +73,8 @@ const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const RECOVERY_CIRCUIT_BREAKER_THRESHOLD = 5;
+const RECOVERY_CIRCUIT_BREAKER_WINDOW_MS = 6 * 60 * 60 * 1000;
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -538,6 +542,73 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return { consecutive, latestFinishedAt };
   }
 
+  async function countRecentRecoveryBounces(input: {
+    companyId: string;
+    issueId: string;
+    retryReason: "assignment_recovery" | "issue_continuation_needed";
+    now?: Date;
+  }) {
+    const windowStart = new Date((input.now ?? new Date()).getTime() - RECOVERY_CIRCUIT_BREAKER_WINDOW_MS);
+    return db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          gte(heartbeatRuns.createdAt, windowStart),
+          inArray(heartbeatRuns.status, [...UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES]),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+          sql`${heartbeatRuns.contextSnapshot} ->> 'retryReason' = ${input.retryReason}`,
+        ),
+      )
+      .then((rows) => Number(rows[0]?.count ?? 0));
+  }
+
+  async function tripRecoveryCircuitBreaker(input: {
+    issue: typeof issues.$inferSelect;
+    previousStatus: "todo" | "in_progress";
+    latestRun: LatestIssueRun;
+    retryReason: "assignment_recovery" | "issue_continuation_needed";
+    bounceCount: number;
+  }) {
+    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+    const updated = await escalateStrandedAssignedIssue({
+      issue: input.issue,
+      previousStatus: input.previousStatus,
+      latestRun: input.latestRun,
+      comment:
+        "Paperclip stopped automatic recovery for this issue because repeated recovery attempts kept bouncing " +
+        `(${input.bounceCount} attempts in 6 hours, retry reason \`${input.retryReason}\`).${failureSummary ?? ""} ` +
+        "Moving it to `blocked` so the recovery owner can restore a live path or record an intentional manual resolution.",
+    });
+    if (!updated) return null;
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "recovery.circuit_breaker_tripped",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        previousStatus: input.previousStatus,
+        status: "blocked",
+        retryReason: input.retryReason,
+        bounceCount: input.bounceCount,
+        threshold: RECOVERY_CIRCUIT_BREAKER_THRESHOLD,
+        windowMs: RECOVERY_CIRCUIT_BREAKER_WINDOW_MS,
+        latestRunId: input.latestRun?.id ?? null,
+        latestRunStatus: input.latestRun?.status ?? null,
+        latestRunErrorCode: input.latestRun?.errorCode ?? null,
+      },
+    });
+
+    return updated;
+  }
+
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
     const [run, deferredWake] = await Promise.all([
       db
@@ -578,6 +649,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(agentWakeupRequests.companyId, companyId),
           eq(agentWakeupRequests.status, "queued"),
           sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  async function hasActiveScheduledRoutineLoop(companyId: string, issueId: string) {
+    return db
+      .select({ id: routineTriggers.id })
+      .from(routineTriggers)
+      .innerJoin(
+        routines,
+        and(
+          eq(routines.companyId, routineTriggers.companyId),
+          eq(routines.id, routineTriggers.routineId),
+        ),
+      )
+      .where(
+        and(
+          eq(routineTriggers.companyId, companyId),
+          eq(routineTriggers.kind, "schedule"),
+          eq(routineTriggers.enabled, true),
+          sql`${routineTriggers.nextRunAt} > now()`,
+          eq(routines.status, "active"),
+          eq(routines.parentIssueId, issueId),
         ),
       )
       .limit(1)
@@ -2502,6 +2598,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      // D1: a routine-bound continuous-loop hub whose recurring routine has an upcoming
+      // scheduled fire is a live continuation between fires, not a stranded issue.
+      if (issue.status === "in_progress" && await hasActiveScheduledRoutineLoop(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
@@ -2516,6 +2619,35 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           result.skipped += 1;
         }
         continue;
+      }
+
+      const latestRetryReason = readNonEmptyString(parseObject(latestRun?.contextSnapshot).retryReason);
+      if (
+        latestRun &&
+        isUnsuccessfulTerminalIssueRun(latestRun) &&
+        (latestRetryReason === "assignment_recovery" || latestRetryReason === "issue_continuation_needed")
+      ) {
+        const bounceCount = await countRecentRecoveryBounces({
+          companyId: issue.companyId,
+          issueId: issue.id,
+          retryReason: latestRetryReason,
+        });
+        if (bounceCount >= RECOVERY_CIRCUIT_BREAKER_THRESHOLD) {
+          const updated = await tripRecoveryCircuitBreaker({
+            issue,
+            previousStatus: issue.status as "todo" | "in_progress",
+            latestRun,
+            retryReason: latestRetryReason,
+            bounceCount,
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
       }
 
       if (issue.status === "todo") {

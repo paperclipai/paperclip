@@ -21,6 +21,8 @@ import {
   issueRelations,
   issueTreeHolds,
   issues,
+  routines,
+  routineTriggers,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
@@ -100,6 +102,33 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   }, 20_000);
 
   afterEach(async () => {
+    runningProcesses.clear();
+    // Drain to full quiescence BEFORE resetting the adapter spy. A test's runs can
+    // spawn an async bounded-liveness continuation run (enqueueWakeup) that invokes the
+    // adapter after the originating run is already terminal. If we reset the spy first
+    // (as the old order did), that late call increments the fresh count and leaks a
+    // phantom invocation into the next test, corrupting its toHaveBeenCalledTimes(...)
+    // assertions. We therefore wait until no heartbeat run is queued/running AND no
+    // wakeup request is still queued (continuations create a queued run), and only then
+    // reset the spy so the next test starts from a clean, stable count.
+    let idlePolls = 0;
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const [runs, wakeups] = await Promise.all([
+        db.select({ status: heartbeatRuns.status }).from(heartbeatRuns),
+        db.select({ status: agentWakeupRequests.status }).from(agentWakeupRequests),
+      ]);
+      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
+      const hasQueuedWakeup = wakeups.some((wakeup) => wakeup.status === "queued");
+      if (!hasActiveRun && !hasQueuedWakeup) {
+        idlePolls += 1;
+        if (idlePolls >= 3) break;
+      } else {
+        idlePolls = 0;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    runningProcesses.clear();
     mockAdapterExecute.mockReset();
     mockAdapterExecute.mockImplementation(async () => ({
       exitCode: 0,
@@ -110,22 +139,6 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       provider: "test",
       model: "test-model",
     }));
-    runningProcesses.clear();
-    let idlePolls = 0;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const runs = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns);
-      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
-      if (!hasActiveRun) {
-        idlePolls += 1;
-        if (idlePolls >= 3) break;
-      } else {
-        idlePolls = 0;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
     await db.delete(environmentLeases);
     await db.delete(activityLog);
     await db.delete(companySkills);
@@ -135,6 +148,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await db.delete(documents);
     await db.delete(issueRelations);
     await db.delete(issueTreeHolds);
+    await db.delete(routineTriggers);
+    await db.delete(routines);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(activityLog);
@@ -397,6 +412,212 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       return rows.every((run) => run.status !== "queued" && run.status !== "running");
     }, 10_000);
     expect(noActiveRuns).toBe(true);
+  });
+
+  it("keeps scheduled routine hubs parked on system dependency wakes but allows user interaction wakes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const routineId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Weekly science hub",
+      status: "backlog",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      parentIssueId: issueId,
+      title: "Weekly science loop",
+      status: "active",
+      priority: "medium",
+    });
+    await db.insert(routineTriggers).values({
+      id: randomUUID(),
+      companyId,
+      routineId,
+      kind: "schedule",
+      enabled: true,
+      cronExpression: "0 9 * * 1",
+      timezone: "Europe/Prague",
+      nextRunAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+
+    const systemWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: { issueId },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      contextSnapshot: { issueId, wakeReason: "issue_blockers_resolved" },
+    });
+    expect(systemWake).toBeNull();
+
+    const skippedWake = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.reason, "routine_backlog_parked"))
+      .then((rows) => rows[0] ?? null);
+    expect(skippedWake).toMatchObject({ status: "skipped", reason: "routine_backlog_parked" });
+
+    let issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("backlog");
+    expect(issue?.checkoutRunId).toBeNull();
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(0);
+
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "board-user",
+      body: "Please pick this back up now.",
+    });
+
+    const userWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId, commentId },
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+      contextSnapshot: {
+        issueId,
+        commentId,
+        wakeCommentId: commentId,
+        wakeReason: "issue_commented",
+        source: "issue.comment",
+      },
+    });
+    expect(userWake).not.toBeNull();
+
+    await waitForCondition(async () => {
+      const row = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      return row?.status === "in_progress";
+    }, 5_000);
+    issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.checkoutRunId).toBe(userWake?.id);
+
+    // Wait for the adapter run to reach a terminal status before the test ends.
+    // Without this, a lingering adapter call can fire after afterEach resets the mock,
+    // causing mock.calls.length to increment unexpectedly in the next test which
+    // asserts calls.length === 1 exactly.
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, userWake!.id))
+        .then((rows) => rows[0] ?? null);
+      return ["succeeded", "failed", "cancelled", "timed_out"].includes(run?.status ?? "");
+    }, 5_000);
+  });
+
+  it("does not park routine hubs when the scheduled next run is stale", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const routineId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Weekly science hub",
+      status: "backlog",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      parentIssueId: issueId,
+      title: "Weekly science loop",
+      status: "active",
+      priority: "medium",
+    });
+    await db.insert(routineTriggers).values({
+      id: randomUUID(),
+      companyId,
+      routineId,
+      kind: "schedule",
+      enabled: true,
+      cronExpression: "0 9 * * 1",
+      timezone: "Europe/Prague",
+      nextRunAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    const systemWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: { issueId },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      contextSnapshot: { issueId, wakeReason: "issue_blockers_resolved" },
+    });
+    expect(systemWake).not.toBeNull();
+
+    await waitForCondition(async () => mockAdapterExecute.mock.calls.length >= 1, 5_000);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+
+    const skippedWake = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.reason, "routine_backlog_parked"))
+      .then((rows) => rows[0] ?? null);
+    expect(skippedWake).toBeNull();
   });
 
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { and, eq, or, inArray } from "drizzle-orm";
+import { and, eq, or, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -34,6 +34,8 @@ import {
   issues,
   projects,
   projectWorkspaces,
+  routines,
+  routineTriggers,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
@@ -347,6 +349,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(issueRecoveryActions);
     await db.delete(issueTreeHoldMembers);
     await db.delete(issueTreeHolds);
+    await db.delete(routineTriggers);
+    await db.delete(routines);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(issueComments);
       await db.delete(issueDocuments);
@@ -680,6 +684,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
 
     return { companyId, agentId, runId, wakeupRequestId, issueId, rootIssueId };
+  }
+
+  async function seedScheduledRoutineLoop(input: {
+    companyId: string;
+    issueId: string;
+    status?: "active" | "archived" | "disabled";
+    enabled?: boolean;
+    nextRunAt?: Date | null;
+  }) {
+    const routineId = randomUUID();
+    await db.insert(routines).values({
+      id: routineId,
+      companyId: input.companyId,
+      parentIssueId: input.issueId,
+      title: "Weekly science loop",
+      status: input.status ?? "active",
+      priority: "medium",
+    });
+    await db.insert(routineTriggers).values({
+      id: randomUUID(),
+      companyId: input.companyId,
+      routineId,
+      kind: "schedule",
+      enabled: input.enabled ?? true,
+      cronExpression: "0 9 * * 1",
+      timezone: "Europe/Prague",
+      nextRunAt: input.nextRunAt === undefined ? new Date(Date.now() + 60 * 60 * 1000) : input.nextRunAt,
+    });
   }
 
   async function seedAssignedTodoNoRunFixture(input?: {
@@ -2237,6 +2269,128 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
     expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+  });
+
+  it("keeps in-progress scheduled routine hubs out of stranded recovery", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "process_lost",
+    });
+    await seedScheduledRoutineLoop({ companyId, issueId });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    const recoveryActions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(recoveryActions).toHaveLength(0);
+  });
+
+  it.each([
+    { name: "archived routine", routine: { status: "archived" as const } },
+    { name: "disabled trigger", routine: { enabled: false } },
+    { name: "missing next run", routine: { nextRunAt: null } },
+    { name: "stale next run", routine: { nextRunAt: new Date(Date.now() - 60 * 60 * 1000) } },
+  ])("still recovers stranded hubs when the scheduled routine is not active: $name", async ({ routine }) => {
+    const { companyId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "agent_not_invokable",
+    });
+    await seedScheduledRoutineLoop({ companyId, issueId, ...routine });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]?.evidence).toMatchObject({ latestRunId: runId });
+  });
+
+  it("trips the recovery circuit breaker after repeated recovery bounces in the rolling window", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "adapter_failed",
+    });
+    const now = new Date();
+    await db.insert(heartbeatRuns).values(
+      Array.from({ length: 4 }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "failed",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+        },
+        errorCode: "adapter_failed",
+        error: "recovery bounced",
+        startedAt: new Date(now.getTime() - (index + 1) * 10 * 60 * 1000),
+        finishedAt: new Date(now.getTime() - (index + 1) * 10 * 60 * 1000 + 60_000),
+        createdAt: new Date(now.getTime() - (index + 1) * 10 * 60 * 1000),
+        updatedAt: new Date(now.getTime() - (index + 1) * 10 * 60 * 1000 + 60_000),
+      })),
+    );
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+      retryReason: "issue_continuation_needed",
+    });
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments[0]?.body).toContain("repeated recovery attempts kept bouncing");
+    expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
+
+    const breakerActivity = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "recovery.circuit_breaker_tripped")))
+      .then((rows) => rows[0] ?? null);
+    expect(breakerActivity?.details).toMatchObject({
+      retryReason: "issue_continuation_needed",
+      bounceCount: 5,
+      threshold: 5,
+    });
+
+    const retryRuns = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          sql`${heartbeatRuns.contextSnapshot} ->> 'retryReason' = 'issue_continuation_needed'`,
+        ),
+      )
+      .then((rows) => Number(rows[0]?.count ?? 0));
+    expect(retryRuns).toBe(5);
   });
 
   it("blocks an already stranded recovery issue without creating a recovery child", async () => {
