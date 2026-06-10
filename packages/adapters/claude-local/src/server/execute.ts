@@ -619,6 +619,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (
     executionTargetIsRemote &&
     runtimeSessionId &&
+    isValidUuid &&
     !canResumeSession
   ) {
     await onLog(
