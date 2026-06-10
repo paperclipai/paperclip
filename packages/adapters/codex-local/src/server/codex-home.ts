@@ -74,6 +74,19 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   }
 
   if (!existing.isSymbolicLink()) {
+    // A previous Paperclip version copied this file into the managed home
+    // instead of symlinking it. Codex refresh tokens rotate and are
+    // single-use, so a stale copy fails with refresh_token_reused on the next
+    // run (#5028). Replace the regular file with a symlink so the CLI follows
+    // the live source. Safe to delete: target is always under the
+    // Paperclip-managed company home, never the user's real ~/.codex.
+    // Directories are left alone — `fs.unlink` would throw EISDIR on Unix
+    // (and behave inconsistently on Windows). A directory at this path is not
+    // a Paperclip-written stale copy and warrants operator inspection rather
+    // than silent removal.
+    if (existing.isDirectory()) return;
+    await fs.unlink(target);
+    await createExpectedSymlink(target, source);
     return;
   }
 
