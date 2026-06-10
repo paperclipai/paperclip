@@ -247,4 +247,123 @@ describe("syncFromLinear", () => {
       status: "in_progress",
     });
   });
+
+  it("moves an already-linked Paperclip issue to the mapped Linear project", async () => {
+    const harness = createTestHarness({ manifest });
+    harness.seed({
+      projects: [
+        {
+          id: "old-proj",
+          companyId: "comp-1",
+          name: "Old Project",
+          status: "active",
+        } as never,
+        {
+          id: "pc-proj-1",
+          companyId: "comp-1",
+          name: "Canonical Project",
+          status: "active",
+        } as never,
+      ],
+      issues: [
+        {
+          id: "pc-1",
+          companyId: "comp-1",
+          projectId: "old-proj",
+          title: "Paperclip title",
+          status: "todo",
+          priority: "low",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        } as never,
+      ],
+    });
+    await harness.ctx.state.set(
+      { scopeKind: "instance", stateKey: `${STATE_KEYS.projectLinkPrefix}pc-proj-1` },
+      makeProjectLink(),
+    );
+    await harness.ctx.state.set(
+      { scopeKind: "instance", stateKey: `${STATE_KEYS.projectLinearPrefix}lin-proj-1` },
+      "pc-proj-1",
+    );
+
+    const update = vi.spyOn(harness.ctx.issues, "update");
+
+    await syncFromLinear(
+      harness.ctx,
+      makeLink(),
+      makeLinearIssue({
+        state: { name: "Backlog", type: "backlog" },
+        project: {
+          id: "lin-proj-1",
+          name: "Canonical Project",
+          description: null,
+          state: "started",
+        },
+      }),
+    );
+
+    expect(update).toHaveBeenCalledWith(
+      "pc-1",
+      expect.objectContaining({ projectId: "pc-proj-1" }),
+      "comp-1",
+    );
+    const issue = await harness.ctx.issues.get("pc-1", "comp-1");
+    expect(issue).toMatchObject({ projectId: "pc-proj-1" });
+  });
+
+  it("retries the Linear sync without projectId when Paperclip rejects the project move", async () => {
+    const harness = createTestHarness({ manifest });
+    harness.seed({
+      issues: [
+        {
+          id: "pc-1",
+          companyId: "comp-1",
+          title: "Paperclip title",
+          status: "todo",
+          priority: "low",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        } as never,
+      ],
+    });
+    await harness.ctx.state.set(
+      { scopeKind: "instance", stateKey: `${STATE_KEYS.projectLinkPrefix}pc-proj-1` },
+      makeProjectLink(),
+    );
+    await harness.ctx.state.set(
+      { scopeKind: "instance", stateKey: `${STATE_KEYS.projectLinearPrefix}lin-proj-1` },
+      "pc-proj-1",
+    );
+
+    const update = vi.spyOn(harness.ctx.issues, "update");
+    update.mockRejectedValueOnce(new Error("HTTP 422"));
+
+    await syncFromLinear(
+      harness.ctx,
+      makeLink(),
+      makeLinearIssue({
+        state: { name: "Backlog", type: "backlog" },
+        project: {
+          id: "lin-proj-1",
+          name: "Canonical Project",
+          description: null,
+          state: "started",
+        },
+      }),
+    );
+
+    expect(update).toHaveBeenNthCalledWith(
+      1,
+      "pc-1",
+      expect.objectContaining({ projectId: "pc-proj-1" }),
+      "comp-1",
+    );
+    expect(update).toHaveBeenNthCalledWith(
+      2,
+      "pc-1",
+      expect.not.objectContaining({ projectId: expect.anything() }),
+      "comp-1",
+    );
+  });
 });

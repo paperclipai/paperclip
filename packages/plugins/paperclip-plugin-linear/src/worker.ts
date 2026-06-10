@@ -587,7 +587,9 @@ async function updateExistingPaperclipIssueFromLinear(
   if (params.description !== undefined) patch.description = params.description;
   if (params.projectId && issue.projectId !== params.projectId) patch.projectId = params.projectId;
   if (params.labelIds.length > 0) patch.labelIds = params.labelIds;
-  if (!issue.assigneeUserId && params.assigneeUserId) patch.assigneeUserId = params.assigneeUserId;
+  if (!issue.assigneeUserId && !issue.assigneeAgentId && params.assigneeUserId) {
+    patch.assigneeUserId = params.assigneeUserId;
+  }
   if (
     params.status !== "in_progress"
     || params.assigneeUserId

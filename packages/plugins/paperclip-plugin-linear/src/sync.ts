@@ -246,12 +246,37 @@ export async function syncFromLinear(
     patch.title = linearIssue.title;
   }
 
+  const linearProjectId = linearIssue.project?.id ?? null;
+  if (linearProjectId) {
+    const projectLink = await getProjectLinkByLinear(ctx, linearProjectId);
+    if (projectLink && projectLink.paperclipCompanyId === link.paperclipCompanyId) {
+      patch.projectId = projectLink.paperclipProjectId;
+    } else if (projectLink) {
+      ctx.logger.warn(
+        `Skipped project sync for ${link.linearIdentifier}: Linear project ${linearProjectId} maps to company ${projectLink.paperclipCompanyId}, not ${link.paperclipCompanyId}`,
+      );
+    }
+  }
+
   if (Object.keys(patch).length === 0) {
     if (linkNeedsUpdate) await updateLink(ctx, link);
     return;
   }
 
-  await ctx.issues.update(link.paperclipIssueId, patch as Parameters<typeof ctx.issues.update>[1], link.paperclipCompanyId);
+  try {
+    await ctx.issues.update(link.paperclipIssueId, patch as Parameters<typeof ctx.issues.update>[1], link.paperclipCompanyId);
+  } catch (err) {
+    if (!("projectId" in patch)) throw err;
+    const { projectId: _projectId, ...withoutProject } = patch;
+    await ctx.issues.update(
+      link.paperclipIssueId,
+      withoutProject as Parameters<typeof ctx.issues.update>[1],
+      link.paperclipCompanyId,
+    );
+    ctx.logger.warn(
+      `Synced ${link.linearIdentifier} without projectId because moving Paperclip issue ${link.paperclipIssueId} failed: ${err}`,
+    );
+  }
   await updateLink(ctx, link);
 
   ctx.logger.info(

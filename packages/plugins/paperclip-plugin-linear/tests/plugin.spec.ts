@@ -1043,6 +1043,65 @@ describe("paperclip-plugin-linear", () => {
       const callArg = (attachmentLinkURL as ReturnType<typeof vi.fn>).mock.calls[0]![2];
       expect(callArg.url).toBe("https://paperclip.test/LUC/issues/LUC-1005");
     });
+
+    it("does not add a Linear human assignee to an exact-title Paperclip issue that already has an agent assignee", async () => {
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+      harness.seed({
+        issues: [
+          {
+            id: "pc-iss-agent",
+            companyId: "comp-1",
+            identifier: "LUC-99",
+            title: "Test issue",
+            status: "todo",
+            priority: "low",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          } as never,
+        ],
+      });
+
+      const { getIssueByIdentifier } = await import("../src/linear.js");
+      (getIssueByIdentifier as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        id: "lin-iss-1",
+        identifier: "LUC-1",
+        title: "Test issue",
+        description: null,
+        state: { name: "Backlog", type: "backlog" },
+        priority: 3,
+        url: "https://linear.app/lucitra/issue/LUC-1",
+        assignee: { name: "Alice", email: "alice@example.com" },
+        project: null,
+        labels: { nodes: [] },
+        createdAt: "2026-06-10T00:00:00.000Z",
+        updatedAt: "2026-06-10T00:00:00.000Z",
+      });
+      vi.spyOn(harness.ctx.users, "findByEmail").mockResolvedValue({
+        id: "user-1",
+        email: "alice@example.com",
+        name: "Alice",
+      });
+      const update = vi.spyOn(harness.ctx.issues, "update");
+
+      const result = await harness.performAction<{ relinked: boolean; paperclipIssueId: string }>(
+        ACTION_KEYS.importIssue,
+        { linearRef: "LUC-1" },
+      );
+
+      expect(result).toMatchObject({ relinked: true, paperclipIssueId: "pc-iss-agent" });
+      expect(update).toHaveBeenCalledWith(
+        "pc-iss-agent",
+        expect.not.objectContaining({ assigneeUserId: expect.anything() }),
+        "comp-1",
+      );
+    });
   });
 
   describe("trigger-sync", () => {
