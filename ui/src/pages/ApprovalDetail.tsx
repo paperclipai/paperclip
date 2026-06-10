@@ -24,6 +24,7 @@ export function ApprovalDetail() {
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const [commentBody, setCommentBody] = useState("");
+  const [decisionNote, setDecisionNote] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [showRawPayload, setShowRawPayload] = useState(false);
 
@@ -84,10 +85,18 @@ export function ApprovalDetail() {
     }
   };
 
+  // TON-2324 / GH #7784: decision buttons carry an optional note that is woken
+  // back to the requesting agent as the board's reply in context.
+  const decisionNoteArg = () => {
+    const trimmed = decisionNote.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  };
+
   const approveMutation = useMutation({
-    mutationFn: () => approvalsApi.approve(approvalId!),
+    mutationFn: () => approvalsApi.approve(approvalId!, decisionNoteArg()),
     onSuccess: () => {
       setError(null);
+      setDecisionNote("");
       refresh();
       navigate(`/approvals/${approvalId}?resolved=approved`, { replace: true });
     },
@@ -95,18 +104,20 @@ export function ApprovalDetail() {
   });
 
   const rejectMutation = useMutation({
-    mutationFn: () => approvalsApi.reject(approvalId!),
+    mutationFn: () => approvalsApi.reject(approvalId!, decisionNoteArg()),
     onSuccess: () => {
       setError(null);
+      setDecisionNote("");
       refresh();
     },
     onError: (err) => setError(err instanceof Error ? err.message : "Reject failed"),
   });
 
   const revisionMutation = useMutation({
-    mutationFn: () => approvalsApi.requestRevision(approvalId!),
+    mutationFn: () => approvalsApi.requestRevision(approvalId!, decisionNoteArg()),
     onSuccess: () => {
       setError(null);
+      setDecisionNote("");
       refresh();
     },
     onError: (err) => setError(err instanceof Error ? err.message : "Revision request failed"),
@@ -257,6 +268,19 @@ export function ApprovalDetail() {
             </div>
             <p className="text-[11px] text-muted-foreground mt-2">
               Linked tasks remain open until the requesting agent follows up and closes them.
+            </p>
+          </div>
+        )}
+        {isActionable && !isBudgetApproval && (
+          <div className="space-y-1">
+            <Textarea
+              value={decisionNote}
+              onChange={(e) => setDecisionNote(e.target.value)}
+              placeholder="Optional note for the requesting agent (sent with your decision)…"
+              rows={2}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              The agent that requested this approval is woken with your decision and this note in context.
             </p>
           </div>
         )}

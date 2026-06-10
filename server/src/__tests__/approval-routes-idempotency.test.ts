@@ -348,3 +348,164 @@ describe("approval routes idempotent retries", () => {
     );
   });
 });
+
+// TON-2324 / GH #7784: board replies (decisions + comments) must wake the
+// requesting agent with the reply text in context.
+describe("approval reply wakes the requesting agent", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../routes/approvals.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.clearAllMocks();
+    mockApprovalService.getById.mockReset();
+    mockApprovalService.approve.mockReset();
+    mockApprovalService.reject.mockReset();
+    mockApprovalService.requestRevision.mockReset();
+    mockApprovalService.addComment.mockReset();
+    mockHeartbeatService.wakeup.mockReset();
+    mockIssueApprovalService.listIssuesForApproval.mockReset();
+    mockLogActivity.mockReset();
+    mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
+    mockLogActivity.mockResolvedValue(undefined);
+  });
+
+  it("forwards the decision note into the wake context on approve", async () => {
+    const approval = {
+      id: "approval-1",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "approved",
+      payload: {},
+      requestedByAgentId: "agent-1",
+      decisionNote: "Looks good — ship it",
+    };
+    mockApprovalService.getById.mockResolvedValue({ ...approval, status: "pending" });
+    mockApprovalService.approve.mockResolvedValue({ approval, applied: true });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-1/approve")
+      .send({ decisionNote: "Looks good — ship it" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({
+        reason: "approval_approved",
+        payload: expect.objectContaining({ note: "Looks good — ship it", approvalId: "approval-1" }),
+        contextSnapshot: expect.objectContaining({
+          wakeReason: "approval_approved",
+          note: "Looks good — ship it",
+        }),
+      }),
+    );
+  });
+
+  it("wakes the requester with the note on reject", async () => {
+    const approval = {
+      id: "approval-2",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "rejected",
+      payload: {},
+      requestedByAgentId: "agent-1",
+      decisionNote: "Not now — revisit next sprint",
+    };
+    mockApprovalService.getById.mockResolvedValue({ ...approval, status: "pending" });
+    mockApprovalService.reject.mockResolvedValue({ approval, applied: true });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-2/reject")
+      .send({ decisionNote: "Not now — revisit next sprint" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({
+        reason: "approval_rejected",
+        contextSnapshot: expect.objectContaining({
+          wakeReason: "approval_rejected",
+          note: "Not now — revisit next sprint",
+        }),
+      }),
+    );
+  });
+
+  it("wakes the requester on request-revision", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-3",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+    mockApprovalService.requestRevision.mockResolvedValue({
+      id: "approval-3",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "revision_requested",
+      payload: {},
+      requestedByAgentId: "agent-1",
+      decisionNote: "Tighten the scope",
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-3/request-revision")
+      .send({ decisionNote: "Tighten the scope" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({ reason: "approval_revision_requested" }),
+    );
+  });
+
+  it("wakes the requester when the board comments", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-4",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+    mockApprovalService.addComment.mockResolvedValue({ id: "comment-9", body: "Can you clarify the cost?" });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-4/comments")
+      .send({ body: "Can you clarify the cost?" });
+
+    expect(res.status).toBe(201);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({
+        reason: "approval_commented",
+        payload: expect.objectContaining({ commentId: "comment-9", note: "Can you clarify the cost?" }),
+      }),
+    );
+  });
+
+  it("does not wake the requester on its own comment", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-5",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+    mockApprovalService.addComment.mockResolvedValue({ id: "comment-10", body: "Following up here." });
+
+    const res = await request(await createAgentApp())
+      .post("/api/approvals/approval-5/comments")
+      .send({ body: "Following up here." });
+
+    expect(res.status).toBe(201);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+});
