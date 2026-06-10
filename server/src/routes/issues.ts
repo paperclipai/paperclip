@@ -152,6 +152,10 @@ const promoteLowTrustOutputSchema = z.object({
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
 type IssueRouteSnapshot = typeof issueRows.$inferSelect;
+type ReviewHandoffRepairTarget = {
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+};
 type RecoveryRevalidationTrigger =
   | "issue_update"
   | "comment"
@@ -1725,6 +1729,83 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  function reviewHandoffRepairTargetForPatch(
+    body: Record<string, unknown>,
+    issue: {
+      status: string;
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+      executionState?: unknown;
+    },
+  ): ReviewHandoffRepairTarget | null {
+    if (issue.status !== "in_review" || issue.assigneeUserId) return null;
+    const allowedKeys = new Set(["assigneeAgentId", "assigneeUserId", "comment", "status"]);
+    if (Object.keys(body).some((key) => !allowedKeys.has(key))) return null;
+    if (body.status !== undefined && body.status !== "in_review") return null;
+
+    const state = parseIssueExecutionState(issue.executionState);
+    const participant = state?.status === "pending" ? state.currentParticipant : null;
+    if (!participant) return null;
+
+    if (participant.type === "agent" && participant.agentId) {
+      if (issue.assigneeAgentId === participant.agentId) return null;
+      if (body.assigneeAgentId !== participant.agentId) return null;
+      if (body.assigneeUserId !== undefined && body.assigneeUserId !== null) return null;
+      return { assigneeAgentId: participant.agentId, assigneeUserId: null };
+    }
+
+    if (participant.type === "user" && participant.userId) {
+      if (body.assigneeUserId !== participant.userId) return null;
+      if (body.assigneeAgentId !== undefined && body.assigneeAgentId !== null) return null;
+      return { assigneeAgentId: null, assigneeUserId: participant.userId };
+    }
+
+    return null;
+  }
+
+  async function hasReviewHandoffRepairAssignmentAuthority(
+    req: Request,
+    issue: {
+      id: string;
+      companyId: string;
+      projectId: string | null;
+      parentId: string | null;
+    },
+    target: ReviewHandoffRepairTarget,
+  ) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId: issue.companyId,
+        issueId: issue.id,
+        projectId: issue.projectId,
+        parentIssueId: issue.parentId,
+        assigneeAgentId: target.assigneeAgentId,
+        assigneeUserId: target.assigneeUserId,
+      },
+      scope: {
+        issueId: issue.id,
+        projectId: issue.projectId,
+        parentIssueId: issue.parentId,
+        assigneeAgentId: target.assigneeAgentId,
+        assigneeUserId: target.assigneeUserId,
+      },
+    });
+    return decision;
+  }
+
+  function isAgentHumanOwnedAssigneeTakeover(
+    req: Request,
+    issue: { assigneeUserId: string | null },
+    body: Record<string, unknown>,
+  ) {
+    if (req.actor.type !== "agent" || !issue.assigneeUserId) return false;
+    if (typeof body.assigneeAgentId === "string" && body.assigneeAgentId.trim().length > 0) return true;
+    return body.assigneeUserId !== undefined && body.assigneeUserId !== issue.assigneeUserId;
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
@@ -1736,7 +1817,9 @@ export function issueRoutes(
       status: string;
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
+      executionState?: unknown;
     },
+    options?: { reviewHandoffRepairTarget?: ReviewHandoffRepairTarget | null },
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1755,6 +1838,25 @@ export function issueRoutes(
     if (issue.assigneeAgentId !== actorAgentId) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
+      }
+      if (options?.reviewHandoffRepairTarget) {
+        const decision = await hasReviewHandoffRepairAssignmentAuthority(
+          req,
+          issue,
+          options.reviewHandoffRepairTarget,
+        );
+        if (decision.allowed) return true;
+        res.status(403).json({
+          error: decision.explanation,
+          details: {
+            issueId: issue.id,
+            assigneeAgentId: issue.assigneeAgentId,
+            actorAgentId,
+            status: issue.status,
+            reviewHandoffRepair: true,
+          },
+        });
+        return false;
       }
       if (issue.status === "in_progress") {
         res.status(409).json({
@@ -4658,7 +4760,12 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (isAgentHumanOwnedAssigneeTakeover(req, existing, req.body)) {
+      res.status(403).json({ error: "Agent cannot reassign a human-owned issue" });
+      return;
+    }
+    const reviewHandoffRepairTarget = reviewHandoffRepairTargetForPatch(req.body, existing);
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, { reviewHandoffRepairTarget }))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);

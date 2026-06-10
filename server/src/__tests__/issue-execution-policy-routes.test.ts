@@ -337,6 +337,8 @@ describe("issue execution policy routes", () => {
       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       expect.objectContaining({
         status: "in_review",
+        assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+        assigneeUserId: null,
         executionState: expect.objectContaining({
           status: "pending",
           currentParticipant: expect.objectContaining({
