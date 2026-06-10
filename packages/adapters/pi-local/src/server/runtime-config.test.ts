@@ -143,7 +143,7 @@ describe("preparePiRuntimeConfig", () => {
     });
     expect(prepared.env.PI_CODING_AGENT_DIR).toBeUndefined();
     expect(prepared.notes).toEqual([
-      "PAPERCLIP_PI_PROVIDERS contains invalid JSON; custom Pi providers ignored.",
+      "PAPERCLIP_PI_PROVIDERS contains invalid JSON; custom providers ignored.",
     ]);
     await prepared.cleanup();
   });
@@ -155,7 +155,7 @@ describe("preparePiRuntimeConfig", () => {
     expect(prepared.env.PI_CODING_AGENT_DIR).toBeUndefined();
     expect(prepared.agentConfigDir).toBeNull();
     expect(prepared.notes).toEqual([
-      "PAPERCLIP_PI_PROVIDERS is set but contains no provider objects (skipped non-object value(s): tensorix); custom Pi providers ignored.",
+      "PAPERCLIP_PI_PROVIDERS: skipped provider(s) with non-object values: tensorix.",
     ]);
     await prepared.cleanup();
   });
@@ -190,7 +190,7 @@ describe("preparePiRuntimeConfig", () => {
     });
     expect(prepared.env.PI_CODING_AGENT_DIR).toBeUndefined();
     expect(prepared.notes).toEqual([
-      "PAPERCLIP_PI_PROVIDERS contains invalid JSON; custom Pi providers ignored.",
+      "PAPERCLIP_PI_PROVIDERS contains invalid JSON; custom providers ignored.",
     ]);
     await prepared.cleanup();
   });
@@ -200,28 +200,28 @@ describe("preparePiRuntimeConfig", () => {
       env: { PAPERCLIP_PI_PROVIDERS: "[1,2]" },
     });
     expect(prepared.notes).toEqual([
-      "PAPERCLIP_PI_PROVIDERS is set but is not a JSON object; custom Pi providers ignored.",
+      "PAPERCLIP_PI_PROVIDERS is set but is not a JSON object; custom providers ignored.",
     ]);
     await prepared.cleanup();
   });
 
-  it("surfaces a note when PAPERCLIP_PI_PROVIDERS has no provider objects", async () => {
+  it("surfaces the skipped entries when no provider objects remain", async () => {
     const prepared = await preparePiRuntimeConfig({
       env: { PAPERCLIP_PI_PROVIDERS: '{"a": 1}' },
     });
+    expect(prepared.env.PI_CODING_AGENT_DIR).toBeUndefined();
     expect(prepared.notes).toEqual([
-      "PAPERCLIP_PI_PROVIDERS is set but contains no provider objects (skipped non-object value(s): a); custom Pi providers ignored.",
+      "PAPERCLIP_PI_PROVIDERS: skipped provider(s) with non-object values: a.",
     ]);
     await prepared.cleanup();
   });
 
-  it("keeps the empty-object case note free of skipped names", async () => {
+  it("stays silent when PAPERCLIP_PI_PROVIDERS is an empty object", async () => {
     const prepared = await preparePiRuntimeConfig({
       env: { PAPERCLIP_PI_PROVIDERS: "{}" },
     });
-    expect(prepared.notes).toEqual([
-      "PAPERCLIP_PI_PROVIDERS is set but contains no provider objects; custom Pi providers ignored.",
-    ]);
+    expect(prepared.env.PI_CODING_AGENT_DIR).toBeUndefined();
+    expect(prepared.notes).toEqual([]);
     await prepared.cleanup();
   });
 });

@@ -50,7 +50,7 @@ function parseProviderConfig(
   raw: unknown,
   resolveEnv: (name: string) => string | undefined,
 ): ParsedProviderConfig {
-  // Unset/empty is the normal "feature off" case: no warning.
+  // Unset/empty (or an empty JSON object) is the normal "feature off" case: no warning.
   if (typeof raw !== "string" || raw.trim().length === 0) {
     return { providers: null, warning: null };
   }
@@ -62,7 +62,7 @@ function parseProviderConfig(
     if (!isPlainObject(parsed)) {
       return {
         providers: null,
-        warning: "PAPERCLIP_PI_PROVIDERS is set but is not a JSON object; custom Pi providers ignored.",
+        warning: "PAPERCLIP_PI_PROVIDERS is set but is not a JSON object; custom providers ignored.",
       };
     }
     // Only keep provider entries that are themselves objects; surface the ones
@@ -73,16 +73,8 @@ function parseProviderConfig(
       if (isPlainObject(value)) providers[key] = expandEnvPlaceholders(value, resolveEnv);
       else skipped.push(key);
     }
-    if (Object.keys(providers).length === 0) {
-      return {
-        providers: null,
-        warning: skipped.length > 0
-          ? `PAPERCLIP_PI_PROVIDERS is set but contains no provider objects (skipped non-object value(s): ${skipped.join(", ")}); custom Pi providers ignored.`
-          : "PAPERCLIP_PI_PROVIDERS is set but contains no provider objects; custom Pi providers ignored.",
-      };
-    }
     return {
-      providers,
+      providers: Object.keys(providers).length > 0 ? providers : null,
       warning: skipped.length > 0
         ? `PAPERCLIP_PI_PROVIDERS: skipped provider(s) with non-object values: ${skipped.join(", ")}.`
         : null,
@@ -90,7 +82,7 @@ function parseProviderConfig(
   } catch {
     return {
       providers: null,
-      warning: "PAPERCLIP_PI_PROVIDERS contains invalid JSON; custom Pi providers ignored.",
+      warning: "PAPERCLIP_PI_PROVIDERS contains invalid JSON; custom providers ignored.",
     };
   }
 }
