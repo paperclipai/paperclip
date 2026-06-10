@@ -9915,6 +9915,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       enrichedContextSnapshot.projectId = projectId;
     }
 
+    // Background wakes must not target finished work (#7841). Stale wakes for
+    // a done/cancelled issue — comment retries, recovery sweeps, re-queues
+    // after a governor-driven cancellation — make the system busy-loop on
+    // work that is already over, and combined with #7840 can pull a
+    // completed issue back into execution. Humans can still wake an agent
+    // about a closed issue explicitly (requestedByActorType === "user").
+    if (issueId && opts.requestedByActorType !== "user") {
+      const issueIdIsUuid = isUuidLike(issueId);
+      const terminalMatch = issueIdIsUuid
+        ? or(eq(issues.id, issueId), eq(issues.identifier, issueId.toUpperCase()))
+        : eq(issues.identifier, issueId.toUpperCase());
+      const issueStatusRow = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.companyId, agent.companyId), terminalMatch))
+        .then((rows) => rows[0] ?? null);
+      if (issueStatusRow && (issueStatusRow.status === "done" || issueStatusRow.status === "cancelled")) {
+        await writeSkippedRequest("issue.terminal_status", {
+          error: `Wake suppressed because issue status is ${issueStatusRow.status}`,
+        });
+        return null;
+      }
+    }
+
     const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
       issueId,
       projectId,
