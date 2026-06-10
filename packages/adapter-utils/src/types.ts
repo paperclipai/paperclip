@@ -498,6 +498,12 @@ export interface CreateConfigValues {
   runtimeServicesJson?: string;
   defaultEnvironmentId?: string;
   maxTurnsPerRun: number;
+  /**
+   * Optional codex recovery fallback agent id. When set, recovery ownership for
+   * transient-upstream failures fails over to this agent instead of the legacy
+   * manager/creator/executive selection. Empty/unset preserves legacy behavior.
+   */
+  recoveryFallbackAgentId?: string;
   heartbeatEnabled: boolean;
   intervalSec: number;
   /** Arbitrary key-value pairs populated by schema-driven config fields. */

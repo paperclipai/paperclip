@@ -95,5 +95,8 @@ export function buildClaudeLocalConfig(v: CreateConfigValues): Record<string, un
   }
   if (v.command) ac.command = v.command;
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
+  if (v.recoveryFallbackAgentId && v.recoveryFallbackAgentId.trim()) {
+    ac.recoveryFallbackAgentId = v.recoveryFallbackAgentId.trim();
+  }
   return ac;
 }
