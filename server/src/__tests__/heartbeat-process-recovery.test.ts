@@ -597,6 +597,21 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         }),
       }),
     ]);
+
+    const secondResult = await recovery.reconcileStalledIssueThreadInteractions({
+      now: new Date("2026-05-15T20:22:00.000Z"),
+      thresholdMs: 10 * 60 * 1000,
+    });
+
+    expect(secondResult).toMatchObject({
+      scanned: 1,
+      operatorRouted: 0,
+      agentWoken: 0,
+      skipped: 1,
+      interactionIds: [interactionId],
+      issueIds: [issueId],
+    });
+    await expect(db.select().from(activityLog).where(eq(activityLog.entityId, issueId))).resolves.toHaveLength(1);
   });
 
   it("skips self-created pending interactions when recent external unblock evidence is in flight", async () => {

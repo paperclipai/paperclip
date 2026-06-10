@@ -10,6 +10,7 @@ import {
 import {
   agents,
   agentWakeupRequests,
+  activityLog,
   approvals,
   companies,
   issueComments,
@@ -496,6 +497,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => Boolean(rows[0]));
   }
 
+  async function hasLoggedOperatorWaitingInteraction(companyId: string, issueId: string, interactionId: string) {
+    return db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          eq(activityLog.action, "issue.thread_interaction_operator_waiting"),
+          sql`${activityLog.details}->>'interactionId' = ${interactionId}`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
   async function hasRecentExternalUnblockEvidence(input: {
     companyId: string;
     issueId: string;
@@ -611,6 +629,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (isOperatorResolvedInteractionKind(interaction.kind)) {
+        if (await hasLoggedOperatorWaitingInteraction(interaction.companyId, interaction.issueId, interaction.id)) {
+          result.skipped += 1;
+          continue;
+        }
         result.operatorRouted += 1;
         await logActivity(db, {
           companyId: interaction.companyId,

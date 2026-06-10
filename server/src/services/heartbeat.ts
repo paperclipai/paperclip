@@ -2117,8 +2117,26 @@ async function collectCppBoardEscalationWakeContext(input: {
     .from(issues)
     .where(and(eq(issues.companyId, input.companyId), inArray(issues.id, Array.from(relatedIssueIds))));
 
-  const queue = sourceIssueRows.map((issue) => issue.parentId).filter((id): id is string => Boolean(id));
+  const initialParentIds = Array.from(
+    new Set(sourceIssueRows.map((issue) => issue.parentId).filter((id): id is string => Boolean(id))),
+  ).filter((id) => !relatedIssueIds.has(id));
   const seenParents = new Set<string>();
+  const queue: string[] = [];
+  if (initialParentIds.length > 0) {
+    const parentRows = await input.db
+      .select({
+        id: issues.id,
+        parentId: issues.parentId,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, input.companyId), inArray(issues.id, initialParentIds)));
+    for (const parent of parentRows) {
+      if (seenParents.size >= 6 || seenParents.has(parent.id) || relatedIssueIds.has(parent.id)) continue;
+      seenParents.add(parent.id);
+      relatedIssueIds.add(parent.id);
+      if (parent.parentId) queue.push(parent.parentId);
+    }
+  }
   while (queue.length > 0 && seenParents.size < 6) {
     const parentId = queue.shift();
     if (!parentId || seenParents.has(parentId) || relatedIssueIds.has(parentId)) continue;

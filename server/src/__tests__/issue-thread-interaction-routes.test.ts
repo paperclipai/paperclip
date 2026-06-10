@@ -343,6 +343,16 @@ describe.sequential("issue thread interaction routes", () => {
     });
   });
 
+  it("rejects unknown company interaction statuses", async () => {
+    const app = await createApp();
+
+    const res = await request(app).get("/api/companies/company-1/interactions?status=foo&limit=100");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Invalid status value");
+    expect(mockInteractionService.listForCompany).not.toHaveBeenCalled();
+  });
+
   it("rejects company interaction enumeration across company boundaries", async () => {
     const app = await createApp({
       type: "agent",

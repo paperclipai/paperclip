@@ -112,6 +112,7 @@ import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const MAX_COMPANY_INTERACTION_LIMIT = 500;
+const COMPANY_INTERACTION_STATUSES = new Set(["pending", "accepted", "rejected", "answered", "cancelled"]);
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -1569,6 +1570,12 @@ export function issueRoutes(
       typeof req.query.status === "string" && req.query.status.trim().length > 0
         ? req.query.status.trim()
         : null;
+    if (status && !COMPANY_INTERACTION_STATUSES.has(status)) {
+      res.status(400).json({
+        error: `Invalid status value. Allowed: ${Array.from(COMPANY_INTERACTION_STATUSES).join(", ")}`,
+      });
+      return;
+    }
     const limitRaw =
       typeof req.query.limit === "string" && req.query.limit.trim().length > 0
         ? Number(req.query.limit)
