@@ -318,7 +318,15 @@ function mergeAdapterRecoveryMetadata(input: {
       : {}),
   };
 }
-const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set(["approval_approved"]);
+const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
+  "approval_approved",
+  // TON-2324 / GH #7784: board replies must survive a mid-run wake — if the
+  // requesting agent is already executing when the board rejects, requests a
+  // revision, or comments, queue a follow-up so the reply is not dropped.
+  "approval_rejected",
+  "approval_revision_requested",
+  "approval_commented",
+]);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
