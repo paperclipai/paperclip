@@ -40,6 +40,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   parseCodexJsonl,
+  hasCodexTerminalTurn,
   extractCodexRetryNotBefore,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
@@ -676,6 +677,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     sessionHandoffChars: sessionHandoffNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };
+  const terminalResultCleanupGraceMs = Math.max(0, asNumber(config.terminalResultCleanupGraceMs, 5_000));
 
   const runAttempt = async (resumeSessionId: string | null) => {
     const execArgs = buildCodexExecArgs(
@@ -723,6 +725,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         if (!cleaned.trim()) return;
         await onLog(stream, cleaned);
       },
+      terminalResultCleanup: {
+        graceMs: terminalResultCleanupGraceMs,
+        hasTerminalResult: ({ stdout }) => hasCodexTerminalTurn(stdout),
+      },
     });
     const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
     return {
@@ -769,13 +775,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       } as Record<string, unknown>)
       : null;
     const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
+    const turnStatus = attempt.parsed.turnStatus;
+    const terminalTurnFailed = turnStatus === "failed";
+    const processFailed = (attempt.proc.exitCode ?? 0) !== 0;
     const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
     const fallbackErrorMessage =
       parsedError ||
       stderrLine ||
       `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
     const transientRetryNotBefore =
-      (attempt.proc.exitCode ?? 0) !== 0
+      processFailed
         ? extractCodexRetryNotBefore({
             stdout: attempt.proc.stdout,
             stderr: attempt.proc.stderr,
@@ -783,21 +792,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           })
         : null;
     const transientUpstream =
-      (attempt.proc.exitCode ?? 0) !== 0 &&
+      processFailed &&
       isCodexTransientUpstreamError({
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
         errorMessage: fallbackErrorMessage,
       });
+    const resolvedErrorMessage = (processFailed || terminalTurnFailed)
+      ? fallbackErrorMessage
+      : null;
 
     return {
       exitCode: attempt.proc.exitCode,
       signal: attempt.proc.signal,
       timedOut: false,
-      errorMessage:
-        (attempt.proc.exitCode ?? 0) === 0
-          ? null
-          : fallbackErrorMessage,
+      errorMessage: resolvedErrorMessage,
       errorCode:
         transientUpstream
           ? "codex_transient_upstream"
@@ -816,6 +825,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
+        ...(turnStatus ? { turnStatus } : {}),
         ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
         ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
         ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
@@ -830,7 +840,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (
       sessionId &&
       !initial.proc.timedOut &&
-      (initial.proc.exitCode ?? 0) !== 0 &&
+      ((initial.proc.exitCode ?? 0) !== 0 || initial.parsed.turnStatus === "failed") &&
       isCodexUnknownSessionError(initial.proc.stdout, initial.rawStderr)
     ) {
       await onLog(

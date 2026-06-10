@@ -11,10 +11,13 @@ const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
 const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 
+export type CodexTurnStatus = "completed" | "failed";
+
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
   let finalMessage: string | null = null;
   let errorMessage: string | null = null;
+  let turnStatus: CodexTurnStatus | null = null;
   const usage = {
     inputTokens: 0,
     cachedInputTokens: 0,
@@ -54,6 +57,7 @@ export function parseCodexJsonl(stdout: string) {
       usage.inputTokens = asNumber(usageObj.input_tokens, usage.inputTokens);
       usage.cachedInputTokens = asNumber(usageObj.cached_input_tokens, usage.cachedInputTokens);
       usage.outputTokens = asNumber(usageObj.output_tokens, usage.outputTokens);
+      turnStatus = "completed";
       continue;
     }
 
@@ -61,6 +65,7 @@ export function parseCodexJsonl(stdout: string) {
       const err = parseObject(event.error);
       const msg = asString(err.message, "").trim();
       if (msg) errorMessage = msg;
+      turnStatus = "failed";
     }
   }
 
@@ -69,7 +74,23 @@ export function parseCodexJsonl(stdout: string) {
     summary: finalMessage?.trim() ?? "",
     usage,
     errorMessage,
+    turnStatus,
   };
+}
+
+export function hasCodexTerminalTurn(stdout: string): boolean {
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const event = parseJson(line);
+    if (!event) continue;
+
+    const type = asString(event.type, "");
+    if (type === "turn.completed" || type === "turn.failed") return true;
+  }
+
+  return false;
 }
 
 export function isCodexUnknownSessionError(stdout: string, stderr: string): boolean {

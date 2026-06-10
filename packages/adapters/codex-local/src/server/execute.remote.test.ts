@@ -203,6 +203,128 @@ describe("codex remote execution", () => {
     }));
   });
 
+  it("marks the run as failed when Codex emits turn.failed even with exitCode=0", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-local-turn-failed-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const codexHomeDir = path.join(rootDir, "codex-home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(codexHomeDir, { recursive: true });
+    await writeFile(path.join(codexHomeDir, "auth.json"), "{}", "utf8");
+
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: [
+        JSON.stringify({ type: "thread.started", thread_id: "thread_123" }),
+        JSON.stringify({ type: "turn.failed", error: { message: "thread not found" } }),
+      ].join("\n"),
+      stderr: "",
+      pid: 321,
+      startedAt: new Date().toISOString(),
+    });
+
+    const result = await execute({
+      runId: "run-turn-failed",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "CodexCoder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "codex",
+        env: {
+          CODEX_HOME: codexHomeDir,
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(result.errorMessage).toBe("thread not found");
+    expect(result.resultJson).toEqual(expect.objectContaining({
+      turnStatus: "failed",
+    }));
+  });
+
+  it("passes terminal-result cleanup options to process execution", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-terminal-cleanup-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const codexHomeDir = path.join(rootDir, "codex-home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(codexHomeDir, { recursive: true });
+    await writeFile(path.join(codexHomeDir, "auth.json"), "{}", "utf8");
+
+    runChildProcess.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } }),
+      stderr: "",
+      pid: 322,
+      startedAt: new Date().toISOString(),
+    });
+
+    await execute({
+      runId: "run-terminal-cleanup",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "CodexCoder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "codex",
+        terminalResultCleanupGraceMs: 1234,
+        env: {
+          CODEX_HOME: codexHomeDir,
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    const call = runChildProcess.mock.calls[0] as unknown as
+      | [string, string, string[], { terminalResultCleanup?: { graceMs: number; hasTerminalResult: (output: { stdout: string; stderr: string }) => boolean } }]
+      | undefined;
+    expect(call?.[3].terminalResultCleanup?.graceMs).toBe(1234);
+    expect(call?.[3].terminalResultCleanup?.hasTerminalResult({
+      stdout: JSON.stringify({ type: "turn.failed", error: { message: "resume failed" } }),
+      stderr: "",
+    })).toBe(true);
+    expect(call?.[3].terminalResultCleanup?.hasTerminalResult({
+      stdout: JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Working" } }),
+      stderr: "",
+    })).toBe(false);
+  });
+
   it("does not resume saved Codex sessions for remote SSH execution without a matching remote identity", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-remote-resume-"));
     cleanupDirs.push(rootDir);
