@@ -566,7 +566,7 @@ export async function markDuplicate(
       relations: { nodes: Array<{ id: string; type: string; relatedIssue: { id: string } | null }> };
     } | null;
   }>(fetch, token, `
-    query IssueRelations($id: ID!) {
+    query IssueRelations($id: String!) {
       issue(id: $id) {
         relations(first: 50) { nodes { id type relatedIssue { id } } }
       }

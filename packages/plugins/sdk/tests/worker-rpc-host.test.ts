@@ -155,6 +155,110 @@ describe("worker performAction context", () => {
   });
 });
 
+describe("worker issue create forwarding", () => {
+  it("passes linkedLinearIssue through to the host", async () => {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    let nextRequestId = 1;
+    let issueCreateParams: unknown = null;
+
+    const plugin = definePlugin({
+      async setup(ctx) {
+        ctx.actions.register("create-linked", async () => {
+          return ctx.issues.create({
+            companyId: "company-1",
+            title: "Mirror existing Linear issue",
+            linkedLinearIssue: {
+              id: "linear-issue-1",
+              identifier: "BLO-123",
+            },
+          });
+        });
+      },
+    });
+    const worker = startWorkerRpcHost({
+      plugin,
+      stdin: hostToWorker,
+      stdout: workerToHost,
+    });
+
+    function callWorker(method: string, params: unknown) {
+      const id = `host-${nextRequestId++}`;
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(createRequest(method, params, id)));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+        return;
+      }
+
+      if (!isJsonRpcRequest(message)) return;
+      if (message.method !== "issues.create") return;
+
+      issueCreateParams = message.params;
+      hostToWorker.write(serializeMessage(createSuccessResponse(message.id, {
+        id: "paperclip-issue-1",
+        companyId: "company-1",
+        title: "Mirror existing Linear issue",
+        status: "todo",
+        priority: "medium",
+      })));
+    });
+
+    try {
+      await callWorker("initialize", {
+        manifest: {
+          id: "paperclip.linked-linear-forwarding",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Linked Linear Forwarding Test",
+          description: "Test plugin",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: ["issues.create"],
+          entrypoints: {},
+        },
+        config: {},
+        databaseNamespace: null,
+      });
+
+      await callWorker("performAction", {
+        key: "create-linked",
+        params: {},
+      });
+
+      expect(issueCreateParams).toMatchObject({
+        companyId: "company-1",
+        title: "Mirror existing Linear issue",
+        linkedLinearIssue: {
+          id: "linear-issue-1",
+          identifier: "BLO-123",
+        },
+      });
+    } finally {
+      worker.stop();
+      hostReadline.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    }
+  });
+});
+
 describe("worker invocation scope propagation", () => {
   it("keeps overlapping company scopes local to each getData invocation", async () => {
     const hostToWorker = new PassThrough();

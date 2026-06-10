@@ -869,6 +869,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             actorAgentId: input.actor?.actorAgentId,
             actorUserId: input.actor?.actorUserId,
             actorRunId: input.actor?.actorRunId,
+            linkedLinearIssue: input.linkedLinearIssue,
           });
         },
 

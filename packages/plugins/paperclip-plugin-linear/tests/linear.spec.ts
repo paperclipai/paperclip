@@ -19,6 +19,8 @@ describe("markDuplicate", () => {
     ]);
     const res = await markDuplicate(fetch, "tok", "dupe-id", "keeper-id");
     expect(res).toEqual({ success: true, issueRelationId: "rel-1", alreadyRelated: false });
+    const precheckBody = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(precheckBody.query).toContain("query IssueRelations($id: String!)");
     const mutationBody = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[1][1].body);
     expect(mutationBody.variables).toEqual({
       input: { issueId: "dupe-id", relatedIssueId: "keeper-id", type: "duplicate" },
