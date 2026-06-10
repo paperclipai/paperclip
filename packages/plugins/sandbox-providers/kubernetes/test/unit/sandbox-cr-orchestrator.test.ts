@@ -109,12 +109,12 @@ describe("findPodForSandbox", () => {
     expect(clients.core.listNamespacedPod).not.toHaveBeenCalled();
   });
 
-  it("falls back to pod listing when status.podName is absent", async () => {
+  it("falls back to pod listing scoped by the unique sandbox-name label", async () => {
     const get = vi.fn().mockResolvedValue(makeCr("Pending")); // no podName
     const list = vi.fn().mockResolvedValue({
       items: [
         {
-          metadata: { name: "pc-abc-001", labels: { "paperclip.io/managed-by": "paperclip-k8s-plugin" } },
+          metadata: { name: "pc-abc-001", labels: { "agents.x-k8s.io/sandbox-name": "pc-abc" } },
           status: { phase: "Running" },
         },
       ],
@@ -124,8 +124,29 @@ describe("findPodForSandbox", () => {
       core: { listNamespacedPod: list },
     };
     const podName = await findPodForSandbox(clients as never, "ns", "pc-abc");
-    // name starts with "pc-abc" → matched by prefix heuristic
+    expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({ labelSelector: "agents.x-k8s.io/sandbox-name=pc-abc" }),
+    );
     expect(podName).toBe("pc-abc-001");
+  });
+
+  it("never matches another sandbox's pod by name prefix", async () => {
+    const get = vi.fn().mockResolvedValue(makeCr("Pending"));
+    const list = vi.fn().mockResolvedValue({
+      items: [
+        {
+          // Same name prefix, different sandbox label: must NOT match.
+          metadata: { name: "pc-abc-zzz", labels: { "agents.x-k8s.io/sandbox-name": "pc-abc-zzz" } },
+          status: { phase: "Running" },
+        },
+      ],
+    });
+    const clients = {
+      custom: { getNamespacedCustomObject: get },
+      core: { listNamespacedPod: list },
+    };
+    const podName = await findPodForSandbox(clients as never, "ns", "pc-abc");
+    expect(podName).toBeNull();
   });
 
   it("returns null when no pod is found in fallback", async () => {

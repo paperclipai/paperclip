@@ -571,6 +571,11 @@ const plugin = definePlugin({
       // declaration for rationale.
       const podAlreadyKnownReady = readySandboxesByLease.has(lease.providerLeaseId);
 
+      // The caller's timeout is a budget for the WHOLE execute call: readiness
+      // wait + exec must share it, or the first exec on a fresh lease could
+      // block for up to twice the requested timeout.
+      const executeStartedAt = Date.now();
+
       if (!podAlreadyKnownReady) {
         try {
           await sandboxCrOrchestrator.waitForCompletion(
@@ -712,6 +717,14 @@ const plugin = definePlugin({
       // partial behaviour.
       const execCommand = wrapCommandWithEnv(baseExecCommand, params.env);
 
+      // Remaining share of the caller's budget after the readiness wait (floor
+      // of 5s so an exec attempt is still made when readiness consumed most of
+      // it; the watchdog then bounds it tightly).
+      const remainingTimeoutMs = Math.max(
+        5_000,
+        effectiveTimeoutMs - (Date.now() - executeStartedAt),
+      );
+
       let execResult: { exitCode: number; stdout: string; stderr: string };
       try {
         execResult = await execInPod(
@@ -721,7 +734,7 @@ const plugin = definePlugin({
           "agent",
           execCommand,
           typeof params.stdin === "string" ? params.stdin : undefined,
-          effectiveTimeoutMs,
+          remainingTimeoutMs,
         );
       } catch (err) {
         // Watchdog-fired or WebSocket-setup error. Surface as a timeout so

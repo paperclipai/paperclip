@@ -152,11 +152,13 @@ export async function findPodForSandbox(
     return podName;
   }
 
-  // Fallback: list pods with sandbox-name label (sandbox controller typically
-  // labels pods with the sandbox name)
+  // Fallback: list pods by the controller's sandbox-name label, which uniquely
+  // identifies the pod for THIS sandbox. A broader managed-by selector plus
+  // name-prefix narrowing could match a concurrent sandbox whose generated
+  // name shares a prefix, and exec would target the wrong lease's pod.
   const result = await clients.core.listNamespacedPod({
     namespace,
-    labelSelector: `paperclip.io/managed-by=paperclip-k8s-plugin`,
+    labelSelector: `agents.x-k8s.io/sandbox-name=${name}`,
   });
   const items =
     (
@@ -170,16 +172,11 @@ export async function findPodForSandbox(
       ).items
     ) ?? [];
 
-  // Filter to pods that belong to this sandbox by name prefix or label
-  const matching = items.filter((p) => {
-    const podMeta = p.metadata ?? {};
-    const labels = podMeta.labels ?? {};
-    // The sandbox controller may label pods differently; try matching by name prefix
-    return (
-      podMeta.name?.startsWith(name) ||
-      labels["agents.x-k8s.io/sandbox-name"] === name
-    );
-  });
+  // The label selector already scopes to exactly this sandbox's pod(s); keep a
+  // defensive re-check on the label value only (no name-prefix matching).
+  const matching = items.filter(
+    (p) => (p.metadata?.labels ?? {})["agents.x-k8s.io/sandbox-name"] === name,
+  );
 
   const running = matching.find((p) => p.status?.phase === "Running");
   return (running ?? matching[0])?.metadata?.name ?? null;
