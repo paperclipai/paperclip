@@ -9,10 +9,12 @@ const mockSecretService = vi.hoisted(() => ({
   listProviders: vi.fn(),
   checkProviders: vi.fn(),
   listProviderConfigs: vi.fn(),
+  previewProviderConfigDiscovery: vi.fn(),
   getProviderConfigById: vi.fn(),
   createProviderConfig: vi.fn(),
   updateProviderConfig: vi.fn(),
   disableProviderConfig: vi.fn(),
+  removeProviderConfig: vi.fn(),
   setDefaultProviderConfig: vi.fn(),
   checkProviderConfigHealth: vi.fn(),
   getById: vi.fn(),
@@ -117,6 +119,22 @@ describe("secret routes", () => {
     expect(mockSecretService.listProviderConfigs).not.toHaveBeenCalled();
   });
 
+  it("rejects provider vault discovery preview for non-board actors", async () => {
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+    }))
+      .post("/api/companies/company-1/secret-provider-configs/discovery/preview")
+      .send({
+        provider: "aws_secrets_manager",
+        config: { region: "us-east-1" },
+      });
+
+    expect(res.status).toBe(403);
+    expect(mockSecretService.previewProviderConfigDiscovery).not.toHaveBeenCalled();
+  });
+
   it("rejects sensitive provider vault config fields", async () => {
     const res = await request(createApp()).post("/api/companies/company-1/secret-provider-configs").send({
       provider: "aws_secrets_manager",
@@ -130,6 +148,92 @@ describe("secret routes", () => {
     expect(res.status).toBe(400);
     expect(JSON.stringify(res.body)).toMatch(/sensitive field/i);
     expect(mockSecretService.createProviderConfig).not.toHaveBeenCalled();
+  });
+
+  it("rejects sensitive provider vault discovery draft config fields", async () => {
+    const res = await request(createApp())
+      .post("/api/companies/company-1/secret-provider-configs/discovery/preview")
+      .send({
+        provider: "aws_secrets_manager",
+        config: {
+          region: "us-east-1",
+          secretAccessKey: "secret",
+        },
+      });
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/sensitive field/i);
+    expect(mockSecretService.previewProviderConfigDiscovery).not.toHaveBeenCalled();
+  });
+
+  it("previews provider vault discovery and logs only aggregate metadata", async () => {
+    mockSecretService.previewProviderConfigDiscovery.mockResolvedValue({
+      provider: "aws_secrets_manager",
+      nextToken: null,
+      sampledSecretCount: 2,
+      skippedForeignPaperclipSampleCount: 0,
+      candidates: [
+        {
+          provider: "aws_secrets_manager",
+          displayName: "AWS production",
+          config: {
+            region: "us-east-1",
+            namespace: "prod-use1",
+            secretNamePrefix: "paperclip",
+            environmentTag: "production",
+            ownerTag: "platform",
+            kmsKeyId: null,
+          },
+          sampleCount: 2,
+          samples: [
+            { name: "paperclip/prod-use1/company-1/openai", hasKmsKey: false, tagKeys: ["environment"] },
+          ],
+          signals: {
+            namespace: "prod-use1",
+            secretNamePrefix: "paperclip",
+            environmentTag: "production",
+            ownerTag: "platform",
+            kmsKeyId: null,
+            hasKmsKey: false,
+            sampleCount: 2,
+            paperclipManagedSampleCount: 0,
+            skippedForeignPaperclipSampleCount: 0,
+          },
+          warnings: [],
+        },
+      ],
+      warnings: [],
+    });
+
+    const res = await request(createApp())
+      .post("/api/companies/company-1/secret-provider-configs/discovery/preview")
+      .send({
+        provider: "aws_secrets_manager",
+        config: { region: "us-east-1" },
+        query: "paperclip",
+        pageSize: 25,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockSecretService.previewProviderConfigDiscovery).toHaveBeenCalledWith("company-1", {
+      provider: "aws_secrets_manager",
+      config: { region: "us-east-1" },
+      query: "paperclip",
+      nextToken: undefined,
+      pageSize: 25,
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "secret_provider_config.discovery_previewed",
+      entityType: "secret_provider_config_discovery",
+      entityId: "company-1",
+      details: {
+        provider: "aws_secrets_manager",
+        candidateCount: 1,
+        sampledSecretCount: 2,
+        warningCount: 0,
+      },
+    }));
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("paperclip/prod-use1/company-1/openai");
   });
 
   it("rejects ready status for coming-soon provider vaults", async () => {
@@ -239,6 +343,48 @@ describe("secret routes", () => {
       },
     }));
     expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("accessKey");
+  });
+
+  it("removes provider vault config locally without deleting remote provider data", async () => {
+    const createdAt = new Date("2026-05-06T00:00:00.000Z");
+    const providerConfig = {
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      provider: "aws_secrets_manager",
+      displayName: "AWS prod",
+      status: "ready",
+      isDefault: false,
+      config: { region: "us-east-1" },
+      healthStatus: null,
+      healthCheckedAt: null,
+      healthMessage: null,
+      healthDetails: null,
+      disabledAt: null,
+      createdByAgentId: null,
+      createdByUserId: "user-1",
+      createdAt,
+      updatedAt: createdAt,
+    };
+    mockSecretService.getProviderConfigById.mockResolvedValue(providerConfig);
+    mockSecretService.removeProviderConfig.mockResolvedValue(providerConfig);
+
+    const res = await request(createApp()).delete(
+      "/api/secret-provider-configs/11111111-1111-4111-8111-111111111111",
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockSecretService.removeProviderConfig).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+    );
+    expect(mockSecretService.disableProviderConfig).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "secret_provider_config.removed",
+      details: {
+        provider: "aws_secrets_manager",
+        displayName: "AWS prod",
+        remoteDeleted: false,
+      },
+    }));
   });
 
   it("rejects remote import preview for non-board actors", async () => {

@@ -138,6 +138,11 @@ vi.mock("@/lib/router", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+// jsdom doesn't implement scrollIntoView; the inbox calls it from a passive effect.
+if (typeof Element !== "undefined" && !Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
+
 function createIssue(overrides: Partial<Issue> = {}): Issue {
   return {
     id: "issue-1",
@@ -284,6 +289,90 @@ describe("Inbox toolbar", () => {
     expect(container.querySelector('button[title="Sort"]')).not.toBeNull();
     expect(container.querySelector('button[title="Enable parent-child nesting"]')).toBeNull();
     expect(container.textContent).not.toContain("Mark all as read");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides workspace grouping when isolated workspaces are disabled", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: false });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+
+    const groupButton = container.querySelector<HTMLButtonElement>('button[title="Group"]');
+    expect(groupButton).not.toBeNull();
+
+    await act(async () => {
+      groupButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const groupOptions = Array.from(document.body.querySelectorAll("button")).map((button) => button.textContent);
+    expect(groupOptions).not.toContain("Workspace");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("syncs hover with j/k selection on inbox rows", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const issueA = createIssue({ id: "issue-a", identifier: "PAP-1001", title: "First inbox row" });
+    const issueB = createIssue({ id: "issue-b", identifier: "PAP-1002", title: "Second inbox row" });
+    apiMocks.issuesList.mockResolvedValue([issueA, issueB]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelectorAll("[data-inbox-item]").length).toBeGreaterThanOrEqual(2);
+    });
+
+    const rows = container.querySelectorAll("[data-inbox-item]");
+
+    const linkOf = (row: Element): HTMLAnchorElement | null =>
+      row.querySelector("a[data-inbox-issue-link]");
+
+    // Nothing selected before hover — both rows show the hover-accent class.
+    expect(linkOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
+    expect(linkOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
+
+    await act(async () => {
+      rows[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+
+    // After hovering row 1, that row is "selected" — same visual state as j/k selection.
+    expect(linkOf(rows[1]!)?.className).toContain("hover:bg-transparent");
+    expect(linkOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
+
+    await act(async () => {
+      rows[0]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+
+    // Hovering a different row moves the selection to follow the mouse.
+    expect(linkOf(rows[0]!)?.className).toContain("hover:bg-transparent");
+    expect(linkOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
 
     act(() => {
       root.unmount();

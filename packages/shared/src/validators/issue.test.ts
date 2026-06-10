@@ -73,6 +73,25 @@ describe("issue validators", () => {
     ).toBe(false);
   });
 
+  it("allows restored recovery resolutions to return the source issue to todo", () => {
+    expect(
+      resolveIssueRecoveryActionSchema.parse({
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+      }),
+    ).toMatchObject({
+      outcome: "restored",
+      sourceIssueStatus: "todo",
+    });
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "false_positive",
+        sourceIssueStatus: "todo",
+      }).success,
+    ).toBe(false);
+  });
+
   it("allows cancelled recovery resolutions to atomically restore the source issue status", () => {
     expect(
       resolveIssueRecoveryActionSchema.parse({

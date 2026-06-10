@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
+  isClaudePoisonedPreviousMessageIdError,
 } from "./parse.js";
 
 describe("isClaudeTransientUpstreamError", () => {
@@ -93,6 +94,53 @@ describe("isClaudeTransientUpstreamError", () => {
         errorMessage: "Invalid request_error: Unknown parameter 'foo'.",
       }),
     ).toBe(false);
+  });
+
+  it("does not classify poisoned previous_message_id errors as transient", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: {
+          subtype: "success",
+          is_error: true,
+          result: "API Error: 400 diagnostics.previous_message_id: must be the `id` from a prior /v1/messages response (starts with `msg_`)",
+        },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("isClaudePoisonedPreviousMessageIdError", () => {
+  it("detects the previous_message_id 400 error in the result field", () => {
+    expect(
+      isClaudePoisonedPreviousMessageIdError({
+        subtype: "success",
+        is_error: true,
+        result: "API Error: 400 diagnostics.previous_message_id: must be the `id` from a prior /v1/messages response (starts with `msg_`)",
+      }),
+    ).toBe(true);
+  });
+
+  it("detects the error in the errors array", () => {
+    expect(
+      isClaudePoisonedPreviousMessageIdError({
+        is_error: true,
+        result: "",
+        errors: [{ message: "400 diagnostics.previous_message_id: must be the `id` from a prior /v1/messages response (starts with `msg_`)" }],
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false for unrelated errors", () => {
+    expect(
+      isClaudePoisonedPreviousMessageIdError({
+        is_error: true,
+        result: "No conversation found with session id abc-123",
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false for empty parsed result", () => {
+    expect(isClaudePoisonedPreviousMessageIdError({})).toBe(false);
   });
 });
 

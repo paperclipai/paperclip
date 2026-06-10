@@ -52,6 +52,11 @@ export {
   type UpsertSidebarOrderPreference,
 } from "./sidebar-preferences.js";
 export {
+  resourceMembershipStateSchema,
+  updateResourceMembershipSchema,
+  type UpdateResourceMembership,
+} from "./resource-memberships.js";
+export {
   companySkillSourceTypeSchema,
   companySkillTrustLevelSchema,
   companySkillCompatibilitySchema,
@@ -62,6 +67,8 @@ export {
   companySkillUsageAgentSchema,
   companySkillDetailSchema,
   companySkillUpdateStatusSchema,
+  companySkillAuditFindingSchema,
+  companySkillAuditResultSchema,
   companySkillImportSchema,
   companySkillProjectScanRequestSchema,
   companySkillProjectScanSkippedSchema,
@@ -70,11 +77,47 @@ export {
   companySkillCreateSchema,
   companySkillFileDetailSchema,
   companySkillFileUpdateSchema,
+  catalogSkillKindSchema,
+  catalogSkillFileSchema,
+  catalogSkillGitHubSourceSchema,
+  catalogSkillSourceSchema,
+  catalogSkillSchema,
+  catalogSkillListQuerySchema,
+  catalogSkillFileDetailSchema,
+  companySkillInstallCatalogSchema,
+  companySkillInstallCatalogResultSchema,
+  companySkillInstallUpdateSchema,
+  companySkillResetSchema,
   type CompanySkillImport,
   type CompanySkillProjectScan,
   type CompanySkillCreate,
   type CompanySkillFileUpdate,
+  type CatalogSkillListQuery,
+  type CompanySkillInstallCatalog,
+  type CompanySkillInstallUpdate,
+  type CompanySkillReset,
 } from "./company-skill.js";
+export {
+  catalogTeamKindSchema,
+  catalogTeamTrustLevelSchema,
+  catalogTeamCompatibilitySchema,
+  catalogTeamFileKindSchema,
+  catalogTeamSkillRequirementTypeSchema,
+  catalogTeamSkillRequirementSchema,
+  catalogTeamEnvInputSummarySchema,
+  catalogTeamSourceRefSchema,
+  catalogTeamFileSchema,
+  catalogTeamSchema,
+  catalogTeamListQuerySchema,
+  catalogTeamFileDetailSchema,
+  catalogTeamSourcePolicySchema,
+  catalogTeamPreviewSchema,
+  catalogTeamInstallSchema,
+  catalogTeamSkillPreparationSchema,
+  type CatalogTeamListQuery,
+  type CatalogTeamPreview,
+  type CatalogTeamInstall,
+} from "./teams-catalog.js";
 export {
   agentSkillStateSchema,
   agentSkillSyncModeSchema,
@@ -102,6 +145,19 @@ export {
   type CompanyPortabilityPreview,
   type CompanyPortabilityImport,
 } from "./company-portability.js";
+
+export {
+  trustPresetSchema,
+  lowTrustBoundarySchema,
+  lowTrustReviewPresetPolicySchema,
+  trustAuthorizationPolicySchema,
+  sourceTrustArtifactKindSchema,
+  sourceTrustMetadataSchema,
+  type TrustPresetInput,
+  type LowTrustBoundaryInput,
+  type TrustAuthorizationPolicyInput,
+  type SourceTrustMetadataInput,
+} from "./trust-policy.js";
 
 export {
   createAgentSchema,
@@ -148,9 +204,25 @@ export {
 } from "./project.js";
 
 export {
+  createDocumentAnnotationCommentSchema,
+  createDocumentAnnotationThreadSchema,
+  documentAnnotationAnchorConfidenceSchema,
+  documentAnnotationAnchorSelectorSchema,
+  documentAnnotationAnchorStateSchema,
+  documentAnnotationTextPositionSelectorSchema,
+  documentAnnotationTextQuoteSelectorSchema,
+  documentAnnotationThreadStatusSchema,
+  updateDocumentAnnotationThreadSchema,
+  type CreateDocumentAnnotationComment,
+  type CreateDocumentAnnotationThread,
+  type UpdateDocumentAnnotationThread,
+} from "./document-annotation.js";
+
+export {
   createIssueSchema,
   createIssueInputSchema,
   createChildIssueSchema,
+  createAcceptedPlanDecompositionSchema,
   resolveCreateIssueStatusDefault,
   createIssueLabelSchema,
   issueBlockedInboxAttentionSchema,
@@ -189,6 +261,9 @@ export {
   requestConfirmationTargetSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
+  requestCheckboxConfirmationOptionSchema,
+  requestCheckboxConfirmationPayloadSchema,
+  requestCheckboxConfirmationResultSchema,
   createIssueThreadInteractionSchema,
   acceptIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
@@ -202,6 +277,7 @@ export {
   restoreIssueDocumentRevisionSchema,
   type CreateIssue,
   type CreateChildIssue,
+  type CreateAcceptedPlanDecomposition,
   type CreateIssueLabel,
   type UpdateIssue,
   type IssueExecutionWorkspaceSettings,
@@ -244,13 +320,30 @@ export {
 
 export {
   createIssueWorkProductSchema,
+  issueWorkProductMetadataSchema,
   updateIssueWorkProductSchema,
+  attachmentArtifactWorkProductMetadataSchema,
   issueWorkProductTypeSchema,
   issueWorkProductStatusSchema,
   issueWorkProductReviewStateSchema,
   type CreateIssueWorkProduct,
+  type IssueWorkProductMetadata,
   type UpdateIssueWorkProduct,
 } from "./work-product.js";
+
+export {
+  COMPANY_ARTIFACTS_DEFAULT_LIMIT,
+  COMPANY_ARTIFACTS_MAX_LIMIT,
+  COMPANY_ARTIFACTS_MAX_QUERY_LENGTH,
+  companyArtifactGroupBySchema,
+  companyArtifactGroupSchema,
+  companyArtifactMediaKindSchema,
+  companyArtifactSchema,
+  companyArtifactSourceSchema,
+  companyArtifactsQuerySchema,
+  companyArtifactsResponseSchema,
+  type CompanyArtifactsQuery,
+} from "./artifact.js";
 
 export {
   executionWorkspaceConfigSchema,
@@ -264,6 +357,21 @@ export {
   executionWorkspaceCloseReadinessStateSchema,
   type UpdateExecutionWorkspace,
 } from "./execution-workspace.js";
+
+export {
+  resolvedWorkspaceResourceSchema,
+  workspaceFileListModeSchema,
+  workspaceFileListQuerySchema,
+  workspaceFileContentSchema,
+  workspaceFilePreviewKindSchema,
+  workspaceFileRefSchema,
+  workspaceFileResourceKindSchema,
+  workspaceFileResourceQuerySchema,
+  workspaceFileSelectorSchema,
+  workspaceFileWorkspaceKindSchema,
+  type WorkspaceFileListQuery,
+  type WorkspaceFileResourceQuery,
+} from "./workspace-file-resource.js";
 
 export {
   createGoalSchema,
@@ -293,6 +401,7 @@ export {
   createSecretSchema,
   createSecretProviderConfigSchema,
   updateSecretProviderConfigSchema,
+  secretProviderConfigDiscoveryPreviewSchema,
   remoteSecretImportPreviewSchema,
   remoteSecretImportSchema,
   remoteSecretImportSelectionSchema,
@@ -309,6 +418,7 @@ export {
   type CreateSecret,
   type CreateSecretProviderConfig,
   type UpdateSecretProviderConfig,
+  type SecretProviderConfigDiscoveryPreview,
   type RemoteSecretImportPreview,
   type RemoteSecretImport,
   type RemoteSecretImportSelection,
@@ -363,6 +473,7 @@ export {
   boardCliAuthAccessLevelSchema,
   createCliAuthChallengeSchema,
   resolveCliAuthChallengeSchema,
+  createBoardApiKeySchema,
   currentUserProfileSchema,
   authSessionSchema,
   updateCurrentUserProfileSchema,
@@ -381,6 +492,7 @@ export {
   type BoardCliAuthAccessLevel,
   type CreateCliAuthChallenge,
   type ResolveCliAuthChallenge,
+  type CreateBoardApiKey,
   type CurrentUserProfile,
   type AuthSession,
   type UpdateCurrentUserProfile,

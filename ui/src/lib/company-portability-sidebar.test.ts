@@ -46,6 +46,7 @@ function makeProject(id: string, name: string): Project {
     leadAgentId: null,
     targetDate: null,
     color: null,
+    icon: null,
     env: null,
     pauseReason: null,
     pausedAt: null,

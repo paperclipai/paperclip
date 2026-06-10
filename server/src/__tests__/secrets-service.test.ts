@@ -205,6 +205,156 @@ describeEmbeddedPostgres("secretService", () => {
     expect(JSON.stringify(events)).not.toContain("runtime-secret");
   });
 
+  it("denies runtime secret resolution outside the low-trust binding allowlist", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `low-trust-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    const env = {
+      API_KEY: { type: "secret_ref" as const, secretId: secret.id, version: "latest" as const },
+    };
+
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "agent", targetId: "agent-1" }, env);
+    const [binding] = await svc.listBindings(companyId, secret.id);
+    expect(binding?.id).toBeTruthy();
+
+    await expect(
+      svc.resolveEnvBindings(companyId, env, {
+        consumerType: "agent",
+        consumerId: "agent-1",
+        actorType: "agent",
+        actorId: "agent-1",
+        allowedBindingIds: ["11111111-1111-4111-8111-111111111111"],
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: { code: "binding_not_allowed" },
+    });
+
+    const resolved = await svc.resolveEnvBindings(companyId, env, {
+      consumerType: "agent",
+      consumerId: "agent-1",
+      actorType: "agent",
+      actorId: "agent-1",
+      allowedBindingIds: [binding!.id],
+    });
+    expect(resolved.env.API_KEY).toBe("runtime-secret");
+    expect(resolved.manifest[0]?.bindingId).toBe(binding!.id);
+  });
+
+  it("resolves routine env secret refs through routine bindings and records value-free access metadata", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `routine-secret-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "routine-super-secret",
+    });
+    const env = {
+      ROUTINE_API_KEY: { type: "secret_ref" as const, secretId: secret.id, version: "latest" as const },
+    };
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "routine", targetId: "routine-1" }, env);
+
+    const resolved = await svc.resolveEnvBindings(companyId, env, {
+      consumerType: "routine",
+      consumerId: "routine-1",
+      actorType: "agent",
+      actorId: "agent-1",
+    });
+
+    expect(resolved.env.ROUTINE_API_KEY).toBe("routine-super-secret");
+    expect(resolved.manifest).toEqual([
+      expect.objectContaining({
+        configPath: "env.ROUTINE_API_KEY",
+        envKey: "ROUTINE_API_KEY",
+        secretId: secret.id,
+        outcome: "success",
+      }),
+    ]);
+
+    const events = await svc.listAccessEvents(companyId, secret.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      companyId,
+      secretId: secret.id,
+      consumerType: "routine",
+      consumerId: "routine-1",
+      configPath: "env.ROUTINE_API_KEY",
+      actorType: "agent",
+      actorId: "agent-1",
+      outcome: "success",
+    });
+    expect(JSON.stringify(events)).not.toContain("routine-super-secret");
+  });
+
+  it("records stable redacted failure codes for routine env secret resolution", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `routine-failure-codes-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "routine-super-secret",
+    });
+    const env = {
+      ROUTINE_API_KEY: { type: "secret_ref" as const, secretId: secret.id, version: "latest" as const },
+    };
+    const context = {
+      consumerType: "routine" as const,
+      consumerId: "routine-1",
+      actorType: "agent" as const,
+      actorId: "agent-1",
+    };
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "routine", targetId: "routine-1" }, env);
+
+    await expect(
+      svc.resolveEnvBindings(companyId, env, { ...context, consumerId: "routine-2" }),
+    ).rejects.toThrow(/not bound/i);
+
+    await db.update(companySecrets).set({ status: "disabled" }).where(eq(companySecrets.id, secret.id));
+    await expect(svc.resolveEnvBindings(companyId, env, context)).rejects.toThrow(/not active/i);
+
+    await db.update(companySecrets).set({ status: "active" }).where(eq(companySecrets.id, secret.id));
+    await expect(
+      svc.resolveSecretValue(companyId, secret.id, 999, {
+        ...context,
+        configPath: "env.ROUTINE_API_KEY",
+      }),
+    ).rejects.toThrow(/version not found/i);
+
+    await db
+      .update(companySecretVersions)
+      .set({ status: "disabled" })
+      .where(eq(companySecretVersions.secretId, secret.id));
+    await expect(svc.resolveEnvBindings(companyId, env, context)).rejects.toThrow(/version is not active/i);
+
+    await db
+      .update(companySecretVersions)
+      .set({ status: "current" })
+      .where(eq(companySecretVersions.secretId, secret.id));
+    vi.spyOn(localEncryptedProvider, "resolveVersion").mockRejectedValueOnce(
+      new Error("provider leaked value routine-super-secret"),
+    );
+    await expect(svc.resolveEnvBindings(companyId, env, context)).rejects.toThrow(/provider leaked value/i);
+
+    await db.update(companySecrets).set({ status: "deleted" }).where(eq(companySecrets.id, secret.id));
+    await expect(svc.resolveEnvBindings(companyId, env, context)).rejects.toThrow(/not found/i);
+
+    const events = await svc.listAccessEvents(companyId, secret.id);
+    expect(events.map((event) => event.errorCode).sort()).toEqual([
+      "binding_missing",
+      "provider_error",
+      "secret_deleted",
+      "secret_inactive",
+      "version_inactive",
+      "version_missing",
+    ]);
+    expect(JSON.stringify(events)).not.toContain("routine-super-secret");
+    expect(JSON.stringify(events)).not.toContain("provider leaked value");
+  });
+
   it("scopes env binding sync deletes to the env path prefix", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
@@ -380,6 +530,35 @@ describeEmbeddedPostgres("secretService", () => {
     await expect(svc.setDefaultProviderConfig(vault.id)).rejects.toThrow(
       /ready or warning/i,
     );
+  });
+
+  it("removes provider vault config locally without deleting remote AWS secrets", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const vault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const secret = await svc.create(companyId, {
+      name: `external-${randomUUID()}`,
+      provider: "aws_secrets_manager",
+      providerConfigId: vault.id,
+      managedMode: "external_reference",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/external",
+    });
+    const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+
+    const removed = await svc.removeProviderConfig(vault.id);
+
+    expect(removed?.id).toBe(vault.id);
+    await expect(svc.getProviderConfigById(vault.id)).resolves.toBeNull();
+    const [persistedSecret] = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.id, secret.id));
+    expect(persistedSecret?.providerConfigId).toBeNull();
+    expect(deleteSpy).not.toHaveBeenCalled();
   });
 
   it("hides soft-deleted secrets and allows name/key reuse", async () => {
@@ -1083,6 +1262,111 @@ describeEmbeddedPostgres("secretService", () => {
     let thrown: unknown;
     try {
       await svc.previewRemoteImport(companyId, { providerConfigId: awsVault.id });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({
+      status: 403,
+      message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+      details: { code: "access_denied" },
+    });
+    expect(JSON.stringify(thrown)).not.toContain("arn:aws");
+    expect(JSON.stringify(thrown)).not.toContain("123456789012");
+    expect(thrown instanceof Error ? thrown.message : String(thrown)).not.toContain("arn:aws");
+  });
+
+  it("previews AWS provider vault discovery from draft config without persisting a provider vault", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const discoverSpy = vi.spyOn(awsSecretsManagerProvider, "discoverProviderConfigs").mockResolvedValue({
+      provider: "aws_secrets_manager",
+      nextToken: null,
+      sampledSecretCount: 1,
+      skippedForeignPaperclipSampleCount: 0,
+      candidates: [
+        {
+          provider: "aws_secrets_manager",
+          displayName: "AWS production",
+          config: {
+            region: "us-east-1",
+            namespace: "prod-use1",
+            secretNamePrefix: "paperclip",
+            kmsKeyId: null,
+            ownerTag: "platform",
+            environmentTag: "production",
+          },
+          sampleCount: 1,
+          samples: [
+            { name: "paperclip/prod-use1/company-1/openai", hasKmsKey: false, tagKeys: ["paperclip:environment"] },
+          ],
+          signals: {
+            namespace: "prod-use1",
+            secretNamePrefix: "paperclip",
+            environmentTag: "production",
+            ownerTag: "platform",
+            kmsKeyId: null,
+            hasKmsKey: false,
+            sampleCount: 1,
+            paperclipManagedSampleCount: 0,
+            skippedForeignPaperclipSampleCount: 0,
+          },
+          warnings: [],
+        },
+      ],
+      warnings: [],
+    });
+
+    const preview = await svc.previewProviderConfigDiscovery(companyId, {
+      provider: "aws_secrets_manager",
+      config: { region: "us-east-1" },
+      query: "openai",
+      pageSize: 25,
+    });
+
+    expect(discoverSpy).toHaveBeenCalledWith({
+      companyId,
+      providerConfig: {
+        id: `discovery-preview-${companyId}`,
+        provider: "aws_secrets_manager",
+        status: "ready",
+        config: { region: "us-east-1" },
+      },
+      query: "openai",
+      nextToken: undefined,
+      pageSize: 25,
+    });
+    expect(preview.candidates[0]?.config).toMatchObject({
+      region: "us-east-1",
+      namespace: "prod-use1",
+    });
+    expect(JSON.stringify(preview)).not.toContain("runtime-secret");
+    const persistedVaults = await db.select().from(companySecretProviderConfigs);
+    expect(persistedVaults).toHaveLength(0);
+  });
+
+  it("sanitizes AWS provider vault discovery errors before crossing the service boundary", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const rawProviderMessage =
+      "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized to perform secretsmanager:ListSecrets";
+
+    vi.spyOn(awsSecretsManagerProvider, "discoverProviderConfigs").mockRejectedValueOnce(
+      new SecretProviderClientError({
+        code: "access_denied",
+        provider: "aws_secrets_manager",
+        operation: "discoverProviderConfigs",
+        message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+        rawMessage: rawProviderMessage,
+      }),
+    );
+
+    let thrown: unknown;
+    try {
+      await svc.previewProviderConfigDiscovery(companyId, {
+        provider: "aws_secrets_manager",
+        config: { region: "us-east-1" },
+      });
     } catch (error) {
       thrown = error;
     }

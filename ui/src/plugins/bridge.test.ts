@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import * as React from "react";
 import * as ReactDOM from "react-dom";
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -23,6 +23,7 @@ import {
   type PluginBridgeContextValue,
 } from "./bridge";
 import { initPluginBridge } from "./bridge-init";
+import { _createReactShimSourceForTests } from "./slots";
 
 function clickEvent(
   overrides: Partial<ReactMouseEvent<HTMLAnchorElement>> = {},
@@ -45,6 +46,10 @@ afterEach(() => {
   delete globalThis.__paperclipPluginBridge__;
 });
 
+function act(callback: () => void) {
+  flushSync(callback);
+}
+
 describe("plugin host navigation", () => {
   it("resolves plugin page routes into the active company prefix", () => {
     expect(resolveHostNavigationHref("/wiki", "PAP")).toBe("/PAP/wiki");
@@ -56,8 +61,14 @@ describe("plugin host navigation", () => {
   it("does not double-prefix active company paths or global host paths", () => {
     expect(resolveHostNavigationHref("/PAP/wiki", "PAP")).toBe("/PAP/wiki");
     expect(resolveHostNavigationHref("/pap/wiki", "PAP")).toBe("/pap/wiki");
+  });
+
+  it("rewrites legacy instance settings paths into the active company settings scope", () => {
     expect(resolveHostNavigationHref("/instance/settings/plugins", "PAP")).toBe(
-      "/instance/settings/plugins",
+      "/PAP/company/settings/instance/plugins",
+    );
+    expect(resolveHostNavigationHref("/settings/experimental?x=1#auto", "pap")).toBe(
+      "/PAP/company/settings/instance/experimental?x=1#auto",
     );
   });
 
@@ -302,5 +313,23 @@ describe("plugin SDK markdown component bridge", () => {
     expect(renderToStaticMarkup(React.createElement(SdkManagedRoutinesList, {
       routines: [{ key: "lint", title: "Run lint", status: "active" }],
     }))).toContain("Run lint");
+  });
+});
+
+describe("plugin React shim", () => {
+  it("re-exports every named export from the host React module", () => {
+    const source = _createReactShimSourceForTests(React);
+
+    for (const name of Object.keys(React).sort()) {
+      if (name === "default") continue;
+      if (!/^[A-Za-z_$][\w$]*$/.test(name)) continue;
+      expect(source).toContain(`export const ${name} = R.${name};`);
+    }
+
+    expect(source).toContain("export default R;");
+    expect(source).toContain("export const useInsertionEffect = R.useInsertionEffect;");
+    expect(source).toContain("export const useId = R.useId;");
+    expect(source).toContain("export const useSyncExternalStore = R.useSyncExternalStore;");
+    expect(source).toContain("export const startTransition = R.startTransition;");
   });
 });

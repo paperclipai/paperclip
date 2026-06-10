@@ -28,6 +28,7 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "issue.released": "released",
   "issue.comment_added": "commented on",
   "issue.comment_cancelled": "cancelled a queued comment on",
+  "issue.comment_deleted": "deleted a comment on",
   "issue.attachment_added": "attached file to",
   "issue.attachment_removed": "removed attachment from",
   "issue.document_created": "created document for",
@@ -48,6 +49,7 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "issue.successful_run_handoff_required": "flagged missing next step on",
   "issue.successful_run_handoff_resolved": "recorded next step chosen on",
   "issue.successful_run_handoff_escalated": "escalated missing next step on",
+  "issue.accepted_plan_decomposition_updated": "updated accepted-plan decomposition on",
   "issue.recovery_action_opened": "opened a recovery action on",
   "issue.recovery_action_resolved": "resolved the recovery action on",
   "issue.recovery_action_escalated": "escalated the recovery action on",
@@ -55,12 +57,15 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "agent.updated": "updated",
   "agent.paused": "paused",
   "agent.resumed": "resumed",
+  "agent.error_cleared": "cleared error on",
   "agent.terminated": "terminated",
   "agent.key_created": "created API key for",
   "agent.budget_updated": "updated budget for",
   "agent.runtime_session_reset": "reset session for",
   "heartbeat.invoked": "invoked heartbeat for",
   "heartbeat.cancelled": "cancelled heartbeat for",
+  "heartbeat.output_stale_source_resolved": "system-folded stale run on",
+  "heartbeat.output_stale_recovery_recursion_refused": "refused recovery-on-recovery for",
   "approval.created": "requested approval",
   "approval.approved": "approved",
   "approval.rejected": "rejected",
@@ -75,6 +80,7 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "company.created": "created company",
   "company.updated": "updated company",
   "company.archived": "archived",
+  "company.reactivated": "reactivated",
   "company.budget_updated": "updated budget for",
 };
 
@@ -85,6 +91,7 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "issue.released": "released the issue",
   "issue.comment_added": "added a comment",
   "issue.comment_cancelled": "cancelled a queued comment",
+  "issue.comment_deleted": "deleted a comment",
   "issue.feedback_vote_saved": "saved feedback on an AI output",
   "issue.attachment_added": "added an attachment",
   "issue.attachment_removed": "removed an attachment",
@@ -108,13 +115,17 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "issue.recovery_action_opened": "Opened a source-scoped recovery action",
   "issue.recovery_action_resolved": "Resolved the recovery action",
   "issue.recovery_action_escalated": "Escalated the recovery action",
+  "issue.accepted_plan_decomposition_updated": "updated the accepted-plan decomposition",
   "agent.created": "created an agent",
   "agent.updated": "updated the agent",
   "agent.paused": "paused the agent",
   "agent.resumed": "resumed the agent",
+  "agent.error_cleared": "cleared the agent error",
   "agent.terminated": "terminated the agent",
   "heartbeat.invoked": "invoked a heartbeat",
   "heartbeat.cancelled": "cancelled a heartbeat",
+  "heartbeat.output_stale_source_resolved": "System folded a stale run",
+  "heartbeat.output_stale_recovery_recursion_refused": "Refused recovery-on-recovery escalation",
   "approval.created": "requested approval",
   "approval.approved": "approved",
   "approval.rejected": "rejected",
@@ -172,7 +183,7 @@ function formatIssueReferenceLabel(reference: ActivityIssueReference): string {
   if (reference.identifier) return reference.identifier;
   if (reference.title) return reference.title;
   if (reference.id) return reference.id.slice(0, 8);
-  return "issue";
+  return "task";
 }
 
 function formatChangedEntityLabel(
@@ -183,6 +194,34 @@ function formatChangedEntityLabel(
   if (labels.length <= 0) return plural;
   if (labels.length === 1) return `${singular} ${labels[0]}`;
   return `${labels.length} ${plural}`;
+}
+
+function readNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return null;
+}
+
+function readStringArrayLength(value: unknown): number {
+  if (!Array.isArray(value)) return 0;
+  return value.filter((entry) => typeof entry === "string" && entry.length > 0).length;
+}
+
+function formatAcceptedPlanDecompositionDetail(details: ActivityDetails): string | null {
+  if (!details) return null;
+  const status = typeof details.status === "string" ? details.status : null;
+  const requested = readNumber(details.requestedChildCount);
+  const totalChildren = readStringArrayLength(details.childIssueIds);
+  const newlyCreated = readStringArrayLength(details.newlyCreatedChildIssueIds);
+  const reused = Math.max(0, totalChildren - newlyCreated);
+  const parts: string[] = [];
+  if (newlyCreated > 0) parts.push(`created ${newlyCreated} new`);
+  if (reused > 0) parts.push(`reused ${reused} existing`);
+  if (parts.length === 0 && requested !== null) parts.push(`${requested} requested`);
+  const summary = parts.length > 0 ? parts.join(", ") : null;
+  if (status === "completed" && summary) return `decomposition completed (${summary})`;
+  if (status === "completed") return "decomposition completed";
+  if (status === "in_flight" && summary) return `decomposition in flight (${summary})`;
+  return summary;
 }
 
 function formatIssueUpdatedVerb(details: ActivityDetails): string | null {
@@ -239,7 +278,7 @@ function formatIssueUpdatedAction(details: ActivityDetails, options: ActivityFor
   }
   if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
     const assigneeName = formatAssigneeName(details, options);
-    parts.push(assigneeName ? `assigned the issue to ${assigneeName}` : "unassigned the issue");
+    parts.push(assigneeName ? `assigned the task to ${assigneeName}` : "unassigned the task");
   }
   if (details.title !== undefined) parts.push("updated the title");
   if (details.description !== undefined) parts.push("updated the description");
@@ -327,6 +366,11 @@ export function formatIssueActivityAction(
     forIssueDetail: true,
   });
   if (structuredChange) return structuredChange;
+
+  if (action === "issue.accepted_plan_decomposition_updated") {
+    const detail = formatAcceptedPlanDecompositionDetail(details);
+    if (detail) return detail;
+  }
 
   if (action.startsWith("issue.monitor_") && details) {
     const serviceName = typeof details.serviceName === "string" && details.serviceName.trim()

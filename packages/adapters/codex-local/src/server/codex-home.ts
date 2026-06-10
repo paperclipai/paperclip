@@ -45,11 +45,31 @@ async function ensureParentDir(target: string): Promise<void> {
   await fs.mkdir(path.dirname(target), { recursive: true });
 }
 
+async function isExpectedSymlink(target: string, source: string): Promise<boolean> {
+  const existing = await fs.lstat(target).catch(() => null);
+  if (!existing?.isSymbolicLink()) return false;
+
+  const linkedPath = await fs.readlink(target).catch(() => null);
+  if (!linkedPath) return false;
+
+  return path.resolve(path.dirname(target), linkedPath) === path.resolve(source);
+}
+
+async function createExpectedSymlink(target: string, source: string): Promise<void> {
+  try {
+    await fs.symlink(source, target);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST" && await isExpectedSymlink(target, source)) return;
+    throw error;
+  }
+}
+
 async function ensureSymlink(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
     await ensureParentDir(target);
-    await fs.symlink(source, target);
+    await createExpectedSymlink(target, source);
     return;
   }
 
@@ -57,14 +77,10 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
     return;
   }
 
-  const linkedPath = await fs.readlink(target).catch(() => null);
-  if (!linkedPath) return;
-
-  const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
-  if (resolvedLinkedPath === source) return;
+  if (await isExpectedSymlink(target, source)) return;
 
   await fs.unlink(target);
-  await fs.symlink(source, target);
+  await createExpectedSymlink(target, source);
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {

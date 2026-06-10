@@ -1,6 +1,6 @@
 import { createHash, createHmac } from "node:crypto";
 import { S3Client } from "@aws-sdk/client-s3";
-import type { DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentMode, SecretProviderConfigDiscoveryPreviewResult } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 import type {
   PreparedSecretVersion,
@@ -24,6 +24,8 @@ const DEFAULT_DELETE_RECOVERY_WINDOW_DAYS = 30;
 const AWS_SECRETS_MANAGER_REQUEST_TIMEOUT_MS = 30_000;
 const AWS_CREDENTIAL_CACHE_TTL_MS = 5 * 60_000;
 const AWS_CREDENTIAL_EXPIRATION_SKEW_MS = 60_000;
+const PROVIDER_CONFIG_DISCOVERY_SAMPLE_LIMIT = 3;
+const PROVIDER_CONFIG_DISCOVERY_CANDIDATE_LIMIT = 6;
 const AWS_RUNTIME_CREDENTIAL_WARNING =
   "AWS bootstrap credentials must be available to the Paperclip server runtime through the AWS SDK default credential provider chain: IAM role/workload identity, AWS_PROFILE/SSO/shared credentials, web identity, container/instance metadata, or short-lived shell credentials.";
 const AWS_CREDENTIAL_CUSTODY_WARNING =
@@ -590,6 +592,234 @@ function createRemoteSecretMetadata(entry: AwsSecretsManagerListSecretEntry): Re
   };
 }
 
+function tagValue(tags: Map<string, string>, keys: string[]) {
+  for (const key of keys) {
+    const value = tags.get(key.toLowerCase());
+    if (value) return value;
+  }
+  return null;
+}
+
+function normalizeAwsTags(tags: AwsSecretsManagerTag[] | undefined) {
+  const normalized = new Map<string, string>();
+  for (const tag of tags ?? []) {
+    const key = tag.Key?.trim();
+    const value = tag.Value?.trim();
+    if (key && value) normalized.set(key.toLowerCase(), value);
+  }
+  return normalized;
+}
+
+function commonValue(values: Array<string | null | undefined>) {
+  const nonEmpty = values.filter((value): value is string => Boolean(value?.trim()));
+  if (nonEmpty.length === 0) return null;
+  const first = nonEmpty[0];
+  return nonEmpty.every((value) => value === first) ? first : null;
+}
+
+function uniqueValues(values: Array<string | null | undefined>) {
+  return [...new Set(values.filter((value): value is string => Boolean(value?.trim())))];
+}
+
+function pathSegments(name: string) {
+  return name.split("/").map((segment) => segment.trim()).filter(Boolean);
+}
+
+function inferPathSignals(entry: AwsSecretsManagerListSecretEntry, tags: Map<string, string>) {
+  const name = entry.Name?.trim() || entry.ARN?.trim() || "";
+  const segments = pathSegments(name);
+  const paperclipDeploymentId = tagValue(tags, ["paperclip:deployment-id"]);
+  const paperclipManaged = tagValue(tags, ["paperclip:managed-by"])?.toLowerCase() === "paperclip";
+
+  if (paperclipDeploymentId || paperclipManaged) {
+    return {
+      prefix: segments[0] ?? DEFAULT_PREFIX,
+      namespace: paperclipDeploymentId ?? segments[1] ?? null,
+    };
+  }
+
+  if (segments.length >= 3) {
+    return {
+      prefix: segments[0] ?? null,
+      namespace: segments[1] ?? null,
+    };
+  }
+
+  return {
+    prefix: segments[0] ?? null,
+    namespace: null,
+  };
+}
+
+function discoveryDisplayName(input: {
+  environmentTag: string | null;
+  ownerTag: string | null;
+  namespace: string | null;
+  secretNamePrefix: string | null;
+}) {
+  const qualifier =
+    input.environmentTag ??
+    input.namespace ??
+    input.secretNamePrefix ??
+    input.ownerTag ??
+    "discovered";
+  return `AWS ${qualifier}`;
+}
+
+function discoverAwsProviderConfigCandidates(input: {
+  companyId: string;
+  config: AwsSecretsManagerConfig;
+  draftConfig: Record<string, unknown>;
+  entries: AwsSecretsManagerListSecretEntry[];
+  nextToken: string | null;
+}): SecretProviderConfigDiscoveryPreviewResult {
+  type DiscoverySample = {
+    entry: AwsSecretsManagerListSecretEntry;
+    name: string;
+    tags: Map<string, string>;
+    prefix: string | null;
+    namespace: string | null;
+    environmentTag: string | null;
+    ownerTag: string | null;
+    kmsKeyId: string | null;
+    paperclipManaged: boolean;
+    paperclipCompanyId: string | null;
+  };
+
+  const skippedWarnings: string[] = [];
+  let skippedForeignPaperclipSampleCount = 0;
+  const samples: DiscoverySample[] = [];
+
+  for (const entry of input.entries) {
+    const name = entry.Name?.trim() || entry.ARN?.trim();
+    if (!name) continue;
+    const tags = normalizeAwsTags(entry.Tags);
+    const paperclipManaged = tagValue(tags, ["paperclip:managed-by"])?.toLowerCase() === "paperclip";
+    const paperclipCompanyId = tagValue(tags, ["paperclip:company-id"]);
+    if (paperclipManaged && paperclipCompanyId !== input.companyId) {
+      skippedForeignPaperclipSampleCount += 1;
+      continue;
+    }
+    const path = inferPathSignals(entry, tags);
+    samples.push({
+      entry,
+      name,
+      tags,
+      prefix: path.prefix,
+      namespace: path.namespace,
+      environmentTag: tagValue(tags, ["paperclip:environment", "environment", "env", "stage"]),
+      ownerTag: tagValue(tags, ["paperclip:provider-owner", "owner", "team", "service", "application"]),
+      kmsKeyId: asOptionalNonEmptyString(entry.KmsKeyId),
+      paperclipManaged,
+      paperclipCompanyId,
+    });
+  }
+
+  if (skippedForeignPaperclipSampleCount > 0) {
+    skippedWarnings.push(
+      `Skipped ${skippedForeignPaperclipSampleCount} Paperclip-managed AWS secret sample(s) that were not tagged for this company.`,
+    );
+  }
+
+  const draftNamespace = asOptionalNonEmptyString(input.draftConfig.namespace);
+  const draftPrefix = asOptionalNonEmptyString(input.draftConfig.secretNamePrefix);
+  const draftKmsKeyId = asOptionalNonEmptyString(input.draftConfig.kmsKeyId);
+  const draftEnvironmentTag = asOptionalNonEmptyString(input.draftConfig.environmentTag);
+  const draftOwnerTag = asOptionalNonEmptyString(input.draftConfig.ownerTag);
+  const groups = new Map<string, DiscoverySample[]>();
+
+  for (const sample of samples) {
+    const key = [
+      draftPrefix ?? sample.prefix ?? "",
+      draftNamespace ?? sample.namespace ?? "",
+    ].join("\0");
+    groups.set(key, [...(groups.get(key) ?? []), sample]);
+  }
+
+  const candidates = [...groups.values()]
+    .sort((a, b) => b.length - a.length)
+    .slice(0, PROVIDER_CONFIG_DISCOVERY_CANDIDATE_LIMIT)
+    .map((group) => {
+      const prefix = draftPrefix ?? commonValue(group.map((sample) => sample.prefix)) ?? input.config.prefix;
+      const namespace = draftNamespace ?? commonValue(group.map((sample) => sample.namespace)) ?? null;
+      const environmentTag = draftEnvironmentTag ?? commonValue(group.map((sample) => sample.environmentTag));
+      const ownerTag = draftOwnerTag ?? commonValue(group.map((sample) => sample.ownerTag));
+      const kmsKeys = uniqueValues(group.map((sample) => sample.kmsKeyId));
+      const commonKmsKey = commonValue(group.map((sample) => sample.kmsKeyId));
+      const kmsKeyId = draftKmsKeyId ?? commonKmsKey;
+      const candidateWarnings: string[] = [];
+
+      if (!namespace) {
+        candidateWarnings.push("No stable namespace signal was found in the sampled AWS secret names or tags.");
+      }
+      if (!environmentTag) {
+        candidateWarnings.push("No common environment tag was found in the sampled AWS secrets.");
+      }
+      if (!ownerTag) {
+        candidateWarnings.push("No common owner/team tag was found in the sampled AWS secrets.");
+      }
+      if (kmsKeys.length > 1 && !draftKmsKeyId) {
+        candidateWarnings.push("Sampled AWS secrets use multiple KMS keys; choose the intended KMS key before saving.");
+      }
+      if (group.some((sample) => sample.paperclipManaged && sample.paperclipCompanyId === input.companyId)) {
+        candidateWarnings.push("Sample includes Paperclip-managed secrets for this company; do not import them as external references.");
+      }
+
+      return {
+        provider: "aws_secrets_manager" as const,
+        displayName: discoveryDisplayName({
+          environmentTag,
+          ownerTag,
+          namespace,
+          secretNamePrefix: prefix,
+        }),
+        config: {
+          region: input.config.region,
+          namespace,
+          secretNamePrefix: prefix,
+          kmsKeyId: kmsKeyId ?? null,
+          ownerTag,
+          environmentTag,
+        },
+        sampleCount: group.length,
+        samples: group.slice(0, PROVIDER_CONFIG_DISCOVERY_SAMPLE_LIMIT).map((sample) => ({
+          name: sample.name,
+          hasKmsKey: Boolean(sample.kmsKeyId),
+          tagKeys: [...sample.tags.keys()].sort(),
+        })),
+        signals: {
+          namespace,
+          secretNamePrefix: prefix,
+          environmentTag,
+          ownerTag,
+          kmsKeyId: kmsKeyId ?? null,
+          hasKmsKey: kmsKeys.length > 0,
+          sampleCount: group.length,
+          paperclipManagedSampleCount: group.filter((sample) => sample.paperclipManaged).length,
+          skippedForeignPaperclipSampleCount,
+        },
+        warnings: candidateWarnings,
+      };
+    });
+
+  const warnings = [...skippedWarnings];
+  if (samples.length === 0) {
+    warnings.push("AWS Secrets Manager returned no metadata samples for this draft provider vault config.");
+  }
+  if (groups.size > PROVIDER_CONFIG_DISCOVERY_CANDIDATE_LIMIT) {
+    warnings.push("Additional AWS secret name groups were omitted from this preview; refine the query to inspect them.");
+  }
+
+  return {
+    provider: "aws_secrets_manager",
+    nextToken: input.nextToken,
+    sampledSecretCount: samples.length,
+    skippedForeignPaperclipSampleCount,
+    candidates,
+    warnings,
+  };
+}
+
 function asAwsSecretsManagerMaterial(value: StoredSecretVersionMaterial): AwsSecretsManagerMaterial {
   if (
     value &&
@@ -981,6 +1211,36 @@ export function createAwsSecretsManagerProvider(
         };
       } catch (error) {
         normalizeAwsError("listSecrets", error);
+      }
+    },
+    async discoverProviderConfigs(input): Promise<SecretProviderConfigDiscoveryPreviewResult> {
+      const config = resolveConfig(input.providerConfig);
+      const gateway = resolveGateway(config);
+      const query = input.query?.trim();
+      const pageSize =
+        input.pageSize && Number.isFinite(input.pageSize)
+          ? Math.min(Math.max(Math.trunc(input.pageSize), 1), 100)
+          : 100;
+
+      try {
+        if (!gateway.listSecrets) {
+          throw new Error("ListSecrets gateway operation is unavailable");
+        }
+        const listed = await gateway.listSecrets({
+          MaxResults: pageSize,
+          NextToken: input.nextToken?.trim() || undefined,
+          IncludePlannedDeletion: false,
+          Filters: query ? [{ Key: "all", Values: [query] }] : undefined,
+        });
+        return discoverAwsProviderConfigCandidates({
+          companyId: input.companyId,
+          config,
+          draftConfig: input.providerConfig.config,
+          entries: listed.SecretList ?? [],
+          nextToken: listed.NextToken ?? null,
+        });
+      } catch (error) {
+        normalizeAwsError("discoverProviderConfigs", error);
       }
     },
     async resolveVersion(input) {
