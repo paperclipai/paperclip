@@ -255,6 +255,72 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     return { companyId, managerId, coderId, issueId, runId, issuePrefix };
   }
 
+  async function seedInvokableIssue() {
+    const companyId = randomUUID();
+    const managerId = randomUUID();
+    const coderId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `W${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Watchdog Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: managerId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: coderId,
+        companyId,
+        name: "Coder",
+        role: "engineer",
+        status: "idle",
+        reportsTo: managerId,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Long running implementation",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+    return { companyId, managerId, coderId, issueId, issuePrefix };
+  }
+
+  async function waitForRun(
+    runId: string,
+    predicate: (run: typeof heartbeatRuns.$inferSelect) => boolean,
+    timeoutMs = 2_000,
+  ) {
+    const deadline = Date.now() + timeoutMs;
+    let latest: typeof heartbeatRuns.$inferSelect | null = null;
+    while (Date.now() < deadline) {
+      latest = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0] ?? null);
+      if (latest && predicate(latest)) return latest;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`Timed out waiting for heartbeat run ${runId}`);
+  }
+
   it("creates one medium-priority evaluation issue for a suspicious silent run", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const { companyId, managerId, runId } = await seedRunningRun({
@@ -313,6 +379,89 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(evaluation?.description).not.toContain("json-secret-value");
     expect(evaluation?.description).not.toContain(leakedJwt);
     expect(evaluation?.description).not.toContain(leakedGithubToken);
+  });
+
+  it("uses lastOutputBytes to read active run-log evidence before finalization", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, coderId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const store = getRunLogStore();
+    const handle = await store.begin({ companyId, agentId: coderId, runId });
+    const logBytes = await store.append(handle, {
+      stream: "stdout",
+      chunk: "boot complete\nready for next command\n",
+      ts: new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS - 60_000).toISOString(),
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        logStore: handle.store,
+        logRef: handle.logRef,
+        logBytes: null,
+        lastOutputAt: new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS - 60_000),
+        lastOutputSeq: 7,
+        lastOutputStream: "stdout",
+        lastOutputBytes: logBytes,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation?.description).toContain("boot complete");
+    expect(evaluation?.description).toContain("ready for next command");
+    expect(evaluation?.description).toContain("- Last output sequence: 7");
+    expect(evaluation?.description).not.toContain("_No run-log tail was available._");
+  });
+
+  it("flushes burst output progress while the active run remains quiet", async () => {
+    let finishAdapterRun: (() => void) | null = null;
+    const logsWritten = new Promise<void>((resolveLogsWritten) => {
+      mockAdapterExecute.mockImplementationOnce(async (input: {
+        onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+      }) => {
+        await input.onLog?.("stdout", "first chunk\n");
+        await input.onLog?.("stdout", "second chunk\n");
+        resolveLogsWritten();
+        await new Promise<void>((resolve) => {
+          finishAdapterRun = resolve;
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Acknowledged stale-run evaluation.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    });
+    const { coderId, issueId } = await seedInvokableIssue();
+    const heartbeat = heartbeatService(db, { activeRunOutputProgressFlushIntervalMs: 25 });
+    const queued = await heartbeat.invoke(coderId, "assignment", { issueId }, "system");
+    expect(queued?.id).toBeTruthy();
+
+    await logsWritten;
+
+    const afterBurst = await waitForRun(queued!.id, (run) => run.status === "running" && (run.lastOutputSeq ?? 0) >= 1);
+    expect(afterBurst.lastOutputBytes ?? 0).toBeGreaterThan(0);
+
+    const afterIdleFlush = await waitForRun(
+      queued!.id,
+      (run) => run.status === "running" && (run.lastOutputSeq ?? 0) >= 2,
+    );
+    expect(afterIdleFlush.lastOutputSeq ?? 0).toBeGreaterThanOrEqual(2);
+    expect(afterIdleFlush.lastOutputBytes ?? 0).toBeGreaterThan(0);
+
+    finishAdapterRun?.();
+    await waitForRun(queued!.id, (run) => run.status === "succeeded");
   });
 
   it("raises critical stale-run evaluations and blocks the source issue", async () => {

@@ -3015,6 +3015,7 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  activeRunOutputProgressFlushIntervalMs?: number;
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
@@ -3045,6 +3046,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
+  const activeRunOutputProgressFlushIntervalMs =
+    options.activeRunOutputProgressFlushIntervalMs ?? ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS;
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
   async function releaseEnvironmentLeasesForRun(input: {
@@ -8526,20 +8529,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let lastOutputFlushAt: Date | null = run.lastOutputAt ?? null;
     const outputProgressState: {
       pending: {
-      at: Date;
-      seq: number;
-      stream: "stdout" | "stderr";
-      bytes: number;
+        at: Date;
+        seq: number;
+        stream: "stdout" | "stderr";
+        bytes: number;
       } | null;
     } = { pending: null };
+    let outputProgressFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    let outputProgressFlushInFlight: Promise<void> | null = null;
     let persistedLogBytes = Number(run.logBytes ?? 0);
+    const clearOutputProgressFlushTimer = () => {
+      if (!outputProgressFlushTimer) return;
+      clearTimeout(outputProgressFlushTimer);
+      outputProgressFlushTimer = null;
+    };
     const flushOutputProgress = async (opts?: { force?: boolean }) => {
       const pendingOutputProgress = outputProgressState.pending;
       if (!pendingOutputProgress) return;
       const shouldFlush =
         opts?.force === true ||
         !lastOutputFlushAt ||
-        pendingOutputProgress.at.getTime() - lastOutputFlushAt.getTime() >= ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS;
+        pendingOutputProgress.at.getTime() - lastOutputFlushAt.getTime() >= activeRunOutputProgressFlushIntervalMs;
       if (!shouldFlush) return;
       await db
         .update(heartbeatRuns)
@@ -8552,7 +8562,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .where(eq(heartbeatRuns.id, run.id));
       lastOutputFlushAt = pendingOutputProgress.at;
-      outputProgressState.pending = null;
+      if (outputProgressState.pending === pendingOutputProgress) {
+        outputProgressState.pending = null;
+      }
+      clearOutputProgressFlushTimer();
+    };
+    const scheduleOutputProgressFlush = () => {
+      if (!outputProgressState.pending || !lastOutputFlushAt) {
+        clearOutputProgressFlushTimer();
+        return;
+      }
+      clearOutputProgressFlushTimer();
+      const flushDelayMs = Math.max(
+        0,
+        activeRunOutputProgressFlushIntervalMs -
+          (outputProgressState.pending.at.getTime() - lastOutputFlushAt.getTime()),
+      );
+      outputProgressFlushTimer = setTimeout(() => {
+        outputProgressFlushTimer = null;
+        outputProgressFlushInFlight = flushOutputProgress({ force: true })
+          .catch((err) => {
+            logger.warn({ err, runId: run.id }, "failed to flush idle run output progress");
+          })
+          .finally(() => {
+            outputProgressFlushInFlight = null;
+            if (outputProgressState.pending) scheduleOutputProgressFlush();
+          });
+      }, flushDelayMs);
+    };
+    const flushPendingOutputProgressBeforeStop = async () => {
+      clearOutputProgressFlushTimer();
+      if (outputProgressFlushInFlight) {
+        await outputProgressFlushInFlight;
+      }
     };
     try {
       const startedAt = run.startedAt ?? new Date();
@@ -8637,6 +8679,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           bytes: persistedLogBytes,
         };
         await flushOutputProgress();
+        scheduleOutputProgressFlush();
 
         const payloadChunk =
           sanitizedChunk.length > MAX_LIVE_LOG_CHUNK_BYTES
@@ -8940,6 +8983,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (handle) {
         logSummary = await runLogStore.finalize(handle);
       }
+      await flushPendingOutputProgressBeforeStop();
       const finalLogBytes = logSummary?.bytes;
       if (outputProgressState.pending && typeof finalLogBytes === "number") {
         outputProgressState.pending.bytes = finalLogBytes;
@@ -9180,6 +9224,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           logger.warn({ err: finalizeErr, runId }, "failed to finalize run log after error");
         }
       }
+      await flushPendingOutputProgressBeforeStop();
       const finalLogBytes = logSummary?.bytes;
       if (outputProgressState.pending && typeof finalLogBytes === "number") {
         outputProgressState.pending.bytes = finalLogBytes;

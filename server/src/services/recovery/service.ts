@@ -893,10 +893,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return `${value.slice(value.length - maxChars)}\n[truncated earlier evidence]`;
   }
 
-  async function readRunLogTailForEvidence(run: typeof heartbeatRuns.$inferSelect) {
-    if (!run.logStore || !run.logRef || !run.logBytes) return "";
+  async function readRunLogTailForEvidence(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "logStore" | "logRef" | "logBytes" | "lastOutputBytes">,
+  ) {
+    const readableBytes =
+      typeof run.logBytes === "number" && run.logBytes > 0
+        ? run.logBytes
+        : typeof run.lastOutputBytes === "number" && run.lastOutputBytes > 0
+          ? run.lastOutputBytes
+          : 0;
+    if (!run.logStore || !run.logRef || readableBytes <= 0) return "";
     try {
-      const offset = Math.max(0, run.logBytes - ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES);
+      const offset = Math.max(0, readableBytes - ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES);
       const result = await runLogStore.read(
         { store: run.logStore as "local_file", logRef: run.logRef },
         { offset, limitBytes: ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES },
