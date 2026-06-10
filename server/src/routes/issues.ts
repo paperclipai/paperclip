@@ -1420,6 +1420,32 @@ export function issueRoutes(
       return;
     }
 
+    // ROC-139 Tier-1 close-gate (Fable 2026-06-09): an AGENT may not self-close (done OR cancelled)
+    // a customer/NPI/live-loan ticket — a human (board user) must sign off. HQ (customer/NPI) board
+    // only; DEV stays ungated. CLOSE_GATE_COMPANIES = CSV of companyIds; empty/unset -> default (fail-closed).
+    {
+      const _gateEnv = (process.env.CLOSE_GATE_COMPANIES ?? "").trim();
+      const _gateList = (_gateEnv || "5c2551e8-cb65-4ab4-9fee-8e0001be2e41")
+        .split(",")
+        .map((c) => c.trim())
+        .filter(Boolean);
+      const _newStatus =
+        typeof updateFields.status === "string" ? updateFields.status.trim().toLowerCase() : updateFields.status;
+      if (
+        req.actor.type === "agent" &&
+        (_newStatus === "done" || _newStatus === "cancelled") &&
+        !isClosedIssueStatus(existing.status) &&
+        _gateList.includes(existing.companyId)
+      ) {
+        res.status(409).json({
+          error:
+            "Tier-1 close-gate: closing a customer/NPI/live-loan ticket requires human sign-off. A board user must close it.",
+          code: "close_gate_human_required",
+        });
+        return;
+      }
+    }
+
     if (interruptRequested) {
       if (!commentBody) {
         res.status(400).json({ error: "Interrupt is only supported when posting a comment" });
