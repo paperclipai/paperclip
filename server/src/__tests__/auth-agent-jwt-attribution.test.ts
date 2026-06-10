@@ -126,4 +126,18 @@ describe("agent JWT actor attribution", () => {
       source: "board_key",
     });
   });
+
+  it("rejects board API keys when x-paperclip-run-id is present", async () => {
+    const res = await request(createApp())
+      .post("/actor")
+      .set("Authorization", "Bearer pcp_board_test")
+      .set("x-paperclip-run-id", runId)
+      .send({ body: "comment" });
+
+    expect(res.status).toBe(200);
+    // In local-trusted mode the default actor is local_implicit, so the
+    // board token should be ignored and the actor should NOT be board_key.
+    expect(res.body.source).not.toBe("board_key");
+    expect(res.body).not.toHaveProperty("keyId");
+  });
 });

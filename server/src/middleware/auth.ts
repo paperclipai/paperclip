@@ -115,25 +115,31 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       }
     }
 
-    const boardKey = await boardAuth.findBoardApiKeyByToken(token);
-    if (boardKey) {
-      const access = await boardAuth.resolveBoardAccess(boardKey.userId);
-      if (access.user) {
-        await boardAuth.touchBoardApiKey(boardKey.id);
-        req.actor = {
-          type: "board",
-          userId: boardKey.userId,
-          userName: access.user?.name ?? null,
-          userEmail: access.user?.email ?? null,
-          companyIds: access.companyIds,
-          memberships: access.memberships,
-          isInstanceAdmin: access.isInstanceAdmin,
-          keyId: boardKey.id,
-          runId: runIdHeader || undefined,
-          source: "board_key",
-        };
-        next();
-        return;
+    // Agent runs (identified by x-paperclip-run-id) must not fall back to
+    // board tokens. They should only authenticate as agents (via JWT or
+    // agent API key) so that write operations are correctly attributed and
+    // restricted to the agent's authorization boundary.
+    if (!runIdHeader) {
+      const boardKey = await boardAuth.findBoardApiKeyByToken(token);
+      if (boardKey) {
+        const access = await boardAuth.resolveBoardAccess(boardKey.userId);
+        if (access.user) {
+          await boardAuth.touchBoardApiKey(boardKey.id);
+          req.actor = {
+            type: "board",
+            userId: boardKey.userId,
+            userName: access.user?.name ?? null,
+            userEmail: access.user?.email ?? null,
+            companyIds: access.companyIds,
+            memberships: access.memberships,
+            isInstanceAdmin: access.isInstanceAdmin,
+            keyId: boardKey.id,
+            runId: runIdHeader || undefined,
+            source: "board_key",
+          };
+          next();
+          return;
+        }
       }
     }
 
