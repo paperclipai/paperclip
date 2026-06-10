@@ -90,6 +90,7 @@ import {
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
+import { assignedIssueTimeoutRetryCooldownSec } from "./assigned-issue-timeout-cooldown.js";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
@@ -6600,7 +6601,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      assignedIssueTimeoutRetryCooldownSec: assignedIssueTimeoutRetryCooldownSec(agent),
     };
+  }
+
+  function shouldApplyAssignedIssueTimeoutCooldown(input: {
+    source: string;
+    reason: string | null;
+    contextSnapshot: Record<string, unknown>;
+  }) {
+    if (input.source !== "assignment") return false;
+    if (input.reason === "startup_issue_reconciliation") return true;
+    return readNonEmptyString(input.contextSnapshot.source) === "startup_reconciliation";
+  }
+
+  async function getRecentIssueTimeoutRun(input: {
+    agentId: string;
+    companyId: string;
+    issueId: string;
+    cooldownSec: number;
+  }) {
+    if (input.cooldownSec <= 0) return null;
+    const cutoff = new Date(Date.now() - input.cooldownSec * 1000);
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        finishedAt: heartbeatRuns.finishedAt,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+          eq(heartbeatRuns.status, "timed_out"),
+          gt(heartbeatRuns.finishedAt, cutoff),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.finishedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
   }
 
   function parseMaxTurnContinuationPolicy(agent: typeof agents.$inferSelect): MaxTurnContinuationPolicy {
@@ -9951,6 +9991,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
+    }
+
+    if (
+      issueId &&
+      shouldApplyAssignedIssueTimeoutCooldown({
+        source,
+        reason,
+        contextSnapshot: enrichedContextSnapshot,
+      })
+    ) {
+      const recentTimeout = await getRecentIssueTimeoutRun({
+        agentId,
+        companyId: agent.companyId,
+        issueId,
+        cooldownSec: policy.assignedIssueTimeoutRetryCooldownSec,
+      });
+      if (recentTimeout) {
+        await writeSkippedRequest("issue.timeout_cooldown");
+        return null;
+      }
     }
 
     if (issueId) {

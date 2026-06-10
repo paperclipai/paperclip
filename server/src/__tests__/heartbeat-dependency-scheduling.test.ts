@@ -117,7 +117,11 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns);
       const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
-      if (!hasActiveRun) {
+      const runningAgents = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(eq(agents.status, "running"));
+      if (!hasActiveRun && runningAgents.length === 0) {
         idlePolls += 1;
         if (idlePolls >= 3) break;
       } else {
