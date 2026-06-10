@@ -6,14 +6,32 @@ describe("deriveCompanySlug", () => {
     expect(deriveCompanySlug("Acme Co!")).toBe("acme-co");
   });
 
-  it("truncates to 32 chars and strips trailing dashes", () => {
-    expect(deriveCompanySlug("A".repeat(50))).toBe("a".repeat(32));
-    expect(deriveCompanySlug("ab---")).toBe("ab");
+  it("preserves long inputs within the namespace budget instead of blind truncation", () => {
+    const input = "a".repeat(40) + "-suffix-that-pushes-past-the-budget";
+    const slug = deriveCompanySlug(input);
+    expect(slug.length).toBeLessThanOrEqual(53);
+    expect(slug.endsWith("-")).toBe(false);
   });
 
   it("falls back to 'company' on empty/zero-letter input", () => {
     expect(deriveCompanySlug("!!!")).toBe("company");
     expect(deriveCompanySlug("")).toBe("company");
+  });
+  it("keeps full UUIDs untruncated so distinct companies never share a slug", () => {
+    const a = deriveCompanySlug("0d9c52f6-2f30-4d3e-9a01-aaaaaaaa0001");
+    const b = deriveCompanySlug("0d9c52f6-2f30-4d3e-9a01-aaaaaaaa0002");
+    expect(a).toBe("0d9c52f6-2f30-4d3e-9a01-aaaaaaaa0001");
+    expect(a).not.toBe(b);
+  });
+
+  it("appends a hash of the full input when the slug exceeds the namespace budget", () => {
+    const long1 = "x".repeat(60) + "-tail-one";
+    const long2 = "x".repeat(60) + "-tail-two";
+    const s1 = deriveCompanySlug(long1);
+    const s2 = deriveCompanySlug(long2);
+    expect(s1.length).toBeLessThanOrEqual(53);
+    expect(s2.length).toBeLessThanOrEqual(53);
+    expect(s1).not.toBe(s2);
   });
 });
 

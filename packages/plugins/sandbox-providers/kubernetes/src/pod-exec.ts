@@ -9,7 +9,7 @@
  * were used, they would be merged onto stdout and the exit code would not be
  * reliable from the status callback on older cluster versions.
  *
- * Stdin handling: @kubernetes/client-node v0.21.0 attaches `stdin.on("end", ()
+ * Stdin handling: @kubernetes/client-node v1.x attaches `stdin.on("end", ()
  * => ws.close())`, which closes the entire WebSocket as soon as our PassThrough
  * ends — BEFORE the pod's command has a chance to flush and BEFORE the
  * statusCallback fires. We work around this by removing that listener after

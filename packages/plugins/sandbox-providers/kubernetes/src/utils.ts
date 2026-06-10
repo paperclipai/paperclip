@@ -1,13 +1,26 @@
+import { createHash, randomInt } from "node:crypto";
+
 const ULID_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
+
+// Namespace names are capped at 63 chars (RFC 1123). The default "paperclip-"
+// prefix leaves 53 for the slug, which fits a full 36-char UUID untruncated.
+const MAX_SLUG_LENGTH = 53;
 
 export function deriveCompanySlug(input: string): string {
   const slug = input
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 32)
     .replace(/-+$/, "");
-  return slug.length > 0 ? slug : "company";
+  if (slug.length === 0) return "company";
+  if (slug.length <= MAX_SLUG_LENGTH) return slug;
+  // Never drop entropy by plain truncation: two long inputs sharing a prefix
+  // (e.g. UUIDs differing only in their tail) must not map to the same slug,
+  // or the tenants would share a namespace and each other's per-run Secrets.
+  // Keep a readable head and append a hash of the FULL input so every byte
+  // contributes to the final name.
+  const digest = createHash("sha256").update(input).digest("hex").slice(0, 8);
+  return `${slug.slice(0, MAX_SLUG_LENGTH - 9).replace(/-+$/, "")}-${digest}`;
 }
 
 export function deriveNamespaceName(prefix: string, slug: string): string {
@@ -23,7 +36,9 @@ export function newRunUlidDns(now: () => number = Date.now): string {
     t = Math.floor(t / 32);
   }
   for (let i = 0; i < 16; i++) {
-    out += ULID_ALPHABET[Math.floor(Math.random() * 32)];
+    // crypto-strength randomness: these become Job/Sandbox CR names and the
+    // providerLeaseId, so they must not be enumerable.
+    out += ULID_ALPHABET[randomInt(32)];
   }
   return out;
 }
