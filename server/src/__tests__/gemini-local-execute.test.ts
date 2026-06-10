@@ -156,6 +156,102 @@ describe("gemini execute", () => {
     }
   });
 
+  it("renders promptTemplate before the wake payload for prompt cache friendliness", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-wake-prompt-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeGeminiCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-wake",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Gemini Coder",
+          adapterType: "gemini_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "gemini-2.5-pro",
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          issueId: "issue-1",
+          taskId: "issue-1",
+          wakeReason: "issue_commented",
+          wakeCommentId: "comment-2",
+          paperclipWake: {
+            reason: "issue_commented",
+            issue: {
+              id: "issue-1",
+              identifier: "PAP-874",
+              title: "chat-speed issues",
+              status: "in_progress",
+              priority: "medium",
+            },
+            commentIds: ["comment-2"],
+            latestCommentId: "comment-2",
+            comments: [
+              {
+                id: "comment-2",
+                issueId: "issue-1",
+                body: "Second comment",
+                bodyTruncated: false,
+                createdAt: "2026-03-28T14:35:10.000Z",
+                author: { type: "user", id: "user-1" },
+              },
+            ],
+            commentWindow: {
+              requestedCount: 1,
+              includedCount: 1,
+              missingCount: 0,
+            },
+            truncated: false,
+            fallbackFetchNeeded: false,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      const promptFlagIndex = capture.argv.indexOf("--prompt");
+      const promptArg = promptFlagIndex >= 0 ? capture.argv[promptFlagIndex + 1] : "";
+      expect(promptArg).toContain("Follow the paperclip heartbeat.");
+      expect(promptArg).toContain("## Paperclip Wake Payload");
+      expect(promptArg.indexOf("Follow the paperclip heartbeat.")).toBeLessThan(
+        promptArg.indexOf("## Paperclip Wake Payload"),
+      );
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("always passes --approval-mode yolo", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-yolo-"));
     const workspace = path.join(root, "workspace");

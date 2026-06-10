@@ -23,6 +23,20 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 | `fastMode` | boolean | No | Enables Codex Fast mode. Currently supported on `gpt-5.4` only and burns credits faster |
 | `dangerouslyBypassApprovalsAndSandbox` | boolean | No | Skip safety checks (dev only) |
 
+## Prompt Composition (Caching)
+
+For non-resumed runs, Paperclip assembles the Codex prompt in this order:
+
+1. `instructionsFilePath` contents (if configured and readable)
+2. `bootstrapPromptTemplate` (first run only)
+3. `promptTemplate`
+4. Wake payload (or resume delta, when applicable)
+5. Session handoff note (if provided)
+
+This ordering is intentional: models that support prefix prompt caching can reuse the stable `promptTemplate` portion even when the wake payload changes each heartbeat, improving `cached_input_tokens`.
+
+To verify the cache impact, compare two consecutive non-resumed heartbeats with different wake payloads and compute `cachedInputTokens / inputTokens` from the run token usage. The ratio should increase when more stable prompt text is moved into the cacheable prefix.
+
 ## Session Persistence
 
 Codex uses `previous_response_id` for session continuity. The adapter serializes and restores this across heartbeats, allowing the agent to maintain conversation context.

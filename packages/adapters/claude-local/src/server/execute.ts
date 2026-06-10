@@ -659,10 +659,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const taskContextNote = asString(context.paperclipTaskMarkdown, "").trim();
   const prompt = joinPromptSections([
     renderedBootstrapPrompt,
+    renderedPrompt,
     wakePrompt,
     sessionHandoffNote,
     taskContextNote,
-    renderedPrompt,
   ]);
   const promptMetrics = {
     promptChars: prompt.length,

@@ -1060,10 +1060,10 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
   const prompt = joinPromptSections([
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
+    renderedPrompt,
     wakePrompt,
     sessionHandoffNote,
     taskContextNote,
-    renderedPrompt,
   ]);
 
   return {
