@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
+import { WORKSPACE_ROOT_PLAN_LINK_ERROR } from "./text.js";
 import {
   addIssueCommentSchema,
+  createIssueThreadInteractionSchema,
   createIssueSchema,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
@@ -203,6 +205,38 @@ describe("issue validators", () => {
 
     expect(response.summaryMarkdown).toBe("Summary\n\nNext action");
     expect(document.body).toBe("# Plan\n\nShip it");
+  });
+
+  it("rejects workspace-root plans links on Paperclip text surfaces", () => {
+    expect(() => addIssueCommentSchema.parse({
+      body: "Review [the plan](/plans/DAT-4136-unified-app-tab-proposal.md).",
+    })).toThrow(WORKSPACE_ROOT_PLAN_LINK_ERROR);
+    expect(() => updateIssueSchema.parse({
+      description: "Broken local plan: plans/DAT-4136-unified-app-tab-proposal.md",
+    })).toThrow(WORKSPACE_ROOT_PLAN_LINK_ERROR);
+    expect(() => upsertIssueDocumentSchema.parse({
+      format: "markdown",
+      body: "Review [the plan](plans/DAT-4136-unified-app-tab-proposal.md).",
+    })).toThrow(WORKSPACE_ROOT_PLAN_LINK_ERROR);
+    expect(() => createIssueThreadInteractionSchema.parse({
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Approve /plans/DAT-4136-unified-app-tab-proposal.md?",
+      },
+    })).toThrow(WORKSPACE_ROOT_PLAN_LINK_ERROR);
+  });
+
+  it("keeps valid Paperclip, issue document, and external repository links working", () => {
+    expect(addIssueCommentSchema.parse({
+      body: [
+        "Issue: [DAT-123](/DAT/issues/DAT-123)",
+        "Plan document: [plan](/DAT/issues/DAT-123#document-plan)",
+        "Repo docs: https://github.com/Data-Advantage/app/blob/main/plans/launch.md",
+        "Repo docs label: [plans/launch.md](https://github.com/Data-Advantage/app/blob/main/plans/launch.md)",
+        "Literal example: `/plans/DAT-4136-unified-app-tab-proposal.md`",
+      ].join("\n"),
+    }).body).toContain("/DAT/issues/DAT-123");
   });
 
   it("clamps oversized requestDepth values on create", () => {

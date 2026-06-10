@@ -1573,4 +1573,16 @@ describe.sequential("issue comment reopen routes", () => {
       }),
     ));
   });
+
+  it("rejects workspace-root plan links in direct issue comments", async () => {
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({
+        body: "See [plan](/plans/DAT-4136-unified-app-tab-proposal.md)",
+      });
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toContain("Workspace-root /plans links are not served");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
 });
