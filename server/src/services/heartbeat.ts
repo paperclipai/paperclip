@@ -7,6 +7,7 @@ import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notI
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  INSTANCE_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
   envBindingSchema,
@@ -7594,6 +7595,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
       if (availableSlots <= 0) return [];
 
+      const globalRunningCount = activeRunExecutions.size;
+      const globalAvailableSlots = Math.max(0, INSTANCE_MAX_CONCURRENT_RUNS - globalRunningCount);
+      if (globalAvailableSlots <= 0) {
+        logger.info(
+          { agentId, globalRunningCount, instanceMax: INSTANCE_MAX_CONCURRENT_RUNS },
+          "instance concurrent-run cap reached; queuing run",
+        );
+        return [];
+      }
+      const effectiveSlots = Math.min(availableSlots, globalAvailableSlots);
+
       const queuedRuns = await db
         .select()
         .from(heartbeatRuns)
@@ -7641,7 +7653,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
-        if (claimedRuns.length >= availableSlots) break;
+        if (claimedRuns.length >= effectiveSlots) break;
         const claimed = await claimQueuedRun(queuedRun, companyAgents);
         if (claimed) claimedRuns.push(claimed);
       }
