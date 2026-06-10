@@ -52,6 +52,14 @@ export function choosePrimaryRuntimeApiUrl(input: {
   bindHost: string;
   port: number;
 }): string {
+  // When the server binds exclusively to loopback, agents on the same host must
+  // reach the API via loopback regardless of authPublicBaseUrl (which is for
+  // browser auth flows / reverse-proxy routing, not same-host agent-to-API calls).
+  const bindHost = normalizeHost(input.bindHost);
+  if (bindHost && isLoopbackHost(bindHost)) {
+    return formatOrigin("http:", bindHost, input.port);
+  }
+
   const explicitPublicBaseUrl = input.authPublicBaseUrl?.trim();
   if (explicitPublicBaseUrl) {
     try {
@@ -68,7 +76,6 @@ export function choosePrimaryRuntimeApiUrl(input: {
     return formatOrigin("http:", allowedHostname, input.port);
   }
 
-  const bindHost = normalizeHost(input.bindHost);
   if (bindHost && !isWildcardHost(bindHost)) {
     return formatOrigin("http:", bindHost, input.port);
   }
