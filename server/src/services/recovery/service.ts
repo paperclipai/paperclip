@@ -35,7 +35,7 @@ import { budgetService } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
-import { issueService } from "../issues.js";
+import { TERMINAL_HEARTBEAT_RUN_STATUSES, issueService } from "../issues.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
@@ -3611,7 +3611,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   // Idempotent and safe: clears at most one row's worth of lock columns per
   // candidate, and only when the referenced run row is unambiguously terminal.
   async function sweepStaleIssueLocks() {
-    const TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
     const result = {
       cleared: 0,
       issueIds: [] as string[],
@@ -3629,27 +3628,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         sql`(${issues.checkoutRunId} is not null or ${issues.executionRunId} is not null)`,
       );
 
+    const referencedRunIds = [
+      ...new Set(
+        candidates
+          .flatMap((issue) => [issue.checkoutRunId, issue.executionRunId])
+          .filter((id): id is string => !!id),
+      ),
+    ];
+    const runRows =
+      referencedRunIds.length > 0
+        ? await db
+            .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+            .from(heartbeatRuns)
+            .where(inArray(heartbeatRuns.id, referencedRunIds))
+        : [];
+    const runStatusById = new Map<string, string>();
+    for (const row of runRows) runStatusById.set(row.id, row.status);
+
+    const isCleanable = (runId: string | null) => {
+      if (!runId) return true;
+      const status = runStatusById.get(runId);
+      if (!status) return true; // missing run row → no real claim
+      return TERMINAL_HEARTBEAT_RUN_STATUSES.has(status);
+    };
+
     for (const issue of candidates) {
-      const referencedRunIds = [issue.checkoutRunId, issue.executionRunId].filter(
-        (id): id is string => !!id,
-      );
-      if (referencedRunIds.length === 0) continue;
-
-      const runRows = await db
-        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(inArray(heartbeatRuns.id, referencedRunIds));
-
-      const runStatusById = new Map<string, string>();
-      for (const row of runRows) runStatusById.set(row.id, row.status);
-
-      const isCleanable = (runId: string | null) => {
-        if (!runId) return true;
-        const status = runStatusById.get(runId);
-        if (!status) return true; // missing run row → no real claim
-        return (TERMINAL_STATUSES as readonly string[]).includes(status);
-      };
-
       if (!isCleanable(issue.checkoutRunId) || !isCleanable(issue.executionRunId)) {
         continue;
       }
