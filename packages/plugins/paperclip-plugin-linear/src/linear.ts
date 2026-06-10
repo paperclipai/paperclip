@@ -455,6 +455,98 @@ export async function attachmentLinkURL(
   };
 }
 
+export interface LinearProjectLink {
+  id: string;
+  url: string;
+  label: string;
+}
+
+export async function listProjectLinks(
+  fetch: LinearFetch,
+  token: string,
+  projectId: string,
+): Promise<LinearProjectLink[]> {
+  const data = await gql<{
+    project: { externalLinks: { nodes: LinearProjectLink[] } } | null;
+  }>(fetch, token, `
+    query ProjectLinks($id: String!) {
+      project(id: $id) {
+        externalLinks(first: 50) { nodes { id url label } }
+      }
+    }
+  `, { id: projectId });
+  return data.project?.externalLinks.nodes ?? [];
+}
+
+export async function createProjectLink(
+  fetch: LinearFetch,
+  token: string,
+  input: { projectId: string; url: string; label: string },
+): Promise<{ success: boolean; projectLink: LinearProjectLink | null }> {
+  const externalLinkInput = {
+    projectId: input.projectId,
+    url: input.url,
+    label: input.label,
+  };
+  const data = await gql<{
+    entityExternalLinkCreate: { success: boolean; entityExternalLink: LinearProjectLink | null };
+  }>(fetch, token, `
+    mutation ProjectLinkCreate($input: EntityExternalLinkCreateInput!) {
+      entityExternalLinkCreate(input: $input) {
+        success
+        entityExternalLink { id url label }
+      }
+    }
+  `, { input: externalLinkInput });
+  return {
+    success: data.entityExternalLinkCreate.success,
+    projectLink: data.entityExternalLinkCreate.entityExternalLink,
+  };
+}
+
+export async function updateProjectLink(
+  fetch: LinearFetch,
+  token: string,
+  id: string,
+  input: { url?: string; label?: string },
+): Promise<{ success: boolean; projectLink: LinearProjectLink | null }> {
+  const data = await gql<{
+    entityExternalLinkUpdate: { success: boolean; entityExternalLink: LinearProjectLink | null };
+  }>(fetch, token, `
+    mutation ProjectLinkUpdate($id: String!, $input: EntityExternalLinkUpdateInput!) {
+      entityExternalLinkUpdate(id: $id, input: $input) {
+        success
+        entityExternalLink { id url label }
+      }
+    }
+  `, { id, input });
+  return {
+    success: data.entityExternalLinkUpdate.success,
+    projectLink: data.entityExternalLinkUpdate.entityExternalLink,
+  };
+}
+
+export async function ensureProjectLink(
+  fetch: LinearFetch,
+  token: string,
+  input: { projectId: string; url: string; label: string },
+): Promise<{ success: boolean; projectLink: LinearProjectLink | null; created: boolean; updated: boolean }> {
+  const links = await listProjectLinks(fetch, token, input.projectId);
+  const existing = links.find((link) => link.url === input.url || link.label === input.label);
+  if (!existing) {
+    const created = await createProjectLink(fetch, token, input);
+    return { ...created, created: true, updated: false };
+  }
+  if (existing.url === input.url && existing.label === input.label) {
+    return { success: true, projectLink: existing, created: false, updated: false };
+  }
+  const updated = await updateProjectLink(fetch, token, existing.id, {
+    url: input.url,
+    label: input.label,
+  });
+  return { ...updated, created: false, updated: true };
+}
+
 /**
  * Mark `dupeLinearId` as a native Linear "duplicate" of `keeperLinearId`
  * (issueRelationCreate type: duplicate). Idempotent: pre-checks the dupe

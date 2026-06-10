@@ -25,6 +25,18 @@
  */
 const WRAP_ISSUE_RE = /`([A-Z][A-Z0-9]+-\d+(?:\/\d+)*)`|\b[A-Z][A-Z0-9]+-\d+(?:\/\d+)*\b/gi;
 const COMPACT_ISSUE_REFERENCE_RE = /^([A-Z][A-Z0-9]+)-(\d+)((?:\/\d+)*)$/i;
+const PAPERCLIP_MARKDOWN_LINK_RE = /(!?)\[([^\]\n]*(?:\\.[^\]\n]*)*)\]\(([^)\s]+)((?:\s+["'][^"']*["'])?)\)/g;
+const PAPERCLIP_PROJECT_BACKLINK_RE = /\n{0,2}---\n_Paperclip sync:_ \[Open Paperclip project\]\([^)]+\)\s*$/;
+const PAPERCLIP_ROUTE_SEGMENTS = new Set([
+  "agents",
+  "approvals",
+  "company",
+  "goals",
+  "inbox",
+  "issues",
+  "projects",
+  "routines",
+]);
 
 /**
  * Whether `s` is exactly a bare issue ref with no surrounding chars. Used to
@@ -32,6 +44,98 @@ const COMPACT_ISSUE_REFERENCE_RE = /^([A-Z][A-Z0-9]+)-(\d+)((?:\/\d+)*)$/i;
  * (so its bare-ref content gets rewritten) or stashed as opaque content.
  */
 const ENTIRE_BARE_ISSUE_RE = /^[A-Z][A-Z0-9]+-\d+(?:\/\d+)*$/i;
+const COMPANY_PREFIX_RE = /^[A-Z][A-Z0-9]*$/i;
+
+export function normalizePaperclipBaseUrl(baseUrl: string | null | undefined): string | null {
+  const trimmed = baseUrl?.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString().replace(/\/+$/, "");
+  } catch {
+    return null;
+  }
+}
+
+function splitPathSuffix(href: string): { path: string; suffix: string } {
+  const match = href.match(/^([^?#]*)([?#].*)?$/);
+  return {
+    path: match?.[1] ?? href,
+    suffix: match?.[2] ?? "",
+  };
+}
+
+function canonicalPaperclipPath(href: string, companyPrefix: string | null | undefined): string | null {
+  if (!href.startsWith("/")) return null;
+  if (href.startsWith("//")) return null;
+
+  const { path, suffix } = splitPathSuffix(href);
+  const segments = path.split("/").filter(Boolean);
+  if (segments.length === 0) return null;
+
+  const first = segments[0] ?? "";
+  const second = segments[1] ?? "";
+  if (PAPERCLIP_ROUTE_SEGMENTS.has(first)) {
+    const prefix = companyPrefix?.trim();
+    return prefix ? `/${encodeURIComponent(prefix)}${path}${suffix}` : `${path}${suffix}`;
+  }
+
+  if (COMPANY_PREFIX_RE.test(first) && PAPERCLIP_ROUTE_SEGMENTS.has(second)) {
+    return `${path}${suffix}`;
+  }
+
+  return null;
+}
+
+export function absolutePaperclipHref(
+  href: string,
+  baseUrl: string | null | undefined,
+  companyPrefix?: string | null,
+): string {
+  if (!href) return href;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("#")) return href;
+
+  const base = normalizePaperclipBaseUrl(baseUrl);
+  if (!base) return href;
+
+  const path = canonicalPaperclipPath(href, companyPrefix);
+  return path ? `${base}${path}` : href;
+}
+
+export function absolutizePaperclipMarkdownLinks(
+  body: string,
+  baseUrl: string | null | undefined,
+  companyPrefix?: string | null,
+): string {
+  if (!body) return body;
+  const base = normalizePaperclipBaseUrl(baseUrl);
+  if (!base) return body;
+
+  return body.replace(PAPERCLIP_MARKDOWN_LINK_RE, (full, imagePrefix: string, text: string, href: string, title: string) => {
+    const absolute = absolutePaperclipHref(href, base, companyPrefix);
+    if (absolute === href) return full;
+    return `${imagePrefix}[${text}](${absolute}${title ?? ""})`;
+  });
+}
+
+export function stripPaperclipProjectBacklink(description: string | null | undefined): string | null {
+  if (description == null) return null;
+  const stripped = description.replace(PAPERCLIP_PROJECT_BACKLINK_RE, "").trimEnd();
+  return stripped.length > 0 ? stripped : null;
+}
+
+export function appendPaperclipProjectBacklink(
+  description: string | null | undefined,
+  paperclipUrl: string,
+): string {
+  const stripped = stripPaperclipProjectBacklink(description);
+  const backlink = `_Paperclip sync:_ [Open Paperclip project](${paperclipUrl})`;
+  return stripped ? `${stripped}\n\n---\n${backlink}` : backlink;
+}
 
 /**
  * Pull the workspace url-key (e.g. `blockcast`) from a Linear issue url.

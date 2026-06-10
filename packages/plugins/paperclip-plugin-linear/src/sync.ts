@@ -9,6 +9,10 @@ import type { PluginContext, Issue } from "@paperclipai/plugin-sdk";
 type IssueStatus = Issue["status"];
 import { STATE_KEYS } from "./constants.js";
 import * as linear from "./linear.js";
+import {
+  absolutizePaperclipMarkdownLinks,
+  stripPaperclipProjectBacklink,
+} from "./markdown.js";
 
 export interface IssueLink {
   paperclipIssueId: string;
@@ -261,6 +265,7 @@ export async function syncToLinear(
   changes: SyncChanges,
   token: string,
   teamId: string,
+  paperclipLinkOptions?: { baseUrl: string | null; companyPrefix?: string | null },
 ): Promise<void> {
   if (link.syncDirection === "linear-to-paperclip") return;
 
@@ -303,7 +308,11 @@ export async function syncToLinear(
 
   // Description → Linear description
   if (changes.description !== undefined) {
-    linearUpdate.description = changes.description ?? "";
+    linearUpdate.description = absolutizePaperclipMarkdownLinks(
+      changes.description ?? "",
+      paperclipLinkOptions?.baseUrl ?? null,
+      paperclipLinkOptions?.companyPrefix ?? null,
+    );
     synced.push("description");
   }
 
@@ -476,7 +485,7 @@ export async function syncProjectFromLinear(
   }
 
   if (linearProject.description !== undefined) {
-    patch.description = linearProject.description ?? undefined;
+    patch.description = stripPaperclipProjectBacklink(linearProject.description) ?? undefined;
   }
 
   const newState = linearProject.state?.toLowerCase() ?? link.lastLinearState;
@@ -531,6 +540,7 @@ export async function syncProjectToLinear(
   link: ProjectLink,
   changes: { name?: string; description?: string; status?: string },
   token: string,
+  paperclipLinkOptions?: { baseUrl: string | null; companyPrefix?: string | null },
 ): Promise<void> {
   if (link.syncDirection === "linear-to-paperclip") return;
 
@@ -550,7 +560,11 @@ export async function syncProjectToLinear(
   }
 
   if (changes.description !== undefined) {
-    linearUpdate.description = changes.description ?? "";
+    linearUpdate.description = absolutizePaperclipMarkdownLinks(
+      changes.description ?? "",
+      paperclipLinkOptions?.baseUrl ?? null,
+      paperclipLinkOptions?.companyPrefix ?? null,
+    );
     synced.push("description");
   }
 
@@ -697,14 +711,20 @@ export async function bridgeCommentToLinear(
   token: string,
   commentBody: string,
   authorName: string,
+  paperclipLinkOptions?: { baseUrl: string | null; companyPrefix?: string | null },
 ): Promise<void> {
   if (link.syncDirection === "linear-to-paperclip") return;
   if (commentBody.includes("[synced from Linear]")) return;
+  const safeBody = absolutizePaperclipMarkdownLinks(
+    commentBody,
+    paperclipLinkOptions?.baseUrl ?? null,
+    paperclipLinkOptions?.companyPrefix ?? null,
+  );
 
   await linear.createComment(
     ctx.http.fetch.bind(ctx.http),
     token,
     link.linearIssueId,
-    `**${authorName}** [synced from Paperclip]:\n\n${commentBody}`,
+    `**${authorName}** [synced from Paperclip]:\n\n${safeBody}`,
   );
 }

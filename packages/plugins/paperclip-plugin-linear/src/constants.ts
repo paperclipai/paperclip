@@ -19,6 +19,8 @@ export const GOALS_LINEAR_PROJECT_NAME = "Company Goals";
 
 export const TOOL_NAMES = {
   search: "search-linear-issues",
+  resolveBinding: "resolve-linear-binding",
+  setBinding: "set-linear-binding",
   link: "link-linear-issue",
   unlink: "unlink-linear-issue",
   create: "create-linear-issue",
@@ -104,6 +106,7 @@ export const DEFAULT_CONFIG = {
   linearClientSecret: "",
   teamId: "",
   defaultProjectId: "",
+  paperclipBaseUrl: "https://paperclip.blockcast.net",
   syncComments: true,
   syncDirection: "bidirectional" as const,
   disableLinearOriginatedCreates: true,

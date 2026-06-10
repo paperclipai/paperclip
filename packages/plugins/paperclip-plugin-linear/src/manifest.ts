@@ -123,7 +123,8 @@ const manifest: PaperclipPluginManifestV1 = {
         type: "string",
         title: "Paperclip base URL",
         description:
-          "Public base URL of this Paperclip instance (no trailing slash). Used to build Linear back-link attachments pointing at the Paperclip mirror after import.",
+          "Public base URL of this Paperclip instance (no trailing slash). Used to build Linear issue attachments and project resource links pointing at the Paperclip mirror.",
+        default: DEFAULT_CONFIG.paperclipBaseUrl,
       },
       linearBacklinkBestEffort: {
         type: "boolean",
@@ -195,6 +196,66 @@ const manifest: PaperclipPluginManifestV1 = {
           },
         },
         required: ["title"],
+      },
+    },
+    {
+      name: TOOL_NAMES.resolveBinding,
+      displayName: "Resolve Linear Binding",
+      description:
+        "Resolve a Linear issue to its Paperclip mirror and project binding. Use this before assuming Linear BLO numbers match Paperclip BLO numbers.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          linearRef: {
+            type: "string",
+            description: "Linear issue identifier (e.g. BLO-123) or URL",
+          },
+        },
+        required: ["linearRef"],
+      },
+    },
+    {
+      name: TOOL_NAMES.setBinding,
+      displayName: "Set Linear Binding",
+      description:
+        "Repair or create Paperclip/Linear issue and project sync bindings, then write the Paperclip backlink into Linear.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          linearRef: {
+            type: "string",
+            description: "Linear issue identifier or URL to bind, when setting an issue binding.",
+          },
+          paperclipIssueId: {
+            type: "string",
+            description: "Paperclip issue UUID to bind to the Linear issue.",
+          },
+          linearProjectId: {
+            type: "string",
+            description: "Linear project UUID to bind, when setting a project binding.",
+          },
+          linearProjectName: {
+            type: "string",
+            description: "Linear project name to store in sync state when setting a project binding.",
+          },
+          paperclipProjectId: {
+            type: "string",
+            description: "Paperclip project UUID to bind to the Linear project.",
+          },
+          replaceExisting: {
+            type: "boolean",
+            description: "Replace conflicting existing Paperclip/Linear bindings.",
+          },
+          linkProjectFromIssue: {
+            type: "boolean",
+            description: "When setting an issue binding, also bind the issue's Linear project to the Paperclip issue's project.",
+          },
+          syncDirection: {
+            type: "string",
+            enum: ["bidirectional", "linear-to-paperclip", "paperclip-to-linear"],
+            description: "Sync direction for newly written bindings.",
+          },
+        },
       },
     },
     {
