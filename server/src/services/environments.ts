@@ -15,6 +15,7 @@ import {
   type EnvironmentLeaseStatus,
   type UpdateEnvironment,
 } from "@paperclipai/shared";
+import { KUBERNETES_PROVIDER_KEY } from "./execution-allowlist.js";
 
 type EnvironmentRow = typeof environments.$inferSelect;
 type EnvironmentLeaseRow = typeof environmentLeases.$inferSelect;
@@ -25,8 +26,6 @@ const DEFAULT_LOCAL_ENVIRONMENT_DESCRIPTION =
 const DEFAULT_KUBERNETES_ENVIRONMENT_NAME = "Kubernetes Sandbox";
 const DEFAULT_KUBERNETES_ENVIRONMENT_DESCRIPTION =
   "Managed Kubernetes sandbox environment for hosted tenant execution.";
-/** Provider key (== plugin driverKey) of the first-party Kubernetes sandbox provider. */
-const KUBERNETES_PROVIDER_KEY = "kubernetes";
 /** Metadata marker for the company's managed-by-config Kubernetes sandbox environment. */
 const KUBERNETES_MANAGED_MARKER = "managedKubernetesSandbox";
 
