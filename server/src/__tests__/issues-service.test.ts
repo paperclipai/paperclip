@@ -36,7 +36,11 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueService,
 } from "../services/issues.ts";
-import { buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
+import {
+  buildAgentMentionHref,
+  buildProjectMentionHref,
+  MAX_ISSUE_REQUEST_DEPTH,
+} from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -3702,6 +3706,89 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
       titleProjectId,
       commentProjectId,
     ]);
+  });
+});
+
+describeEmbeddedPostgres("issueService.findMentionedAgents", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-mentioned-agents-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompany() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    return companyId;
+  }
+
+  async function seedAgent(companyId: string, name: string) {
+    const id = randomUUID();
+    await db.insert(agents).values({
+      id,
+      companyId,
+      name,
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return id;
+  }
+
+  it("resolves URL-key explicit mentions (e.g. board-liaison) to the agent uuid (PUL-3750)", async () => {
+    const companyId = await seedCompany();
+    const liaisonId = await seedAgent(companyId, "Board Liaison");
+
+    // The renderer/author may emit either the uuid or the URL key as the
+    // agent:// host. Before PUL-3750, the URL-key form was forwarded straight
+    // into enqueueWakeup -> agents.id (uuid) and Postgres rejected it.
+    const urlKeyBody = `Heads up [@Board Liaison](agent://board-liaison) — please relay.`;
+    const uuidBody = `Heads up [@Board Liaison](${buildAgentMentionHref(liaisonId)}) — please relay.`;
+
+    expect(await svc.findMentionedAgents(companyId, urlKeyBody)).toEqual([liaisonId]);
+    expect(await svc.findMentionedAgents(companyId, uuidBody)).toEqual([liaisonId]);
+  });
+
+  it("drops explicit mentions that match no agent in the company", async () => {
+    const companyId = await seedCompany();
+    await seedAgent(companyId, "Board Liaison");
+
+    const strangerUrlKey = "Mention [@Stranger](agent://stranger-agent)";
+    const strangerUuid = `Mention [@Stranger](${buildAgentMentionHref(randomUUID())})`;
+
+    expect(await svc.findMentionedAgents(companyId, strangerUrlKey)).toEqual([]);
+    expect(await svc.findMentionedAgents(companyId, strangerUuid)).toEqual([]);
+  });
+
+  it("still resolves bare @-name mentions against agent names", async () => {
+    const companyId = await seedCompany();
+    const liaisonId = await seedAgent(companyId, "BoardLiaison");
+
+    const body = "@BoardLiaison please relay this update";
+    expect(await svc.findMentionedAgents(companyId, body)).toEqual([liaisonId]);
   });
 });
 

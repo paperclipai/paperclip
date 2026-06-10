@@ -55,6 +55,7 @@ import {
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
   isUuidLike,
+  normalizeAgentUrlKey,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
@@ -6071,12 +6072,41 @@ export function issueService(db: Db) {
         if (normalized) tokens.add(normalized.toLowerCase());
       }
 
-      const explicitAgentMentionIds = extractAgentMentionIds(body);
-      if (tokens.size === 0 && explicitAgentMentionIds.length === 0) return [];
+      // Explicit mentions (`agent://<id-or-url-key>`) may carry either an agent
+      // UUID or a URL key like `board-liaison`. Split them so we resolve each
+      // bucket against the agents table — passing a URL key straight through to
+      // enqueueWakeup hits the `agents.id` uuid column and blows up the wake.
+      const explicitMentionRefs = extractAgentMentionIds(body);
+      const explicitIdRefs = new Set<string>();
+      const explicitUrlKeyRefs = new Set<string>();
+      for (const ref of explicitMentionRefs) {
+        if (isUuidLike(ref)) {
+          explicitIdRefs.add(ref);
+        } else {
+          const urlKey = normalizeAgentUrlKey(ref);
+          if (urlKey) explicitUrlKeyRefs.add(urlKey);
+        }
+      }
+
+      if (
+        tokens.size === 0 &&
+        explicitIdRefs.size === 0 &&
+        explicitUrlKeyRefs.size === 0
+      )
+        return [];
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(eq(agents.companyId, companyId));
-      const resolved = new Set<string>(explicitAgentMentionIds);
+      const resolved = new Set<string>();
       for (const agent of rows) {
+        if (explicitIdRefs.has(agent.id)) {
+          resolved.add(agent.id);
+          continue;
+        }
+        const urlKey = normalizeAgentUrlKey(agent.name);
+        if (urlKey && explicitUrlKeyRefs.has(urlKey)) {
+          resolved.add(agent.id);
+          continue;
+        }
         if (tokens.has(agent.name.toLowerCase())) {
           resolved.add(agent.id);
         }
