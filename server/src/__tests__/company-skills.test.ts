@@ -8,6 +8,7 @@ import {
   normalizeGitHubSkillDirectory,
   parseSkillImportSourceInput,
   readLocalSkillImportFromDirectory,
+  tallyAttachedAgentCounts,
 } from "../services/company-skills.js";
 
 const cleanupDirs = new Set<string>();
@@ -27,6 +28,31 @@ async function writeSkillDir(skillDir: string, name: string) {
   await fs.mkdir(skillDir, { recursive: true });
   await fs.writeFile(path.join(skillDir, "SKILL.md"), `---\nname: ${name}\n---\n\n# ${name}\n`, "utf8");
 }
+
+describe("tallyAttachedAgentCounts (skill list summary, #7685)", () => {
+  it("counts how many agents desire each skill key", () => {
+    const counts = tallyAttachedAgentCounts([
+      ["alpha", "beta"], // agent 1
+      ["beta"], // agent 2
+      ["beta", "gamma"], // agent 3
+    ]);
+    expect(counts.get("alpha")).toBe(1);
+    expect(counts.get("beta")).toBe(3);
+    expect(counts.get("gamma")).toBe(1);
+    expect(counts.get("missing")).toBeUndefined();
+  });
+
+  it("counts an agent at most once per key even with duplicates", () => {
+    const counts = tallyAttachedAgentCounts([
+      ["alpha", "alpha", "alpha"], // duplicates within one agent must not inflate the count
+    ]);
+    expect(counts.get("alpha")).toBe(1);
+  });
+
+  it("returns an empty map when no agents desire any skill", () => {
+    expect(tallyAttachedAgentCounts([[], []]).size).toBe(0);
+  });
+});
 
 describe("company skill import source parsing", () => {
   it("parses a skills.sh command without executing shell input", () => {

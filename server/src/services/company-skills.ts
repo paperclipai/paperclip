@@ -1478,6 +1478,24 @@ function resolveDesiredSkillKeys(
   ));
 }
 
+/**
+ * Tally how many agents desire each skill key. Each agent is counted at most once per key
+ * (matching the prior `agentRows.filter((a) => desired.includes(skill.key)).length` semantics),
+ * so the skill-list summary stays O(agents + skills) instead of O(agents × skills) (#7685).
+ * Exported for unit testing.
+ */
+export function tallyAttachedAgentCounts(
+  agentDesiredKeys: Iterable<readonly string[]>,
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const keys of agentDesiredKeys) {
+    for (const key of new Set(keys)) {
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
 function normalizeSkillDirectory(skill: SkillSourceInfoTarget) {
   if ((skill.sourceType !== "local_path" && skill.sourceType !== "catalog") || !skill.sourceLocator) return null;
   const resolved = path.resolve(skill.sourceLocator);
@@ -2053,13 +2071,17 @@ export function companySkillService(db: Db) {
       .orderBy(asc(companySkills.name), asc(companySkills.key))
       .then((entries) => entries.map((entry) => toCompanySkillListRow(entry as CompanySkillListDbRow)));
     const agentRows = await agents.list(companyId);
-    return rows.map((skill) => {
-      const attachedAgentCount = agentRows.filter((agent) => {
-        const desiredSkills = resolveDesiredSkillKeys(rows, agent.adapterConfig as Record<string, unknown>);
-        return desiredSkills.includes(skill.key);
-      }).length;
-      return toCompanySkillListItem(skill, attachedAgentCount);
-    });
+    // Count attached agents per skill key in O(agents + skills) instead of O(agents × skills).
+    // resolveDesiredSkillKeys depends only on the agent's config (not the skill), so resolve it
+    // once per agent and tally into a map rather than re-resolving it for every skill row.
+    const attachedAgentCountByKey = tallyAttachedAgentCounts(
+      agentRows.map((agent) =>
+        resolveDesiredSkillKeys(rows, agent.adapterConfig as Record<string, unknown>),
+      ),
+    );
+    return rows.map((skill) =>
+      toCompanySkillListItem(skill, attachedAgentCountByKey.get(skill.key) ?? 0),
+    );
   }
 
   async function listFull(companyId: string): Promise<CompanySkill[]> {
