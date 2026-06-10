@@ -844,6 +844,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  async function hasResolvedStaleRunEvaluation(companyId: string, runId: string) {
+    const [row] = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .limit(1);
+    return Boolean(row);
+  }
+
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
@@ -1531,6 +1548,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
       }
       return { kind: "existing" as const, evaluationIssueId: existing.id };
+    }
+
+    if (await hasResolvedStaleRunEvaluation(input.run.companyId, input.run.id)) {
+      logger.info({ runId: input.run.id, companyId: input.run.companyId }, "skipped stale-run evaluation: a resolved evaluation already exists for this run UUID");
+      return { kind: "skipped" as const };
     }
 
     const ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });

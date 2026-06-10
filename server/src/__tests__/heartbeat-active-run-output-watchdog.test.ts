@@ -672,14 +672,16 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       now: new Date(rearmAt.getTime() + 60_000),
       companyId,
     });
-    expect(afterRearm.created).toBe(1);
-    expect(afterRearm.evaluationIssueIds[0]).not.toBe(evaluationIssueId);
+    // The run has a resolved (done) evaluation already, so no new evaluation is created.
+    expect(afterRearm.created).toBe(0);
+    expect(afterRearm.skipped).toBeGreaterThanOrEqual(1);
 
     const evaluations = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
-    expect(evaluations.filter((issue) => !["done", "cancelled"].includes(issue.status))).toHaveLength(1);
+    expect(evaluations).toHaveLength(1);
+    expect(evaluations[0]?.status).toBe("done");
   });
 
   it("rejects agent watchdog decisions using issues not bound to the target run", async () => {
