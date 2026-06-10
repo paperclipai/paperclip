@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { assertAgnbAccess } from "../../routes/authz.js";
 import { rows } from "../helpers.js";
-import { generatePitch, renderPitch } from "../pitch/index.js";
+import { generatePitch, renderPitch, pitchToPdf } from "../pitch/index.js";
 
 /**
  * AGNB group: Finn pitch-deck generator (ported from the standalone finn-pitch
@@ -101,6 +101,45 @@ export function registerPitch(router: Router, db: Db) {
     res.setHeader("Content-Security-Policy", DECK_CSP);
     res.setHeader("Cache-Control", "private, max-age=60");
     res.send(row.html);
+  });
+
+  /** GET /api/agnb/pitch/:id/pdf — clean 16:9 PDF via headless Chrome. Dev-only. */
+  router.get("/agnb/pitch/:id/pdf", async (req, res) => {
+    assertAgnbAccess(req);
+    let row: { html: string; client_name: string } | undefined;
+    try {
+      row = rows<{ html: string; client_name: string }>(
+        await db.execute(
+          sql`SELECT html, client_name FROM agnb.pitch_decks WHERE id = ${req.params.id} LIMIT 1`,
+        ),
+      )[0];
+    } catch (e) {
+      if (isMissingTable(e)) return res.status(404).send("not found");
+      throw e;
+    }
+    if (!row) return res.status(404).send("not found");
+
+    let pdf: Buffer;
+    try {
+      pdf = await pitchToPdf(row.html);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[pitch.pdf] failed:", msg);
+      // No Chrome binary (e.g. Cloud Run) → ENOENT/"chrome not found".
+      if (/chrome|ENOENT|not found/i.test(msg)) {
+        return res.status(503).json({
+          ok: false,
+          error: "PDF export runs only in local dev (requires a Chrome binary).",
+        });
+      }
+      return res.status(500).json({ ok: false, error: msg });
+    }
+
+    const safe = (row.client_name || "deck").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${safe}.pdf"`);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.send(pdf);
   });
 
   /** POST /api/agnb/pitch/generate — intake → claude → render → store. Dev-only. */

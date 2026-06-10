@@ -64,7 +64,7 @@ export function PitchDetail() {
             <a href={contentUrl} target="_blank" rel="noreferrer"><ExternalLink className="mr-1 h-3.5 w-3.5" /> Open</a>
           </Button>
           <Button asChild variant="outline" size="sm">
-            <a href={`${contentUrl}?print-pdf`} target="_blank" rel="noreferrer"><Download className="mr-1 h-3.5 w-3.5" /> PDF</a>
+            <a href={agnbPitchApi.pdfUrl(pitchId)}><Download className="mr-1 h-3.5 w-3.5" /> PDF</a>
           </Button>
           <Button variant="outline" size="sm" onClick={remove} disabled={delBusy}>
             <Trash2 className="h-3.5 w-3.5" />

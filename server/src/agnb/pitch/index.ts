@@ -24,3 +24,14 @@ export async function renderPitch(deck: PitchDeck): Promise<string> {
   const mod = await import("./lib/render.mjs");
   return mod.render(deck) as string;
 }
+
+/**
+ * Render a deck's HTML into a clean 16:9 PDF by screenshotting each live slide
+ * via headless Chrome (avoids reveal.js print-pdf's broken page breaks).
+ * Dev-only — throws an ENOENT-flavoured error where no Chrome binary exists.
+ */
+export async function pitchToPdf(html: string): Promise<Buffer> {
+  // @ts-expect-error — ported .mjs lib, no declarations
+  const mod = await import("./lib/pdf.mjs");
+  return mod.deckToPdf(html) as Buffer;
+}

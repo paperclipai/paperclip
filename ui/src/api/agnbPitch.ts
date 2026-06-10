@@ -61,4 +61,7 @@ export const agnbPitchApi = {
 
   /** Same-origin URL for the rendered deck HTML (iframe / new tab). */
   contentUrl: (id: string) => `/api/agnb/pitch/${encodeURIComponent(id)}/content`,
+
+  /** Same-origin URL for the clean 16:9 PDF export (headless-Chrome, dev-only). */
+  pdfUrl: (id: string) => `/api/agnb/pitch/${encodeURIComponent(id)}/pdf`,
 };
