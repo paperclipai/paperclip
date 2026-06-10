@@ -3,9 +3,11 @@ import {
   addClickUpChatMessageReaction,
   deleteClickUpChatMessageReaction,
   detectClickUpAwaitingHumanBridgeEvents,
+  detectClickUpAwaitingHumanBridgeEventsAfterMessage,
   getClickUpChatMessageReplies,
   sendClickUpTransportTestMessage,
   sendAwaitingHumanNotification,
+  sendAwaitingHumanNotificationReply,
   uploadClickUpReviewFile,
 } from "../services/clickup-awaiting-human-transport.js";
 import { logger } from "../middleware/logger.js";
@@ -317,9 +319,104 @@ describe("getClickUpChatMessageReplies", () => {
           parentMessageId: "message-42",
           reactionsUrl: "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/reply-row-1/reactions",
           content: "approve",
+          dateMs: null,
         },
       ],
     });
+  });
+
+  it("orders same-time replies by IDs beyond Number precision", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [
+          {
+            id: "9007199254740993",
+            parent_message: "message-42",
+            content: "second",
+            links: { reactions: "https://example.test/reactions/second" },
+          },
+          {
+            id: "9007199254740992",
+            parent_message: "message-42",
+            content: "first",
+            links: { reactions: "https://example.test/reactions/first" },
+          },
+        ],
+      }),
+    }) as typeof fetch;
+
+    const result = await getClickUpChatMessageReplies("message-42");
+
+    expect(result.status).toBe("sent");
+    expect(result.replies.map((reply) => reply.id)).toEqual([
+      "9007199254740992",
+      "9007199254740993",
+    ]);
+  });
+
+  it("paginates replies and orders them chronologically across all pages", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [{
+            id: "reply-3",
+            parent_message: "message-42",
+            content: "third",
+            date: 3000,
+            links: { reactions: "https://example.test/reactions/third" },
+          }],
+          next_cursor: "cursor-1",
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [
+            {
+              id: "reply-1",
+              parent_message: "message-42",
+              content: "first",
+              date: 1000,
+              links: { reactions: "https://example.test/reactions/first" },
+            },
+            {
+              id: "reply-2",
+              parent_message: "message-42",
+              content: "second",
+              date: 2000,
+              links: { reactions: "https://example.test/reactions/second" },
+            },
+          ],
+          next_cursor: null,
+        }),
+      });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await getClickUpChatMessageReplies("message-42");
+
+    expect(result.status).toBe("sent");
+    expect(result.replies.map((reply) => reply.id)).toEqual(["reply-1", "reply-2", "reply-3"]);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/message-42/replies",
+      expect.anything(),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/message-42/replies?cursor=cursor-1",
+      expect.anything(),
+    );
   });
 
   it("aborts slow ClickUp reply polling requests", async () => {
@@ -432,6 +529,108 @@ describe("sendAwaitingHumanNotification review context", () => {
   });
 });
 
+describe("sendAwaitingHumanNotificationReply", () => {
+  it("posts a ClickUp chat reply under the workflow thread root", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      text: async () => JSON.stringify({ id: "question-reply-1" }),
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await sendAwaitingHumanNotificationReply("thread-root-1", {
+      companyId: "company-1",
+      issueId: "handoff-1",
+      handoffKind: "ask_user_questions",
+      notification: {
+        title: "Workflow input required",
+        summary: "Which city?",
+        body: "Which city should I check?",
+        link: "",
+        cta: "Reply with your response.",
+        labels: ["workflow_handoff", "response"],
+      },
+    });
+
+    expect(result).toEqual({
+      status: "sent",
+      channel: "clickup-chat",
+      detail: "sent",
+      externalId: "question-reply-1",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/thread-root-1/replies",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "token-123",
+          "Content-Type": "application/json",
+        }),
+      }),
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      type: "message",
+      content: "**Workflow input required**\n\nWhich city should I check?\n\nReply with your response.",
+      content_format: "text/md",
+    });
+  });
+
+  it("keeps long workflow approval replies intact instead of applying the short channel-message cap", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    const longApprovalBody = [
+      "# Landing Page Approval Required",
+      "",
+      "## Slug",
+      "",
+      "- `adk-bizbox-human-gate-smoke-1780911620717` (new)",
+      "",
+      "## Section Order",
+      "",
+      ...Array.from({ length: 35 }, (_, index) =>
+        `- Section ${index + 1}: This line should remain visible in the ClickUp thread reply so the human can review the complete workflow approval context before replying.`,
+      ),
+      "",
+      "## Final Decision",
+      "",
+      "Please approve or reject this landing page plan.",
+    ].join("\n");
+
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      text: async () => JSON.stringify({ id: "question-reply-1" }),
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await sendAwaitingHumanNotificationReply("thread-root-1", {
+      companyId: "company-1",
+      issueId: "handoff-1",
+      handoffKind: "approval",
+      notification: {
+        title: "Workflow approval required",
+        summary: "Landing page approval required",
+        body: longApprovalBody,
+        link: "",
+        cta: "Reply with: approve or reject (optionally include a note).",
+        labels: ["workflow_handoff", "approval"],
+      },
+    });
+
+    expect(result.status).toBe("sent");
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.content.length).toBeGreaterThan(1_800);
+    expect(body.content).toContain("Section 35");
+    expect(body.content).toContain("Please approve or reject this landing page plan.");
+    expect(body.content).toContain("Reply with: approve or reject");
+    expect(body.content).not.toMatch(/…$/);
+  });
+});
+
 describe("sendClickUpTransportTestMessage reviewer mentions", () => {
   it("renders reviewer mention links when reviewer testing is requested", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce({
@@ -537,6 +736,7 @@ describe("detectClickUpAwaitingHumanBridgeEvents", () => {
           parentMessageId: "message-42",
           reactionsUrl: "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/reply-unknown-1/reactions",
           content: "First reply",
+          dateMs: null,
         },
       },
       "Skipping ClickUp reply without stable reply.id",
@@ -576,5 +776,241 @@ describe("detectClickUpAwaitingHumanBridgeEvents", () => {
         metadata: { clickupReplyId: "reply-1" },
       }],
     });
+  });
+});
+
+describe("detectClickUpAwaitingHumanBridgeEventsAfterMessage", () => {
+  it("returns only replies after the current bot question marker", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [
+          {
+            id: "previous-human-reply",
+            parent_message: "thread-root-1",
+            content: "Melbourne",
+            date: 1000,
+            links: { reactions: "https://example.test/reactions/previous" },
+          },
+          {
+            id: "question-reply-2",
+            parent_message: "thread-root-1",
+            content: "Which unit?",
+            date: 2000,
+            links: { reactions: "https://example.test/reactions/question" },
+          },
+          {
+            id: "human-reply-2",
+            parent_message: "thread-root-1",
+            content: "Celsius",
+            date: 3000,
+            links: { reactions: "https://example.test/reactions/answer" },
+          },
+        ],
+      }),
+    }) as typeof fetch;
+
+    const result = await detectClickUpAwaitingHumanBridgeEventsAfterMessage(
+      "thread-root-1",
+      "question-reply-2",
+    );
+
+    expect(result).toEqual({
+      status: "sent",
+      detail: "replies-detected",
+      events: [{
+        kind: "reply",
+        externalEventId: "human-reply-2",
+        externalThreadId: "thread-root-1",
+        externalMessageId: "question-reply-2",
+        body: "Celsius",
+        metadata: {
+          clickupReplyId: "human-reply-2",
+          clickupThreadId: "thread-root-1",
+          clickupQuestionMessageId: "question-reply-2",
+        },
+      }],
+    });
+  });
+
+  it("does not accept replies when the bot question marker is missing", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [{
+          id: "human-reply-1",
+          parent_message: "thread-root-1",
+          content: "Sydney",
+          date: 3000,
+          links: { reactions: "https://example.test/reactions/answer" },
+        }],
+      }),
+    }) as typeof fetch;
+
+    const result = await detectClickUpAwaitingHumanBridgeEventsAfterMessage(
+      "thread-root-1",
+      "question-reply-1",
+    );
+
+    expect(result).toEqual({
+      status: "failed",
+      detail: "question-marker-not-found",
+      events: [],
+    });
+  });
+
+  it("normalizes ClickUp newest-first replies before applying the question marker", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [
+          {
+            id: "80160041502274",
+            parent_message: "80160041502221",
+            content: "Ankara Turkey",
+            date: 1780920048301,
+            links: { reactions: "https://example.test/reactions/answer" },
+          },
+          {
+            id: "80160041502222",
+            parent_message: "80160041502221",
+            content: "**Workflow input required**",
+            date: 1780920031891,
+            links: { reactions: "https://example.test/reactions/question" },
+          },
+        ],
+      }),
+    }) as typeof fetch;
+
+    const result = await detectClickUpAwaitingHumanBridgeEventsAfterMessage(
+      "80160041502221",
+      "80160041502222",
+    );
+
+    expect(result).toEqual({
+      status: "sent",
+      detail: "replies-detected",
+      events: [{
+        kind: "reply",
+        externalEventId: "80160041502274",
+        externalThreadId: "80160041502221",
+        externalMessageId: "80160041502222",
+        body: "Ankara Turkey",
+        metadata: {
+          clickupReplyId: "80160041502274",
+          clickupThreadId: "80160041502221",
+          clickupQuestionMessageId: "80160041502222",
+        },
+      }],
+    });
+  });
+
+  it("detects a human answer on page 2 after a marker on page 1", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [{
+            id: "question-reply-1",
+            parent_message: "thread-root-1",
+            content: "**Workflow input required**",
+            date: 1000,
+            links: { reactions: "https://example.test/reactions/question" },
+          }],
+          next_cursor: "cursor-1",
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [{
+            id: "human-reply-1",
+            parent_message: "thread-root-1",
+            content: "Celsius",
+            date: 2000,
+            links: { reactions: "https://example.test/reactions/answer" },
+          }],
+          next_cursor: null,
+        }),
+      }) as typeof fetch;
+
+    const result = await detectClickUpAwaitingHumanBridgeEventsAfterMessage(
+      "thread-root-1",
+      "question-reply-1",
+    );
+
+    expect(result.status).toBe("sent");
+    expect(result.detail).toBe("replies-detected");
+    expect(result.events.map((event) => event.externalEventId)).toEqual(["human-reply-1"]);
+  });
+
+  it("detects a marker on page 2 after older replies on page 1", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [{
+            id: "previous-human-reply",
+            parent_message: "thread-root-1",
+            content: "Sydney",
+            date: 1000,
+            links: { reactions: "https://example.test/reactions/previous" },
+          }],
+          next_cursor: "cursor-1",
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [
+            {
+              id: "question-reply-2",
+              parent_message: "thread-root-1",
+              content: "**Workflow input required**",
+              date: 2000,
+              links: { reactions: "https://example.test/reactions/question" },
+            },
+            {
+              id: "human-reply-2",
+              parent_message: "thread-root-1",
+              content: "Fahrenheit",
+              date: 3000,
+              links: { reactions: "https://example.test/reactions/answer" },
+            },
+          ],
+          next_cursor: null,
+        }),
+      }) as typeof fetch;
+
+    const result = await detectClickUpAwaitingHumanBridgeEventsAfterMessage(
+      "thread-root-1",
+      "question-reply-2",
+    );
+
+    expect(result.status).toBe("sent");
+    expect(result.detail).toBe("replies-detected");
+    expect(result.events.map((event) => event.externalEventId)).toEqual(["human-reply-2"]);
   });
 });

@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import { and, asc, desc, eq, inArray, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   workflowDeliverables,
@@ -38,6 +38,7 @@ import {
   collectWorkflowRuntimeArtifacts,
   prepareInstrumentedWorkflowRuntime,
 } from "./workflows-runtime.js";
+import { workflowHandoffBridgeService } from "./workflow-handoff-bridge.js";
 
 function toWorkflow(row: typeof workflows.$inferSelect): Workflow {
   return {
@@ -234,6 +235,8 @@ async function selectLatestDeliverableMap(db: Db, workflowIds: string[]) {
 const WORKFLOW_DETAIL_RUN_LIMIT = 20;
 const WORKFLOW_RUN_CONSOLE_ENTRY_LIMIT = 600;
 const WORKFLOW_RUN_EXCERPT_CHAR_LIMIT = 16_000;
+const WORKFLOW_ADK_TIMEOUT_SEC = 24 * 60 * 60;
+const WORKFLOW_INTERRUPTED_ERROR = "Workflow process was interrupted before completion.";
 
 function appendWorkflowRunExcerpt(existing: string, chunk: string) {
   const next = `${existing}${chunk}`;
@@ -364,7 +367,10 @@ export function workflowService(db: Db) {
       workflowId: workflow.id,
       runId,
       companyId: workflow.companyId,
-      runnerConfig: workflow.runnerConfig,
+      runnerConfig: {
+        ...workflow.runnerConfig,
+        timeoutSec: WORKFLOW_ADK_TIMEOUT_SEC,
+      },
       analysis,
       runToken,
     });
@@ -408,15 +414,48 @@ export function workflowService(db: Db) {
       await persistContextSnapshot();
     };
 
-    try {
-    await db.update(workflowRuns).set({
-      status: "running",
-      startedAt: new Date(),
-      updatedAt: new Date(),
-      contextSnapshot,
-    }).where(eq(workflowRuns.id, runId));
+    const finishOpenPhases = async (status: "succeeded" | "failed") => {
+      const phases = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, runId)).orderBy(asc(workflowRunPhases.ordinal));
+      if (phases.length === 0) {
+        const now = new Date();
+        await db.insert(workflowRunPhases).values({
+          companyId: workflow.companyId,
+          workflowRunId: runId,
+          phaseKey: "entrypoint",
+          label: "Entrypoint",
+          kind: "phase",
+          ordinal: 0,
+          status,
+          startedAt: now,
+          finishedAt: now,
+        }).catch(() => {});
+        return;
+      }
 
-    const result = await invokeGoogleAdk({
+      for (const phase of phases) {
+        if (["succeeded", "failed", "cancelled"].includes(phase.status)) continue;
+        const now = new Date();
+        await db.update(workflowRunPhases).set({
+          status,
+          startedAt: phase.startedAt ?? now,
+          finishedAt: now,
+          updatedAt: now,
+        }).where(and(
+          eq(workflowRunPhases.id, phase.id),
+          notInArray(workflowRunPhases.status, ["succeeded", "failed", "cancelled"]),
+        ));
+      }
+    };
+
+    try {
+      await db.update(workflowRuns).set({
+        status: "running",
+        startedAt: new Date(),
+        updatedAt: new Date(),
+        contextSnapshot,
+      }).where(eq(workflowRuns.id, runId));
+
+      const result = await invokeGoogleAdk({
         runId,
         agent: {
           id: workflow.id,
@@ -470,18 +509,7 @@ export function workflowService(db: Db) {
         }
       }
 
-      const phases = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, runId)).orderBy(asc(workflowRunPhases.ordinal));
-      if (phases.every((phase) => phase.status === "idle")) {
-        const first = phases[0];
-        if (first) {
-          await db.update(workflowRunPhases).set({
-            status: result.errorMessage ? "failed" : "succeeded",
-            startedAt: new Date(),
-            finishedAt: new Date(),
-            updatedAt: new Date(),
-          }).where(and(eq(workflowRunPhases.id, first.id), eq(workflowRunPhases.status, "idle")));
-        }
-      }
+      await finishOpenPhases(result.errorMessage ? "failed" : "succeeded");
 
       await db.update(workflowRuns).set({
         status: result.errorMessage ? "failed" : "succeeded",
@@ -505,6 +533,7 @@ export function workflowService(db: Db) {
       } else {
         await persistContextSnapshot();
       }
+      await finishOpenPhases("failed");
       await db.update(workflowRuns).set({
         status: "failed",
         error: err instanceof Error ? err.message : String(err),
@@ -528,6 +557,41 @@ export function workflowService(db: Db) {
   }
 
   return {
+    failInterruptedActiveRuns: async () => {
+      const now = new Date();
+      const candidates = await db
+        .select({ id: workflowRuns.id })
+        .from(workflowRuns)
+        .innerJoin(workflows, eq(workflowRuns.workflowId, workflows.id))
+        .where(and(
+          eq(workflows.runnerType, "google_adk"),
+          inArray(workflowRuns.status, ["queued", "running", "awaiting_human"]),
+        ));
+      const runIds = candidates.map((row) => row.id);
+      if (runIds.length === 0) return { failed: 0, runIds };
+
+      const rows = await db.update(workflowRuns).set({
+        status: "failed",
+        error: WORKFLOW_INTERRUPTED_ERROR,
+        finishedAt: now,
+        updatedAt: now,
+      }).where(and(
+        inArray(workflowRuns.id, runIds),
+        inArray(workflowRuns.status, ["queued", "running", "awaiting_human"]),
+      )).returning({ id: workflowRuns.id });
+      const failedRunIds = rows.map((row) => row.id);
+      await db.update(workflowRunPhases).set({
+        status: "failed",
+        startedAt: sql`COALESCE(${workflowRunPhases.startedAt}, ${now.toISOString()}::timestamptz)`,
+        finishedAt: now,
+        updatedAt: now,
+      }).where(and(
+        inArray(workflowRunPhases.workflowRunId, failedRunIds),
+        notInArray(workflowRunPhases.status, ["succeeded", "failed", "cancelled"]),
+      ));
+      return { failed: rows.length, runIds: failedRunIds };
+    },
+
     list: async (companyId: string): Promise<WorkflowListItem[]> => {
       const rows = await db.select().from(workflows).where(eq(workflows.companyId, companyId)).orderBy(desc(workflows.updatedAt));
       const items = rows.map(toWorkflow);
@@ -852,6 +916,16 @@ export function workflowService(db: Db) {
         eq(workflowRuns.id, existing.workflowRunId),
         notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled"]),
       ));
+      try {
+        await workflowHandoffBridgeService(db).closeResolvedHandoff(updated.id, resolution);
+      } catch (error) {
+        logger.warn({
+          err: error,
+          workflowHandoffId: updated.id,
+          workflowRunId: existing.workflowRunId,
+          resolution,
+        }, "workflow handoff bridge: failed to close bridge after direct handoff resolution");
+      }
       return updated ? toWorkflowHandoff(updated) : null;
     },
   };
