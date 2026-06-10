@@ -126,6 +126,7 @@ describe("gemini remote execution", () => {
       },
       config: {
         command: "gemini",
+        env: { GEMINI_API_KEY: "test-key" },
       },
       context: {
         paperclipWorkspace: {
@@ -182,6 +183,19 @@ describe("gemini remote execution", () => {
     expect(runSshCommand).toHaveBeenCalledWith(
       expect.anything(),
       expect.stringContaining(".gemini/skills"),
+      expect.anything(),
+    );
+    // Managed-home headless auth: the adapter must pre-select gemini-api-key
+    // auth in $HOME/.gemini/settings.json (gemini-cli hard-refuses headless
+    // runs otherwise, and the managed HOME hides any image-baked settings).
+    expect(runSshCommand).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining(".gemini/settings.json"),
+      expect.anything(),
+    );
+    expect(runSshCommand).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining("gemini-api-key"),
       expect.anything(),
     );
     const call = runChildProcess.mock.calls[0] as unknown as

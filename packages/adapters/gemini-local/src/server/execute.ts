@@ -376,6 +376,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           { cwd, env, timeoutSec, graceSec, onLog },
         );
       }
+      // Gemini CLI refuses headless runs without an auth selection persisted in
+      // $HOME/.gemini/settings.json ("Invalid auth method selected."); env vars
+      // alone (GEMINI_DEFAULT_AUTH_TYPE) do not satisfy it. With a managed HOME
+      // the runtime root replaces the image home, so any settings baked into the
+      // image are invisible -- pre-select the api-key auth whenever an API key
+      // is provided. Both settings schema generations are written (legacy
+      // selectedAuthType + current security.auth.selectedType). An existing
+      // settings.json (user-shipped via workspace) is left untouched.
+      // Key presence check spans the run env AND the host process env: in the
+      // managed sandbox path the key never enters the adapter's run env -- it
+      // reaches the agent pod via the provider's per-run secret (envKeys
+      // passthrough from the host env), so the host env is the signal here.
+      const hasGeminiApiKey = Boolean(
+        env.GEMINI_API_KEY || env.GOOGLE_API_KEY ||
+        process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
+      );
+      if (remoteHomeDir && hasGeminiApiKey) {
+        const remoteSettingsPath = path.posix.join(remoteHomeDir, ".gemini", "settings.json");
+        const authSettingsJson = JSON.stringify({
+          selectedAuthType: "gemini-api-key",
+          security: { auth: { selectedType: "gemini-api-key" } },
+        });
+        await runAdapterExecutionTargetShellCommand(
+          runId,
+          executionTarget,
+          `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSettingsPath))} && { [ -f ${JSON.stringify(remoteSettingsPath)} ] || printf '%s' ${JSON.stringify(authSettingsJson)} > ${JSON.stringify(remoteSettingsPath)}; }`,
+          { cwd, env, timeoutSec, graceSec, onLog },
+        );
+      }
     } catch (error) {
       await Promise.allSettled([
         restoreRemoteWorkspace?.(),
