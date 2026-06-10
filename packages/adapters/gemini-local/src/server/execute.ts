@@ -51,6 +51,7 @@ import { DEFAULT_GEMINI_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js
 import {
   describeGeminiFailure,
   detectGeminiAuthRequired,
+  isGeminiTransientNetworkError,
   isGeminiTurnLimitResult,
   isGeminiUnknownSessionError,
   parseGeminiJsonl,
@@ -569,6 +570,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdout: attempt.proc.stdout,
       stderr: attempt.proc.stderr,
     });
+    const networkUnavailable = isGeminiTransientNetworkError(attempt.proc.stdout, attempt.proc.stderr);
 
     if (attempt.proc.timedOut) {
       return {
@@ -576,7 +578,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         signal: attempt.proc.signal,
         timedOut: true,
         errorMessage: `Timed out after ${timeoutSec}s`,
-        errorCode: authMeta.requiresAuth ? "gemini_auth_required" : null,
+        errorCode: authMeta.requiresAuth
+          ? "gemini_auth_required"
+          : networkUnavailable
+            ? "gemini_network_unavailable"
+            : null,
         clearSession: clearSessionOnMissingSession,
       };
     }
@@ -632,6 +638,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ? "gemini_auth_required"
         : failed && clearSessionForTurnLimit
         ? "max_turns_exhausted"
+        : failed && networkUnavailable
+        ? "gemini_network_unavailable"
         : null,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
