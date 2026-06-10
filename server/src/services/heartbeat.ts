@@ -22,6 +22,7 @@ import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
+import * as backpressure from "./backpressure.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec, UsageSummary } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
@@ -2712,9 +2713,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    errorInfo?: { errorCode?: string | null; message?: string | null },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
+
+    // ROC-2148: update the seat-level circuit breaker. A success closes the seat;
+    // only genuine provider failures (errorInfo supplied) can trip it. Orchestrator
+    // outcomes — cancelled, and process_lost reaps which pass no errorInfo — never trip.
+    try {
+      const seatKey = backpressure.seatKeyForAgent(existing);
+      if (outcome === "succeeded") {
+        backpressure.recordSuccess(seatKey);
+      } else if ((outcome === "failed" || outcome === "timed_out") && errorInfo) {
+        const cls = backpressure.classifyFailure(errorInfo.errorCode, errorInfo.message);
+        if (cls) backpressure.recordFailure(seatKey, cls);
+      }
+    } catch (err) {
+      logger.warn({ err, agentId }, "backpressure: failed to update seat breaker");
+    }
 
     if (existing.status === "paused" || existing.status === "terminated") {
       return;
@@ -4184,7 +4201,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(agent.id, outcome, {
+        errorCode: adapterResult.errorCode,
+        message: adapterResult.errorMessage,
+      });
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -4249,7 +4269,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
 
-      await finalizeAgentStatus(agent.id, "failed");
+      await finalizeAgentStatus(agent.id, "failed", { errorCode: "adapter_failed", message });
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
@@ -4614,6 +4634,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
+    }
+
+    // ROC-2148: seat-level circuit breaker. If the agent's Claude seat is capped/cooling,
+    // skip dispatch (no run created) instead of hammering it. Recovery is automatic via a
+    // single half-open probe when the cooldown elapses. Applies to all wake sources.
+    {
+      const seatDecision = backpressure.canDispatch(backpressure.seatKeyForAgent(agent), agentId);
+      if (!seatDecision.allowed) {
+        await writeSkippedRequest(seatDecision.reason ?? "circuit_open");
+        return null;
+      }
     }
 
     if (issueId) {
