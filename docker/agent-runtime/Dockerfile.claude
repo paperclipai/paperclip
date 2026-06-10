@@ -1,0 +1,16 @@
+# syntax=docker/dockerfile:1.6
+ARG BASE_TAG=dev
+FROM paperclipai/agent-runtime-base:${BASE_TAG}
+
+USER root
+RUN npm install -g @anthropic-ai/claude-code@latest \
+    && chown -R 1000:1000 /usr/lib/node_modules \
+    || true
+
+# @anthropic-ai/claude-code installs as 'claude', but the shim expects 'claude-code'
+RUN command -v claude >/dev/null 2>&1 && ln -s /usr/bin/claude /usr/bin/claude-code || true
+
+USER 1000:1000
+
+# Verify the CLI is on PATH for the shim's exec.LookPath
+RUN command -v claude-code >/dev/null 2>&1 || (echo "claude-code not on PATH"; exit 1)

@@ -1,0 +1,16 @@
+# syntax=docker/dockerfile:1.6
+ARG BASE_TAG=dev
+FROM paperclipai/agent-runtime-base:${BASE_TAG}
+
+USER root
+# pi is the multi-provider Pi coding-agent router. Verified npm package:
+# @mariozechner/pi-coding-agent (binary 'pi' → dist/cli.js). Same package
+# is used by SANDBOX_INSTALL_COMMAND in pi-local/src/index.ts.
+RUN npm install -g @mariozechner/pi-coding-agent@latest \
+    && chown -R 1000:1000 /usr/lib/node_modules \
+    || true
+
+USER 1000:1000
+
+# Verify the CLI is on PATH for the shim's exec.LookPath
+RUN command -v pi >/dev/null 2>&1 || (echo "pi not on PATH"; exit 1)
