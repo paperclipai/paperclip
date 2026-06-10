@@ -1015,7 +1015,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
   });
 
-  it("rejects a peer agent retiring another owner's action as a false positive", async () => {
+  it("rejects an assignee peer retiring another owner's action as a false positive", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, sourceIssueId));
     const recoveryActionSvc = issueRecoveryActionService(db);
@@ -1039,7 +1039,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       source: "agent_jwt",
     });
 
-    await request(app)
+    const rejected = await request(app)
       .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
       .send({
         actionId: action.id,
@@ -1048,6 +1048,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         resolutionNote: "Peer agent should not be able to retire another owner's action.",
       })
       .expect(403);
+    expect(rejected.body).toMatchObject({
+      error: "Board access required",
+    });
 
     const [actionRow] = await db
       .select()
