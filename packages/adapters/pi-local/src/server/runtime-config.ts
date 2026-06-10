@@ -5,6 +5,8 @@ import path from "node:path";
 type PreparedPiRuntimeConfig = {
   env: Record<string, string>;
   notes: string[];
+  /** The managed agent-config dir, or null when no provider config was written. */
+  agentConfigDir: string | null;
   cleanup: () => Promise<void>;
 };
 
@@ -17,7 +19,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 // SERVER-SIDE, where the value is reliably present. Pi resolves a provider apiKey
 // by trying it as an env var name first, then as a literal -- but the (possibly
 // sandboxed) run process env plumbing is not guaranteed to carry the key, so we
-// resolve it here. Unresolvable placeholders are left intact.
+// resolve it here. Unresolvable placeholders are left intact; an env var set to
+// an empty string counts as unresolvable (the placeholder stays for Pi to try).
 function expandEnvPlaceholders<T>(value: T, resolve: (name: string) => string | undefined): T {
   if (typeof value === "string") {
     return value.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name: string) => {
@@ -38,9 +41,10 @@ function expandEnvPlaceholders<T>(value: T, resolve: (name: string) => string | 
   return value;
 }
 
-type ParsedProviderConfig =
-  | { providers: Record<string, unknown>; warning: null }
-  | { providers: null; warning: string | null };
+type ParsedProviderConfig = {
+  providers: Record<string, unknown> | null;
+  warning: string | null;
+};
 
 function parseProviderConfig(
   raw: unknown,
@@ -61,18 +65,28 @@ function parseProviderConfig(
         warning: "PAPERCLIP_PI_PROVIDERS is set but is not a JSON object; custom Pi providers ignored.",
       };
     }
-    // Only keep provider entries that are themselves objects.
+    // Only keep provider entries that are themselves objects; surface the ones
+    // we drop so a malformed entry is just as diagnosable as malformed JSON.
     const providers: Record<string, unknown> = {};
+    const skipped: string[] = [];
     for (const [key, value] of Object.entries(parsed)) {
       if (isPlainObject(value)) providers[key] = expandEnvPlaceholders(value, resolveEnv);
+      else skipped.push(key);
     }
     if (Object.keys(providers).length === 0) {
       return {
         providers: null,
-        warning: "PAPERCLIP_PI_PROVIDERS is set but contains no provider objects; custom Pi providers ignored.",
+        warning: skipped.length > 0
+          ? `PAPERCLIP_PI_PROVIDERS is set but contains no provider objects (skipped non-object value(s): ${skipped.join(", ")}); custom Pi providers ignored.`
+          : "PAPERCLIP_PI_PROVIDERS is set but contains no provider objects; custom Pi providers ignored.",
       };
     }
-    return { providers, warning: null };
+    return {
+      providers,
+      warning: skipped.length > 0
+        ? `PAPERCLIP_PI_PROVIDERS: skipped provider(s) with non-object values: ${skipped.join(", ")}.`
+        : null,
+    };
   } catch {
     return {
       providers: null,
@@ -110,6 +124,7 @@ export async function preparePiRuntimeConfig(input: {
     return {
       env: input.env,
       notes: warning ? [warning] : [],
+      agentConfigDir: null,
       cleanup: async () => {},
     };
   }
@@ -134,8 +149,10 @@ export async function preparePiRuntimeConfig(input: {
       PI_CODING_AGENT_DIR: agentConfigDir,
     },
     notes: [
+      ...(warning ? [warning] : []),
       `Injected ${Object.keys(providers).length} custom Pi provider(s) from PAPERCLIP_PI_PROVIDERS into a managed models.json: ${Object.keys(providers).join(", ")}.`,
     ],
+    agentConfigDir,
     cleanup: async () => {
       await fs.rm(agentConfigDir, { recursive: true, force: true });
     },

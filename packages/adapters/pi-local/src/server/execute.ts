@@ -322,10 +322,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // PI_CODING_AGENT_DIR before runtimeEnv is computed, so both local validation
   // and the spawned Pi process resolve models against the managed models.json.
   const preparedRuntimeConfig = await preparePiRuntimeConfig({ env });
-  const localAgentConfigDir =
-    preparedRuntimeConfig.notes.length > 0
-      ? preparedRuntimeConfig.env.PI_CODING_AGENT_DIR ?? ""
-      : "";
+  const localAgentConfigDir = preparedRuntimeConfig.agentConfigDir ?? "";
   if (localAgentConfigDir) {
     env.PI_CODING_AGENT_DIR = localAgentConfigDir;
   }

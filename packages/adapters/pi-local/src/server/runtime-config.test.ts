@@ -148,13 +148,38 @@ describe("preparePiRuntimeConfig", () => {
     await prepared.cleanup();
   });
 
-  it("ignores provider entries that are not objects", async () => {
+  it("ignores provider entries that are not objects and names them in the note", async () => {
     const prepared = await preparePiRuntimeConfig({
       env: { PAPERCLIP_PI_PROVIDERS: JSON.stringify({ tensorix: "nope" }) },
     });
     expect(prepared.env.PI_CODING_AGENT_DIR).toBeUndefined();
+    expect(prepared.agentConfigDir).toBeNull();
     expect(prepared.notes).toEqual([
-      "PAPERCLIP_PI_PROVIDERS is set but contains no provider objects; custom Pi providers ignored.",
+      "PAPERCLIP_PI_PROVIDERS is set but contains no provider objects (skipped non-object value(s): tensorix); custom Pi providers ignored.",
+    ]);
+    await prepared.cleanup();
+  });
+
+  it("surfaces skipped non-object entries while keeping the usable ones", async () => {
+    const prepared = await preparePiRuntimeConfig({
+      env: {
+        PAPERCLIP_PI_PROVIDERS: JSON.stringify({
+          bad: "http://gw/v1",
+          tensorix: { baseUrl: "http://gw/anthropic", apiKey: "k", api: "anthropic-messages", models: [] },
+        }),
+      },
+    });
+    const agentConfigDir = prepared.env.PI_CODING_AGENT_DIR;
+    cleanupPaths.add(agentConfigDir);
+    expect(prepared.agentConfigDir).toBe(agentConfigDir);
+    const modelsJson = (await readModelsJson(agentConfigDir)) as {
+      providers: Record<string, unknown>;
+    };
+    expect(modelsJson.providers.tensorix).toBeDefined();
+    expect(modelsJson.providers.bad).toBeUndefined();
+    expect(prepared.notes).toEqual([
+      "PAPERCLIP_PI_PROVIDERS: skipped provider(s) with non-object values: bad.",
+      "Injected 1 custom Pi provider(s) from PAPERCLIP_PI_PROVIDERS into a managed models.json: tensorix.",
     ]);
     await prepared.cleanup();
   });
@@ -183,6 +208,16 @@ describe("preparePiRuntimeConfig", () => {
   it("surfaces a note when PAPERCLIP_PI_PROVIDERS has no provider objects", async () => {
     const prepared = await preparePiRuntimeConfig({
       env: { PAPERCLIP_PI_PROVIDERS: '{"a": 1}' },
+    });
+    expect(prepared.notes).toEqual([
+      "PAPERCLIP_PI_PROVIDERS is set but contains no provider objects (skipped non-object value(s): a); custom Pi providers ignored.",
+    ]);
+    await prepared.cleanup();
+  });
+
+  it("keeps the empty-object case note free of skipped names", async () => {
+    const prepared = await preparePiRuntimeConfig({
+      env: { PAPERCLIP_PI_PROVIDERS: "{}" },
     });
     expect(prepared.notes).toEqual([
       "PAPERCLIP_PI_PROVIDERS is set but contains no provider objects; custom Pi providers ignored.",
