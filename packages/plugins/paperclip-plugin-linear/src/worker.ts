@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
-import type { Issue, PluginContext, PluginWebhookInput } from "@paperclipai/plugin-sdk";
+import type { Issue, PluginContext, PluginEvent, PluginWebhookInput } from "@paperclipai/plugin-sdk";
 
 // Goal type with `targetDate` — added in paperclipai/shared post-2026-04-26
 // (BLO-584). Cast at the boundary until the SDK ships the updated type.
@@ -392,6 +392,42 @@ async function getCompanyId(ctx: PluginContext): Promise<string | null> {
     stateKey: STATE_KEYS.companyId,
   });
   return stored ? String(stored) : null;
+}
+
+function getEventCompanyId(event: PluginEvent, payload?: Record<string, unknown>): string | null {
+  const value = payload?.companyId ?? event.companyId;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+async function getConnectedCompanyIdForEvent(
+  ctx: PluginContext,
+  event: PluginEvent,
+  payload: Record<string, unknown> | undefined,
+  label: string,
+): Promise<string | null> {
+  const connectedCompanyId = await getCompanyId(ctx);
+  if (!connectedCompanyId) return null;
+
+  const eventCompanyId = getEventCompanyId(event, payload);
+  if (eventCompanyId && eventCompanyId !== connectedCompanyId) {
+    ctx.logger.info(`${label}: event company ${eventCompanyId} does not match connected Linear company ${connectedCompanyId}, skipping`);
+    return null;
+  }
+
+  return connectedCompanyId;
+}
+
+function eventMatchesLinkCompany(
+  ctx: PluginContext,
+  event: PluginEvent,
+  payload: Record<string, unknown> | undefined,
+  linkCompanyId: string | null | undefined,
+  label: string,
+): boolean {
+  const eventCompanyId = getEventCompanyId(event, payload);
+  if (!eventCompanyId || !linkCompanyId || eventCompanyId === linkCompanyId) return true;
+  ctx.logger.info(`${label}: event company ${eventCompanyId} does not match linked company ${linkCompanyId}, skipping`);
+  return false;
 }
 
 async function refreshLinearWebhookRegistration(
@@ -1036,8 +1072,11 @@ const plugin = definePlugin({
     });
 
     /** Trigger a full re-sync of all linked issues */
-    ctx.actions.register(ACTION_KEYS.triggerSync, async () => {
-      return await runFullSync(ctx);
+    ctx.actions.register(ACTION_KEYS.triggerSync, async (params: any, context: { companyId?: string | null } | undefined) => {
+      const requestedCompanyId =
+        (context?.companyId as string | null | undefined) ??
+        (typeof params?.companyId === "string" ? params.companyId : null);
+      return await runFullSync(ctx, requestedCompanyId);
     });
 
     // One-time bounded backfill: write Paperclip back-links for already-mirrored
@@ -2100,6 +2139,7 @@ const plugin = definePlugin({
 
       const link = await sync.getLink(ctx, issueId);
       if (!link) return;
+      if (!eventMatchesLinkCompany(ctx, event, payload, link.paperclipCompanyId, "issue.updated")) return;
 
       const changes: sync.SyncChanges = {};
       if (payload?.status) changes.status = payload.status as string;
@@ -2178,7 +2218,7 @@ const plugin = definePlugin({
       const syncDirection = (config.syncDirection as string) || "bidirectional";
       if (syncDirection === "linear-to-paperclip") { ctx.logger.info("issue.created: syncDirection=linear-to-paperclip, skipping"); return; }
 
-      const companyId = await getCompanyId(ctx);
+      const companyId = await getConnectedCompanyIdForEvent(ctx, event, payload, "issue.created");
       if (!companyId) { ctx.logger.info("issue.created: no companyId stored, skipping"); return; }
 
       // Skip if already linked (e.g. created via import or link tool)
@@ -2258,7 +2298,7 @@ const plugin = definePlugin({
       const existing = await sync.getProjectLink(ctx, projectId);
       if (existing) return;
 
-      const companyId = await getCompanyId(ctx);
+      const companyId = await getConnectedCompanyIdForEvent(ctx, event, payload, "project.created");
       if (!companyId) return;
 
       try {
@@ -2316,6 +2356,7 @@ const plugin = definePlugin({
 
       const link = await sync.getProjectLink(ctx, projectId);
       if (!link) return;
+      if (!eventMatchesLinkCompany(ctx, event, payload, link.paperclipCompanyId, "project.updated")) return;
 
       const changes: { name?: string; description?: string; status?: string } = {};
       if (payload?.name) changes.name = payload.name as string;
@@ -2360,7 +2401,7 @@ const plugin = definePlugin({
         return;
       }
 
-      const companyId = await getCompanyId(ctx);
+      const companyId = await getConnectedCompanyIdForEvent(ctx, event, payload, "goal.created");
       if (!companyId) return;
 
       try {
@@ -2375,7 +2416,7 @@ const plugin = definePlugin({
       const goalId = (event.entityId ?? payload?.id) as string | undefined;
       if (!goalId) return;
 
-      const companyId = await getCompanyId(ctx);
+      const companyId = await getConnectedCompanyIdForEvent(ctx, event, payload, "goal.updated");
       if (!companyId) return;
 
       try {
@@ -2397,6 +2438,7 @@ const plugin = definePlugin({
 
       const link = await sync.getLink(ctx, issueId);
       if (!link) return;
+      if (!eventMatchesLinkCompany(ctx, event, payload, link.paperclipCompanyId, "issue.comment.created")) return;
 
       try {
         const token = await resolveToken(ctx);
@@ -3641,10 +3683,11 @@ function isProjectLink(value: unknown): value is sync.ProjectLink {
     && typeof candidate.syncDirection === "string";
 }
 
-async function runFullSync(ctx: PluginContext): Promise<{
+async function runFullSync(ctx: PluginContext, requestedCompanyId?: string | null): Promise<{
   synced: number;
   errors: number;
   scanned: number;
+  skippedOtherCompany: number;
   complete: boolean;
   nextOffset: number;
 }> {
@@ -3652,14 +3695,23 @@ async function runFullSync(ctx: PluginContext): Promise<{
   try {
     token = await resolveToken(ctx);
   } catch {
-    return { synced: 0, errors: 0, scanned: 0, complete: true, nextOffset: 0 };
+    return { synced: 0, errors: 0, scanned: 0, skippedOtherCompany: 0, complete: true, nextOffset: 0 };
   }
 
   const fetch = ctx.http.fetch.bind(ctx.http);
   const teamId = await getTeamId(ctx).catch(() => "");
+  const connectedCompanyId = await getCompanyId(ctx);
+  if (requestedCompanyId && connectedCompanyId && requestedCompanyId !== connectedCompanyId) {
+    ctx.logger.info(
+      `Full sync skipped: requested company ${requestedCompanyId} does not match connected Linear company ${connectedCompanyId}`,
+    );
+    return { synced: 0, errors: 0, scanned: 0, skippedOtherCompany: 0, complete: true, nextOffset: 0 };
+  }
+  const targetCompanyId = connectedCompanyId ?? requestedCompanyId ?? null;
   let synced = 0;
   let errors = 0;
   let scanned = 0;
+  let skippedOtherCompany = 0;
   let entriesScanned = 0;
   const cursorKey = { scopeKind: "instance" as const, stateKey: STATE_KEYS.periodicLinkSyncOffset };
   const storedOffset = Number(await ctx.state.get(cursorKey));
@@ -3686,11 +3738,18 @@ async function runFullSync(ctx: PluginContext): Promise<{
       .filter(isIssueLink);
     scanned += links.length;
     entriesScanned += page.entries.length;
+    const currentCompanyLinks = targetCompanyId
+      ? links.filter((link) => {
+          if (link.paperclipCompanyId === targetCompanyId) return true;
+          skippedOtherCompany++;
+          return false;
+        })
+      : links;
 
     let removedLinksFromPage = 0;
 
-    for (let index = 0; index < links.length; index += LINEAR_ISSUE_SYNC_BATCH_SIZE) {
-      const batch = links.slice(index, index + LINEAR_ISSUE_SYNC_BATCH_SIZE);
+    for (let index = 0; index < currentCompanyLinks.length; index += LINEAR_ISSUE_SYNC_BATCH_SIZE) {
+      const batch = currentCompanyLinks.slice(index, index + LINEAR_ISSUE_SYNC_BATCH_SIZE);
       const linearIds = batch.map((link) => link.linearIssueId);
       let linearIssues: linear.LinearIssue[];
 
@@ -3744,18 +3803,20 @@ async function runFullSync(ctx: PluginContext): Promise<{
   await ctx.state.set(cursorKey, offset);
 
   if (!complete) {
+    const skipSuffix = skippedOtherCompany > 0 ? `, ${skippedOtherCompany} skipped (other company)` : "";
     ctx.logger.info(
-      `Full sync paused: ${synced} synced from ${scanned} linked issues, ${errors} errors, next offset ${offset}`,
+      `Full sync paused: ${synced} synced from ${scanned} linked issues, ${errors} errors${skipSuffix}, next offset ${offset}`,
     );
-    return { synced, errors, scanned, complete, nextOffset: offset };
+    return { synced, errors, scanned, skippedOtherCompany, complete, nextOffset: offset };
   }
 
-  ctx.logger.info(`Full sync complete: ${synced} synced from ${scanned} linked issues, ${errors} errors`);
+  const skipSuffix = skippedOtherCompany > 0 ? `, ${skippedOtherCompany} skipped (other company)` : "";
+  ctx.logger.info(`Full sync complete: ${synced} synced from ${scanned} linked issues, ${errors} errors${skipSuffix}`);
 
   // Re-push goals so status/targetDate edits land in Linear within one cron
   // tick even if the goal.updated event was missed.
   try {
-    const companyId = await getCompanyId(ctx);
+    const companyId = targetCompanyId;
     if (companyId) {
       const g = await runGoalSync(ctx, companyId);
       ctx.logger.info(
@@ -3772,7 +3833,7 @@ async function runFullSync(ctx: PluginContext): Promise<{
   // were missed (e.g. plugin worker was restarting). Runs in the same cron
   // tick so issues, goals, and projects all converge together.
   try {
-    const companyId = await getCompanyId(ctx);
+    const companyId = targetCompanyId;
     if (companyId && teamId) {
       const projResult = await runProjectSync(ctx, companyId, teamId, token);
       const sdkSkipNotes: string[] = [];
@@ -3794,7 +3855,7 @@ async function runFullSync(ctx: PluginContext): Promise<{
     ctx.logger.warn(`Project sync pass failed: ${err}`);
   }
 
-  return { synced, errors, scanned, complete, nextOffset: offset };
+  return { synced, errors, scanned, skippedOtherCompany, complete, nextOffset: offset };
 }
 
 /**

@@ -143,12 +143,14 @@ describe("paperclip-plugin-linear", () => {
   let harness: TestHarness;
 
   // Re-install hoisted syncModule defaults. `vi.clearAllMocks()` clears
-  // call history but preserves implementations set via `mockResolvedValue`
-  // — any test that overrides a default would otherwise leak its override
-  // to subsequent tests (see BLO-2350 / BLO-2973 incident in the commit
-  // log for this file). Keep this list in sync with the hoisted block
-  // at the top of the file.
+  // call history but preserves implementations and queued one-shot
+  // implementations. Reset first, then re-install defaults so tests that use
+  // `mockResolvedValueOnce` cannot leak queue entries into later import tests.
+  // Keep this list in sync with the hoisted block at the top of the file.
   function restoreSyncModuleDefaults() {
+    for (const mock of Object.values(syncModule)) {
+      mock.mockReset();
+    }
     syncModule.getLink.mockResolvedValue(null);
     syncModule.getLinkByLinear.mockResolvedValue(null);
     syncModule.createLink.mockImplementation((_ctx: unknown, params: Record<string, unknown>) => ({
@@ -566,6 +568,23 @@ describe("paperclip-plugin-linear", () => {
 
       expect(syncModule.syncToLinear).toHaveBeenCalledOnce();
     });
+
+    it("skips linked issues when the event company differs from the link company", async () => {
+      syncModule.getLink.mockResolvedValueOnce({
+        paperclipIssueId: "iss-1",
+        paperclipCompanyId: "comp-1",
+        linearIssueId: "lin-1",
+        syncDirection: "bidirectional",
+      });
+
+      await harness.emit(
+        "issue.updated",
+        { id: "iss-1", status: "done", title: "Updated title", companyId: "comp-2" },
+        { entityId: "iss-1", companyId: "comp-2" },
+      );
+
+      expect(syncModule.syncToLinear).not.toHaveBeenCalled();
+    });
   });
 
   describe("issue.comment.created event", () => {
@@ -637,7 +656,7 @@ describe("paperclip-plugin-linear", () => {
       await harness.emit(
         "project.created",
         { id: "proj-1", name: "New Project", status: "active" },
-        { entityId: "proj-1" },
+        { entityId: "proj-1", companyId: "comp-1" },
       );
 
       expect(createProject).toHaveBeenCalledOnce();
@@ -1658,12 +1677,39 @@ describe("paperclip-plugin-linear", () => {
       await harness.emit(
         "issue.created",
         { id: "iss-new", title: "New Paperclip Issue", description: "Test", priority: "high" },
-        { entityId: "iss-new" },
+        { entityId: "iss-new", companyId: "comp-1" },
       );
 
       expect(createIssue).toHaveBeenCalledOnce();
       expect(syncModule.createLink).toHaveBeenCalledOnce();
       expect(harness.activity.some((a) => a.message === "issue.pushed_to_linear")).toBe(true);
+    });
+
+    it("skips Paperclip issues from a different company than the connected Linear company", async () => {
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthTeamId },
+        "team-1",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+
+      const { createIssue } = await import("../src/linear.js");
+
+      await harness.emit(
+        "issue.created",
+        { id: "iss-other", title: "Other company issue", companyId: "comp-2" },
+        { entityId: "iss-other", companyId: "comp-2" },
+      );
+
+      expect(createIssue).not.toHaveBeenCalled();
+      expect(syncModule.createLink).not.toHaveBeenCalled();
+      expect(harness.activity).toHaveLength(0);
     });
 
     it("skips when source is linear (prevents feedback loop)", async () => {
@@ -2511,6 +2557,89 @@ describe("paperclip-plugin-linear", () => {
       expect(syncModule.getLinkByLinear).not.toHaveBeenCalled();
       expect(syncModule.syncFromLinear).toHaveBeenCalledWith(harness.ctx, linkOne, linearOne);
       expect(syncModule.syncFromLinear).toHaveBeenCalledWith(harness.ctx, linkTwo, linearTwo);
+    });
+
+    it("skips persisted Linear issue links from other companies during scoped full sync", async () => {
+      const { listIssuesByIds } = await import("../src/linear.js");
+      const currentLink = {
+        paperclipIssueId: "pc-current",
+        paperclipCompanyId: "comp-1",
+        linearIssueId: "lin-current",
+        linearIdentifier: "LUC-1",
+        linearUrl: "https://linear.app/lucitra/issue/LUC-1",
+        syncDirection: "bidirectional" as const,
+        lastSyncAt: "2026-06-09T00:00:00.000Z",
+        lastLinearStateType: "backlog",
+        lastCommentSyncAt: null,
+      };
+      const otherLink = {
+        paperclipIssueId: "pc-other",
+        paperclipCompanyId: "comp-2",
+        linearIssueId: "lin-other",
+        linearIdentifier: "PEN-1",
+        linearUrl: "https://linear.app/penstock/issue/PEN-1",
+        syncDirection: "bidirectional" as const,
+        lastSyncAt: "2026-06-09T00:00:00.000Z",
+        lastLinearStateType: "backlog",
+        lastCommentSyncAt: null,
+      };
+      const linearCurrent = {
+        id: "lin-current",
+        identifier: "LUC-1",
+        title: "Current company",
+        description: null,
+        state: { name: "Done", type: "completed" },
+        priority: 2,
+        url: "https://linear.app/lucitra/issue/LUC-1",
+        assignee: null,
+        labels: { nodes: [] },
+        project: null,
+        createdAt: "2026-06-09T00:00:00.000Z",
+        updatedAt: "2026-06-09T00:00:00.000Z",
+      };
+
+      vi.mocked(listIssuesByIds).mockResolvedValueOnce([linearCurrent]);
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: `${STATE_KEYS.linkPrefix}${currentLink.paperclipIssueId}` },
+        currentLink,
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: `${STATE_KEYS.linkPrefix}${otherLink.paperclipIssueId}` },
+        otherLink,
+      );
+
+      const result = await harness.performAction<{
+        synced: number;
+        errors: number;
+        scanned: number;
+        skippedOtherCompany: number;
+        complete: boolean;
+        nextOffset: number;
+      }>(ACTION_KEYS.triggerSync, {}, { companyId: "comp-1" });
+
+      expect(result).toMatchObject({
+        synced: 1,
+        errors: 0,
+        scanned: 2,
+        skippedOtherCompany: 1,
+        complete: true,
+        nextOffset: 0,
+      });
+      expect(listIssuesByIds).toHaveBeenCalledWith(
+        expect.any(Function),
+        "lin_token_123",
+        ["lin-current"],
+      );
+      expect(syncModule.syncFromLinear).toHaveBeenCalledTimes(1);
+      expect(syncModule.syncFromLinear).toHaveBeenCalledWith(harness.ctx, currentLink, linearCurrent);
     });
 
     it("bounds periodic linked issue sync and resumes from the stored cursor", async () => {
