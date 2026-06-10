@@ -654,11 +654,26 @@ describe("Routines page", () => {
     });
   });
 
-  it("defaults the routines list to project groups sorted by title", async () => {
+  it("defaults the routines list to ungrouped rows sorted by updated descending", async () => {
     routinesListMock.mockResolvedValue([
-      createRoutine({ id: "routine-1", title: "Weekly digest", projectId: "project-1" }),
-      createRoutine({ id: "routine-2", title: "Morning sync", projectId: "project-1" }),
-      createRoutine({ id: "routine-3", title: "Agent review", projectId: "project-2" }),
+      createRoutine({
+        id: "routine-1",
+        title: "Weekly digest",
+        projectId: "project-1",
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      }),
+      createRoutine({
+        id: "routine-2",
+        title: "Morning sync",
+        projectId: "project-1",
+        updatedAt: new Date("2026-04-03T00:00:00.000Z"),
+      }),
+      createRoutine({
+        id: "routine-3",
+        title: "Agent review",
+        projectId: "project-2",
+        updatedAt: new Date("2026-04-02T00:00:00.000Z"),
+      }),
     ]);
     issuesListMock.mockResolvedValue([]);
 
@@ -678,24 +693,23 @@ describe("Routines page", () => {
       await flush();
     });
 
-    for (let attempts = 0; attempts < 5 && !container.textContent?.includes("Project Alpha"); attempts += 1) {
+    for (let attempts = 0; attempts < 5 && !container.textContent?.includes("Morning sync"); attempts += 1) {
       await act(async () => {
         await flush();
       });
     }
 
     const text = container.textContent ?? "";
-    expect(text.indexOf("Project Alpha")).toBeLessThan(text.indexOf("Project Beta"));
-    expect(text.indexOf("Morning sync")).toBeLessThan(text.indexOf("Weekly digest"));
-    expect(text.indexOf("Project Alpha")).toBeLessThan(text.indexOf("Morning sync"));
-    expect(text.indexOf("Weekly digest")).toBeLessThan(text.indexOf("Project Beta"));
+    expect(text).not.toContain("PROJECT ALPHA");
+    expect(text.indexOf("Morning sync")).toBeLessThan(text.indexOf("Agent review"));
+    expect(text.indexOf("Agent review")).toBeLessThan(text.indexOf("Weekly digest"));
 
     await act(async () => {
       root.unmount();
     });
   });
 
-  it("hides archived routines from the routines list", async () => {
+  it("shows only active routines by default with archived available in filters", async () => {
     routinesListMock.mockResolvedValue([
       createRoutine({ id: "routine-1", title: "Morning sync", status: "active" }),
       createRoutine({ id: "routine-2", title: "Archived cleanup", status: "archived" }),
@@ -725,7 +739,8 @@ describe("Routines page", () => {
     }
 
     const text = container.textContent ?? "";
-    expect(text).toContain("1 routine");
+    expect(text).toContain("1 shown");
+    expect(text).toContain("Archived");
     expect(text).toContain("Morning sync");
     expect(text).not.toContain("Archived cleanup");
 
@@ -734,7 +749,7 @@ describe("Routines page", () => {
     });
   });
 
-  it("shows an outlined row-level run now button on the routines table", async () => {
+  it("shows a row-level run now button on the routines table", async () => {
     routinesListMock.mockResolvedValue([createRoutine({ id: "routine-1", title: "Morning sync" })]);
     issuesListMock.mockResolvedValue([]);
 
@@ -755,19 +770,18 @@ describe("Routines page", () => {
     });
 
     let runNowButton = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Run now"),
+      button.textContent?.includes("Run now") && button.getAttribute("data-variant") === "ghost",
     );
     for (let attempts = 0; attempts < 5 && !runNowButton; attempts += 1) {
       await act(async () => {
         await flush();
       });
       runNowButton = Array.from(container.querySelectorAll("button")).find((button) =>
-        button.textContent?.includes("Run now"),
+        button.textContent?.includes("Run now") && button.getAttribute("data-variant") === "ghost",
       );
     }
 
     expect(runNowButton).toBeTruthy();
-    expect(runNowButton?.getAttribute("data-variant")).toBe("outline");
 
     await act(async () => {
       root.unmount();

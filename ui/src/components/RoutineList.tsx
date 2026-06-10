@@ -130,6 +130,7 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
   disableRunNow = false,
   disableToggle = false,
   hideArchiveAction = false,
+  divider = true,
   onRunNow,
   onToggleEnabled,
   onToggleArchived,
@@ -149,6 +150,8 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
   disableRunNow?: boolean;
   disableToggle?: boolean;
   hideArchiveAction?: boolean;
+  /** Render a bottom divider between consecutive rows. Off when the group is its own card. */
+  divider?: boolean;
   onRunNow: (routine: TRoutine) => void;
   onToggleEnabled: (routine: TRoutine, enabled: boolean) => void;
   onToggleArchived?: (routine: TRoutine) => void;
@@ -169,7 +172,11 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
   const activeIssue = routine.activeIssue ?? null;
 
   return (
-    <div className="flex flex-col gap-3 border-b border-border px-3 py-3 last:border-b-0 sm:flex-row sm:items-center">
+    <div
+      className={`flex flex-col gap-3 px-3 py-3 sm:flex-row sm:items-center${
+        divider ? " border-b border-border last:border-b-0" : ""
+      }`}
+    >
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex flex-wrap items-center gap-2">
           <Link to={href} className="truncate text-sm font-medium text-inherit no-underline hover:underline">
