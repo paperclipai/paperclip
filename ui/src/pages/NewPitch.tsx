@@ -42,6 +42,22 @@ const SELECTS: Record<string, Array<{ v: string; l: string }>> = {
   ],
 };
 
+// Type-or-pick suggestion lists (ported from finn-pitch's intake form). Free
+// text is still allowed — these only populate the dropdown.
+const COMBOS: Record<string, string[]> = {
+  industry: [
+    "Healthcare", "Financial Services", "Insurance", "Real Estate", "Retail & Consumer",
+    "Home Services", "Logistics", "Travel & Hospitality", "Debt Collection", "Mortgage",
+    "SaaS", "Recruitment", "Legal", "Automotive", "Fintech", "Education", "Hospitality",
+    "Wellness", "Customer Success", "Solar", "Non-profit",
+  ],
+  primaryMetric: [
+    "pickup rate", "connect rate", "conversion rate", "qualified leads", "cost per lead",
+    "response time", "first-call resolution", "CSAT", "show rate", "collection rate",
+    "answer rate",
+  ],
+};
+
 const FIELD = "w-full rounded-md border border-border bg-background px-2 py-1 text-sm";
 
 export function NewPitch() {
@@ -102,6 +118,23 @@ export function NewPitch() {
     </select>
   );
   const lbl = (s: string) => <label className="text-xs text-muted-foreground">{s}</label>;
+  const Combo = ({ k, placeholder }: { k: keyof typeof COMBOS; placeholder: string }) => (
+    <>
+      <input
+        list={`combo-${k}`}
+        value={a[k as keyof PitchAnswers]}
+        onChange={(e) => set(k as keyof PitchAnswers, e.target.value)}
+        placeholder={placeholder}
+        autoComplete="off"
+        className={FIELD}
+      />
+      <datalist id={`combo-${k}`}>
+        {COMBOS[k].map((o) => (
+          <option key={o} value={o} />
+        ))}
+      </datalist>
+    </>
+  );
 
   return (
     <div className="space-y-4">
@@ -119,7 +152,7 @@ export function NewPitch() {
           <div>{lbl("Primary use case")}<Sel k="useCase" /></div>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <div>{lbl("Industry / vertical")}<Input value={a.industry} onChange={(e) => set("industry", e.target.value)} placeholder="3PL / logistics" /></div>
+          <div>{lbl("Industry / vertical")}<Combo k="industry" placeholder="Type or pick…" /></div>
           <div>{lbl("Region")}<Sel k="region" /></div>
         </div>
         <div className="grid grid-cols-2 gap-3">
@@ -127,7 +160,7 @@ export function NewPitch() {
           <div>{lbl("Length")}<Sel k="length" /></div>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <div>{lbl("Primary metric")}<Input value={a.primaryMetric} onChange={(e) => set("primaryMetric", e.target.value)} placeholder="cost/call, pickup rate, CSAT…" /></div>
+          <div>{lbl("Primary metric")}<Combo k="primaryMetric" placeholder="Type or pick…" /></div>
           <div>{lbl("Monthly call volume")}<Input value={a.monthlyCalls} onChange={(e) => set("monthlyCalls", e.target.value)} placeholder="8000" inputMode="numeric" /></div>
         </div>
         <div className="grid grid-cols-2 gap-3">
