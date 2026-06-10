@@ -8,6 +8,7 @@ import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -289,6 +290,16 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
       membershipRole,
       status: "active",
     });
+
+  // Without instance-admin elevation, cloud tenant users are authorized purely
+  // through company-scoped permission grants — seed the same role defaults the
+  // regular membership flows create.
+  await ensureHumanRoleDefaultGrants(db, {
+    companyId,
+    principalId: userId,
+    membershipRole: membership.membershipRole,
+    grantedByUserId: null,
+  });
 
   return {
     type: "board",

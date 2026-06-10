@@ -128,7 +128,9 @@ describe("actorMiddleware authenticated session profile", () => {
       memberships: [expect.objectContaining({ membershipRole: "owner", status: "active" })],
     });
     expect(res.body.companyIds[0]).toMatch(/^[0-9a-f-]{36}$/);
-    expect(inserts).toHaveLength(3);
+    // authUsers, companies, companyMemberships, and the role-default
+    // principalPermissionGrants seeded in place of instance-admin elevation.
+    expect(inserts).toHaveLength(4);
     expect(inserts[0]?.values).toMatchObject({
       id: "global-user-1",
       email: "owner@example.com",
