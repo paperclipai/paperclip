@@ -2178,6 +2178,71 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(0);
   });
 
+  it("caps stranded recovery dispatches per pass", async () => {
+    const previousCap = process.env.PAPERCLIP_STRANDED_RECOVERY_MAX_DISPATCHES_PER_PASS;
+    process.env.PAPERCLIP_STRANDED_RECOVERY_MAX_DISPATCHES_PER_PASS = "1";
+
+    try {
+      const first = await seedAssignedTodoNoRunFixture();
+      const second = await seedAssignedTodoNoRunFixture();
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result.assignmentDispatched).toBe(1);
+      expect(result.dispatchRequeued).toBe(0);
+      expect(result.continuationRequeued).toBe(0);
+      expect(result.escalated).toBe(0);
+      expect(result.skipped).toBe(1);
+      expect(result.issueIds).toHaveLength(1);
+      expect([first.issueId, second.issueId]).toContain(result.issueIds[0]);
+
+      const runs = await db.select().from(heartbeatRuns);
+      expect(runs).toHaveLength(1);
+      if (runs[0]?.id) {
+        await waitForRunToSettle(heartbeat, runs[0].id);
+      }
+    } finally {
+      if (previousCap === undefined) {
+        delete process.env.PAPERCLIP_STRANDED_RECOVERY_MAX_DISPATCHES_PER_PASS;
+      } else {
+        process.env.PAPERCLIP_STRANDED_RECOVERY_MAX_DISPATCHES_PER_PASS = previousCap;
+      }
+    }
+  });
+
+  it("ignores nonpositive stranded recovery dispatch caps", async () => {
+    const previousCap = process.env.PAPERCLIP_STRANDED_RECOVERY_MAX_DISPATCHES_PER_PASS;
+    process.env.PAPERCLIP_STRANDED_RECOVERY_MAX_DISPATCHES_PER_PASS = "0";
+
+    try {
+      const first = await seedAssignedTodoNoRunFixture();
+      const second = await seedAssignedTodoNoRunFixture();
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result.assignmentDispatched).toBe(2);
+      expect(result.dispatchRequeued).toBe(0);
+      expect(result.continuationRequeued).toBe(0);
+      expect(result.escalated).toBe(0);
+      expect(result.skipped).toBe(0);
+      expect(result.issueIds).toEqual(expect.arrayContaining([first.issueId, second.issueId]));
+
+      const runs = await db.select().from(heartbeatRuns);
+      expect(runs).toHaveLength(2);
+      for (const run of runs) {
+        if (run.id) {
+          await waitForRunToSettle(heartbeat, run.id);
+        }
+      }
+    } finally {
+      if (previousCap === undefined) {
+        delete process.env.PAPERCLIP_STRANDED_RECOVERY_MAX_DISPATCHES_PER_PASS;
+      } else {
+        process.env.PAPERCLIP_STRANDED_RECOVERY_MAX_DISPATCHES_PER_PASS = previousCap;
+      }
+    }
+  });
+
   it("re-enqueues assigned todo work when the last issue run died and no wake remains", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "todo",
@@ -2260,6 +2325,39 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }
     },
   );
+
+  it("does not retry stranded work while a pending issue interaction owns the next action", async () => {
+    const { agentId, companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "adapter_failed",
+    });
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Confirm the next step before continuing.",
+      },
+      createdByAgentId: agentId,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+  });
 
   it("still re-enqueues stranded assigned todo recovery when an old queued wake exists", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
