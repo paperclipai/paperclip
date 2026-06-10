@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
-import postgres from "postgres";
+// `postgres` (postgres-js) is re-exported by @paperclipai/db so the server
+// doesn't need to declare its own copy of the dependency.
+import { postgres } from "@paperclipai/db";
 import type { LiveEvent } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { pgChannelForCompany } from "./channel.js";
