@@ -946,6 +946,16 @@ describe("agent issue mutation checkout ownership", () => {
 
   it("allows a non-assignee agent to post a plain comment on another agent's issue (201)", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId,
+      companyId,
+      body: "This is a plain comment from a non-assignee agent.",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: peerAgentId,
+      authorUserId: null,
+    });
 
     const res = await request(await createApp(peerActor())).post(`/api/issues/${issueId}/comments`).send({
       body: "This is a plain comment from a non-assignee agent.",
