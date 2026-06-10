@@ -3029,16 +3029,22 @@ function prReviewOutputHasPostedReviewNegation(text: string) {
 // produced no posting attempt won't carry a GitHub auth-expiry signature).
 function prReviewOutputHasGithubAuthExpiry(text: string) {
   // GitHub's literal response for an expired / invalid installation token.
-  // Anthropic cap 401s surface as "API Error: 401" / "authentication_error" and
-  // never say "Bad credentials", so this pairing cleanly discriminates a GitHub
-  // auth failure from an Anthropic 401 (and this fn only runs on succeeded,
-  // non-rate-limited reviewer runs in any case).
-  if (/\bbad\s+credentials\b/i.test(text) && /\b401\b/.test(text)) return true;
+  // Require an explicit GitHub/publish cue alongside "bad credentials" + "401"
+  // so reviewed code that discusses a 401 Bad credentials HTTP response does not
+  // self-trigger the classifier without a GitHub publish-path signal.
+  if (
+    /\bbad\s+credentials\b/i.test(text) &&
+    /\b401\b/.test(text) &&
+    /\b(?:github(?:\s+app)?|installation|gh\b|graphql|rest\b|publish|push|pr\s+review)\b/i.test(text)
+  )
+    return true;
   // Explicit GitHub-App / installation token-expiry phrasing, anchored to a
   // GitHub or publish-path cue so an unrelated "session expired" / "cache
   // expired" line in a quoted diff or review body cannot trip the classifier.
+  // `access` is intentionally absent: "access token expired" is too common in
+  // reviewed application code; require github|installation|gh instead.
   if (
-    /\b(?:github(?:\s+app)?|installation|gh|access)\b[\s\S]{0,40}\btoken\b[\s\S]{0,40}\bexpir\w*/i.test(text) ||
+    /\b(?:github(?:\s+app)?|installation|gh)\b[\s\S]{0,40}\btoken\b[\s\S]{0,40}\bexpir\w*/i.test(text) ||
     // env-var token names (GH_TOKEN / GITHUB_TOKEN); the underscore defeats a
     // bare `\btoken\b`, so anchor on the whole identifier.
     /\b(?:gh_token|github_token)\b[\s\S]{0,30}\bexpir\w*/i.test(text) ||

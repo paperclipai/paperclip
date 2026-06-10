@@ -670,6 +670,24 @@ describe("evaluatePrReviewCompletionEvidence", () => {
     ).toMatchObject({ status: "missing", errorCode: "pr_review_output_missing" });
   });
 
+  it("BLO-9657: reviewed code returning 401 Bad credentials without a GitHub publish anchor stays missing", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(authExpiryCtx, {
+        summary:
+          "Diff fetched for Blockcast/paperclip#230 at head 1672bf45; no review has been posted. The change fixes the OAuth handler that was returning 401 Bad credentials when the session token was missing.",
+      }),
+    ).toMatchObject({ status: "missing", errorCode: "pr_review_output_missing" });
+  });
+
+  it("BLO-9657: reviewed code with 'access token expired' without a GitHub publish anchor stays missing", () => {
+    expect(
+      evaluatePrReviewCompletionEvidence(authExpiryCtx, {
+        summary:
+          "Diff fetched for Blockcast/paperclip#230 at head 1672bf45; no review has been posted. The diff adds retry logic for when the OAuth access token expires during a long-running operation.",
+      }),
+    ).toMatchObject({ status: "missing", errorCode: "pr_review_output_missing" });
+  });
+
   // Precedence guard: a genuinely posted review that merely mentions an earlier,
   // recovered 401 must stay `posted_review` (the posted-marker checks run first).
   it("BLO-8215: a posted review that recovered from an earlier 401 stays posted_review", () => {
