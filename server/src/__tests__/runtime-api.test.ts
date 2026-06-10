@@ -6,7 +6,7 @@ import {
 } from "../runtime-api.js";
 
 describe("runtime API discovery", () => {
-  it("prefers the explicit public base URL for the primary runtime URL", () => {
+  it("prefers the explicit public base URL for the primary runtime URL when bindHost is wildcard", () => {
     expect(
       choosePrimaryRuntimeApiUrl({
         authPublicBaseUrl: "https://paperclip.example.com/base/path",
@@ -15,6 +15,18 @@ describe("runtime API discovery", () => {
         port: 3102,
       }),
     ).toBe("https://paperclip.example.com");
+  });
+
+  it("prefers loopback URL over authPublicBaseUrl when bindHost is loopback", () => {
+    // Server bound to 127.0.0.1 only — agents must use loopback, not the Tailscale/auth URL.
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: "https://myhost.tail302fee.ts.net",
+        allowedHostnames: ["myhost.tail302fee.ts.net"],
+        bindHost: "127.0.0.1",
+        port: 3100,
+      }),
+    ).toBe("http://127.0.0.1:3100");
   });
 
   it("builds ordered callback candidates from explicit, allowed, bind, and interface hosts", () => {
