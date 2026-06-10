@@ -344,6 +344,14 @@ export function decideSuccessfulRunHandoff(input: {
   hasPauseHold: boolean;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
+  // True when this run actually engaged the issue (checked it out / adopted its
+  // checkout lock). Used to scope the implicit in_progress re-confirmation so we
+  // never suppress recovery for issues a run never picked up.
+  runEngagedIssue: boolean;
+  // True when this run emitted a disposition-bearing `PATCH /api/issues/{id}`
+  // (status change, blocker change, or comment-via-patch — anything that logs an
+  // `issue.updated` activity attributed to the run).
+  runEmittedIssuePatch: boolean;
 }): SuccessfulRunHandoffDecision {
   const { run, issue, agent } = input;
 
@@ -369,6 +377,18 @@ export function decideSuccessfulRunHandoff(input: {
   }
   if (!isProductiveSuccessfulRun(input)) {
     return { kind: "skip", reason: "successful run did not produce handoff-relevant progress" };
+  }
+  // A succeeded run that engaged the issue (checked it out) and exited without a
+  // disposition-bearing PATCH or blocker is an implicit `in_progress`
+  // re-confirmation — the agent is saying "still in progress, nothing to change".
+  // Treat that as a valid disposition instead of a missing one. Scoped to engaged
+  // runs so issues that were never picked up still flow to recovery, and to
+  // no-PATCH runs so an explicit status/blocker PATCH keeps existing handling.
+  if (input.runEngagedIssue && !input.runEmittedIssuePatch) {
+    return {
+      kind: "skip",
+      reason: "succeeded run engaged the issue with no PATCH or blocker — implicit in_progress re-confirmation",
+    };
   }
   if (input.hasActiveExecutionPath) return { kind: "skip", reason: "issue already has an active execution path" };
   if (input.hasQueuedWake) return { kind: "skip", reason: "issue already has a queued or deferred wake" };
