@@ -16,7 +16,7 @@ const ALL_FALSE: AdapterCapabilities = {
  * Synchronous fallback for known built-in adapter types so capability checks
  * return correct values on first render before the /api/adapters call resolves.
  */
-const KNOWN_DEFAULTS: Record<string, AdapterCapabilities> = {
+export const BUILTIN_ADAPTER_CAPABILITY_DEFAULTS: Record<string, AdapterCapabilities> = {
   claude_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsModelProfiles: true, supportsAcp: true },
   codex_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsModelProfiles: true, supportsAcp: true },
   cursor: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsModelProfiles: true, supportsAcp: false },
@@ -24,6 +24,7 @@ const KNOWN_DEFAULTS: Record<string, AdapterCapabilities> = {
   grok_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsModelProfiles: false, supportsAcp: false },
   opencode_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsModelProfiles: true, supportsAcp: false },
   pi_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsModelProfiles: false, supportsAcp: false },
+  hermes_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsModelProfiles: false, supportsAcp: false },
   openclaw_gateway: ALL_FALSE,
 };
 
@@ -52,5 +53,5 @@ export function useAdapterCapabilities(): (type: string) => AdapterCapabilities 
   }, [adapters]);
 
   return (type: string): AdapterCapabilities =>
-    capMap.get(type) ?? KNOWN_DEFAULTS[type] ?? ALL_FALSE;
+    capMap.get(type) ?? BUILTIN_ADAPTER_CAPABILITY_DEFAULTS[type] ?? ALL_FALSE;
 }
