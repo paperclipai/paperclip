@@ -54,6 +54,10 @@ vi.mock("../src/linear.js", () => ({
     url: "https://linear.app/lucitra/issue/LUC-1",
     assignee: null,
   }),
+  registerWebhook: vi.fn().mockResolvedValue({
+    id: "lin-webhook-1",
+    enabled: true,
+  }),
   listIssuesByIds: vi.fn().mockResolvedValue([]),
   createIssue: vi.fn().mockResolvedValue({
     id: "lin-iss-new",
@@ -238,6 +242,77 @@ describe("paperclip-plugin-linear", () => {
         stateKey: STATE_KEYS.oauthToken,
       });
       expect(token).toBe("lin_token_123");
+    });
+
+    it("registers the Linear webhook with the configured signing secret", async () => {
+      const { registerWebhook } = await import("../src/linear.js");
+      harness.setConfig({
+        linearClientId: "client-id-123",
+        linearClientSecret: "client-secret-456",
+        paperclipBaseUrl: "https://paperclip.example.com/",
+        linearWebhookSigningSecret: " lin_wh_test ",
+        teamId: "team-1",
+        syncComments: true,
+        syncDirection: "bidirectional",
+      });
+
+      const start = await harness.performAction<{
+        authorizeUrl: string;
+        state: string;
+      }>(ACTION_KEYS.oauthStart, {
+        companyId: "comp-1",
+        redirectUri: "http://localhost:3000/callback",
+      });
+
+      await harness.performAction(ACTION_KEYS.oauthCallback, {
+        code: "auth-code-xyz",
+        state: start.state,
+        redirectUri: "http://localhost:3000/callback",
+      });
+
+      expect(registerWebhook).toHaveBeenCalledWith(
+        expect.any(Function),
+        "lin_token_123",
+        expect.objectContaining({
+          teamId: "team-1",
+          url: "https://paperclip.example.com/api/plugins/paperclip-plugin-linear/webhooks/linear-events",
+          secret: "lin_wh_test",
+        }),
+      );
+    });
+
+    it("refreshes the Linear webhook when config changes", async () => {
+      const { registerWebhook } = await import("../src/linear.js");
+      const config = {
+        linearClientId: "client-id-123",
+        linearClientSecret: "client-secret-456",
+        paperclipBaseUrl: "https://paperclip.example.com",
+        linearWebhookSigningSecret: "lin_wh_changed",
+        teamId: "team-1",
+        syncComments: true,
+        syncDirection: "bidirectional",
+      };
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthTeamId },
+        "team-1",
+      );
+      harness.setConfig(config);
+
+      await plugin.definition.onConfigChanged?.(config);
+
+      expect(registerWebhook).toHaveBeenCalledWith(
+        expect.any(Function),
+        "lin_token_123",
+        expect.objectContaining({
+          teamId: "team-1",
+          url: "https://paperclip.example.com/api/plugins/paperclip-plugin-linear/webhooks/linear-events",
+          secret: "lin_wh_changed",
+        }),
+      );
     });
 
     it("rejects invalid state token", async () => {

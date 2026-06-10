@@ -22,6 +22,8 @@ import {
   JOB_KEYS,
   ACTION_KEYS,
   DATA_KEYS,
+  PLUGIN_ID,
+  WEBHOOK_KEYS,
   STATE_KEYS,
   LINEAR_OAUTH,
   GOALS_LINEAR_PROJECT_NAME,
@@ -172,6 +174,36 @@ async function getCompanyId(ctx: PluginContext): Promise<string | null> {
     stateKey: STATE_KEYS.companyId,
   });
   return stored ? String(stored) : null;
+}
+
+async function refreshLinearWebhookRegistration(
+  ctx: PluginContext,
+  configOverride?: Record<string, unknown>,
+): Promise<{ registered: boolean; reason?: string; webhookId?: string }> {
+  const config = configOverride ?? await ctx.config.get();
+  const baseUrl = (config.paperclipBaseUrl as string | undefined)?.trim().replace(/\/+$/, "");
+  if (!baseUrl) return { registered: false, reason: "paperclipBaseUrl not configured" };
+
+  let token: string;
+  try {
+    token = await resolveToken(ctx);
+  } catch (err) {
+    return { registered: false, reason: String(err) };
+  }
+
+  let teamId: string;
+  try {
+    teamId = await getTeamId(ctx);
+  } catch (err) {
+    return { registered: false, reason: String(err) };
+  }
+
+  const webhook = await linear.registerWebhook(ctx.http.fetch.bind(ctx.http), token, {
+    teamId,
+    url: `${baseUrl}/api/plugins/${PLUGIN_ID}/webhooks/${WEBHOOK_KEYS.linear}`,
+    secret: (config.linearWebhookSigningSecret as string | undefined)?.trim(),
+  });
+  return { registered: true, webhookId: webhook.id };
 }
 
 /**
@@ -545,6 +577,17 @@ const plugin = definePlugin({
           );
         }
 
+        try {
+          const webhookResult = await refreshLinearWebhookRegistration(ctx, config);
+          if (webhookResult.registered) {
+            ctx.logger.info(`Linear webhook registered: ${webhookResult.webhookId}`);
+          } else {
+            ctx.logger.warn(`Linear webhook registration skipped: ${webhookResult.reason}`);
+          }
+        } catch (err) {
+          ctx.logger.warn(`Linear webhook registration failed: ${err}`);
+        }
+
         ctx.logger.info(`Linear OAuth connected: team=${team?.key}, highestNumber=${highestNumber}`);
 
         return {
@@ -708,6 +751,15 @@ const plugin = definePlugin({
             updatedAt: new Date().toISOString(),
           },
         );
+
+        try {
+          const webhookResult = await refreshLinearWebhookRegistration(ctx);
+          if (webhookResult.registered) {
+            ctx.logger.info(`Linear webhook refreshed after team change: ${webhookResult.webhookId}`);
+          }
+        } catch (err) {
+          ctx.logger.warn(`Linear webhook refresh after team change failed: ${err}`);
+        }
       }
       return { ok: true };
     });
@@ -1555,6 +1607,21 @@ const plugin = definePlugin({
 
   async onHealth() {
     return { status: "ok" as const, message: "Linear Issue Sync operational" };
+  },
+
+  async onConfigChanged(newConfig) {
+    const ctx = currentCtx;
+    if (!ctx) return;
+    try {
+      const webhookResult = await refreshLinearWebhookRegistration(ctx, newConfig);
+      if (webhookResult.registered) {
+        ctx.logger.info(`Linear webhook refreshed after config change: ${webhookResult.webhookId}`);
+      } else {
+        ctx.logger.warn(`Linear webhook refresh skipped after config change: ${webhookResult.reason}`);
+      }
+    } catch (err) {
+      ctx.logger.warn(`Linear webhook refresh after config change failed: ${err}`);
+    }
   },
 
   async onValidateConfig(config) {

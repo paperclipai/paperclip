@@ -118,6 +118,7 @@ export async function registerWebhook(
     url: string;
     teamId: string;
     label?: string;
+    secret?: string;
     resourceTypes?: string[];
   },
 ): Promise<{ id: string; enabled: boolean }> {
@@ -139,6 +140,12 @@ export async function registerWebhook(
 
   if (match) {
     // Update existing
+    const input: Record<string, unknown> = {
+      url: params.url,
+      enabled: true,
+      resourceTypes,
+    };
+    if (params.secret?.trim()) input.secret = params.secret.trim();
     const updated = await gql<{
       webhookUpdate: { webhook: { id: string; enabled: boolean } };
     }>(fetch, token, `
@@ -147,7 +154,7 @@ export async function registerWebhook(
           webhook { id enabled }
         }
       }
-    `, { id: match.id, input: { url: params.url, enabled: true } });
+    `, { id: match.id, input });
     return updated.webhookUpdate.webhook;
   }
 
@@ -167,6 +174,7 @@ export async function registerWebhook(
       teamId: params.teamId,
       resourceTypes,
       enabled: true,
+      ...(params.secret?.trim() ? { secret: params.secret.trim() } : {}),
     },
   });
   return created.webhookCreate.webhook;
