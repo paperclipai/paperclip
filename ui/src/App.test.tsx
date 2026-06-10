@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { readFile } from "node:fs/promises";
 import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -96,6 +97,16 @@ describe("CloudAccessGate", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("keeps plugin operations routes registered in App", async () => {
+    const uiRoot = process.cwd().endsWith("/ui") ? process.cwd() : `${process.cwd()}/ui`;
+    const appSource = await readFile(`${uiRoot}/src/App.tsx`, "utf8");
+
+    expect(appSource).toContain('<Route path="projects/:projectId/plugin-operations" element={<ProjectDetail />} />');
+    expect(appSource).toContain(
+      '<Route path="projects/:projectId/plugin-operations" element={<UnprefixedBoardRedirect />} />',
+    );
   });
 
   it("shows a no-access message for signed-in users without org access", async () => {
