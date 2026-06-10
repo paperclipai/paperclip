@@ -229,7 +229,8 @@ describe("prepareCodexRuntimeConfig", () => {
       ["not json", "contains invalid JSON"],
       [JSON.stringify(["providers"]), "is not a JSON object"],
       [JSON.stringify({ no_providers: true }), 'has no "providers" object'],
-      [JSON.stringify({ providers: { gw: "nope" } }), "contains no usable entries"],
+      [JSON.stringify({ providers: {} }), "contains no usable entries"],
+      [JSON.stringify({ providers: { gw: "nope" } }), "skipped non-object or empty-name provider(s): gw"],
     ];
     for (const [raw, noteFragment] of cases) {
       const prepared = await prepareCodexRuntimeConfig({
@@ -257,6 +258,31 @@ describe("prepareCodexRuntimeConfig", () => {
       expect(await readConfigToml(home)).toBe("model = \"gpt-5.1-codex\"\n");
       await prepared.cleanup();
     }
+  });
+
+  it("surfaces skipped non-object provider entries while merging the usable ones", async () => {
+    const home = await makeCodexHome();
+    const prepared = await prepareCodexRuntimeConfig({
+      env: {
+        PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
+          providers: {
+            bad: "http://gateway.example/v1",
+            good: { base_url: "http://gateway.example/v1", env_key: "OPENAI_API_KEY" },
+          },
+          model_provider: "good",
+        }),
+      },
+      codexHome: home,
+    });
+
+    const content = await readConfigToml(home);
+    expect(content).toContain("[model_providers.good]");
+    expect(content).not.toContain("[model_providers.bad]");
+    expect(
+      prepared.notes.some((n) => n.includes("skipped provider(s) with empty names or non-object values: bad")),
+    ).toBe(true);
+    expect(prepared.notes.some((n) => n.includes("Merged 1 custom Codex model provider(s)"))).toBe(true);
+    await prepared.cleanup();
   });
 
   it("escapes DEL (U+007F) in emitted TOML strings", async () => {

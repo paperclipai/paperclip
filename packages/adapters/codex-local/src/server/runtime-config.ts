@@ -99,16 +99,29 @@ function parseCodexProvidersConfig(
     );
     return null;
   }
+  // Only keep provider entries with non-empty names and object values; surface
+  // the ones we drop so a malformed entry is just as diagnosable as malformed JSON.
   const providers: Record<string, Record<string, unknown>> = {};
+  const skipped: string[] = [];
   for (const [key, value] of Object.entries(rawProviders)) {
-    if (key.trim().length === 0 || !isPlainObject(value)) continue;
+    if (key.trim().length === 0 || !isPlainObject(value)) {
+      skipped.push(key.trim().length === 0 ? "(empty name)" : key);
+      continue;
+    }
     providers[key] = expandEnvPlaceholders(value, resolveEnv);
   }
   if (Object.keys(providers).length === 0) {
     notes.push(
-      'PAPERCLIP_CODEX_PROVIDERS "providers" contains no usable entries; custom model providers ignored.',
+      `PAPERCLIP_CODEX_PROVIDERS "providers" contains no usable entries${
+        skipped.length > 0 ? ` (skipped non-object or empty-name provider(s): ${skipped.join(", ")})` : ""
+      }; custom model providers ignored.`,
     );
     return null;
+  }
+  if (skipped.length > 0) {
+    notes.push(
+      `PAPERCLIP_CODEX_PROVIDERS: skipped provider(s) with empty names or non-object values: ${skipped.join(", ")}.`,
+    );
   }
   const modelProvider =
     typeof parsed.model_provider === "string" && parsed.model_provider.trim().length > 0
@@ -361,6 +374,7 @@ export async function prepareCodexRuntimeConfig(input: {
   if (!input.codexHome) {
     return {
       notes: [
+        ...notes,
         "PAPERCLIP_CODEX_PROVIDERS is set but the adapter config explicitly sets env.CODEX_HOME; leaving the user-managed Codex home untouched (no model provider merge).",
       ],
       cleanup: async () => {},
@@ -386,6 +400,7 @@ export async function prepareCodexRuntimeConfig(input: {
 
   return {
     notes: [
+      ...notes,
       `Merged ${providerNames.length} custom Codex model provider(s) from PAPERCLIP_CODEX_PROVIDERS into "${configTomlPath}": ${providerNames.join(", ")}${
         parsed.modelProvider ? `; selected model_provider "${parsed.modelProvider}"` : ""
       }.`,
