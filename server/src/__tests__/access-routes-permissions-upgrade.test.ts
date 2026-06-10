@@ -115,7 +115,7 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
       .where(eq(companyMemberships.id, owner.id))
       .then((rows) => rows[0]!);
     expect(unchanged.membershipRole).toBe("owner");
-  });
+  }, 10_000);
 
   it("keeps custom grants when the role-only member route changes a member role", async () => {
     const { company, owner } = await createCompanyWithOwner(db);

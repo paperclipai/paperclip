@@ -8,7 +8,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
-import { companiesApi } from "../api/companies";
+import { companiesListQueryOptions } from "../api/companies-query";
 import { healthApi } from "../api/health";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { clearPendingInviteToken, rememberPendingInviteToken } from "../lib/invite-memory";
@@ -248,11 +248,10 @@ export function InviteLandingPage() {
   });
 
   const companiesQuery = useQuery({
-    queryKey: queryKeys.companies.all,
-    queryFn: () => companiesApi.list(),
+    ...companiesListQueryOptions,
     enabled: !!sessionQuery.data && !!inviteQuery.data?.companyId,
-    retry: false,
   });
+  const companyList = companiesQuery.data?.companies ?? [];
 
   useEffect(() => {
     if (token) rememberPendingInviteToken(token);
@@ -263,15 +262,12 @@ export function InviteLandingPage() {
   }, [token]);
 
   useEffect(() => {
-    if (!companiesQuery.data || !inviteQuery.data?.companyId) return;
-    const isMember = companiesQuery.data.some(
-      (c) => c.id === inviteQuery.data!.companyId
-    );
-    if (isMember) {
+    const list = companiesQuery.data?.companies;
+    if (!list || !inviteQuery.data?.companyId) return;
+    if (list.some((c) => c.id === inviteQuery.data!.companyId)) {
       clearPendingInviteToken(token);
-      navigate("/", { replace: true });
     }
-  }, [companiesQuery.data, inviteQuery.data, token, navigate]);
+  }, [companiesQuery.data, inviteQuery.data, token]);
 
   const invite = inviteQuery.data;
   const isCheckingExistingMembership =
@@ -280,9 +276,7 @@ export function InviteLandingPage() {
     companiesQuery.isLoading;
   const isCurrentMember =
     Boolean(invite?.companyId) &&
-    Boolean(
-      companiesQuery.data?.some((company) => company.id === invite?.companyId),
-    );
+    companyList.some((company) => company.id === invite?.companyId);
   const companyName = invite?.companyName?.trim() || null;
   const companyDisplayName = companyName || "this Paperclip company";
   const companyLogoUrl = invite?.companyLogoUrl?.trim() || null;
@@ -292,6 +286,9 @@ export function InviteLandingPage() {
   const requestedHumanRole = formatHumanRole(invite?.humanRole);
   const inviteJoinRequestStatus = invite?.joinRequestStatus ?? null;
   const inviteJoinRequestType = invite?.joinRequestType ?? null;
+  const canCompleteAcceptedHumanInvite =
+    inviteJoinRequestType === "human" &&
+    (inviteJoinRequestStatus === "pending_approval" || inviteJoinRequestStatus === "approved");
   const requiresHumanAccount =
     healthQuery.data?.deploymentMode === "authenticated" &&
     !sessionQuery.data &&
@@ -301,7 +298,7 @@ export function InviteLandingPage() {
     Boolean(sessionQuery.data) &&
     !showsAgentForm &&
     invite?.inviteType !== "bootstrap_ceo" &&
-    !inviteJoinRequestStatus &&
+    (!inviteJoinRequestStatus || canCompleteAcceptedHumanInvite) &&
     !isCheckingExistingMembership &&
     !isCurrentMember &&
     !result &&
@@ -341,6 +338,7 @@ export function InviteLandingPage() {
       const asBootstrap = isBootstrapAcceptancePayload(payload);
       setResult({ kind: asBootstrap ? "bootstrap" : "join", payload });
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       if (invite?.companyId && isApprovedHumanJoinPayload(payload, showsAgentForm)) {
         setSelectedCompanyId(invite.companyId, { source: "manual" });
@@ -375,13 +373,10 @@ export function InviteLandingPage() {
       setAuthFeedback(null);
       rememberPendingInviteToken(token);
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-      const companies = await queryClient.fetchQuery({
-        queryKey: queryKeys.companies.all,
-        queryFn: () => companiesApi.list(),
-        retry: false,
-      });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
+      const { companies: freshCompanies } = await queryClient.fetchQuery(companiesListQueryOptions);
 
-      if (invite?.companyId && companies.some((company) => company.id === invite.companyId)) {
+      if (invite?.companyId && freshCompanies.some((company) => company.id === invite.companyId)) {
         clearPendingInviteToken(token);
         setSelectedCompanyId(invite.companyId, { source: "manual" });
         navigate("/", { replace: true });
@@ -413,10 +408,11 @@ export function InviteLandingPage() {
 
   const joinButtonLabel = useMemo(() => {
     if (!invite) return "Continue";
+    if (isCurrentMember) return "Open company";
     if (invite.inviteType === "bootstrap_ceo") return "Accept invite";
     if (showsAgentForm) return "Submit request";
     return sessionQuery.data ? "Accept invite" : "Continue";
-  }, [invite, sessionQuery.data, showsAgentForm]);
+  }, [invite, isCurrentMember, sessionQuery.data, showsAgentForm]);
 
   if (!token) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-destructive">Invalid invite token.</div>;
@@ -451,7 +447,7 @@ export function InviteLandingPage() {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Opening company...</div>;
   }
 
-  if (inviteJoinRequestStatus === "pending_approval") {
+  if (inviteJoinRequestStatus === "pending_approval" && !canCompleteAcceptedHumanInvite) {
     return (
       <AwaitingJoinApprovalPanel
         companyDisplayName={companyDisplayName}
@@ -462,7 +458,7 @@ export function InviteLandingPage() {
     );
   }
 
-  if (inviteJoinRequestStatus) {
+  if (inviteJoinRequestStatus && !canCompleteAcceptedHumanInvite) {
     return (
       <div className="mx-auto max-w-xl py-10">
         <div className="border border-border bg-card p-6" data-testid="invite-error">
@@ -787,19 +783,21 @@ export function InviteLandingPage() {
               <div className="space-y-4">
                 <div>
                   <h2 className="text-lg font-semibold">
-                    {shouldAutoAcceptHumanInvite
-                      ? "Submitting join request"
+                    {isCurrentMember
+                      ? "Already in this company"
+                      : shouldAutoAcceptHumanInvite
+                      ? "Completing company access"
                       : invite.inviteType === "bootstrap_ceo"
                         ? "Accept bootstrap invite"
                         : "Accept company invite"}
                   </h2>
                   <p className="mt-1 text-sm text-zinc-400">
                     {shouldAutoAcceptHumanInvite
-                      ? `Submitting your join request for ${companyDisplayName}.`
+                      ? `Granting your access to ${companyDisplayName}.`
                       : isCurrentMember
                       ? `This account already belongs to ${companyDisplayName}.`
                       : `This will ${
-                          invite.inviteType === "bootstrap_ceo" ? "finish setting up Paperclip" : `submit or complete your join request for ${companyDisplayName}`
+                          invite.inviteType === "bootstrap_ceo" ? "finish setting up Paperclip" : `grant or complete your access to ${companyDisplayName}`
                         }.`}
                   </p>
                 </div>
@@ -811,8 +809,16 @@ export function InviteLandingPage() {
                 ) : (
                   <Button
                     className="w-full rounded-none"
-                    disabled={acceptMutation.isPending || isCurrentMember}
-                    onClick={() => acceptMutation.mutate()}
+                    disabled={acceptMutation.isPending}
+                    onClick={() => {
+                      if (isCurrentMember && invite.companyId) {
+                        clearPendingInviteToken(token);
+                        setSelectedCompanyId(invite.companyId, { source: "manual" });
+                        navigate("/", { replace: true });
+                        return;
+                      }
+                      acceptMutation.mutate();
+                    }}
                   >
                     {acceptMutation.isPending ? "Working..." : joinButtonLabel}
                   </Button>

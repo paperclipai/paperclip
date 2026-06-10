@@ -89,6 +89,10 @@
   --chip-match-identifier-bg: var(--muted);
   --chip-match-identifier-fg: var(--muted-foreground);
   --chip-match-identifier-border: var(--border);
+  --paperclip-doc-annotation-highlight-open: #fef08a;
+  --paperclip-doc-annotation-highlight-focused: #fde047;
+  --paperclip-doc-annotation-highlight-stale: #fef08a;
+  --paperclip-doc-annotation-highlight-resolved: #fef9c3;
 }
 
 .dark {
@@ -136,6 +140,30 @@
   --chip-match-identifier-bg: var(--muted);
   --chip-match-identifier-fg: var(--muted-foreground);
   --chip-match-identifier-border: var(--border);
+  --paperclip-doc-annotation-highlight-open: #a16207;
+  --paperclip-doc-annotation-highlight-focused: #ca8a04;
+  --paperclip-doc-annotation-highlight-stale: #854d0e;
+  --paperclip-doc-annotation-highlight-resolved: #713f12;
+}
+
+::highlight(paperclip-doc-annotation-open) {
+  background-color: var(--paperclip-doc-annotation-highlight-open);
+  color: inherit;
+}
+
+::highlight(paperclip-doc-annotation-focused) {
+  background-color: var(--paperclip-doc-annotation-highlight-focused);
+  color: inherit;
+}
+
+::highlight(paperclip-doc-annotation-stale) {
+  background-color: var(--paperclip-doc-annotation-highlight-stale);
+  color: inherit;
+}
+
+::highlight(paperclip-doc-annotation-resolved) {
+  background-color: var(--paperclip-doc-annotation-highlight-resolved);
+  color: inherit;
 }
 
 @layer base {
@@ -736,7 +764,9 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 .paperclip-markdown-codeblock-action {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 0.25rem;
+  min-height: 1.55rem;
   padding: 0.2rem 0.4rem;
   border-radius: calc(var(--radius) - 4px);
   border: 1px solid color-mix(in oklab, var(--foreground) 14%, transparent);
@@ -745,7 +775,7 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   font-size: 0.7rem;
   line-height: 1;
   cursor: pointer;
-  transition: background-color 0.12s ease, color 0.12s ease;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 
 .paperclip-markdown-codeblock:hover .paperclip-markdown-codeblock-actions,
@@ -761,6 +791,7 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 
 .paperclip-markdown-codeblock-action[data-active],
 .paperclip-markdown-codeblock-action[data-copied] {
+  border-color: color-mix(in oklab, var(--primary) 38%, transparent);
   color: var(--primary);
 }
 

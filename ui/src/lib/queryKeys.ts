@@ -11,6 +11,11 @@ export const queryKeys = {
       ["company-skills", companyId, skillId, "update-status"] as const,
     file: (companyId: string, skillId: string, relativePath: string) =>
       ["company-skills", companyId, skillId, "file", relativePath] as const,
+    catalog: (filters: { kind?: string; category?: string; q?: string } = {}) =>
+      ["company-skills", "catalog", filters.kind ?? "__all-kinds__", filters.category ?? "__all-categories__", filters.q ?? ""] as const,
+    catalogDetail: (catalogRef: string) => ["company-skills", "catalog", "detail", catalogRef] as const,
+    catalogFile: (catalogRef: string, relativePath: string) =>
+      ["company-skills", "catalog", "file", catalogRef, relativePath] as const,
   },
   agents: {
     list: (companyId: string) => ["agents", companyId] as const,
@@ -56,15 +61,20 @@ export const queryKeys = {
     detail: (id: string) => ["issues", "detail", id] as const,
     comments: (issueId: string) => ["issues", "comments", issueId] as const,
     interactions: (issueId: string) => ["issues", "interactions", issueId] as const,
+    acceptedPlanDecompositions: (issueId: string) =>
+      ["issues", "accepted-plan-decompositions", issueId] as const,
     feedbackVotes: (issueId: string) => ["issues", "feedback-votes", issueId] as const,
     costSummary: (issueId: string, options: { excludeRoot?: boolean } = {}) =>
       options.excludeRoot
         ? (["issues", "cost-summary", issueId, "exclude-root"] as const)
         : (["issues", "cost-summary", issueId] as const),
     attachments: (issueId: string) => ["issues", "attachments", issueId] as const,
+    attachmentPreview: (attachmentId: string) => ["issues", "attachment-preview", attachmentId] as const,
     documents: (issueId: string) => ["issues", "documents", issueId] as const,
     document: (issueId: string, key: string) => ["issues", "document", issueId, key] as const,
     documentRevisions: (issueId: string, key: string) => ["issues", "document-revisions", issueId, key] as const,
+    documentAnnotations: (issueId: string, key: string, status: "open" | "resolved" | "all" = "all") =>
+      ["issues", "document-annotations", issueId, key, status] as const,
     activity: (issueId: string) => ["issues", "activity", issueId] as const,
     runs: (issueId: string) => ["issues", "runs", issueId] as const,
     approvals: (issueId: string) => ["issues", "approvals", issueId] as const,
@@ -129,6 +139,9 @@ export const queryKeys = {
     companyOrder: (userId: string) => ["sidebar-preferences", "company-order", userId] as const,
     projectOrder: (companyId: string, userId: string) =>
       ["sidebar-preferences", "project-order", companyId, userId] as const,
+  },
+  resourceMemberships: {
+    mine: (companyId: string) => ["resource-memberships", companyId, "me"] as const,
   },
   instance: {
     generalSettings: ["instance", "general-settings"] as const,

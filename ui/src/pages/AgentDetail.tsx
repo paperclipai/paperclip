@@ -36,6 +36,7 @@ import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { CopyText } from "../components/CopyText";
 import { EntityRow } from "../components/EntityRow";
+import { MembershipAction } from "../components/MembershipAction";
 import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { RunButton, PauseResumeButton } from "../components/AgentActionButtons";
@@ -103,6 +104,11 @@ import {
 } from "@paperclipai/shared";
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
+import {
+  resourceMembershipState,
+  useResourceMembershipMutation,
+  useResourceMemberships,
+} from "../hooks/useResourceMemberships";
 import {
   applyAgentSkillSnapshot,
   arraysEqual,
@@ -677,6 +683,7 @@ export function AgentDetail() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [actionError, setActionError] = useState<string | null>(null);
+  const [dismissedLeftAgentIds, setDismissedLeftAgentIds] = useState<Set<string>>(() => new Set());
   const [moreOpen, setMoreOpen] = useState(false);
   const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
   const needsDashboardData = activeView === "dashboard";
@@ -707,6 +714,11 @@ export function AgentDetail() {
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
   const agentLookupRef = agent?.id ?? routeAgentRef;
   const resolvedAgentId = agent?.id ?? null;
+  const membershipsQuery = useResourceMemberships(resolvedCompanyId);
+  const membershipMutation = useResourceMembershipMutation(resolvedCompanyId);
+  const agentMembershipState = resolvedAgentId
+    ? resourceMembershipState(membershipsQuery.data, "agent", resolvedAgentId)
+    : "joined";
 
   const { data: runtimeState } = useQuery({
     queryKey: queryKeys.agents.runtimeState(resolvedAgentId ?? routeAgentRef),
@@ -988,6 +1000,16 @@ export function AgentDetail() {
     return () => closePanel();
   }, [closePanel]);
 
+  useEffect(() => {
+    if (!resolvedAgentId || agentMembershipState !== "joined") return;
+    setDismissedLeftAgentIds((current) => {
+      if (!current.has(resolvedAgentId)) return current;
+      const next = new Set(current);
+      next.delete(resolvedAgentId);
+      return next;
+    });
+  }, [resolvedAgentId, agentMembershipState]);
+
   useBeforeUnload(
     useCallback((event) => {
       if (!configDirty) return;
@@ -1004,9 +1026,48 @@ export function AgentDetail() {
   }
   const isPendingApproval = agent.status === "pending_approval";
   const showConfigActionBar = (activeView === "configuration" || activeView === "instructions") && (configDirty || configSaving);
+  const showLeftAgentNotice = agentMembershipState === "left" && !dismissedLeftAgentIds.has(agent.id);
+  const agentMembershipPending =
+    membershipMutation.isPending &&
+    membershipMutation.variables?.resourceType === "agent" &&
+    membershipMutation.variables.resourceId === agent.id;
 
   return (
     <div className={cn("space-y-6", isMobile && showConfigActionBar && "pb-24")}>
+      {showLeftAgentNotice ? (
+        <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-100">
+          <p className="min-w-0 flex-1">
+            You left this agent. It no longer appears in your sidebar.
+          </p>
+          <MembershipAction
+            compact
+            state="left"
+            pending={agentMembershipPending}
+            pendingState={agentMembershipPending ? membershipMutation.variables?.state : null}
+            resourceName={agent.name}
+            onJoin={() => membershipMutation.mutate({
+              resourceType: "agent",
+              resourceId: agent.id,
+              resourceName: agent.name,
+              state: "joined",
+            })}
+            onLeave={() => membershipMutation.mutate({
+              resourceType: "agent",
+              resourceId: agent.id,
+              resourceName: agent.name,
+              state: "left",
+            })}
+          />
+          <button
+            type="button"
+            className="h-6 w-6 shrink-0 text-yellow-100/70 hover:text-yellow-100"
+            aria-label="Dismiss agent membership notice"
+            onClick={() => setDismissedLeftAgentIds((current) => new Set(current).add(agent.id))}
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
       {/* Header */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3 min-w-0">
@@ -2749,6 +2810,14 @@ export function AgentSkillsTab({
         })),
     [companySkillKeys, skillSnapshot],
   );
+  const installedSkillRows = useMemo(
+    () => optionalSkillRows.filter((skill) => skillDraft.includes(skill.key)),
+    [optionalSkillRows, skillDraft],
+  );
+  const otherSkillRows = useMemo(
+    () => optionalSkillRows.filter((skill) => !skillDraft.includes(skill.key)),
+    [optionalSkillRows, skillDraft],
+  );
   const desiredOnlyMissingSkills = useMemo(
     () => skillDraft.filter((key) => !companySkillByKey.has(key)),
     [companySkillByKey, skillDraft],
@@ -2913,6 +2982,30 @@ export function AgentSkillsTab({
               );
             };
 
+            const renderSkillSection = (
+              title: string,
+              rows: SkillRow[],
+              emptyMessage?: string,
+            ) => {
+              if (rows.length === 0 && !emptyMessage) return null;
+              return (
+                <section className="border-y border-border">
+                  <div className="border-b border-border bg-muted/40 px-3 py-2">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      {title}
+                    </span>
+                  </div>
+                  {rows.length > 0 ? (
+                    rows.map(renderSkillRow)
+                  ) : (
+                    <div className="px-3 py-3 text-sm text-muted-foreground">
+                      {emptyMessage}
+                    </div>
+                  )}
+                </section>
+              );
+            };
+
             if (optionalSkillRows.length === 0 && requiredSkillRows.length === 0 && unmanagedSkillRows.length === 0) {
               return (
                 <section className="border-y border-border">
@@ -2925,22 +3018,17 @@ export function AgentSkillsTab({
 
             return (
               <>
-                {optionalSkillRows.length > 0 && (
-                  <section className="border-y border-border">
-                    {optionalSkillRows.map(renderSkillRow)}
-                  </section>
-                )}
+                {optionalSkillRows.length > 0
+                  ? renderSkillSection(
+                      "Installed skills",
+                      installedSkillRows,
+                      "No company-library skills installed on this agent.",
+                    )
+                  : null}
 
-                {requiredSkillRows.length > 0 && (
-                  <section className="border-y border-border">
-                    <div className="border-b border-border bg-muted/40 px-3 py-2">
-                      <span className="text-xs font-medium text-muted-foreground">
-                        Required by Paperclip
-                      </span>
-                    </div>
-                    {requiredSkillRows.map(renderSkillRow)}
-                  </section>
-                )}
+                {renderSkillSection("Other skills", otherSkillRows)}
+
+                {renderSkillSection("Required by Paperclip", requiredSkillRows)}
 
                 {unmanagedSkillRows.length > 0 && (
                   <section className="border-y border-border">

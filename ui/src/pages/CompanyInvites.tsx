@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, ExternalLink, MailPlus } from "lucide-react";
+import { Check, Copy, ExternalLink, MailPlus } from "lucide-react";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
@@ -52,6 +52,7 @@ export function CompanyInvites() {
   const [humanRole, setHumanRole] = useState<"owner" | "admin" | "operator" | "viewer">("operator");
   const [latestInviteUrl, setLatestInviteUrl] = useState<string | null>(null);
   const [latestInviteCopied, setLatestInviteCopied] = useState(false);
+  const latestInviteInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!latestInviteCopied) return;
@@ -61,22 +62,58 @@ export function CompanyInvites() {
     return () => window.clearTimeout(timeout);
   }, [latestInviteCopied]);
 
-  async function copyInviteUrl(url: string) {
+  function selectLatestInviteUrl() {
+    latestInviteInputRef.current?.focus();
+    latestInviteInputRef.current?.select();
+  }
+
+  async function copyText(text: string, unavailableBody: string, afterFallback?: () => void) {
     try {
       if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(url);
+        await navigator.clipboard.writeText(text);
         return true;
       }
     } catch {
       // Fall through to the unavailable message below.
     }
 
+    const canUseLegacyCopy =
+      typeof document !== "undefined" &&
+      typeof document.execCommand === "function" &&
+      (typeof document.queryCommandSupported !== "function" || document.queryCommandSupported("copy"));
+    if (canUseLegacyCopy) {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "true");
+      textarea.style.position = "fixed";
+      textarea.style.top = "0";
+      textarea.style.left = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
+
+      try {
+        const copied = document.execCommand("copy");
+        document.body.removeChild(textarea);
+        afterFallback?.();
+        if (copied) return true;
+      } catch {
+        document.body.removeChild(textarea);
+      }
+    }
+
+    afterFallback?.();
     pushToast({
       title: "Clipboard unavailable",
-      body: "Copy the invite URL manually from the field below.",
+      body: unavailableBody,
       tone: "warn",
     });
     return false;
+  }
+
+  async function copyInviteUrl(url: string) {
+    return copyText(url, "The invite URL is selected. Copy it manually from the field.", selectLatestInviteUrl);
   }
 
   useEffect(() => {
@@ -117,7 +154,7 @@ export function CompanyInvites() {
     onSuccess: async (invite) => {
       setLatestInviteUrl(invite.inviteUrl);
       setLatestInviteCopied(false);
-      const copied = await copyInviteUrl(invite.inviteUrl);
+      const copied = await copyText(invite.inviteUrl, "Copy the invite URL manually from the field below.");
 
       await queryClient.invalidateQueries({ queryKey: inviteHistoryQueryKey });
       pushToast({
@@ -176,13 +213,13 @@ export function CompanyInvites() {
           <h1 className="text-lg font-semibold">Company Invites</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          Create human invite links for company access. New invite links are copied to your clipboard when they are generated.
+          Invite people to request access to this company. New invite links are copied to your clipboard when they are generated.
         </p>
       </div>
 
       <section className="space-y-4 rounded-xl border border-border p-5">
         <div className="space-y-1">
-          <h2 className="text-sm font-semibold">Create invite</h2>
+          <h2 className="text-sm font-semibold">Invite a person</h2>
           <p className="text-sm text-muted-foreground">
             Generate a human invite link and choose the default access it should request.
           </p>
@@ -225,7 +262,7 @@ export function CompanyInvites() {
         </fieldset>
 
         <div className="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
-          Each invite link is single-use. The first successful use consumes the link and creates or reuses the matching join request before approval.
+          Each invite link is single-use. Human invitees get the selected role immediately after sign-in; agent invites still create a join request for approval.
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
@@ -251,17 +288,31 @@ export function CompanyInvites() {
                 This URL includes the current Paperclip domain returned by the server.
               </div>
             </div>
-            <button
-              type="button"
-              onClick={async () => {
-                const copied = await copyInviteUrl(latestInviteUrl);
-                setLatestInviteCopied(copied);
-              }}
-              className="w-full rounded-md border border-border bg-muted/60 px-3 py-2 text-left text-sm break-all transition-colors hover:bg-background"
-            >
-              {latestInviteUrl}
-            </button>
+            <label className="block space-y-1">
+              <span className="sr-only">Latest invite URL</span>
+              <input
+                ref={latestInviteInputRef}
+                readOnly
+                value={latestInviteUrl}
+                onFocus={(event) => event.currentTarget.select()}
+                onClick={(event) => event.currentTarget.select()}
+                className="w-full rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-foreground outline-none transition-colors selection:bg-primary selection:text-primary-foreground focus:border-ring"
+                aria-label="Latest invite URL"
+              />
+            </label>
             <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={async () => {
+                  const copied = await copyInviteUrl(latestInviteUrl);
+                  setLatestInviteCopied(copied);
+                }}
+              >
+                <Copy className="h-4 w-4" />
+                Copy link
+              </Button>
               <Button size="sm" variant="outline" asChild>
                 <a href={latestInviteUrl} target="_blank" rel="noreferrer">
                   <ExternalLink className="h-4 w-4" />
@@ -278,7 +329,7 @@ export function CompanyInvites() {
           <div className="space-y-1">
             <h2 className="text-sm font-semibold">Invite history</h2>
             <p className="text-sm text-muted-foreground">
-              Review invite status, role, inviter, and any linked join request.
+              Review invite status, audience, inviter, and any linked join request.
             </p>
           </div>
           <Link to="/inbox/requests" className="text-sm underline underline-offset-4">
@@ -297,7 +348,7 @@ export function CompanyInvites() {
                 <thead>
                   <tr className="border-b border-border">
                     <th className="px-5 py-3 font-medium text-muted-foreground">State</th>
-                    <th className="px-5 py-3 font-medium text-muted-foreground">Role</th>
+                    <th className="px-5 py-3 font-medium text-muted-foreground">For</th>
                     <th className="px-5 py-3 font-medium text-muted-foreground">Invited by</th>
                     <th className="px-5 py-3 font-medium text-muted-foreground">Created</th>
                     <th className="px-5 py-3 font-medium text-muted-foreground">Join request</th>
@@ -312,7 +363,7 @@ export function CompanyInvites() {
                           {formatInviteState(invite.state)}
                         </span>
                       </td>
-                      <td className="px-5 py-3 align-top">{invite.humanRole ?? "—"}</td>
+                      <td className="px-5 py-3 align-top">{formatInviteAudience(invite)}</td>
                       <td className="px-5 py-3 align-top">
                         <div>{invite.invitedByUser?.name || invite.invitedByUser?.email || "Unknown inviter"}</div>
                         {invite.invitedByUser?.email && invite.invitedByUser.name ? (
@@ -371,4 +422,10 @@ export function CompanyInvites() {
 
 function formatInviteState(state: "active" | "accepted" | "expired" | "revoked") {
   return state.charAt(0).toUpperCase() + state.slice(1);
+}
+
+function formatInviteAudience(invite: Awaited<ReturnType<typeof accessApi.listInvites>>["invites"][number]) {
+  if (invite.allowedJoinTypes === "agent") return "Agent";
+  if (invite.allowedJoinTypes === "both") return invite.humanRole ? `Human or agent · ${invite.humanRole}` : "Human or agent";
+  return invite.humanRole ?? "Human";
 }

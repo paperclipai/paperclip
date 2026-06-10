@@ -292,6 +292,22 @@ export function isSystemIssueDocumentKey(key: string): key is SystemIssueDocumen
 export const ISSUE_REFERENCE_SOURCE_KINDS = ["title", "description", "comment", "document"] as const;
 export type IssueReferenceSourceKind = (typeof ISSUE_REFERENCE_SOURCE_KINDS)[number];
 
+export const DOCUMENT_ANNOTATION_THREAD_STATUSES = ["open", "resolved"] as const;
+export type DocumentAnnotationThreadStatus = (typeof DOCUMENT_ANNOTATION_THREAD_STATUSES)[number];
+
+export const DOCUMENT_ANNOTATION_ANCHOR_STATES = ["active", "stale", "orphaned"] as const;
+export type DocumentAnnotationAnchorState = (typeof DOCUMENT_ANNOTATION_ANCHOR_STATES)[number];
+
+export const DOCUMENT_ANNOTATION_ANCHOR_CONFIDENCES = [
+  "exact",
+  "duplicate",
+  "fuzzy",
+  "ambiguous",
+  "missing",
+] as const;
+export type DocumentAnnotationAnchorConfidence =
+  (typeof DOCUMENT_ANNOTATION_ANCHOR_CONFIDENCES)[number];
+
 export const ISSUE_EXECUTION_POLICY_MODES = ["normal", "auto"] as const;
 export type IssueExecutionPolicyMode = (typeof ISSUE_EXECUTION_POLICY_MODES)[number];
 
@@ -400,7 +416,7 @@ export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
 export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook"] as const;
 export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
 
-export const PAUSE_REASONS = ["manual", "budget", "system"] as const;
+export const PAUSE_REASONS = ["manual", "budget", "system", "company_archived"] as const;
 export type PauseReason = (typeof PAUSE_REASONS)[number];
 
 export const PROJECT_COLORS = [

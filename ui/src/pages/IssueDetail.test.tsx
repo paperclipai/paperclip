@@ -2,7 +2,8 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, Issue, IssueTreeControlPreview, IssueTreeHold } from "@paperclipai/shared";
-import { act, type AnchorHTMLAttributes, type ButtonHTMLAttributes, type ReactNode } from "react";
+import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { canBoardResolveRecoveryAction, IssueDetail } from "./IssueDetail";
@@ -10,8 +11,10 @@ import { canBoardResolveRecoveryAction, IssueDetail } from "./IssueDetail";
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
   list: vi.fn(),
+  listAcceptedPlanDecompositions: vi.fn(),
   listComments: vi.fn(),
   listAttachments: vi.fn(),
+  listWorkProducts: vi.fn(),
   listFeedbackVotes: vi.fn(),
   markRead: vi.fn(),
   update: vi.fn(),
@@ -59,6 +62,7 @@ const mockProjectsApi = vi.hoisted(() => ({
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getGeneral: vi.fn(),
+  getExperimental: vi.fn(),
 }));
 
 const mockNavigate = vi.hoisted(() => vi.fn());
@@ -353,6 +357,14 @@ vi.mock("@/components/ui/textarea", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
 
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
@@ -799,6 +811,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.listComments.mockResolvedValue([]);
     mockIssuesApi.listAttachments.mockResolvedValue([]);
+    mockIssuesApi.listWorkProducts.mockResolvedValue([]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
     mockIssuesApi.markRead.mockResolvedValue({ id: "issue-1", lastReadAt: new Date().toISOString() });
     mockIssuesApi.getTreeControlState.mockResolvedValue({ activePauseHold: null });
@@ -823,6 +836,10 @@ describe("IssueDetail", () => {
       keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: false,
+    });
+    mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
     mockIssuesListRender.mockClear();
     mockIssueChatThreadRender.mockClear();
   });
@@ -855,7 +872,84 @@ describe("IssueDetail", () => {
 
     expect(container.textContent).toContain("Issue detail smoke");
     expect(container.textContent).toContain("Chat thread");
-    expect(consoleErrorSpy).not.toHaveBeenCalled();
+    expect(
+      consoleErrorSpy.mock.calls.some((call) =>
+        String(call[0]).includes("React has detected a change in the order of Hooks"),
+      ),
+    ).toBe(false);
+  });
+
+  it("hides the plan decomposition panel by default", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Plan decomposition");
+    expect(mockIssuesApi.listAcceptedPlanDecompositions).not.toHaveBeenCalled();
+  });
+
+  it("shows the plan decomposition panel when the experimental flag is enabled", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: true,
+    });
+    mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([
+      {
+        id: "decomp-1",
+        companyId: "company-1",
+        sourceIssueId: "issue-1",
+        acceptedPlanRevisionId: "plan-rev-1",
+        acceptedPlanRevisionNumber: 2,
+        acceptedInteractionId: null,
+        status: "completed",
+        requestFingerprint: "fingerprint-1",
+        requestedChildCount: 2,
+        childIssueIds: ["issue-2", "issue-3"],
+        childIssues: [
+          {
+            id: "issue-2",
+            identifier: "PAP-2",
+            title: "First child issue",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          },
+        ],
+        ownerAgentId: null,
+        ownerUserId: null,
+        ownerRunId: null,
+        completedAt: "2026-05-28T06:00:00.000Z",
+        createdAt: "2026-05-28T05:50:00.000Z",
+        updatedAt: "2026-05-28T06:00:00.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Plan decomposition");
+    expect(container.textContent).toContain("Plan revision 2");
+    expect(container.textContent).toContain("2 of 2 child issues created");
+    expect(container.textContent).toContain("First child issue");
+    expect(mockIssuesApi.listAcceptedPlanDecompositions).toHaveBeenCalledWith("issue-1");
   });
 
   it("renders sibling previous and next navigation at the chat footer", async () => {

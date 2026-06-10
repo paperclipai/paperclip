@@ -12,6 +12,7 @@ import { openUrl } from "../../client/board-auth.js";
 import { resolvePaperclipInstanceId } from "../../config/home.js";
 import {
   addCommonClientOptions,
+  apiPath,
   handleCommandError,
   printOutput,
   resolveCommandContext,
@@ -270,7 +271,7 @@ export async function buildBundleFromLocalCompany(input: {
   mode: "preview" | "apply";
 }): Promise<LocalUpstreamExportBundle> {
   const exported = await input.localApi.post<CompanyPortabilityExportResult>(
-    `/api/companies/${input.localCompanyId}/export`,
+    apiPath`/api/companies/${input.localCompanyId}/export`,
     {
       include: {
         company: true,

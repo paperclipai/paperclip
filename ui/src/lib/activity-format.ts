@@ -48,6 +48,7 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "issue.successful_run_handoff_required": "flagged missing next step on",
   "issue.successful_run_handoff_resolved": "recorded next step chosen on",
   "issue.successful_run_handoff_escalated": "escalated missing next step on",
+  "issue.accepted_plan_decomposition_updated": "updated accepted-plan decomposition on",
   "issue.recovery_action_opened": "opened a recovery action on",
   "issue.recovery_action_resolved": "resolved the recovery action on",
   "issue.recovery_action_escalated": "escalated the recovery action on",
@@ -77,6 +78,7 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "company.created": "created company",
   "company.updated": "updated company",
   "company.archived": "archived",
+  "company.reactivated": "reactivated",
   "company.budget_updated": "updated budget for",
 };
 
@@ -110,6 +112,7 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "issue.recovery_action_opened": "Opened a source-scoped recovery action",
   "issue.recovery_action_resolved": "Resolved the recovery action",
   "issue.recovery_action_escalated": "Escalated the recovery action",
+  "issue.accepted_plan_decomposition_updated": "updated the accepted-plan decomposition",
   "agent.created": "created an agent",
   "agent.updated": "updated the agent",
   "agent.paused": "paused the agent",
@@ -187,6 +190,34 @@ function formatChangedEntityLabel(
   if (labels.length <= 0) return plural;
   if (labels.length === 1) return `${singular} ${labels[0]}`;
   return `${labels.length} ${plural}`;
+}
+
+function readNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return null;
+}
+
+function readStringArrayLength(value: unknown): number {
+  if (!Array.isArray(value)) return 0;
+  return value.filter((entry) => typeof entry === "string" && entry.length > 0).length;
+}
+
+function formatAcceptedPlanDecompositionDetail(details: ActivityDetails): string | null {
+  if (!details) return null;
+  const status = typeof details.status === "string" ? details.status : null;
+  const requested = readNumber(details.requestedChildCount);
+  const totalChildren = readStringArrayLength(details.childIssueIds);
+  const newlyCreated = readStringArrayLength(details.newlyCreatedChildIssueIds);
+  const reused = Math.max(0, totalChildren - newlyCreated);
+  const parts: string[] = [];
+  if (newlyCreated > 0) parts.push(`created ${newlyCreated} new`);
+  if (reused > 0) parts.push(`reused ${reused} existing`);
+  if (parts.length === 0 && requested !== null) parts.push(`${requested} requested`);
+  const summary = parts.length > 0 ? parts.join(", ") : null;
+  if (status === "completed" && summary) return `decomposition completed (${summary})`;
+  if (status === "completed") return "decomposition completed";
+  if (status === "in_flight" && summary) return `decomposition in flight (${summary})`;
+  return summary;
 }
 
 function formatIssueUpdatedVerb(details: ActivityDetails): string | null {
@@ -331,6 +362,11 @@ export function formatIssueActivityAction(
     forIssueDetail: true,
   });
   if (structuredChange) return structuredChange;
+
+  if (action === "issue.accepted_plan_decomposition_updated") {
+    const detail = formatAcceptedPlanDecompositionDetail(details);
+    if (detail) return detail;
+  }
 
   if (action.startsWith("issue.monitor_") && details) {
     const serviceName = typeof details.serviceName === "string" && details.serviceName.trim()

@@ -103,6 +103,7 @@ type UpstreamTransferManifest = {
   idempotencyKey: string;
   generatedAt: string;
   entityCount: number;
+  perEntityTypeCounts: Record<string, number>;
   entities: UpstreamTransferEntityRecord[];
   chunks: Array<Omit<LocalUpstreamExportChunk, "payload"> & { manifestHash: NormalizedSha256 }>;
   warnings: UpstreamTransferWarning[];
@@ -914,6 +915,7 @@ function buildLocalUpstreamExportBundle(input: {
     idempotencyKey: input.idempotencyKey,
     generatedAt: new Date(0).toISOString(),
     entityCount: entities.length,
+    perEntityTypeCounts: countEntityTypesForManifest(entities),
     entities: entities.map((entity) => entity.record),
     chunks: chunksWithoutManifestHash.map(({ payload: _payload, ...chunk }) => chunk),
     warnings: input.warnings ?? [],
@@ -929,6 +931,15 @@ function buildLocalUpstreamExportBundle(input: {
     entities,
     chunks: chunksWithoutManifestHash,
   };
+}
+
+function countEntityTypesForManifest(entities: LocalUpstreamExportEntity[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const entity of entities) {
+    const entityType = entity.record.key.sourceEntityType;
+    counts[entityType] = (counts[entityType] ?? 0) + 1;
+  }
+  return counts;
 }
 
 function buildLocalChunks(entities: LocalUpstreamExportEntity[], maxEntitiesPerChunk: number): LocalUpstreamExportChunk[] {

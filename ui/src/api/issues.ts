@@ -1,4 +1,5 @@
 import type {
+  AcceptedPlanDecompositionSummary,
   AskUserQuestionsAnswer,
   Approval,
   CreateIssueTreeHold,
@@ -205,6 +206,8 @@ export const issuesApi = {
   },
   listInteractions: (id: string) =>
     api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
+  listAcceptedPlanDecompositions: (id: string) =>
+    api.get<AcceptedPlanDecompositionSummary[]>(`/issues/${id}/accepted-plan-decompositions`),
   createInteraction: (id: string, data: Record<string, unknown>) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions`, data),
   acceptInteraction: (

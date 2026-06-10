@@ -470,13 +470,13 @@ export function NewIssueDialog() {
     enabled: !!effectiveCompanyId && newIssueOpen,
   });
   const { data: reusableExecutionWorkspaces } = useQuery({
-    queryKey: queryKeys.executionWorkspaces.list(effectiveCompanyId!, {
+    queryKey: queryKeys.executionWorkspaces.summaryList(effectiveCompanyId!, {
       projectId,
       projectWorkspaceId: projectWorkspaceId || undefined,
       reuseEligible: true,
     }),
     queryFn: () =>
-      executionWorkspacesApi.list(effectiveCompanyId!, {
+      executionWorkspacesApi.listSummaries(effectiveCompanyId!, {
         projectId,
         projectWorkspaceId: projectWorkspaceId || undefined,
         reuseEligible: true,
