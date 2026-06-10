@@ -47,6 +47,8 @@ Edit an agent's configuration from the agent detail page:
 - **Heartbeat settings** — interval, cooldown, max concurrent runs, wake triggers
 - **Budget** — monthly spend limit
 
+The prompt template field is available across adapter types. When no custom value is saved, Paperclip may show the adapter's effective default so you can inspect it or copy it into a custom template.
+
 Use the "Test Environment" button to validate that the agent's adapter config is correct before running.
 
 ## Pausing and Resuming
