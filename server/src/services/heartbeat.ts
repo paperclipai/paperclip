@@ -6595,11 +6595,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
 
+    const proactiveAssignmentScope = readNonEmptyString(
+      heartbeat.proactiveAssignmentScope as string | undefined,
+    );
+    const validScopes = ["todo", "backlog", "both"] as const;
+    type ProactiveScope = typeof validScopes[number];
+    const normalizedScope: ProactiveScope =
+      validScopes.includes(proactiveAssignmentScope as ProactiveScope)
+        ? (proactiveAssignmentScope as ProactiveScope)
+        : "backlog";
+
     return {
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      proactiveAssignment: asBoolean(heartbeat.proactiveAssignment, false),
+      proactiveAssignmentScope: normalizedScope,
     };
   }
 
@@ -8130,9 +8142,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       runScopedMentionedSkillKeys,
     );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
+    const heartbeatPolicy = parseHeartbeatPolicy(agent);
     let runtimeConfig = {
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
+      proactiveAssignment: heartbeatPolicy.proactiveAssignment,
+      proactiveAssignmentScope: heartbeatPolicy.proactiveAssignmentScope,
     };
     const hostExecutionWorkspaceConfig = stripHostWorkspaceProvisionForLowTrustSandbox({
       config: runtimeConfig,
