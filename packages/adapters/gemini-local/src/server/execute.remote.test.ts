@@ -185,15 +185,15 @@ describe("gemini remote execution", () => {
       expect.stringContaining(".gemini/skills"),
       expect.anything(),
     );
-    // Managed-home headless auth: the adapter must pre-select gemini-api-key
-    // auth in $HOME/.gemini/settings.json (gemini-cli hard-refuses headless
-    // runs otherwise, and the managed HOME hides any image-baked settings).
-    expect(runSshCommand).toHaveBeenCalledWith(
+    // The headless-auth settings.json write is scoped to managed HOMEs (sandbox
+    // transport). SSH targets keep the user's real home, where existing settings
+    // stay visible and the adapter must not create files.
+    expect(runSshCommand).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.stringContaining(".gemini/settings.json"),
       expect.anything(),
     );
-    expect(runSshCommand).toHaveBeenCalledWith(
+    expect(runSshCommand).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.stringContaining("gemini-api-key"),
       expect.anything(),
@@ -221,6 +221,77 @@ describe("gemini remote execution", () => {
     expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
     expect(startAdapterExecutionTargetPaperclipBridge).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
+  });
+
+  it("pre-selects gemini-api-key auth in the managed HOME for sandbox execution", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-sandbox-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const geminiOutput = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "gemini-session-2", model: "gemini-2.5-pro" }),
+      JSON.stringify({ type: "message", role: "assistant", content: "hello" }),
+      JSON.stringify({
+        type: "result",
+        status: "success",
+        session_id: "gemini-session-2",
+        stats: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+      }),
+    ].join("\n");
+    const runnerExecute = vi.fn(async (input: { command: string; args?: string[] }) => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: input.command === "gemini" ? geminiOutput : "",
+      stderr: "",
+      pid: 321,
+      startedAt: new Date().toISOString(),
+    }));
+
+    await execute({
+      runId: "run-sandbox-1",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Gemini Builder",
+        adapterType: "gemini_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "gemini",
+        env: { GEMINI_API_KEY: "test-key" },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "kubernetes",
+        remoteCwd: "/remote/workspace",
+        runner: { execute: runnerExecute },
+      },
+      onLog: async () => {},
+    });
+
+    const runnerScripts = runnerExecute.mock.calls.map(
+      (call) => `${call[0].command} ${(call[0].args ?? []).join(" ")}`,
+    );
+    const settingsWrite = runnerScripts.find((script) => script.includes(".gemini/settings.json"));
+    expect(settingsWrite).toBeDefined();
+    expect(settingsWrite).toContain("gemini-api-key");
+    // The managed HOME lives under the per-run runtime root, never a real home.
+    expect(settingsWrite).toContain(".paperclip-runtime");
   });
 
   it("resumes saved Gemini sessions for remote SSH execution only when the identity matches", async () => {
