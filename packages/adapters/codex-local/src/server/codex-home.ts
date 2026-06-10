@@ -2,7 +2,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
-import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
+import {
+  resolvePaperclipInstanceRootForAdapter,
+  symlinkOrHardLink,
+} from "@paperclipai/adapter-utils/server-utils";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
@@ -57,7 +60,7 @@ async function isExpectedSymlink(target: string, source: string): Promise<boolea
 
 async function createExpectedSymlink(target: string, source: string): Promise<void> {
   try {
-    await fs.symlink(source, target);
+    await symlinkOrHardLink(source, target);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "EEXIST" && await isExpectedSymlink(target, source)) return;
@@ -73,14 +76,22 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
     return;
   }
 
-  if (!existing.isSymbolicLink()) {
+  if (existing.isSymbolicLink()) {
+    if (await isExpectedSymlink(target, source)) return;
+    await fs.unlink(target);
+    await createExpectedSymlink(target, source);
     return;
   }
 
-  if (await isExpectedSymlink(target, source)) return;
-
-  await fs.unlink(target);
-  await createExpectedSymlink(target, source);
+  // Not a symlink: on Windows, symlink creation that required admin rights
+  // (EPERM) falls back to a hard link via symlinkOrHardLink. Refresh it only
+  // when the source has changed (different inode); otherwise leave it as-is.
+  if (process.platform !== "win32") return;
+  const sourceStat = await fs.stat(source).catch(() => null);
+  if (sourceStat && existing.ino !== sourceStat.ino) {
+    await fs.unlink(target);
+    await createExpectedSymlink(target, source);
+  }
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
