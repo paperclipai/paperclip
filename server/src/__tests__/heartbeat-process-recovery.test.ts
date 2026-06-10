@@ -2232,6 +2232,166 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
   });
 
+  it("escalation preserves assigneeAgentId after manual reassignment before recovery fires (SAG-3171)", async () => {
+    // Regression test for SAG-3171.
+    // Sequence:
+    //  1. Issue is checked out and run by originalAgent; the run stalls and fails.
+    //  2. An external PATCH changes assigneeAgentId → newAgent (simulated by seeding
+    //     the issue directly with newAgent as assignee while checkoutRunId still points
+    //     at originalAgent's stalled run).
+    //  3. Recovery sweep fires.
+    //  4. Recovery must keep newAgent as assignee — it must NOT revert to originalAgent
+    //     even though originalAgent is the recovery owner (newAgent's manager/CEO).
+    const companyId = randomUUID();
+    const originalAgentId = randomUUID(); // ran the issue; its run stalled
+    const newAgentId = randomUUID(); // assigned via PATCH after the stall
+    const runId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const issueId = randomUUID();
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    // originalAgent must be inserted before newAgent (FK self-reference on reportsTo).
+    await db.insert(agents).values([
+      {
+        id: originalAgentId,
+        companyId,
+        name: "OriginalRunner",
+        role: "ceo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: newAgentId,
+        companyId,
+        name: "NewAssignee",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+        reportsTo: originalAgentId,
+      },
+    ]);
+
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId: originalAgentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: { issueId },
+      status: "failed",
+      runId,
+      claimedAt: now,
+      finishedAt: new Date("2026-03-19T00:05:00.000Z"),
+      error: "run failed before issue advanced",
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: originalAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "failed",
+      wakeupRequestId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+      },
+      startedAt: now,
+      finishedAt: new Date("2026-03-19T00:05:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:05:00.000Z"),
+      errorCode: "process_lost",
+      error: "run failed before issue advanced",
+    });
+
+    // Issue is seeded with newAgentId as assignee (post-PATCH state).
+    // checkoutRunId still points at originalAgent's stalled run — this is the
+    // trigger recovery will detect when it sweeps in_progress issues.
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reassigned issue — new assignee must survive recovery sweep",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: newAgentId,
+      checkoutRunId: runId,
+      executionRunId: null,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      startedAt: now,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    // Core SAG-3171 assertion: the PATCH-assigned agent must NOT be reverted to the
+    // historical runner (originalAgent) as a side-effect of recovery escalation.
+    expect(issue?.assigneeAgentId).toBe(newAgentId);
+
+    // Recovery action must wake originalAgent as shepherd (it is newAgent's manager/CEO),
+    // while returnOwnerAgentId confirms newAgent is the rightful long-term assignee.
+    const recoveryAction = await waitForValue(async () =>
+      db
+        .select()
+        .from(issueRecoveryActions)
+        .where(
+          and(
+            eq(issueRecoveryActions.companyId, companyId),
+            eq(issueRecoveryActions.sourceIssueId, issueId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null),
+    );
+    expect(recoveryAction?.ownerAgentId).toBe(originalAgentId);
+    expect(recoveryAction?.previousOwnerAgentId).toBe(newAgentId);
+    expect(recoveryAction?.returnOwnerAgentId).toBe(newAgentId);
+
+    // The recovery wake must be queued for originalAgent (the recovery owner/shepherd),
+    // not for newAgent (who is the assignee but whose run is not the stalled one).
+    const ownerWake = await waitForValue(async () => {
+      const wakeups = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.agentId, originalAgentId));
+      return (
+        wakeups.find((w) => {
+          const payload = w.payload as Record<string, unknown> | null;
+          return (
+            payload?.issueId === issueId &&
+            payload?.recoveryActionId === recoveryAction?.id
+          );
+        }) ?? null
+      );
+    });
+    expect(ownerWake?.reason).toBe("source_scoped_recovery_action");
+  });
+
   it("blocks an already stranded recovery issue without creating a recovery child", async () => {
     const { companyId, issueId } = await seedStrandedIssueFixture({
       status: "todo",
