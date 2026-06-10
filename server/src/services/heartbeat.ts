@@ -8813,11 +8813,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
+      // GH #7841: a cancellation is a deliberate veto (e.g. a budget/volume
+      // governor cancelling over-quota runs), not a failure to recover from.
+      // Auto-retrying it re-queued another run that got cancelled again, which
+      // re-queued another retry — a self-sustaining loop. Only failed/timed_out
+      // runs warrant automatic immediate recovery; cancelled runs just release
+      // the execution lock (deferred human/mention wakes above still promote).
       const issueNeedsImmediateRecovery =
         (issue.status === "todo" || issue.status === "in_progress") &&
         !issue.assigneeUserId &&
         issue.assigneeAgentId === run.agentId &&
-        (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled");
+        (run.status === "failed" || run.status === "timed_out");
 
       if (!issueNeedsImmediateRecovery) {
         return { kind: "released" as const };
