@@ -36,6 +36,11 @@ server/src/**/*.js
 server/src/**/*.js.map
 server/src/**/*.d.ts
 server/src/**/*.d.ts.map
+# Hand-written type augmentation (NOT a build artifact). Git tracks it anyway, but
+# `railway up` honors .gitignore patterns when selecting files to upload, so without
+# this negation the file is omitted from the cloud build context and the server
+# tsc build fails with "Property 'actor' does not exist on type Request".
+!server/src/types/express.d.ts
 tmp/
 feedback-export-*
 diagnostics/
