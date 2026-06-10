@@ -4,6 +4,7 @@ import {
   isClaudeTransientUpstreamError,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeUnknownSessionError,
+  isClaudeImageProcessingError,
 } from "./parse.js";
 
 describe("isClaudeTransientUpstreamError", () => {
@@ -182,6 +183,50 @@ describe("isClaudeUnknownSessionError", () => {
         errors: [{ message: "Network timeout" }],
       }),
     ).toBe(false);
+  });
+});
+
+describe("isClaudeImageProcessingError", () => {
+  it("detects the 'Could not process image' 400 error in the result field", () => {
+    expect(
+      isClaudeImageProcessingError({
+        subtype: "success",
+        is_error: true,
+        result: "API Error: 400 Could not process image: image source URL has expired",
+      }),
+    ).toBe(true);
+  });
+
+  it("detects the error in the errors array", () => {
+    expect(
+      isClaudeImageProcessingError({
+        is_error: true,
+        result: "",
+        errors: [{ message: "400 Could not process image" }],
+      }),
+    ).toBe(true);
+  });
+
+  it("is case-insensitive", () => {
+    expect(
+      isClaudeImageProcessingError({
+        is_error: true,
+        result: "could not process image attached to message",
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false for unrelated errors", () => {
+    expect(
+      isClaudeImageProcessingError({
+        is_error: true,
+        result: "No conversation found with session id abc-123",
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false for empty parsed result", () => {
+    expect(isClaudeImageProcessingError({})).toBe(false);
   });
 });
 
