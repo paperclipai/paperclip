@@ -3,10 +3,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, Issue, IssueAttachment, IssueTreeControlPreview, IssueTreeHold, IssueWorkProduct } from "@paperclipai/shared";
 import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ReactNode } from "react";
+import { NavigationType } from "react-router-dom";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { canBoardResolveRecoveryAction, IssueDetail } from "./IssueDetail";
+import { canBoardResolveRecoveryAction, IssueDetail, shouldScrollIssueDetailToTopOnNavigation } from "./IssueDetail";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -74,6 +75,7 @@ const mockPushToast = vi.hoisted(() => vi.fn());
 const mockIssuesListRender = vi.hoisted(() => vi.fn());
 const mockIssueChatThreadRender = vi.hoisted(() => vi.fn());
 const mockImageGalleryRender = vi.hoisted(() => vi.fn());
+const mockIssueWorkspaceCardRender = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
@@ -281,7 +283,10 @@ vi.mock("../components/IssueRunLedger", () => ({
 }));
 
 vi.mock("../components/IssueWorkspaceCard", () => ({
-  IssueWorkspaceCard: () => <div>Workspace</div>,
+  IssueWorkspaceCard: (props: { onBrowseFiles?: () => void; onOpenFileByPath?: () => void }) => {
+    mockIssueWorkspaceCardRender(props);
+    return <div>Workspace</div>;
+  },
 }));
 
 vi.mock("../components/ImageGalleryModal", () => ({
@@ -355,6 +360,7 @@ vi.mock("@/components/ui/sheet", () => ({
   Sheet: ({ children, open }: { children?: ReactNode; open?: boolean }) => (open ? <div>{children}</div> : null),
   SheetContent: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   SheetHeader: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  SheetDescription: ({ children }: { children?: ReactNode }) => <p>{children}</p>,
   SheetTitle: ({ children }: { children?: ReactNode }) => <h2>{children}</h2>,
 }));
 
@@ -932,11 +938,13 @@ describe("IssueDetail", () => {
     });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: false,
     });
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
     mockIssuesListRender.mockClear();
     mockIssueChatThreadRender.mockClear();
     mockImageGalleryRender.mockClear();
+    mockIssueWorkspaceCardRender.mockClear();
   });
 
   afterEach(async () => {
@@ -992,10 +1000,55 @@ describe("IssueDetail", () => {
     expect(mockIssuesApi.listAcceptedPlanDecompositions).not.toHaveBeenCalled();
   });
 
+  it("hides file viewer entry points by default", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushReact();
+    await flushReact();
+
+    expect(container.querySelector('[aria-label="Open file in this issue"]')).toBeNull();
+    const latestWorkspaceProps = mockIssueWorkspaceCardRender.mock.calls.at(-1)?.[0];
+    expect(latestWorkspaceProps?.onBrowseFiles).toBeUndefined();
+    expect(latestWorkspaceProps?.onOpenFileByPath).toBeUndefined();
+  });
+
+  it("shows file viewer entry points when the experimental flag is enabled", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: true,
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushReact();
+    await flushReact();
+
+    expect(container.querySelector('[aria-label="Open file in this issue"]')).not.toBeNull();
+    const latestWorkspaceProps = mockIssueWorkspaceCardRender.mock.calls.at(-1)?.[0];
+    expect(latestWorkspaceProps?.onBrowseFiles).toEqual(expect.any(Function));
+    expect(latestWorkspaceProps?.onOpenFileByPath).toEqual(expect.any(Function));
+  });
+
   it("shows the plan decomposition panel when the experimental flag is enabled", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIssuePlanDecompositions: true,
+      enableExperimentalFileViewer: false,
     });
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([
       {
@@ -1958,5 +2011,31 @@ describe("canBoardResolveRecoveryAction", () => {
         userId: "user-1",
       }),
     ).toBe(false);
+  });
+});
+
+describe("shouldScrollIssueDetailToTopOnNavigation", () => {
+  it("does not scroll when only URL search params changed for the same issue", () => {
+    expect(shouldScrollIssueDetailToTopOnNavigation({
+      previousIssueId: "PAP-10306",
+      nextIssueId: "PAP-10306",
+      navigationType: NavigationType.Push,
+    })).toBe(false);
+  });
+
+  it("scrolls on forward navigation to a different issue", () => {
+    expect(shouldScrollIssueDetailToTopOnNavigation({
+      previousIssueId: "PAP-1",
+      nextIssueId: "PAP-2",
+      navigationType: NavigationType.Push,
+    })).toBe(true);
+  });
+
+  it("does not scroll on browser back or forward restoration", () => {
+    expect(shouldScrollIssueDetailToTopOnNavigation({
+      previousIssueId: "PAP-1",
+      nextIssueId: "PAP-2",
+      navigationType: NavigationType.Pop,
+    })).toBe(false);
   });
 });

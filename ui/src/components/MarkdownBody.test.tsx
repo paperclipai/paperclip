@@ -28,6 +28,12 @@ vi.mock("@/lib/router", () => ({
   }: { children: ReactNode; to: string } & React.ComponentProps<"a">) => (
     <a href={to} {...props}>{children}</a>
   ),
+  useLocation: () => ({
+    pathname: "/PAP/issues/PAP-10306",
+    search: "",
+    hash: "",
+    state: null,
+  }),
 }));
 
 vi.mock("../api/issues", () => ({
@@ -265,6 +271,21 @@ describe("MarkdownBody", () => {
     expect(html).toContain('<code style="overflow-wrap:anywhere;word-break:break-word">PAP-1271</code>');
     expect(html).toContain("text-green-600");
     expect(html).toContain("paperclip-markdown-issue-ref");
+  });
+
+  it("renders linked inline-code workspace paths as file viewer links before issue links", () => {
+    const html = renderMarkdown(
+      "- **MP4**: [`videos/90-days-paperclip/out/90-days-paperclip-1x1.mp4`](/PAP/issues/PAP-10306 \"Publish handoff\")",
+      [{ identifier: "PAP-10306", status: "in_review", title: "Publish handoff" }],
+      { linkWorkspaceFileRefs: true },
+    );
+
+    expect(html).toContain('data-workspace-file-link="true"');
+    expect(html).toContain('data-workspace-file-path="videos/90-days-paperclip/out/90-days-paperclip-1x1.mp4"');
+    expect(html).toContain("videos/90-days-paperclip/out/90-days-paperclip-1x1.mp4");
+    expect(html).not.toContain("max-w-[38ch]");
+    expect(html).not.toContain("paperclip-markdown-issue-ref");
+    expect(html).not.toContain('href="/issues/PAP-10306"');
   });
 
   it("keeps trailing punctuation outside auto-linked issue references", () => {
@@ -532,4 +553,5 @@ describe("MarkdownBody", () => {
 
     expect(html).toContain('href="/issues/ACME-1"');
   });
+
 });

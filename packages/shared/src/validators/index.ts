@@ -320,12 +320,14 @@ export {
 
 export {
   createIssueWorkProductSchema,
+  issueWorkProductMetadataSchema,
   updateIssueWorkProductSchema,
   attachmentArtifactWorkProductMetadataSchema,
   issueWorkProductTypeSchema,
   issueWorkProductStatusSchema,
   issueWorkProductReviewStateSchema,
   type CreateIssueWorkProduct,
+  type IssueWorkProductMetadata,
   type UpdateIssueWorkProduct,
 } from "./work-product.js";
 
@@ -355,6 +357,21 @@ export {
   executionWorkspaceCloseReadinessStateSchema,
   type UpdateExecutionWorkspace,
 } from "./execution-workspace.js";
+
+export {
+  resolvedWorkspaceResourceSchema,
+  workspaceFileListModeSchema,
+  workspaceFileListQuerySchema,
+  workspaceFileContentSchema,
+  workspaceFilePreviewKindSchema,
+  workspaceFileRefSchema,
+  workspaceFileResourceKindSchema,
+  workspaceFileResourceQuerySchema,
+  workspaceFileSelectorSchema,
+  workspaceFileWorkspaceKindSchema,
+  type WorkspaceFileListQuery,
+  type WorkspaceFileResourceQuery,
+} from "./workspace-file-resource.js";
 
 export {
   createGoalSchema,
