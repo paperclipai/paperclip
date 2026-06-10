@@ -285,6 +285,17 @@ export interface WorkerHostCallContext {
   invalidInvocationScope?: boolean;
 }
 
+/**
+ * Worker protocol capability advertised in `InitializeResult.protocolCapabilities`
+ * by SDKs that echo the host-issued invocation id (`paperclipInvocationId`) on
+ * nested worker→host RPC calls.
+ *
+ * Hosts must only enforce the invocation-scope echo for workers that declare
+ * this capability. Workers built against older SDKs (which never echo the id)
+ * fall back to legacy scope resolution, matching pre-enforcement host behavior.
+ */
+export const WORKER_PROTOCOL_CAPABILITY_INVOCATION_SCOPE_ECHO = "invocation-scope-echo";
+
 // ---------------------------------------------------------------------------
 // Host → Worker Method Signatures (§13 Host-Worker Protocol)
 // ---------------------------------------------------------------------------
@@ -320,6 +331,12 @@ export interface InitializeResult {
   ok: boolean;
   /** Optional methods the worker has implemented (e.g. "validateConfig", "onEvent"). */
   supportedMethods?: string[];
+  /**
+   * Host-worker protocol capabilities this worker supports (e.g.
+   * `WORKER_PROTOCOL_CAPABILITY_INVOCATION_SCOPE_ECHO`). Absent for workers
+   * built against SDKs that predate the capability handshake.
+   */
+  protocolCapabilities?: string[];
 }
 
 /**

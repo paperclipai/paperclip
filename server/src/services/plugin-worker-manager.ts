@@ -27,6 +27,7 @@ import {
   JSONRPC_VERSION,
   JSONRPC_ERROR_CODES,
   PLUGIN_RPC_ERROR_CODES,
+  WORKER_PROTOCOL_CAPABILITY_INVOCATION_SCOPE_ECHO,
   createRequest,
   createErrorResponse,
   parseMessage,
@@ -396,6 +397,13 @@ export function createPluginWorkerHandle(
   // Optional methods reported by the worker during initialization
   let supportedMethods: string[] = [];
 
+  // Whether the worker declared (during initialize) that its SDK echoes
+  // host-issued invocation ids on nested worker→host calls. Legacy SDKs that
+  // predate the capability handshake never echo the id, so invocation-scope
+  // enforcement is only applied to workers that advertise this capability.
+  let echoesInvocationScope = false;
+  let legacyInvocationScopeWarned = false;
+
   // Crash tracking for exponential backoff
   let consecutiveCrashes = 0;
   let totalCrashes = 0;
@@ -559,6 +567,21 @@ export function createPluginWorkerHandle(
       (message as { paperclipInvocationId?: unknown }).paperclipInvocationId,
     );
     if (!invocationId) {
+      if (!echoesInvocationScope) {
+        // Legacy SDK that never echoes invocation ids. Fall back to the
+        // pre-enforcement behavior: the call proceeds without an invocation
+        // scope, exactly as hosts behaved before scope enforcement landed.
+        if (!legacyInvocationScopeWarned) {
+          legacyInvocationScopeWarned = true;
+          log.warn(
+            { capability: WORKER_PROTOCOL_CAPABILITY_INVOCATION_SCOPE_ECHO },
+            "plugin SDK does not support the invocation-scope echo protocol; " +
+              "falling back to legacy invocation scope resolution. " +
+              "Upgrade the plugin's @paperclipai/plugin-sdk to enable per-invocation scope enforcement.",
+          );
+        }
+        return {};
+      }
       const hasActiveInvocation = activeInvocations.size > 0 ||
         Array.from(pendingRequests.values()).some((pending) => pending.invocationId);
       return hasActiveInvocation ? { invalidInvocationScope: true } : {};
@@ -933,6 +956,7 @@ export function createPluginWorkerHandle(
     intentionalStop = false;
     setStatus("starting");
     stderrExcerpt = "";
+    echoesInvocationScope = false;
 
     const child = spawnProcess();
     childProcess = child;
@@ -953,11 +977,14 @@ export function createPluginWorkerHandle(
         "initialize",
         initParams,
         INITIALIZE_TIMEOUT_MS,
-      ) as { ok?: boolean; supportedMethods?: string[] } | undefined;
+      ) as { ok?: boolean; supportedMethods?: string[]; protocolCapabilities?: string[] } | undefined;
       if (!result || !result.ok) {
         throw new Error("Worker initialize returned ok=false");
       }
       supportedMethods = result.supportedMethods ?? [];
+      echoesInvocationScope =
+        Array.isArray(result.protocolCapabilities) &&
+        result.protocolCapabilities.includes(WORKER_PROTOCOL_CAPABILITY_INVOCATION_SCOPE_ECHO);
     } catch (err) {
       // Initialize failed — kill the process and propagate
       const msg = err instanceof Error ? err.message : String(err);
