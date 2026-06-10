@@ -707,6 +707,10 @@ function goalLinearStateKey(linearIssueId: string): string {
   return `${STATE_KEYS.goalLinearPrefix}${linearIssueId}`;
 }
 
+function copyGoalLink(link: GoalLink): GoalLink {
+  return { ...link };
+}
+
 export async function getGoalLink(
   ctx: PluginContext,
   paperclipGoalId: string,
@@ -716,7 +720,7 @@ export async function getGoalLink(
     stateKey: goalLinkStateKey(paperclipGoalId),
   });
   if (!raw) return null;
-  return raw as GoalLink;
+  return copyGoalLink(raw as GoalLink);
 }
 
 export async function createGoalLink(
@@ -725,7 +729,7 @@ export async function createGoalLink(
 ): Promise<void> {
   await ctx.state.set(
     { scopeKind: "instance", stateKey: goalLinkStateKey(link.paperclipGoalId) },
-    link,
+    copyGoalLink(link),
   );
   await ctx.state.set(
     { scopeKind: "instance", stateKey: goalLinearStateKey(link.linearIssueId) },
@@ -737,11 +741,45 @@ export async function updateGoalLink(
   ctx: PluginContext,
   link: GoalLink,
 ): Promise<void> {
+  const previous = await getGoalLink(ctx, link.paperclipGoalId);
   link.lastSyncAt = new Date().toISOString();
+
   await ctx.state.set(
     { scopeKind: "instance", stateKey: goalLinkStateKey(link.paperclipGoalId) },
-    link,
+    copyGoalLink(link),
   );
+
+  if (previous && previous.linearIssueId !== link.linearIssueId) {
+    await ctx.state.delete({
+      scopeKind: "instance",
+      stateKey: goalLinearStateKey(previous.linearIssueId),
+    });
+  }
+
+  await ctx.state.set(
+    { scopeKind: "instance", stateKey: goalLinearStateKey(link.linearIssueId) },
+    link.paperclipGoalId,
+  );
+}
+
+export async function removeGoalLink(
+  ctx: PluginContext,
+  paperclipGoalId: string,
+): Promise<boolean> {
+  const link = await getGoalLink(ctx, paperclipGoalId);
+  if (!link) return false;
+
+  await ctx.state.delete({
+    scopeKind: "instance",
+    stateKey: goalLinkStateKey(paperclipGoalId),
+  });
+
+  await ctx.state.delete({
+    scopeKind: "instance",
+    stateKey: goalLinearStateKey(link.linearIssueId),
+  });
+
+  return true;
 }
 
 /**
@@ -758,7 +796,9 @@ export async function getGoalLinkByLinear(
     stateKey: goalLinearStateKey(linearId),
   });
   if (!goalId || typeof goalId !== "string") return null;
-  return getGoalLink(ctx, goalId);
+  const link = await getGoalLink(ctx, goalId);
+  if (!link || link.linearIssueId !== linearId) return null;
+  return link;
 }
 
 /** Map Paperclip goal status → Linear workflow state type. */

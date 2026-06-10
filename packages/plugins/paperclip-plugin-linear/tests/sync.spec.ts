@@ -4,11 +4,16 @@ import manifest from "../src/manifest.js";
 import { STATE_KEYS } from "../src/constants.js";
 import {
   createLink,
+  createGoalLink,
+  getGoalLink,
   getLink,
+  getGoalLinkByLinear,
   getLinkByLinear,
   getProjectLink,
   getProjectLinkByLinear,
+  updateGoalLink,
   syncFromLinear,
+  type GoalLink,
   type IssueLink,
   type ProjectLink,
 } from "../src/sync.js";
@@ -56,6 +61,23 @@ function makeProjectLink(overrides: Partial<ProjectLink> = {}): ProjectLink {
     syncDirection: "bidirectional",
     lastSyncAt: "2026-06-10T00:00:00.000Z",
     lastLinearState: "started",
+    ...overrides,
+  };
+}
+
+function makeGoalLink(overrides: Partial<GoalLink> = {}): GoalLink {
+  return {
+    paperclipGoalId: "pc-goal-1",
+    paperclipCompanyId: "comp-1",
+    linearIssueId: "lin-goal-1",
+    linearIdentifier: "lin-goal-1",
+    linearUrl: "https://linear.app/initiatives/lin-goal-1",
+    linearProjectId: null,
+    lastSyncAt: "2026-06-10T00:00:00.000Z",
+    lastTitle: "Goal title",
+    lastStatus: "active",
+    lastTargetDate: null,
+    lastLevel: "task",
     ...overrides,
   };
 }
@@ -158,6 +180,53 @@ describe("link lookup", () => {
     await expect(getProjectLinkByLinear(harness.ctx, "lin-proj-current")).resolves.toMatchObject({
       paperclipProjectId: "pc-proj-1",
       linearProjectId: "lin-proj-current",
+    });
+  });
+
+  it("ignores stale Linear goal reverse keys that point at a different forward link", async () => {
+    const harness = createTestHarness({ manifest });
+    await harness.ctx.state.set(
+      { scopeKind: "instance", stateKey: `${STATE_KEYS.goalLinkPrefix}pc-goal-1` },
+      makeGoalLink({ paperclipGoalId: "pc-goal-1", linearIssueId: "lin-goal-current" }),
+    );
+    await harness.ctx.state.set(
+      { scopeKind: "instance", stateKey: `${STATE_KEYS.goalLinearPrefix}lin-goal-stale` },
+      "pc-goal-1",
+    );
+    await harness.ctx.state.set(
+      { scopeKind: "instance", stateKey: `${STATE_KEYS.goalLinearPrefix}lin-goal-current` },
+      "pc-goal-1",
+    );
+
+    await expect(getGoalLinkByLinear(harness.ctx, "lin-goal-stale")).resolves.toBeNull();
+    await expect(getGoalLinkByLinear(harness.ctx, "lin-goal-current")).resolves.toMatchObject({
+      paperclipGoalId: "pc-goal-1",
+      linearIssueId: "lin-goal-current",
+    });
+  });
+
+  it("repoints Linear goal reverse keys when an existing goal link moves to an initiative", async () => {
+    const harness = createTestHarness({ manifest });
+    const existing = makeGoalLink({
+      paperclipGoalId: "pc-goal-1",
+      linearIssueId: "lin-goal-old",
+      linearProjectId: "company-goals-project",
+    });
+    await createGoalLink(harness.ctx, existing);
+
+    const persisted = await getGoalLink(harness.ctx, "pc-goal-1");
+    expect(persisted).not.toBeNull();
+    persisted!.linearIssueId = "lin-goal-new";
+    persisted!.linearIdentifier = "lin-goal-new";
+    persisted!.linearUrl = "https://linear.app/initiatives/lin-goal-new";
+    persisted!.linearProjectId = null;
+    await updateGoalLink(harness.ctx, persisted!);
+
+    await expect(getGoalLinkByLinear(harness.ctx, "lin-goal-old")).resolves.toBeNull();
+    await expect(getGoalLinkByLinear(harness.ctx, "lin-goal-new")).resolves.toMatchObject({
+      paperclipGoalId: "pc-goal-1",
+      linearIssueId: "lin-goal-new",
+      linearProjectId: null,
     });
   });
 });
