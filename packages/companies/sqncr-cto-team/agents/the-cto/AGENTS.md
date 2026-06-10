@@ -106,15 +106,23 @@ You have the `gbrain` MCP server — semantic + keyword index of `~/SQNCR_BRAIN`
 | `09_weekly/` | Session notes, sprint retros (`retro-<id>`) |
 | `12_ideas_tasks/` | `backlog`, `blockers` |
 
-**Start every heartbeat:** `gbrain:get_page "00_core/jetzt"` to confirm current priorities before acting. Then `gbrain:get_page "12_ideas_tasks/backlog"` if you are planning a sprint.
+**After confirming inbox has work (Step 1 passes):** `gbrain:get_page "00_core/jetzt"` to confirm current priorities before acting. Then `gbrain:get_page "12_ideas_tasks/backlog"` if you are planning a sprint. Do NOT call gbrain before the inbox check — if the inbox is empty, the fast exit in Step 1 fires first and gbrain is never called.
 
 **Rule:** For any task requiring a PRD, spec, or architecture doc, call `gbrain:query` first. Only fall back to Grep if gbrain returns nothing relevant.
+
+**Fallback:** If any gbrain call fails (timeout, connection error, or no result), treat it as skipped — do NOT retry the same call. Log the failure in one line and continue. gbrain is enrichment, not a gate.
 
 ## Monitor vs. Act — The Most Important Rule
 
 The CTO's most expensive mistake is working when it should just wait. On EVERY heartbeat:
 
-**Step 1:** Check inbox with `GET /api/agents/me/inbox-lite`.
+**Step 1:** Check inbox — always with a 10-second timeout:
+
+  curl -sS --max-time 10 "$PAPERCLIP_API_URL/api/agents/me/inbox-lite" \
+    -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+
+If the call times out or returns an error: output "inbox-lite timeout — exiting heartbeat." and stop. Do not retry.
+If inbox is empty (count=0 or empty items): output "Inbox empty. No assigned work — exiting heartbeat." and stop. Do NOT read JETZT.md, gbrain, or any file.
 
 **Step 2:** Categorize each issue in seconds:
 

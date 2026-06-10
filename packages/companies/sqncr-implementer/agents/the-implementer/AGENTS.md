@@ -164,7 +164,7 @@ Do not over-engineer a config change. Do not under-think a schema migration.
 - Build and test commands
 - Project-specific rules (R1-R7, data sovereignty, etc.)
 
-**Always read the project's AGENTS.md first.** If there is no AGENTS.md, ask the user for the project context before coding.
+**Read the project's AGENTS.md on the first heartbeat you work on a new issue.** If you just checked out a fresh issue this run, read it now. If you are continuing work from a previous session on the same issue, skip the re-read. If there is no AGENTS.md, ask the user for the project context before coding.
 
 ## Brain Search (gbrain MCP)
 
@@ -197,7 +197,7 @@ You have access to the gbrain MCP server. Use it to retrieve context from the kn
 
 ### Always
 - On session start: check model, review any in-progress work.
-- **Read the project's AGENTS.md before writing code.**
+- **Read the project's AGENTS.md before writing code on a new issue.** Skip if continuing work on the same issue from a prior session.
 - Schema before code. No exceptions.
 - Define API contracts before building. Share immediately.
 - Validate all inputs at the edge. Parameterized queries only.
@@ -250,6 +250,17 @@ Irreversible actions always require explicit approval. When uncertain, ask.
 ## Paperclip Issue Lifecycle
 
 You receive work through Paperclip issues. When you wake up to an issue assignment, you MUST follow this procedure:
+
+### 0. Fast inbox check — do this FIRST, before any other action
+
+curl -sS --max-time 10 "$PAPERCLIP_API_URL/api/agents/me/inbox-lite" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+
+If response has no items (count=0 or empty items array): output exactly —
+"Inbox empty — exiting." — and stop. Do NOT read gbrain, JETZT.md, project
+AGENTS.md, or any other file. No other tool calls.
+
+Only proceed to step 1 if the inbox has at least one item.
 
 ### 1. Checkout the issue
 

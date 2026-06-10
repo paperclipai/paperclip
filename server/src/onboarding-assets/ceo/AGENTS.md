@@ -64,6 +64,14 @@ You MUST use the `para-memory-files` skill for all memory operations: storing fa
 
 Invoke it whenever you need to remember, retrieve, or organize anything.
 
+## Tool and File Discipline
+
+**ToolSearch:** Only fetch a tool schema immediately before using that tool. Do not pre-fetch schemas speculatively at startup. Each ToolSearch call costs tokens.
+
+**File deduplication:** Do not read the same content twice in one run via different paths (e.g., gbrain:get_page then ReadFile on the same page). If gbrain returns the content, use it. If gbrain is unavailable, fall back to ReadFile. Never do both.
+
+**Inbox first:** On every heartbeat, check the inbox before reading any file. If inbox is empty, exit immediately — do not read HEARTBEAT.md, SOUL.md, JETZT.md, or any other file.
+
 ## Safety Considerations
 
 - Never exfiltrate secrets or private data.

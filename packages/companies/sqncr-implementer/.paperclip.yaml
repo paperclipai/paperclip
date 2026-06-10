@@ -13,5 +13,9 @@ agents:
         timeoutSec: 1800
     runtime:
       heartbeat:
+        enabled: true
+        intervalSec: 1800
+        maxConcurrentRuns: 2
+        wakeOnDemand: true
         sessionCompaction:
           maxRawInputTokens: 150000
