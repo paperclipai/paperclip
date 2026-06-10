@@ -21,7 +21,7 @@ const LINEAR_TOKEN_URL = "https://api.linear.app/oauth/token";
 const LINEAR_REVOKE_URL = "https://api.linear.app/oauth/revoke";
 
 const LINEAR_SECRET_NAME = "linear-oauth-token";
-const SCOPES = ["read", "write", "admin"];
+const SCOPES = ["read", "write", "initiative:read", "initiative:write"];
 const LINEAR_OAUTH_ACTOR = "app";
 
 // In-memory CSRF state store (short-lived, cleared on use)
@@ -315,7 +315,7 @@ export function linearAuthRoutes(db: Db, config: LinearAuthConfig) {
             const { getTunnelUrl, startLinearTunnel, registerWebhookWithToken } = await import("../linear-tunnel.js");
             const existingTunnel = getTunnelUrl();
             if (existingTunnel) {
-              // Tunnel already running — register webhook with new admin-scoped token
+              // Tunnel already running — best-effort webhook registration with the new token
               void registerWebhookWithToken(existingTunnel, tokenData.access_token, teamId);
             } else if (teamId) {
               // Start tunnel + webhook

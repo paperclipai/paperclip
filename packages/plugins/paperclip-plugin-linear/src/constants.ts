@@ -99,7 +99,7 @@ export const LINEAR_OAUTH = {
   tokenUrl: "https://api.linear.app/oauth/token",
   revokeUrl: "https://api.linear.app/oauth/revoke",
   actor: "app",
-  scopes: ["read", "write", "admin"],
+  scopes: ["read", "write", "initiative:read", "initiative:write"],
 } as const;
 
 export const DEFAULT_CONFIG = {

@@ -226,6 +226,9 @@ describe("paperclip-plugin-linear", () => {
       expect(result.authorizeUrl).toContain("client_id=client-id-123");
       expect(result.authorizeUrl).toContain("response_type=code");
       expect(result.authorizeUrl).toContain("actor=app");
+      const authUrl = new URL(result.authorizeUrl);
+      expect(authUrl.searchParams.get("scope")).toBe("read,write,initiative:read,initiative:write");
+      expect(authUrl.searchParams.get("scope")).not.toContain("admin");
       expect(result.state).toBeTruthy();
     });
 
