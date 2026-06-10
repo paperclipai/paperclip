@@ -119,7 +119,7 @@ async function fetchCatalogSourceFile(
 ): Promise<Buffer> {
   const source = skill.source;
   if (!source) {
-    const packageRoot = resolveCatalogPackageRoot();
+    const packageRoot = catalogPackageRoot;
     const absolutePath = path.resolve(packageRoot, skill.path, relativePath);
     const skillRoot = path.resolve(packageRoot, skill.path);
     if (absolutePath !== skillRoot && !absolutePath.startsWith(`${skillRoot}${path.sep}`)) {
