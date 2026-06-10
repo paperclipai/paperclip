@@ -303,6 +303,88 @@ describeEmbeddedPostgres("cascade-delete service handlers (GH#7250)", () => {
     expect(remainingIssues).toHaveLength(0);
   });
 
+  it("project remove() handles cross-project issueRelations without FK violation", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const targetProjectId = randomUUID();
+    const otherProjectId = randomUUID();
+    const targetIssueId = randomUUID();
+    const otherIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Cross-Project Cascade Co",
+      issuePrefix: "CPC",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cross-Project Dev",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: targetProjectId,
+      companyId,
+      name: "Target Project",
+      color: "red",
+    });
+    await db.insert(projects).values({
+      id: otherProjectId,
+      companyId,
+      name: "Other Project",
+      color: "green",
+    });
+    // Issue in target project
+    await db.insert(issues).values({
+      id: targetIssueId,
+      companyId,
+      projectId: targetProjectId,
+      title: "Target issue",
+      status: "open",
+      priority: "medium",
+      issueNumber: 1,
+      identifier: "CPC-1",
+    });
+    // Issue in OTHER project
+    await db.insert(issues).values({
+      id: otherIssueId,
+      companyId,
+      projectId: otherProjectId,
+      title: "Other issue",
+      status: "open",
+      priority: "low",
+      issueNumber: 1,
+      identifier: "CPC-2",
+    });
+    // issueRelations: target issue blocks other issue (relatedIssueId points to other project)
+    await db.insert(issueRelations).values({
+      id: randomUUID(),
+      companyId,
+      issueId: targetIssueId,
+      relatedIssueId: otherIssueId,
+      type: "blocks",
+    });
+
+    const svc = projectService(db);
+    // This must not throw a FK violation on issueRelations.relatedIssueId → issues.id
+    await expect(svc.remove(targetProjectId)).resolves.not.toThrow();
+
+    // Verify target project and its issue are deleted
+    const remainingProject = await db.select().from(projects).where(eq(projects.id, targetProjectId));
+    expect(remainingProject).toHaveLength(0);
+    const remainingTargetIssue = await db.select().from(issues).where(eq(issues.id, targetIssueId));
+    expect(remainingTargetIssue).toHaveLength(0);
+    // Other project and its issue should still exist
+    const remainingOtherIssue = await db.select().from(issues).where(eq(issues.id, otherIssueId));
+    expect(remainingOtherIssue).toHaveLength(1);
+  });
+
   it("agent remove() handles approval + budget incident FK without violation", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

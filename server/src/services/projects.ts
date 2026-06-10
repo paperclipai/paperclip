@@ -914,7 +914,12 @@ export function projectService(db: Db) {
           );
           // inboxDismissals has no issue reference — skip (deleted at company level)
           await tx.delete(issueExecutionDecisions).where(inArray(issueExecutionDecisions.issueId, issueIds));
-          await tx.delete(issueRelations).where(inArray(issueRelations.issueId, issueIds));
+          await tx.delete(issueRelations).where(
+            or(
+              inArray(issueRelations.issueId, issueIds),
+              inArray(issueRelations.relatedIssueId, issueIds),
+            ),
+          );
         }
         // Cost/finance events — reference project and/or issues (FK without cascade)
         await tx.delete(costEvents).where(
