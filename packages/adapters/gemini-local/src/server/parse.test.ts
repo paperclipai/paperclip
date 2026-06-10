@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isGeminiTransientNetworkError,
-  isGeminiUnknownSessionError,
+  isGeminiSessionUnrecoverableError,
   parseGeminiJsonl,
 } from "./parse.js";
 
@@ -136,34 +136,34 @@ describe("parseGeminiJsonl", () => {
   });
 });
 
-describe("isGeminiUnknownSessionError", () => {
+describe("isGeminiSessionUnrecoverableError", () => {
   it("matches 'unknown session'", () => {
-    expect(isGeminiUnknownSessionError("", "Error: unknown session 'abc-123'")).toBe(true);
+    expect(isGeminiSessionUnrecoverableError("", "Error: unknown session 'abc-123'")).toBe(true);
   });
 
   it("matches 'session ... not found'", () => {
-    expect(isGeminiUnknownSessionError("", "Resumed session abc-123 not found on disk")).toBe(true);
+    expect(isGeminiSessionUnrecoverableError("", "Resumed session abc-123 not found on disk")).toBe(true);
   });
 
   it("matches 'exceeds the maximum number of tokens' (compression overflow)", () => {
     const stderr =
       '_ApiError: {"error":{"code":400,"message":"The input token count exceeds the maximum number of tokens allowed 1048576","status":"INVALID_ARGUMENT"}} at ChatCompressionService.compress';
-    expect(isGeminiUnknownSessionError("", stderr)).toBe(true);
+    expect(isGeminiSessionUnrecoverableError("", stderr)).toBe(true);
   });
 
   it("matches 'input token count exceeds'", () => {
     expect(
-      isGeminiUnknownSessionError("", "input token count exceeds maximum"),
+      isGeminiSessionUnrecoverableError("", "input token count exceeds maximum"),
     ).toBe(true);
   });
 
   it("does not match unrelated stderr", () => {
-    expect(isGeminiUnknownSessionError("", "Some other error")).toBe(false);
+    expect(isGeminiSessionUnrecoverableError("", "Some other error")).toBe(false);
   });
 
   it("does not match transient network errors (those go to isGeminiTransientNetworkError)", () => {
     expect(
-      isGeminiUnknownSessionError(
+      isGeminiSessionUnrecoverableError(
         "",
         "_GaxiosError: getaddrinfo ENOTFOUND oauth2.googleapis.com",
       ),
@@ -195,7 +195,7 @@ describe("isGeminiTransientNetworkError", () => {
     expect(isGeminiTransientNetworkError("", "Some other error")).toBe(false);
   });
 
-  it("does not match unknown-session errors (those go to isGeminiUnknownSessionError)", () => {
+  it("does not match unknown-session errors (those go to isGeminiSessionUnrecoverableError)", () => {
     expect(
       isGeminiTransientNetworkError("", "Error: unknown session 'abc-123'"),
     ).toBe(false);

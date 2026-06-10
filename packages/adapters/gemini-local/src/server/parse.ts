@@ -199,7 +199,7 @@ export function parseGeminiJsonl(stdout: string) {
   };
 }
 
-export function isGeminiUnknownSessionError(stdout: string, stderr: string): boolean {
+export function isGeminiSessionUnrecoverableError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)
     .map((line) => line.trim())

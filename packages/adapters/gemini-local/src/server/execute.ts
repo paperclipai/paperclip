@@ -53,7 +53,7 @@ import {
   detectGeminiAuthRequired,
   isGeminiTransientNetworkError,
   isGeminiTurnLimitResult,
-  isGeminiUnknownSessionError,
+  isGeminiSessionUnrecoverableError,
   parseGeminiJsonl,
 } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
@@ -663,7 +663,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionId &&
       !initial.proc.timedOut &&
       (initial.proc.exitCode ?? 0) !== 0 &&
-      isGeminiUnknownSessionError(initial.proc.stdout, initial.proc.stderr)
+      isGeminiSessionUnrecoverableError(initial.proc.stdout, initial.proc.stderr)
     ) {
       await onLog(
         "stdout",
