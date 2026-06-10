@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PAP-128 · Unify Composer Styling — side-by-side proposal</title>
+<style>
+  /* ───────────────────────── Design tokens (faithful to ui/src/index.css) ── */
+  :root[data-theme="dark"] {
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+    --accent: oklch(0.269 0 0);
+    --border: oklch(0.269 0 0);
+    --shadow-rgb: 0 0 0;
+    --shadow-alpha: 0.28;
+  }
+  :root[data-theme="light"] {
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.145 0 0);
+    --card: oklch(1 0 0);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+    --accent: oklch(0.97 0 0);
+    --border: oklch(0.922 0 0);
+    --shadow-rgb: 15 23 42;
+    --shadow-alpha: 0.08;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background:
+      radial-gradient(120% 80% at 50% -10%, color-mix(in oklab, var(--muted) 60%, var(--background)) 0%, var(--background) 60%);
+    color: var(--foreground);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ───────────────────────── Page chrome ─────────────────────────────────── */
+  header.page {
+    display: flex; align-items: flex-end; justify-content: space-between;
+    gap: 24px; padding: 28px 32px 18px; flex-wrap: wrap;
+  }
+  .title h1 { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -0.01em; }
+  .title p  { margin: 6px 0 0; font-size: 13px; color: var(--muted-foreground); max-width: 70ch; line-height: 1.5; }
+  .controls { display: flex; align-items: center; gap: 10px; }
+  .ctl {
+    appearance: none; cursor: pointer; font: inherit; font-size: 12.5px;
+    border: 1px solid var(--border); background: var(--card); color: var(--foreground);
+    padding: 7px 12px; border-radius: 8px; transition: background .15s, border-color .15s;
+  }
+  .ctl:hover { background: var(--accent); border-color: color-mix(in oklab, var(--foreground) 22%, var(--border)); }
+  .ctl[aria-pressed="true"] { background: var(--foreground); color: var(--background); border-color: var(--foreground); }
+
+  /* ───────────────────────── Columns ─────────────────────────────────────── */
+  .grid {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 22px; padding: 8px 32px 40px; align-items: stretch;
+  }
+  @media (max-width: 1080px) { .grid { grid-template-columns: 1fr; } }
+
+  .col { display: flex; flex-direction: column; min-width: 0; }
+  .col-head { display: flex; align-items: center; gap: 8px; margin: 0 2px 10px; }
+  .col-head h2 { margin: 0; font-size: 13.5px; font-weight: 600; }
+  .tag {
+    font-size: 10.5px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase;
+    padding: 3px 7px; border-radius: 999px; border: 1px solid;
+  }
+  .tag.before { color: #f0a; border-color: color-mix(in oklab, #ff4d8d 50%, var(--border)); background: color-mix(in oklab, #ff4d8d 12%, transparent); }
+  .tag.after  { color: #34d399; border-color: color-mix(in oklab, #34d399 50%, var(--border)); background: color-mix(in oklab, #34d399 14%, transparent); }
+  .tag.ref    { color: var(--muted-foreground); border-color: var(--border); background: var(--muted); }
+  .col-note { margin: 10px 2px 0; font-size: 12px; line-height: 1.5; color: var(--muted-foreground); }
+  .col-note b { color: var(--foreground); font-weight: 600; }
+
+  /* ───────────────────────── Surface (chat pane + docked composer) ───────── */
+  .surface {
+    position: relative; height: 560px;
+    border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+    background: var(--background);
+    box-shadow: 0 1px 0 color-mix(in oklab, var(--foreground) 4%, transparent);
+  }
+
+  /* Scrolling content behind the composer */
+  /* Low bottom padding on purpose: lets messages scroll *behind* the docked
+     composer so the translucency (and the old hard mask) is visible. */
+  .stream { position: absolute; inset: 0; overflow-y: auto; padding: 18px 18px 44px; scroll-behavior: smooth; }
+  .stream::-webkit-scrollbar { width: 8px; }
+  .stream::-webkit-scrollbar-thumb { background: color-mix(in oklab, var(--foreground) 16%, transparent); border-radius: 99px; }
+
+  .row { display: flex; gap: 10px; margin-bottom: 16px; align-items: flex-start; }
+  .row.me { flex-direction: row-reverse; }
+  .ava {
+    width: 26px; height: 26px; border-radius: 8px; flex: none; display: grid; place-items: center;
+    font-size: 11px; font-weight: 700; color: var(--background);
+    background: linear-gradient(135deg, #8b5cf6, #6366f1);
+  }
+  .row.me .ava { background: linear-gradient(135deg, #f59e0b, #f97316); }
+  .bubble {
+    max-width: 78%; font-size: 13px; line-height: 1.55;
+    padding: 9px 12px; border-radius: 12px;
+    border: 1px solid var(--border); background: var(--card); color: var(--foreground);
+  }
+  .row.me .bubble { background: color-mix(in oklab, var(--foreground) 9%, var(--card)); }
+  .who { font-size: 11px; font-weight: 600; color: var(--muted-foreground); margin-bottom: 3px; }
+
+  /* Comment-style content for the task column */
+  .cmt { margin-bottom: 18px; }
+  .cmt .who { display: flex; align-items: center; gap: 7px; }
+  .cmt .dot { width: 18px; height: 18px; border-radius: 6px; background: linear-gradient(135deg,#8b5cf6,#6366f1); }
+  .cmt p { margin: 6px 0 0; font-size: 13px; line-height: 1.6; color: var(--foreground); }
+
+  /* ── The BLACK GRADIENT MASK (current conference room only) ─────────────── */
+  .mask {
+    position: absolute; left: 0; right: 8px; bottom: 84px; height: 40px; pointer-events: none;
+    background: linear-gradient(to top, var(--background), transparent);
+    z-index: 2;
+  }
+
+  /* ── Composer dock ──────────────────────────────────────────────────────── */
+  .dock { position: absolute; left: 0; right: 0; bottom: 0; padding: 0 16px 16px; z-index: 3; }
+  /* The translucent fade used by the TASK composer dock (soft, not a hard mask) */
+  .dock.translucent-dock {
+    padding-top: 22px;
+    background: linear-gradient(to top, var(--background), color-mix(in oklab, var(--background) 95%, transparent) 55%, transparent);
+  }
+
+  .composer {
+    position: relative; padding: 11px 12px 9px; transition: border-color .15s, background-color .15s, box-shadow .15s;
+  }
+  /* OPAQUE card variant — today's conference room (shared ChatComposer) */
+  .composer.card {
+    border-radius: 12px; border: 1px solid var(--border); background: var(--card);
+  }
+  /* TRANSLUCENT variant — task comments recipe, the proposed unified look */
+  .composer.translucent {
+    border-radius: 12px; border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+    background: color-mix(in oklab, var(--background) 85%, transparent);
+    box-shadow: 0 -12px 28px rgba(var(--shadow-rgb) / var(--shadow-alpha));
+  }
+  @supports (backdrop-filter: blur(1px)) {
+    .composer.translucent { backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+  }
+  .composer:focus-within { border-color: color-mix(in oklab, var(--foreground) 40%, var(--border)); }
+
+  .composer textarea {
+    display: block; width: 100%; border: 0; background: transparent; resize: none;
+    font: inherit; font-size: 13.5px; line-height: 1.5; color: var(--foreground);
+    outline: none; padding: 0; min-height: 22px; max-height: 120px;
+  }
+  .composer textarea::placeholder { color: var(--muted-foreground); }
+  .toolbar { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+  .iconbtn {
+    width: 28px; height: 28px; border-radius: 8px; border: 0; cursor: pointer;
+    display: grid; place-items: center; color: var(--muted-foreground); background: transparent;
+    transition: background .15s, color .15s;
+  }
+  .iconbtn:hover { background: var(--accent); color: var(--foreground); }
+  .spacer { flex: 1; }
+  .send {
+    width: 28px; height: 28px; border-radius: 8px; border: 0; cursor: pointer;
+    display: grid; place-items: center; transition: opacity .15s, background .15s, color .15s;
+    background: var(--accent); color: var(--muted-foreground);
+  }
+  .send.ready { background: var(--foreground); color: var(--background); }
+  .send.ready:hover { opacity: .9; }
+  .send:disabled { cursor: default; }
+  svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .send svg { width: 14px; height: 14px; }
+
+  footer.page { padding: 0 32px 40px; color: var(--muted-foreground); font-size: 12px; line-height: 1.6; max-width: 95ch; }
+  footer.page code { background: var(--muted); padding: 1px 5px; border-radius: 5px; font-size: 11.5px; color: var(--foreground); }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 6px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 22px; height: 12px; border-radius: 4px; border: 1px solid var(--border); }
+</style>
+</head>
+<body>
+  <header class="page">
+    <div class="title">
+      <h1>PAP-128 · Unify composer styling</h1>
+      <p>The conference-room composer should read like the task-comments composer: <b>translucent</b> (content scrolls visibly behind it), soft rounded corners, soft upward shadow — and the <b>black gradient mask</b> above it is removed. Type in any box, and scroll the message stream to watch text pass <em>behind</em> the translucent composers.</p>
+    </div>
+    <div class="controls">
+      <button class="ctl" id="theme" aria-pressed="true">◐ Dark</button>
+      <button class="ctl" id="scrollAll">↕ Auto-scroll all</button>
+    </div>
+  </header>
+
+  <div class="grid">
+    <!-- ── Column 1: CURRENT conference room ──────────────────────────────── -->
+    <section class="col">
+      <div class="col-head"><h2>Conference room</h2><span class="tag before">Current</span></div>
+      <div class="surface">
+        <div class="stream" data-stream>
+          <!-- agent bubbles -->
+        </div>
+        <!-- the black gradient mask the user wants removed -->
+        <div class="mask" title="black gradient mask (to be removed)"></div>
+        <div class="dock">
+          <div class="composer card">
+            <textarea rows="1" placeholder="Ask anything about your company..."></textarea>
+            <div class="toolbar">
+              <button class="iconbtn" title="Attach"><svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+              <span class="spacer"></span>
+              <button class="send" disabled><svg viewBox="0 0 24 24"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="col-note"><b>Opaque</b> <code>bg-card</code> box + hard <code>bg-gradient-to-t</code> mask strip clips the last message behind a flat band. <code>BoardChat.tsx:910</code> &amp; <code>:938</code>.</p>
+    </section>
+
+    <!-- ── Column 2: PROPOSED conference room ─────────────────────────────── -->
+    <section class="col">
+      <div class="col-head"><h2>Conference room</h2><span class="tag after">Proposed</span></div>
+      <div class="surface">
+        <div class="stream" data-stream>
+        </div>
+        <!-- no .mask here -->
+        <div class="dock translucent-dock">
+          <div class="composer translucent">
+            <textarea rows="1" placeholder="Ask anything about your company..."></textarea>
+            <div class="toolbar">
+              <button class="iconbtn" title="Attach"><svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+              <span class="spacer"></span>
+              <button class="send" disabled><svg viewBox="0 0 24 24"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="col-note"><b>Translucent</b> <code>bg-background/85</code> + <code>backdrop-blur</code> + soft shadow; mask removed. Messages glide softly behind the glass — matching task comments.</p>
+    </section>
+
+    <!-- ── Column 3: REFERENCE task comments ──────────────────────────────── -->
+    <section class="col">
+      <div class="col-head"><h2>Task comments</h2><span class="tag ref">Reference (unchanged)</span></div>
+      <div class="surface">
+        <div class="stream" data-stream data-comments>
+        </div>
+        <div class="dock translucent-dock">
+          <div class="composer translucent">
+            <textarea rows="1" placeholder="Reply"></textarea>
+            <div class="toolbar">
+              <button class="iconbtn" title="Attach"><svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+              <span class="spacer"></span>
+              <button class="send" disabled><svg viewBox="0 0 24 24"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="col-note">The existing recipe we are matching: <code>rounded</code> + <code>bg-background/85</code> + <code>backdrop-blur</code> + <code>shadow-[0_-12px_28px]</code>. <code>IssueChatThread.tsx:3634</code>.</p>
+    </section>
+  </div>
+
+  <footer class="page">
+    <div class="legend">
+      <span><i class="swatch" style="background:var(--card)"></i> opaque <code>bg-card</code> (today)</span>
+      <span><i class="swatch" style="background:color-mix(in oklab,var(--background) 85%, transparent); backdrop-filter:blur(4px)"></i> translucent <code>bg-background/85</code> (proposed)</span>
+    </div>
+    <p style="margin-top:12px">Scope: only the conference room changes. The shared <code>ChatComposer</code> is used <b>only</b> by BoardChat; task comments render a separate <code>IssueChatComposer</code>, so this is visual unification with no shared-component risk.</p>
+  </footer>
+
+<script>
+  // ── seed content ────────────────────────────────────────────────────────
+  const boardMsgs = [
+    ["CEO","Morning. Here's where the three active workstreams stand."],
+    ["You","Give me the headline on the onboarding wizard.","me"],
+    ["CEO","PAP-125 shipped the faithful 5-step capsule wizard. QA (PAP-126) is unblocked and running now."],
+    ["You","Any blockers I should clear today?","me"],
+    ["CEO","One: the PAP-83 master integration is waiting on a rebase decision. I can draft the plan if you want."],
+    ["You","Do it. Also pull the composer styling ticket forward.","me"],
+    ["CEO","On it. Drafting the rebase plan and scoping PAP-128 — the conference composer should match the task composer's translucent glass."],
+    ["CEO","Watch this message as you scroll: with the new translucent composer you can read text right up to the edge instead of losing it behind a flat band."],
+  ];
+  const comments = [
+    ["Reviewer","Confirmed the translucent treatment reads well over long threads."],
+    ["You","Good. Let's mirror it in the conference room then.","me"],
+    ["Designer","The soft upward shadow is what sells the depth — keep the 28px blur radius."],
+    ["You","Agreed. No hard mask anywhere.","me"],
+    ["Reviewer","Scroll this thread — notice content stays legible right behind the composer glass."],
+    ["Designer","That's the whole point of dropping the gradient mask. Ship it."],
+  ];
+
+  function bubble([who, text, me]) {
+    const row = document.createElement("div");
+    row.className = "row" + (me ? " me" : "");
+    row.innerHTML = `<div class="ava">${me ? "Y" : who[0]}</div>
+      <div class="bubble"><div class="who">${who}</div>${text}</div>`;
+    return row;
+  }
+  function comment([who, text, me]) {
+    const c = document.createElement("div");
+    c.className = "cmt";
+    c.innerHTML = `<div class="who"><span class="dot"></span>${me ? "You" : who}</div><p>${text}</p>`;
+    return c;
+  }
+
+  document.querySelectorAll("[data-stream]").forEach((s) => {
+    const isComments = s.hasAttribute("data-comments");
+    const data = isComments ? comments : boardMsgs;
+    // duplicate so there's plenty to scroll
+    [...data, ...data].forEach((m) => s.appendChild(isComments ? comment(m) : bubble(m)));
+    s.scrollTop = s.scrollHeight;
+  });
+
+  // ── live send-button state ──────────────────────────────────────────────
+  document.querySelectorAll(".composer").forEach((c) => {
+    const ta = c.querySelector("textarea");
+    const send = c.querySelector(".send");
+    const sync = () => {
+      const ready = ta.value.trim().length > 0;
+      send.classList.toggle("ready", ready);
+      send.disabled = !ready;
+      ta.style.height = "auto";
+      ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
+    };
+    ta.addEventListener("input", sync);
+    send.addEventListener("click", () => { ta.value = ""; sync(); ta.focus(); });
+  });
+
+  // ── controls ────────────────────────────────────────────────────────────
+  const root = document.documentElement;
+  const themeBtn = document.getElementById("theme");
+  themeBtn.addEventListener("click", () => {
+    const dark = root.getAttribute("data-theme") === "dark";
+    root.setAttribute("data-theme", dark ? "light" : "dark");
+    themeBtn.textContent = dark ? "◑ Light" : "◐ Dark";
+    themeBtn.setAttribute("aria-pressed", String(!dark));
+  });
+
+  let scrolling = null;
+  document.getElementById("scrollAll").addEventListener("click", (e) => {
+    const streams = [...document.querySelectorAll("[data-stream]")];
+    if (scrolling) { clearInterval(scrolling); scrolling = null; e.target.setAttribute("aria-pressed","false"); return; }
+    e.target.setAttribute("aria-pressed","true");
+    let dir = -1;
+    scrolling = setInterval(() => {
+      streams.forEach((s) => {
+        s.scrollTop += dir * 2;
+        if (s.scrollTop <= 0) dir = 1;
+        if (s.scrollTop + s.clientHeight >= s.scrollHeight - 1) dir = -1;
+      });
+    }, 16);
+  });
+</script>
+</body>
+</html>
