@@ -2417,6 +2417,109 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("skips orphan-blocker assignment when an active recovery action already exists (FMA-3284)", async () => {
+    const companyId = randomUUID();
+    const creatorAgentId = randomUUID();
+    const blockedAssigneeAgentId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "SecurityEngineer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: blockedAssigneeAgentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "Fix blocker",
+        status: "todo",
+        priority: "high",
+        createdByAgentId: creatorAgentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked work",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: blockedAssigneeAgentId,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+      createdByAgentId: creatorAgentId,
+    });
+    // Seed an active recovery action — the stranded recovery system is already
+    // managing this issue; the orphan-blocker sweep should not interfere.
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: blockerIssueId,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: creatorAgentId,
+      cause: "stranded_assigned_issue",
+      fingerprint: `source_scoped_recovery:${companyId}:${blockerIssueId}:stranded_assigned_issue`,
+      evidence: {},
+      nextAction: "Restore a live execution path.",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // The orphan-blocker sweep must skip the blocker because a recovery action
+    // is already active — assigning it again would create a parallel wake loop.
+    expect(result.orphanBlockersAssigned).toBe(0);
+    expect(result.issueIds).not.toContain(blockerIssueId);
+
+    const blocker = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, blockerIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(blocker?.assigneeAgentId).toBeNull();
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, creatorAgentId));
+    expect(wakeups).toHaveLength(0);
+  });
+
   it("re-enqueues continuation for stranded in-progress work with no active run", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
