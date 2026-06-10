@@ -1,7 +1,7 @@
 {
   "name": "@paperclipai/plugin-sdk",
   "version": "1.0.0",
-  "description": "Stable public API for Paperclip plugins — worker-side context and UI bridge hooks",
+  "description": "Stable public API for Paperclip plugins \u2014 worker-side context and UI bridge hooks",
   "license": "MIT",
   "homepage": "https://github.com/paperclipai/paperclip",
   "bugs": {
@@ -15,39 +15,39 @@
   "type": "module",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
+      "types": "./dist/index.d.js",
       "import": "./dist/index.js"
     },
     "./protocol": {
-      "types": "./dist/protocol.d.ts",
+      "types": "./dist/protocol.d.js",
       "import": "./dist/protocol.js"
     },
     "./types": {
-      "types": "./dist/types.d.ts",
+      "types": "./dist/types.d.js",
       "import": "./dist/types.js"
     },
     "./ui": {
-      "types": "./dist/ui/index.d.ts",
+      "types": "./dist/ui/index.d.js",
       "import": "./dist/ui/index.js"
     },
     "./ui/hooks": {
-      "types": "./dist/ui/hooks.d.ts",
+      "types": "./dist/ui/hooks.d.js",
       "import": "./dist/ui/hooks.js"
     },
     "./ui/types": {
-      "types": "./dist/ui/types.d.ts",
+      "types": "./dist/ui/types.d.js",
       "import": "./dist/ui/types.js"
     },
     "./testing": {
-      "types": "./dist/testing.d.ts",
+      "types": "./dist/testing.d.js",
       "import": "./dist/testing.js"
     },
     "./bundlers": {
-      "types": "./dist/bundlers.d.ts",
+      "types": "./dist/bundlers.d.js",
       "import": "./dist/bundlers.js"
     },
     "./dev-server": {
-      "types": "./dist/dev-server.d.ts",
+      "types": "./dist/dev-server.d.js",
       "import": "./dist/dev-server.js"
     }
   },
@@ -123,5 +123,6 @@
     "react": {
       "optional": true
     }
-  }
+  },
+  "main": "./dist/index.js"
 }

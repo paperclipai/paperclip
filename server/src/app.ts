@@ -18,6 +18,7 @@ import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
+import { workProductRoutes } from "./routes/work-products.js";
 import { routineRoutes } from "./routes/routines.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
@@ -224,6 +225,7 @@ export async function createApp(
   }));
   api.use(issueTreeControlRoutes(db));
   api.use(fileResourceRoutes(db));
+  api.use(workProductRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(executionWorkspaceRoutes(db));

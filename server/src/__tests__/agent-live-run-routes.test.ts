@@ -329,6 +329,31 @@ describe("agent live run routes", () => {
     });
   });
 
+  it("returns an empty log response for existing runs without a log handle", async () => {
+    mockHeartbeatService.getRunLogAccess.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      logStore: null,
+      logRef: null,
+    });
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-1/log?offset=12&limitBytes=64"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
+    expect(res.body).toEqual({
+      runId: "run-1",
+      store: null,
+      logRef: null,
+      content: "",
+      nextOffset: 12,
+    });
+  });
+
   it("caps company live run polling by default", async () => {
     const rows = Array.from({ length: 75 }, (_, index) => ({
       id: `run-${index}`,

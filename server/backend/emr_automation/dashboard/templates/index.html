@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Toca Ficha Dr. — EMR Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <header>
+        <div class="header-left">
+            <h1>Toca Ficha Dr.</h1>
+            <span id="connection-status" class="badge badge-offline">Offline</span>
+        </div>
+        <nav>
+            <button class="nav-btn active" data-panel="dashboard">Dashboard</button>
+            <button class="nav-btn" data-panel="dosages">Dosagens</button>
+            <button class="nav-btn" data-panel="audit">Auditoria</button>
+            <button class="nav-btn" data-panel="config">Config</button>
+        </nav>
+    </header>
+
+    <main>
+        <!-- ═══════════════ DASHBOARD PANEL ═══════════════ -->
+        <section id="panel-dashboard" class="panel active">
+            <div class="dash-grid">
+                <!-- ── Patient Card ── -->
+                <div class="card card-patient">
+                    <div class="card-head">
+                        <h2>Paciente Atual</h2>
+                        <div class="card-actions">
+                            <button class="btn-icon" onclick="App.toggleAudio()" id="btn-mic" title="Audio Assistant">&#127908;</button>
+                            <button class="btn-icon" onclick="App.openManualActionModal()" title="Registrar Acao Manual">&#9998;</button>
+                            <button class="btn-icon" onclick="App.refreshPatient()" title="Atualizar dados (R)">&#8635;</button>
+                        </div>
+                    </div>
+                    <div id="patient-skeleton" class="patient-data">
+                        <div class="skeleton skeleton-title"></div>
+                        <div class="skeleton-row">
+                            <div class="skeleton skeleton-text" style="width:30%"></div>
+                            <div class="skeleton skeleton-text" style="width:45%"></div>
+                        </div>
+                        <div class="skeleton-row">
+                            <div class="skeleton skeleton-text" style="width:30%"></div>
+                            <div class="skeleton skeleton-text skeleton-text-lg" style="width:35%"></div>
+                        </div>
+                    </div>
+                    <div id="patient-info" class="patient-empty hidden">
+                        <div class="empty-icon">&#9899;</div>
+                        <p>Aguardando paciente...</p>
+                    </div>
+                    <!-- Quick dosages (analgesics) shown when patient loaded -->
+                    <div id="quick-dosages" class="quick-dosages hidden"></div>
+                </div>
+
+                <!-- ── Workflow Card ── -->
+                <div class="card card-workflow">
+                    <h2>Fluxo de Trabalho</h2>
+
+                    <!-- Template Selection -->
+                    <div class="template-grid">
+                        {% for template in prescription_templates %}
+                        <button
+                            class="tpl-btn"
+                            data-tpl="{{ template.code }}"
+                            data-key="{{ template.shortcut_key }}"
+                            data-label="{{ template.display_name }}"
+                            onclick="App.selectTemplate('{{ template.code }}')"
+                        >
+                            <span class="tpl-key">{{ template.shortcut_key }}</span>
+                            <span class="tpl-name">{{ template.display_name }}</span>
+                        </button>
+                        {% endfor %}
+                    </div>
+
+                    <!-- Workflow Options -->
+                    <div class="wf-options">
+                        <label class="wf-check">
+                            <input type="checkbox" id="opt-medication">
+                            <span>Imprimir Medicacao</span>
+                        </label>
+                        <label class="wf-check">
+                            <input type="checkbox" id="opt-attestation">
+                            <span>Imprimir Atestado</span>
+                        </label>
+                        <label class="wf-check">
+                            <input type="checkbox" id="opt-discharge" checked>
+                            <span>Processar Alta</span>
+                        </label>
+                    </div>
+
+                    <!-- Execute Button -->
+                    <button class="btn-execute" id="btn-execute" onclick="App.executeWorkflow()" disabled>
+                        <span class="exec-icon" id="exec-icon">&#9654;</span>
+                        <div class="exec-text">
+                            <span class="exec-title" id="exec-title">EXECUTAR</span>
+                            <span class="exec-sub" id="exec-sub">Selecione um template acima</span>
+                        </div>
+                    </button>
+
+                    <!-- Individual Actions -->
+                    <div class="individual-actions">
+                        <button class="btn-ind" onclick="App.action('discharge')" title="D">Alta</button>
+                        <button class="btn-ind" onclick="App.action('medication')" title="M">Medicacao</button>
+                        <button class="btn-ind" onclick="App.action('refresh')" title="R">Atualizar</button>
+                    </div>
+                </div>
+
+                <!-- ── Activity + Summary Card ── -->
+                <div class="card card-activity">
+                    <div class="summary-bar" id="summary-skeleton">
+                        <div class="summary-item">
+                            <span class="s-val skeleton skeleton-badge"></span>
+                            <span class="s-lbl">Total</span>
+                        </div>
+                        <div class="summary-item ok">
+                            <span class="s-val skeleton skeleton-badge"></span>
+                            <span class="s-lbl">OK</span>
+                        </div>
+                        <div class="summary-item fail">
+                            <span class="s-val skeleton skeleton-badge"></span>
+                            <span class="s-lbl">Erro</span>
+                        </div>
+                    </div>
+                    <div class="summary-bar hidden" id="summary-data">
+                        <div class="summary-item">
+                            <span class="s-val" id="stat-total">0</span>
+                            <span class="s-lbl">Total</span>
+                        </div>
+                        <div class="summary-item ok">
+                            <span class="s-val" id="stat-success">0</span>
+                            <span class="s-lbl">OK</span>
+                        </div>
+                        <div class="summary-item fail">
+                            <span class="s-val" id="stat-failure">0</span>
+                            <span class="s-lbl">Erro</span>
+                        </div>
+                    </div>
+                    <h2>Atividade Recente</h2>
+                    <div id="activity-skeleton" class="activity-feed">
+                        <div class="skeleton-activity-item"><div class="skeleton skeleton-text"></div><div class="skeleton skeleton-text"></div></div>
+                        <div class="skeleton-activity-item"><div class="skeleton skeleton-text"></div><div class="skeleton skeleton-text"></div></div>
+                        <div class="skeleton-activity-item"><div class="skeleton skeleton-text"></div><div class="skeleton skeleton-text"></div></div>
+                        <div class="skeleton-activity-item"><div class="skeleton skeleton-text"></div><div class="skeleton skeleton-text"></div></div>
+                        <div class="skeleton-activity-item"><div class="skeleton skeleton-text"></div><div class="skeleton skeleton-text"></div></div>
+                    </div>
+                    <div id="activity-feed" class="activity-feed hidden">
+                        <p class="text-muted">Aguardando acoes...</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Keyboard shortcut hint -->
+            <div class="shortcut-hint">
+                <span><kbd>{{ template_shortcut_hint }}</kbd> Template</span>
+                <span><kbd>Enter</kbd> Executar</span>
+                <span><kbd>D</kbd> Alta</span>
+                <span><kbd>M</kbd> Medicacao</span>
+                <span><kbd>R</kbd> Atualizar</span>
+            </div>
+        </section>
+
+        <!-- ═══════════════ DOSAGES PANEL ═══════════════ -->
+        <section id="panel-dosages" class="panel">
+            <div class="card">
+                <div class="dosage-header">
+                    <h2>Calculadora de Dosagens Pediatricas</h2>
+                    <div class="weight-group">
+                        <label for="dosage-weight">Peso:</label>
+                        <input type="number" id="dosage-weight" placeholder="kg" min="0.5" max="150" step="0.1">
+                        <span class="weight-unit">kg</span>
+                        <button class="btn-primary btn-sm" onclick="App.calculateFullDosages()">Calcular</button>
+                    </div>
+                </div>
+                <div id="dosage-results">
+                    <p class="text-muted center">Informe o peso do paciente para calcular as dosagens.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════════ AUDIT PANEL ═══════════════ -->
+        <section id="panel-audit" class="panel">
+            <div class="card">
+                <div class="audit-head">
+                    <div class="audit-title">
+                        <h2>Auditoria</h2>
+                        <div class="audit-summary-badges">
+                            <span class="audit-chip audit-chip-total">7d: <strong id="audit-stat-total">0</strong></span>
+                            <span class="audit-chip audit-chip-success">OK <strong id="audit-stat-success">0</strong></span>
+                            <span class="audit-chip audit-chip-failure">Erro <strong id="audit-stat-failure">0</strong></span>
+                        </div>
+                    </div>
+                    <div class="audit-controls">
+                        <select id="audit-filter-action">
+                            <option value="">Todas as acoes</option>
+                            {% for template in prescription_templates %}
+                            <option value="{{ template.code }}">{{ template.display_name }}</option>
+                            {% endfor %}
+                            <option value="audio_soap_fill">SOAP → EMR</option>
+                            <option value="dosage_export">Dosagem → EMR</option>
+                            <option value="discharge">Alta</option>
+                            <option value="medication">Medicacao</option>
+                            <option value="complete_workflow">Workflow Completo</option>
+                            <option value="manual_entry">Acao Manual</option>
+                        </select>
+                        <input type="text" id="audit-filter-patient" placeholder="Patient ID...">
+                        <button class="btn-secondary btn-sm" onclick="App.loadAudit()">Filtrar</button>
+                        <button class="btn-secondary btn-sm" onclick="App.exportAudit()">Exportar</button>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table class="audit-table">
+                        <thead>
+                            <tr>
+                                <th>Data/Hora</th>
+                                <th>Paciente</th>
+                                <th>Acao</th>
+                                <th>Template</th>
+                                <th>Status</th>
+                                <th>Duracao</th>
+                                <th>Erro</th>
+                            </tr>
+                        </thead>
+                        <tbody id="audit-skeleton">
+                            <tr><td colspan="7"><div class="skeleton skeleton-table-row"></div></td></tr>
+                            <tr><td colspan="7"><div class="skeleton skeleton-table-row"></div></td></tr>
+                            <tr><td colspan="7"><div class="skeleton skeleton-table-row"></div></td></tr>
+                            <tr><td colspan="7"><div class="skeleton skeleton-table-row"></div></td></tr>
+                            <tr><td colspan="7"><div class="skeleton skeleton-table-row"></div></td></tr>
+                        </tbody>
+                        <tbody id="audit-body" class="hidden">
+                            <tr><td colspan="7" class="text-muted">Carregando...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════════ CONFIG PANEL ═══════════════ -->
+        <section id="panel-config" class="panel">
+            <div class="card">
+                <h2>Configuracao</h2>
+                <p class="text-muted" style="margin-bottom:16px">Edite e salve. Alteracoes aplicam-se imediatamente.</p>
+                <form id="config-form" onsubmit="App.saveConfig(event)">
+                    <div id="config-skeleton">
+                        <div class="skeleton skeleton-config-section"></div>
+                        <div class="skeleton skeleton-config-section"></div>
+                        <div class="skeleton skeleton-config-section"></div>
+                    </div>
+                    <div id="config-sections"></div>
+                    <div class="config-actions">
+                        <button type="submit" class="btn-primary">Salvar Configuracao</button>
+                        <span id="config-status"></span>
+                    </div>
+                </form>
+            </div>
+        </section>
+    </main>
+
+    <!-- Soap Note Modal -->
+    <div id="modal-soap" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="App.closeModal('modal-soap')">&times;</span>
+            <h2>Nota SOAP Gerada</h2>
+            <textarea id="soap-result" rows="15" readonly></textarea>
+            <div class="modal-actions">
+                <button class="btn-primary" onclick="App.insertSoapToEmr()">Inserir no EMR</button>
+                <button class="btn-secondary" onclick="App.copySoap()">Copiar</button>
+                <button class="btn-primary" onclick="App.closeModal('modal-soap')">Fechar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Manual Action Modal -->
+    <div id="modal-manual" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="App.closeModal('modal-manual')">&times;</span>
+            <h2>Registrar Acao Manual</h2>
+            <p>O que voce fez manualmente?</p>
+            <div class="manual-options">
+                <label><input type="checkbox" value="recipe_edit"> Alterei texto da receita</label>
+                <label><input type="checkbox" value="extra_med"> Adicionei medicamento extra</label>
+                <label><input type="checkbox" value="free_text"> Digitei evolucao livre</label>
+                <label><input type="checkbox" value="labs"> Pedi exames</label>
+                <label><input type="checkbox" value="specialist"> Chamei especialista</label>
+                <label><input type="checkbox" value="other"> Outros</label>
+            </div>
+            <textarea id="manual-notes" placeholder="Detalhes opcionais..." rows="3"></textarea>
+            <div class="modal-actions">
+                <button class="btn-secondary" onclick="App.closeModal('modal-manual')">Cancelar</button>
+                <button class="btn-primary" onclick="App.saveManualAction()">Salvar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast container -->
+    <div id="toast-container"></div>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

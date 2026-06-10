@@ -10,6 +10,7 @@ import {
   buildRuntimeMountedSkillSnapshot,
   buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  ensurePathInEnv,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
@@ -612,6 +613,8 @@ describe("renderPaperclipWakePrompt", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Create child issues directly when you know what needs to be done");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("POST /api/issues/{issueId}/interactions");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("kind suggest_tasks, ask_user_questions, or request_confirmation");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("payload.version and payload.prompt");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("do not send confirmationPrompt");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("confirmation:{issueId}:plan:{revisionId}");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Wait for acceptance before creating implementation subtasks");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
@@ -1159,5 +1162,38 @@ describe("appendWithByteCap", () => {
     expect(output).not.toContain("\uFFFD");
     expect(Buffer.from(output, "utf8").toString("utf8")).toBe(output);
     expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(7);
+  });
+});
+
+describe("ensurePathInEnv", () => {
+  const isWindows = process.platform === "win32";
+  const home = os.homedir();
+  const opencodeBin = path.join(home, ".opencode", "bin");
+  const bunBin = path.join(home, ".bun", "bin");
+
+  it.skipIf(isWindows)("prepends ~/.opencode/bin and ~/.bun/bin to an existing PATH", () => {
+    const result = ensurePathInEnv({ PATH: "/usr/bin:/bin" });
+    const dirs = (result.PATH ?? "").split(":");
+
+    expect(dirs[0]).toBe(opencodeBin);
+    expect(dirs[1]).toBe(bunBin);
+    expect(dirs).toContain("/usr/bin");
+    expect(dirs).toContain("/bin");
+  });
+
+  it.skipIf(isWindows)("is idempotent when the dirs are already present", () => {
+    const startingPath = `${opencodeBin}:${bunBin}:/usr/bin:/bin`;
+    const result = ensurePathInEnv({ PATH: startingPath });
+
+    expect(result.PATH).toBe(startingPath);
+  });
+
+  it.skipIf(isWindows)("prepends to the default platform PATH when none is set", () => {
+    const result = ensurePathInEnv({});
+    const dirs = (result.PATH ?? "").split(":");
+
+    expect(dirs[0]).toBe(opencodeBin);
+    expect(dirs[1]).toBe(bunBin);
+    expect(dirs).toContain("/usr/bin");
   });
 });

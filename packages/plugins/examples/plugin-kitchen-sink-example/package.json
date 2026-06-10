@@ -5,7 +5,7 @@
   "type": "module",
   "private": true,
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./dist/index.js"
   },
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",
@@ -33,5 +33,6 @@
   },
   "peerDependencies": {
     "react": ">=18"
-  }
+  },
+  "main": "./dist/index.js"
 }

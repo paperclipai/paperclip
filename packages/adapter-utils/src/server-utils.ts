@@ -123,6 +123,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
   "- Create child issues directly when you know what needs to be done; use issue-thread interactions when the board/user must choose suggested tasks, answer structured questions, or confirm a proposal.",
   "- To ask for that input, create an interaction on the current issue with POST /api/issues/{issueId}/interactions using kind suggest_tasks, ask_user_questions, or request_confirmation. Use continuationPolicy wake_assignee when you need to resume after a response; for request_confirmation this resumes only after acceptance.",
+  "- request_confirmation payloads must include payload.version and payload.prompt; do not send confirmationPrompt. Minimal shape: {\"kind\":\"request_confirmation\",\"title\":\"Approve plan\",\"summary\":\"Short context\",\"continuationPolicy\":\"wake_assignee\",\"payload\":{\"version\":1,\"prompt\":\"Approve this plan?\",\"acceptLabel\":\"Approve\",\"rejectLabel\":\"Request changes\",\"supersedeOnUserComment\":true}}.",
   "- When you intentionally restart follow-up work on a completed assigned issue, include structured `resume: true` with the POST /api/issues/{issueId}/comments or PATCH /api/issues/{issueId} comment payload. Generic agent comments on closed issues are inert by default.",
   "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
@@ -1176,6 +1177,27 @@ export function defaultPathForPlatform() {
   return "/usr/local/bin:/opt/homebrew/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin";
 }
 
+// User-local tool install dirs that should always be on the spawned agent's
+// PATH. launchd-started Paperclip servers receive a minimal PATH that drops
+// these, so agents (which inherit the server PATH) couldn't reach `opencode`
+// or `bun` without absolute paths until we prepend them here.
+function userAgentBinDirs(): string[] {
+  if (process.platform === "win32") return [];
+  const home = os.homedir();
+  if (!home) return [];
+  return [path.join(home, ".opencode", "bin"), path.join(home, ".bun", "bin")];
+}
+
+function prependDirsToPath(currentPath: string, dirs: string[]): string {
+  if (dirs.length === 0) return currentPath;
+  const delimiter = process.platform === "win32" ? ";" : ":";
+  const existing = currentPath.split(delimiter).filter(Boolean);
+  const existingSet = new Set(existing);
+  const additions = dirs.filter((dir) => !existingSet.has(dir));
+  if (additions.length === 0) return currentPath;
+  return [...additions, ...existing].join(delimiter);
+}
+
 function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
   return (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean);
 }
@@ -1304,9 +1326,16 @@ async function resolveSpawnTarget(
 }
 
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
-  if (typeof env.Path === "string" && env.Path.length > 0) return env;
-  return { ...env, PATH: defaultPathForPlatform() };
+  const userBinDirs = userAgentBinDirs();
+  if (typeof env.PATH === "string" && env.PATH.length > 0) {
+    const augmented = prependDirsToPath(env.PATH, userBinDirs);
+    return augmented === env.PATH ? env : { ...env, PATH: augmented };
+  }
+  if (typeof env.Path === "string" && env.Path.length > 0) {
+    const augmented = prependDirsToPath(env.Path, userBinDirs);
+    return augmented === env.Path ? env : { ...env, Path: augmented };
+  }
+  return { ...env, PATH: prependDirsToPath(defaultPathForPlatform(), userBinDirs) };
 }
 
 export async function ensureAbsoluteDirectory(

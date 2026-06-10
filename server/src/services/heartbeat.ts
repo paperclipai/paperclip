@@ -1361,8 +1361,14 @@ export function compactRunLogChunk(chunk: string, maxChars = MAX_PERSISTED_LOG_C
 }
 
 function normalizeMaxConcurrentRuns(value: unknown) {
-  const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT));
-  if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
+  const envDefault = process.env.PAPERCLIP_DEFAULT_MAX_CONCURRENT_RUNS
+    ? Math.floor(Number(process.env.PAPERCLIP_DEFAULT_MAX_CONCURRENT_RUNS))
+    : null;
+  const effectiveDefault = envDefault && Number.isFinite(envDefault) && envDefault >= HEARTBEAT_MAX_CONCURRENT_RUNS_MIN && envDefault <= HEARTBEAT_MAX_CONCURRENT_RUNS_MAX
+    ? envDefault
+    : HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
+  const parsed = Math.floor(asNumber(value, effectiveDefault));
+  if (!Number.isFinite(parsed)) return effectiveDefault;
   return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_MIN, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
 }
 
@@ -6597,11 +6603,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
 
+    const envCap = process.env.PAPERCLIP_MAX_CONCURRENT_RUNS_HARD_CAP
+      ? Math.floor(Number(process.env.PAPERCLIP_MAX_CONCURRENT_RUNS_HARD_CAP))
+      : null;
+    const normalizedMax = normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns);
+    const effectiveMax = envCap && Number.isFinite(envCap) && envCap >= 1
+      ? Math.min(normalizedMax, envCap)
+      : normalizedMax;
+
     return {
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
-      maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      maxConcurrentRuns: effectiveMax,
     };
   }
 
@@ -9533,7 +9547,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           );
         let reopenedActivity: LogActivityInput | null = null;
 
-        if (shouldReopenDeferredCommentWake) {
+        // Reopening a done stale_active_run_evaluation issue while another
+        // non-done sibling exists for the same orphan run would violate the
+        // issues_active_stale_run_evaluation_uq partial index — the resulting
+        // 23505 poisons the entire releaseIssueExecutionAndPromote transaction
+        // and the watchdog re-spawns the cascade every ~2-3 min.
+        // See: project_paperclip_stale_run_cascade_20260515.
+        let staleEvaluationReopenBlocked = false;
+        if (
+          shouldReopenDeferredCommentWake &&
+          issue.originKind === RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation &&
+          issue.originId
+        ) {
+          const conflictingSibling = await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.companyId, issue.companyId),
+                eq(issues.originKind, issue.originKind),
+                eq(issues.originId, issue.originId),
+                sql`${issues.id} <> ${issue.id}`,
+                notInArray(issues.status, ["done", "cancelled"]),
+                isNull(issues.hiddenAt),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (conflictingSibling) {
+            staleEvaluationReopenBlocked = true;
+          }
+        }
+
+        if (shouldReopenDeferredCommentWake && !staleEvaluationReopenBlocked) {
           const reopenedFromStatus = issue.status;
           const reopenedIssue = await issuesSvc.update(
             issue.id,

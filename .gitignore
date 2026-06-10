@@ -59,4 +59,9 @@ tests/release-smoke/playwright-report/
 .superset/
 .superpowers/
 .claude/worktrees/
+graphify-out/
+
+# docs/reviews is tracked (sweep reports); other /docs sub-paths are not
+/docs/
+!/docs/reviews/
 .herenow

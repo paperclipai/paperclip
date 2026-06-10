@@ -16,7 +16,7 @@
     "create-paperclip-plugin": "./dist/bin.js"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./dist/index.js"
   },
   "publishConfig": {
     "access": "public",
@@ -47,5 +47,6 @@
   "devDependencies": {
     "@types/node": "^24.6.0",
     "typescript": "^5.7.3"
-  }
+  },
+  "main": "./dist/index.js"
 }

@@ -86,7 +86,8 @@ type GatewayClientRequestOptions = {
   expectFinal?: boolean;
 };
 
-const PROTOCOL_VERSION = 3;
+const PROTOCOL_VERSION = 4; // [paperclip-jarvis-patch] OpenClaw 2026.5.22 expects protocol 4
+const PROTOCOL_VERSION_MAX = 4;
 const DEFAULT_SCOPES = ["operator.admin"];
 const DEFAULT_CLIENT_ID = "gateway-client";
 const DEFAULT_CLIENT_MODE = "backend";
@@ -444,6 +445,15 @@ function buildWakeText(
           structuredWakePrompt,
         ]
       : []),
+    "",
+    "Coordination Rules:",
+    "- You have browser use, computer use, and SSH access. Use these capabilities autonomously.",
+    "- SSH into the MacBook (macbook-de-chris.tail606c16.ts.net) to verify information or check system state when needed.",
+    "- Pull code from GitHub, run tests, and build on the Mac Mini or MacBook without asking the board.",
+    "- Verify facts using your available tools before escalating to the board (human).",
+    "- Do not ask the board to do things you can do yourself.",
+    "- If another agent asks you for information you have access to, provide it directly.",
+    "- The Engineer, CTO, Reviewer, and Merger agents handle all PR review and merging autonomously — no branch or PR should wait for the board's personal review.",
     "",
     "Complete the workflow in this run.",
   ];
@@ -872,7 +882,7 @@ async function autoApproveDevicePairing(params: {
     await client.connect(
       () => ({
         minProtocol: PROTOCOL_VERSION,
-        maxProtocol: PROTOCOL_VERSION,
+        maxProtocol: PROTOCOL_VERSION_MAX,
         client: {
           id: params.clientId,
           version: params.clientVersion,
@@ -1139,7 +1149,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     idempotencyKey: ctx.runId,
   };
   delete agentParams.text;
-  agentParams.paperclip = paperclipPayload;
+  void paperclipPayload; // [paperclip-jarvis-patch] gateway rejects unknown 'paperclip' root field
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
@@ -1264,7 +1274,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const signedAtMs = Date.now();
         const connectParams: Record<string, unknown> = {
           minProtocol: PROTOCOL_VERSION,
-          maxProtocol: PROTOCOL_VERSION,
+          maxProtocol: PROTOCOL_VERSION_MAX,
           client: {
             id: clientId,
             version: clientVersion,

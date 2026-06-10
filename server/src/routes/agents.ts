@@ -3495,6 +3495,17 @@ export function agentRoutes(
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
+    if (!run.logStore || !run.logRef) {
+      res.set("Cache-Control", "no-cache, no-store");
+      res.json({
+        runId,
+        store: null,
+        logRef: null,
+        content: "",
+        nextOffset: Number.isFinite(offset) ? offset : 0,
+      });
+      return;
+    }
     const result = await heartbeat.readLog(run, {
       offset: Number.isFinite(offset) ? offset : 0,
       limitBytes,

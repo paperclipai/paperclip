@@ -889,6 +889,28 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockDocumentService.upsertIssueDocument).toHaveBeenCalled();
   });
 
+  it("attributes issue comments from an agent actor to that agent", async () => {
+    const app = await createApp(ownerActor());
+
+    await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "agent-authored comment" })
+      .expect(201);
+
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "agent-authored comment",
+      expect.objectContaining({
+        agentId: ownerAgentId,
+        userId: undefined,
+        runId: ownerRunId,
+      }),
+      expect.objectContaining({
+        authorType: "agent",
+      }),
+    );
+  });
+
   it("allows agents with the active-checkout management grant to mutate active checkouts", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action === "issue:mutate" || input.action === "tasks:manage_active_checkouts",

@@ -13,9 +13,9 @@
   },
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./telemetry": "./src/telemetry/index.ts",
-    "./*": "./src/*.ts"
+    ".": "./dist/index.js",
+    "./telemetry": "./dist/telemetry/index.js",
+    "./*": "./dist/*.js"
   },
   "publishConfig": {
     "access": "public",
@@ -50,5 +50,6 @@
   "devDependencies": {
     "@types/node": "^24.6.0",
     "typescript": "^5.7.3"
-  }
+  },
+  "main": "./dist/index.js"
 }
