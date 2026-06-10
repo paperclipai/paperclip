@@ -592,3 +592,67 @@ For a board operator, the intended meaning is:
 - blockers explain waiting
 
 That is the execution contract Paperclip should present to operators.
+
+## 15. Workspace/Branch Single-Flight Lease
+
+Issue checkout (`§5`) guarantees that a single issue is owned by one heartbeat
+run at a time. It does **not**, on its own, prevent two runs arriving through
+**different issues** from targeting the **same shared execution workspace** — the
+same on-disk local checkout or SSH `remoteWorkspacePath`. Without an additional
+guard, both runs can `git checkout`/commit/push against the same working tree and
+corrupt each other (the "RTR-12 near-miss" class of bug).
+
+### Invariant
+
+> At most one **active** `ephemeral` `environment_leases` row may exist for a
+> given (`environment_id`, `execution_workspace_id`) at any time.
+
+This is enforced in two layers, both durable in the control plane (not in agent
+instructions or process-local locks):
+
+1. **Database (authoritative).** A partial unique index
+   `environment_leases_active_workspace_singleflight_idx` over
+   (`environment_id`, `execution_workspace_id`) `WHERE status = 'active' AND
+   execution_workspace_id IS NOT NULL AND lease_policy = 'ephemeral'`
+   (migration `0099`). Even under a race, the second `INSERT` fails with
+   `unique_violation` (SQLSTATE 23505).
+2. **Service (`environmentService.acquireLease`).** Before inserting it resolves
+   any existing active lease on the workspace and:
+   - **Re-entrant** — same `heartbeat_run_id` already holds it → reuse the lease
+     (this preserves existing same-issue / same-run `checkoutRunId` behavior).
+   - **Live conflict** — a *different*, non-terminal run holds it → throw
+     `EnvironmentLeaseConflictError`. The run orchestrator maps this to the
+     `lease_conflict` error code so the competing run **defers cleanly** rather
+     than reporting broken infrastructure.
+   - **Stale holder** — the holder's `heartbeat_run` is terminal
+     (`succeeded`/`failed`/`cancelled`/`timed_out`), orphaned (`heartbeat_run_id`
+     is null), or past `expires_at` → the stale lease is transitioned to
+     `expired` and the new run **adopts** the workspace. This prevents an
+     abandoned lease from permanently deadlocking the workspace.
+
+A lost insert race (both runs pass the pre-check, the index rejects the loser) is
+caught and re-surfaced as the same `EnvironmentLeaseConflictError`.
+
+### Scope and residual risk
+
+- **Scope.** The guard applies only to `ephemeral` leases bound to a concrete
+  `execution_workspace_id`, i.e. local/SSH shared checkouts. Workspace-less
+  leases and `reuse_by_environment` (sandbox reuse) leases are intentionally
+  **not** single-flight-guarded, because each realizes/needs its own provider
+  workspace and reuse there is sequential by design. If a future driver shares a
+  physical checkout under a non-ephemeral policy, extend the index predicate.
+- **Workspace granularity, not branch.** The single-flight key is the execution
+  *workspace* (the physical checkout), not the git branch. This is deliberate:
+  two runs on *different* branches inside the *same* shared clone still race
+  `git` state, so guarding at the workspace level is the safe granularity. An
+  environment that realizes a distinct working tree per branch is represented by
+  distinct `execution_workspace_id`s and is therefore already correctly
+  separated.
+- **Cross-environment / external mutation.** The guard is scoped per
+  `environment_id`. Two environments pointed at the same physical path, or
+  out-of-band mutation of the checkout, are out of scope and remain the
+  operator's responsibility.
+- **Stale detection latency.** Adoption keys off the holder run's heartbeat
+  status; a wedged process that has not yet been marked terminal by the
+  watchdog (`§11`) still holds its lease until then. This is intentionally
+  conservative — preferring a brief deferral over racing a possibly-live run.
