@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
-import { act, createRef, forwardRef, useImperativeHandle } from "react";
+import { createRef, forwardRef, useImperativeHandle } from "react";
+import { act } from "../test-utils/act-shim";
+
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";

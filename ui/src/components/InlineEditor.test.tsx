@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
-import { act, forwardRef, useImperativeHandle, useRef } from "react";
+import { forwardRef, useImperativeHandle, useRef } from "react";
+import { act } from "../test-utils/act-shim";
+
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
