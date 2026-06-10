@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
-import { listIssuesByIds, listOpenIssues, markDuplicate } from "../src/linear.js";
+import {
+  attachmentLinkURL,
+  ensureProjectLink,
+  listIssuesByIds,
+  listOpenIssues,
+  markDuplicate,
+} from "../src/linear.js";
 
 // gql() (linear.ts:222) calls fetch(LINEAR_API, {..., body: JSON.stringify({query, variables})}),
 // checks res.ok, then res.json() -> { data, errors }. Mock that contract.
@@ -110,5 +116,112 @@ describe("listIssuesByIds", () => {
     const body = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
     expect(body.query).toContain("query ListIssuesByIds($ids: [ID!]!, $first: Int!)");
     expect(body.variables).toEqual({ ids: ["issue-1"], first: 1 });
+  });
+});
+
+describe("Paperclip backlink helpers", () => {
+  it("passes Linear app-integration attachment fields through to attachmentCreate", async () => {
+    const fetch = mockFetch([
+      { data: { attachmentCreate: { success: true, attachment: { id: "att-1" } } } },
+    ]);
+
+    const result = await attachmentLinkURL(fetch, "tok", {
+      issueId: "issue-1",
+      url: "https://paperclip.test/BLO/issues/BLO-1",
+      title: "Paperclip mirror: BLO-1",
+      subtitle: "Open in Paperclip",
+      iconUrl: "https://paperclip.test/favicon-32x32.png",
+      displayIconUrl: "https://paperclip.test/favicon-32x32.png",
+      groupBySource: true,
+      metadata: { source: "paperclip" },
+    });
+
+    expect(result).toEqual({ success: true, attachmentId: "att-1" });
+    const body = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(body.variables.input).toMatchObject({
+      issueId: "issue-1",
+      url: "https://paperclip.test/BLO/issues/BLO-1",
+      title: "Paperclip mirror: BLO-1",
+      subtitle: "Open in Paperclip",
+      iconUrl: "https://paperclip.test/favicon-32x32.png",
+      displayIconUrl: "https://paperclip.test/favicon-32x32.png",
+      groupBySource: true,
+      metadata: { source: "paperclip" },
+    });
+  });
+
+  it("passes sortOrder through when creating a Linear project external link", async () => {
+    const fetch = mockFetch([
+      { data: { project: { externalLinks: { nodes: [] } } } },
+      {
+        data: {
+          entityExternalLinkCreate: {
+            success: true,
+            entityExternalLink: {
+              id: "link-1",
+              url: "https://paperclip.test/BLO/projects/project",
+              label: "Paperclip project",
+            },
+          },
+        },
+      },
+    ]);
+
+    const result = await ensureProjectLink(fetch, "tok", {
+      projectId: "project-1",
+      url: "https://paperclip.test/BLO/projects/project",
+      label: "Paperclip project",
+      sortOrder: -100,
+    });
+
+    expect(result.created).toBe(true);
+    const createBody = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[1][1].body);
+    expect(createBody.variables.input).toMatchObject({
+      projectId: "project-1",
+      url: "https://paperclip.test/BLO/projects/project",
+      label: "Paperclip project",
+      sortOrder: -100,
+    });
+  });
+
+  it("passes sortOrder through when updating an existing Linear project external link", async () => {
+    const fetch = mockFetch([
+      {
+        data: {
+          project: {
+            externalLinks: {
+              nodes: [{ id: "link-1", url: "https://old.example/project", label: "Paperclip project" }],
+            },
+          },
+        },
+      },
+      {
+        data: {
+          entityExternalLinkUpdate: {
+            success: true,
+            entityExternalLink: {
+              id: "link-1",
+              url: "https://paperclip.test/BLO/projects/project",
+              label: "Paperclip project",
+            },
+          },
+        },
+      },
+    ]);
+
+    const result = await ensureProjectLink(fetch, "tok", {
+      projectId: "project-1",
+      url: "https://paperclip.test/BLO/projects/project",
+      label: "Paperclip project",
+      sortOrder: -100,
+    });
+
+    expect(result.updated).toBe(true);
+    const updateBody = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[1][1].body);
+    expect(updateBody.variables.input).toMatchObject({
+      url: "https://paperclip.test/BLO/projects/project",
+      label: "Paperclip project",
+      sortOrder: -100,
+    });
   });
 });

@@ -143,6 +143,12 @@ async function buildPaperclipIssueUrl(
   return absolutePaperclipHref(`/issues/${encodeURIComponent(issueIdentifier)}`, baseUrl, companyPrefix);
 }
 
+async function buildPaperclipIconUrl(ctx: PluginContext): Promise<string | null> {
+  const baseUrl = await resolvePaperclipBaseUrl(ctx);
+  if (!baseUrl) return null;
+  return `${baseUrl}/favicon-32x32.png`;
+}
+
 async function buildPaperclipProjectUrl(
   ctx: PluginContext,
   companyId: string,
@@ -252,6 +258,7 @@ async function writePaperclipBackLink(
   const backLinkBestEffort = config.linearBacklinkBestEffort === true;
   const paperclipUrl = await buildPaperclipIssueUrl(ctx, paperclipCompanyId, paperclipIdentifier);
   if (!paperclipUrl) return;
+  const iconUrl = await buildPaperclipIconUrl(ctx);
   const title = paperclipTitle?.trim() ?? "";
   try {
     await linear.attachmentLinkURL(ctx.http.fetch.bind(ctx.http), token, {
@@ -259,8 +266,14 @@ async function writePaperclipBackLink(
       url: paperclipUrl,
       title: `Paperclip mirror: ${paperclipIdentifier}`,
       subtitle: title ? `${paperclipIdentifier} - ${title}` : "Open in Paperclip",
+      ...(iconUrl ? { iconUrl, displayIconUrl: iconUrl } : {}),
+      groupBySource: true,
       metadata: {
         source: "paperclip",
+        sourceType: "paperclip",
+        service: "paperclip",
+        title: `Paperclip mirror: ${paperclipIdentifier}`,
+        subtitle: title ? `${paperclipIdentifier} - ${title}` : "Open in Paperclip",
         paperclipIssueId,
         paperclipIdentifier,
         linearIdentifier: linearIdentifier ?? "",
@@ -307,6 +320,7 @@ async function writePaperclipProjectBackLink(
       projectId: link.linearProjectId,
       url: paperclipUrl,
       label,
+      sortOrder: -100,
     });
     return;
   } catch (err) {

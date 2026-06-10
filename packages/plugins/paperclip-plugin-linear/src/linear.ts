@@ -427,7 +427,9 @@ export async function attachmentLinkURL(
     title: string;
     subtitle?: string;
     iconUrl?: string;
+    displayIconUrl?: string;
     metadata?: Record<string, unknown>;
+    groupBySource?: boolean;
   },
 ): Promise<{ success: boolean; attachmentId: string | null }> {
   const attachmentInput = {
@@ -436,7 +438,9 @@ export async function attachmentLinkURL(
     title: input.title,
     ...(input.subtitle ? { subtitle: input.subtitle } : {}),
     ...(input.iconUrl ? { iconUrl: input.iconUrl } : {}),
+    ...(input.displayIconUrl ? { displayIconUrl: input.displayIconUrl } : {}),
     ...(input.metadata ? { metadata: input.metadata } : {}),
+    ...(input.groupBySource !== undefined ? { groupBySource: input.groupBySource } : {}),
   };
   const data = await gql<{
     attachmentCreate: { success: boolean; attachment: { id: string } | null };
@@ -481,12 +485,13 @@ export async function listProjectLinks(
 export async function createProjectLink(
   fetch: LinearFetch,
   token: string,
-  input: { projectId: string; url: string; label: string },
+  input: { projectId: string; url: string; label: string; sortOrder?: number },
 ): Promise<{ success: boolean; projectLink: LinearProjectLink | null }> {
   const externalLinkInput = {
     projectId: input.projectId,
     url: input.url,
     label: input.label,
+    ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
   };
   const data = await gql<{
     entityExternalLinkCreate: { success: boolean; entityExternalLink: LinearProjectLink | null };
@@ -508,7 +513,7 @@ export async function updateProjectLink(
   fetch: LinearFetch,
   token: string,
   id: string,
-  input: { url?: string; label?: string },
+  input: { url?: string; label?: string; sortOrder?: number },
 ): Promise<{ success: boolean; projectLink: LinearProjectLink | null }> {
   const data = await gql<{
     entityExternalLinkUpdate: { success: boolean; entityExternalLink: LinearProjectLink | null };
@@ -529,7 +534,7 @@ export async function updateProjectLink(
 export async function ensureProjectLink(
   fetch: LinearFetch,
   token: string,
-  input: { projectId: string; url: string; label: string },
+  input: { projectId: string; url: string; label: string; sortOrder?: number },
 ): Promise<{ success: boolean; projectLink: LinearProjectLink | null; created: boolean; updated: boolean }> {
   const links = await listProjectLinks(fetch, token, input.projectId);
   const existing = links.find((link) => link.url === input.url || link.label === input.label);
@@ -543,6 +548,7 @@ export async function ensureProjectLink(
   const updated = await updateProjectLink(fetch, token, existing.id, {
     url: input.url,
     label: input.label,
+    ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
   });
   return { ...updated, created: false, updated: true };
 }

@@ -839,8 +839,13 @@ describe("paperclip-plugin-linear", () => {
         url: "https://paperclip.test/LUC/issues/LUC-1001",
         title: "Paperclip mirror: LUC-1001",
         subtitle: "LUC-1001 - Test issue",
+        iconUrl: "https://paperclip.test/favicon-32x32.png",
+        displayIconUrl: "https://paperclip.test/favicon-32x32.png",
+        groupBySource: true,
         metadata: {
           source: "paperclip",
+          sourceType: "paperclip",
+          service: "paperclip",
           paperclipIssueId: "pcp-iss-1",
           paperclipIdentifier: "LUC-1001",
           linearIdentifier: "LUC-1",
@@ -1872,8 +1877,13 @@ describe("paperclip-plugin-linear", () => {
         url: "https://paperclip.test/LUC/issues/LUC-W100",
         title: "Paperclip mirror: LUC-W100",
         subtitle: "LUC-W100 - Webhook create",
+        iconUrl: "https://paperclip.test/favicon-32x32.png",
+        displayIconUrl: "https://paperclip.test/favicon-32x32.png",
+        groupBySource: true,
         metadata: {
           source: "paperclip",
+          sourceType: "paperclip",
+          service: "paperclip",
           paperclipIssueId: "pcp-iss-wh-1",
           paperclipIdentifier: "LUC-W100",
           linearIdentifier: "LUC-W1",
@@ -2782,6 +2792,7 @@ describe("paperclip-plugin-linear", () => {
           projectId: "lin-proj-1",
           url: "https://paperclip.test/BLO/projects/cloud-service",
           label: "Paperclip project",
+          sortOrder: -100,
         },
       );
     });
