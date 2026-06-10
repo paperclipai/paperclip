@@ -2889,7 +2889,7 @@ function getAdapterSessionCodec(adapterType: string) {
   return adapter.sessionCodec ?? defaultSessionCodec;
 }
 
-function normalizeSessionParams(params: Record<string, unknown> | null | undefined) {
+export function normalizeSessionParams(params: Record<string, unknown> | null | undefined) {
   if (!params) return null;
   return Object.keys(params).length > 0 ? params : null;
 }
@@ -8550,7 +8550,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : runtimeSessionDisplayId;
     let runtimeSessionIdForAdapter =
       readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback;
-    let runtimeSessionParamsForAdapter = runtimeSessionParams;
+    let runtimeSessionParamsForAdapter = normalizeSessionParams(
+      stripConfiguredModelFromSessionParams(runtimeSessionParams),
+    );
 
     const sessionCompaction = await evaluateSessionCompaction({
       agent,
