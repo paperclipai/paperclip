@@ -1330,7 +1330,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(0);
   });
 
-  it("blocks a git-sensitive local adapter before launch when a project-workspace-linked issue is missing its project id", async () => {
+  it("stops a git-sensitive local adapter before launch when a project-workspace-linked issue is missing its project id", async () => {
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -1388,10 +1388,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       },
     });
 
+    // ALAA-965: the workspace-validation escalation has no first-class
+    // blockers, so the issue lands in `todo` (never blocked + empty) while
+    // the workspace_validation recovery action carries the repair path.
     const issue = await waitForValue(async () =>
       db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
         const row = rows[0] ?? null;
-        return row?.status === "blocked" ? row : null;
+        return row?.status === "todo" && row.executionRunId === null ? row : null;
       }),
     );
     expect(issue?.executionRunId).toBeNull();
