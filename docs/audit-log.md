@@ -177,3 +177,22 @@ server/src/index.ts:28 → app.ts:42 (adapterRoutes)
 **Cleanest fix:** lazy-load adapter `execute` implementations (`routes/adapters.ts`/`registry.ts` should `await import("@valadrien-os/adapter-*/server")` on first use, keeping only type-only imports eager), or split the registry into eager-metadata + lazy-runtime modules. Removes ~165MB of module eval from every cold boot. Logged to issue #7785 (with the precise chain).
 
 **Logout live-test — BLOCKED (skipped: couldn't re-authenticate).** Mid-audit the headless session dropped to `/auth` (the cold-boot `get-session` 401-bounce), and re-importing Chrome cookies returned 0 cookies (likely Chrome's encrypted cookie store locked while Chrome is open, and/or the session token had rotated/invalidated). Could not drive a real logout. What is known: warm `/api/auth/sign-out` = 0.20s; logout shares the same cold-boot path; and the spontaneous session-drop is itself evidence of auth fragility under cold boots. To test cleanly next time: a dedicated test account (isolated session) or close Chrome before cookie import.
+
+---
+
+## 2026-06-09 23:49 ET — GREEN (cold-boot hang RESOLVED)
+
+Third audit. **The RED cold-boot defect from 06-08 is fixed and verified.** Platform is materially healthier: heartbeat loop is live and the company grew to 5 agents.
+
+**Tier 1 — public (GREEN):** root 200 (3.3KB); `/api/health` 200 ×2, ~0.2–0.35s, `bootstrapStatus=ready`, `googleAuthEnabled=true`, now also `storage: {provider: s3, persistent: true}`. All 11 `/assets/*` chunks 200/non-zero (bundle unchanged: `index` 2.18MB raw, `vendor` 3.92MB — route-split still not landed, low priority now).
+
+**Tier 2 — credentialed:**
+- ✅ **Cold-boot hang #7785 FIXED.** `/api/health` ×8 cache-buster: **8/8 = 200, all <0.3s, 0 timeouts, 0 slow** (was 7/10 hung >10s + a 504@300s on 06-08). Fix shipped: `55032d76 fix(reliability): lazy-load codex-acp in acpx adapter` (the exact rec from #7785) — codex-acp (~165MB) no longer evaluated at module scope. Also `3fec4116 perf(db): raise serverless pool max 1→3` (the fan-out fix) and `a30ebaaf` (control plane no longer executes runs inline). Issue #7785 closed as verified.
+- **DB (GREEN, 1 watch):** `select 1` ok. **Connections 39/60 = 65%** (active 1, idle 31) — elevated, up from 24/60 last audit, expected after the pool 1→3 raise + 5 agents. Under 80% but **trending — watch that bursts don't saturate 60.**
+- **Heartbeat (12h): 95 runs, 74 succeeded = 78%.** Breakdown: 74 succeeded, 8 queued, 6 cancelled (`issue_terminal_status`, normal), 3 failed `claude_transient_upstream` (Anthropic blips), 2 running, 1 `timed_out`, 1 `adapter_failed`. 0 stuck. Failures are transient noise, not a spike — loop is healthy.
+- **Railway worker (GREEN):** 0 `Server listening` boots (no crash loop), 0 uncaughtException/FATAL/504; routine scheduler ticking (~5 runs/tick).
+- **Agents (GREEN):** 5 agents — Bati (idle), Korije (idle), **Sol (idle — recovered from `error`; sandbox-home blocker no longer surfacing)**, Ti Claude (running), Veye (running). **None in `error`.**
+- **Budget (GREEN):** Ti Claude 55.2%, Sol 53.8%, Veye 29.3%, Korije 24.7%, Bati 2.2% — all <80%. Ti Claude + Sol past half mid-month; minor watch.
+- **Vercel (GREEN):** prod `dpl_9FgMC…` READY, commit `8bbf9d82` = branch HEAD, `source: git`, region pdx1. Not behind HEAD.
+
+**Verdict:** **GREEN.** Cold-boot hang resolved (the headline reliability defect is gone). Two minor watch items: DB connections at 65% (post pool-raise), and the un-split client bundle (cosmetic now). No new issues opened; #7785 closed. Read-only audit; no code changed.
