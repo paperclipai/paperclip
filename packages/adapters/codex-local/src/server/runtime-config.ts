@@ -129,6 +129,17 @@ function parseCodexProvidersConfig(
     typeof parsed.model_provider === "string" && parsed.model_provider.trim().length > 0
       ? parsed.model_provider.trim()
       : null;
+  // A selector pointing at a provider that did not survive filtering (or was
+  // never defined) would emit model_provider = "x" with no [model_providers.x]
+  // table, which codex rejects at runtime with an error that points nowhere
+  // near the env var. Treat it as the same class of misconfiguration as
+  // malformed JSON: reject the whole block with a visible note.
+  if (modelProvider !== null && !(modelProvider in providers)) {
+    notes.push(
+      `PAPERCLIP_CODEX_PROVIDERS: model_provider "${modelProvider}" does not match any usable provider entry; custom providers ignored.`,
+    );
+    return null;
+  }
   return { providers, modelProvider };
 }
 

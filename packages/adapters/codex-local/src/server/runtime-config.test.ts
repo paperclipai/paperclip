@@ -395,4 +395,22 @@ describe("prepareCodexRuntimeConfig", () => {
     expect(content.split("model_provider =").length).toBe(2);
     await second.cleanup();
   });
+
+  it("rejects the block when model_provider names a filtered or missing provider", async () => {
+    const home = await makeCodexHome("model = \"gpt-5.1-codex\"\n");
+    const prepared = await prepareCodexRuntimeConfig({
+      env: {
+        PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
+          providers: { good: { base_url: "https://gateway.example/v1" }, bad: "not-an-object" },
+          model_provider: "bad",
+        }),
+      },
+      codexHome: home,
+    });
+    expect(prepared.notes).toContain(
+      'PAPERCLIP_CODEX_PROVIDERS: model_provider "bad" does not match any usable provider entry; custom providers ignored.',
+    );
+    const content = await readConfigToml(home);
+    expect(content).toBe("model = \"gpt-5.1-codex\"\n");
+  });
 });
