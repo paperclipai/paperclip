@@ -675,15 +675,40 @@ const plugin = definePlugin({
           const script =
             `mkdir -p '${dir}' && ` +
             `head -c ${base64Body.length} | base64 -d > '${decision.flush.targetPath}'`;
-          const flushResult = await execInPod(
-            kc,
-            namespace,
-            podName,
-            "agent",
-            ["/bin/sh", "-c", script],
-            base64Body,
-            effectiveTimeoutMs,
+          // The flush shares the caller's single execute budget (same contract
+          // as the normal exec path below) and surfaces watchdog/WebSocket
+          // failures as a timed-out result instead of an uncaught throw.
+          const flushTimeoutMs = Math.max(
+            5_000,
+            effectiveTimeoutMs - (Date.now() - executeStartedAt),
           );
+          let flushResult: { exitCode: number; stdout: string; stderr: string };
+          try {
+            flushResult = await execInPod(
+              kc,
+              namespace,
+              podName,
+              "agent",
+              ["/bin/sh", "-c", script],
+              base64Body,
+              flushTimeoutMs,
+            );
+          } catch (err) {
+            return {
+              exitCode: null,
+              timedOut: true,
+              stdout: "",
+              stderr: `fast-upload flush failed: ${err instanceof Error ? err.message : String(err)}`,
+              metadata: {
+                provider: "kubernetes",
+                backend: "sandbox-cr",
+                namespace,
+                sandboxName: lease.providerLeaseId,
+                podName,
+                fastUpload: "flush",
+              },
+            };
+          }
           return {
             exitCode: flushResult.exitCode,
             timedOut: false,

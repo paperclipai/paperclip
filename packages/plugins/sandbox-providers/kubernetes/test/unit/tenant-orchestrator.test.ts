@@ -94,4 +94,13 @@ describe("ensureTenant", () => {
     await ensureTenant(clients as never, baseInput);
     expect(clients.core.createNamespace).not.toHaveBeenCalled();
   });
+
+  it("tolerates a 409 AlreadyExists from a concurrent ensure for the same tenant", async () => {
+    const clients = makeMockClients();
+    // Both racers saw the 404 read; the loser's create returns 409, which means
+    // the desired state exists and must not fail the lease acquisition.
+    clients.core.createNamespace.mockRejectedValue({ statusCode: 409 });
+    clients.core.createNamespacedServiceAccount.mockRejectedValue({ code: 409 });
+    await expect(ensureTenant(clients as never, baseInput)).resolves.not.toThrow();
+  });
 });
