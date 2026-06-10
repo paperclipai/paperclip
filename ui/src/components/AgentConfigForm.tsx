@@ -58,7 +58,10 @@ import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, type AgentConfigOverlay } from "../lib/agent-config-patch";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { filterAcpxModelsByAgent } from "../lib/acpx-model-filter";
-import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
+import {
+  resolveExecutionPickerState,
+  resolveForcedKubernetesEnvironment,
+} from "../lib/forced-kubernetes-environment";
 
 /* ---- Create mode values ---- */
 
@@ -230,11 +233,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // Instance execution policy (general settings). When `executionMode` is
   // "kubernetes" the instance FORCES all execution onto the managed Kubernetes
   // sandbox; "any"/absent leaves the full environment/adapter choice intact.
-  // Reuses the same general-settings query the rest of the UI uses.
-  const { data: generalSettings } = useQuery({
+  // Reuses the same general-settings query the rest of the UI uses, with the
+  // default retry behavior (like Layout/InstanceGeneralSettings) so a transient
+  // failure does not silently unlock the full picker on a forced-K8s instance.
+  // While the policy loads the Execution section shows a placeholder, and on
+  // persistent failure it shows a notice instead — a failed load never maps to
+  // forced-K8s, which would wrongly restrict non-K8s instances.
+  const {
+    data: generalSettings,
+    isPending: executionPolicyLoading,
+    isError: executionPolicyFailed,
+  } = useQuery({
     queryKey: queryKeys.instance.generalSettings,
     queryFn: () => instanceSettingsApi.getGeneral(),
-    retry: false,
   });
 
   const { data: environments = [] } = useQuery<Environment[]>({
@@ -254,6 +265,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     () => resolveForcedKubernetesEnvironment(generalSettings?.executionMode, environments),
     [generalSettings?.executionMode, environments],
   );
+
+  // Which Execution section to render given the policy query status: forced
+  // read-only, loading placeholder, full picker (with a notice when the policy
+  // could not be loaded), or hidden. Pure helper, unit-tested.
+  const { state: executionPickerState, showPolicyUnknownNotice } = resolveExecutionPickerState({
+    forced: forcedKubernetes,
+    environmentsEnabled,
+    executionModeLoading: executionPolicyLoading,
+    executionModeFailed: executionPolicyFailed,
+  });
   const createSecret = useMutation({
     mutationFn: (input: { name: string; value: string }) => {
       if (!selectedCompanyId) throw new Error("Select a company to create secrets");
@@ -819,7 +840,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       )}
 
       {/* ---- Execution ---- */}
-      {forcedKubernetes ? (
+      {executionPickerState === "forced" ? (
         // Instance execution policy forces the managed Kubernetes sandbox
         // (executionMode=kubernetes): never offer local / non-Kubernetes targets.
         // Render the environment read-only instead of the selectable picker.
@@ -847,7 +868,27 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           </div>
         </div>
-      ) : environmentsEnabled ? (
+      ) : executionPickerState === "loading" ? (
+        // Instance execution policy not resolved yet: render a placeholder
+        // instead of the full picker so a forced-K8s instance never briefly
+        // implies unrestricted environment choice while the query is in flight.
+        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+          {cards
+            ? <h3 className="text-sm font-medium mb-3">Execution</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Execution</div>
+          }
+          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+            <Field
+              label="Default environment"
+              hint="Agent-level default execution target. Project and task settings can still override this."
+            >
+              <div aria-busy="true" className={cn(inputClass, "text-muted-foreground")}>
+                Loading execution policy…
+              </div>
+            </Field>
+          </div>
+        </div>
+      ) : executionPickerState === "picker" ? (
         <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
             ? <h3 className="text-sm font-medium mb-3">Execution</h3>
@@ -878,6 +919,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 ))}
               </select>
             </Field>
+            {showPolicyUnknownNotice && (
+              <p className="text-xs text-amber-400">
+                Couldn&apos;t load the instance execution policy. If this instance restricts
+                execution to the Kubernetes sandbox, runs in other environments will be
+                rejected by the server.
+              </p>
+            )}
           </div>
         </div>
       ) : null}

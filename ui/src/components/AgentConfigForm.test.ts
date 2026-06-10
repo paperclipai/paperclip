@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { Environment } from "@paperclipai/shared";
 import { supportsAdapterModelRefresh } from "./AgentConfigForm";
-import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
+import {
+  resolveExecutionPickerState,
+  resolveForcedKubernetesEnvironment,
+} from "../lib/forced-kubernetes-environment";
 
 describe("supportsAdapterModelRefresh", () => {
   it("enables the model refresh action for Claude, Codex, and ACPX adapters", () => {
@@ -68,5 +71,62 @@ describe("resolveForcedKubernetesEnvironment", () => {
     const result = resolveForcedKubernetesEnvironment("kubernetes", [localEnv, fakeSandbox]);
     expect(result.forced).toBe(true);
     expect(result.kubernetesEnvironment).toBeNull();
+  });
+});
+
+describe("resolveExecutionPickerState", () => {
+  it("renders the forced read-only section when execution is forced", () => {
+    expect(
+      resolveExecutionPickerState({
+        forced: true,
+        environmentsEnabled: false,
+        executionModeLoading: false,
+        executionModeFailed: false,
+      }),
+    ).toEqual({ state: "forced", showPolicyUnknownNotice: false });
+  });
+
+  it("hides the section when the environments picker is disabled", () => {
+    expect(
+      resolveExecutionPickerState({
+        forced: false,
+        environmentsEnabled: false,
+        executionModeLoading: true,
+        executionModeFailed: false,
+      }),
+    ).toEqual({ state: "hidden", showPolicyUnknownNotice: false });
+  });
+
+  it("shows a loading placeholder instead of the picker while the policy loads", () => {
+    expect(
+      resolveExecutionPickerState({
+        forced: false,
+        environmentsEnabled: true,
+        executionModeLoading: true,
+        executionModeFailed: false,
+      }),
+    ).toEqual({ state: "loading", showPolicyUnknownNotice: false });
+  });
+
+  it("shows the full picker without a notice once the policy resolves as not forced", () => {
+    expect(
+      resolveExecutionPickerState({
+        forced: false,
+        environmentsEnabled: true,
+        executionModeLoading: false,
+        executionModeFailed: false,
+      }),
+    ).toEqual({ state: "picker", showPolicyUnknownNotice: false });
+  });
+
+  it("keeps the picker usable but warns when the policy load failed (never forces K8s)", () => {
+    expect(
+      resolveExecutionPickerState({
+        forced: false,
+        environmentsEnabled: true,
+        executionModeLoading: false,
+        executionModeFailed: true,
+      }),
+    ).toEqual({ state: "picker", showPolicyUnknownNotice: true });
   });
 });

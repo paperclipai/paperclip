@@ -54,3 +54,47 @@ export function resolveForcedKubernetesEnvironment(
     environments.find((environment) => isKubernetesSandboxEnvironment(environment)) ?? null;
   return { forced: true, kubernetesEnvironment };
 }
+
+/**
+ * Which Execution section to render in the agent config form:
+ * - "forced": the instance forces the Kubernetes sandbox — render it read-only.
+ * - "loading": the execution policy is still loading — render a placeholder so
+ *   a forced-K8s instance never briefly implies unrestricted choice.
+ * - "picker": render the full environment picker.
+ * - "hidden": no Execution section (environments picker disabled).
+ */
+export type ExecutionPickerState = "forced" | "loading" | "picker" | "hidden";
+
+export interface ExecutionPickerResolution {
+  state: ExecutionPickerState;
+  /**
+   * True when the execution policy could not be loaded. The picker stays fully
+   * usable (an unreachable settings endpoint must never restrict a non-forced
+   * instance), but a notice warns that a forced-K8s instance would reject
+   * non-Kubernetes environments server-side.
+   */
+  showPolicyUnknownNotice: boolean;
+}
+
+/**
+ * Resolve the Execution section state from the execution-policy query status.
+ * Pure so the loading/error/forced precedence can be unit-tested without
+ * rendering. Deliberately never maps a failed policy load to "forced".
+ */
+export function resolveExecutionPickerState(input: {
+  forced: boolean;
+  environmentsEnabled: boolean;
+  executionModeLoading: boolean;
+  executionModeFailed: boolean;
+}): ExecutionPickerResolution {
+  if (input.forced) {
+    return { state: "forced", showPolicyUnknownNotice: false };
+  }
+  if (!input.environmentsEnabled) {
+    return { state: "hidden", showPolicyUnknownNotice: false };
+  }
+  if (input.executionModeLoading) {
+    return { state: "loading", showPolicyUnknownNotice: false };
+  }
+  return { state: "picker", showPolicyUnknownNotice: input.executionModeFailed };
+}
