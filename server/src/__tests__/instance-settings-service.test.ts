@@ -21,6 +21,8 @@ describe("instance settings service", () => {
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
+      soloMode: false,
+      strictBoardTransitions: false,
     });
   });
 });

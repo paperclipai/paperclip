@@ -7,6 +7,8 @@ import {
   budgetPolicies,
   companies,
   costEvents,
+  issues,
+  planDetails,
   projects,
 } from "@paperclipai/db";
 import type {
@@ -24,6 +26,7 @@ import type {
 } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
+import { publishLiveEvent } from "./live-events.js";
 
 type ScopeRecord = {
   companyId: string;
@@ -121,6 +124,26 @@ async function resolveScopeRecord(db: Db, scopeType: BudgetScopeType, scopeId: s
     };
   }
 
+  if (scopeType === "issue") {
+    const row = await db
+      .select({
+        companyId: issues.companyId,
+        title: issues.title,
+        planState: planDetails.state,
+      })
+      .from(issues)
+      .leftJoin(planDetails, eq(planDetails.issueId, issues.id))
+      .where(eq(issues.id, scopeId))
+      .then((rows) => rows[0] ?? null);
+    if (!row) throw notFound("Issue not found");
+    return {
+      companyId: row.companyId,
+      name: row.title,
+      paused: row.planState === "stopped",
+      pauseReason: row.planState === "stopped" ? "budget" : null,
+    };
+  }
+
   const row = await db
     .select({
       companyId: projects.companyId,
@@ -144,21 +167,39 @@ async function computeObservedAmount(
   db: Db,
   policy: Pick<PolicyRow, "companyId" | "scopeType" | "scopeId" | "windowKind" | "metric">,
 ) {
-  if (policy.metric !== "billed_cents") return 0;
+  if (policy.metric !== "billed_cents" && policy.metric !== "total_tokens") return 0;
 
   const conditions = [eq(costEvents.companyId, policy.companyId)];
   if (policy.scopeType === "agent") conditions.push(eq(costEvents.agentId, policy.scopeId));
   if (policy.scopeType === "project") conditions.push(eq(costEvents.projectId, policy.scopeId));
+  if (policy.scopeType === "issue") {
+    // Issue scope = the issue itself plus every descendant stamped with
+    // plan_root_issue_id. Subquery keeps it a single round-trip.
+    const subtreeIds = db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, policy.companyId),
+          sql`(${issues.id} = ${policy.scopeId} OR ${issues.planRootIssueId} = ${policy.scopeId})`,
+        ),
+      );
+    conditions.push(inArray(costEvents.issueId, subtreeIds));
+  }
   const { start, end } = resolveWindow(policy.windowKind as BudgetWindowKind);
   if (policy.windowKind === "calendar_month_utc") {
     conditions.push(gte(costEvents.occurredAt, start));
     conditions.push(lt(costEvents.occurredAt, end));
   }
 
+  // total_tokens counts input + cached input + output (real usage pressure).
+  const amountExpr =
+    policy.metric === "total_tokens"
+      ? sql<number>`coalesce(sum(${costEvents.inputTokens} + ${costEvents.cachedInputTokens} + ${costEvents.outputTokens}), 0)::double precision`
+      : sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`;
+
   const [row] = await db
-    .select({
-      total: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
-    })
+    .select({ total: amountExpr })
     .from(costEvents)
     .where(and(...conditions));
 
@@ -235,6 +276,16 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           updatedAt: now,
         })
         .where(eq(projects.id, policy.scopeId));
+      return;
+    }
+
+    if (policy.scopeType === "issue") {
+      // If the issue is a plan root, mark the plan stopped. No-op for plain tasks
+      // (the subtree run cancellation is handled by the cancelWorkForScope hook).
+      await db
+        .update(planDetails)
+        .set({ state: "stopped", stoppedAt: now, stopReason: "budget_cap", updatedAt: now })
+        .where(and(eq(planDetails.issueId, policy.scopeId), ne(planDetails.state, "stopped")));
       return;
     }
 
@@ -653,19 +704,37 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           and(
             eq(budgetPolicies.companyId, event.companyId),
             eq(budgetPolicies.isActive, true),
-            inArray(budgetPolicies.scopeType, ["company", "agent", "project"]),
+            inArray(budgetPolicies.scopeType, ["company", "agent", "project", "issue"]),
           ),
         );
+
+      // Resolve the cost event's plan root once so issue-scoped caps on the plan
+      // root also catch spend from its descendant tickets.
+      let eventPlanRootId: string | null = null;
+      if (event.issueId) {
+        const issueRow = await db
+          .select({ planRootIssueId: issues.planRootIssueId })
+          .from(issues)
+          .where(eq(issues.id, event.issueId))
+          .then((rows) => rows[0] ?? null);
+        eventPlanRootId = issueRow?.planRootIssueId ?? null;
+      }
 
       const relevantPolicies = candidatePolicies.filter((policy) => {
         if (policy.scopeType === "company") return policy.scopeId === event.companyId;
         if (policy.scopeType === "agent") return policy.scopeId === event.agentId;
         if (policy.scopeType === "project") return Boolean(event.projectId) && policy.scopeId === event.projectId;
+        if (policy.scopeType === "issue") {
+          return (
+            Boolean(event.issueId) &&
+            (policy.scopeId === event.issueId || policy.scopeId === eventPlanRootId)
+          );
+        }
         return false;
       });
 
       for (const policy of relevantPolicies) {
-        if (policy.metric !== "billed_cents" || policy.amount <= 0) continue;
+        if ((policy.metric !== "billed_cents" && policy.metric !== "total_tokens") || policy.amount <= 0) continue;
         const observedAmount = await computeObservedAmount(db, policy);
         const softThreshold = Math.ceil((policy.amount * policy.warnPercent) / 100);
 
@@ -686,6 +755,18 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
                 amountLimit: policy.amount,
               },
             });
+            publishLiveEvent({
+              companyId: policy.companyId,
+              type: "budget.threshold",
+              payload: {
+                scopeType: policy.scopeType,
+                scopeId: policy.scopeId,
+                thresholdType: "soft",
+                metric: policy.metric,
+                observed: observedAmount,
+                limit: policy.amount,
+              },
+            });
           }
         }
 
@@ -693,6 +774,25 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           await resolveOpenSoftIncidents(policy.id);
           const hardIncident = await createIncidentIfNeeded(policy, "hard", observedAmount);
           await pauseAndCancelScopeForBudget(policy);
+          publishLiveEvent({
+            companyId: policy.companyId,
+            type: "budget.threshold",
+            payload: {
+              scopeType: policy.scopeType,
+              scopeId: policy.scopeId,
+              thresholdType: "hard",
+              metric: policy.metric,
+              observed: observedAmount,
+              limit: policy.amount,
+            },
+          });
+          if (policy.scopeType === "issue") {
+            publishLiveEvent({
+              companyId: policy.companyId,
+              type: "plan.state.changed",
+              payload: { planIssueId: policy.scopeId, state: "stopped", reason: "budget_cap" },
+            });
+          }
           if (hardIncident) {
             await logActivity(db, {
               companyId: policy.companyId,
@@ -809,6 +909,66 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
             scopeName: agent.name,
             reason: "Agent cannot start because its budget hard-stop is still exceeded.",
           };
+        }
+      }
+
+      // MyHive issue/plan-scoped caps. Uses the issueId the heartbeat already
+      // passes; checks the task itself and its plan root.
+      const candidateIssueId = context?.issueId ?? null;
+      if (candidateIssueId) {
+        const issueRow = await db
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            title: issues.title,
+            planRootIssueId: issues.planRootIssueId,
+          })
+          .from(issues)
+          .where(eq(issues.id, candidateIssueId))
+          .then((rows) => rows[0] ?? null);
+        if (issueRow && issueRow.companyId === companyId) {
+          const scopeIds = [issueRow.id, issueRow.planRootIssueId].filter(
+            (value): value is string => typeof value === "string",
+          );
+          for (const scopeId of scopeIds) {
+            // A stopped plan blocks new work outright.
+            const planRow = await db
+              .select({ state: planDetails.state })
+              .from(planDetails)
+              .where(eq(planDetails.issueId, scopeId))
+              .then((rows) => rows[0] ?? null);
+            if (planRow?.state === "stopped") {
+              return {
+                scopeType: "issue" as const,
+                scopeId,
+                scopeName: issueRow.title,
+                reason: "Plan is stopped and cannot start new work.",
+              };
+            }
+            const issuePolicies = await db
+              .select()
+              .from(budgetPolicies)
+              .where(
+                and(
+                  eq(budgetPolicies.companyId, companyId),
+                  eq(budgetPolicies.scopeType, "issue"),
+                  eq(budgetPolicies.scopeId, scopeId),
+                  eq(budgetPolicies.isActive, true),
+                ),
+              );
+            for (const issuePolicy of issuePolicies) {
+              if (!issuePolicy.hardStopEnabled || issuePolicy.amount <= 0) continue;
+              const observed = await computeObservedAmount(db, issuePolicy);
+              if (observed >= issuePolicy.amount) {
+                return {
+                  scopeType: "issue" as const,
+                  scopeId,
+                  scopeName: issueRow.title,
+                  reason: "Plan/task budget hard-stop reached; cannot start new work.",
+                };
+              }
+            }
+          }
         }
       }
 

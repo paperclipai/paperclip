@@ -122,6 +122,8 @@ import {
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
+import { evaluateStageTransition } from "../services/issue-stage-machine.js";
+import { publishLiveEvent } from "../services/live-events.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
@@ -4874,6 +4876,27 @@ export function issueRoutes(
       }
     }
 
+    // MyHive board stage-machine backstop (M12 / E3): block manual backward
+    // drags through the review gate for board/human actors when strict mode is on.
+    const effectiveTargetStatus =
+      typeof updateFields.status === "string" ? updateFields.status : existing.status;
+    if (effectiveTargetStatus !== existing.status) {
+      const { strictBoardTransitions } = await instanceSettings.getExperimental();
+      if (strictBoardTransitions) {
+        const stageCheck = evaluateStageTransition({
+          from: existing.status,
+          to: effectiveTargetStatus,
+          actorType: actor.actorType,
+          workflowControlled:
+            transition.decision != null || transition.workflowControlledAssignment === true,
+        });
+        if (!stageCheck.allowed) {
+          res.status(422).json({ error: stageCheck.reason });
+          return;
+        }
+      }
+    }
+
     await assertAgentInReviewReviewPath({
       existing,
       updateFields,
@@ -4981,6 +5004,27 @@ export function issueRoutes(
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
+    }
+
+    // MyHive: surface board motion (incl. review loopback on changes_requested).
+    if (issue.status !== existing.status) {
+      publishLiveEvent({
+        companyId: issue.companyId,
+        type: "issue.status.changed",
+        payload: {
+          issueId: issue.id,
+          from: existing.status,
+          to: issue.status,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          decisionOutcome: transition.decision?.outcome ?? null,
+          reviewerAgentId:
+            transition.decision != null ? actor.agentId ?? null : null,
+          returnAssigneeAgentId:
+            (updateFields.assigneeAgentId as string | null | undefined) ?? null,
+          planRootIssueId: issue.planRootIssueId ?? null,
+        },
+      });
     }
 
     let cancelledStatusRunId: string | null = null;

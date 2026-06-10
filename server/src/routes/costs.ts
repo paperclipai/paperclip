@@ -1,5 +1,8 @@
 import { Router } from "express";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { companies as companiesTable, issues as issuesTable, planDetails } from "@paperclipai/db";
+import { publishLiveEvent } from "../services/live-events.js";
 import {
   createCostEventSchema,
   createFinanceEventSchema,
@@ -308,6 +311,95 @@ export function costRoutes(
       res.json(summary);
     },
   );
+
+  // MyHive board-header budget meter: overview plus active plans with caps.
+  router.get("/companies/:companyId/budgets/live-meter", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    const overview = await budgets.overview(companyId);
+    const planRows = await db
+      .select({
+        planIssueId: planDetails.issueId,
+        title: issuesTable.title,
+        state: planDetails.state,
+        budgetCapCents: planDetails.budgetCapCents,
+        budgetCapTokens: planDetails.budgetCapTokens,
+      })
+      .from(planDetails)
+      .innerJoin(issuesTable, eq(issuesTable.id, planDetails.issueId))
+      .where(and(eq(planDetails.companyId, companyId), eq(planDetails.state, "active")));
+    const activePlans = planRows.map((plan) => {
+      const issuePolicy = overview.policies.find(
+        (policy) => policy.scopeType === "issue" && policy.scopeId === plan.planIssueId,
+      );
+      return {
+        planIssueId: plan.planIssueId,
+        title: plan.title,
+        budgetCapCents: plan.budgetCapCents,
+        budgetCapTokens: plan.budgetCapTokens,
+        observedAmount: issuePolicy?.observedAmount ?? null,
+        metric: issuePolicy?.metric ?? null,
+        utilizationPercent: issuePolicy?.utilizationPercent ?? null,
+      };
+    });
+    res.json({ ...overview, activePlans });
+  });
+
+  // MyHive global kill switch: cancel all company work and pause the company so
+  // no new invocations can start until released.
+  router.post("/companies/:companyId/kill-switch", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const actor = getActorInfo(req);
+
+    await heartbeat.cancelBudgetScopeWork({ companyId, scopeType: "company", scopeId: companyId });
+    await db
+      .update(companiesTable)
+      .set({ status: "paused", pauseReason: "manual", pausedAt: new Date(), updatedAt: new Date() })
+      .where(eq(companiesTable.id, companyId));
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.kill_switch_engaged",
+      entityType: "company",
+      entityId: companyId,
+      details: {},
+    });
+    publishLiveEvent({ companyId, type: "killswitch.engaged", payload: { companyId } });
+    res.json({ stopped: true });
+  });
+
+  router.post("/companies/:companyId/kill-switch/release", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const actor = getActorInfo(req);
+
+    await db
+      .update(companiesTable)
+      .set({ status: "active", pauseReason: null, pausedAt: null, updatedAt: new Date() })
+      .where(and(eq(companiesTable.id, companyId), eq(companiesTable.pauseReason, "manual")));
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.kill_switch_released",
+      entityType: "company",
+      entityId: companyId,
+      details: {},
+    });
+    publishLiveEvent({ companyId, type: "killswitch.released", payload: { companyId } });
+    res.json({ released: true });
+  });
 
   router.post(
     "/companies/:companyId/budget-incidents/:incidentId/resolve",
