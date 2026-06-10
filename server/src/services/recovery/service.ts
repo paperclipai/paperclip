@@ -1699,7 +1699,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         silenceAgeMs < longestSuppressionAgeMs
       ) {
         try {
-          if (await hasActiveChildProcesses(run.processPid, { minCpuPercent: 5 })) {
+          if (await hasActiveChildProcesses(run.processPid, { minCpuPercent: 0 })) {
             await db
               .update(heartbeatRuns)
               .set({
