@@ -549,7 +549,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     const buildArgs = (resumeSessionId: string | null) => {
-      const args = ["run", "--format", "json"];
+      const args = ["run", "--format", "json", "--thinking"];
       if (resumeSessionId) args.push("--session", resumeSessionId);
       if (model) args.push("--model", model);
       if (variant) args.push("--variant", variant);
