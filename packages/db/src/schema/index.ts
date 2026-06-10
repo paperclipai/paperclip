@@ -33,6 +33,7 @@ export { projectGoals } from "./project_goals.js";
 export { goals } from "./goals.js";
 export { issues } from "./issues.js";
 export { issuePlanDecompositions } from "./issue_plan_decompositions.js";
+export { planDetails } from "./plan_details.js";
 export { issueRecoveryActions } from "./issue_recovery_actions.js";
 export { issueReferenceMentions } from "./issue_reference_mentions.js";
 export { issueRelations } from "./issue_relations.js";
