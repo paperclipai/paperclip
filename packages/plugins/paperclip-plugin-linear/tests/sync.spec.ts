@@ -3,6 +3,7 @@ import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import { STATE_KEYS } from "../src/constants.js";
 import {
+  createLink,
   getLink,
   getLinkByLinear,
   getProjectLink,
@@ -89,6 +90,42 @@ describe("link lookup", () => {
     await expect(getLinkByLinear(harness.ctx, "lin-current")).resolves.toMatchObject({
       paperclipIssueId: "pc-1",
       linearIssueId: "lin-current",
+    });
+  });
+
+  it("writes the host Linear issue link when creating plugin link state", async () => {
+    const harness = createTestHarness({ manifest });
+    harness.seed({
+      issues: [
+        {
+          id: "pc-1",
+          companyId: "comp-1",
+          title: "Paperclip-originated issue",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        } as never,
+      ],
+    });
+
+    await createLink(harness.ctx, {
+      paperclipIssueId: "pc-1",
+      paperclipCompanyId: "comp-1",
+      linearIssueId: "lin-1",
+      linearIdentifier: "BLO-1",
+      linearUrl: "https://linear.app/blockc/issue/BLO-1",
+      linearStateType: "unstarted",
+      syncDirection: "bidirectional",
+    });
+
+    await expect(harness.ctx.issues.getByLinearIssueId({
+      companyId: "comp-1",
+      linearIssueId: "lin-1",
+    })).resolves.toMatchObject({ id: "pc-1" });
+    await expect(getLinkByLinear(harness.ctx, "lin-1")).resolves.toMatchObject({
+      paperclipIssueId: "pc-1",
+      linearIssueId: "lin-1",
     });
   });
 

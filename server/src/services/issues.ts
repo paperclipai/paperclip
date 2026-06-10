@@ -4557,6 +4557,83 @@ export function issueService(db: Db) {
       return issue;
     },
 
+    linkLinearIssue: async (
+      companyId: string,
+      input: { issueId: string; linearIssueId: string; linearIdentifier: string },
+    ) => {
+      const issue = await getIssueByUuid(input.issueId);
+      if (!issue || issue.companyId !== companyId) {
+        throw notFound("Issue not found");
+      }
+
+      const matchingRows = await db
+        .select({
+          id: linearIssueLinks.id,
+          companyId: linearIssueLinks.companyId,
+          paperclipIssueId: linearIssueLinks.paperclipIssueId,
+          linearIssueId: linearIssueLinks.linearIssueId,
+          linearIdentifier: linearIssueLinks.linearIdentifier,
+        })
+        .from(linearIssueLinks)
+        .where(
+          or(
+            eq(linearIssueLinks.paperclipIssueId, input.issueId),
+            and(
+              eq(linearIssueLinks.companyId, companyId),
+              eq(linearIssueLinks.linearIssueId, input.linearIssueId),
+            ),
+            and(
+              eq(linearIssueLinks.companyId, companyId),
+              eq(linearIssueLinks.linearIdentifier, input.linearIdentifier),
+            ),
+          ),
+        );
+
+      const conflicts = matchingRows.filter((row) =>
+        row.companyId !== companyId
+        || row.paperclipIssueId !== input.issueId
+        || row.linearIssueId !== input.linearIssueId
+        || row.linearIdentifier !== input.linearIdentifier
+      );
+      if (conflicts.length > 0) {
+        throw conflict("Linear issue link conflict", {
+          issueId: input.issueId,
+          linearIssueId: input.linearIssueId,
+          linearIdentifier: input.linearIdentifier,
+          conflicts,
+        });
+      }
+
+      const existing = matchingRows[0];
+      if (existing) {
+        await db
+          .update(linearIssueLinks)
+          .set({ updatedAt: new Date() })
+          .where(eq(linearIssueLinks.id, existing.id));
+        return;
+      }
+
+      try {
+        await db.insert(linearIssueLinks).values({
+          companyId,
+          paperclipIssueId: input.issueId,
+          linearIssueId: input.linearIssueId,
+          linearIdentifier: input.linearIdentifier,
+        });
+      } catch (err) {
+        const maybe = err as { code?: string; constraint?: string; constraint_name?: string };
+        if (maybe.code === "23505") {
+          throw conflict("Linear issue link conflict", {
+            issueId: input.issueId,
+            linearIssueId: input.linearIssueId,
+            linearIdentifier: input.linearIdentifier,
+            constraint: maybe.constraint ?? maybe.constraint_name,
+          });
+        }
+        throw err;
+      }
+    },
+
     getCurrentScheduledRetry: async (issueId: string) => {
       const issue = await db
         .select({ id: issues.id, companyId: issues.companyId })

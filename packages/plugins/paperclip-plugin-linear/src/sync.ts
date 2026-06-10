@@ -114,6 +114,34 @@ export async function createLink(
     lastCommentSyncAt: null,
   };
 
+  const linkLinearIssue = ctx.issues.linkLinearIssue;
+  if (typeof linkLinearIssue === "function") {
+    try {
+      await linkLinearIssue.call(ctx.issues, {
+        issueId: params.paperclipIssueId,
+        companyId: params.paperclipCompanyId,
+        linearIssueId: params.linearIssueId,
+        linearIdentifier: params.linearIdentifier,
+      });
+    } catch (err) {
+      if (isHostWriteUnavailableError(err)) {
+        ctx.logger.warn("Host Linear issue link write unavailable; falling back to plugin state only", {
+          paperclipIssueId: params.paperclipIssueId,
+          linearIssueId: params.linearIssueId,
+          error: String(err),
+        });
+      } else {
+        throw err;
+      }
+    }
+  } else {
+    ctx.logger.warn("Host Linear issue link write unavailable; falling back to plugin state only", {
+      paperclipIssueId: params.paperclipIssueId,
+      linearIssueId: params.linearIssueId,
+      error: "ctx.issues.linkLinearIssue is not available",
+    });
+  }
+
   await ctx.state.set(
     { scopeKind: "instance", stateKey: linkStateKey(params.paperclipIssueId) },
     link,

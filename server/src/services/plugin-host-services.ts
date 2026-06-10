@@ -1725,6 +1725,15 @@ export function buildHostServices(
         }
         return issue as Issue | null;
       },
+      async linkLinearIssue(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        await issues.linkLinearIssue(companyId, {
+          issueId: params.issueId,
+          linearIssueId: params.linearIssueId,
+          linearIdentifier: params.linearIdentifier,
+        });
+      },
       async create(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);

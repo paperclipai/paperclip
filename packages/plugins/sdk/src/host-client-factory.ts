@@ -240,6 +240,7 @@ export interface HostServices {
     list(params: WorkerToHostMethods["issues.list"][0]): Promise<WorkerToHostMethods["issues.list"][1]>;
     get(params: WorkerToHostMethods["issues.get"][0]): Promise<WorkerToHostMethods["issues.get"][1]>;
     getByLinearIssueId(params: WorkerToHostMethods["issues.getByLinearIssueId"][0]): Promise<WorkerToHostMethods["issues.getByLinearIssueId"][1]>;
+    linkLinearIssue(params: WorkerToHostMethods["issues.linkLinearIssue"][0]): Promise<WorkerToHostMethods["issues.linkLinearIssue"][1]>;
     create(params: WorkerToHostMethods["issues.create"][0]): Promise<WorkerToHostMethods["issues.create"][1]>;
     update(params: WorkerToHostMethods["issues.update"][0]): Promise<WorkerToHostMethods["issues.update"][1]>;
     getRelations(params: WorkerToHostMethods["issues.relations.get"][0]): Promise<WorkerToHostMethods["issues.relations.get"][1]>;
@@ -473,6 +474,7 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "issues.list": "issues.read",
   "issues.get": "issues.read",
   "issues.getByLinearIssueId": "issues.read",
+  "issues.linkLinearIssue": "issues.update",
   "issues.create": "issues.create",
   "issues.update": "issues.update",
   "issues.relations.get": "issue.relations.read",
@@ -893,6 +895,9 @@ export function createHostClientHandlers(
     }),
     "issues.getByLinearIssueId": gated("issues.getByLinearIssueId", async (params) => {
       return services.issues.getByLinearIssueId(params);
+    }),
+    "issues.linkLinearIssue": gated("issues.linkLinearIssue", async (params) => {
+      return services.issues.linkLinearIssue(params);
     }),
     "issues.create": gated("issues.create", async (params) => {
       return services.issues.create(params);

@@ -477,6 +477,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   // can exercise the host-allocator-mirror dedup branch without
   // spinning embedded postgres. Tests seed via `host.linkLinearIssue(...)`.
   const linearIssueLinksByLinearIssueId = new Map<string, string>();
+  const linearIssueLinksByPaperclipIssueId = new Map<string, { companyId: string; linearIssueId: string }>();
   const linkKey = (companyId: string, linearIssueId: string) => `${companyId}:${linearIssueId}`;
   const blockedByIssueIds = new Map<string, string[]>();
   const issueComments = new Map<string, IssueComment[]>();
@@ -1588,6 +1589,35 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const issue = issues.get(paperclipIssueId);
         return isInCompany(issue, companyId) ? issue : null;
       },
+      async linkLinearIssue(input) {
+        requireCapability(manifest, capabilitySet, "issues.update");
+        const issue = issues.get(input.issueId);
+        if (!isInCompany(issue, input.companyId)) throw new Error(`Issue not found: ${input.issueId}`);
+
+        const existingByLinear = linearIssueLinksByLinearIssueId.get(
+          linkKey(input.companyId, input.linearIssueId),
+        );
+        if (existingByLinear && existingByLinear !== input.issueId) {
+          throw new Error(`Linear issue already linked: ${input.linearIssueId}`);
+        }
+
+        const existingByPaperclip = linearIssueLinksByPaperclipIssueId.get(input.issueId);
+        if (existingByPaperclip && (
+          existingByPaperclip.companyId !== input.companyId
+          || existingByPaperclip.linearIssueId !== input.linearIssueId
+        )) {
+          throw new Error(`Paperclip issue already linked: ${input.issueId}`);
+        }
+
+        linearIssueLinksByLinearIssueId.set(
+          linkKey(input.companyId, input.linearIssueId),
+          input.issueId,
+        );
+        linearIssueLinksByPaperclipIssueId.set(input.issueId, {
+          companyId: input.companyId,
+          linearIssueId: input.linearIssueId,
+        });
+      },
       async create(input) {
         requireCapability(manifest, capabilitySet, "issues.create");
         const now = new Date();
@@ -2432,6 +2462,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       for (const row of input.goals ?? []) goals.set(row.id, row);
       for (const row of input.linearIssueLinks ?? []) {
         linearIssueLinksByLinearIssueId.set(linkKey(row.companyId, row.linearIssueId), row.paperclipIssueId);
+        linearIssueLinksByPaperclipIssueId.set(row.paperclipIssueId, {
+          companyId: row.companyId,
+          linearIssueId: row.linearIssueId,
+        });
       }
       for (const row of input.projectWorkspaces ?? []) {
         const list = projectWorkspaces.get(row.projectId) ?? [];

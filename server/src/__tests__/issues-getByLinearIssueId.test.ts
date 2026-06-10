@@ -137,4 +137,69 @@ describeEmbeddedPostgres("issueService.getByLinearIssueId (linear_issue_links lo
     expect((await svc.getByLinearIssueId(companyA.id, linearIssueUuid))?.id).toBe(issueA.id);
     expect(await svc.getByLinearIssueId(companyB.id, linearIssueUuid)).toBeNull();
   });
+
+  it("linkLinearIssue binds an existing Paperclip issue to an existing Linear issue", async () => {
+    const company = await seedCompany();
+    const [issue] = await db
+      .insert(issues)
+      .values({
+        companyId: company.id,
+        identifier: "BLO-60",
+        issueNumber: 60,
+        title: "Paperclip issue mirrored to Linear by plugin",
+        originKind: "manual",
+      })
+      .returning();
+    const linearIssueUuid = randomUUID();
+
+    await svc.linkLinearIssue(company.id, {
+      issueId: issue.id,
+      linearIssueId: linearIssueUuid,
+      linearIdentifier: "BLO-5431",
+    });
+
+    expect((await svc.getByLinearIssueId(company.id, linearIssueUuid))?.id).toBe(issue.id);
+
+    await expect(svc.linkLinearIssue(company.id, {
+      issueId: issue.id,
+      linearIssueId: linearIssueUuid,
+      linearIdentifier: "BLO-5431",
+    })).resolves.toBeUndefined();
+  });
+
+  it("linkLinearIssue rejects conflicting Linear links", async () => {
+    const company = await seedCompany();
+    const [issueA, issueB] = await db
+      .insert(issues)
+      .values([
+        {
+          companyId: company.id,
+          identifier: "BLO-70",
+          issueNumber: 70,
+          title: "first issue",
+          originKind: "manual",
+        },
+        {
+          companyId: company.id,
+          identifier: "BLO-71",
+          issueNumber: 71,
+          title: "second issue",
+          originKind: "manual",
+        },
+      ])
+      .returning();
+    const linearIssueUuid = randomUUID();
+
+    await svc.linkLinearIssue(company.id, {
+      issueId: issueA.id,
+      linearIssueId: linearIssueUuid,
+      linearIdentifier: "BLO-5432",
+    });
+
+    await expect(svc.linkLinearIssue(company.id, {
+      issueId: issueB.id,
+      linearIssueId: linearIssueUuid,
+      linearIdentifier: "BLO-5432",
+    })).rejects.toMatchObject({ status: 409 });
+  });
 });

@@ -1459,6 +1459,16 @@ export interface PluginIssuesClient {
    * paperclip row but appear in linear_issue_links). Requires `issues.read`.
    */
   getByLinearIssueId(input: { linearIssueId: string; companyId: string }): Promise<Issue | null>;
+  /**
+   * Bind an existing Paperclip issue to an existing Linear issue in the
+   * host's `linear_issue_links` table. Requires `issues.update`.
+   */
+  linkLinearIssue(input: {
+    issueId: string;
+    companyId: string;
+    linearIssueId: string;
+    linearIdentifier: string;
+  }): Promise<void>;
   create(input: {
     companyId: string;
     projectId?: string;

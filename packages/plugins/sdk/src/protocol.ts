@@ -1076,6 +1076,15 @@ export interface WorkerToHostMethods {
     params: { linearIssueId: string; companyId: string },
     result: Issue | null,
   ];
+  "issues.linkLinearIssue": [
+    params: {
+      issueId: string;
+      companyId: string;
+      linearIssueId: string;
+      linearIdentifier: string;
+    },
+    result: void,
+  ];
   "issues.create": [
     params: {
       companyId: string;
