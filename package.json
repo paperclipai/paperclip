@@ -68,7 +68,9 @@
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
     },
     "overrides": {
-      "rollup": ">=4.59.0"
+      "rollup": ">=4.59.0",
+      "vitest": "^3.2.6",
+      "shell-quote": ">=1.8.4"
     }
   }
 }
