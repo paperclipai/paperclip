@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { prepareManagedCodexHome } from "./codex-home.js";
+import { ensureSymlink, prepareManagedCodexHome } from "./codex-home.js";
 
 describe("codex managed home", () => {
   afterEach(() => {
@@ -97,6 +97,49 @@ describe("codex managed home", () => {
 
       expect((await fs.lstat(managedAuth)).isSymbolicLink()).toBe(true);
       expect(await fs.readFile(managedAuth, "utf8")).toBe('{"token":"fresh"}');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // Direct unit coverage for the new ensureSymlink branch (#5028). The
+  // regression test above goes through prepareManagedCodexHome, whose
+  // pre-existing apikey-mode cleanup `fs.rm`s the stale auth.json before
+  // ensureSymlink runs — so the heal branch never executes there. Call
+  // ensureSymlink directly to prove the unlink-and-recreate path itself.
+  it("ensureSymlink: unlinks a stale regular file and recreates the symlink", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ensure-symlink-"));
+    try {
+      const source = path.join(root, "live-source.json");
+      const target = path.join(root, "stale-target.json");
+      await fs.writeFile(source, '{"token":"fresh"}', "utf8");
+      await fs.writeFile(target, '{"token":"stale-from-copy"}', "utf8");
+
+      await ensureSymlink(target, source);
+
+      expect((await fs.lstat(target)).isSymbolicLink()).toBe(true);
+      expect(await fs.readFile(target, "utf8")).toBe('{"token":"fresh"}');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // The isDirectory() guard added with the heal branch must keep an unexpected
+  // directory in place rather than throwing EISDIR. We treat a directory at
+  // this path as operator-owned, not a stale Paperclip copy.
+  it("ensureSymlink: leaves an unexpected directory in place instead of throwing", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ensure-symlink-dir-"));
+    try {
+      const source = path.join(root, "live-source.json");
+      const target = path.join(root, "unexpected-dir");
+      await fs.writeFile(source, '{"token":"fresh"}', "utf8");
+      await fs.mkdir(target);
+      await fs.writeFile(path.join(target, "sentinel"), "keep-me", "utf8");
+
+      await expect(ensureSymlink(target, source)).resolves.toBeUndefined();
+
+      expect((await fs.lstat(target)).isDirectory()).toBe(true);
+      expect(await fs.readFile(path.join(target, "sentinel"), "utf8")).toBe("keep-me");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

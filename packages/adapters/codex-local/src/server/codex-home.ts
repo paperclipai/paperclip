@@ -65,7 +65,7 @@ async function createExpectedSymlink(target: string, source: string): Promise<vo
   }
 }
 
-async function ensureSymlink(target: string, source: string): Promise<void> {
+export async function ensureSymlink(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
     await ensureParentDir(target);
