@@ -177,7 +177,7 @@ export async function ensureCursorSkillsInjected(
   for (const entry of skillsEntries) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
-      const result = await ensurePaperclipSkillSymlink(entry.source, target, linkSkill);
+      const result = await ensurePaperclipSkillSymlink(entry.source, target, {}, linkSkill);
       if (result === "skipped") continue;
 
       await onLog(

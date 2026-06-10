@@ -3017,6 +3017,9 @@ export interface HeartbeatServiceOptions {
   environmentRuntime?: HeartbeatEnvironmentRuntime;
 }
 
+const activeRunExecutions = new Set<string>();
+let unsafeTextProjectionPromise: Promise<boolean> | null = null;
+
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
@@ -3038,14 +3041,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     environmentRuntime,
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
-  const activeRunExecutions = new Set<string>();
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
-  let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
   async function releaseEnvironmentLeasesForRun(input: {
     runId: string;
@@ -7346,11 +7347,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
-      // Apply staleness threshold to avoid false positives
-      if (staleThresholdMs > 0) {
-        const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
-        if (now.getTime() - refTime < staleThresholdMs) continue;
-      }
+      // Apply staleness threshold to avoid false positives.
+      // Even if threshold is 0, we apply a small 5-second grace period for recently updated runs
+      // to avoid races at the start/end of a run (e.g. after in-memory handle is cleared but before DB update,
+      // or while the run is being claimed/started by a concurrent service instance).
+      const effectiveStaleThresholdMs = Math.max(staleThresholdMs, 5_000);
+      const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+      if (now.getTime() - refTime < effectiveStaleThresholdMs) continue;
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);

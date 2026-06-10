@@ -169,7 +169,7 @@ async function ensureOpenCodeSkillsInjected(
       const result = await ensurePaperclipSkillSymlink(entry.source, target);
       if (result === "skipped") continue;
       await onLog(
-        "stderr",
+        "stdout",
         `[paperclip] ${result === "repaired" ? "Repaired" : "Injected"} OpenCode skill "${entry.key}" into ${skillsHome}\n`,
       );
     } catch (err) {

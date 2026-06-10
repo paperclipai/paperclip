@@ -1794,9 +1794,19 @@ export function writePaperclipSkillSyncPreference(
   return next;
 }
 
+export interface SkillSymlinkOptions {
+  /**
+   * If true, skip repairing the symlink if it points to an existing directory
+   * even if that directory is not the intended source.
+   * Default: false (repair mismatched links even if they are valid).
+   */
+  preserveExistingValidMismatchedLinks?: boolean;
+}
+
 export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
+  options: SkillSymlinkOptions = {},
   linkSkill: (source: string, target: string) => Promise<void> = (linkSource, linkTarget) =>
     fs.symlink(linkSource, linkTarget),
 ): Promise<"created" | "repaired" | "skipped"> {
@@ -1814,13 +1824,20 @@ export async function ensurePaperclipSkillSymlink(
   if (!linkedPath) return "skipped";
 
   const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
-  if (resolvedLinkedPath === source) {
+  const realLinked = await fs.realpath(resolvedLinkedPath).catch(() => resolvedLinkedPath);
+  const realSource = await fs.realpath(source).catch(() => source);
+  if (realLinked === realSource) {
     return "skipped";
   }
 
-  const linkedPathExists = await fs.stat(resolvedLinkedPath).then(() => true).catch(() => false);
-  if (linkedPathExists) {
-    return "skipped";
+  if (options.preserveExistingValidMismatchedLinks) {
+    const linkedPathExists = await fs
+      .stat(resolvedLinkedPath)
+      .then(() => true)
+      .catch(() => false);
+    if (linkedPathExists) {
+      return "skipped";
+    }
   }
 
   await fs.unlink(target);
