@@ -722,6 +722,13 @@
       "when": 1780876800000,
       "tag": "0102_tool_gateway_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1780963200000,
+      "tag": "0103_tool_connection_application_no_cascade",
+      "breakpoints": true
     }
   ]
 }

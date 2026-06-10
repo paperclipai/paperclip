@@ -603,6 +603,63 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(remaining).toHaveLength(1);
   });
 
+  it("fails closed at the database when a connection races an application delete (no silent cascade)", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connection = await service.createConnection(company.id, {
+      name: "Racy connection",
+      transport: "remote_http",
+      config: { url: "https://fixture.example/mcp" },
+    });
+
+    // Simulate the delete-vs-create race: skip the endpoint's "any connections?" pre-check and
+    // issue the raw DELETE it would run afterwards, standing in for a connection created in the
+    // gap. Under the old ON DELETE CASCADE schema this silently removed the linked connection;
+    // the hardened ON DELETE NO ACTION FK must reject it so the delete can never become an
+    // implicit cascade.
+    await expect(
+      db.delete(toolApplications).where(eq(toolApplications.id, connection.applicationId)),
+    ).rejects.toThrow();
+
+    const remainingApp = await db
+      .select()
+      .from(toolApplications)
+      .where(eq(toolApplications.id, connection.applicationId));
+    const remainingConnection = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connection.id));
+    expect(remainingApp).toHaveLength(1);
+    expect(remainingConnection).toHaveLength(1);
+  });
+
+  it("still cascades application + connection deletes when the owning company is removed", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connection = await service.createConnection(company.id, {
+      name: "Company-scoped connection",
+      transport: "remote_http",
+      config: { url: "https://fixture.example/mcp" },
+    });
+
+    // NO ACTION (not RESTRICT) must keep the company teardown cascade intact: deleting the
+    // company cascades to both tool_applications and tool_connections in one statement, and the
+    // end-of-statement FK check passes because the connection is already gone. RESTRICT would
+    // abort this delete mid-cascade.
+    await db.delete(companies).where(eq(companies.id, company.id));
+
+    const remainingApp = await db
+      .select()
+      .from(toolApplications)
+      .where(eq(toolApplications.id, connection.applicationId));
+    const remainingConnection = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connection.id));
+    expect(remainingApp).toHaveLength(0);
+    expect(remainingConnection).toHaveLength(0);
+  });
+
   it("returns 403 for cross-company application deletes and 404 for missing applications", async () => {
     const allowedCompany = await createCompany(db);
     const otherCompany = await createCompany(db);

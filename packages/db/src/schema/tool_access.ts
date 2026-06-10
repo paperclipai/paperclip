@@ -80,7 +80,15 @@ export const toolConnections = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-    applicationId: uuid("application_id").notNull().references(() => toolApplications.id, { onDelete: "cascade" }),
+    // NO ACTION (not CASCADE) so the database itself refuses to delete an application that still
+    // has connections. This closes the delete-vs-create race in DELETE
+    // /tool-applications/:applicationId: a connection inserted concurrently takes a FOR KEY SHARE
+    // lock on the parent row, so the delete fails closed with a foreign-key violation instead of
+    // silently cascading the new connection away. NO ACTION (checked at end-of-statement) rather
+    // than RESTRICT (checked immediately) is deliberate: it lets a company delete still cascade —
+    // companies → tool_applications and companies → tool_connections both fire in one statement,
+    // and the connections are gone by the time this constraint is checked.
+    applicationId: uuid("application_id").notNull().references(() => toolApplications.id, { onDelete: "no action" }),
     name: text("name").notNull(),
     connectionKind: text("connection_kind").$type<ToolConnectionKind>().notNull().default("managed"),
     transport: text("transport").$type<ToolConnectionTransport>().notNull(),

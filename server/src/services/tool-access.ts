@@ -181,6 +181,36 @@ function asRecord(value: unknown): Record<string, unknown> {
   return {};
 }
 
+// Detects a Postgres foreign_key_violation (SQLSTATE 23503) raised by the
+// tool_connections.application_id constraint — i.e. an application delete that lost the race to
+// a concurrently-created connection now that the FK is ON DELETE RESTRICT. Walks the error and
+// its `cause` since the driver may wrap the original pg error.
+function isToolConnectionForeignKeyViolation(error: unknown): boolean {
+  const records: Record<string, unknown>[] = [];
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth += 1) {
+    const record = current as Record<string, unknown>;
+    records.push(record);
+    current = record.cause;
+  }
+  return records.some((record) => {
+    const code = typeof record.code === "string" ? record.code : null;
+    const constraint =
+      typeof record.constraint === "string"
+        ? record.constraint
+        : typeof record.constraint_name === "string"
+          ? record.constraint_name
+          : null;
+    const message = typeof record.message === "string" ? record.message : "";
+    return (
+      code === "23503" &&
+      (constraint === "tool_connections_application_id_tool_applications_id_fk" ||
+        /tool_connections/.test(constraint ?? "") ||
+        /tool_connections/.test(message))
+    );
+  });
+}
+
 function numberValue(value: unknown): number | null {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : null;
@@ -1901,7 +1931,22 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           { connectionCount: linkedConnections.length },
         );
       }
-      const [row] = await db.delete(toolApplications).where(eq(toolApplications.id, applicationId)).returning();
+      // The pre-check above gives a friendly 409 in the common case, but it cannot close the
+      // race where a connection is created in the gap before this delete runs. The FK is now
+      // ON DELETE RESTRICT, so such a delete fails closed with a foreign_key_violation instead
+      // of silently cascading the new connection away. Translate that into the same 409 so the
+      // endpoint keeps its contract instead of surfacing a 500.
+      let row: typeof toolApplications.$inferSelect | undefined;
+      try {
+        [row] = await db.delete(toolApplications).where(eq(toolApplications.id, applicationId)).returning();
+      } catch (error) {
+        if (isToolConnectionForeignKeyViolation(error)) {
+          throw conflict(
+            "This application still has connections. Remove its connections or archive the application instead of deleting it.",
+          );
+        }
+        throw error;
+      }
       if (!row) throw notFound("Tool application not found");
       return toApplication(row);
     },
