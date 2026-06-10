@@ -4173,3 +4173,84 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(record?.childIssues.every((child) => typeof child.title === "string")).toBe(true);
   });
 });
+
+describeEmbeddedPostgres("issueService.update parentId/goalId validation (#7656)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-parent-validate-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issues);
+    await db.delete(goals);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedIssue() {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Child",
+      status: "todo",
+      priority: "medium",
+    });
+    return { companyId, issueId };
+  }
+
+  it("rejects a non-existent parentId with 422 instead of a raw FK 500", async () => {
+    const { issueId } = await seedIssue();
+    await expect(svc.update(issueId, { parentId: randomUUID() })).rejects.toMatchObject({ status: 422 });
+    const [row] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(row?.parentId).toBeNull();
+  });
+
+  it("rejects a parentId belonging to another company with 422", async () => {
+    const { issueId } = await seedIssue();
+    const { issueId: foreignIssueId } = await seedIssue();
+    await expect(svc.update(issueId, { parentId: foreignIssueId })).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("rejects self-parenting with 422", async () => {
+    const { issueId } = await seedIssue();
+    await expect(svc.update(issueId, { parentId: issueId })).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("rejects a non-existent goalId with 422", async () => {
+    const { issueId } = await seedIssue();
+    await expect(svc.update(issueId, { goalId: randomUUID() })).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("still accepts a valid same-company parentId", async () => {
+    const { companyId, issueId } = await seedIssue();
+    const parentId = randomUUID();
+    await db.insert(issues).values({
+      id: parentId,
+      companyId,
+      title: "Parent",
+      status: "todo",
+      priority: "medium",
+    });
+    const updated = await svc.update(issueId, { parentId });
+    expect(updated?.parentId).toBe(parentId);
+  });
+});

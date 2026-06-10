@@ -4914,6 +4914,36 @@ export function issueService(db: Db) {
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
       }
+      // GH #7656: a parentId/goalId pointing at a row that doesn't exist used to
+      // surface as a raw Postgres FK 500. Validate existence (company-scoped)
+      // up front so callers get a clean 422 instead.
+      if (issueData.parentId) {
+        if (issueData.parentId === id) {
+          throw unprocessable("An issue cannot be its own parent", { parentId: issueData.parentId });
+        }
+        const parent = await dbOrTx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(and(eq(issues.id, issueData.parentId), eq(issues.companyId, existing.companyId)))
+          .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+        if (!parent) {
+          throw unprocessable("parentId does not reference an existing issue in this company", {
+            parentId: issueData.parentId,
+          });
+        }
+      }
+      if (issueData.goalId) {
+        const goal = await dbOrTx
+          .select({ id: goals.id })
+          .from(goals)
+          .where(and(eq(goals.id, issueData.goalId), eq(goals.companyId, existing.companyId)))
+          .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+        if (!goal) {
+          throw unprocessable("goalId does not reference an existing goal in this company", {
+            goalId: issueData.goalId,
+          });
+        }
+      }
       const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
       const nextProjectWorkspaceId =
         issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
