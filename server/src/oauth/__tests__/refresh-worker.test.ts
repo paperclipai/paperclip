@@ -1,5 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import { runRefreshTick } from "../refresh-worker.js";
+import type { RefreshDeps, RefreshResult } from "../refresh.js";
+
+type RefreshFnMock = Mock<(deps: RefreshDeps) => Promise<RefreshResult>>;
 
 describe("runRefreshTick", () => {
   beforeEach(() => {
@@ -11,7 +14,7 @@ describe("runRefreshTick", () => {
   function buildDeps(opts: {
     candidates: Array<Record<string, unknown>>;
     locked?: boolean;
-    refreshFn?: ReturnType<typeof vi.fn>;
+    refreshFn?: RefreshFnMock;
   }) {
     const acquired = opts.locked !== false;
     // The worker now runs the tick inside a single `db.transaction(cb)` and
@@ -23,9 +26,11 @@ describe("runRefreshTick", () => {
       .fn()
       .mockResolvedValue({ rows: [{ result: acquired }] });
     const findMany = vi.fn().mockResolvedValue(opts.candidates);
-    const refreshFn =
+    const refreshFn: RefreshFnMock =
       opts.refreshFn ??
-      vi.fn().mockResolvedValue({ outcome: "success", accessToken: "x" });
+      vi
+        .fn<(deps: RefreshDeps) => Promise<RefreshResult>>()
+        .mockResolvedValue({ outcome: "success", accessToken: "x" });
     const tx = {
       execute,
       query: { oauthConnections: { findMany } },
@@ -114,8 +119,8 @@ describe("runRefreshTick", () => {
       { id: "a", refreshAttemptCount: 0, lastErrorAt: null },
       { id: "b", refreshAttemptCount: 0, lastErrorAt: null },
     ];
-    const refreshFn = vi
-      .fn()
+    const refreshFn: RefreshFnMock = vi
+      .fn<(deps: RefreshDeps) => Promise<RefreshResult>>()
       .mockRejectedValueOnce(new Error("boom"))
       .mockResolvedValueOnce({ outcome: "success", accessToken: "x" });
     const { db } = buildDeps({ candidates, refreshFn });
