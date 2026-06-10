@@ -2168,6 +2168,75 @@ describe("paperclip-plugin-linear", () => {
       expect(listProjects).toHaveBeenCalledTimes(1);
     });
 
+    it("removes stale persisted links when the Linear issue is gone without skipping the shifted cursor", async () => {
+      const { listIssuesByIds } = await import("../src/linear.js");
+      const issueCount = 101;
+      const makeLink = (index: number) => {
+        const padded = String(index).padStart(3, "0");
+        return {
+          paperclipIssueId: `pc-${padded}`,
+          paperclipCompanyId: "comp-1",
+          linearIssueId: `lin-${padded}`,
+          linearIdentifier: `LUC-${index + 1}`,
+          linearUrl: `https://linear.app/lucitra/issue/LUC-${index + 1}`,
+          syncDirection: "bidirectional" as const,
+          lastSyncAt: "2026-06-09T00:00:00.000Z",
+          lastLinearStateType: "started",
+          lastCommentSyncAt: null,
+        };
+      };
+      const makeLinearIssue = (id: string) => {
+        const index = Number(id.slice("lin-".length));
+        return {
+          id,
+          identifier: `LUC-${index + 1}`,
+          title: `Linked ${index + 1}`,
+          description: null,
+          state: { name: "In Progress", type: "started" },
+          priority: 3,
+          url: `https://linear.app/lucitra/issue/LUC-${index + 1}`,
+          assignee: null,
+          labels: { nodes: [] },
+          project: null,
+          createdAt: "2026-06-09T00:00:00.000Z",
+          updatedAt: "2026-06-09T00:00:00.000Z",
+        };
+      };
+
+      vi.mocked(listIssuesByIds).mockImplementation(async (_fetch, _token, ids) => (
+        ids.filter((id) => id !== "lin-000").map(makeLinearIssue)
+      ));
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      for (let index = 0; index < issueCount; index++) {
+        const link = makeLink(index);
+        await harness.ctx.state.set(
+          { scopeKind: "instance", stateKey: `${STATE_KEYS.linkPrefix}${link.paperclipIssueId}` },
+          link,
+        );
+      }
+
+      const result = await harness.performAction<{
+        synced: number;
+        errors: number;
+        scanned: number;
+        complete: boolean;
+        nextOffset: number;
+      }>(ACTION_KEYS.triggerSync);
+
+      expect(result).toMatchObject({
+        synced: 99,
+        errors: 0,
+        scanned: 100,
+        complete: false,
+        nextOffset: 99,
+      });
+      expect(syncModule.removeLink).toHaveBeenCalledWith(harness.ctx, "pc-000");
+      expect(harness.getState({ scopeKind: "instance", stateKey: STATE_KEYS.periodicLinkSyncOffset })).toBe(99);
+    });
+
     it("removes stale persisted links when the Paperclip issue is gone", async () => {
       const { listIssuesByIds } = await import("../src/linear.js");
       const link = {

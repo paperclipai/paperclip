@@ -2774,6 +2774,8 @@ async function runFullSync(ctx: PluginContext): Promise<{
     scanned += links.length;
     entriesScanned += page.entries.length;
 
+    let removedLinksFromPage = 0;
+
     for (let index = 0; index < links.length; index += LINEAR_ISSUE_SYNC_BATCH_SIZE) {
       const batch = links.slice(index, index + LINEAR_ISSUE_SYNC_BATCH_SIZE);
       const linearIds = batch.map((link) => link.linearIssueId);
@@ -2792,8 +2794,11 @@ async function runFullSync(ctx: PluginContext): Promise<{
       for (const link of batch) {
         const linearIssue = linearById.get(link.linearIssueId);
         if (!linearIssue) {
-          ctx.logger.warn(`Linked Linear issue ${link.linearIdentifier} (${link.linearIssueId}) was not found`);
-          errors++;
+          const removed = await sync.removeLink(ctx, link.paperclipIssueId);
+          if (removed) removedLinksFromPage++;
+          ctx.logger.info(
+            `Removed stale Linear link for ${link.linearIdentifier}: Linear issue ${link.linearIssueId} was not found`,
+          );
           continue;
         }
 
@@ -2802,7 +2807,8 @@ async function runFullSync(ctx: PluginContext): Promise<{
           synced++;
         } catch (err) {
           if (sync.isPaperclipIssueNotFoundError(err)) {
-            await sync.removeLink(ctx, link.paperclipIssueId);
+            const removed = await sync.removeLink(ctx, link.paperclipIssueId);
+            if (removed) removedLinksFromPage++;
             ctx.logger.info(
               `Removed stale Linear link for ${link.linearIdentifier}: Paperclip issue ${link.paperclipIssueId} was not found`,
             );
@@ -2814,7 +2820,7 @@ async function runFullSync(ctx: PluginContext): Promise<{
       }
     }
 
-    offset += page.entries.length;
+    offset += Math.max(0, page.entries.length - removedLinksFromPage);
     if (!page.hasMore) {
       offset = 0;
       complete = true;
