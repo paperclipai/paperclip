@@ -623,13 +623,14 @@ export function agentService(db: Db) {
             tx.select({ id: approvals.id }).from(approvals).where(eq(approvals.requestedByAgentId, id)),
           ),
         );
-        await tx.delete(approvals).where(eq(approvals.requestedByAgentId, id));
+        // Delete budget incidents first — budget_incidents.approvalId FK has no ON DELETE CASCADE
         await tx.delete(budgetIncidents).where(
           inArray(
             budgetIncidents.approvalId,
             tx.select({ id: approvals.id }).from(approvals).where(eq(approvals.requestedByAgentId, id)),
           ),
         );
+        await tx.delete(approvals).where(eq(approvals.requestedByAgentId, id));
         await tx.delete(joinRequests).where(eq(joinRequests.createdAgentId, id));
         await tx.delete(assets).where(eq(assets.createdByAgentId, id));
         await tx.delete(goals).where(eq(goals.ownerAgentId, id));

@@ -4,7 +4,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agentApiKeys,
   agents,
+  approvals,
   assets,
+  budgetIncidents,
+  budgetPolicies,
   companies,
   costEvents,
   createDb,
@@ -298,5 +301,80 @@ describeEmbeddedPostgres("cascade-delete service handlers (GH#7250)", () => {
     expect(remaining).toHaveLength(0);
     const remainingIssues = await db.select().from(issues).where(eq(issues.projectId, projectId));
     expect(remainingIssues).toHaveLength(0);
+  });
+
+  it("agent remove() handles approval + budget incident FK without violation", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const approvalId = randomUUID();
+    const budgetIncidentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Approval Cascade Co",
+      issuePrefix: "APC",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Approver",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    // Create an approval requested by this agent
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "budget",
+      requestedByAgentId: agentId,
+      status: "approved",
+      payload: { amount: 1000 },
+    });
+    // Create a budget policy (required FK for budget incidents)
+    const policyId = randomUUID();
+    await db.insert(budgetPolicies).values({
+      id: policyId,
+      companyId,
+      scopeType: "company",
+      scopeId: companyId,
+      windowKind: "monthly",
+    });
+    // Create a budget incident linked to that approval (FK: budget_incidents.approvalId -> approvals.id)
+    await db.insert(budgetIncidents).values({
+      id: budgetIncidentId,
+      companyId,
+      policyId,
+      scopeType: "agent",
+      scopeId: agentId,
+      metric: "cost",
+      windowKind: "monthly",
+      windowStart: new Date(),
+      windowEnd: new Date(),
+      thresholdType: "hard",
+      amountLimit: 500,
+      amountObserved: 750,
+      status: "open",
+      approvalId,
+    });
+
+    const svc = agentService(db);
+    // This must not throw a FK constraint violation
+    await expect(svc.remove(agentId)).resolves.not.toThrow();
+
+    // Verify all related rows are deleted
+    const remainingAgent = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(remainingAgent).toHaveLength(0);
+    const remainingApproval = await db.select().from(approvals).where(eq(approvals.id, approvalId));
+    expect(remainingApproval).toHaveLength(0);
+    const remainingIncident = await db
+      .select()
+      .from(budgetIncidents)
+      .where(eq(budgetIncidents.id, budgetIncidentId));
+    expect(remainingIncident).toHaveLength(0);
   });
 });
