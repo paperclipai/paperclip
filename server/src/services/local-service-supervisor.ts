@@ -397,9 +397,12 @@ export async function terminateLocalService(
  */
 export async function hasActiveChildProcesses(
   parentPid: number,
-  opts?: { minCpuPercent?: number },
+  opts?: { minCpuPercent?: number; maxDepth?: number; depth?: number },
 ): Promise<boolean> {
   const threshold = opts?.minCpuPercent ?? 5;
+  const maxDepth = opts?.maxDepth ?? 5;
+  const depth = opts?.depth ?? 0;
+  if (depth >= maxDepth) return false;
   if (process.platform === "win32") return false;
   if (!Number.isInteger(parentPid) || parentPid <= 0) return false;
 
@@ -429,7 +432,7 @@ export async function hasActiveChildProcesses(
 
     // Recurse into grandchildren
     for (const childPid of childPids) {
-      if (await hasActiveChildProcesses(childPid, opts)) return true;
+      if (await hasActiveChildProcesses(childPid, { ...opts, depth: depth + 1 })) return true;
     }
 
     return false;

@@ -1644,6 +1644,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       evaluationIssueIds: [] as string[],
     };
 
+    // Pre-fetch agent adapter types for local-adapter child-CPU checks.
+    const localRunAgentIds = [
+      ...new Set(
+        candidates
+          .filter(
+            (r) => typeof r.processPid === "number" && r.processPid > 0,
+          )
+          .map((r) => r.agentId),
+      ),
+    ];
+    const agentAdapterMap = new Map<string, string>();
+    if (localRunAgentIds.length > 0) {
+      const agentRows = await db
+        .select({ id: agents.id, adapterType: agents.adapterType })
+        .from(agents)
+        .where(inArray(agents.id, localRunAgentIds));
+      for (const row of agentRows) {
+        agentAdapterMap.set(row.id, row.adapterType);
+      }
+    }
+
     for (const run of candidates) {
       if (await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now)) {
         result.snoozed += 1;
@@ -1654,12 +1675,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       // processes are doing CPU work (e.g., MCP servers performing
       // long-running PDF extraction).  When they are, bump lastOutputAt
       // so the run does not look silent, and skip evaluation.
+      //
+      // Suppression is capped at 2× the suspicion threshold: if the run
+      // started more than 2× SUSPICION_THRESHOLD ago and we're still
+      // suppressing, fall through to normal evaluation so a permanently
+      // CPU-looping child cannot hide the parent forever.
+      const longestSuppressionAgeMs =
+        2 * ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS;
+      const silenceStartedAt =
+        run.lastOutputAt ??
+        run.processStartedAt ??
+        run.startedAt ??
+        run.createdAt;
+      const silenceAgeMs = silenceStartedAt
+        ? Math.max(0, now.getTime() - silenceStartedAt.getTime())
+        : 0;
       if (
         typeof run.processPid === "number" &&
         run.processPid > 0 &&
         SESSIONED_LOCAL_ADAPTERS.has(
-          (await getAgent(run.agentId))?.adapterType ?? "",
-        )
+          agentAdapterMap.get(run.agentId) ?? "",
+        ) &&
+        silenceAgeMs < longestSuppressionAgeMs
       ) {
         try {
           if (await hasActiveChildProcesses(run.processPid, { minCpuPercent: 5 })) {
@@ -1667,7 +1704,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               .update(heartbeatRuns)
               .set({
                 lastOutputAt: now,
-                lastOutputStream: "stderr",
                 updatedAt: now,
               })
               .where(eq(heartbeatRuns.id, run.id));
