@@ -303,15 +303,15 @@ export function issueRecoveryActionService(db: Db) {
 
   async function listStale(
     companyId: string,
-    options: { assigneeAgentId?: string } = {},
+    options: { ownerAgentId?: string } = {},
   ): Promise<IssueRecoveryAction[]> {
     const predicates = [
       eq(issueRecoveryActions.companyId, companyId),
       eq(issueRecoveryActions.stale, true),
       inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
     ];
-    if (options.assigneeAgentId) {
-      predicates.push(eq(issueRecoveryActions.ownerAgentId, options.assigneeAgentId));
+    if (options.ownerAgentId) {
+      predicates.push(eq(issueRecoveryActions.ownerAgentId, options.ownerAgentId));
     }
     const rows = await db
       .select()

@@ -2575,7 +2575,7 @@ export function issueRoutes(
       res.status(400).json({ error: "Query param 'stale=true' is required" });
       return;
     }
-    const actions = await recoveryActionsSvc.listStale(companyId, { assigneeAgentId });
+    const actions = await recoveryActionsSvc.listStale(companyId, { ownerAgentId: assigneeAgentId });
     res.json({ actions });
   });
 
