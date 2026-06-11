@@ -1772,6 +1772,8 @@ export function issueRoutes(
       status: string;
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
+      checkoutRunId: string | null;
+      executionRunId: string | null;
     },
   ) {
     if (req.actor.type !== "agent") return true;
@@ -1820,26 +1822,76 @@ export function issueRoutes(
     }
     const runId = requireAgentRunId(req, res);
     if (!runId) return false;
-    const ownership = await svc.assertCheckoutOwner(issue.id, actorAgentId, runId);
-    if (ownership.adoptedFromRunId) {
-      const actor = getActorInfo(req);
+    const actor = getActorInfo(req);
+    try {
+      const ownership = await svc.assertCheckoutOwner(issue.id, actorAgentId, runId);
+      if (ownership.checkoutLease?.action) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: ownership.checkoutLease.action,
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            previousCheckoutRunId: ownership.checkoutLease.previousCheckoutRunId,
+            checkoutRunId: ownership.checkoutLease.replacementRunId,
+            recoverMode: ownership.checkoutLease.recoverMode,
+            actorRunId: runId,
+            source: "ownership_check",
+            adoptedFromRunId: ownership.adoptedFromRunId,
+          },
+        });
+      } else if (ownership.adoptedFromRunId) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.checkout_lease_recovered",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            previousCheckoutRunId: ownership.adoptedFromRunId,
+            checkoutRunId: runId,
+            reason: "stale_checkout_run",
+          },
+        });
+      } else {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.checkout_lease_preserved",
+          entityType: "issue",
+          entityId: issue.id,
+          details: { checkoutRunId: runId },
+        });
+      }
+      return true;
+    } catch (error) {
       await logActivity(db, {
         companyId: issue.companyId,
         actorType: actor.actorType,
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
-        action: "issue.checkout_lock_adopted",
+        action: "issue.checkout_lease_rejected",
         entityType: "issue",
         entityId: issue.id,
         details: {
-          previousCheckoutRunId: ownership.adoptedFromRunId,
+          previousCheckoutRunId: issue.checkoutRunId,
           checkoutRunId: runId,
-          reason: "stale_checkout_run",
+          reason: "ownership_check_failed",
         },
       });
+      throw error;
     }
-    return true;
   }
 
   function isStatusOnlyCheapRecoveryContext(contextSnapshot: unknown) {
@@ -5775,8 +5827,67 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
-    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
+    let updated: Awaited<ReturnType<typeof svc.checkout>>;
+    try {
+      updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+    } catch (error) {
+      const checkoutLease = req.body.expectedStatuses.includes("in_progress")
+        ? {
+            action: "issue.checkout_lease_rejected" as const,
+            previousCheckoutRunId: issue.checkoutRunId,
+            replacementRunId: checkoutRunId,
+            recoverMode: "unknown" as const,
+          }
+        : null;
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.checkout_lease_rejected",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          requestedExpectedStatuses: req.body.expectedStatuses,
+          checkoutRunId,
+          previousCheckoutRunId: issue.checkoutRunId,
+          previousExecutionRunId: issue.executionRunId,
+          checkoutLease,
+          reason: "checkout_conflict",
+        },
+      });
+      throw error;
+    }
+
+    const checkoutLease = (updated as {
+      checkoutLease?: {
+        action: "issue.checkout_lease_preserved" | "issue.checkout_lease_recovered" | "issue.checkout_lease_rejected";
+        previousCheckoutRunId: string | null;
+        replacementRunId: string | null;
+        recoverMode: string;
+      };
+    }).checkoutLease;
+    if (checkoutLease) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: checkoutLease.action,
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          previousCheckoutRunId: checkoutLease.previousCheckoutRunId,
+          checkoutRunId: checkoutLease.replacementRunId,
+          recoverMode: checkoutLease.recoverMode,
+          requestedExpectedStatuses: req.body.expectedStatuses,
+          source: "issue.checkout",
+        },
+      });
+    }
 
     await logActivity(db, {
       companyId: issue.companyId,

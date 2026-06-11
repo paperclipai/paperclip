@@ -1669,10 +1669,27 @@ export function buildHostServices(
           params.actorAgentId,
           params.actorRunId,
         );
-        if (ownership.adoptedFromRunId) {
+        if (ownership.checkoutLease?.action) {
           await logPluginActivity({
             companyId,
-            action: "issue.checkout_lock_adopted",
+            action: ownership.checkoutLease.action,
+            entityType: "issue",
+            entityId: params.issueId,
+            actor: {
+              actorAgentId: params.actorAgentId,
+              actorRunId: params.actorRunId,
+            },
+            details: {
+              previousCheckoutRunId: ownership.checkoutLease.previousCheckoutRunId,
+              checkoutRunId: params.actorRunId,
+              recoverMode: ownership.checkoutLease.recoverMode,
+              source: "plugin_host_assert_checkout_owner",
+            },
+          });
+        } else if (ownership.adoptedFromRunId) {
+          await logPluginActivity({
+            companyId,
+            action: "issue.checkout_lease_recovered",
             entityType: "issue",
             entityId: params.issueId,
             actor: {
@@ -1683,6 +1700,23 @@ export function buildHostServices(
               previousCheckoutRunId: ownership.adoptedFromRunId,
               checkoutRunId: params.actorRunId,
               reason: "stale_checkout_run",
+            },
+          });
+        } else {
+          await logPluginActivity({
+            companyId,
+            action: "issue.checkout_lease_preserved",
+            entityType: "issue",
+            entityId: params.issueId,
+            actor: {
+              actorAgentId: params.actorAgentId,
+              actorRunId: params.actorRunId,
+            },
+            details: {
+              previousCheckoutRunId: ownership.checkoutRunId,
+              checkoutRunId: params.actorRunId,
+              recoverMode: "same_run_reuse",
+              source: "plugin_host_assert_checkout_owner",
             },
           });
         }
