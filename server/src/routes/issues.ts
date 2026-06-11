@@ -6683,17 +6683,6 @@ export function issueRoutes(
       }
     }
 
-    const comment = await svc.addComment(id, req.body.body, {
-      agentId: actor.agentId ?? undefined,
-      userId: actor.actorType === "user" ? actor.actorId : undefined,
-      runId: actor.runId,
-    }, {
-      authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
-      presentation: req.body.presentation ?? null,
-      metadata: req.body.metadata ?? null,
-      sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
-    });
-
     const currentExecutionState = parseIssueExecutionState(currentIssue.executionState);
     const currentExecutionPolicy = normalizeIssueExecutionPolicy(currentIssue.executionPolicy ?? null);
     const shouldAutoApproveReviewComment =
@@ -6701,6 +6690,11 @@ export function issueRoutes(
       currentExecutionState?.status === "pending" &&
       actorMatchesExecutionParticipant(actor, currentExecutionState.currentParticipant ?? null) &&
       isApprovalReviewComment(req.body.body);
+
+    // Persist the comment and the auto-approval state transition atomically when both apply.
+    // Without a single transaction, a 422 (or any error) thrown by the status update after the
+    // comment is inserted would leave an orphan comment without the corresponding state change.
+    let comment: Awaited<ReturnType<typeof svc.addComment>>;
     if (shouldAutoApproveReviewComment) {
       const transition = applyIssueExecutionPolicyTransition({
         issue: currentIssue,
@@ -6733,32 +6727,51 @@ export function issueRoutes(
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
       };
 
-      const updatedIssue = transition.decision && decisionId
-        ? await db.transaction(async (tx) => {
-          const updated = await svc.update(id, updatePatch, tx);
-          if (!updated) return null;
+      const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
+      const commentOptions = {
+        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        presentation: req.body.presentation ?? null,
+        metadata: req.body.metadata ?? null,
+        sourceTrust,
+      };
+      const txResult = await db.transaction(async (tx) => {
+        const insertedComment = await svc.addComment(
+          id,
+          req.body.body,
+          {
+            agentId: actor.agentId ?? undefined,
+            userId: actor.actorType === "user" ? actor.actorId : undefined,
+            runId: actor.runId,
+          },
+          commentOptions,
+          tx,
+        );
+        const updated = await svc.update(id, updatePatch, tx);
+        if (!updated) return null;
 
+        if (transition.decision && decisionId) {
           await tx.insert(issueExecutionDecisions).values({
             id: decisionId,
             companyId: updated.companyId,
             issueId: updated.id,
-            stageId: transition.decision!.stageId,
-            stageType: transition.decision!.stageType,
+            stageId: transition.decision.stageId,
+            stageType: transition.decision.stageType,
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
-            outcome: transition.decision!.outcome,
-            body: transition.decision!.body,
+            outcome: transition.decision.outcome,
+            body: transition.decision.body,
             createdByRunId: actor.runId ?? null,
           });
+        }
 
-          return updated;
-        })
-        : await svc.update(id, updatePatch);
-      if (!updatedIssue) {
+        return { comment: insertedComment, issue: updated };
+      });
+      if (!txResult) {
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      currentIssue = updatedIssue;
+      comment = txResult.comment;
+      currentIssue = txResult.issue;
       commentDecisionStageWakeup = buildExecutionStageWakeup({
         issueId: currentIssue.id,
         previousState: currentExecutionState,
@@ -6766,6 +6779,17 @@ export function issueRoutes(
         interruptedRunId,
         requestedByActorType: actor.actorType,
         requestedByActorId: actor.actorId,
+      });
+    } else {
+      comment = await svc.addComment(id, req.body.body, {
+        agentId: actor.agentId ?? undefined,
+        userId: actor.actorType === "user" ? actor.actorId : undefined,
+        runId: actor.runId,
+      }, {
+        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        presentation: req.body.presentation ?? null,
+        metadata: req.body.metadata ?? null,
+        sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
       });
     }
 

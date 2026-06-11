@@ -5895,12 +5895,13 @@ export function issueService(db: Db) {
         sourceTrust?: typeof issueComments.$inferInsert.sourceTrust;
         createdAt?: Date | string | null;
       },
+      dbOrTx: any = db,
     ) => {
-      const issue = await db
+      const issue = await dbOrTx
         .select({ companyId: issues.companyId })
         .from(issues)
         .where(eq(issues.id, issueId))
-        .then((rows) => rows[0] ?? null);
+        .then((rows: Array<{ companyId: string }>) => rows[0] ?? null);
 
       if (!issue) throw notFound("Issue not found");
 
@@ -5915,7 +5916,7 @@ export function issueService(db: Db) {
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
-      const [comment] = await db
+      const [comment] = await dbOrTx
         .insert(issueComments)
         .values({
           companyId: issue.companyId,
@@ -5933,7 +5934,7 @@ export function issueService(db: Db) {
         .returning();
 
       // Update issue's updatedAt so comment activity is reflected in recency sorting
-      await db
+      await dbOrTx
         .update(issues)
         .set({ updatedAt: new Date() })
         .where(eq(issues.id, issueId));

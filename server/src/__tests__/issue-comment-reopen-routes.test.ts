@@ -2023,6 +2023,76 @@ describe.sequential("issue comment reopen routes", () => {
     });
   });
 
+  it("rolls back the comment when the auto-approval status transition fails", async () => {
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [{ type: "agent", agentId: reviewerAgentId }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: reviewerAgentId,
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    const reviewBody = "## Review: PAP-580 - APPROVED\n\nLooks good.";
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-review-atomic",
+      issueId: issue.id,
+      companyId: issue.companyId,
+      body: reviewBody,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: reviewerAgentId,
+      authorUserId: null,
+    });
+    const { unprocessable } = await import("../errors.js");
+    mockIssueService.update.mockRejectedValue(unprocessable("Issue can only have one assignee"));
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: reviewerAgentId,
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "run-review-atomic",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: reviewBody });
+
+    // The route must propagate the 422 (no successful 201) and must insert the
+    // comment inside the same transaction as the status update so the comment
+    // rolls back when the status update fails.
+    expect(res.status).toBe(422);
+    expect(mockDb.transaction).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      reviewBody,
+      expect.objectContaining({ agentId: reviewerAgentId }),
+      expect.any(Object),
+      mockTx,
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("coerces executor handoff patches into workflow-controlled review wakes", async () => {
     const policy = await normalizePolicy({
       stages: [
