@@ -242,6 +242,30 @@ export function IssueDocumentAnnotations({
     [allThreads],
   );
 
+  const fallbackDesktopPanelFrame = useMemo(() => {
+    if (!panelOpen || isMobile || desktopPanelFrame || typeof window === "undefined") return null;
+    const width = Math.min(
+      DESKTOP_ANNOTATION_PANEL_WIDTH,
+      Math.max(
+        DESKTOP_ANNOTATION_PANEL_MIN_WIDTH,
+        window.innerWidth - DESKTOP_ANNOTATION_PANEL_VIEWPORT_MARGIN * 2,
+      ),
+    );
+    return {
+      left: Math.max(
+        DESKTOP_ANNOTATION_PANEL_VIEWPORT_MARGIN,
+        window.innerWidth - width - DESKTOP_ANNOTATION_PANEL_VIEWPORT_MARGIN,
+      ),
+      top: DESKTOP_ANNOTATION_PANEL_VIEWPORT_MARGIN,
+      maxHeight: Math.max(
+        240,
+        window.innerHeight - DESKTOP_ANNOTATION_PANEL_VIEWPORT_MARGIN * 2,
+      ),
+      width,
+    };
+  }, [desktopPanelFrame, isMobile, panelOpen]);
+  const renderedDesktopPanelFrame = desktopPanelFrame ?? fallbackDesktopPanelFrame;
+
   const annotationPanel = panelOpen ? (
     <DocumentAnnotationPanel
       open={panelOpen}
@@ -272,7 +296,7 @@ export function IssueDocumentAnnotations({
       newCommentDisabled={newCommentDisabled}
       newCommentDisabledReason={newCommentDisabledReason}
       isMobile={isMobile}
-      desktopWidth={desktopPanelFrame?.width}
+      desktopWidth={renderedDesktopPanelFrame?.width}
       agentMap={agentMap}
       userProfileMap={userProfileMap}
     />
@@ -307,15 +331,15 @@ export function IssueDocumentAnnotations({
           />
         ) : null}
       </section>
-      {panelOpen && !isMobile && desktopPanelFrame ? (
+      {panelOpen && !isMobile && renderedDesktopPanelFrame ? (
         <div
           data-testid="document-annotation-panel-anchor"
           className="pointer-events-auto fixed z-[60] hidden lg:block"
           style={{
-            left: desktopPanelFrame.left,
-            maxHeight: desktopPanelFrame.maxHeight,
-            top: desktopPanelFrame.top,
-            width: desktopPanelFrame.width,
+            left: renderedDesktopPanelFrame.left,
+            maxHeight: renderedDesktopPanelFrame.maxHeight,
+            top: renderedDesktopPanelFrame.top,
+            width: renderedDesktopPanelFrame.width,
           }}
         >
           {annotationPanel}
