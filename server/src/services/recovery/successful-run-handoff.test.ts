@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { issueCommentMetadataSchema } from "@paperclipai/shared";
 import {
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
@@ -244,6 +245,34 @@ describe("successful run handoff decision", () => {
         ]),
       }),
     ]));
+  });
+
+  it("truncates overlong issue titles to satisfy metadata validation", () => {
+    const longTitle = `${"A".repeat(300)} tail`;
+    const notice = buildSuccessfulRunHandoffRequiredNotice({
+      issue: {
+        id: "11111111-1111-4111-8111-111111111111",
+        identifier: "PAP-1",
+        title: longTitle,
+        status: "in_progress",
+      } as any,
+      run: {
+        id: "22222222-2222-4222-8222-222222222222",
+        status: "succeeded",
+      } as any,
+      agent: {
+        id: "33333333-3333-4333-8333-333333333333",
+        name: "CodexCoder",
+      } as any,
+      detectedProgressSummary: "Run produced concrete action evidence: 1 issue comment(s)",
+    });
+
+    expect(() => issueCommentMetadataSchema.parse(notice.metadata)).not.toThrow();
+    const row = notice.metadata.sections[0].rows[0];
+    expect(row.type).toBe("issue_link");
+    if (row.type !== "issue_link") return;
+    expect(row.title).toHaveLength(240);
+    expect(row.title?.endsWith("...")).toBe(true);
   });
 
   it("builds the exhausted system notice with recovery metadata", () => {

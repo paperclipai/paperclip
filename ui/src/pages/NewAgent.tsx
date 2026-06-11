@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
@@ -33,31 +33,11 @@ import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { TrustPresetSection } from "../components/TrustPresetSection";
 import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
 import {
-  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-  DEFAULT_CODEX_LOCAL_MODEL,
-} from "@paperclipai/adapter-codex-local";
-import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
-import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
-import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
-
-function createValuesForAdapterType(
-  adapterType: CreateConfigValues["adapterType"],
-): CreateConfigValues {
-  const { adapterType: _discard, ...defaults } = defaultCreateValues;
-  const nextValues: CreateConfigValues = { ...defaults, adapterType };
-  if (adapterType === "codex_local") {
-    nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
-    nextValues.dangerouslyBypassSandbox =
-      DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
-  } else if (adapterType === "gemini_local") {
-    nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
-  } else if (adapterType === "cursor") {
-    nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
-  } else if (adapterType === "opencode_local") {
-    nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
-  }
-  return nextValues;
-}
+  buildNewAgentDefaultCreateValues,
+  createValuesForAdapterType,
+  resolveNewAgentDefaultAdapterType,
+} from "../lib/new-agent-create-values";
+import { isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 
 export function NewAgent() {
   const { selectedCompanyId } = useCompany();
@@ -76,6 +56,7 @@ export function NewAgent() {
     buildPermissionsForTrustPreset(null, "standard"),
   );
   const [selectedSkillKeys, setSelectedSkillKeys] = useState<string[]>([]);
+  const adapterTouchedRef = useRef(false);
   const [roleOpen, setRoleOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [testAgentAction, setTestAgentAction] = useState<(() => void) | null>(null);
@@ -118,6 +99,10 @@ export function NewAgent() {
 
   const isFirstAgent = !agents || agents.length === 0;
   const effectiveRole = isFirstAgent ? "ceo" : role;
+  const defaultAdapterType = resolveNewAgentDefaultAdapterType({
+    companyAgents: agents ?? null,
+    presetAdapterType,
+  });
 
   useEffect(() => {
     setBreadcrumbs([
@@ -137,11 +122,25 @@ export function NewAgent() {
     const requested = presetAdapterType;
     if (!requested) return;
     if (!isValidAdapterType(requested)) return;
+    adapterTouchedRef.current = true;
     setConfigValues((prev) => {
       if (prev.adapterType === requested) return prev;
       return createValuesForAdapterType(requested as CreateConfigValues["adapterType"]);
     });
   }, [presetAdapterType]);
+
+  useEffect(() => {
+    if (presetAdapterType) return;
+    if (adapterTouchedRef.current) return;
+    if (!agents) return;
+    if (defaultAdapterType === defaultCreateValues.adapterType) return;
+    setConfigValues((prev) => {
+      if (prev.adapterType === defaultAdapterType) return prev;
+      return buildNewAgentDefaultCreateValues({
+        companyAgents: agents,
+      });
+    });
+  }, [agents, defaultAdapterType, presetAdapterType]);
 
   const createAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
@@ -302,7 +301,12 @@ export function NewAgent() {
         <AgentConfigForm
           mode="create"
           values={configValues}
-          onChange={(patch) => setConfigValues((prev) => ({ ...prev, ...patch }))}
+          onChange={(patch) => {
+            if (Object.keys(patch).length > 0) {
+              adapterTouchedRef.current = true;
+            }
+            setConfigValues((prev) => ({ ...prev, ...patch }));
+          }}
           onTestActionChange={handleTestAgentActionChange}
           onTestActionStateChange={handleTestAgentStateChange}
           onTestFeedbackChange={handleTestAgentFeedbackChange}

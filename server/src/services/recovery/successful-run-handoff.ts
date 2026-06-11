@@ -93,6 +93,14 @@ function metadataText(value: unknown, fallback = "unknown") {
   return resolved.length > 2000 ? `${resolved.slice(0, 1997)}...` : resolved;
 }
 
+function boundedMetadataTitle(value: unknown, maxLength: number, fallback = "unknown") {
+  const text = typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
+  const resolved = text.length > 0 ? text : fallback;
+  if (resolved.length <= maxLength) return resolved;
+  if (maxLength <= 3) return resolved.slice(0, maxLength);
+  return `${resolved.slice(0, maxLength - 3)}...`;
+}
+
 function keyValueRow(label: string, value: unknown): IssueCommentMetadata["sections"][number]["rows"][number] {
   return { type: "key_value", label, value: metadataText(value) };
 }
@@ -107,7 +115,7 @@ function issueLinkRow(
     label,
     issueId: issue.id,
     identifier: issue.identifier,
-    title: issue.title,
+    title: boundedMetadataTitle(issue.title, 240),
   };
 }
 
@@ -116,7 +124,7 @@ function runLinkRow(
   run: NullableNoticeRun,
 ): IssueCommentMetadata["sections"][number]["rows"][number] {
   if (!run) return keyValueRow(label, "unknown");
-  return { type: "run_link", label, runId: run.id, title: run.status };
+  return { type: "run_link", label, runId: run.id, title: boundedMetadataTitle(run.status, 160) };
 }
 
 function agentLinkRow(
@@ -124,7 +132,7 @@ function agentLinkRow(
   agent: NullableNoticeAgent,
 ): IssueCommentMetadata["sections"][number]["rows"][number] {
   if (!agent) return keyValueRow(label, "unknown");
-  return { type: "agent_link", label, agentId: agent.id, name: agent.name };
+  return { type: "agent_link", label, agentId: agent.id, name: boundedMetadataTitle(agent.name, 160) };
 }
 
 function systemNoticePresentation(input: {
