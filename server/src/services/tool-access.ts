@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gte, inArray, lt, ne } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, max, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -3321,7 +3321,33 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         .from(toolConnections)
         .where(eq(toolConnections.companyId, companyId))
         .orderBy(desc(toolConnections.updatedAt));
-      return rows.map(toConnection);
+      const connections = rows.map(toConnection);
+      if (connections.length === 0) return connections;
+      // Enrich with "last used" = most recent tool-call event per connection so the
+      // prosumer Apps list can surface a staleness signal without an N+1 fan-out.
+      const lastUsedRows = await db
+        .select({
+          connectionId: toolCallEvents.connectionId,
+          lastUsedAt: max(toolCallEvents.createdAt),
+        })
+        .from(toolCallEvents)
+        .where(
+          and(
+            eq(toolCallEvents.companyId, companyId),
+            inArray(
+              toolCallEvents.connectionId,
+              connections.map((connection) => connection.id),
+            ),
+          ),
+        )
+        .groupBy(toolCallEvents.connectionId);
+      const lastUsedByConnection = new Map(
+        lastUsedRows.map((row) => [row.connectionId, row.lastUsedAt]),
+      );
+      for (const connection of connections) {
+        connection.lastUsedAt = lastUsedByConnection.get(connection.id) ?? null;
+      }
+      return connections;
     },
 
     createConnection: async (companyId: string, input: CreateToolConnection): Promise<ToolConnection> => {

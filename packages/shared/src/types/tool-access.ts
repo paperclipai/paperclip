@@ -112,6 +112,8 @@ export interface ToolConnection {
   lastHealthAt?: Date | string | null;
   lastCatalogRefreshAt?: Date | string | null;
   lastError: string | null;
+  /** Most recent tool-call event timestamp for this connection; only populated by list endpoints. */
+  lastUsedAt?: Date | string | null;
   enabled: boolean;
   createdByAgentId: string | null;
   createdByUserId: string | null;

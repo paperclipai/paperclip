@@ -2002,4 +2002,52 @@ describeEmbeddedPostgres("tool access service", () => {
       lastError: "revoked token",
     });
   });
+
+  it("enriches listConnections with lastUsedAt from the most recent tool-call event", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+
+    const used = await service.createConnection(company.id, {
+      name: "Used remote",
+      transport: "remote_http",
+      config: { url: "https://used.example/mcp" },
+      enabled: true,
+      status: "active",
+    });
+    const unused = await service.createConnection(company.id, {
+      name: "Unused remote",
+      transport: "remote_http",
+      config: { url: "https://unused.example/mcp" },
+      enabled: true,
+      status: "active",
+    });
+
+    const older = new Date("2026-06-01T00:00:00.000Z");
+    const newest = new Date("2026-06-09T12:30:00.000Z");
+    await db.insert(toolCallEvents).values([
+      {
+        companyId: company.id,
+        eventType: "call_completed",
+        connectionId: used.id,
+        toolName: "search_notes",
+        outcome: "success",
+        createdAt: older,
+      },
+      {
+        companyId: company.id,
+        eventType: "call_completed",
+        connectionId: used.id,
+        toolName: "search_notes",
+        outcome: "success",
+        createdAt: newest,
+      },
+    ]);
+
+    const connections = await service.listConnections(company.id);
+    const usedRow = connections.find((connection) => connection.id === used.id);
+    const unusedRow = connections.find((connection) => connection.id === unused.id);
+
+    expect(new Date(usedRow!.lastUsedAt!).toISOString()).toBe(newest.toISOString());
+    expect(unusedRow!.lastUsedAt).toBeNull();
+  });
 });
