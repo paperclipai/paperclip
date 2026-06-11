@@ -87,4 +87,4 @@ VOLUME ["/paperclip"]
 EXPOSE 3100
 
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+CMD ["sh", "-lc", "pnpm paperclipai auth bootstrap-ceo || true; exec node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js"]
