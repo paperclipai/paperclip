@@ -76,6 +76,39 @@ describe("createInstructionApplyTask", () => {
     );
   });
 
+  it("quote-prefixes every line of a multi-line note", async () => {
+    const { db } = createDbStub([[agentRow], []]);
+
+    await createInstructionApplyTask(db, {
+      companyId: "company-1",
+      approvalId: "approval-note",
+      decidedByUserId: "board",
+      payload: { ...bundlePayload, note: "first line\nsecond line" },
+    });
+
+    const [, data] = mockIssueService.create.mock.calls[0];
+    expect(data.description).toContain("> first line\n> second line");
+  });
+
+  it("widens the code fence past the longest backtick run in file content", async () => {
+    const { db } = createDbStub([[agentRow], []]);
+    const content = "````markdown\nnested four-backtick fence\n````\n";
+
+    await createInstructionApplyTask(db, {
+      companyId: "company-1",
+      approvalId: "approval-fence",
+      decidedByUserId: "board",
+      payload: {
+        agentId: "agent-1",
+        bundle: { files: [{ path: "AGENTS.md", content }] },
+      },
+    });
+
+    const [, data] = mockIssueService.create.mock.calls[0];
+    expect(data.description).toContain("`````markdown\n````markdown");
+    expect(data.description).toContain("````\n`````");
+  });
+
   it("reuses an existing open apply task for the same agent and bundle fingerprint", async () => {
     const { db } = createDbStub([[agentRow], [{ id: "existing-1" }]]);
 

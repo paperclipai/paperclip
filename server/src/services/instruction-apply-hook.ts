@@ -33,6 +33,11 @@ export interface InstructionApplyTaskResult {
   created: boolean;
 }
 
+/**
+ * Extracts the approved bundle files from an instruction-generation approval payload.
+ * Two payload shapes are supported: the canonical `{ bundle: { files: [...] } }` and a
+ * flat `{ files: [...] }` fallback for payloads authored without the bundle wrapper.
+ */
 function parseBundleFiles(payload: Record<string, unknown>): InstructionBundleFile[] | null {
   const bundle = payload.bundle;
   const rawFiles =
@@ -75,20 +80,31 @@ function buildApplyTaskDescription(input: {
 }): string {
   const { agentId, agentName, approvalId, fingerprint, files, note } = input;
   const fileSections = files
-    .map(
-      (file) =>
+    .map((file) => {
+      // Fence must be longer than any backtick run inside the content or it closes early
+      const longestBacktickRun = file.content
+        .match(/`+/g)
+        ?.reduce((max, run) => Math.max(max, run.length), 0) ?? 0;
+      const fence = "`".repeat(Math.max(4, longestBacktickRun + 1));
+      return (
         `### \`${file.path}\`\n\n` +
-        // 4-backtick fence so bundle content containing ``` renders intact
-        "````markdown\n" +
+        fence +
+        "markdown\n" +
         file.content +
         (file.content.endsWith("\n") ? "" : "\n") +
-        "````",
-    )
+        fence
+      );
+    })
     .join("\n\n");
 
   return [
     `Board-authenticated apply task auto-created from instruction-generation approval \`${approvalId}\` for agent **${agentName}** (\`${agentId}\`).`,
-    note ? `> ${note}` : null,
+    note
+      ? note
+          .split("\n")
+          .map((line) => `> ${line}`)
+          .join("\n")
+      : null,
     "## How to execute (board-authenticated callers only)",
     [
       "For each approved file below, write it through the gated route:",
