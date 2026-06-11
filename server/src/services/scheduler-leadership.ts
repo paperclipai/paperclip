@@ -195,3 +195,18 @@ export function createSchedulerLeadership(opts: SchedulerLeadershipOptions): Sch
 
   return { start, stop, isLeader: () => leader };
 }
+
+// ---------------------------------------------------------------------------
+// Health registry
+// ---------------------------------------------------------------------------
+
+let healthHandle: SchedulerLeadership | null = null;
+
+/** Registered at startup so /api/health can report leadership state (consumed in routes/health.ts). */
+export function registerSchedulerLeadershipForHealth(handle: SchedulerLeadership): void {
+  healthHandle = handle;
+}
+
+export function getRegisteredSchedulerLeadership(): SchedulerLeadership | null {
+  return healthHandle;
+}

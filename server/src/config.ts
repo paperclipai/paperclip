@@ -329,6 +329,9 @@ export function loadConfig(): Config {
     storageS3ForcePathStyle,
     feedbackExportBackendUrl,
     feedbackExportBackendToken,
+    // Participate in scheduler leader election (every enabled replica is a
+    // candidate; only the elected leader runs the heartbeat/routines
+    // scheduler). false = traffic-only replica, never a candidate.
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
