@@ -82,7 +82,7 @@ export function assertCompanyAccess(req: Request, companyId: string) {
  *
  * Using `assertCompanyAccess` in that position leaks resource existence
  * across tenants: a 404 means "no such resource" while a 403 means "exists
- * in another tenant". An unauthenticated attacker can enumerate IDs and
+ * in another tenant". Any authenticated user can enumerate IDs and
  * distinguish the two responses.
  *
  * The recommended pattern is:
@@ -101,11 +101,15 @@ export function assertCompanyAccess(req: Request, companyId: string) {
  * Routes that need those checks for authorized tenants should still call
  * `assertCompanyAccess` after the 404 gate — the oracle concern is only
  * about the existence check.
+ *
+ * The company-scope semantics must stay in lockstep with
+ * `assertCompanyAccess`: in particular, signed-in instance admins do NOT
+ * get blanket access to companies they are not a member of.
  */
 export function hasCompanyAccess(req: Request, companyId: string): boolean {
   if (req.actor.type === "none") return false;
   if (req.actor.type === "agent") return req.actor.companyId === companyId;
-  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
+  if (req.actor.source === "local_implicit") return true;
   return (req.actor.companyIds ?? []).includes(companyId);
 }
 

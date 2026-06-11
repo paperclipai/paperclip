@@ -147,7 +147,7 @@ vi.mock("../routes/authz.js", async () => {
   function hasCompanyAccess(req: Express.Request, expectedCompanyId: string): boolean {
     if (req.actor.type === "none") return false;
     if (req.actor.type === "agent") return req.actor.companyId === expectedCompanyId;
-    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
+    if (req.actor.source === "local_implicit") return true;
     return (req.actor.companyIds ?? []).includes(expectedCompanyId);
   }
 
