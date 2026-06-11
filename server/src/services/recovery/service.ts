@@ -8,6 +8,7 @@ import {
   type IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "@paperclipai/shared";
 import {
+  activityLog,
   agents,
   agentWakeupRequests,
   approvals,
@@ -16,9 +17,11 @@ import {
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   issueApprovals,
+  issueComments,
   issueRelations,
   issueThreadInteractions,
   issues,
+  routineRuns,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -1615,6 +1618,110 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
+  async function suppressSupersededRoutineExecutionRecovery(issue: typeof issues.$inferSelect) {
+    if (issue.originKind !== "routine_execution" || !issue.originRunId) return null;
+
+    const currentRun = await db
+      .select()
+      .from(routineRuns)
+      .where(and(
+        eq(routineRuns.id, issue.originRunId),
+        eq(routineRuns.companyId, issue.companyId),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!currentRun?.dispatchFingerprint) return null;
+
+    const newerCompletedRun = await db
+      .select({
+        id: routineRuns.id,
+        linkedIssueId: routineRuns.linkedIssueId,
+        issueIdentifier: issues.identifier,
+        issueTitle: issues.title,
+      })
+      .from(routineRuns)
+      .leftJoin(issues, eq(issues.id, routineRuns.linkedIssueId))
+      .where(and(
+        eq(routineRuns.companyId, currentRun.companyId),
+        eq(routineRuns.routineId, currentRun.routineId),
+        eq(routineRuns.dispatchFingerprint, currentRun.dispatchFingerprint),
+        eq(routineRuns.status, "completed"),
+        gt(routineRuns.triggeredAt, currentRun.triggeredAt),
+      ))
+      .orderBy(desc(routineRuns.triggeredAt), desc(routineRuns.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!newerCompletedRun) return null;
+
+    const newerIssueLabel = newerCompletedRun.issueIdentifier ??
+      newerCompletedRun.issueTitle ??
+      newerCompletedRun.linkedIssueId ??
+      newerCompletedRun.id;
+    const message = `Routine execution superseded by a newer completed routine run (${newerIssueLabel}). Automatic recovery was suppressed to avoid acting on stale historical work.`;
+    const now = new Date();
+
+    const [updated] = await db.transaction(async (tx) => {
+      await tx
+        .update(routineRuns)
+        .set({
+          status: "superseded",
+          coalescedIntoRunId: newerCompletedRun.id,
+          failureReason: message,
+          completedAt: currentRun.completedAt ?? now,
+          updatedAt: now,
+        })
+        .where(eq(routineRuns.id, currentRun.id));
+
+      const [cancelledIssue] = await tx
+        .update(issues)
+        .set({
+          status: "cancelled",
+          completedAt: null,
+          cancelledAt: now,
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(eq(issues.id, issue.id))
+        .returning();
+
+      await tx.insert(issueComments).values({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        authorAgentId: null,
+        authorUserId: null,
+        authorType: "system",
+        createdByRunId: null,
+        body: message,
+      });
+
+      await tx.insert(activityLog).values({
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          status: "cancelled",
+          source: "recovery.suppress_superseded_routine_execution",
+          routineRunId: currentRun.id,
+          supersededByRunId: newerCompletedRun.id,
+          supersededByIssueId: newerCompletedRun.linkedIssueId,
+        },
+      });
+
+      return [cancelledIssue];
+    });
+
+    return updated ?? null;
+  }
+
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: "todo" | "in_progress";
@@ -1630,6 +1737,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         latestRun: input.latestRun,
       });
     }
+
+    const supersededRoutineExecution = await suppressSupersededRoutineExecutionRecovery(input.issue);
+    if (supersededRoutineExecution) return supersededRoutineExecution;
 
     const recoveryIssue = await ensureStrandedIssueRecoveryIssue({
       issue: input.issue,

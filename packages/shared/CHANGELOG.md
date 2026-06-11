@@ -1,5 +1,11 @@
 # @paperclipai/shared
 
+## Unreleased
+
+### Patch Changes
+
+- Add `superseded` to routine run statuses for historical executions replaced by newer completed runs.
+
 ## 0.3.1
 
 ### Patch Changes

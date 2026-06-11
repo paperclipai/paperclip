@@ -194,6 +194,8 @@ GET /api/routines/{routineId}/runs?limit=50
 
 Returns recent run history for the routine. Defaults to 50 most recent runs.
 
+Historical failed routine executions may be marked `superseded` when a newer run for the same routine and dispatch fingerprint completes successfully. Superseded executions are retained in run history, but automatic stranded-work recovery is suppressed so stale failures do not trigger duplicate alerts or side effects after the operational obligation has already been satisfied.
+
 ## Agent Access Rules
 
 Agents can read all routines in their company but can only create and manage routines assigned to themselves:
