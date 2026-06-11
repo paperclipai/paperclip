@@ -984,6 +984,42 @@ export function issueRoutes(
     return resolveActorSourceTrustForIssue({ db, issue, actor });
   }
 
+  function hasExplicitIssueWorkspaceCreateSelection(input: Record<string, unknown>) {
+    return input.parentId !== undefined ||
+      input.inheritExecutionWorkspaceFromIssueId !== undefined ||
+      input.projectWorkspaceId !== undefined ||
+      input.executionWorkspaceId !== undefined ||
+      input.executionWorkspacePreference !== undefined ||
+      input.executionWorkspaceSettings !== undefined;
+  }
+
+  async function resolveRunIssueWorkspaceInheritanceSource(
+    companyId: string,
+    actor: ReturnType<typeof getActorInfo>,
+  ): Promise<string | null> {
+    if (actor.actorType !== "agent" || !actor.agentId || !actor.runId) return null;
+    const run = await db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.id, actor.runId),
+        eq(heartbeatRuns.companyId, companyId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!run || run.agentId !== actor.agentId) return null;
+    const context = run.contextSnapshot && typeof run.contextSnapshot === "object"
+      ? run.contextSnapshot as Record<string, unknown>
+      : null;
+    if (!context || !readNonEmptyString(context.executionWorkspaceId)) return null;
+    const paperclipIssue = context.paperclipIssue && typeof context.paperclipIssue === "object"
+      ? context.paperclipIssue as Record<string, unknown>
+      : null;
+    return readNonEmptyString(context.issueId) ?? readNonEmptyString(paperclipIssue?.id);
+  }
+
   async function resolveAgentTrustForIssue(
     input: {
       agentId: string | null | undefined;
@@ -4205,9 +4241,16 @@ export function issueRoutes(
       companyId,
       req.body.assigneeAgentId as string | null | undefined,
     );
+    const actor = getActorInfo(req);
+    const runWorkspaceInheritanceSourceIssueId = hasExplicitIssueWorkspaceCreateSelection(req.body)
+      ? null
+      : await resolveRunIssueWorkspaceInheritanceSource(companyId, actor);
     const createBody = {
       ...req.body,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
+      ...(runWorkspaceInheritanceSourceIssueId
+        ? { inheritExecutionWorkspaceFromIssueId: runWorkspaceInheritanceSourceIssueId }
+        : {}),
     };
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, createBody))) return;
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
@@ -4224,7 +4267,6 @@ export function issueRoutes(
     }
     await assertIssueEnvironmentSelection(companyId, createBody.executionWorkspaceSettings?.environmentId);
 
-    const actor = getActorInfo(req);
     const executionPolicy = applyActorMonitorScheduledBy(
       normalizeIssueExecutionPolicy(createBody.executionPolicy),
       actor.actorType,
