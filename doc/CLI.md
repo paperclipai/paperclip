@@ -110,6 +110,50 @@ Notes:
 - Deletion is server-gated by `PAPERCLIP_ENABLE_COMPANY_DELETION`.
 - With agent authentication, company deletion is company-scoped. Use the current company ID/prefix (for example via `--company-id` or `PAPERCLIP_COMPANY_ID`), not another company.
 
+### Per-company config flags
+
+Per-company settings (for example `closureGateFixSha`) live on the company
+record and are set with `PATCH /api/companies/{companyId}`. The CLI does
+not have a dedicated `update` subcommand yet, so use `curl` (or the API
+client of your choice) against the running server:
+
+```sh
+# Enable strict Fix-SHA enforcement on a company
+curl -X PATCH "$PAPERCLIP_API_URL/api/companies/$COMPANY_ID" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "closureGateFixSha": "enforce" }'
+
+# Loosen to advisory (logs warnings but does not block)
+curl -X PATCH "$PAPERCLIP_API_URL/api/companies/$COMPANY_ID" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "closureGateFixSha": "advisory" }'
+
+# Turn the gate off (default for new companies)
+curl -X PATCH "$PAPERCLIP_API_URL/api/companies/$COMPANY_ID" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "closureGateFixSha": "off" }'
+```
+
+`closureGateFixSha` is the per-company Fix-SHA closure-gate mode. It
+governs what happens when an agent PATCHes an issue to `status: "done"`
+without a `Fix-SHA: <40-hex-sha>` line in the closure comment, or with
+a SHA that is not reachable on the issue's configured remote branch.
+
+| Mode        | Missing Fix-SHA                           | Unreachable Fix-SHA                       | Off-actor (board) |
+|-------------|-------------------------------------------|-------------------------------------------|-------------------|
+| `off`       | Allowed (no gate)                         | Allowed (no gate)                         | Allowed           |
+| `advisory`  | Allowed; warning logged with `reason`     | Allowed; warning logged with `reason`     | Allowed           |
+| `enforce`   | 422 (`reason: "missing_fix_sha"`)         | 422 (`reason: "unreachable_sha"`)         | Allowed           |
+
+Defaults to `off` for new companies. The gate applies to **all** agent
+roles on the company (engineer, manager, …) when set to `enforce`, not
+just engineers — board (user) actors are never gated. See
+[AGENTS.md §7.4](../AGENTS.md#74-fix-sha-closure-gate) for the agent
+contract.
+
 ## Issue Commands
 
 ```sh

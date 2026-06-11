@@ -135,6 +135,38 @@ pnpm build
 
 If anything cannot be run, explicitly report what was not run and why.
 
+### 7.4 Fix-SHA Closure Gate
+
+When a company has `closureGateFixSha` set to `enforce` on its record, an
+agent (any role — engineer, manager, …) cannot PATCH an issue to
+`status: "done"` without including a `Fix-SHA: <40-hex-sha>` line in
+the closure comment (optionally followed by `Fix-Target: <branch>`).
+If the SHA is not reachable on the issue's configured remote branch,
+the request is rejected with `422 Unprocessable Entity`.
+
+The gate has three modes, settable per company via
+`PATCH /api/companies/{companyId}` with `{ "closureGateFixSha": "..." }`:
+
+- `off` (default) — no enforcement, no warnings.
+- `advisory` — closure is allowed regardless, but missing / unreachable
+  SHAs are logged as warnings.
+- `enforce` — closure is rejected with `422` and a `details.reason`
+  of `missing_fix_sha` or `unreachable_sha`.
+
+Board (user) actors are never gated. The contract and the
+mode-behavior table live in [doc/CLI.md → Per-company config flags](doc/CLI.md#per-company-config-flags).
+
+Agent contract when `enforce` is on:
+
+- Include a `Fix-SHA: <40-hex-sha>` line in your closure comment body.
+- Optionally include `Fix-Target: <branch>` on the next line; defaults
+  to `main` if omitted.
+- The SHA must be reachable on `<repo-url>@<target>` of the issue's
+  configured execution workspace (`git ls-remote --quiet` is used under
+  the hood, results are cached for 60s).
+- If you have no comment body, the gate falls back to the most recent
+  persisted comment on the issue (desc, limit 1).
+
 ## 8. API and Auth Expectations
 
 - Base path: `/api`

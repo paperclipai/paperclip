@@ -151,6 +151,12 @@ export const ISSUE_WORK_MODES = ["standard", "planning"] as const;
 export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
 
+export const CLOSURE_GATE_FIX_SHA_MODES = ["off", "advisory", "enforce"] as const;
+export type ClosureGateFixShaMode = (typeof CLOSURE_GATE_FIX_SHA_MODES)[number];
+export const DEFAULT_CLOSURE_GATE_FIX_SHA_MODE: ClosureGateFixShaMode = "off";
+export const CLOSURE_GATE_FIX_SHA_LINE_REGEX = /^Fix-SHA:[ \t]*([0-9a-f]{40})[ \t]*(?:\nFix-Target:[ \t]*([^\n]+))?/im;
+export const CLOSURE_GATE_VERIFY_CACHE_TTL_MS = 60_000;
+
 export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system"] as const;
 export type IssueCommentAuthorType = (typeof ISSUE_COMMENT_AUTHOR_TYPES)[number];
 

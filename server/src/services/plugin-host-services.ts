@@ -1082,11 +1082,11 @@ export function buildHostServices(
 
     companies: {
       async list(params) {
-        return applyWindow((await companies.list()) as Company[], params);
+        return applyWindow((await companies.list()) as unknown as Company[], params);
       },
       async get(params) {
         await ensurePluginAvailableForCompany(params.companyId);
-        return (await companies.getById(params.companyId)) as Company;
+        return (await companies.getById(params.companyId)) as unknown as Company;
       },
     },
 

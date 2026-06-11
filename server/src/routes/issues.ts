@@ -79,6 +79,10 @@ import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
+  createClosureGate,
+  throwIfClosureGateRejected,
+} from "../services/closure-gate.js";
+import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
@@ -833,6 +837,7 @@ export function issueRoutes(
     return searchSvc;
   };
   const searchRateLimiter = opts.searchRateLimiter ?? defaultCompanySearchRateLimiter;
+  const closureGateSvc = createClosureGate({ logger });
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
@@ -2979,6 +2984,51 @@ export function issueRoutes(
       updateFields,
       actorType: req.actor.type,
     });
+
+    // CAR-214: Fix-SHA closure-gate routine. When this PATCH is closing
+    // the issue (status: "done") and the actor is an agent, require a
+    // Fix-SHA line in the closure comment and verify it is reachable on
+    // the issue's configured remote branch.
+    if (updateFields.status === "done" && existing.status !== "done") {
+      const gateCompany = await companiesSvc.getById(existing.companyId);
+      const companyMode = (gateCompany?.closureGateFixSha ?? "off") as
+        | "off"
+        | "advisory"
+        | "enforce";
+      let gateFallbackCommentBody: string | null = null;
+      if (typeof commentBody !== "string" || commentBody.length === 0) {
+        try {
+          const recent = await svc.listComments(existing.id, { order: "desc", limit: 1 });
+          gateFallbackCommentBody = recent[0]?.body ?? null;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: existing.id },
+            "closure-gate: failed to load most recent comment for Fix-SHA fallback",
+          );
+        }
+      }
+      const resolveRepoUrl = async () => {
+        if (!existing.executionWorkspaceId) return null;
+        try {
+          const ws = await executionWorkspacesSvc.getById(existing.executionWorkspaceId);
+          return ws?.repoUrl ?? null;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: existing.id, executionWorkspaceId: existing.executionWorkspaceId },
+            "closure-gate: failed to load execution workspace for repo URL",
+          );
+          return null;
+        }
+      };
+      const gateOutcome = await closureGateSvc.assertAllowed({
+        companyMode,
+        actor: { actorType: actor.actorType, agentId: actor.agentId ?? null },
+        commentBody: typeof commentBody === "string" ? commentBody : null,
+        fallbackCommentBody: gateFallbackCommentBody,
+        resolveRepoUrl,
+      });
+      throwIfClosureGateRejected(gateOutcome);
+    }
 
     const nextAssigneeAgentId =
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);
