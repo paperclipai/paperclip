@@ -36,6 +36,15 @@ export type AgentJobRunStatus = {
   name?: string | null;
 };
 
+export type AgentJobRunStatusByName =
+  | AgentJobRunStatus
+  | {
+      phase: "missing";
+      reason: "NotFound";
+      message?: string | null;
+      name: string;
+    };
+
 type ClientState =
   | { kind: "uninitialized" }
   | { kind: "unavailable"; reason: string }
@@ -94,6 +103,23 @@ function conditionIsTrue(condition: k8s.V1JobCondition | undefined) {
   return condition?.status === "True";
 }
 
+function readNumericField(value: unknown, key: string): number | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = (value as Record<string, unknown>)[key];
+  return typeof candidate === "number" ? candidate : null;
+}
+
+function isKubernetesNotFoundError(error: unknown) {
+  if (readNumericField(error, "code") === 404 || readNumericField(error, "statusCode") === 404) {
+    return true;
+  }
+  const response = error && typeof error === "object"
+    ? (error as Record<string, unknown>).response
+    : null;
+  return readNumericField(response, "statusCode") === 404 ||
+    readNumericField(response, "status") === 404;
+}
+
 export function classifyAgentJobRunStatus(job: k8s.V1Job): AgentJobRunStatus {
   const conditions = job.status?.conditions ?? [];
   const failedCondition = conditions.find((condition) => condition.type === "Failed");
@@ -118,6 +144,47 @@ export function classifyAgentJobRunStatus(job: k8s.V1Job): AgentJobRunStatus {
   }
 
   return { phase: "active", reason: null, message: null };
+}
+
+/**
+ * Reads one persisted backing Job by name. A successful namespace-wide list can
+ * still miss a just-deleted Job, so callers use this exact lookup to
+ * distinguish "not in the list yet" from "the recorded Job is actually gone".
+ */
+export async function readAgentJobRunStatusByName(
+  name: string,
+): Promise<AgentJobRunStatusByName | null> {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  const state = initClient();
+  if (state.kind !== "ready") return null;
+  try {
+    const job = await state.api.readNamespacedJob(
+      {
+        name: trimmed,
+        namespace: PAPERCLIP_K8S_NAMESPACE,
+      },
+      requestOptionsWithTimeout(),
+    );
+    return {
+      ...classifyAgentJobRunStatus(job),
+      name: job.metadata?.name ?? trimmed,
+    };
+  } catch (error) {
+    if (isKubernetesNotFoundError(error)) {
+      return {
+        phase: "missing",
+        reason: "NotFound",
+        message: `Kubernetes Job ${trimmed} was not found`,
+        name: trimmed,
+      };
+    }
+    logger.warn(
+      { jobName: trimmed, error: error instanceof Error ? error.message : String(error) },
+      "k8s job-liveness exact Job lookup failed; falling back to staleness heuristic",
+    );
+    return null;
+  }
 }
 
 /**

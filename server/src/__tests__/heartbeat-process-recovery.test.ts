@@ -89,9 +89,29 @@ const mockListAgentJobRunStatuses = vi.hoisted(() =>
     >
   >(async () => null),
 );
+const mockReadAgentJobRunStatusByName = vi.hoisted(() =>
+  vi.fn<
+    (name: string) => Promise<
+      | {
+          phase: "active" | "succeeded" | "failed";
+          reason?: string | null;
+          message?: string | null;
+          name?: string | null;
+        }
+      | {
+          phase: "missing";
+          reason: "NotFound";
+          message?: string | null;
+          name: string;
+        }
+      | null
+    >
+  >(async () => null),
+);
 vi.mock("../services/k8s-job-liveness.ts", () => ({
   listLiveAgentJobRunIds: mockListLiveAgentJobRunIds,
   listAgentJobRunStatuses: mockListAgentJobRunStatuses,
+  readAgentJobRunStatusByName: mockReadAgentJobRunStatusByName,
   deleteAgentJobsForRun: mockDeleteAgentJobsForRun,
 }));
 
@@ -319,6 +339,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     includeIssue?: boolean;
     runErrorCode?: string | null;
     runError?: string | null;
+    externalRunId?: string | null;
     lastOutputAt?: Date | null;
     contextSnapshot?: Record<string, unknown>;
   }) {
@@ -384,6 +405,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       processLossRetryCount: input?.processLossRetryCount ?? 0,
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
+      externalRunId: input?.externalRunId ?? null,
       startedAt: now,
       createdAt: now,
       updatedAt: new Date("2026-03-19T00:00:00.000Z"),
@@ -906,6 +928,41 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const run = await heartbeat.getRun(runId);
     expect(run?.status).toBe("running");
     expect(run?.externalRunId).toBe(jobName);
+  });
+
+  it("reaps a fresh external-lifecycle run when its persisted Job name is confirmed missing", async () => {
+    // Helm rollouts can delete an active k8s-backed agent Job while the
+    // heartbeat run still has fresh output. A namespace-wide Job list no
+    // longer contains the run, but the old false-positive fix requires a long
+    // silence window before reaping list misses. When external_run_id already
+    // records the exact Job name, a direct 404 is strong enough to fail the
+    // run immediately and free the issue/agent dispatch lock.
+    const fresh = new Date(Date.now() - 30 * 1000);
+    const jobName = "agent-opencode-cd284f1d-6fbf-45-aafe9690-0e04-48-964404";
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "opencode_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: fresh,
+      externalRunId: jobName,
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
+    mockListAgentJobRunStatuses.mockResolvedValueOnce(new Map());
+    mockReadAgentJobRunStatusByName.mockResolvedValueOnce({
+      phase: "missing",
+      reason: "NotFound",
+      name: jobName,
+    });
+
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 });
+
+    expect(result.runIds).toContain(runId);
+    expect(mockReadAgentJobRunStatusByName).toHaveBeenCalledWith(jobName);
+    expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
   });
 
   it("reaps a pre-adapter external-lifecycle orphan even when updatedAt is freshly churned by review machinery (BLO-8827)", async () => {

@@ -67,6 +67,7 @@ import {
   deleteAgentJobsForRun,
   listAgentJobRunStatuses,
   listLiveAgentJobRunIds,
+  readAgentJobRunStatusByName,
   type AgentJobRunStatus,
 } from "./k8s-job-liveness.js";
 import { processPendingImageBumpForAgent } from "./agent-image-bump.js";
@@ -8633,6 +8634,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         continue;
       }
       let cascadeDeleteLiveJob = false;
+      let confirmedMissingExternalJob = false;
       if (externalLifecycleRun && externalLifecycleStarted) {
         const lastSignalRef = run.lastOutputAt
           ? new Date(run.lastOutputAt).getTime()
@@ -8642,7 +8644,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const isSilent = !lastSignalRef || now.getTime() - lastSignalRef >= EXTERNAL_LIFECYCLE_STALE_MS;
 
         if (jobRunStatuses !== null) {
-          const jobStatus = jobRunStatuses.get(run.id) ?? null;
+          let jobStatus = jobRunStatuses.get(run.id) ?? null;
+          const persistedJobName = run.externalRunId?.trim() || null;
+          if (!jobStatus && persistedJobName) {
+            const exactJobStatus = await readAgentJobRunStatusByName(persistedJobName);
+            if (exactJobStatus?.phase === "missing") {
+              confirmedMissingExternalJob = true;
+            } else if (exactJobStatus) {
+              jobStatus = exactJobStatus;
+            }
+          }
+
           if (jobStatus && jobStatus.phase !== "active") {
             const finalized = await finalizeExternalLifecycleTerminalRun({
               run,
@@ -8658,7 +8670,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
 
           if (!jobStatus) {
-            if (!isSilent) continue;
+            if (!confirmedMissingExternalJob && !isSilent) continue;
             const finalized = await finalizeExternalLifecycleTerminalRun({
               run,
               adapterType,
@@ -8716,7 +8728,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // review/recovery churn bumps updatedAt every ~minute and would otherwise
       // shield a dead run from this gate forever (BLO-8827). Local adapters keep
       // updatedAt — their liveness is tracked via process pid/group, not Jobs.
-      if (staleThresholdMs > 0) {
+      if (staleThresholdMs > 0 && !confirmedMissingExternalJob) {
         const refTime = externalLifecycleRun
           ? externalLifecycleRecentRefTime(run)
           : run.updatedAt
