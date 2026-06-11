@@ -1,0 +1,24 @@
+AGNB — All Gas No Brakes
+========================
+
+AGNB application code and content © 2026 the AGNB authors.
+
+This product is built on Paperclip, an open-source AI-agent orchestration
+platform:
+
+    Paperclip
+    Copyright (c) 2025 Paperclip AI / Paperclip Labs, Inc.
+    Licensed under the MIT License.
+    https://github.com/paperclipai/paperclip
+
+The upstream Paperclip source is used under the terms of its MIT license, a
+copy of which is retained in the LICENSE file. Portions of this repository are
+unmodified or lightly modified from upstream Paperclip; the AGNB-specific
+product layer (the agent-company vertical under server/src/agnb/, the pitch-deck
+generator, the marketing site, custom-domain infrastructure, branding, and
+authorization extensions) is original to AGNB.
+
+To keep merging upstream improvements, AGNB intentionally preserves upstream's
+internal package namespaces (@paperclipai/*), environment-variable prefixes
+(PAPERCLIP_*), HTTP headers (X-Paperclip-*), and code identifiers. These are
+infrastructure plumbing inherited from upstream, not AGNB branding.
