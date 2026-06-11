@@ -657,7 +657,10 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
   }
 }
 
-export async function applyPendingMigrations(url: string): Promise<void> {
+// Keep in sync with PAPERCLIP_LOCK_NAMESPACE in server/src/services/advisory-locks.ts.
+const PAPERCLIP_LOCK_NAMESPACE = 0x70_63_6c_70; // "pclp"
+
+async function applyPendingMigrationsLocked(url: string): Promise<void> {
   const initialState = await inspectMigrations(url);
   if (initialState.status === "upToDate") return;
 
@@ -714,6 +717,20 @@ export async function applyPendingMigrations(url: string): Promise<void> {
     throw new Error(
       `Failed to apply pending migrations: ${finalState.pendingMigrations.join(", ")}`,
     );
+  }
+}
+
+export async function applyPendingMigrations(url: string): Promise<void> {
+  // Serialize concurrent migration attempts (N replicas booting after an
+  // upgrade). Session-scoped advisory lock on a dedicated connection: held
+  // across all migration transactions, released on sql.end() or if this
+  // process dies. Waiters block, then re-inspect and no-op.
+  const lockSql = createUtilitySql(url);
+  try {
+    await lockSql`SELECT pg_advisory_lock(${PAPERCLIP_LOCK_NAMESPACE}, hashtext('db-migrate'))`;
+    await applyPendingMigrationsLocked(url);
+  } finally {
+    await lockSql.end({ timeout: 5 });
   }
 }
 
