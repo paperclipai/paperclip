@@ -29,6 +29,8 @@ const DEFAULT_KUBERNETES_ENVIRONMENT_DESCRIPTION =
 const KUBERNETES_PROVIDER_KEY = "kubernetes";
 /** Metadata marker for the company's managed-by-config Kubernetes sandbox environment. */
 const KUBERNETES_MANAGED_MARKER = "managedKubernetesSandbox";
+/** Metadata marker for any Paperclip-managed environment (set on managed sandbox envs). */
+const PAPERCLIP_MANAGED_MARKER = "managedByPaperclip";
 
 /**
  * Configuration accepted by `ensureKubernetesEnvironment`. Mirrors the keys of
@@ -204,7 +206,7 @@ export function environmentService(db: Db) {
         provider: KUBERNETES_PROVIDER_KEY,
       };
       const desiredMetadata: Record<string, unknown> = {
-        managedByPaperclip: true,
+        [PAPERCLIP_MANAGED_MARKER]: true,
         [KUBERNETES_MANAGED_MARKER]: true,
       };
 
@@ -313,6 +315,11 @@ export function environmentService(db: Db) {
     // executionMode="sandbox" to pin runs onto whatever sandbox the operator
     // configured (Daytona, E2B, Modal, Kubernetes, …). Prefers a Paperclip-
     // managed environment when several exist, else the most recently updated.
+    //
+    // Only environments with a configured provider count: a provider-less
+    // sandbox row is treated as "no sandbox configured", so the heartbeat
+    // surfaces the actionable "configure a sandbox provider" error rather than
+    // pinning onto it and tripping the allowlist backstop later.
     findManagedSandboxEnvironment: async (companyId: string): Promise<Environment | null> => {
       const rows = await db
         .select()
@@ -325,11 +332,15 @@ export function environmentService(db: Db) {
           ),
         )
         .orderBy(desc(environments.updatedAt));
-      if (rows.length === 0) return null;
-      const managed = rows.find(
-        (row) => (row.metadata as Record<string, unknown> | null)?.managedByPaperclip === true,
+      const providerRows = rows.filter((row) => {
+        const provider = (row.config as Record<string, unknown> | null)?.provider;
+        return typeof provider === "string" && provider.length > 0;
+      });
+      if (providerRows.length === 0) return null;
+      const managed = providerRows.find(
+        (row) => (row.metadata as Record<string, unknown> | null)?.[PAPERCLIP_MANAGED_MARKER] === true,
       );
-      return toEnvironment(managed ?? rows[0]!);
+      return toEnvironment(managed ?? providerRows[0]!);
     },
 
     create: async (companyId: string, input: CreateEnvironment): Promise<Environment> => {

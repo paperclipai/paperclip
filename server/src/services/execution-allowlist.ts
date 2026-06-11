@@ -135,11 +135,17 @@ export function evaluateExecutionAllowlist(
     return { allowed: true };
   }
 
+  // A `sandbox` driver with no provider is the likeliest misconfiguration, so
+  // name that distinctly instead of blaming the (correct) driver.
+  const target =
+    candidate.driver === "sandbox"
+      ? `sandbox driver with no configured provider`
+      : `"${candidate.driver}" driver`;
   return {
     allowed: false,
     reason:
       `Instance execution policy requires a sandbox-provider environment ` +
-      `(executionMode=sandbox), but the resolved environment uses the "${candidate.driver}" driver. ` +
+      `(executionMode=sandbox), but the resolved environment uses the ${target}. ` +
       `Untrusted execution outside a sandbox is refused.`,
     deniedDriver: candidate.driver,
     deniedProvider: provider,

@@ -343,6 +343,28 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect((await svc.findManagedSandboxEnvironment(companyId))?.id).toBe(fake.id);
   });
 
+  it("findManagedSandboxEnvironment ignores a provider-less sandbox env (treated as unconfigured)", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // A sandbox row without a provider key is a misconfiguration; the lookup
+    // must return null so the heartbeat raises the actionable
+    // "configure a sandbox provider" error instead of pinning onto it.
+    await svc.create(companyId, {
+      name: "Provider-less Sandbox",
+      driver: "sandbox",
+      config: { reuseLease: false },
+    });
+
+    expect(await svc.findManagedSandboxEnvironment(companyId)).toBeNull();
+  });
+
   it("findManagedSandboxEnvironment prefers a Paperclip-managed sandbox when several exist", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({

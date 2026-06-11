@@ -110,12 +110,15 @@ describe("evaluateExecutionAllowlist", () => {
       expect(result.allowed).toBe(false);
     });
 
-    it("DENIES a sandbox driver with no provider", () => {
+    it("DENIES a sandbox driver with no provider, naming the missing provider", () => {
       const result = evaluateExecutionAllowlist(
         { executionMode: "sandbox" },
         { driver: "sandbox", provider: null },
       );
       expect(result.allowed).toBe(false);
+      if (!result.allowed) {
+        expect(result.reason).toMatch(/no configured provider/);
+      }
     });
   });
 
