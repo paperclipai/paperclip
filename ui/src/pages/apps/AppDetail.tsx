@@ -135,6 +135,26 @@ export function AppDetail() {
     onSettled: () => setPending(false),
   });
 
+  const removeApp = useMutation({
+    mutationFn: () => toolsApi.archiveConnection(connectionId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
+      pushToast({
+        title: "App removed",
+        body: `${appName} no longer has access. You can connect it again any time.`,
+        tone: "success",
+      });
+      navigate("/apps");
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Couldn’t remove the app",
+        body: error instanceof Error ? error.message : "Please try again.",
+        tone: "error",
+      }),
+  });
+
   const apply = (mutate: { enabled?: Set<string>; askFirst?: Set<string>; access?: AccessDraft }) =>
     persist.mutate({
       enabled: mutate.enabled ?? new Set(enabledIds),
@@ -271,7 +291,58 @@ export function AppDetail() {
         loading={activityQuery.isLoading}
         agents={agents}
       />
+
+      {/* Danger zone */}
+      <DangerZone
+        appName={appName}
+        removing={removeApp.isPending}
+        onRemove={() => removeApp.mutate()}
+      />
     </div>
+  );
+}
+
+// ---------- Danger zone ----------
+
+function DangerZone({
+  appName,
+  removing,
+  onRemove,
+}: {
+  appName: string;
+  removing: boolean;
+  onRemove: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <section className="rounded-xl border border-destructive/40 bg-card">
+      <div className="border-b border-destructive/40 px-5 py-3 text-sm font-bold text-destructive">
+        Danger zone
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
+        <div>
+          <p className="text-sm font-medium text-foreground">Remove this app</p>
+          <p className="text-xs text-muted-foreground">
+            Agents lose access to {appName} right away. You can connect it again later.
+          </p>
+        </div>
+        {confirming ? (
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setConfirming(false)} disabled={removing}>
+              Cancel
+            </Button>
+            <Button variant="destructive" size="sm" onClick={onRemove} disabled={removing}>
+              {removing && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+              Yes, remove it
+            </Button>
+          </div>
+        ) : (
+          <Button variant="destructive" size="sm" onClick={() => setConfirming(true)}>
+            Remove app
+          </Button>
+        )}
+      </div>
+    </section>
   );
 }
 

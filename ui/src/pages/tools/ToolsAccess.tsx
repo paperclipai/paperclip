@@ -31,11 +31,11 @@ function renderTab(tab: ToolTabKey, companyId: string) {
       return <RuntimeTab companyId={companyId} />;
     case "audit":
       return <AuditTab companyId={companyId} />;
-    case "run-your-own":
-      return <RunYourOwnTab companyId={companyId} />;
     case "paste-config":
-    default:
       return <PasteConfigTab companyId={companyId} />;
+    case "run-your-own":
+    default:
+      return <RunYourOwnTab companyId={companyId} />;
   }
 }
 
@@ -43,7 +43,7 @@ export function ToolsAccess() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const params = useParams<{ tab?: string }>();
-  const activeTab = (TOOL_TABS.find((t) => t.key === params.tab)?.key ?? "paste-config") as ToolTabKey;
+  const activeTab = (TOOL_TABS.find((t) => t.key === params.tab)?.key ?? "run-your-own") as ToolTabKey;
   const advanced = isAdvancedSetupTab(activeTab);
   const tabLabel = TOOL_TABS.find((t) => t.key === activeTab)?.label;
 
@@ -54,7 +54,7 @@ export function ToolsAccess() {
       ...(advanced
         ? [{ label: "Advanced setup" }]
         : [
-            { label: "Advanced setup", href: advancedTabHref("paste-config") },
+            { label: "Advanced setup", href: advancedTabHref("run-your-own") },
             { label: tabLabel ?? "Developer tools" },
           ]),
     ]);

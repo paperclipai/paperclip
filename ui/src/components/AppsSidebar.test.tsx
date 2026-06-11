@@ -3,11 +3,12 @@
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ToolsSidebar } from "./ToolsSidebar";
+import { AppsSidebar } from "./AppsSidebar";
 
 const sidebarNavItemMock = vi.hoisted(() => vi.fn());
 const mockToolsApi = vi.hoisted(() => ({
   listRuntimeSlots: vi.fn(),
+  listAppsAttention: vi.fn(),
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -52,6 +53,7 @@ vi.mock("./SidebarNavItem", () => ({
     label: string;
     end?: boolean;
     liveCount?: number;
+    badge?: number;
   }) => {
     sidebarNavItemMock(props);
     return <div data-to={props.to}>{props.label}</div>;
@@ -74,12 +76,13 @@ async function flushReact() {
   }
 }
 
-describe("ToolsSidebar", () => {
+describe("AppsSidebar", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    mockToolsApi.listAppsAttention.mockResolvedValue({ apps: [] });
     mockToolsApi.listRuntimeSlots.mockResolvedValue({
       runtimeSlots: [
         { id: "slot-1", status: "running" },
@@ -94,7 +97,7 @@ describe("ToolsSidebar", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the tools sections as secondary-sidebar nav items", async () => {
+  it("renders Apps, Advanced setup, and Developer sections in one sidebar", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -103,30 +106,38 @@ describe("ToolsSidebar", () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <ToolsSidebar />
+          <AppsSidebar />
         </QueryClientProvider>,
       );
     });
     await flushReact();
 
+    expect(container.textContent).toContain("Apps");
     expect(container.textContent).toContain("Advanced setup");
+    expect(container.textContent).toContain("Admin");
     expect(container.textContent).toContain("Developer");
+
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "/apps", label: "All apps", end: true }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "/apps/attention", label: "Needs attention" }),
+    );
+    // Run your own is the door's default tab and owns the bare base path (PAP-10915).
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "/apps/advanced", label: "Run your own", end: true }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "/apps/advanced/paste-config", label: "Paste a config", end: true }),
+    );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({ to: "/apps/advanced/applications", label: "Applications", end: true }),
     );
-    // Retired tabs (PAP-10915): Connections, Overview, Examples are gone.
-    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(expect.objectContaining({ label: "Connections" }));
-    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(expect.objectContaining({ label: "Overview" }));
-    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(expect.objectContaining({ label: "Examples" }));
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({ to: "/apps/advanced/runtime", label: "Runtime", end: true, liveCount: 1 }),
     );
-    // M8a is the door's face: "Paste a config" lives at the bare base path.
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps/advanced", label: "Paste a config", end: true }),
-    );
-    expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps/advanced/run-your-own", label: "Run your own", end: true }),
+      expect.objectContaining({ to: "/apps/advanced/audit", label: "Audit", end: true }),
     );
 
     await act(async () => {

@@ -15,16 +15,16 @@ import {
  */
 export const ADVANCED_TOOLS_BASE = "/apps/advanced";
 
-/** Build a tab href off the Advanced base. `paste-config` is the bare base path (M8a is the door's face). */
+/** Build a tab href off the Advanced base. `run-your-own` is the bare base path (the door's default tab). */
 export function advancedTabHref(tab: ToolTabKey): string {
-  return tab === "paste-config" ? ADVANCED_TOOLS_BASE : `${ADVANCED_TOOLS_BASE}/${tab}`;
+  return tab === "run-your-own" ? ADVANCED_TOOLS_BASE : `${ADVANCED_TOOLS_BASE}/${tab}`;
 }
 
 // M8a/M8b — the prosumer-facing Advanced setup tabs (PAP-10839 wires). The only
 // screens where "MCP" vocabulary is permitted (PAP-10827).
 export const ADVANCED_TABS = [
-  { key: "paste-config", label: "Paste a config", icon: ClipboardPaste },
   { key: "run-your-own", label: "Run your own", icon: TerminalSquare },
+  { key: "paste-config", label: "Paste a config", icon: ClipboardPaste },
 ] as const;
 
 // The pre-Apps developer surface, kept reachable behind the Advanced door.

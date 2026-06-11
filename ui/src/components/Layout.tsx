@@ -4,7 +4,6 @@ import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "
 import { Sidebar } from "./Sidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 import { CompanySettingsNav } from "./access/CompanySettingsNav";
-import { ToolsSidebar } from "./ToolsSidebar";
 import { AppsSidebar } from "./AppsSidebar";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
@@ -82,14 +81,6 @@ export function Layout() {
   const isCompanySettingsRoute = location.pathname.includes("/company/settings");
   const isToolsRoute = getCompanyRouteSegment(location.pathname, companyPrefix) === "tools";
   const isAppsRoute = getCompanyRouteSegment(location.pathname, companyPrefix) === "apps";
-  // The Advanced door (`/apps/advanced` + the M8 paste-config/run-your-own tabs)
-  // keeps the prosumer Apps sidebar per the PAP-10839 wires; only the legacy
-  // developer tabs behind it swap in the Developer tools sidebar.
-  const advancedTabSegment = location.pathname.match(/(^|\/)apps\/advanced(?:\/([^/]+))?(\/|$)/)?.[2];
-  const isAdvancedToolsRoute =
-    isAppsRoute &&
-    advancedTabSegment != null &&
-    !["paste-config", "run-your-own"].includes(advancedTabSegment);
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
   const previousPathname = useRef<string | null>(null);
@@ -131,12 +122,8 @@ export function Layout() {
   // both desktop (SecondarySidebar) and mobile (off-canvas drawer).
   const secondarySidebar = isCompanySettingsRoute ? (
     <CompanySettingsSidebar />
-  ) : isAdvancedToolsRoute ? (
-    <ToolsSidebar />
-  ) : isAppsRoute ? (
+  ) : isAppsRoute || isToolsRoute ? (
     <AppsSidebar />
-  ) : isToolsRoute ? (
-    <ToolsSidebar />
   ) : routeSidebarSlot ? (
     <PluginSlotMount
       slot={routeSidebarSlot}

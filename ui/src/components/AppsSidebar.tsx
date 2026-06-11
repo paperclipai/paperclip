@@ -1,21 +1,24 @@
-import { ChevronLeft, AppWindow, Settings2, ShieldAlert } from "lucide-react";
+import { ChevronLeft, AppWindow, ShieldAlert } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
+import { ADVANCED_TABS, DEVELOPER_TABS, advancedTabHref } from "@/pages/tools/tool-tabs";
 import { SidebarNavItem } from "./SidebarNavItem";
 
 /**
  * Secondary sidebar for the prosumer Apps area (PAP-10856, v1.1).
  *
- *   ← Back · APPS: All apps / Needs attention (n) / Advanced setup [Admin]
+ *   ← Back · APPS: All apps / Needs attention (n)
+ *   ADVANCED SETUP [Admin]: Run your own / Paste a config
+ *   DEVELOPER: Applications / Profiles / Policies / Runtime / Audit
  *
  * "Needs attention" links to its own page (M9, PAP-10859) with a live count
- * chip from `GET /tools/apps/attention`. "Advanced setup" links to the
- * developer door, mounted under `/apps/advanced` (PAP-10862); `/tools/:tab`
- * redirects there.
+ * chip from `GET /tools/apps/attention`. The Advanced setup and Developer
+ * sections were folded in from the retired ToolsSidebar (PAP-10915) so the
+ * whole Apps area shares one sidebar.
  */
 export function AppsSidebar() {
   const { selectedCompany, selectedCompanyId } = useCompany();
@@ -28,6 +31,15 @@ export function AppsSidebar() {
     refetchInterval: 30_000,
   });
   const attentionCount = attentionQuery.data?.apps.length ?? 0;
+
+  const runtimeSlots = useQuery({
+    queryKey: queryKeys.tools.runtimeSlots(selectedCompanyId ?? "__none__"),
+    queryFn: () => toolsApi.listRuntimeSlots(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 15_000,
+  });
+  const runtimeActiveCount = (runtimeSlots.data?.runtimeSlots ?? [])
+    .filter((slot) => slot.status === "running").length;
 
   return (
     <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">
@@ -62,12 +74,34 @@ export function AppsSidebar() {
             badgeTone="danger"
             badgeLabel="needing attention"
           />
-          <SidebarNavItem
-            to="/apps/advanced"
-            label="Advanced setup"
-            icon={Settings2}
-            textBadge="Admin"
-          />
+        </div>
+        <div className="flex items-center gap-1.5 px-3 pb-1 pt-4">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Advanced setup
+          </span>
+          <span className="rounded bg-muted px-1 py-px text-[10px] font-semibold text-muted-foreground">
+            Admin
+          </span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          {ADVANCED_TABS.map((tab) => (
+            <SidebarNavItem key={tab.key} to={advancedTabHref(tab.key)} label={tab.label} icon={tab.icon} end />
+          ))}
+        </div>
+        <div className="px-3 pb-1 pt-4 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Developer
+        </div>
+        <div className="flex flex-col gap-0.5">
+          {DEVELOPER_TABS.map((tab) => (
+            <SidebarNavItem
+              key={tab.key}
+              to={advancedTabHref(tab.key)}
+              label={tab.label}
+              icon={tab.icon}
+              end
+              liveCount={tab.key === "runtime" && runtimeActiveCount > 0 ? runtimeActiveCount : undefined}
+            />
+          ))}
         </div>
       </nav>
     </aside>

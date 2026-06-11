@@ -82,6 +82,7 @@ test.describe.serial("PAP-10915 dark-mode Apps surfaces", () => {
 
   let healthy: MockMcpServer;
   let seed: Seed;
+  let brokenId: string;
 
   test.beforeAll(async ({ request }) => {
     healthy = await startMockMcp();
@@ -93,7 +94,7 @@ test.describe.serial("PAP-10915 dark-mode Apps surfaces", () => {
     // Broken app → needs attention. Use a `localhost` URL so the derived
     // connection name differs from the healthy `127.0.0.1` app.
     const ephemeral = await startMockMcp();
-    const brokenId = await connectApp(request, seed, ephemeral.url.replace("127.0.0.1", "localhost"));
+    brokenId = await connectApp(request, seed, ephemeral.url.replace("127.0.0.1", "localhost"));
     await ephemeral.close();
     const health = await request.post(`/api/tool-connections/${brokenId}/health-check`);
     expect(health.status()).toBe(502);
@@ -126,27 +127,42 @@ test.describe.serial("PAP-10915 dark-mode Apps surfaces", () => {
     await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10915-02-attention-dark.png`, fullPage: true });
   });
 
-  test("advanced door defaults to Paste a config with Apps sidebar", async ({ page }) => {
+  test("advanced door defaults to Run your own with the merged Apps sidebar", async ({ page }) => {
     await forceDark(page);
     await page.goto(`/${seed.prefix}/apps/advanced`);
     await expect(page.getByRole("heading", { name: "Advanced setup" })).toBeVisible({ timeout: 30_000 });
-    // M8a tab switcher with paste-config active; Apps secondary sidebar present.
-    await expect(page.getByRole("link", { name: "Paste a config" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Run your own" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Needs attention" })).toBeVisible();
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10915-03-advanced-paste-dark.png`, fullPage: true });
-
-    await page.getByRole("link", { name: "Run your own" }).click();
+    // Run your own is now the default tab (PAP-10915); merged sidebar shows Apps items too.
     await expect(page.getByText(/isolated workspace/i).first()).toBeVisible({ timeout: 20_000 });
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10915-04-advanced-run-dark.png`, fullPage: true });
+    await expect(page.getByRole("link", { name: "Needs attention" })).toBeVisible();
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10915-03-advanced-run-dark.png`, fullPage: true });
+
+    // Sidebar and tab switcher both link Paste a config — either lands on /paste-config.
+    await page.getByRole("link", { name: "Paste a config" }).first().click();
+    await expect(page).toHaveURL(/\/apps\/advanced\/paste-config$/);
+    await expect(page.getByText(/Paste the MCP config snippet/i).first()).toBeVisible({ timeout: 20_000 });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10915-04-advanced-paste-dark.png`, fullPage: true });
   });
 
-  test("developer tabs keep the developer sidebar", async ({ page }) => {
+  test("developer tabs share the merged Apps sidebar", async ({ page }) => {
     await forceDark(page);
     await page.goto(`/${seed.prefix}/apps/advanced/applications`);
     await expect(page.getByRole("heading", { name: "Developer tools" })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole("link", { name: "Runtime", exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Audit", exact: true })).toBeVisible();
+    // Apps section lives in the same sidebar now.
+    await expect(page.getByRole("link", { name: "All apps" })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10915-05-developer-overview-dark.png`, fullPage: true });
+  });
+
+  test("app detail danger zone removes the app", async ({ page }) => {
+    await forceDark(page);
+    await page.goto(`/${seed.prefix}/apps/${brokenId}`);
+    await expect(page.getByText("Danger zone")).toBeVisible({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Remove app" }).click();
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10915-06-danger-zone-dark.png`, fullPage: true });
+    await page.getByRole("button", { name: "Yes, remove it" }).click();
+    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`), { timeout: 20_000 });
+    await expect(page.getByText("App removed").first()).toBeVisible({ timeout: 20_000 });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10915-07-after-remove-dark.png`, fullPage: true });
   });
 });

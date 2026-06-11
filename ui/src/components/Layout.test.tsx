@@ -59,10 +59,6 @@ vi.mock("./CompanySettingsSidebar", () => ({
   CompanySettingsSidebar: () => <div>Company settings sidebar</div>,
 }));
 
-vi.mock("./ToolsSidebar", () => ({
-  ToolsSidebar: () => <div>Tools sidebar</div>,
-}));
-
 vi.mock("./AppsSidebar", () => ({
   AppsSidebar: () => <div>Apps sidebar</div>,
 }));
@@ -492,7 +488,7 @@ describe("Layout", () => {
     });
   });
 
-  it("keeps the app sidebar and shows the tools sidebar in the secondary pane on tools routes", async () => {
+  it("keeps the app sidebar and shows the Apps sidebar in the secondary pane on legacy tools routes", async () => {
     currentPathname = "/PAP/tools/runtime";
     const root = createRoot(container);
     const queryClient = new QueryClient({
@@ -509,7 +505,7 @@ describe("Layout", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("Tools sidebar");
+    expect(container.textContent).toContain("Apps sidebar");
     expect(container.textContent).toContain("Main company nav");
     expect(container.textContent).not.toContain("Company settings sidebar");
     expect(mockSetForceCollapsed).toHaveBeenCalledWith(true);
@@ -537,7 +533,6 @@ describe("Layout", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Apps sidebar");
-    expect(container.textContent).not.toContain("Tools sidebar");
     expect(container.textContent).toContain("Main company nav");
 
     await act(async () => {
@@ -545,7 +540,7 @@ describe("Layout", () => {
     });
   });
 
-  it("shows the developer tools sidebar on legacy developer tabs behind the Advanced door", async () => {
+  it("keeps the Apps sidebar on legacy developer tabs behind the Advanced door", async () => {
     currentPathname = "/PAP/apps/advanced/runtime";
     const root = createRoot(container);
     const queryClient = new QueryClient({
@@ -562,7 +557,7 @@ describe("Layout", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("Tools sidebar");
+    expect(container.textContent).toContain("Apps sidebar");
     expect(container.textContent).toContain("Main company nav");
 
     await act(async () => {
