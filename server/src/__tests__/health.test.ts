@@ -82,6 +82,7 @@ describe("GET /health", () => {
       status: "ok",
       version: serverVersion,
       serverInfo: testServerInfo,
+      liveEvents: { mode: "in-process" },
     });
   });
 
