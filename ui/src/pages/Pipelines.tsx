@@ -739,7 +739,7 @@ function PipelinesIndex() {
   const connectionsAvailable = pipelinesHaveConnectionData(pipelines);
 
   return (
-    <div className="ml-auto max-w-6xl px-6 py-8">
+    <div className="w-full max-w-6xl px-6 py-8">
       <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Work</p>

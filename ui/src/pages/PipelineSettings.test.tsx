@@ -232,12 +232,13 @@ describe("PipelineSettings", () => {
     document.body.innerHTML = "";
   });
 
-  it("renders only Stages, Guidance, and Advanced top-level tabs", async () => {
+  it("renders only Stages and Guidance top-level tabs", async () => {
     const { container, root, queryClient } = renderSettings();
     await flushQueries();
 
     const tabLabels = Array.from(container.querySelectorAll("[data-tab-value]")).map((tab) => tab.textContent);
-    expect(tabLabels).toEqual(["Stages", "Guidance", "Advanced"]);
+    expect(tabLabels).toEqual(["Stages", "Guidance"]);
+    expect(tabLabels).not.toContain("Advanced");
     expect(container.textContent).not.toContain("Automation");
 
     flushSync(() => {
@@ -250,12 +251,13 @@ describe("PipelineSettings", () => {
     const { container, root, queryClient } = renderSettings();
     await flushQueries();
 
+    flushSync(() => {
+      findButton(container, "Variables")!.click();
+    });
+
     const headings = Array.from(container.querySelectorAll("h2")).map((heading) => heading.textContent ?? "");
-    // The stage panel keeps Basics + Approval before the routine-style editor.
-    const stageHeadings = headings.filter((heading) =>
-      ["Basics", "Approval", "Instructions", "Allowed next steps", "New entries"].includes(heading),
-    );
-    expect(stageHeadings.slice(0, 3)).toEqual(["Basics", "Approval", "Instructions"]);
+    expect(headings).toContain("Variables");
+    expect(headings).toContain("Instructions");
     expect(headings).not.toContain("What happens here");
     expect(headings).not.toContain("Routine variables");
     // The instructions body is the mocked MarkdownEditor, not a plain Textarea.
@@ -296,17 +298,27 @@ describe("PipelineSettings", () => {
     const { container, root, queryClient } = renderSettings();
     await flushQueries();
 
-    const advancedTab = container.querySelector<HTMLButtonElement>('[data-tab-value="advanced"]')!;
+    const actionsButton = container.querySelector<HTMLButtonElement>('button[title="Pipeline actions"]')!;
     flushSync(() => {
-      advancedTab.click();
+      actionsButton.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, ctrlKey: false }));
     });
+    await flushQueries();
 
-    const archiveButton = Array.from(container.querySelectorAll("button")).find((button) =>
+    const menuArchiveButton = Array.from(document.body.querySelectorAll("div[role='menuitem']")).find((button) =>
+      button.textContent?.includes("Archive pipeline"),
+    ) as HTMLElement | undefined;
+    expect(menuArchiveButton).toBeTruthy();
+    flushSync(() => {
+      menuArchiveButton!.click();
+    });
+    await flushQueries();
+
+    const archiveButton = Array.from(document.body.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Archive pipeline"),
     ) as HTMLButtonElement | undefined;
     expect(archiveButton?.disabled).toBe(true);
 
-    const input = container.querySelector<HTMLInputElement>('[aria-label="Archive confirmation"]')!;
+    const input = document.body.querySelector<HTMLInputElement>('[aria-label="Archive confirmation"]')!;
     flushSync(() => {
       const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
       valueSetter?.call(input, "Content pipeline");
@@ -325,6 +337,10 @@ describe("PipelineSettings", () => {
     const { container, root, queryClient } = renderSettings();
     await flushQueries();
 
+    flushSync(() => {
+      findButton(container, "Variables")!.click();
+    });
+
     const editor = container.querySelector<HTMLTextAreaElement>('[aria-label="Stage instructions"]')!;
     expect(editor.value).toBe("Collect requests.");
 
@@ -337,6 +353,10 @@ describe("PipelineSettings", () => {
   it("syncs variables from escaped {{snake_case}} tokens and saves body + variables in one action", async () => {
     const { container, root, queryClient } = renderSettings();
     await flushQueries();
+
+    flushSync(() => {
+      findButton(container, "Variables")!.click();
+    });
 
     const editor = container.querySelector<HTMLTextAreaElement>('[aria-label="Stage instructions"]')!;
     flushSync(() => {
@@ -377,6 +397,10 @@ describe("PipelineSettings", () => {
     );
     const { container, root, queryClient } = renderSettings();
     await flushQueries();
+
+    flushSync(() => {
+      findButton(container, "Variables")!.click();
+    });
 
     const editor = container.querySelector<HTMLTextAreaElement>('[aria-label="Stage instructions"]')!;
     flushSync(() => {
