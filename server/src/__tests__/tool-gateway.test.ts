@@ -144,9 +144,19 @@ function createTestToolGatewayService(db: Db, options: ToolGatewayServiceOptions
   });
 }
 
-function createGatewayRouteApp(db: Db, gateway = createTestToolGatewayService(db)) {
+function createGatewayRouteApp(
+  db: Db,
+  gateway = createTestToolGatewayService(db),
+  actor?: Express.Request["actor"],
+) {
   const app = express();
   app.use(express.json());
+  if (actor) {
+    app.use((req, _res, next) => {
+      req.actor = actor;
+      next();
+    });
+  }
   app.use("/api", toolGatewayRoutes(db, gateway));
   return app;
 }
@@ -363,6 +373,103 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       .get("/api/tool-gateway/tools")
       .set("x-paperclip-tool-gateway-token", session.token);
     expect(listWithHeaderToken.status).toBe(200);
+  });
+
+  it("denies agent actors from runtime control and raw gateway audit routes", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const gateway = createTestToolGatewayService(db);
+    const app = createGatewayRouteApp(db, gateway, {
+      type: "agent",
+      companyId: company.id,
+      agentId: agent.id,
+      runId: run.id,
+      source: "agent_jwt",
+    });
+
+    const list = await request(app)
+      .get("/api/tool-gateway/runtime-slots")
+      .query({ companyId: company.id });
+    expect(list.status).toBe(403);
+    expect(list.body.error).toBe("Board access required");
+
+    const stop = await request(app)
+      .post("/api/tool-gateway/runtime-slots/slot-1/stop")
+      .send({ companyId: company.id });
+    expect(stop.status).toBe(403);
+    expect(stop.body.error).toBe("Board access required");
+
+    const restart = await request(app)
+      .post("/api/tool-gateway/runtime-slots/slot-1/restart")
+      .send({ companyId: company.id });
+    expect(restart.status).toBe(403);
+    expect(restart.body.error).toBe("Board access required");
+
+    const audit = await request(app)
+      .get("/api/tool-gateway/audit")
+      .query({ companyId: company.id });
+    expect(audit.status).toBe(403);
+    expect(audit.body.error).toBe("Board access required");
+  });
+
+  it("allows board runtime control and audit reads through explicit board-only routes", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    await allowToolsForAgent(db, company.id, agent.id, ["mcp-stdio-fixture:increment_counter"]);
+    const gateway = createTestToolGatewayService(db, {
+      runtimeSupervisor: { restartBackoffMs: 0, idleTtlMs: 10_000 },
+    });
+    const session = await gateway.createSession({
+      companyId: company.id,
+      agentId: agent.id,
+      runId: run.id,
+    });
+    const first = await gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-stdio-fixture:increment_counter",
+      parameters: {},
+    });
+    const slotId = (first.result as { data: { slotId: string } }).data.slotId;
+
+    const app = createGatewayRouteApp(db, gateway, {
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const list = await request(app)
+      .get("/api/tool-gateway/runtime-slots")
+      .query({ companyId: company.id });
+    expect(list.status).toBe(200);
+    expect(list.body).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: slotId, status: "idle" }),
+    ]));
+
+    const stop = await request(app)
+      .post(`/api/tool-gateway/runtime-slots/${slotId}/stop`)
+      .send({ companyId: company.id });
+    expect(stop.status).toBe(200);
+    expect(stop.body).toMatchObject({ id: slotId, status: "stopped" });
+
+    const restart = await request(app)
+      .post(`/api/tool-gateway/runtime-slots/${slotId}/restart`)
+      .send({ companyId: company.id });
+    expect(restart.status).toBe(200);
+    expect(restart.body).toMatchObject({ id: slotId, status: "running" });
+
+    const audit = await request(app)
+      .get("/api/tool-gateway/audit")
+      .query({ companyId: company.id, limit: 20 });
+    expect(audit.status).toBe(200);
+    expect(audit.body).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        companyId: company.id,
+        action: expect.stringMatching(/^tool_gateway\./),
+      }),
+    ]));
   });
 
   it("rejects durable sessions after the heartbeat run is no longer active", async () => {

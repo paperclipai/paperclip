@@ -2,8 +2,11 @@ import { Router } from "express";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog } from "@paperclipai/db";
+import type { PermissionKey } from "@paperclipai/shared";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
+import { forbidden, HttpError } from "../errors.js";
+import { accessService } from "../services/index.js";
 
 const TOOL_GATEWAY_ACTIONS = [
   "tool_gateway.session_created",
@@ -30,12 +33,29 @@ function sendGatewayError(res: import("express").Response, err: unknown) {
     });
     return;
   }
+  if (err instanceof HttpError) {
+    const details =
+      err.details && typeof err.details === "object" && !Array.isArray(err.details)
+        ? err.details as Record<string, unknown>
+        : {};
+    res.status(err.status).json({ error: err.message, ...details });
+    return;
+  }
   const message = err instanceof Error ? err.message : String(err);
   res.status(500).json({ error: message });
 }
 
 export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
   const router = Router();
+  const access = accessService(db);
+
+  async function assertBoardPermission(req: import("express").Request, companyId: string, permissionKey: PermissionKey) {
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+    if (req.actor.userId && await access.canUser(companyId, req.actor.userId, permissionKey)) return;
+    throw forbidden(`Missing permission: ${permissionKey}`);
+  }
 
   router.post("/tool-gateway/sessions", async (req, res) => {
     try {
@@ -156,18 +176,13 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
 
   router.get("/tool-gateway/runtime-slots", async (req, res) => {
     try {
-      assertBoardOrAgent(req);
-      const companyId =
-        req.actor.type === "agent"
-          ? req.actor.companyId
-          : typeof req.query.companyId === "string"
-            ? req.query.companyId
-            : null;
+      assertBoard(req);
+      const companyId = typeof req.query.companyId === "string" ? req.query.companyId : null;
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
         return;
       }
-      assertCompanyAccess(req, companyId);
+      await assertBoardPermission(req, companyId, "tools:manage_runtime");
       res.json(await toolGateway.listRuntimeSlots(companyId));
     } catch (err) {
       sendGatewayError(res, err);
@@ -176,20 +191,17 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
 
   router.post("/tool-gateway/runtime-slots/:slotId/stop", async (req, res) => {
     try {
-      assertBoardOrAgent(req);
       const companyId =
-        req.actor.type === "agent"
-          ? req.actor.companyId
-          : typeof req.body?.companyId === "string"
-            ? req.body.companyId
-            : typeof req.query.companyId === "string"
-              ? req.query.companyId
-              : null;
+        typeof req.body?.companyId === "string"
+          ? req.body.companyId
+          : typeof req.query.companyId === "string"
+            ? req.query.companyId
+            : null;
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
         return;
       }
-      assertCompanyAccess(req, companyId);
+      await assertBoardPermission(req, companyId, "tools:manage_runtime");
       const actor = getActorInfo(req);
       res.json(await toolGateway.stopRuntimeSlot({
         companyId,
@@ -206,20 +218,17 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
 
   router.post("/tool-gateway/runtime-slots/:slotId/restart", async (req, res) => {
     try {
-      assertBoardOrAgent(req);
       const companyId =
-        req.actor.type === "agent"
-          ? req.actor.companyId
-          : typeof req.body?.companyId === "string"
-            ? req.body.companyId
-            : typeof req.query.companyId === "string"
-              ? req.query.companyId
-              : null;
+        typeof req.body?.companyId === "string"
+          ? req.body.companyId
+          : typeof req.query.companyId === "string"
+            ? req.query.companyId
+            : null;
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
         return;
       }
-      assertCompanyAccess(req, companyId);
+      await assertBoardPermission(req, companyId, "tools:manage_runtime");
       const actor = getActorInfo(req);
       res.json(await toolGateway.restartRuntimeSlot({
         companyId,
@@ -236,18 +245,13 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
 
   router.get("/tool-gateway/audit", async (req, res) => {
     try {
-      assertBoardOrAgent(req);
-      const companyId =
-        req.actor.type === "agent"
-          ? req.actor.companyId
-          : typeof req.query.companyId === "string"
-            ? req.query.companyId
-            : null;
+      assertBoard(req);
+      const companyId = typeof req.query.companyId === "string" ? req.query.companyId : null;
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
         return;
       }
-      assertCompanyAccess(req, companyId);
+      await assertBoardPermission(req, companyId, "tools:view_audit");
       const limitRaw = Number(req.query.limit ?? 100);
       const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.floor(limitRaw))) : 100;
       const rows = await db
