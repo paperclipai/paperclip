@@ -374,6 +374,58 @@ describe("paperclip MCP tools", () => {
     });
   });
 
+  it("creates a plan draft with a tier-1 task list and resolved company id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ issue: { id: "plan-1", workMode: "planning" } }, 201),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipCreatePlan");
+    await tool.execute({
+      title: "Build billing dashboard",
+      overview: "Stripe + invoices",
+      tasks: ["Set up webhook", { title: "Invoice list", priority: "high" }],
+      tokenCap: 500000,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe("http://localhost:3100/api/plans");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      companyId: "11111111-1111-1111-1111-111111111111",
+      title: "Build billing dashboard",
+      overview: "Stripe + invoices",
+      tiers: [
+        {
+          id: "tier-1",
+          kind: "phase",
+          name: "Phase 1",
+          requestedChildren: [{ title: "Set up webhook" }, { title: "Invoice list", priority: "high" }],
+          childIssueIds: [],
+        },
+      ],
+      budgetCapTokens: 500000,
+      assigneeAgentId: null,
+    });
+  });
+
+  it("creates an empty plan draft when no tasks are provided (tiers omitted)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ issue: { id: "plan-2" } }, 201),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipCreatePlan");
+    await tool.execute({ title: "Empty draft" });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body));
+    expect(body.tiers).toBeUndefined();
+    expect(body.title).toBe("Empty draft");
+    expect(body.budgetCapTokens).toBeNull();
+  });
+
   it("rejects invalid generic request paths", async () => {
     vi.stubGlobal("fetch", vi.fn());
 

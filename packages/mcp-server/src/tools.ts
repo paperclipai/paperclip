@@ -461,6 +461,53 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/issues`, { body }),
     ),
     makeTool(
+      "paperclipCreatePlan",
+      "Create a MyHive plan (draft) that appears in the board's Plans column. Provide a task list (tier-1 titles); the operator clicks Activate on the board to start work. Does NOT run agents. With no tasks the plan still appears as an empty draft, but Activate is blocked until at least one task is added.",
+      z.object({
+        companyId: companyIdOptional,
+        title: z.string().min(1).max(240),
+        overview: z.string().optional(),
+        tasks: z
+          .array(
+            z.union([
+              z.string().min(1),
+              z.object({
+                title: z.string().min(1),
+                description: z.string().optional(),
+                priority: z.enum(["low", "medium", "high"]).optional(),
+                assigneeAgentId: z.string().uuid().optional(),
+              }),
+            ]),
+          )
+          .default([]),
+        tokenCap: z.number().int().nonnegative().optional(),
+        assigneeAgentId: z.string().uuid().optional(),
+      }),
+      async ({ companyId, title, overview, tasks, tokenCap, assigneeAgentId }) => {
+        const tiers = tasks.length
+          ? [
+              {
+                id: "tier-1",
+                kind: "phase" as const,
+                name: "Phase 1",
+                requestedChildren: tasks.map((t) => (typeof t === "string" ? { title: t } : t)),
+                childIssueIds: [] as string[],
+              },
+            ]
+          : undefined;
+        return client.requestJson("POST", "/plans", {
+          body: {
+            companyId: client.resolveCompanyId(companyId),
+            title,
+            overview,
+            tiers,
+            budgetCapTokens: tokenCap ?? null,
+            assigneeAgentId: assigneeAgentId ?? null,
+          },
+        });
+      },
+    ),
+    makeTool(
       "paperclipUpdateIssue",
       "Patch an issue, optionally including a comment; include resume=true when intentionally requesting follow-up on resumable closed work",
       updateIssueToolSchema,
