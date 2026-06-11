@@ -43,7 +43,7 @@ export async function tryAdvisoryXactLock<T>(
     const rows = await tx.execute(
       sql`SELECT pg_try_advisory_xact_lock(${PAPERCLIP_LOCK_NAMESPACE}, hashtext(${name})) AS acquired`,
     );
-    const acquired = Boolean((rows as Array<{ acquired: boolean }>)[0]?.acquired);
+    const acquired = Boolean((rows as unknown as Array<{ acquired: boolean }>)[0]?.acquired);
     if (!acquired) return { acquired: false } as const;
     return { acquired: true, result: await fn(tx) } as const;
   });
