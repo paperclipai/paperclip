@@ -158,6 +158,7 @@ export const portabilityWorkflowManifestEntrySchema = z.object({
   workingDirectory: z.string().nullable().optional(),
   command: z.string().nullable().optional(),
   model: z.string().nullable().optional(),
+  path: z.string().optional().default(""),
 });
 
 export const portabilityManifestSchema = z.object({

@@ -17,6 +17,8 @@ export interface CompanyPortabilityWorkflowManifestEntry {
   workingDirectory: string | null;
   command: string | null;
   model: string | null;
+  /** Directory path within the source bundle (e.g. "workflows/content-strategist"). */
+  path: string;
 }
 
 export interface CompanyPortabilityEnvInput {

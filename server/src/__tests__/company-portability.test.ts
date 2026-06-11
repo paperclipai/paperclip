@@ -5,6 +5,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyPortabilityFileEntry } from "@paperclipai/shared";
+import { resolveManagedWorkflowDir } from "../home-paths.js";
 
 const companySvc = {
   getById: vi.fn(),
@@ -59,6 +60,12 @@ const assetSvc = {
   create: vi.fn(),
 };
 
+const workflowSvc = {
+  list: vi.fn(),
+  create: vi.fn(),
+  update: vi.fn(),
+};
+
 const secretSvc = {
   create: vi.fn(),
   normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
@@ -100,6 +107,10 @@ vi.mock("../services/company-skills.js", () => ({
 
 vi.mock("../services/assets.js", () => ({
   assetService: () => assetSvc,
+}));
+
+vi.mock("../services/workflows.js", () => ({
+  workflowService: () => workflowSvc,
 }));
 
 vi.mock("../services/secrets.js", () => ({
@@ -366,6 +377,19 @@ describe("company portability", () => {
     assetSvc.create.mockResolvedValue({
       id: "asset-created",
     });
+    workflowSvc.list.mockResolvedValue([]);
+    workflowSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: "workflow-created",
+      title: input.title,
+      description: input.description ?? null,
+      runnerConfig: input.runnerConfig ?? {},
+    }));
+    workflowSvc.update.mockImplementation(async (workflowId: string, input: Record<string, unknown>) => ({
+      id: workflowId,
+      title: input.title,
+      description: input.description ?? null,
+      runnerConfig: input.runnerConfig ?? {},
+    }));
     accessSvc.listActiveUserMemberships.mockResolvedValue([
       {
         id: "membership-1",
@@ -2501,6 +2525,70 @@ describe("company portability", () => {
     expect(nestedMaterializedFiles?.["AGENTS.md"]).toContain("You are ClaudeCoder.");
     expect(nestedMaterializedFiles?.["AGENTS.md"]).not.toMatch(/^---\n/);
     expect(nestedMaterializedFiles?.["AGENTS.md"]).not.toContain('name: "ClaudeCoder"');
+  });
+
+  it("does not materialize WORKFLOW.yaml into the managed workflow directory on import", async () => {
+    const portability = companyPortabilityService({} as any);
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "company-portability-workflow-"));
+    const previousHome = process.env.BIZBOX_HOME;
+    const previousInstanceId = process.env.BIZBOX_INSTANCE_ID;
+    process.env.BIZBOX_HOME = tempHome;
+    process.env.BIZBOX_INSTANCE_ID = "workflow-test";
+
+    try {
+      const existingManagedDir = resolveManagedWorkflowDir({ companyId: "company-1", workflowId: "workflow-existing" });
+      await fs.mkdir(path.join(existingManagedDir, "nested"), { recursive: true });
+      await fs.writeFile(path.join(existingManagedDir, "nested", "notes.txt"), "workflow payload");
+
+      workflowSvc.list.mockResolvedValueOnce([
+        {
+          id: "workflow-existing",
+          title: "Content Strategist",
+          description: "Plans content",
+          runnerConfig: {
+            agentPath: "agents/content-strategist",
+          },
+        },
+      ]);
+
+      const exported = await portability.exportBundle("company-1", {
+        include: { company: true, agents: false, projects: false, issues: false, workflows: true },
+      });
+
+      companySvc.create.mockResolvedValueOnce({ id: "company-imported", name: "Imported Paperclip" });
+      accessSvc.ensureMembership.mockResolvedValue(undefined);
+
+      await portability.importBundle({
+        source: {
+          type: "inline",
+          rootPath: exported.rootPath,
+          files: exported.files,
+        },
+        include: { company: true, agents: false, projects: false, issues: false, workflows: true },
+        target: {
+          mode: "new_company",
+          newCompanyName: "Imported Paperclip",
+        },
+        agents: "all",
+        collisionStrategy: "rename",
+      }, "user-1");
+
+      const importedManagedDir = resolveManagedWorkflowDir({ companyId: "company-imported", workflowId: "workflow-created" });
+      await expect(fs.readFile(path.join(importedManagedDir, "nested", "notes.txt"), "utf8")).resolves.toBe("workflow payload");
+      await expect(fs.access(path.join(importedManagedDir, "WORKFLOW.yaml"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.BIZBOX_HOME;
+      } else {
+        process.env.BIZBOX_HOME = previousHome;
+      }
+      if (previousInstanceId === undefined) {
+        delete process.env.BIZBOX_INSTANCE_ID;
+      } else {
+        process.env.BIZBOX_INSTANCE_ID = previousInstanceId;
+      }
+      await fs.rm(tempHome, { recursive: true, force: true });
+    }
   });
 
   it("rejects dangerous adapter types on agent-safe imports", async () => {

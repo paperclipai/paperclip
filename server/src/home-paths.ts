@@ -90,6 +90,24 @@ export function resolveManagedProjectWorkspaceDir(input: {
   );
 }
 
+export function resolveManagedWorkflowDir(input: {
+  companyId: string;
+  workflowId: string;
+}): string {
+  const companyId = input.companyId.trim();
+  const workflowId = input.workflowId.trim();
+  if (!companyId || !workflowId) {
+    throw new Error("Managed workflow dir path requires companyId and workflowId.");
+  }
+  return path.resolve(
+    resolvePaperclipInstanceRoot(),
+    "companies",
+    sanitizeFriendlyPathSegment(companyId, "company"),
+    "workflows",
+    sanitizeFriendlyPathSegment(workflowId, "workflow"),
+  );
+}
+
 export function resolveHomeAwarePath(value: string): string {
   return path.resolve(expandHomePrefix(value));
 }

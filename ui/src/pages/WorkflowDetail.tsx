@@ -1,4 +1,10 @@
-import { type Dispatch, type SetStateAction, useEffect, useMemo, useState } from "react";
+import {
+  type Dispatch,
+  type SetStateAction,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "@/lib/router";
 import {
@@ -26,7 +32,10 @@ import type {
 } from "@paperclipai/shared";
 import { workflowsApi } from "../api/workflows";
 import { buildTranscript, getUIAdapter } from "../adapters";
-import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
+import {
+  RunTranscriptView,
+  type TranscriptMode,
+} from "../components/transcript/RunTranscriptView";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
@@ -56,10 +65,22 @@ function toDraft(detail: WorkflowDetailType): WorkflowEditDraft {
     title: detail.title,
     description: detail.description ?? "",
     status: detail.status,
-    agentPath: typeof detail.runnerConfig.agentPath === "string" ? detail.runnerConfig.agentPath : "",
-    cwd: typeof detail.runnerConfig.cwd === "string" ? detail.runnerConfig.cwd : "",
-    command: typeof detail.runnerConfig.command === "string" ? detail.runnerConfig.command : "",
-    model: typeof detail.runnerConfig.model === "string" ? detail.runnerConfig.model : "",
+    agentPath:
+      typeof detail.runnerConfig.agentPath === "string"
+        ? detail.runnerConfig.agentPath
+        : "",
+    cwd:
+      typeof detail.runnerConfig.cwd === "string"
+        ? detail.runnerConfig.cwd
+        : "",
+    command:
+      typeof detail.runnerConfig.command === "string"
+        ? detail.runnerConfig.command
+        : "",
+    model:
+      typeof detail.runnerConfig.model === "string"
+        ? detail.runnerConfig.model
+        : "",
   };
 }
 
@@ -111,14 +132,22 @@ const GRAPH_ROW_GAP = 28;
 const GRAPH_PADDING_X = 28;
 const GRAPH_PADDING_Y = 24;
 
-function estimateGraphNodeHeight(kind: GraphNodeKind, handoff?: WorkflowHandoff | undefined) {
+function estimateGraphNodeHeight(
+  kind: GraphNodeKind,
+  handoff?: WorkflowHandoff | undefined,
+) {
   if (kind === "start") return 76;
   if (kind === "terminal") return 92;
   if (kind === "deliverable") return 92;
   if (kind === "human") {
     const promptLength = handoff?.promptMarkdown.length ?? 0;
     const settledLength = handoff?.responseMarkdown?.length ?? 0;
-    return Math.min(320, 180 + Math.ceil(promptLength / 80) * 18 + Math.ceil(settledLength / 120) * 14);
+    return Math.min(
+      320,
+      180 +
+        Math.ceil(promptLength / 80) * 18 +
+        Math.ceil(settledLength / 120) * 14,
+    );
   }
   const descriptionLength = handoff ? 0 : 0;
   return 132 + descriptionLength;
@@ -161,7 +190,10 @@ function buildWorkflowGraph(
     status: runDetail?.status === "running" ? "running" : "idle",
   });
 
-  const appendPhase = (phase: WorkflowPhase, incomingIds: string[]): string[] => {
+  const appendPhase = (
+    phase: WorkflowPhase,
+    incomingIds: string[],
+  ): string[] => {
     const phaseId = `phase:${phase.phaseKey}`;
     addNode({
       id: phaseId,
@@ -177,7 +209,8 @@ function buildWorkflowGraph(
 
     let outputs = [phaseId];
     const handoffs = [...(handoffsByPhase.get(phase.phaseKey) ?? [])].sort(
-      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      (a, b) =>
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
     );
     if (handoffs.length > 0) {
       let previousId = phaseId;
@@ -186,7 +219,8 @@ function buildWorkflowGraph(
         addNode({
           id: handoffId,
           kind: "human",
-          label: handoff.kind === "approval" ? "Human approval" : "Human response",
+          label:
+            handoff.kind === "approval" ? "Human approval" : "Human response",
           level: 1,
           handoff,
           width: GRAPH_HUMAN_WIDTH,
@@ -209,9 +243,10 @@ function buildWorkflowGraph(
     return childOutputs;
   };
 
-  const leafIds = roots.length > 0
-    ? roots.flatMap((phase) => appendPhase(phase, ["graph:start"]))
-    : ["graph:start"];
+  const leafIds =
+    roots.length > 0
+      ? roots.flatMap((phase) => appendPhase(phase, ["graph:start"]))
+      : ["graph:start"];
 
   addNode({
     id: "graph:terminal",
@@ -290,11 +325,14 @@ function buildWorkflowGraph(
     for (const node of levelNodes) {
       node.x = GRAPH_PADDING_X + level * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP);
       if (node.kind === "human") {
-        node.x = GRAPH_PADDING_X + level * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP) - 16;
+        node.x =
+          GRAPH_PADDING_X + level * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP) - 16;
       } else if (node.kind === "start" || node.kind === "terminal") {
-        node.x = GRAPH_PADDING_X + level * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP) + 32;
+        node.x =
+          GRAPH_PADDING_X + level * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP) + 32;
       } else if (node.kind === "deliverable") {
-        node.x = GRAPH_PADDING_X + level * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP) + 12;
+        node.x =
+          GRAPH_PADDING_X + level * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP) + 12;
       }
       node.y = cursorY;
       cursorY += node.height + GRAPH_ROW_GAP;
@@ -302,7 +340,9 @@ function buildWorkflowGraph(
     graphHeight = Math.max(graphHeight, cursorY);
   }
 
-  const graphWidth = GRAPH_PADDING_X * 2 + (Math.max(...sortedLevels, 0) + 1) * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP);
+  const graphWidth =
+    GRAPH_PADDING_X * 2 +
+    (Math.max(...sortedLevels, 0) + 1) * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP);
 
   return {
     nodes: orderedNodes,
@@ -344,7 +384,10 @@ function WorkflowTopologyGraph({
   onRespond: (handoffId: string) => void;
   pendingHandoffId: string | null;
 }) {
-  const nodeMap = useMemo(() => new Map(graph.nodes.map((node) => [node.id, node])), [graph.nodes]);
+  const nodeMap = useMemo(
+    () => new Map(graph.nodes.map((node) => [node.id, node])),
+    [graph.nodes],
+  );
 
   return (
     <div className="overflow-x-auto rounded-3xl border border-border/70 bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.06),_transparent_42%),linear-gradient(180deg,rgba(255,255,255,0.03),transparent)] p-3">
@@ -386,15 +429,22 @@ function WorkflowTopologyGraph({
           >
             <GraphNodeCard
               node={node}
-              response={node.handoff ? (handoffResponses[node.handoff.id] ?? "") : ""}
+              response={
+                node.handoff ? (handoffResponses[node.handoff.id] ?? "") : ""
+              }
               onChangeResponse={(value) => {
                 if (!node.handoff) return;
-                setHandoffResponses((current) => ({ ...current, [node.handoff!.id]: value }));
+                setHandoffResponses((current) => ({
+                  ...current,
+                  [node.handoff!.id]: value,
+                }));
               }}
               onApprove={() => node.handoff && onApprove(node.handoff.id)}
               onReject={() => node.handoff && onReject(node.handoff.id)}
               onRespond={() => node.handoff && onRespond(node.handoff.id)}
-              pending={node.handoff ? pendingHandoffId === node.handoff.id : false}
+              pending={
+                node.handoff ? pendingHandoffId === node.handoff.id : false
+              }
             />
           </div>
         ))}
@@ -433,27 +483,34 @@ function GraphNodeCard({
       />
     );
   }
-  if (node.kind === "start") return <GraphStartNode status={node.status ?? "idle"} />;
-  if (node.kind === "terminal") return <GraphTerminalNode status={node.status ?? "idle"} />;
-  if (node.kind === "deliverable" && node.deliverable) return <GraphDeliverableNode node={node} />;
+  if (node.kind === "start")
+    return <GraphStartNode status={node.status ?? "idle"} />;
+  if (node.kind === "terminal")
+    return <GraphTerminalNode status={node.status ?? "idle"} />;
+  if (node.kind === "deliverable" && node.deliverable)
+    return <GraphDeliverableNode node={node} />;
   return <GraphPhaseNode node={node} />;
 }
 
 function GraphStartNode({ status }: { status: string }) {
   return (
-    <div className={cn(
-      "rounded-full border px-5 py-4 shadow-sm",
-      status === "running"
-        ? "border-amber-500/60 bg-amber-500/10 animate-pulse"
-        : "border-border bg-background/90",
-    )}>
+    <div
+      className={cn(
+        "rounded-full border px-5 py-4 shadow-sm",
+        status === "running"
+          ? "border-amber-500/60 bg-amber-500/10 animate-pulse"
+          : "border-border bg-background/90",
+      )}
+    >
       <div className="flex items-center gap-3">
         <div className="rounded-full border border-border/70 bg-background/80 p-2">
           <Play className="h-4 w-4" />
         </div>
         <div>
           <div className="text-sm font-semibold">Start</div>
-          <div className="text-xs uppercase tracking-wide text-muted-foreground">{status.replaceAll("_", " ")}</div>
+          <div className="text-xs uppercase tracking-wide text-muted-foreground">
+            {status.replaceAll("_", " ")}
+          </div>
         </div>
       </div>
     </div>
@@ -464,24 +521,34 @@ function GraphTerminalNode({ status }: { status: string }) {
   const settled = status === "succeeded";
   const failed = status === "failed";
   return (
-    <div className={cn(
-      "rounded-3xl border p-4 shadow-sm",
-      settled
-        ? "border-emerald-500/45 bg-emerald-500/10"
-        : failed
-          ? "border-red-500/45 bg-red-500/10"
-          : "border-border bg-background/90",
-    )}>
+    <div
+      className={cn(
+        "rounded-3xl border p-4 shadow-sm",
+        settled
+          ? "border-emerald-500/45 bg-emerald-500/10"
+          : failed
+            ? "border-red-500/45 bg-red-500/10"
+            : "border-border bg-background/90",
+      )}
+    >
       <div className="flex items-center gap-3">
-        <div className={cn(
-          "rounded-2xl border p-2",
-          settled ? "border-emerald-500/50 bg-emerald-500/10" : failed ? "border-red-500/50 bg-red-500/10" : "border-border/70 bg-background/80",
-        )}>
+        <div
+          className={cn(
+            "rounded-2xl border p-2",
+            settled
+              ? "border-emerald-500/50 bg-emerald-500/10"
+              : failed
+                ? "border-red-500/50 bg-red-500/10"
+                : "border-border/70 bg-background/80",
+          )}
+        >
           <Check className="h-4 w-4" />
         </div>
         <div>
           <div className="text-sm font-semibold">Terminal</div>
-          <div className="text-xs text-muted-foreground">Run outcome and downstream artifacts</div>
+          <div className="text-xs text-muted-foreground">
+            Run outcome and downstream artifacts
+          </div>
         </div>
       </div>
       <div className="mt-3 rounded-full border border-border/60 bg-background/70 px-3 py-1 text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -499,9 +566,15 @@ function GraphDeliverableNode({ node }: { node: GraphNode }) {
           <Download className="h-4 w-4" />
         </div>
         <div className="min-w-0">
-          <div className="text-sm font-semibold text-foreground">Deliverable</div>
-          <div className="mt-1 truncate text-sm text-foreground/90">{node.deliverable?.title}</div>
-          <div className="mt-2 text-xs text-emerald-600 dark:text-emerald-300">Artifact ready</div>
+          <div className="text-sm font-semibold text-foreground">
+            Deliverable
+          </div>
+          <div className="mt-1 truncate text-sm text-foreground/90">
+            {node.deliverable?.title}
+          </div>
+          <div className="mt-2 text-xs text-emerald-600 dark:text-emerald-300">
+            Artifact ready
+          </div>
         </div>
       </div>
     </div>
@@ -514,31 +587,34 @@ function GraphPhaseNode({ node }: { node: GraphNode }) {
   const description = readPhaseMetaString(phase, "description");
   const filePath = readPhaseMetaString(phase, "filePath");
   const functionName = readPhaseMetaString(phase, "functionName");
-  const kindLabel = phase.kind === "loop"
-    ? "Loop agent"
-    : phase.kind === "validator"
-      ? "Validator"
-      : phase.kind === "tool"
-        ? "Tool"
-        : phase.kind === "agent"
-          ? "Agent"
-          : "Phase";
-  const tone = phase.status === "running"
-    ? "border-amber-500/60 bg-amber-500/10 shadow-[0_0_0_1px_rgba(245,158,11,0.2)] animate-pulse"
-    : phase.status === "succeeded"
-      ? "border-emerald-500/40 bg-emerald-500/10"
-      : phase.status === "failed"
-        ? "border-red-500/40 bg-red-500/10"
-        : phase.status === "awaiting_human"
-          ? "border-sky-500/40 bg-sky-500/10"
-          : "border-border bg-background/90";
-  const Icon = phase.kind === "loop"
-    ? Repeat
-    : phase.kind === "tool"
-      ? Wrench
+  const kindLabel =
+    phase.kind === "loop"
+      ? "Loop agent"
       : phase.kind === "validator"
-        ? ShieldCheck
-        : Bot;
+        ? "Validator"
+        : phase.kind === "tool"
+          ? "Tool"
+          : phase.kind === "agent"
+            ? "Agent"
+            : "Phase";
+  const tone =
+    phase.status === "running"
+      ? "border-amber-500/60 bg-amber-500/10 shadow-[0_0_0_1px_rgba(245,158,11,0.2)] animate-pulse"
+      : phase.status === "succeeded"
+        ? "border-emerald-500/40 bg-emerald-500/10"
+        : phase.status === "failed"
+          ? "border-red-500/40 bg-red-500/10"
+          : phase.status === "awaiting_human"
+            ? "border-sky-500/40 bg-sky-500/10"
+            : "border-border bg-background/90";
+  const Icon =
+    phase.kind === "loop"
+      ? Repeat
+      : phase.kind === "tool"
+        ? Wrench
+        : phase.kind === "validator"
+          ? ShieldCheck
+          : Bot;
 
   return (
     <div className={cn("rounded-3xl border p-4 shadow-sm", tone)}>
@@ -552,7 +628,11 @@ function GraphPhaseNode({ node }: { node: GraphNode }) {
             <div className="rounded-full border border-border/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground inline-flex">
               {kindLabel}
             </div>
-            {description ? <p className="pt-1 text-xs text-muted-foreground">{description}</p> : null}
+            {description ? (
+              <p className="pt-1 text-xs text-muted-foreground">
+                {description}
+              </p>
+            ) : null}
           </div>
         </div>
         <span className="rounded-full border border-border/60 bg-background/70 px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
@@ -588,10 +668,14 @@ function GraphHumanNode({
   const isPending = handoff.status === "pending";
 
   return (
-    <div className={cn(
-      "rounded-3xl border p-4 shadow-sm",
-      isPending ? "border-sky-500/55 bg-sky-500/10" : "border-border bg-background/90",
-    )}>
+    <div
+      className={cn(
+        "rounded-3xl border p-4 shadow-sm",
+        isPending
+          ? "border-sky-500/55 bg-sky-500/10"
+          : "border-border bg-background/90",
+      )}
+    >
       <div className="mb-3 flex items-center gap-3">
         <StickFigure />
         <div>
@@ -599,7 +683,9 @@ function GraphHumanNode({
             {handoff.kind === "approval" ? "Human approval" : "Human response"}
           </div>
           <div className="flex items-center gap-2">
-            <div className="text-xs text-muted-foreground">{handoff.status.replaceAll("_", " ")}</div>
+            <div className="text-xs text-muted-foreground">
+              {handoff.status.replaceAll("_", " ")}
+            </div>
             {handoff.bridgeStatus === "waiting_for_human" && (
               <span className="inline-flex items-center gap-1 rounded-full bg-sky-500/15 px-2 py-0.5 text-xs font-medium text-sky-600 dark:text-sky-400">
                 <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />
@@ -621,7 +707,11 @@ function GraphHumanNode({
           <Textarea
             value={response}
             onChange={(event) => onChange(event.target.value)}
-            placeholder={handoff.kind === "approval" ? "Optional decision note" : "Write the human response"}
+            placeholder={
+              handoff.kind === "approval"
+                ? "Optional decision note"
+                : "Write the human response"
+            }
             rows={3}
           />
           <div className="flex flex-wrap gap-2">
@@ -631,13 +721,22 @@ function GraphHumanNode({
                   <Check className="mr-1.5 h-3.5 w-3.5" />
                   Approve
                 </Button>
-                <Button size="sm" variant="outline" onClick={onReject} disabled={pending}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={onReject}
+                  disabled={pending}
+                >
                   <X className="mr-1.5 h-3.5 w-3.5" />
                   Reject
                 </Button>
               </>
             ) : (
-              <Button size="sm" onClick={onRespond} disabled={pending || response.trim().length === 0}>
+              <Button
+                size="sm"
+                onClick={onRespond}
+                disabled={pending || response.trim().length === 0}
+              >
                 <UserRound className="mr-1.5 h-3.5 w-3.5" />
                 Respond
               </Button>
@@ -655,7 +754,14 @@ function GraphHumanNode({
 
 function StickFigure() {
   return (
-    <svg viewBox="0 0 48 48" className="h-10 w-10 text-foreground" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+    <svg
+      viewBox="0 0 48 48"
+      className="h-10 w-10 text-foreground"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+    >
       <circle cx="24" cy="10" r="5" />
       <path d="M24 15v13" />
       <path d="M14 22l10 6 10-6" />
@@ -672,7 +778,9 @@ export function WorkflowDetail() {
   const queryClient = useQueryClient();
   const [editDraft, setEditDraft] = useState<WorkflowEditDraft | null>(null);
   const [inputMarkdown, setInputMarkdown] = useState("");
-  const [handoffResponses, setHandoffResponses] = useState<Record<string, string>>({});
+  const [handoffResponses, setHandoffResponses] = useState<
+    Record<string, string>
+  >({});
 
   const workflowQuery = useQuery({
     queryKey: queryKeys.workflows.detail(workflowId ?? ""),
@@ -688,22 +796,32 @@ export function WorkflowDetail() {
     enabled: !!latestRunId,
     refetchInterval: (query) => {
       const run = query.state.data as WorkflowRunDetail | undefined;
-      return run && ["queued", "running", "awaiting_human"].includes(run.status) ? 3000 : false;
+      return run && ["queued", "running", "awaiting_human"].includes(run.status)
+        ? 3000
+        : false;
     },
   });
 
   const activityQuery = useQuery({
     queryKey: [
-      ...queryKeys.workflows.activity(selectedCompanyId ?? "", workflowId ?? ""),
+      ...queryKeys.workflows.activity(
+        selectedCompanyId ?? "",
+        workflowId ?? "",
+      ),
       workflowQuery.data?.runs.map((run) => run.id).join(",") ?? "",
       runQuery.data?.handoffs.map((handoff) => handoff.id).join(",") ?? "",
     ],
-    queryFn: () => workflowsApi.activity(selectedCompanyId!, workflowId!, {
-      runIds: workflowQuery.data?.runs.map((run) => run.id) ?? [],
-      handoffIds: runQuery.data?.handoffs.map((handoff) => handoff.id) ?? [],
-    }),
+    queryFn: () =>
+      workflowsApi.activity(selectedCompanyId!, workflowId!, {
+        runIds: workflowQuery.data?.runs.map((run) => run.id) ?? [],
+        handoffIds: runQuery.data?.handoffs.map((handoff) => handoff.id) ?? [],
+      }),
     enabled: !!selectedCompanyId && !!workflowId,
-    refetchInterval: runQuery.data && ["queued", "running", "awaiting_human"].includes(runQuery.data.status) ? 4000 : false,
+    refetchInterval:
+      runQuery.data &&
+      ["queued", "running", "awaiting_human"].includes(runQuery.data.status)
+        ? 4000
+        : false,
   });
 
   useEffect(() => {
@@ -721,25 +839,40 @@ export function WorkflowDetail() {
   const refreshAll = async () => {
     if (!workflowId || !selectedCompanyId) return;
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: queryKeys.workflows.detail(workflowId) }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.workflows.list(selectedCompanyId) }),
-      latestRunId ? queryClient.invalidateQueries({ queryKey: queryKeys.workflows.run(latestRunId) }) : Promise.resolve(),
-      queryClient.invalidateQueries({ queryKey: queryKeys.deliverables.list(selectedCompanyId) }),
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.workflows.detail(workflowId),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.workflows.list(selectedCompanyId),
+      }),
+      latestRunId
+        ? queryClient.invalidateQueries({
+            queryKey: queryKeys.workflows.run(latestRunId),
+          })
+        : Promise.resolve(),
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.deliverables.list(selectedCompanyId),
+      }),
     ]);
   };
 
   const saveMutation = useMutation({
-    mutationFn: () => workflowsApi.update(workflowId!, {
-      title: editDraft!.title.trim(),
-      description: editDraft!.description.trim() || null,
-      status: editDraft!.status,
-      runnerConfig: {
-        agentPath: editDraft!.agentPath.trim(),
-        ...(editDraft!.cwd.trim() ? { cwd: editDraft!.cwd.trim() } : {}),
-        ...(editDraft!.command.trim() ? { command: editDraft!.command.trim() } : {}),
-        ...(editDraft!.model.trim() ? { model: editDraft!.model.trim() } : {}),
-      },
-    }),
+    mutationFn: () =>
+      workflowsApi.update(workflowId!, {
+        title: editDraft!.title.trim(),
+        description: editDraft!.description.trim() || null,
+        status: editDraft!.status,
+        runnerConfig: {
+          agentPath: editDraft!.agentPath.trim(),
+          ...(editDraft!.cwd.trim() ? { cwd: editDraft!.cwd.trim() } : {}),
+          ...(editDraft!.command.trim()
+            ? { command: editDraft!.command.trim() }
+            : {}),
+          ...(editDraft!.model.trim()
+            ? { model: editDraft!.model.trim() }
+            : {}),
+        },
+      }),
     onSuccess: async () => {
       await refreshAll();
       pushToast({ title: "Workflow updated" });
@@ -754,7 +887,8 @@ export function WorkflowDetail() {
   });
 
   const runMutation = useMutation({
-    mutationFn: () => workflowsApi.run(workflowId!, { inputMarkdown: inputMarkdown.trim() }),
+    mutationFn: () =>
+      workflowsApi.run(workflowId!, { inputMarkdown: inputMarkdown.trim() }),
     onSuccess: async () => {
       setInputMarkdown("");
       await refreshAll();
@@ -770,21 +904,24 @@ export function WorkflowDetail() {
   });
 
   const approveMutation = useMutation({
-    mutationFn: (handoffId: string) => workflowsApi.approveHandoff(handoffId, {
-      responseMarkdown: handoffResponses[handoffId]?.trim() || null,
-    }),
+    mutationFn: (handoffId: string) =>
+      workflowsApi.approveHandoff(handoffId, {
+        responseMarkdown: handoffResponses[handoffId]?.trim() || null,
+      }),
     onSuccess: refreshAll,
   });
   const rejectMutation = useMutation({
-    mutationFn: (handoffId: string) => workflowsApi.rejectHandoff(handoffId, {
-      responseMarkdown: handoffResponses[handoffId]?.trim() || null,
-    }),
+    mutationFn: (handoffId: string) =>
+      workflowsApi.rejectHandoff(handoffId, {
+        responseMarkdown: handoffResponses[handoffId]?.trim() || null,
+      }),
     onSuccess: refreshAll,
   });
   const respondMutation = useMutation({
-    mutationFn: (handoffId: string) => workflowsApi.respondHandoff(handoffId, {
-      responseMarkdown: handoffResponses[handoffId]?.trim() || "",
-    }),
+    mutationFn: (handoffId: string) =>
+      workflowsApi.respondHandoff(handoffId, {
+        responseMarkdown: handoffResponses[handoffId]?.trim() || "",
+      }),
     onSuccess: refreshAll,
   });
 
@@ -809,28 +946,31 @@ export function WorkflowDetail() {
   const runDetail = runQuery.data ?? null;
   const pipelinePhases = runDetail?.phases.length
     ? runDetail.phases
-    : workflow.pipelineDefinition.phases.map((phase) => ({
-        id: phase.key,
-        companyId: workflow.companyId,
-        workflowRunId: workflow.latestRun?.id ?? "definition",
-        phaseKey: phase.key,
-        label: phase.label,
-        kind: phase.kind,
-        ordinal: phase.ordinal,
-        status: "idle",
-        metadata: {
-          filePath: phase.filePath,
-          functionName: phase.functionName,
-          parentKey: phase.parentKey ?? null,
-          depth: phase.depth ?? 0,
-          agentName: phase.agentName ?? null,
-          description: phase.description ?? null,
-        },
-        startedAt: null,
-        finishedAt: null,
-        createdAt: workflow.createdAt,
-        updatedAt: workflow.updatedAt,
-      } satisfies WorkflowPhase));
+    : workflow.pipelineDefinition.phases.map(
+        (phase) =>
+          ({
+            id: phase.key,
+            companyId: workflow.companyId,
+            workflowRunId: workflow.latestRun?.id ?? "definition",
+            phaseKey: phase.key,
+            label: phase.label,
+            kind: phase.kind,
+            ordinal: phase.ordinal,
+            status: "idle",
+            metadata: {
+              filePath: phase.filePath,
+              functionName: phase.functionName,
+              parentKey: phase.parentKey ?? null,
+              depth: phase.depth ?? 0,
+              agentName: phase.agentName ?? null,
+              description: phase.description ?? null,
+            },
+            startedAt: null,
+            finishedAt: null,
+            createdAt: workflow.createdAt,
+            updatedAt: workflow.updatedAt,
+          }) satisfies WorkflowPhase,
+      );
 
   return (
     <div className="space-y-6">
@@ -838,7 +978,8 @@ export function WorkflowDetail() {
         <div>
           <h1 className="text-xl font-semibold">{workflow.title}</h1>
           <p className="text-sm text-muted-foreground">
-            Google ADK workflow with an inferred read-only pipeline and workflow-backed deliverables.
+            Google ADK workflow with an inferred read-only pipeline and
+            workflow-backed deliverables.
           </p>
         </div>
         {workflow.latestDeliverable ? (
@@ -862,10 +1003,10 @@ export function WorkflowDetail() {
           onReject={(handoffId) => rejectMutation.mutate(handoffId)}
           onRespond={(handoffId) => respondMutation.mutate(handoffId)}
           pendingHandoffId={
-            approveMutation.variables
-            ?? rejectMutation.variables
-            ?? respondMutation.variables
-            ?? null
+            approveMutation.variables ??
+            rejectMutation.variables ??
+            respondMutation.variables ??
+            null
           }
         />
 
@@ -885,9 +1026,15 @@ export function WorkflowDetail() {
                 <div className="flex justify-end">
                   <Button
                     onClick={() => runMutation.mutate()}
-                    disabled={runMutation.isPending || inputMarkdown.trim().length === 0}
+                    disabled={
+                      runMutation.isPending || inputMarkdown.trim().length === 0
+                    }
                   >
-                    {runMutation.isPending ? <LoaderCircle className="mr-1.5 h-4 w-4 animate-spin" /> : <Play className="mr-1.5 h-4 w-4" />}
+                    {runMutation.isPending ? (
+                      <LoaderCircle className="mr-1.5 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Play className="mr-1.5 h-4 w-4" />
+                    )}
                     Run workflow
                   </Button>
                 </div>
@@ -898,7 +1045,10 @@ export function WorkflowDetail() {
 
             <RunHistoryCard workflow={workflow} runDetail={runDetail} />
 
-            <ActivityCard events={activityQuery.data ?? []} loading={activityQuery.isLoading} />
+            <ActivityCard
+              events={activityQuery.data ?? []}
+              loading={activityQuery.isLoading}
+            />
           </div>
 
           <div className="space-y-6">
@@ -911,14 +1061,26 @@ export function WorkflowDetail() {
                   <Label>Title</Label>
                   <Input
                     value={editDraft.title}
-                    onChange={(event) => setEditDraft((current) => current ? { ...current, title: event.target.value } : current)}
+                    onChange={(event) =>
+                      setEditDraft((current) =>
+                        current
+                          ? { ...current, title: event.target.value }
+                          : current,
+                      )
+                    }
                   />
                 </div>
                 <div className="space-y-2">
                   <Label>Description</Label>
                   <Textarea
                     value={editDraft.description}
-                    onChange={(event) => setEditDraft((current) => current ? { ...current, description: event.target.value } : current)}
+                    onChange={(event) =>
+                      setEditDraft((current) =>
+                        current
+                          ? { ...current, description: event.target.value }
+                          : current,
+                      )
+                    }
                     rows={4}
                   />
                 </div>
@@ -926,7 +1088,13 @@ export function WorkflowDetail() {
                   <Label>Status</Label>
                   <select
                     value={editDraft.status}
-                    onChange={(event) => setEditDraft((current) => current ? { ...current, status: event.target.value } : current)}
+                    onChange={(event) =>
+                      setEditDraft((current) =>
+                        current
+                          ? { ...current, status: event.target.value }
+                          : current,
+                      )
+                    }
                     className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                   >
                     <option value="active">Active</option>
@@ -938,34 +1106,62 @@ export function WorkflowDetail() {
                   <Label>ADK path</Label>
                   <Input
                     value={editDraft.agentPath}
-                    onChange={(event) => setEditDraft((current) => current ? { ...current, agentPath: event.target.value } : current)}
+                    onChange={(event) =>
+                      setEditDraft((current) =>
+                        current
+                          ? { ...current, agentPath: event.target.value }
+                          : current,
+                      )
+                    }
                   />
                 </div>
                 <div className="space-y-2">
                   <Label>Working directory</Label>
                   <Input
                     value={editDraft.cwd}
-                    onChange={(event) => setEditDraft((current) => current ? { ...current, cwd: event.target.value } : current)}
+                    onChange={(event) =>
+                      setEditDraft((current) =>
+                        current
+                          ? { ...current, cwd: event.target.value }
+                          : current,
+                      )
+                    }
                   />
                 </div>
                 <div className="space-y-2">
                   <Label>Command override</Label>
                   <Input
                     value={editDraft.command}
-                    onChange={(event) => setEditDraft((current) => current ? { ...current, command: event.target.value } : current)}
+                    onChange={(event) =>
+                      setEditDraft((current) =>
+                        current
+                          ? { ...current, command: event.target.value }
+                          : current,
+                      )
+                    }
                   />
                 </div>
                 <div className="space-y-2">
                   <Label>Model</Label>
                   <Input
                     value={editDraft.model}
-                    onChange={(event) => setEditDraft((current) => current ? { ...current, model: event.target.value } : current)}
+                    onChange={(event) =>
+                      setEditDraft((current) =>
+                        current
+                          ? { ...current, model: event.target.value }
+                          : current,
+                      )
+                    }
                   />
                 </div>
                 <div className="flex justify-end">
                   <Button
                     onClick={() => saveMutation.mutate()}
-                    disabled={saveMutation.isPending || !editDraft.title.trim() || !editDraft.agentPath.trim()}
+                    disabled={
+                      saveMutation.isPending ||
+                      !editDraft.title.trim() ||
+                      !editDraft.agentPath.trim()
+                    }
                   >
                     <Save className="mr-1.5 h-4 w-4" />
                     Save workflow
@@ -979,17 +1175,23 @@ export function WorkflowDetail() {
                 <CardTitle className="text-base">Latest deliverables</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
-                {runDetail?.deliverables.length ? runDetail.deliverables.map((deliverable) => (
-                  <Link
-                    key={deliverable.id}
-                    to={`/deliverables/${deliverable.id}`}
-                    className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm no-underline transition-colors hover:bg-muted/40"
-                  >
-                    <span className="truncate">{deliverable.title}</span>
-                    <span className="text-xs text-muted-foreground">{formatFileSize(deliverable.byteSize)}</span>
-                  </Link>
-                )) : (
-                  <div className="text-sm text-muted-foreground">No deliverables yet.</div>
+                {runDetail?.deliverables.length ? (
+                  runDetail.deliverables.map((deliverable) => (
+                    <Link
+                      key={deliverable.id}
+                      to={`/deliverables/${deliverable.id}`}
+                      className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm no-underline transition-colors hover:bg-muted/40"
+                    >
+                      <span className="truncate">{deliverable.title}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {formatFileSize(deliverable.byteSize)}
+                      </span>
+                    </Link>
+                  ))
+                ) : (
+                  <div className="text-sm text-muted-foreground">
+                    No deliverables yet.
+                  </div>
                 )}
               </CardContent>
             </Card>
@@ -1068,7 +1270,11 @@ function PipelineCard({
   );
 }
 
-function WorkflowRunConsoleCard({ runDetail }: { runDetail: WorkflowRunDetail | null }) {
+function WorkflowRunConsoleCard({
+  runDetail,
+}: {
+  runDetail: WorkflowRunDetail | null;
+}) {
   const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("nice");
 
   useEffect(() => {
@@ -1077,7 +1283,11 @@ function WorkflowRunConsoleCard({ runDetail }: { runDetail: WorkflowRunDetail | 
 
   const consoleEntries = runDetail?.consoleEntries ?? [];
   const transcript = useMemo(
-    () => buildTranscript(consoleEntries as WorkflowRunConsoleChunk[], getUIAdapter("google_adk")),
+    () =>
+      buildTranscript(
+        consoleEntries as WorkflowRunConsoleChunk[],
+        getUIAdapter("google_adk"),
+      ),
     [consoleEntries],
   );
 
@@ -1088,13 +1298,17 @@ function WorkflowRunConsoleCard({ runDetail }: { runDetail: WorkflowRunDetail | 
           <CardTitle className="text-base">Operator console</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="text-sm text-muted-foreground">Run a workflow to inspect stdout and stderr here.</div>
+          <div className="text-sm text-muted-foreground">
+            Run a workflow to inspect stdout and stderr here.
+          </div>
         </CardContent>
       </Card>
     );
   }
 
-  const isLive = ["queued", "running", "awaiting_human"].includes(runDetail.status);
+  const isLive = ["queued", "running", "awaiting_human"].includes(
+    runDetail.status,
+  );
 
   return (
     <Card>
@@ -1144,16 +1358,18 @@ function WorkflowRunConsoleCard({ runDetail }: { runDetail: WorkflowRunDetail | 
           />
         </div>
 
-        {(runDetail.error || runDetail.stderrExcerpt || runDetail.resultJson) ? (
-          <div className="space-y-3 rounded-2xl border border-red-500/20 bg-red-500/[0.06] p-4">
-            <div className="text-xs font-medium uppercase tracking-wide text-red-700 dark:text-red-300">
-              Failure details
+        {runDetail.error || runDetail.stderrExcerpt || runDetail.resultJson ? (
+          <div className="space-y-3 rounded-2xl border border-border/30 bg-muted/30 p-4">
+            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              {runDetail.error || runDetail.stderrExcerpt ? "Stderr details" : "Run details"}
             </div>
             {runDetail.error ? (
-              <div className="text-sm text-red-700 dark:text-red-200">{runDetail.error}</div>
+              <div className="text-sm text-red-700 dark:text-red-200">
+                {runDetail.error}
+              </div>
             ) : null}
             {runDetail.stderrExcerpt ? (
-              <pre className="overflow-x-auto whitespace-pre-wrap rounded-xl bg-background/80 p-3 text-xs text-red-700 dark:text-red-200">
+              <pre className="overflow-x-auto whitespace-pre-wrap rounded-xl bg-background/80 p-3 text-xs text-foreground/80">
                 {runDetail.stderrExcerpt}
               </pre>
             ) : null}
@@ -1188,19 +1404,33 @@ function RunHistoryCard({
           workflow.runs.map((run) => {
             const isLatest = runDetail?.id === run.id;
             return (
-              <div key={run.id} className={`rounded-xl border p-3 ${isLatest ? "border-amber-500/40 bg-amber-500/5" : "border-border"}`}>
+              <div
+                key={run.id}
+                className={`rounded-xl border p-3 ${isLatest ? "border-amber-500/40 bg-amber-500/5" : "border-border"}`}
+              >
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-sm font-medium">{run.status.replaceAll("_", " ")}</div>
-                  <div className="text-xs text-muted-foreground" title={formatDateTime(run.createdAt)}>
+                  <div className="text-sm font-medium">
+                    {run.status.replaceAll("_", " ")}
+                  </div>
+                  <div
+                    className="text-xs text-muted-foreground"
+                    title={formatDateTime(run.createdAt)}
+                  >
                     {relativeTime(run.createdAt)}
                   </div>
                 </div>
                 {run.summary ? (
-                  <p className="mt-2 text-sm text-muted-foreground line-clamp-3">{run.summary}</p>
+                  <p className="mt-2 text-sm text-muted-foreground line-clamp-3">
+                    {run.summary}
+                  </p>
                 ) : null}
                 <div className="mt-2 text-xs text-muted-foreground">
-                  {run.startedAt ? `Started ${formatDateTime(run.startedAt)}` : "Queued"}
-                  {run.finishedAt ? ` · Finished ${formatDateTime(run.finishedAt)}` : ""}
+                  {run.startedAt
+                    ? `Started ${formatDateTime(run.startedAt)}`
+                    : "Queued"}
+                  {run.finishedAt
+                    ? ` · Finished ${formatDateTime(run.finishedAt)}`
+                    : ""}
                 </div>
               </div>
             );
@@ -1211,7 +1441,13 @@ function RunHistoryCard({
   );
 }
 
-function ActivityCard({ events, loading }: { events: ActivityEvent[]; loading: boolean }) {
+function ActivityCard({
+  events,
+  loading,
+}: {
+  events: ActivityEvent[];
+  loading: boolean;
+}) {
   return (
     <Card>
       <CardHeader>
@@ -1221,13 +1457,20 @@ function ActivityCard({ events, loading }: { events: ActivityEvent[]; loading: b
         {loading ? (
           <div className="text-sm text-muted-foreground">Loading activity…</div>
         ) : events.length === 0 ? (
-          <div className="text-sm text-muted-foreground">No workflow activity yet.</div>
+          <div className="text-sm text-muted-foreground">
+            No workflow activity yet.
+          </div>
         ) : (
           events.slice(0, 12).map((event) => (
             <div key={event.id} className="rounded-xl border border-border p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="text-sm font-medium">{event.action.replaceAll(".", " ")}</div>
-                <div className="text-xs text-muted-foreground" title={formatDateTime(event.createdAt)}>
+                <div className="text-sm font-medium">
+                  {event.action.replaceAll(".", " ")}
+                </div>
+                <div
+                  className="text-xs text-muted-foreground"
+                  title={formatDateTime(event.createdAt)}
+                >
                   {relativeTime(event.createdAt)}
                 </div>
               </div>

@@ -68,6 +68,7 @@ import { projectService } from "./projects.js";
 import { routineService } from "./routines.js";
 import { secretService } from "./secrets.js";
 import { workflowService } from "./workflows.js";
+import { resolveManagedWorkflowDir } from "../home-paths.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
@@ -1397,6 +1398,25 @@ function portableFileToBuffer(entry: CompanyPortabilityFileEntry, filePath: stri
     return portableBinaryFileToBuffer(entry);
   }
   throw unprocessable(`Unsupported file entry encoding for ${filePath}`);
+}
+
+async function materializeWorkflowBundle(
+  managedDir: string,
+  bundlePath: string,
+  files: Record<string, CompanyPortabilityFileEntry>,
+): Promise<void> {
+  const bundlePrefix = bundlePath.endsWith("/") ? bundlePath : `${bundlePath}/`;
+  for (const [filePath, fileEntry] of Object.entries(files)) {
+    if (!filePath.startsWith(bundlePrefix)) continue;
+    const relativePath = filePath.slice(bundlePrefix.length);
+    if (!relativePath) continue;
+    if (relativePath === "WORKFLOW.yaml") continue;
+    const absolutePath = path.resolve(managedDir, relativePath);
+    const resolvedRelative = path.relative(managedDir, absolutePath);
+    if (resolvedRelative === ".." || resolvedRelative.startsWith(`..${path.sep}`)) continue;
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    await fs.writeFile(absolutePath, portableFileToBuffer(fileEntry, filePath));
+  }
 }
 
 function bufferToPortableBinaryFile(buffer: Buffer, contentType: string | null): CompanyPortabilityFileEntry {
@@ -2762,6 +2782,7 @@ function buildManifestFromPackageFiles(
       workingDirectory: asString(parsed.workingDirectory) ?? null,
       command: asString(parsed.command) ?? null,
       model: asString(parsed.model) ?? null,
+      path: path.posix.dirname(workflowPath),
     };
     manifest.workflows.push(entry);
   }
@@ -3616,6 +3637,27 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const model = typeof runnerConfig.model === "string" ? runnerConfig.model : null;
         if (model) workflowEntry.model = model;
         files[workflowPath] = buildYamlFile(workflowEntry);
+
+        // Bundle managed workflow directory files (mirrors import materializeWorkflowBundle)
+        const bundlePrefix = workflowPath.slice(0, -"WORKFLOW.yaml".length); // e.g. "workflows/<slug>/"
+        try {
+          const managedDir = resolveManagedWorkflowDir({ companyId, workflowId: wf.id });
+          const dirEntries = await fs.readdir(managedDir, { recursive: true, withFileTypes: true });
+          for (const entry of dirEntries) {
+            if (!entry.isFile()) continue;
+            const entryDir = (entry as { parentPath?: string; path?: string }).parentPath ?? (entry as { path?: string }).path ?? managedDir;
+            const absoluteFilePath = path.join(entryDir, entry.name);
+            const relativePath = path.relative(managedDir, absoluteFilePath).replace(/\\/g, "/");
+            if (!relativePath || relativePath.startsWith("..")) continue;
+            const content = await fs.readFile(absoluteFilePath);
+            files[`${bundlePrefix}${relativePath}`] = bufferToPortableBinaryFile(content, null);
+          }
+        } catch (err: unknown) {
+          // Managed dir may not exist if the workflow was never materialized — skip silently
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+            warnings.push(`Could not read managed workflow dir for "${wf.title}": ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
       }
     }
 
@@ -4771,6 +4813,17 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             reason: wp.reason,
           });
           void updated; // used for side effect
+          // Materialize workflow bundle files to managed dir
+          if (manifestWorkflow.path && manifestWorkflow.path !== ".") {
+            try {
+              const managedDir = resolveManagedWorkflowDir({ companyId: targetCompany.id, workflowId: wp.existingWorkflowId });
+              await fs.rm(managedDir, { recursive: true, force: true });
+              await fs.mkdir(managedDir, { recursive: true });
+              await materializeWorkflowBundle(managedDir, manifestWorkflow.path, plan.source.files);
+            } catch (err) {
+              warnings.push(`Failed to materialize workflow bundle for ${manifestWorkflow.title}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
           continue;
         }
 
@@ -4791,6 +4844,16 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           action: "created",
           reason: null,
         });
+        // Materialize workflow bundle files to managed dir
+        if (manifestWorkflow.path && manifestWorkflow.path !== ".") {
+          try {
+            const managedDir = resolveManagedWorkflowDir({ companyId: targetCompany.id, workflowId: created.id });
+            await fs.mkdir(managedDir, { recursive: true });
+            await materializeWorkflowBundle(managedDir, manifestWorkflow.path, plan.source.files);
+          } catch (err) {
+            warnings.push(`Failed to materialize workflow bundle for ${manifestWorkflow.title}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
       }
     }
 
