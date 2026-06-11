@@ -5,5 +5,11 @@
       "description": "ਕੰਪਨੀ ਬਣਾਕੇ ਸ਼ੁਰੂ ਕਰੋ।",
       "newCompany": "ਨਵੀਂ ਕੰਪਨੀ"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "ਭਾਸ਼ਾ",
+      "description": "ਇੰਟਰਫੇਸ ਵਿੱਚ ਵਰਤੀ ਜਾਣ ਵਾਲੀ ਭਾਸ਼ਾ ਚੁਣੋ।"
+    }
   }
 }

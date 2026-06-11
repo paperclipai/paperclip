@@ -5,5 +5,11 @@
       "description": "Get started by creating a company.",
       "newCompany": "New Company"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Choose the language used across the interface."
+    }
   }
 }

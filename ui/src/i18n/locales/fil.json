@@ -5,5 +5,11 @@
       "description": "Magsimula sa paggawa ng kumpanya.",
       "newCompany": "Bagong Kumpanya"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Wika",
+      "description": "Piliin ang wikang gagamitin sa interface."
+    }
   }
 }

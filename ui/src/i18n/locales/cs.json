@@ -5,5 +5,11 @@
       "description": "Začněte vytvořením společnosti.",
       "newCompany": "Nová společnost"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Jazyk",
+      "description": "Zvolte jazyk používaný v rozhraní."
+    }
   }
 }

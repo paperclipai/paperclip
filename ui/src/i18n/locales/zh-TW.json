@@ -5,5 +5,11 @@
       "description": "從建立公司開始。",
       "newCompany": "新公司"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "語言",
+      "description": "選擇介面所使用的語言。"
+    }
   }
 }

@@ -5,5 +5,11 @@
       "description": "Inizia creando un'azienda.",
       "newCompany": "Nuova azienda"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Lingua",
+      "description": "Scegli la lingua utilizzata nell'interfaccia."
+    }
   }
 }

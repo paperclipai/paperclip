@@ -5,5 +5,11 @@
       "description": "회사를 만들어 시작하세요.",
       "newCompany": "새 회사"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "언어",
+      "description": "인터페이스에서 사용할 언어를 선택하세요."
+    }
   }
 }

@@ -5,5 +5,11 @@
       "description": "Mulakan dengan mencipta syarikat.",
       "newCompany": "Syarikat Baharu"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Bahasa",
+      "description": "Pilih bahasa yang digunakan dalam antara muka."
+    }
   }
 }

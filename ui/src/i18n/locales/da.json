@@ -5,5 +5,11 @@
       "description": "Kom i gang ved at oprette en virksomhed.",
       "newCompany": "Ny virksomhed"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Sprog",
+      "description": "Vælg det sprog, der bruges i grænsefladen."
+    }
   }
 }
