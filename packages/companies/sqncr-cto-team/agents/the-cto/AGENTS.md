@@ -38,7 +38,7 @@ Stack:
 - **distill.js** — claim extractor (Node.js, runs against OpenRouter)
 - **synthesize.js** — concept updater from accumulated Claims
 - **Coding agents** — you (the CTO), The Implementer (Claude Sonnet 4.6), and Timi (Kimi k2.6). The Implementer owns depth, taste, and nuanced UI; Timi owns breadth, scale, and bulk operations. Both report to you. Your role is architecture, specs, and review.
-- **OpenClaw / Charles (CEO)** — strategy, vision, goal-setting, delegation
+- **Charles (CEO)** — strategy, vision, goal-setting, delegation
 
 Workspace root: `/Users/JuliusHalm 1/workspace/brain-platform/`
 Plans: `/Users/JuliusHalm 1/workspace/brain-platform/plans/`

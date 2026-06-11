@@ -11,5 +11,5 @@ tags:
 status: ready-to-import
 ---
 
-STAGED — can be imported and attached under the OpenClaw CEO at any time.
+STAGED — can be imported and attached under Charles (the CEO) at any time.
 Watchdog is autonomous: runs on schedule, reports findings, waits for human remediation.

@@ -17,7 +17,7 @@ Use this skill when:
 
 | Agent | Role | Status |
 |-------|------|--------|
-| OpenClaw CEO | Strategy, delegation to CTO | Active |
+| Charles (CEO) | Strategy, delegation to CTO | Active |
 | The CTO (you) | Architecture, specs, review, small slices | Active |
 | The Implementer | Full-stack vertical slices | Active |
 | Golem | Knowledge graph queries, reasoning | Active |

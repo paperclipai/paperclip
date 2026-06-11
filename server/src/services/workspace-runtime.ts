@@ -462,6 +462,14 @@ async function executeProcess(input: {
   stdoutBytes: number;
   stderrBytes: number;
 }> {
+  // Git localizes its stdout/stderr to the host locale (e.g. "Branch already
+  // exists" becomes "Branch ... existiert bereits" under de_DE). Downstream
+  // logic parses those messages (see gitErrorIncludes), so pin git to the C
+  // locale to keep its output stable and parseable regardless of the machine's
+  // language. Only git is affected; other commands keep their env untouched.
+  const baseProcessEnv = input.env ?? process.env;
+  const childEnv =
+    input.command === "git" ? { ...baseProcessEnv, LC_ALL: "C", LANG: "C" } : baseProcessEnv;
   const proc = await new Promise<{
     stdout: ProcessOutputAccumulator;
     stderr: ProcessOutputAccumulator;
@@ -470,7 +478,7 @@ async function executeProcess(input: {
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      env: input.env ?? process.env,
+      env: childEnv,
     });
     const stdout = createProcessOutputCapture(input.maxStdoutBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
     const stderr = createProcessOutputCapture(input.maxStderrBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
