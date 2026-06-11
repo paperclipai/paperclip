@@ -6,8 +6,8 @@ import type { LiveEvent } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { pgChannelForCompany } from "./channel.js";
 import {
-  buildEnvelope,
-  OVERSIZED_EVENT,
+  envelopeToEvents,
+  packEnvelopes,
   PG_NOTIFY_INLINE_LIMIT,
   type LiveEventsTransport,
   type TransportEnvelope,
@@ -83,8 +83,9 @@ export function createPgLiveEventsTransport(opts: {
     if (envelope.origin === originId) return; // own echo
     const entry = subscriptions.get(companyId);
     if (!entry) return;
-
-    deliver(entry.handlers, envelope.event);
+    for (const event of envelopeToEvents(companyId, envelope)) {
+      deliver(entry.handlers, event);
+    }
   }
 
   function subscribe(companyId: string, handler: TransportEventHandler) {
@@ -106,9 +107,19 @@ export function createPgLiveEventsTransport(opts: {
           // onlisten fires on initial LISTEN and on each auto-reconnect.
           // We log reconnects (after the first connect) so operators
           // have a signal in the logs when the dedicated socket flaps.
+          // LISTEN/NOTIFY is at-most-once: anything NOTIFYed while the
+          // socket was down is gone, so we deliver a synthetic
+          // transport.resync event telling consumers to refetch.
           const existing = subscriptions.get(companyId);
           if (existing?.unlisten) {
             logger.info({ companyId, channel }, "live-events pg transport: LISTEN reconnected");
+            deliver(existing.handlers, {
+              id: 0,
+              companyId,
+              type: "transport.resync",
+              createdAt: new Date().toISOString(),
+              payload: { __resync: true },
+            });
           }
         },
       )
@@ -151,37 +162,55 @@ export function createPgLiveEventsTransport(opts: {
     }
   }
 
-  function publish(event: LiveEvent) {
-    const envelope = buildEnvelope(originId, event, PG_NOTIFY_INLINE_LIMIT);
-    if (envelope === OVERSIZED_EVENT) {
-      // Symmetric noisy drop — see transport.ts OVERSIZED_EVENT docs.
-      // Caller (live-events.ts) also suppresses local emission for the
-      // same event so behavior matches across replicas.
-      logger.error(
-        {
-          companyId: event.companyId,
-          eventType: event.type,
-          eventId: event.id,
-          byteSize: Buffer.byteLength(
-            JSON.stringify({ kind: "full", origin: originId, event }),
-            "utf8",
-          ),
-          limit: PG_NOTIFY_INLINE_LIMIT,
-        },
-        "live-events pg transport: oversized event dropped symmetrically (exceeds NOTIFY inline limit)",
-      );
-      return;
+  /**
+   * NOTIFY takes a global AccessExclusiveLock at commit, serializing all
+   * NOTIFY-ing commits cluster-wide. Coalescing a burst into one frame per
+   * company per window keeps Paperclip's event traffic off that lock's
+   * hot path. 25ms adds imperceptible UI latency.
+   */
+  const FLUSH_WINDOW_MS = 25;
+  const pendingByCompany = new Map<string, LiveEvent[]>();
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function flushPending() {
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
     }
-    const channel = pgChannelForCompany(event.companyId);
-    const serialized = JSON.stringify(envelope);
-    // NOTIFY is fire-and-forget. We attach a catch so a transient
-    // database blip doesn't surface as an unhandled rejection.
-    sql.notify(channel, serialized).catch((err) => {
-      logger.warn({ err, channel, eventType: event.type }, "live-events pg transport: NOTIFY failed");
-    });
+    for (const [companyId, events] of pendingByCompany) {
+      pendingByCompany.delete(companyId);
+      const channel = pgChannelForCompany(companyId);
+      for (const envelope of packEnvelopes(originId, events, PG_NOTIFY_INLINE_LIMIT)) {
+        if (envelope.kind === "resync") {
+          logger.warn(
+            { companyId, eventType: envelope.type, limit: PG_NOTIFY_INLINE_LIMIT },
+            "live-events pg transport: oversized event downgraded to resync marker",
+          );
+        }
+        // NOTIFY is fire-and-forget. We attach a catch so a transient
+        // database blip doesn't surface as an unhandled rejection.
+        sql.notify(channel, JSON.stringify(envelope)).catch((err) => {
+          logger.warn({ err, channel }, "live-events pg transport: NOTIFY failed");
+        });
+      }
+    }
+  }
+
+  function publish(event: LiveEvent) {
+    const pending = pendingByCompany.get(event.companyId);
+    if (pending) {
+      pending.push(event);
+    } else {
+      pendingByCompany.set(event.companyId, [event]);
+    }
+    if (!flushTimer) {
+      flushTimer = setTimeout(flushPending, FLUSH_WINDOW_MS);
+      flushTimer.unref?.();
+    }
   }
 
   async function close() {
+    flushPending();
     // Best-effort: unlisten everything we know about, then end the pool.
     const pending: Promise<unknown>[] = [];
     for (const [companyId, entry] of subscriptions) {
@@ -192,12 +221,10 @@ export function createPgLiveEventsTransport(opts: {
     await sql.end({ timeout: 5 }).catch(() => {});
   }
 
-  return {
-    originId,
-    maxEnvelopeBytes: PG_NOTIFY_INLINE_LIMIT,
-    publish,
-    subscribe,
-    unsubscribe,
-    close,
-  };
+  async function stats() {
+    const rows = await sql`SELECT pg_notification_queue_usage()::float8 AS usage`;
+    return { notificationQueueUsage: Number(rows[0]?.usage ?? 0) };
+  }
+
+  return { originId, publish, subscribe, unsubscribe, close, stats };
 }

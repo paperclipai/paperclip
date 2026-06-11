@@ -3,8 +3,8 @@ import type { LiveEvent } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { redisChannelForCompany } from "./channel.js";
 import {
-  buildEnvelope,
-  OVERSIZED_EVENT,
+  envelopeToEvents,
+  packEnvelopes,
   REDIS_PUBSUB_INLINE_LIMIT,
   type LiveEventsTransport,
   type TransportEnvelope,
@@ -110,16 +110,25 @@ export function createRedisLiveEventsTransport(opts: RedisTransportOptions): Liv
       return;
     }
     if (envelope.origin === originId) return;
-    // Guard malformed payloads: valid JSON without an `event` field would
-    // otherwise throw out of the ioredis "message" callback (no try-catch
-    // upstream), unlike the PG transport where deliver() absorbs it.
-    if (!envelope.event) return;
-    const companyId = envelope.event.companyId;
+    // Guard malformed payloads: valid JSON that doesn't carry the fields
+    // its `kind` promises would otherwise throw out of the ioredis
+    // "message" callback (no try-catch upstream), unlike the PG transport
+    // where deliver() absorbs it.
+    const companyId =
+      envelope.kind === "full"
+        ? envelope.event?.companyId
+        : envelope.kind === "batch"
+          ? envelope.events?.[0]?.companyId
+          : envelope.kind === "resync"
+            ? envelope.companyId
+            : undefined;
+    if (!companyId) return;
     if (redisChannelForCompany(companyId) !== channel) return;
     const handlers = subscriptions.get(companyId);
     if (!handlers) return;
-
-    deliver(handlers, envelope.event);
+    for (const event of envelopeToEvents(companyId, envelope)) {
+      deliver(handlers, event);
+    }
   }
 
   async function flushPendingSubscribes() {
@@ -190,31 +199,23 @@ export function createRedisLiveEventsTransport(opts: RedisTransportOptions): Liv
       });
   }
 
+  // No debounce here: Redis PUBLISH has no commit-lock serialization
+  // problem, so each event goes out immediately in its own envelope.
   function publish(event: LiveEvent) {
-    const envelope = buildEnvelope(originId, event, REDIS_PUBSUB_INLINE_LIMIT);
-    if (envelope === OVERSIZED_EVENT) {
-      // Symmetric noisy drop — see transport.ts OVERSIZED_EVENT docs.
-      logger.error(
-        {
-          companyId: event.companyId,
-          eventType: event.type,
-          eventId: event.id,
-          byteSize: Buffer.byteLength(
-            JSON.stringify({ kind: "full", origin: originId, event }),
-            "utf8",
-          ),
-          limit: REDIS_PUBSUB_INLINE_LIMIT,
-        },
-        "live-events redis transport: oversized event dropped symmetrically (exceeds redis pub/sub inline limit)",
-      );
-      return;
-    }
     if (!publisher) return;
+    const client = publisher;
     const channel = redisChannelForCompany(event.companyId);
-    const serialized = JSON.stringify(envelope);
-    publisher.publish(channel, serialized).catch((err) => {
-      logger.warn({ err, channel }, "live-events redis transport: PUBLISH failed");
-    });
+    for (const envelope of packEnvelopes(originId, [event], REDIS_PUBSUB_INLINE_LIMIT)) {
+      if (envelope.kind === "resync") {
+        logger.warn(
+          { companyId: event.companyId, eventType: envelope.type, limit: REDIS_PUBSUB_INLINE_LIMIT },
+          "live-events redis transport: oversized event downgraded to resync marker",
+        );
+      }
+      client.publish(channel, JSON.stringify(envelope)).catch((err) => {
+        logger.warn({ err, channel }, "live-events redis transport: PUBLISH failed");
+      });
+    }
   }
 
   async function close() {
@@ -233,7 +234,6 @@ export function createRedisLiveEventsTransport(opts: RedisTransportOptions): Liv
 
   return {
     originId,
-    maxEnvelopeBytes: REDIS_PUBSUB_INLINE_LIMIT,
     publish,
     subscribe,
     unsubscribe,
