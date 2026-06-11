@@ -1,11 +1,12 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { postgres } from "@paperclipai/db";
 import type { LiveEvent } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
   type EmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { redisChannelForCompany } from "../services/live-events/channel.js";
+import { pgChannelForCompany, redisChannelForCompany } from "../services/live-events/channel.js";
 import { createPgLiveEventsTransport } from "../services/live-events/pg-transport.js";
 import { createRedisLiveEventsTransport } from "../services/live-events/redis-transport.js";
 import {
@@ -13,6 +14,7 @@ import {
   publishLiveEvent,
   subscribeCompanyLiveEvents,
   teardownLiveEventsTransport,
+  whenTransportSubscribed,
 } from "../services/live-events.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -66,9 +68,9 @@ describeEmbeddedPostgres("live-events postgres LISTEN/NOTIFY transport", () => {
 
     const receivedOnB: LiveEvent[] = [];
     replicaB.subscribe("company-a", (event) => receivedOnB.push(event));
-    // Let LISTEN settle before publishing — postgres-js does it on a
-    // dedicated socket and returns a meta handle asynchronously.
-    await new Promise((r) => setTimeout(r, 300));
+    // Wait for LISTEN to settle before publishing — postgres-js does it on
+    // a dedicated socket and returns a meta handle asynchronously.
+    await replicaB.whenSubscribed!("company-a");
 
     const event = makeEvent({ id: 101, payload: { hello: "world" } });
     replicaA.publish(event);
@@ -85,10 +87,11 @@ describeEmbeddedPostgres("live-events postgres LISTEN/NOTIFY transport", () => {
     const replica = createPgLiveEventsTransport({ databaseUrl });
     const received: LiveEvent[] = [];
     replica.subscribe("company-a", (e) => received.push(e));
-    await new Promise((r) => setTimeout(r, 300));
+    await replica.whenSubscribed!("company-a");
 
     replica.publish(makeEvent({ id: 202 }));
-    // Give NOTIFY a chance to round-trip.
+    // Negative assertion: there is no readiness signal for "the echo would
+    // have arrived by now", so give NOTIFY a generous round-trip window.
     await new Promise((r) => setTimeout(r, 500));
 
     // The same replica published it; the originId filter should drop it
@@ -103,7 +106,7 @@ describeEmbeddedPostgres("live-events postgres LISTEN/NOTIFY transport", () => {
     const subscriberA = createPgLiveEventsTransport({ databaseUrl });
     const seenByA: LiveEvent[] = [];
     subscriberA.subscribe("company-a", (e) => seenByA.push(e));
-    await new Promise((r) => setTimeout(r, 300));
+    await subscriberA.whenSubscribed!("company-a");
 
     publisher.publish(makeEvent({ id: 301, companyId: "company-b", payload: { secret: "do-not-leak" } }));
     publisher.publish(makeEvent({ id: 302, companyId: "company-a" }));
@@ -111,7 +114,8 @@ describeEmbeddedPostgres("live-events postgres LISTEN/NOTIFY transport", () => {
     const got = await waitFor(() => (seenByA.length > 0 ? seenByA[0] : undefined));
     expect(got.id).toBe(302);
     expect(got.companyId).toBe("company-a");
-    // Give B's NOTIFY a generous window to (incorrectly) arrive.
+    // Negative assertion with no readiness signal: give B's NOTIFY a
+    // generous window to (incorrectly) arrive.
     await new Promise((r) => setTimeout(r, 500));
     expect(seenByA.some((e) => e.companyId === "company-b")).toBe(false);
 
@@ -123,7 +127,7 @@ describeEmbeddedPostgres("live-events postgres LISTEN/NOTIFY transport", () => {
     await configureLiveEventsTransport({ mode: "postgres", databaseUrl });
     const received: LiveEvent[] = [];
     const unsubscribe = subscribeCompanyLiveEvents("company-a", (e) => received.push(e));
-    await new Promise((r) => setTimeout(r, 300));
+    await whenTransportSubscribed("company-a");
 
     // In a single-process test the in-process emitter delivers the
     // event immediately; the cross-replica path also fires through pg
@@ -148,8 +152,8 @@ describeEmbeddedPostgres("live-events postgres LISTEN/NOTIFY transport", () => {
 
     // Configure the transport AFTER the subscription is already in place.
     await configureLiveEventsTransport({ mode: "postgres", databaseUrl });
-    // LISTEN is async; give postgres-js time to settle.
-    await new Promise((r) => setTimeout(r, 300));
+    // LISTEN is async; wait for postgres-js to settle it.
+    await whenTransportSubscribed("company-a");
 
     // Publish from an independent replica so the in-process path is not
     // involved — delivery must come exclusively through LISTEN/NOTIFY.
@@ -170,10 +174,56 @@ describeEmbeddedPostgres("live-events postgres LISTEN/NOTIFY transport", () => {
     const receiver = createPgLiveEventsTransport({ databaseUrl });
     const received: LiveEvent[] = [];
     receiver.subscribe("company-a", (event) => received.push(event));
-    await new Promise((resolve) => setTimeout(resolve, 300)); // LISTEN settle
+    await receiver.whenSubscribed!("company-a");
+
+    // Raw frame observer: a plain postgres-js LISTEN on the same channel
+    // records the wire envelopes, so we can assert the burst actually
+    // coalesced into fewer frames rather than 20 one-event NOTIFYs.
+    const rawSql = postgres(databaseUrl, { max: 1 });
+    const frames: { kind?: string }[] = [];
+    await rawSql.listen(pgChannelForCompany("company-a"), (raw) => frames.push(JSON.parse(raw)));
+
     for (let i = 1; i <= 20; i++) sender.publish(makeEvent({ id: i }));
     await waitFor(() => (received.length === 20 ? received : undefined));
     expect(received.map((e) => e.id)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
+
+    // The raw listener is a separate connection; wait until it has seen a
+    // batch frame before asserting on counts.
+    await waitFor(() => (frames.some((f) => f.kind === "batch") ? true : undefined));
+    expect(frames.length).toBeLessThan(20);
+
+    await rawSql.end({ timeout: 5 });
+    await sender.close();
+    await receiver.close();
+  });
+
+  it("survives a malformed NOTIFY envelope and keeps the LISTEN connection alive", async () => {
+    const receiver = createPgLiveEventsTransport({ databaseUrl });
+    const received: LiveEvent[] = [];
+    receiver.subscribe("company-a", (event) => received.push(event));
+    await receiver.whenSubscribed!("company-a");
+
+    // Inject valid JSON with an unknown kind straight onto the channel.
+    // Before envelopeToEvents was total, this returned undefined and the
+    // resulting `for ... of undefined` TypeError propagated into
+    // postgres-js's onnotify dispatch, killing the LISTEN connection.
+    const rawSql = postgres(databaseUrl, { max: 1 });
+    await rawSql.notify(
+      pgChannelForCompany("company-a"),
+      JSON.stringify({ origin: "other", kind: "bogus" }),
+    );
+
+    // A well-formed event published afterwards must still arrive — that
+    // proves the malformed frame was dropped and the LISTEN survived.
+    const sender = createPgLiveEventsTransport({ databaseUrl });
+    sender.publish(makeEvent({ id: 707 }));
+    const got = await waitFor(() => received.find((e) => e.id === 707));
+    expect(got.id).toBe(707);
+    // Nothing was delivered for the bogus frame (and no synthetic resync
+    // from a reconnect either — the connection never dropped).
+    expect(received.map((e) => e.id)).toEqual([707]);
+
+    await rawSql.end({ timeout: 5 });
     await sender.close();
     await receiver.close();
   });
@@ -183,11 +233,37 @@ describeEmbeddedPostgres("live-events postgres LISTEN/NOTIFY transport", () => {
     const receiver = createPgLiveEventsTransport({ databaseUrl });
     const received: LiveEvent[] = [];
     receiver.subscribe("company-a", (event) => received.push(event));
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await receiver.whenSubscribed!("company-a");
     sender.publish(makeEvent({ type: "heartbeat.run.log", payload: { huge: "x".repeat(10_000) } }));
     const marker = await waitFor(() => received[0]);
     expect(marker.type).toBe("heartbeat.run.log");
     expect(marker.payload).toEqual({ __resync: true });
+    await sender.close();
+    await receiver.close();
+  });
+
+  it("does not duplicate delivery after unsubscribe→resubscribe while LISTEN is in flight", async () => {
+    const receiver = createPgLiveEventsTransport({ databaseUrl });
+    const received: LiveEvent[] = [];
+    const handler = (e: LiveEvent) => received.push(e);
+    // All three calls land within one LISTEN round-trip: the first LISTEN
+    // is still in flight when its subscription record is deleted and a new
+    // one is seated. Without the identity guard, listen #1's callback
+    // stayed registered forever and every NOTIFY was delivered twice.
+    receiver.subscribe("company-a", handler);
+    receiver.unsubscribe("company-a", handler);
+    receiver.subscribe("company-a", handler);
+    await receiver.whenSubscribed!("company-a");
+
+    const sender = createPgLiveEventsTransport({ databaseUrl });
+    sender.publish(makeEvent({ id: 808 }));
+    await waitFor(() => received.find((e) => e.id === 808));
+    // Negative assertion (no signal for "the duplicate would have arrived
+    // by now"): both callbacks fire from the same NOTIFY dispatch, so a
+    // short settle is enough for the duplicate to show up if it exists.
+    await new Promise((r) => setTimeout(r, 200));
+    expect(received.map((e) => e.id)).toEqual([808]);
+
     await sender.close();
     await receiver.close();
   });
@@ -197,7 +273,7 @@ describeEmbeddedPostgres("live-events postgres LISTEN/NOTIFY transport", () => {
     const receiver = createPgLiveEventsTransport({ databaseUrl });
     const received: LiveEvent[] = [];
     receiver.subscribe("company-a", (event) => received.push(event));
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await receiver.whenSubscribed!("company-a");
     sender.publish(makeEvent({ id: 42 }));
     await sender.close(); // before the 25ms window elapses
     const event = await waitFor(() => received[0]);
@@ -298,23 +374,24 @@ describe("live-events redis transport (mocked)", () => {
 
     const seenByB: LiveEvent[] = [];
     replicaB.subscribe("company-a", (e) => seenByB.push(e));
-    // Mock factory is async — wait for init.
-    await new Promise((r) => setTimeout(r, 20));
+    await replicaB.whenSubscribed!("company-a");
+    // Publisher init is async too; whenSubscribed also awaits client init.
+    await replicaA.whenSubscribed!("company-a");
 
     replicaA.publish(makeEvent({ id: 401 }));
     await waitFor(() => (seenByB.length > 0 ? seenByB[0] : undefined), { timeoutMs: 1000 });
     expect(seenByB[0]?.id).toBe(401);
 
-    // Self-echo: replicaA also subscribed to its own publish? Try it.
+    // Self-echo: replicaA subscribes to its own channel; the origin filter
+    // must suppress its own publish while replicaB still receives it.
     const seenByA: LiveEvent[] = [];
     replicaA.subscribe("company-a", (e) => seenByA.push(e));
-    await new Promise((r) => setTimeout(r, 20));
+    await replicaA.whenSubscribed!("company-a");
     replicaA.publish(makeEvent({ id: 402 }));
-    await new Promise((r) => setTimeout(r, 50));
-    // origin filter should suppress replicaA's own publish
-    expect(seenByA.map((e) => e.id)).not.toContain(402);
-    // But replicaB still gets it
+    // The mock delivers synchronously: once replicaB has the event, the
+    // echo would already have hit replicaA if the filter were broken.
     await waitFor(() => seenByB.find((e) => e.id === 402));
+    expect(seenByA.map((e) => e.id)).not.toContain(402);
 
     await replicaA.close();
     await replicaB.close();
@@ -329,7 +406,7 @@ describe("live-events redis transport (mocked)", () => {
 
     const seen: LiveEvent[] = [];
     replica.subscribe("company-a", (e) => seen.push(e));
-    await new Promise((r) => setTimeout(r, 20));
+    await replica.whenSubscribed!("company-a");
 
     // Inject a malformed envelope (valid JSON, no `event`) directly via a raw
     // publisher client. Without the guard this threw a TypeError out of the
@@ -346,8 +423,8 @@ describe("live-events redis transport (mocked)", () => {
       redisUrl: "redis://test",
       clientFactory: factory,
     });
-    // Mock factory is async — wait for init before publishing.
-    await new Promise((r) => setTimeout(r, 20));
+    // Client init is async — whenSubscribed awaits it before publishing.
+    await other.whenSubscribed!("company-a");
     other.publish(makeEvent({ id: 403 }));
     await waitFor(() => seen.find((e) => e.id === 403));
     expect(seen.map((e) => e.id)).toEqual([403]);
@@ -362,13 +439,15 @@ describe("live-events redis transport (mocked)", () => {
     const subscriberA = createRedisLiveEventsTransport({ redisUrl: "redis://test", clientFactory: factory });
     const seenByA: LiveEvent[] = [];
     subscriberA.subscribe("company-a", (e) => seenByA.push(e));
-    await new Promise((r) => setTimeout(r, 20));
+    await subscriberA.whenSubscribed!("company-a");
+    await publisher.whenSubscribed!("company-a"); // awaits client init
 
     publisher.publish(makeEvent({ id: 501, companyId: "company-b" }));
     publisher.publish(makeEvent({ id: 502, companyId: "company-a" }));
 
+    // The mock delivers synchronously and 501 was published first, so by
+    // the time 502 is visible the leak (if any) would already have landed.
     await waitFor(() => seenByA.find((e) => e.id === 502), { timeoutMs: 1000 });
-    await new Promise((r) => setTimeout(r, 50));
     expect(seenByA.some((e) => e.companyId === "company-b")).toBe(false);
 
     await publisher.close();
@@ -387,7 +466,8 @@ describe("live-events redis transport (mocked)", () => {
 
     const seen: LiveEvent[] = [];
     subscriber.subscribe("company-a", (e) => seen.push(e));
-    await new Promise((r) => setTimeout(r, 20));
+    await subscriber.whenSubscribed!("company-a");
+    await publisher.whenSubscribed!("company-a"); // awaits client init
 
     // ~50KB payload — > PG_NOTIFY_INLINE_LIMIT (7500) but well under
     // REDIS_PUBSUB_INLINE_LIMIT (1_000_000).

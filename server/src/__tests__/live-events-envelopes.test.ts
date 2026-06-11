@@ -57,16 +57,20 @@ describe("packEnvelopes", () => {
     ]);
   });
 
-  it("keeps small events batched around an oversized one", () => {
+  it("keeps small events batched around an oversized one, preserving event order", () => {
     const events = [
       makeEvent({ id: 1 }),
       makeEvent({ id: 2, payload: { huge: "x".repeat(10_000) } }),
       makeEvent({ id: 3 }),
     ];
     const envelopes = packEnvelopes("origin-1", events, PG_NOTIFY_INLINE_LIMIT);
-    const kinds = envelopes.map((e) => e.kind).sort();
-    expect(kinds).toContain("resync");
+    // The pending batch is flushed before a resync marker is pushed, so the
+    // marker never overtakes earlier inline events: envelope order matches
+    // event order.
+    expect(envelopes.map((e) => e.kind)).toEqual(["full", "resync", "full"]);
     const delivered = envelopes.flatMap((e) => envelopeToEvents("company-a", e));
+    expect(delivered.map((e) => e.id)).toEqual([1, 0, 3]);
+    expect(delivered[1]?.payload).toEqual({ __resync: true });
     expect(delivered.filter((e) => e.payload.__resync !== true).map((e) => e.id)).toEqual([1, 3]);
   });
 });
@@ -82,5 +86,60 @@ describe("envelopeToEvents", () => {
     expect(event.companyId).toBe("company-a");
     expect(event.type).toBe("activity.logged");
     expect(event.payload).toEqual({ __resync: true });
+  });
+
+  it("returns [] for an unknown envelope kind instead of throwing", () => {
+    const bogus = { kind: "bogus", origin: "origin-1" } as unknown as Parameters<
+      typeof envelopeToEvents
+    >[1];
+    expect(envelopeToEvents("company-a", bogus)).toEqual([]);
+  });
+
+  it("returns [] for shape mismatches (full without event object, batch without array)", () => {
+    const fullNoEvent = { kind: "full", origin: "origin-1" } as unknown as Parameters<
+      typeof envelopeToEvents
+    >[1];
+    expect(envelopeToEvents("company-a", fullNoEvent)).toEqual([]);
+    const batchNoArray = { kind: "batch", origin: "origin-1", events: "nope" } as unknown as Parameters<
+      typeof envelopeToEvents
+    >[1];
+    expect(envelopeToEvents("company-a", batchNoArray)).toEqual([]);
+  });
+
+  it("treats the pre-hardening wire format { origin, event } (no kind) as a full envelope", () => {
+    const event = makeEvent({ id: 7 });
+    const legacy = { origin: "origin-1", event } as unknown as Parameters<typeof envelopeToEvents>[1];
+    expect(envelopeToEvents("company-a", legacy)).toEqual([event]);
+  });
+
+  it("filters a batch envelope down to the channel's company", () => {
+    const mine1 = makeEvent({ id: 1 });
+    const foreign = makeEvent({ id: 2, companyId: "company-b" });
+    const mine2 = makeEvent({ id: 3 });
+    const delivered = envelopeToEvents("company-a", {
+      kind: "batch",
+      origin: "origin-1",
+      events: [mine1, foreign, mine2],
+    });
+    expect(delivered).toEqual([mine1, mine2]);
+  });
+
+  it("returns [] for a full envelope whose event belongs to another company", () => {
+    const delivered = envelopeToEvents("company-a", {
+      kind: "full",
+      origin: "origin-1",
+      event: makeEvent({ companyId: "company-b" }),
+    });
+    expect(delivered).toEqual([]);
+  });
+
+  it("returns [] for a resync envelope addressed to another company", () => {
+    const delivered = envelopeToEvents("company-a", {
+      kind: "resync",
+      origin: "origin-1",
+      companyId: "company-b",
+      type: "activity.logged",
+    });
+    expect(delivered).toEqual([]);
   });
 });
