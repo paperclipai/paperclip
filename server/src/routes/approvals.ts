@@ -19,6 +19,7 @@ import {
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
+import { unprocessable } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
@@ -26,6 +27,41 @@ function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(a
     ...approval,
     payload: redactEventPayload(approval.payload) ?? {},
   };
+}
+
+function normalizeApprovalIntentText(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value.toLowerCase().replace(/[#/_.:-]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function requestBoardApprovalHasMergeOrDeployExecutionIntent(payload: Record<string, unknown>) {
+  const rawText = ["title", "summary", "recommendedAction"]
+    .map((key) => normalizeApprovalIntentText(payload[key]))
+    .filter(Boolean)
+    .join(" ");
+  const text = rawText.replace(
+    /\b(do not|don't|does not|should not|must not|never)\b.{0,30}\b(authori[sz]e|approve|permit|execute|perform|run|proceed|ship|merge|deploy|release|promote|publish)\b.{0,60}\b(merge|merging|land|landing|rebase|rebasing|squash|squashing|cherry pick|cherry picking|deploy|deploying|deployment|release|releasing|promote|promoting|publish|publishing)\b/g,
+    " ",
+  );
+  if (!text) return false;
+
+  const hasPlanningContext = /\b(plan|planning|proposal|scope|design|budget|estimate|strategy|policy|guard|investigate|rca)\b/.test(text);
+  const directMergeExecution =
+    /\b(authori[sz]e|approve|permit|execute|perform|run|proceed|ship)\b.{0,40}\b(merge|merging|land|landing|rebase|rebasing|squash|squashing|cherry pick|cherry picking)\b/.test(text) ||
+    /\b(merge|merging|land|landing|rebase|rebasing|squash|squashing|cherry pick|cherry picking)\b.{0,40}\b(pr|pull request|\d{3,}|rc|prod|production|main|master)\b/.test(text);
+  const directDeployExecution =
+    /\b(authori[sz]e|approve|permit|execute|perform|run|proceed|ship)\b.{0,40}\b(deploy|deploying|deployment|release|releasing|promote|promoting|publish|publishing)\b.{0,60}\b(prod|production|rc|staging|live)\b/.test(text) ||
+    /\b(deploy|deploying|release|releasing|promote|promoting|publish|publishing)\b.{0,30}\b(to|into)\b.{0,20}\b(prod|production|rc|staging|live)\b/.test(text);
+
+  return directMergeExecution || (directDeployExecution && !hasPlanningContext);
+}
+
+function assertRequestBoardApprovalIntentAllowed(type: string, payload: Record<string, unknown>) {
+  if (type !== "request_board_approval") return;
+  if (!requestBoardApprovalHasMergeOrDeployExecutionIntent(payload)) return;
+  throw unprocessable(
+    "request_board_approval cannot request board authorization for agent-executed merge/deploy actions; use an issue-thread interaction or WorkflowHR escalation instead (WHA-1700).",
+  );
 }
 
 export function approvalRoutes(
@@ -101,6 +137,7 @@ export function approvalRoutes(
             { strictMode: strictSecretsMode },
           )
         : approvalInput.payload;
+    assertRequestBoardApprovalIntentAllowed(approvalInput.type, normalizedPayload);
 
     const actor = getActorInfo(req);
     const approval = await svc.create(companyId, {

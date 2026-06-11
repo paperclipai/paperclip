@@ -347,4 +347,84 @@ describe("approval routes idempotent retries", () => {
       }),
     );
   });
+
+  it("blocks request_board_approval cards that authorize PR merge execution", async () => {
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        payload: {
+          title: "Authorize merging #6907 and #6934 to rc",
+          summary: "Board approval requested so the agent can merge these PRs.",
+          recommendedAction: "Approve merge execution.",
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("WHA-1700");
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+    expect(mockIssueApprovalService.linkManyForApproval).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("blocks request_board_approval cards that authorize deploy execution", async () => {
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        payload: {
+          title: "Approve production deploy",
+          summary: "Authorize the agent to deploy to production now.",
+          recommendedAction: "Proceed with deployment to prod.",
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("agent-executed merge/deploy");
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
+  it("allows scope and plan board approvals that mention merge or deploy safety", async () => {
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-2",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: {
+        title: "Approve WHA-1700 prevention plan",
+        summary: "Scope approval for a merge-freeze guard and deploy policy tests.",
+        recommendedAction: "Approve the implementation plan; do not authorize any merge or deploy.",
+      },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-06-11T00:00:00.000Z"),
+      updatedAt: new Date("2026-06-11T00:00:00.000Z"),
+    });
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        payload: {
+          title: "Approve WHA-1700 prevention plan",
+          summary: "Scope approval for a merge-freeze guard and deploy policy tests.",
+          recommendedAction: "Approve the implementation plan; do not authorize any merge or deploy.",
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockApprovalService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        type: "request_board_approval",
+        payload: expect.objectContaining({
+          title: "Approve WHA-1700 prevention plan",
+        }),
+      }),
+    );
+  });
 });
