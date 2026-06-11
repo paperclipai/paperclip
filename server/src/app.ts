@@ -17,6 +17,7 @@ import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
+import { fileResourceRoutes } from "./routes/file-resources.js";
 import { routineRoutes } from "./routes/routines.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
@@ -222,6 +223,7 @@ export async function createApp(
     pluginWorkerManager: workerManager,
   }));
   api.use(issueTreeControlRoutes(db));
+  api.use(fileResourceRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(executionWorkspaceRoutes(db));
@@ -469,7 +471,67 @@ export async function createApp(
     lifecycle,
     async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
   );
-  void loader.loadAll().then((result) => {
+  // Auto-install the bundled kubernetes sandbox-provider plugin so the
+  // "kubernetes" sandbox provider is registered for agent runs. The plugin is
+  // excluded from the pnpm workspace and built standalone into the image (see
+  // Dockerfile), then installed here from its local path. This runs BEFORE
+  // loadAll() so loadAll() can activate it in the same startup pass.
+  //
+  // SAFETY (invariant B): this is fully fail-safe. Any failure (missing path,
+  // install error, load error) is caught, logged, and swallowed so the server
+  // ALWAYS finishes booting. A degraded boot (no kubernetes provider, agents
+  // cannot run) is strictly preferable to a crash loop.
+  const ensureBundledKubernetesPlugin = async (): Promise<void> => {
+    const KUBERNETES_PLUGIN_KEY = "paperclip.kubernetes-sandbox-provider";
+    const pluginPath =
+      process.env["PAPERCLIP_KUBERNETES_PLUGIN_PATH"] ??
+      "/app/packages/plugins/sandbox-providers/kubernetes";
+    try {
+      // Idempotent: skip if already installed (any non-uninstalled status).
+      const existing = await pluginRegistry.getByKey(KUBERNETES_PLUGIN_KEY);
+      if (existing) {
+        logger.info(
+          { pluginKey: KUBERNETES_PLUGIN_KEY, status: existing.status },
+          "kubernetes sandbox plugin already installed; skipping auto-install",
+        );
+        return;
+      }
+      // Skip silently when the bundle is absent (e.g. local dev or an image
+      // built without the plugin). Not an error condition.
+      if (!fs.existsSync(path.join(pluginPath, "dist", "manifest.js"))) {
+        logger.info(
+          { pluginPath },
+          "kubernetes sandbox plugin bundle not present; skipping auto-install",
+        );
+        return;
+      }
+      logger.info({ pluginPath }, "auto-installing bundled kubernetes sandbox plugin");
+      const discovered = await loader.installPlugin({ localPath: pluginPath });
+      if (!discovered.manifest) {
+        logger.error("kubernetes sandbox plugin installed but manifest is missing");
+        return;
+      }
+      // Transition installed -> ready and activate the worker.
+      const installed = await pluginRegistry.getByKey(discovered.manifest.id);
+      if (installed) {
+        await lifecycle.load(installed.id);
+        logger.info(
+          { pluginId: installed.id, pluginKey: installed.pluginKey },
+          "kubernetes sandbox plugin auto-installed and loaded",
+        );
+      } else {
+        logger.error("kubernetes sandbox plugin installed but not found in registry");
+      }
+    } catch (err) {
+      logger.error(
+        { err },
+        "Failed to auto-install the kubernetes sandbox plugin; continuing boot (degraded: kubernetes provider unavailable)",
+      );
+    }
+  };
+  void ensureBundledKubernetesPlugin()
+    .then(() => loader.loadAll())
+    .then((result) => {
     if (!result) return;
     for (const loaded of result.results) {
       if (devWatcher && loaded.success && loaded.plugin.packagePath) {

@@ -89,11 +89,26 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { MarkdownBody } from "./MarkdownBody";
+import { WorkspaceFileMarkdownBody } from "./WorkspaceFileMarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 import { AgentIcon } from "./AgentIconPicker";
+import {
+  AssigneeChip,
+  ComposerHandoffPreviewRow,
+  ComposerMentionCoach,
+  HandoffWakeRow,
+  RunStatusBadge,
+  type HandoffChipResolvers,
+} from "./interrupt-handoff/InterruptHandoffViews";
+import {
+  computeComposerHandoffPreview,
+  extractAgentMentionIds,
+  findPlainAgentNameCandidate,
+  type HandoffAgentMention,
+} from "../lib/interrupt-handoff";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import {
   captureComposerViewportSnapshot,
@@ -131,6 +146,7 @@ import {
   summarizeToolInput,
   summarizeToolResult,
 } from "../lib/transcriptPresentation";
+import { buildAgentMentionHref } from "@paperclipai/shared";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -301,6 +317,10 @@ interface IssueChatComposerProps {
   suggestedAssigneeValue?: string;
   mentions?: MentionOption[];
   agentMap?: Map<string, Agent>;
+  /** Whether an agent run is currently in flight, so the composer can preview an interrupt. */
+  hasActiveRun?: boolean;
+  currentUserId?: string | null;
+  userLabelMap?: ReadonlyMap<string, string> | null;
   composerDisabledReason?: string | null;
   composerHint?: string | null;
   issueStatus?: string;
@@ -669,14 +689,14 @@ const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed }: { 
     return <SuccessfulRunHandoffCommentCallout text={text} recessed={recessed} onImageClick={onImageClick} />;
   }
   return (
-    <MarkdownBody
+    <WorkspaceFileMarkdownBody
       className="text-sm leading-6"
       style={recessed ? { opacity: 0.55 } : undefined}
       softBreaks
       onImageClick={onImageClick}
     >
       {text}
-    </MarkdownBody>
+    </WorkspaceFileMarkdownBody>
   );
 });
 
@@ -718,21 +738,6 @@ export function SuccessfulRunHandoffCommentCallout({
 function humanizeValue(value: string | null) {
   if (!value) return "None";
   return value.replace(/_/g, " ");
-}
-
-function formatTimelineAssigneeLabel(
-  assignee: IssueTimelineAssignee,
-  agentMap?: Map<string, Agent>,
-  currentUserId?: string | null,
-  userLabelMap?: ReadonlyMap<string, string> | null,
-) {
-  if (assignee.agentId) {
-    return agentMap?.get(assignee.agentId)?.name ?? assignee.agentId.slice(0, 8);
-  }
-  if (assignee.userId) {
-    return formatAssigneeUserLabel(assignee.userId, currentUserId, userLabelMap) ?? "Board";
-  }
-  return "Unassigned";
 }
 
 function initialsForName(name: string) {
@@ -778,36 +783,6 @@ export function resolveIssueChatHumanAuthor(args: {
     authorName: resolvedAuthorName,
     avatarUrl: profile?.image ?? null,
   };
-}
-
-function formatRunStatusLabel(status: string) {
-  switch (status) {
-    case "timed_out":
-      return "timed out";
-    default:
-      return status.replace(/_/g, " ");
-  }
-}
-
-function runStatusClass(status: string) {
-  switch (status) {
-    case "succeeded":
-      return "text-green-700 dark:text-green-300";
-    case "failed":
-    case "error":
-      return "text-red-700 dark:text-red-300";
-    case "timed_out":
-      return "text-orange-700 dark:text-orange-300";
-    case "running":
-      return "text-cyan-700 dark:text-cyan-300";
-    case "queued":
-    case "pending":
-      return "text-amber-700 dark:text-amber-300";
-    case "cancelled":
-      return "text-muted-foreground";
-    default:
-      return "text-foreground";
-  }
 }
 
 function toolCountSummary(toolParts: ToolCallMessagePart[]): string | null {
@@ -2551,6 +2526,11 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     const isCurrentUser = actorType === "user" && !!currentUserId && actorId === currentUserId;
     const isAgent = actorType === "agent";
     const agentIcon = isAgent && actorId ? agentMap?.get(actorId)?.icon : undefined;
+    const handoffResolvers: HandoffChipResolvers = {
+      agentMap,
+      currentUserId,
+      resolveUserLabel: (userId) => formatAssigneeUserLabel(userId, null, userLabelMap),
+    };
 
     const eventContent = (
       <div className="min-w-0 space-y-1">
@@ -2579,17 +2559,22 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
         ) : null}
 
         {assigneeChange ? (
-          <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
-            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Assignee
-            </span>
-            <span className="text-muted-foreground">
-              {formatTimelineAssigneeLabel(assigneeChange.from, agentMap, currentUserId, userLabelMap)}
-            </span>
-            <ArrowRight className="h-3 w-3 text-muted-foreground" />
-            <span className="font-medium text-foreground">
-              {formatTimelineAssigneeLabel(assigneeChange.to, agentMap, currentUserId, userLabelMap)}
-            </span>
+          <div className="space-y-1">
+            <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
+              <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Assignee
+              </span>
+              <AssigneeChip assignee={assigneeChange.from} resolvers={handoffResolvers} />
+              <ArrowRight className="h-3 w-3 text-muted-foreground" />
+              <AssigneeChip assignee={assigneeChange.to} resolvers={handoffResolvers} />
+            </div>
+            <div className={cn(isCurrentUser && "flex justify-end")}>
+              <HandoffWakeRow
+                to={assigneeChange.to}
+                resolvers={handoffResolvers}
+                interruptedRunAttached={custom.interruptedRunId != null}
+              />
+            </div>
           </div>
         ) : null}
 
@@ -2664,9 +2649,10 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
               >
                 {runId.slice(0, 8)}
               </Link>
-              <span className={cn("font-medium", runStatusClass(runStatus))}>
-                {formatRunStatusLabel(runStatus)}
-              </span>
+              <RunStatusBadge
+                status={runStatus}
+                operatorInterrupted={custom.runOperatorInterrupted === true}
+              />
               <a
                 href={anchorId ? `#${anchorId}` : undefined}
                 className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
@@ -3273,6 +3259,9 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   suggestedAssigneeValue,
   mentions = [],
   agentMap,
+  hasActiveRun = false,
+  currentUserId = null,
+  userLabelMap = null,
   composerDisabledReason = null,
   composerHint = null,
   issueStatus,
@@ -3290,6 +3279,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const [unassignedConfirmed, setUnassignedConfirmed] = useState(false);
+  const [dismissedCoachToken, setDismissedCoachToken] = useState<string | null>(null);
   const resolvedIssueWorkMode: IssueWorkMode = issueWorkMode ?? "standard";
   const [pendingWorkMode, setPendingWorkMode] = useState<IssueWorkMode>(resolvedIssueWorkMode);
   const [workModeMenuOpen, setWorkModeMenuOpen] = useState(false);
@@ -3547,6 +3537,67 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
 
   const canSubmit = !submitting && !!body.trim();
 
+  // Interrupt-handoff clarity (PAP-10669): preview what this comment will durably
+  // do, and coach plain agent names toward real mentions.
+  const agentMentionOptions = useMemo<HandoffAgentMention[]>(
+    () =>
+      mentions
+        .filter((m) => (m.kind ?? "agent") === "agent" && (m.agentId ?? m.id))
+        .map((m) => ({ agentId: m.agentId ?? m.id.replace(/^agent:/, ""), name: m.name })),
+    [mentions],
+  );
+  const handoffResolvers = useMemo<HandoffChipResolvers>(
+    () => ({
+      agentMap,
+      currentUserId,
+      resolveUserLabel: (userId: string) => formatAssigneeUserLabel(userId, null, userLabelMap),
+    }),
+    [agentMap, currentUserId, userLabelMap],
+  );
+  const mentionedAgentIds = useMemo(() => extractAgentMentionIds(body), [body]);
+  const plainNameCandidate = useMemo(
+    () => (mentionedAgentIds.length > 0 ? null : findPlainAgentNameCandidate(body, agentMentionOptions)),
+    [body, mentionedAgentIds, agentMentionOptions],
+  );
+  const handoffPreview = useMemo(
+    () =>
+      computeComposerHandoffPreview({
+        reassignTarget,
+        currentAssigneeValue,
+        hasActiveRun,
+        bodyHasAgentMention: mentionedAgentIds.length > 0,
+        mentionedAgentId: mentionedAgentIds[0] ?? null,
+        plainNameCandidate,
+      }),
+    [reassignTarget, currentAssigneeValue, hasActiveRun, mentionedAgentIds, plainNameCandidate],
+  );
+  const coachVisible = Boolean(
+    plainNameCandidate && plainNameCandidate.matchedText !== dismissedCoachToken,
+  );
+  const coachAgentName = plainNameCandidate
+    ? agentMap?.get(plainNameCandidate.agentId)?.name ?? plainNameCandidate.matchedText
+    : "";
+
+  function insertCoachMention() {
+    if (!plainNameCandidate) return;
+    const option = mentions.find(
+      (m) => (m.agentId ?? m.id.replace(/^agent:/, "")) === plainNameCandidate.agentId,
+    );
+    const agentId = plainNameCandidate.agentId;
+    const name = option?.name ?? plainNameCandidate.matchedText;
+    const markdown = `[@${name}](${buildAgentMentionHref(agentId, option?.agentIcon ?? null)}) `;
+    // Replace the first bare occurrence of the matched token (outside links).
+    const tokenRe = new RegExp(
+      `(?<![\\w@/])${plainNameCandidate.matchedText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w/])`,
+      "i",
+    );
+    setBody((current) => {
+      if (tokenRe.test(current)) return current.replace(tokenRe, markdown.trimEnd());
+      return current ? `${current} ${markdown}` : markdown;
+    });
+    setDismissedCoachToken(plainNameCandidate.matchedText);
+  }
+
   if (composerDisabledReason) {
     return (
       <div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
@@ -3604,6 +3655,17 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         contentClassName="max-h-[28dvh] overflow-y-auto pr-1 pb-2 text-sm scrollbar-auto-hide"
       />
 
+      {coachVisible && plainNameCandidate ? (
+        <div className="mt-2">
+          <ComposerMentionCoach
+            candidate={plainNameCandidate}
+            agentDisplayName={coachAgentName}
+            onInsert={insertCoachMention}
+            onDismiss={() => setDismissedCoachToken(plainNameCandidate.matchedText)}
+          />
+        </div>
+      ) : null}
+
       {composerHint ? (
         <div className="inline-flex items-center rounded-full border border-border/70 bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground">
           {composerHint}
@@ -3653,6 +3715,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
             );
           })}
         </div>
+      ) : null}
+
+      {body.trim() ? (
+        <ComposerHandoffPreviewRow preview={handoffPreview} resolvers={handoffResolvers} />
       ) : null}
 
       <div className="flex flex-wrap items-center justify-end gap-3">
@@ -3899,6 +3965,10 @@ export function IssueChatThread({
     }
     return ids;
   }, [displayLiveRuns]);
+  const hasActiveRun = useMemo(
+    () => displayLiveRuns.some((run) => run.status === "running") || activeRun?.status === "running",
+    [displayLiveRuns, activeRun],
+  );
   const clearLatestSettleTimeouts = useCallback(() => {
     for (const timeout of latestSettleTimeoutsRef.current) {
       window.clearTimeout(timeout);
@@ -4531,6 +4601,9 @@ export function IssueChatThread({
               suggestedAssigneeValue={suggestedAssigneeValue}
               mentions={mentions}
               agentMap={agentMap}
+              hasActiveRun={!!hasActiveRun}
+              currentUserId={currentUserId}
+              userLabelMap={userLabelMap}
               composerDisabledReason={composerDisabledReason}
               composerHint={composerHint}
               issueStatus={issueStatus}

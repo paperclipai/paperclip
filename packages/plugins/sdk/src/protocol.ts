@@ -478,6 +478,13 @@ export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDr
   runId: string;
   workspaceMode?: string;
   requestedCwd?: string;
+  /**
+   * The harness/adapter type for THIS run (the agent's adapter), so a single
+   * environment can serve mixed harnesses. When omitted, the driver falls back to
+   * the environment's configured default adapter. A provider that materializes a
+   * per-run sandbox should use this to select the runtime image and per-run env.
+   */
+  adapterType?: string;
 }
 
 export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDriverBaseParams {

@@ -126,6 +126,8 @@ import {
   secretProviderConfigDiscoveryPreviewSchema,
   remoteSecretImportPreviewSchema,
   remoteSecretImportSchema,
+  workspaceFileListQuerySchema,
+  workspaceFileResourceQuerySchema,
 } from "@paperclipai/shared";
 
 type JsonSchema = Record<string, unknown>;
@@ -430,6 +432,10 @@ const responses = {
     description: "Internal server error",
     content: { "application/json": { schema: ErrorSchema } },
   },
+  tooManyRequests: {
+    description: "Too many requests",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
 };
 
 const jsonBody = (schema: z.ZodTypeAny) => ({
@@ -566,6 +572,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/secrets/{id}/usage",
   "GET /api/secrets/{id}/access-events",
   "POST /api/health/dev-server/restart",
+  "GET /api/issues/{issueId}/file-resources/content",
+  "GET /api/issues/{issueId}/file-resources/list",
+  "GET /api/issues/{issueId}/file-resources/resolve",
   "POST /api/issues/{id}/interactions/{interactionId}/accept",
   "POST /api/issues/{id}/interactions/{interactionId}/reject",
   "POST /api/issues/{id}/interactions/{interactionId}/respond",
@@ -1636,6 +1645,60 @@ registry.registerPath({
   summary: "Get a feedback trace bundle",
   request: { params: z.object({ traceId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{issueId}/file-resources/list",
+  tags: ["issues"],
+  summary: "List workspace files for an issue",
+  request: {
+    params: z.object({ issueId: z.string() }),
+    query: workspaceFileListQuerySchema,
+  },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    404: r.notFound,
+    422: r.unprocessable,
+    429: r.tooManyRequests,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{issueId}/file-resources/resolve",
+  tags: ["issues"],
+  summary: "Resolve an issue workspace file",
+  request: {
+    params: z.object({ issueId: z.string() }),
+    query: workspaceFileResourceQuerySchema,
+  },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    404: r.notFound,
+    422: r.unprocessable,
+    429: r.tooManyRequests,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{issueId}/file-resources/content",
+  tags: ["issues"],
+  summary: "Read issue workspace file content",
+  request: {
+    params: z.object({ issueId: z.string() }),
+    query: workspaceFileResourceQuerySchema,
+  },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    404: r.notFound,
+    422: r.unprocessable,
+    429: r.tooManyRequests,
+  },
 });
 
 registry.registerPath({

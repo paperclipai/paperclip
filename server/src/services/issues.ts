@@ -380,7 +380,7 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   return checkoutRunId == null;
 }
 
-const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
@@ -1004,41 +1004,6 @@ function shouldIncludePluginOperationIssues(filters: IssueFilters | undefined) {
     filters?.originId ||
     filters?.projectId,
   );
-}
-
-/** Named entities commonly emitted in saved issue bodies; unknown `&name;` sequences are left unchanged. */
-const WELL_KNOWN_NAMED_HTML_ENTITIES: Readonly<Record<string, string>> = {
-  amp: "&",
-  apos: "'",
-  copy: "\u00A9",
-  gt: ">",
-  lt: "<",
-  nbsp: "\u00A0",
-  quot: '"',
-  ensp: "\u2002",
-  emsp: "\u2003",
-  thinsp: "\u2009",
-};
-
-function decodeNumericHtmlEntity(digits: string, radix: 16 | 10): string | null {
-  const n = Number.parseInt(digits, radix);
-  if (Number.isNaN(n) || n < 0 || n > 0x10ffff) return null;
-  try {
-    return String.fromCodePoint(n);
-  } catch {
-    return null;
-  }
-}
-
-/** Decodes HTML character references in a raw @mention capture so UI-encoded bodies match agent names. */
-export function normalizeAgentMentionToken(raw: string): string {
-  let s = raw.replace(/&#x([0-9a-fA-F]+);/gi, (full, hex: string) => decodeNumericHtmlEntity(hex, 16) ?? full);
-  s = s.replace(/&#([0-9]+);/g, (full, dec: string) => decodeNumericHtmlEntity(dec, 10) ?? full);
-  s = s.replace(/&([a-z][a-z0-9]*);/gi, (full, name: string) => {
-    const decoded = WELL_KNOWN_NAMED_HTML_ENTITIES[name.toLowerCase()];
-    return decoded !== undefined ? decoded : full;
-  });
-  return s.trim();
 }
 
 export function deriveIssueUserContext(
@@ -3669,8 +3634,8 @@ export function issueService(db: Db) {
     );
   }
 
-  async function isTerminalOrMissingHeartbeatRun(runId: string) {
-    const run = await db
+  async function isTerminalOrMissingHeartbeatRun(runId: string, dbOrTx: DbReader = db) {
+    const run = await dbOrTx
       .select({ status: heartbeatRuns.status })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
@@ -3795,8 +3760,73 @@ export function issueService(db: Db) {
     });
   }
 
+  // Symmetric to clearExecutionRunIfTerminal. Clears checkoutRunId (and the
+  // bundled execution lock cols) when the row's checkoutRunId points at a
+  // heartbeat run that is terminal or no longer exists. No assignee/status
+  // precondition: a terminal run holds no real claim regardless of who is
+  // assigned or what status the issue is currently in.
+  async function clearCheckoutRunIfTerminal(issueId: string): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
+      );
+      const issue = await tx
+        .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue?.checkoutRunId) return false;
+
+      await tx.execute(
+        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.checkoutRunId} for update`,
+      );
+      const run = await tx
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, issue.checkoutRunId))
+        .then((rows) => rows[0] ?? null);
+      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+
+      if (issue.executionRunId && issue.executionRunId !== issue.checkoutRunId) {
+        await tx.execute(
+          sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
+        );
+        const executionRun = await tx
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, issue.executionRunId))
+          .then((rows) => rows[0] ?? null);
+        if (executionRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)) return false;
+      }
+
+      const updated = await tx
+        .update(issues)
+        .set({
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(issues.id, issueId),
+            eq(issues.checkoutRunId, issue.checkoutRunId),
+            issue.executionRunId
+              ? eq(issues.executionRunId, issue.executionRunId)
+              : isNull(issues.executionRunId),
+          ),
+        )
+        .returning({ id: issues.id })
+        .then((rows) => rows[0] ?? null);
+
+      return Boolean(updated);
+    });
+  }
+
   return {
     clearExecutionRunIfTerminal,
+    clearCheckoutRunIfTerminal,
 
     list: async (companyId: string, filters?: IssueFilters) => {
       if (filters?.attention === "blocked") {
@@ -5346,6 +5376,7 @@ export function issueService(db: Db) {
       }
 
       await clearExecutionRunIfTerminal(id);
+      await clearCheckoutRunIfTerminal(id);
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
       const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
@@ -5475,6 +5506,7 @@ export function issueService(db: Db) {
 
     assertCheckoutOwner: async (id: string, actorAgentId: string, actorRunId: string | null) => {
       await clearExecutionRunIfTerminal(id);
+      await clearCheckoutRunIfTerminal(id);
       const current = await db
         .select({
           id: issues.id,
@@ -5551,54 +5583,57 @@ export function issueService(db: Db) {
       });
     },
 
-    release: async (id: string, actorAgentId?: string, actorRunId?: string | null) => {
-      await clearExecutionRunIfTerminal(id);
-      const existing = await db
-        .select()
-        .from(issues)
-        .where(eq(issues.id, id))
-        .then((rows) => rows[0] ?? null);
+    release: async (id: string, actorAgentId?: string, actorRunId?: string | null) =>
+      db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
+        );
+        const existing = await tx
+          .select()
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
 
-      if (!existing) return null;
-      if (actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
-        throw conflict("Only assignee can release issue");
-      }
-      if (
-        actorAgentId &&
-        existing.status === "in_progress" &&
-        existing.assigneeAgentId === actorAgentId &&
-        existing.checkoutRunId &&
-        !sameRunLock(existing.checkoutRunId, actorRunId ?? null)
-      ) {
-        const stale = await isTerminalOrMissingHeartbeatRun(existing.checkoutRunId);
-        if (!stale) {
-          throw conflict("Only checkout run can release issue", {
-            issueId: existing.id,
-            assigneeAgentId: existing.assigneeAgentId,
-            checkoutRunId: existing.checkoutRunId,
-            actorRunId: actorRunId ?? null,
-          });
+        if (!existing) return null;
+        if (actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
+          throw conflict("Only assignee can release issue");
         }
-      }
+        if (
+          actorAgentId &&
+          existing.status === "in_progress" &&
+          existing.assigneeAgentId === actorAgentId &&
+          existing.checkoutRunId &&
+          !sameRunLock(existing.checkoutRunId, actorRunId ?? null)
+        ) {
+          const stale = await isTerminalOrMissingHeartbeatRun(existing.checkoutRunId, tx);
+          if (!stale) {
+            throw conflict("Only checkout run can release issue", {
+              issueId: existing.id,
+              assigneeAgentId: existing.assigneeAgentId,
+              checkoutRunId: existing.checkoutRunId,
+              actorRunId: actorRunId ?? null,
+            });
+          }
+        }
 
-      const updated = await db
-        .update(issues)
-        .set({
-          status: "todo",
-          assigneeAgentId: null,
-          checkoutRunId: null,
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(issues.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      if (!updated) return null;
-      const [enriched] = await withIssueLabels(db, [updated]);
-      return enriched;
-    },
+        const updated = await tx
+          .update(issues)
+          .set({
+            status: "todo",
+            assigneeAgentId: null,
+            checkoutRunId: null,
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(issues.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+        const [enriched] = await withIssueLabels(tx, [updated]);
+        return enriched;
+      }),
 
     adminForceRelease: async (id: string, options: { clearAssignee?: boolean } = {}) =>
       db.transaction(async (tx) => {
@@ -6063,25 +6098,13 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
-      const re = /\B@([^\s@,!?.]+)/g;
-      const tokens = new Set<string>();
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(body)) !== null) {
-        const normalized = normalizeAgentMentionToken(m[1]);
-        if (normalized) tokens.add(normalized.toLowerCase());
-      }
-
       const explicitAgentMentionIds = extractAgentMentionIds(body);
-      if (tokens.size === 0 && explicitAgentMentionIds.length === 0) return [];
-      const rows = await db.select({ id: agents.id, name: agents.name })
+      if (explicitAgentMentionIds.length === 0) return [];
+
+      const rows = await db.select({ id: agents.id })
         .from(agents).where(eq(agents.companyId, companyId));
-      const resolved = new Set<string>(explicitAgentMentionIds);
-      for (const agent of rows) {
-        if (tokens.has(agent.name.toLowerCase())) {
-          resolved.add(agent.id);
-        }
-      }
-      return [...resolved];
+      const companyAgentIds = new Set(rows.map((agent) => agent.id));
+      return explicitAgentMentionIds.filter((agentId) => companyAgentIds.has(agentId));
     },
 
     findMentionedProjectIds: async (
