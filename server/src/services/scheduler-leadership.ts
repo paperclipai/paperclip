@@ -108,6 +108,10 @@ export function createSchedulerLeadership(opts: SchedulerLeadershipOptions): Sch
         // The lease expires on its own; another replica reaps it within ttl.
         logger.warn({ err: resignErr, leaderId }, "scheduler leadership resign after failed onAcquired failed");
       });
+      // onAcquired may have partially started (e.g. an interval was set
+      // before the throw); onLost is always its counterpart, so it must run
+      // to undo whatever acquisition-side startup did succeed.
+      await notifyLost();
     }
   }
 
@@ -204,7 +208,7 @@ export function createSchedulerLeadership(opts: SchedulerLeadershipOptions): Sch
 let healthHandle: SchedulerLeadership | null = null;
 
 /** Registered at startup so /api/health can report leadership state (consumed in routes/health.ts). */
-export function registerSchedulerLeadershipForHealth(handle: SchedulerLeadership): void {
+export function registerSchedulerLeadershipForHealth(handle: SchedulerLeadership | null): void {
   healthHandle = handle;
 }
 

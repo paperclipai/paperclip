@@ -204,6 +204,9 @@ describeEmbedded("scheduler leadership", () => {
 
     // A tried at least once (the failure path exists and executed).
     expect(faultyOnAcquired.mock.calls.length).toBeGreaterThanOrEqual(1);
+    // onLost is always the counterpart of onAcquired: even a failed
+    // acquisition runs it so partially-started scheduler state is torn down.
+    expect(a.onLost.mock.calls.length).toBeGreaterThanOrEqual(1);
     // B's onAcquired fired exactly once (no double-acquire).
     expect(b.onAcquired).toHaveBeenCalledTimes(1);
   });
@@ -212,7 +215,7 @@ describeEmbedded("scheduler leadership", () => {
     const { leadership } = makeInstance(dbA, "health-test-leader");
 
     // Before start: not registered as candidate
-    registerSchedulerLeadershipForHealth(null as unknown as SchedulerLeadership);
+    registerSchedulerLeadershipForHealth(null);
     let health = await getSchedulerHealth(dbA);
     expect(health.candidate).toBe(false);
     expect(health.isLeader).toBe(false);
@@ -238,7 +241,7 @@ describeEmbedded("scheduler leadership", () => {
 
     // After stop + unregister: candidate=false
     await leadership.stop();
-    registerSchedulerLeadershipForHealth(null as unknown as SchedulerLeadership);
+    registerSchedulerLeadershipForHealth(null);
     health = await getSchedulerHealth(dbA);
     expect(health.candidate).toBe(false);
     expect(health.isLeader).toBe(false);
