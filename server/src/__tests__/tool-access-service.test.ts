@@ -1207,6 +1207,42 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  it("reconnects a gallery app by rotating the existing credential in place (PAP-10859)", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    mockToolsList([
+      { name: "list_zaps", description: "List", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } },
+    ]);
+
+    const connect = await service.connectGalleryApp(company.id, {
+      galleryKey: "zapier",
+      name: "Zapier reconnect",
+      credentialValues: { "credentials.authorization": "old-secret" },
+    }, { actorType: "user", actorId: "board" });
+
+    const before = await service.getConnection(connect.connectionId, company.id);
+    const beforeRef = before.credentialSecretRefs.find((r) => r.configPath === "credentials.authorization")!;
+    expect(beforeRef).toBeDefined();
+
+    await expect(
+      service.reconnectGalleryApp(connect.connectionId, company.id, { credentialValues: {} }, { actorType: "user", actorId: "board" }),
+    ).rejects.toMatchObject({ message: expect.stringContaining("Paste a new key") });
+
+    const result = await service.reconnectGalleryApp(
+      connect.connectionId,
+      company.id,
+      { credentialValues: { "credentials.authorization": "new-secret" } },
+      { actorType: "user", actorId: "board" },
+    );
+    expect(result.connection.id).toBe(connect.connectionId);
+
+    const after = await service.getConnection(connect.connectionId, company.id);
+    const afterRef = after.credentialSecretRefs.find((r) => r.configPath === "credentials.authorization")!;
+    // Rotated in place: same secret, no duplicate ref created.
+    expect(after.credentialSecretRefs).toHaveLength(before.credentialSecretRefs.length);
+    expect(afterRef.secretId).toBe(beforeRef.secretId);
+  });
+
   it("stops and restarts local stdio runtime slots through the board service", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db, { now: () => new Date("2026-06-06T01:00:00.000Z") });

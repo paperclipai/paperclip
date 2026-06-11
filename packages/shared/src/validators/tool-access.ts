@@ -184,6 +184,12 @@ export const connectToolAppSchema = z.object({
 
 export type ConnectToolApp = z.infer<typeof connectToolAppSchema>;
 
+export const reconnectToolAppSchema = z.object({
+  credentialValues: z.record(z.string().trim().min(1).max(200), z.string().min(1)),
+});
+
+export type ReconnectToolApp = z.infer<typeof reconnectToolAppSchema>;
+
 export const finishToolAppSchema = z.object({
   enabledCatalogEntryIds: z.array(z.string().uuid()).max(500).default([]),
   askFirstCatalogEntryIds: z.array(z.string().uuid()).max(500).default([]),

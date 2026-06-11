@@ -194,6 +194,53 @@ describeEmbeddedPostgres("tool gateway service", () => {
     })).rejects.toMatchObject({ reasonCode: "action_not_approved" });
   });
 
+  it("declines a pending action request and rejects the invocation (PAP-10859)", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review note writes",
+      policyType: "require_approval",
+      selectors: { toolName: "mcp-remote-fixture:update_note" },
+    });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({
+      companyId: company.id,
+      agentId: agent.id,
+      runId: run.id,
+    });
+
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-remote-fixture:update_note",
+      parameters: { noteId: "n1", body: "short" },
+    })).rejects.toMatchObject({ reasonCode: "approval_required" });
+
+    const [actionRequest] = await db.select().from(toolActionRequests);
+    const declined = await gateway.declineActionRequest({
+      companyId: company.id,
+      actionRequestId: actionRequest.id,
+      actor: { userId: "board-user" },
+    });
+    expect(declined.status).toBe("rejected");
+    expect(declined.resolvedByUserId).toBe("board-user");
+
+    const [invocation] = await db.select().from(toolInvocations);
+    expect(invocation.approvalState).toBe("rejected");
+
+    // Declining again is idempotent; approving a declined request is refused.
+    const again = await gateway.declineActionRequest({
+      companyId: company.id,
+      actionRequestId: actionRequest.id,
+      actor: { userId: "board-user" },
+    });
+    expect(again.status).toBe("rejected");
+    await expect(gateway.approveActionRequest({
+      companyId: company.id,
+      actionRequestId: actionRequest.id,
+      actor: { userId: "board-user" },
+    })).rejects.toMatchObject({ reasonCode: "action_not_pending" });
+  });
+
   it("adds formal board approval for destructive tool actions and fails closed until approved", async () => {
     const { company, agent, run } = await createRunFixture(db);
     await db.insert(toolPolicies).values({

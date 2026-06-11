@@ -15,6 +15,7 @@ import {
   createToolProfileWithEntriesSchema,
   disableToolStdioCommandTemplateSchema,
   finishToolAppSchema,
+  reconnectToolAppSchema,
   createToolTrustRuleFromActionRequestSchema,
   importMcpJsonSchema,
   revokeToolTrustRuleSchema,
@@ -415,6 +416,32 @@ export function toolAccessRoutes(
     assertCompanyAccess(req, existing.companyId);
     res.json(await svc.checkHealth(existing.id, getActorInfo(req)));
   });
+
+  router.post(
+    "/tool-connections/:connectionId/reconnect",
+    validate(reconnectToolAppSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const existing = await svc.getConnection(req.params.connectionId as string);
+      assertCompanyAccess(req, existing.companyId);
+      const result = await svc.reconnectGalleryApp(
+        existing.id,
+        existing.companyId,
+        req.body,
+        getActorInfo(req),
+      );
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "tool_app.reconnected",
+        entityType: "tool_connection",
+        entityId: existing.id,
+        details: { healthStatus: result.connection.healthStatus },
+      });
+      res.json(result);
+    },
+  );
 
   router.post("/tool-connections/:connectionId/catalog/refresh", async (req, res) => {
     assertBoard(req);

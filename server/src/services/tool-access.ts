@@ -2746,6 +2746,86 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     };
   }
 
+  /**
+   * Replace the credential(s) on an existing connection and re-run the health
+   * check — the "Replace key" / reconnect flow (M7, PAP-10859). Rotates the
+   * secret in place when a ref already exists so the connection keeps its
+   * profile, policies, and catalog; creates a fresh secret only when the field
+   * had none (e.g. a link connection added a key after the fact).
+   */
+  async function reconnectGalleryApp(
+    connectionId: string,
+    companyId: string,
+    input: { credentialValues: Record<string, string> },
+    actor?: ActorInfo,
+  ): Promise<ToolConnectionHealthCheckResult> {
+    const connection = await getConnectionRow(connectionId, companyId);
+    if (connection.status === "archived") throw conflict("Archived app connections cannot be reconnected");
+    const sourceTemplateKey =
+      typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null;
+    const galleryEntry = sourceTemplateKey ? getToolAppGalleryEntry(sourceTemplateKey) : null;
+    const credentialFields = galleryEntry?.credentialFields ?? [
+      {
+        label: "App key",
+        configPath: "credentials.authorization",
+        helpUrl: "",
+        required: false,
+        placement: "header" as const,
+        key: "Authorization",
+        prefix: "Bearer ",
+      },
+    ];
+
+    const providedFields = credentialFields.filter(
+      (field) => (input.credentialValues[field.configPath]?.trim().length ?? 0) > 0,
+    );
+    if (providedFields.length === 0) throw badRequest("Paste a new key to reconnect this app");
+
+    const credentialSecretRefs = [...connection.credentialSecretRefs];
+    const credentialRefs: McpConnectionCredentialRef[] = [...(connection.credentialRefs ?? [])];
+
+    for (const field of providedFields) {
+      const value = input.credentialValues[field.configPath]!.trim();
+      const existing = credentialSecretRefs.find((ref) => ref.configPath === field.configPath);
+      if (existing) {
+        await secrets.rotate(existing.secretId, { value }, actorForSecret(actor));
+        continue;
+      }
+      const secret = await secrets.create(companyId, {
+        name: `${connection.name} ${field.label} ${randomUUID().slice(0, 8)}`,
+        key: `tool_app.${randomUUID()}.${field.configPath.replace(/[^a-z0-9_:-]+/gi, "_")}`,
+        provider: "local_encrypted",
+        value,
+        description: `Credential for ${connection.name} (${field.configPath}).`,
+      }, actorForSecret(actor));
+      credentialSecretRefs.push({
+        secretId: secret.id,
+        versionSelector: "latest",
+        configPath: field.configPath,
+        required: field.required ?? true,
+        label: field.label,
+      });
+      if (field.placement === "header" && field.key) {
+        credentialRefs.push({
+          name: field.configPath,
+          secretId: secret.id,
+          version: "latest",
+          placement: "header",
+          key: field.key,
+          prefix: field.prefix ?? null,
+        });
+      }
+    }
+
+    const [updated] = await db
+      .update(toolConnections)
+      .set({ credentialRefs, credentialSecretRefs, lastError: null, updatedAt: new Date() })
+      .where(eq(toolConnections.id, connection.id))
+      .returning();
+    await syncCredentialBindings(updated);
+    return checkConnectionHealth(updated.id, actor);
+  }
+
   async function startOAuth(
     companyId: string,
     connectionId: string,
@@ -3005,6 +3085,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     connectGalleryApp,
 
     finishGalleryAppConnection,
+
+    reconnectGalleryApp,
 
     startOAuth,
 
