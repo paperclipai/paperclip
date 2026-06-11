@@ -53,12 +53,19 @@ describeEmbedded("advisory locks", () => {
   });
 
   it("tryAdvisoryXactLock skips when another client holds the lock", async () => {
+    // Deterministic latch (same pattern as the serialization test): A's
+    // critical section resolves `aInside` as its first statement, and the
+    // test waits on it before B tries — A is guaranteed to hold the lock,
+    // with no timing sleep.
+    let aInsideResolve!: () => void;
+    const aInside = new Promise<void>((resolve) => (aInsideResolve = resolve));
     let releaseA: () => void = () => {};
     const held = new Promise<void>((resolve) => (releaseA = resolve));
     const first = withAdvisoryXactLock(dbA, "test-skip", async () => {
+      aInsideResolve();
       await held;
     });
-    await new Promise((resolve) => setTimeout(resolve, 100)); // ensure A holds it
+    await aInside;
     const result = await tryAdvisoryXactLock(dbB, "test-skip", async () => "ran");
     expect(result).toEqual({ acquired: false });
     releaseA();

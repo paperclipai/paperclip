@@ -431,7 +431,12 @@ export function createPluginJobScheduler(
           ),
         );
       if (runningRuns.length > 0) {
-        jobLog.debug("skipping scheduled fire — a run is still in progress (slot already advanced)");
+        // warn, not debug: a recurring overlap means the job outlasts its cron
+        // period and fires are being dropped — operators should see that.
+        jobLog.warn(
+          { jobId, jobKey, pluginId, nextRunAt },
+          "scheduled fire skipped: previous run still in progress; slot advanced — recurring overlap means the job outlasts its cron period",
+        );
         return;
       }
 
