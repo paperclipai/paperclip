@@ -86,6 +86,7 @@ import {
 } from "./issue-tree-control.js";
 import { runEvidenceGate, type EvidenceFetchResult } from "./evidence-gate-wiring.js";
 import { shouldBlockNarratedDone } from "./done-gate.js";
+import { shouldBlockUnreviewableInReview } from "./in-review-gate.js";
 import {
   parseIssueGraphLivenessIncidentKey,
   RECOVERY_ORIGIN_KINDS,
@@ -5815,19 +5816,26 @@ export function issueService(db: Db) {
       applyStatusSideEffects(issueData.status, patch);
 
       // Phase-1 warn-only evidence gate (BLO-4824 / BLO-4461). Records the
-      // gate's verdict but never throws — Phase 2 (BLO-4828) will flip
-      // `block` to a 422. Errors during evaluation are swallowed so a
+      // gate's verdict but never throws on its own — Phase 2 (BLO-4828) will
+      // flip `block` to a 422. Errors during evaluation are swallowed so a
       // misbehaving gate can't break the PATCH; production runs surface
       // them via the warn log.
+      //
+      // The flag-gated in_review enforcement below intentionally lives
+      // OUTSIDE the try/catch: an evaluation failure yields verdict == null
+      // (gate fails open), while a successfully-computed non-pass verdict
+      // throws without being swallowed.
       if (
         issueData.status === "in_review" &&
         existing.status !== "in_review"
       ) {
+        let inReviewVerdict: Awaited<ReturnType<typeof runEvidenceGate>> | null = null;
         try {
           const verdict = await runEvidenceGate(
             (issueId) => fetchEvidenceForIssue(dbOrTx, issueId, existing.description),
             id,
           );
+          inReviewVerdict = verdict;
           patch.lastEvidenceVerdict = verdict;
           logger.info(
             {
@@ -5847,6 +5855,33 @@ export function issueService(db: Db) {
               err: err instanceof Error ? err.message : String(err),
             },
             "evidence-gate: evaluation failed; proceeding without verdict",
+          );
+        }
+
+        // In-review evidence gate (narrated-review hardening, instance flag
+        // `enableInReviewEvidenceGate`, default off). Blocks an agent
+        // flipping an issue to `in_review` when the evidence gate found
+        // nothing reviewable — the failure mode where an agent does
+        // analysis-only work and narrates in_review with no PR, branch, or
+        // commits. Never gates human actors. See
+        // server/src/services/in-review-gate.ts.
+        if (
+          experimental.enableInReviewEvidenceGate &&
+          shouldBlockUnreviewableInReview({
+            fromStatus: existing.status,
+            toStatus: issueData.status,
+            isAgentActor: actorAgentId != null,
+            verdict: inReviewVerdict,
+          })
+        ) {
+          throw unprocessable(
+            "Issue cannot be moved to in_review without reviewable evidence " +
+              `(missing: ${inReviewVerdict?.missing.join(", ") || "unknown"})`,
+            {
+              reason: "in_review_without_reviewable_evidence",
+              issueId: id,
+              missing: inReviewVerdict?.missing ?? [],
+            },
           );
         }
       }

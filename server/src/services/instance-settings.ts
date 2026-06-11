@@ -58,6 +58,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableIssuePlanDecompositions: parsed.data.enableIssuePlanDecompositions ?? false,
       enableCloudSync: parsed.data.enableCloudSync ?? false,
       enableDoneExecutionGate: parsed.data.enableDoneExecutionGate ?? false,
+      enableInReviewEvidenceGate: parsed.data.enableInReviewEvidenceGate ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? true,
       issueGraphLivenessAutoRecoveryLookbackHours:
@@ -71,6 +72,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableIssuePlanDecompositions: false,
     enableCloudSync: false,
     enableDoneExecutionGate: false,
+    enableInReviewEvidenceGate: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: true,
     issueGraphLivenessAutoRecoveryLookbackHours:

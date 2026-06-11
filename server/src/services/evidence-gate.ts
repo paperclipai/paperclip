@@ -182,12 +182,16 @@ function detectChecklistDoneWhen(
   issueDescription: string | null | undefined,
 ): boolean {
   if (!issueDescription) {
-    // No description = no acceptance criteria to map against; treat as
-    // satisfied (the checklist requirement is meaningless here).
-    return true;
+    // No description = no acceptance criteria to map against. The shape is
+    // undetectable, not satisfied — `evaluateEvidence` drops it from the
+    // required set when inapplicable, so returning false here cannot block;
+    // it just keeps `evidenceFound` honest. (Previously this returned a
+    // vacuous `true`, which let unlabeled issues with no criteria reach a
+    // `pass` verdict with zero artifacts.)
+    return false;
   }
   const doneWhenBullets = countDoneWhenBullets(issueDescription);
-  if (doneWhenBullets === 0) return true;
+  if (doneWhenBullets === 0) return false;
 
   // A "checklist" is either:
   //  (a) A markdown table with N >= doneWhenBullets rows that include a
@@ -370,10 +374,27 @@ export function evaluateEvidence(
 ): EvaluateEvidenceResult {
   const limit = input.recentCommentLimit ?? DEFAULT_RECENT_COMMENT_LIMIT;
   const text = buildAgentEvidenceText(input.comments, limit);
-  const { required, unlabeledFallback } = resolveRequiredShapes(
-    input.issue,
-    input.registry,
-  );
+  const resolved = resolveRequiredShapes(input.issue, input.registry);
+  const { unlabeledFallback } = resolved;
+  let required = resolved.required;
+
+  // Done-when applicability: `checklist:done-when` only means something when
+  // the issue actually has a `## Done when` section to check against. When it
+  // doesn't, the shape is undetectable — drop it from the required set rather
+  // than letting it vacuously pass (the narrated-in_review hole: an unlabeled
+  // issue with no criteria reached `pass` with zero artifacts). Labeled
+  // issues simply lose the inapplicable shape (their other shapes carry the
+  // signal); the unlabeled fallback substitutes `pr-link`, because with no
+  // criteria to check, a PR is the only reviewable receipt.
+  const doneWhenApplicable =
+    !!input.issue.description && countDoneWhenBullets(input.issue.description) > 0;
+  if (!doneWhenApplicable && required.includes("checklist:done-when")) {
+    required = required.filter((s) => s !== "checklist:done-when");
+    if (unlabeledFallback && !required.includes("pr-link")) {
+      required.push("pr-link");
+    }
+  }
+
   const { detections, found } = detectAll({
     issueDescription: input.issue.description,
     text,

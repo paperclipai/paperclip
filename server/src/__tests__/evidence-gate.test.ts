@@ -243,14 +243,56 @@ describe("evaluateEvidence — unlabeled issue", () => {
     expect(result.missing).toEqual(["checklist:done-when"]);
   });
 
-  it("passes when unlabeled issue has no Done-when section (vacuous)", () => {
+  it("requires a pr-link (not a vacuous checklist) when unlabeled issue has no Done-when section", () => {
+    // The narrated-in_review hole: with no Done-when section the checklist
+    // shape used to pass vacuously, letting analysis-only agent runs reach
+    // in_review with zero artifacts. The fallback now substitutes pr-link.
     const result = evaluateEvidence({
       issue: { description: "## Goal\njust do it", labels: [] },
       comments: [agentComment("done")],
       workProducts: [],
       registry: DEFAULT_EVIDENCE_REGISTRY,
     });
+    expect(result.verdict).toBe("warn");
+    expect(result.unlabeledFallback).toBe(true);
+    expect(result.missing).toEqual(["pr-link"]);
+    expect(result.evidenceFound).not.toContain("checklist:done-when");
+  });
+
+  it("passes when unlabeled issue with no Done-when section has a PR link", () => {
+    const result = evaluateEvidence({
+      issue: { description: "## Goal\njust do it", labels: [] },
+      comments: [agentComment("Shipped: https://github.com/acme/repo/pull/123")],
+      workProducts: [],
+      registry: DEFAULT_EVIDENCE_REGISTRY,
+    });
     expect(result.verdict).toBe("pass");
+    expect(result.evidenceFound).toContain("pr-link");
+  });
+
+  it("requires pr-link when unlabeled issue has no description at all", () => {
+    const result = evaluateEvidence({
+      issue: { description: null, labels: [] },
+      comments: [agentComment("done")],
+      workProducts: [],
+      registry: DEFAULT_EVIDENCE_REGISTRY,
+    });
+    expect(result.verdict).toBe("warn");
+    expect(result.missing).toEqual(["pr-link"]);
+  });
+
+  it("drops the inapplicable checklist shape for labeled issues with no Done-when section", () => {
+    // backend requires [test-output, checklist:done-when]; without a
+    // Done-when section the checklist is undetectable, so only the
+    // test-output shape should gate (not an unsatisfiable checklist).
+    const result = evaluateEvidence({
+      issue: { description: "## Goal\nfix the thing", labels: [{ name: "backend" }] },
+      comments: [agentComment("Test Files  3 passed (3)")],
+      workProducts: [],
+      registry: DEFAULT_EVIDENCE_REGISTRY,
+    });
+    expect(result.verdict).toBe("pass");
+    expect(result.missing).toEqual([]);
   });
 });
 

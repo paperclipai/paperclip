@@ -44,6 +44,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableIssuePlanDecompositions: z.boolean().default(false),
   enableCloudSync: z.boolean().default(false),
   enableDoneExecutionGate: z.boolean().default(false),
+  enableInReviewEvidenceGate: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
   enableIssueGraphLivenessAutoRecovery: z.boolean().default(false),
   issueGraphLivenessAutoRecoveryLookbackHours: z
