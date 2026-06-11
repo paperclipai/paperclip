@@ -683,6 +683,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       {
         resumeSessionId,
         skipGitRepoCheck: executionTargetIsSandbox,
+        detectUnsupportedModel: true,
       },
     );
     const args = execArgs.args;
@@ -690,12 +691,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       execArgs.fastModeIgnoredReason == null
         ? commandNotes
         : [...commandNotes, execArgs.fastModeIgnoredReason];
+    const commandNotesWithFallback = execArgs.modelFallbackApplied
+      ? [`[codex-local] Model auto-fallback: ${execArgs.originalModel} -> ${execArgs.model}`,
+         ...commandNotesWithFastMode]
+      : commandNotesWithFastMode;
     if (onMeta) {
       await onMeta({
         adapterType: "codex_local",
         command: resolvedCommand,
         cwd: effectiveExecutionCwd,
-        commandNotes: commandNotesWithFastMode,
+        commandNotes: commandNotesWithFallback,
         commandArgs: args.map((value, idx) => {
           if (idx === args.length - 1 && value !== "-") return `<prompt ${prompt.length} chars>`;
           return value;
@@ -839,6 +844,58 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
       const retry = await runAttempt(null);
       return toResult(retry, true, true);
+    }
+
+    // Retry with gpt-5.3-codex-spark fallback when the model is unsupported on ChatGPT accounts
+    if (
+      !initial.proc.timedOut &&
+      (initial.proc.exitCode ?? 0) !== 0 &&
+      isCodexTransientUpstreamError({
+        stdout: initial.proc.stdout,
+        stderr: initial.proc.stderr,
+        errorMessage: (initial.proc.stderr || initial.parsed.errorMessage) ?? "",
+      }) &&
+      /is not supported when using Codex with a ChatGPT account/i.test(initial.rawStderr)
+    ) {
+      await onLog(
+        "stdout",
+        `[paperclip] Detected unsupported model on ChatGPT account; retrying with gpt-5.3-codex-spark fallback.\n`,
+      );
+      // Retry with the spark model explicitly to avoid re-failing with the same unsupported model.
+      const retryConfig = { ...config, model: "gpt-5.3-codex-spark" };
+      const retryArgs = buildCodexExecArgs(retryConfig, {
+        resumeSessionId: null,
+        skipGitRepoCheck: executionTargetIsSandbox,
+        detectUnsupportedModel: true,
+      });
+      const retryProc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, retryArgs.args, {
+        cwd,
+        env,
+        stdin: prompt,
+        timeoutSec,
+        graceSec,
+        onSpawn,
+        onLog: async (stream, chunk) => {
+          if (stream !== "stderr") {
+            await onLog(stream, chunk);
+            return;
+          }
+          const cleaned = stripCodexRolloutNoise(chunk);
+          if (!cleaned.trim()) return;
+          await onLog(stream, cleaned);
+        },
+      });
+      const retryCleanedStderr = stripCodexRolloutNoise(retryProc.stderr);
+      const retryResult = {
+        proc: {
+          ...retryProc,
+          stderr: retryCleanedStderr,
+        },
+        rawStderr: retryProc.stderr,
+        parsed: parseCodexJsonl(retryProc.stdout),
+      };
+      // If the spark retry also fails, report the spark error (not the original unsupported-model error).
+      return toResult(retryResult, true, true);
     }
 
     return toResult(initial, false, false);
