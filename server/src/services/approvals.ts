@@ -219,7 +219,7 @@ export function approvalService(db: Db) {
         }
       }
 
-      if (applied && updated.type === "request_board_approval") {
+      if (updated.type === "request_board_approval") {
         await applyRequestGrantsForApproval(updated, decidedByUserId);
       }
 

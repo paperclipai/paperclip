@@ -187,7 +187,7 @@ describe("approvalService request_board_approval grant propagation", () => {
     );
   });
 
-  it("does not insert grants when a repeated approval retry finds the row already approved", async () => {
+  it("re-applies grants on a repeated approval retry so partial-failure is recoverable", async () => {
     const selectResults: unknown[][] = [
       [makeBoardApproval("pending")],
       [makeBoardApproval("approved")],
@@ -202,14 +202,17 @@ describe("approvalService request_board_approval grant propagation", () => {
     const set = vi.fn(() => ({ where: updateWhere }));
     const update = vi.fn(() => ({ set }));
 
-    const insert = vi.fn(() => ({ values: vi.fn() }));
+    const onConflictDoUpdate = vi.fn().mockReturnThis();
+    const insertValues = vi.fn(() => ({ onConflictDoUpdate }));
+    const insert = vi.fn(() => ({ values: insertValues }));
     const dbStub = { select, update, insert };
 
     const svc = approvalService(dbStub as any);
     const result = await svc.approve("approval-board-1", "user-board-1");
 
     expect(result.applied).toBe(false);
-    expect(insert).not.toHaveBeenCalled();
+    expect(insert).toHaveBeenCalledTimes(2);
+    expect(insertValues).toHaveBeenCalledTimes(2);
   });
 
   it("skips grant insertion when the request_board_approval payload has no grants", async () => {
