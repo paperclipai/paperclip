@@ -236,6 +236,130 @@ const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_r
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
+
+/**
+ * Default hibernation threshold for cold-wake detection.
+ *
+ * If an agent's most recent succeeded heartbeat finished more than this many
+ * hours before the current wake, the wake is considered a "cold wake" and
+ * downstream callers may attach a pre-wake context briefing to the run.
+ *
+ * 24h is the lower bound the board set on ALL-781: shorter than the longest
+ * weekend gap (so a Monday wake on Friday's work still gets briefed), longer
+ * than a normal active session (so back-to-back heartbeats don't burn budget
+ * on briefings nobody needs).
+ */
+export const DEFAULT_HIBERNATION_THRESHOLD_HOURS = 24;
+
+/**
+ * Environment variable that overrides {@link DEFAULT_HIBERNATION_THRESHOLD_HOURS}
+ * at runtime. Per-call `thresholdHours` (when passed) takes precedence over the
+ * env var. Non-numeric, non-finite, zero, or negative values are ignored.
+ */
+export const HIBERNATION_THRESHOLD_ENV_VAR = "PAPERCLIP_HIBERNATION_THRESHOLD_HOURS";
+
+const MILLIS_PER_HOUR = 60 * 60 * 1000;
+
+export interface ColdWakeDetectionResult {
+  /** True when no prior succeeded run exists, or the gap exceeds `thresholdHours`. */
+  isColdWake: boolean;
+  /** Hours between the most recent succeeded run's `finishedAt` and `now`. Null when no prior run. */
+  hoursSinceLastRun: number | null;
+  /** ISO-8601 timestamp of the most recent succeeded run's `finishedAt`. Null when no prior run. */
+  lastRunFinishedAt: string | null;
+  /** Resolved threshold actually used for this check (param > env > default). */
+  thresholdHours: number;
+}
+
+export interface DetectColdWakeOptions {
+  /** Optional override for the wall-clock reference; defaults to `new Date()`. Test-only. */
+  now?: Date;
+}
+
+/**
+ * Resolve the active hibernation threshold using the param > env > default
+ * precedence. Exported for tests and for callers that need to log the value
+ * separately from a detection result.
+ */
+export function resolveHibernationThresholdHours(thresholdHoursOverride?: number): number {
+  if (
+    typeof thresholdHoursOverride === "number" &&
+    Number.isFinite(thresholdHoursOverride) &&
+    thresholdHoursOverride > 0
+  ) {
+    return thresholdHoursOverride;
+  }
+  const raw = process.env[HIBERNATION_THRESHOLD_ENV_VAR];
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return DEFAULT_HIBERNATION_THRESHOLD_HOURS;
+}
+
+/**
+ * Detect whether the next wake for `agentId` should be treated as a cold wake.
+ *
+ * Looks up the most recent `heartbeatRuns` row for the agent whose status is
+ * `"succeeded"` and whose `finishedAt` is non-null. Compares that to `now`
+ * (default: `new Date()`). If no such row exists, the wake is cold. Otherwise
+ * the wake is cold when the gap meets-or-exceeds the resolved threshold.
+ *
+ * Threshold resolution order: explicit `thresholdHours` argument (when
+ * positive and finite) > {@link HIBERNATION_THRESHOLD_ENV_VAR} > {@link DEFAULT_HIBERNATION_THRESHOLD_HOURS}.
+ *
+ * Pure read; no DB writes, no telemetry side effects. Briefing assembly,
+ * logging, and bypass-switch handling are owned by follow-up steps of
+ * ALL-781.
+ *
+ * @param db - Drizzle DB handle (Postgres).
+ * @param agentId - UUID of the agent being woken.
+ * @param thresholdHours - Optional per-call override in hours.
+ * @param options - Optional injection point for `now` (test-only).
+ */
+export async function detectColdWake(
+  db: Db,
+  agentId: string,
+  thresholdHours?: number,
+  options: DetectColdWakeOptions = {},
+): Promise<ColdWakeDetectionResult> {
+  const resolvedThresholdHours = resolveHibernationThresholdHours(thresholdHours);
+  const now = options.now ?? new Date();
+
+  const [latest] = await db
+    .select({ finishedAt: heartbeatRuns.finishedAt })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.agentId, agentId),
+        eq(heartbeatRuns.status, "succeeded"),
+        sql`${heartbeatRuns.finishedAt} IS NOT NULL`,
+      ),
+    )
+    .orderBy(desc(heartbeatRuns.finishedAt))
+    .limit(1);
+
+  if (!latest || !latest.finishedAt) {
+    return {
+      isColdWake: true,
+      hoursSinceLastRun: null,
+      lastRunFinishedAt: null,
+      thresholdHours: resolvedThresholdHours,
+    };
+  }
+
+  const finishedAt =
+    latest.finishedAt instanceof Date ? latest.finishedAt : new Date(latest.finishedAt);
+  const hoursSinceLastRun = (now.getTime() - finishedAt.getTime()) / MILLIS_PER_HOUR;
+  return {
+    isColdWake: hoursSinceLastRun >= resolvedThresholdHours,
+    hoursSinceLastRun,
+    lastRunFinishedAt: finishedAt.toISOString(),
+    thresholdHours: resolvedThresholdHours,
+  };
+}
 export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
