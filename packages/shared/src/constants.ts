@@ -393,6 +393,15 @@ export type IssueExecutionMonitorClearReason = (typeof ISSUE_EXECUTION_MONITOR_C
 export const ISSUE_EXECUTION_DECISION_OUTCOMES = ["approved", "changes_requested"] as const;
 export type IssueExecutionDecisionOutcome = (typeof ISSUE_EXECUTION_DECISION_OUTCOMES)[number];
 
+export const ISSUE_EXECUTION_GATE_STATUSES = ["passed", "failed"] as const;
+export type IssueExecutionGateStatus = (typeof ISSUE_EXECUTION_GATE_STATUSES)[number];
+
+/**
+ * Default review-gate suite required to advance an execution stage without being
+ * the pinned participant or a board actor. Policies may override via `requiredGates`.
+ */
+export const DEFAULT_ISSUE_EXECUTION_REQUIRED_GATES = ["clawsweeper", "clawpatch", "autoreview"] as const;
+
 export const GOAL_LEVELS = ["company", "team", "agent", "task"] as const;
 export type GoalLevel = (typeof GOAL_LEVELS)[number];
 

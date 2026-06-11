@@ -289,6 +289,8 @@ export type {
   IssueExecutionStagePrincipal,
   IssueReviewRequest,
   IssueExecutionDecision,
+  IssueExecutionGateResult,
+  IssueExecutionGateEvidence,
   IssueComment,
   IssueCommentMetadata,
   IssueCommentMetadataSection,

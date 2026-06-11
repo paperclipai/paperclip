@@ -566,7 +566,7 @@ describe("issue execution policy transitions", () => {
           actor: { agentId: coderAgentId },
           commentBody: "Trying to bypass review",
         }),
-      ).toThrow("Only the active reviewer or approver can advance");
+      ).toThrow("missing gates: clawsweeper, clawpatch, autoreview");
     });
 
     it("non-participant can still post non-advancing updates", () => {
@@ -597,6 +597,232 @@ describe("issue execution policy transitions", () => {
 
       // No error — just no patch modifications
       expect(result.patch).toEqual({});
+    });
+  });
+
+  describe("gate-based advance and board override", () => {
+    function pendingReviewIssue(policy = twoStagePolicy(), overrides: Record<string, unknown> = {}) {
+      const reviewStageId = policy.stages[0].id;
+      return {
+        policy,
+        reviewStageId,
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+            ...overrides,
+          },
+        },
+      };
+    }
+
+    const fullGateEvidence = {
+      gates: [
+        { gate: "clawsweeper", status: "passed" as const, evidenceUrl: "https://ci.example/clawsweeper/1" },
+        { gate: "clawpatch", status: "passed" as const, evidenceUrl: "https://ci.example/clawpatch/1" },
+        { gate: "autoreview", status: "passed" as const, evidenceUrl: "https://ci.example/autoreview/1" },
+      ],
+    };
+
+    it("executor advances own review stage with clean gate evidence recorded on the decision", () => {
+      const { issue, policy, reviewStageId } = pendingReviewIssue();
+      const result = applyIssueExecutionPolicyTransition({
+        issue,
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "All gates ran clean; advancing per gate-based review",
+        gateEvidence: fullGateEvidence,
+      });
+
+      expect(result.decision).toMatchObject({
+        stageId: reviewStageId,
+        stageType: "review",
+        outcome: "approved",
+      });
+      expect(result.decision?.gateEvidence).toEqual(fullGateEvidence);
+      expect(result.boardOverride).toBeUndefined();
+      const nextState = result.patch.executionState as IssueExecutionState;
+      expect(nextState.currentStageType).toBe("approval");
+      expect(result.patch.assigneeUserId).toBe(ctoUserId);
+      expect(result.patch.status).toBe("in_review");
+    });
+
+    it("rejects advance with incomplete gate evidence, naming the missing gates", () => {
+      const { issue, policy } = pendingReviewIssue();
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue,
+          policy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: { agentId: coderAgentId },
+          commentBody: "Partial gates",
+          gateEvidence: {
+            gates: [
+              { gate: "clawsweeper", status: "passed" as const },
+              { gate: "clawpatch", status: "failed" as const },
+            ],
+          },
+        }),
+      ).toThrow("missing gates: clawpatch, autoreview");
+    });
+
+    it("honors a custom requiredGates suite on the policy", () => {
+      const policy = normalizeIssueExecutionPolicy({
+        requiredGates: ["model-x-review"],
+        stages: [
+          { type: "review", participants: [{ type: "agent", agentId: qaAgentId }] },
+          { type: "approval", participants: [{ type: "user", userId: ctoUserId }] },
+        ],
+      })!;
+      const { issue } = pendingReviewIssue(policy);
+
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue,
+          policy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: { agentId: coderAgentId },
+          commentBody: "No evidence",
+        }),
+      ).toThrow("missing gates: model-x-review");
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue,
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Custom gate ran clean",
+        gateEvidence: { gates: [{ gate: "model-x-review", status: "passed" as const }] },
+      });
+      expect(result.decision?.outcome).toBe("approved");
+    });
+
+    it("board actor can advance the stage without gate evidence, with override metadata", () => {
+      const { issue, policy, reviewStageId } = pendingReviewIssue();
+      const result = applyIssueExecutionPolicyTransition({
+        issue,
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+        actorIsBoard: true,
+        commentBody: "Board approving on behalf of the reviewer",
+      });
+
+      expect(result.decision?.outcome).toBe("approved");
+      expect(result.boardOverride).toMatchObject({
+        action: "advance",
+        stageId: reviewStageId,
+        stageType: "review",
+        previousParticipant: { type: "agent", agentId: qaAgentId },
+      });
+      const nextState = result.patch.executionState as IssueExecutionState;
+      expect(nextState.currentStageType).toBe("approval");
+      expect(result.patch.assigneeUserId).toBe(ctoUserId);
+    });
+
+    it("board actor can reassign the current participant and the stage keeps the new participant", () => {
+      const { issue, policy, reviewStageId } = pendingReviewIssue();
+      const result = applyIssueExecutionPolicyTransition({
+        issue,
+        policy,
+        requestedStatus: undefined,
+        requestedAssigneePatch: { assigneeAgentId: ctoAgentId },
+        actor: { userId: boardUserId },
+        actorIsBoard: true,
+        commentBody: "Reassigning review to the CTO agent",
+      });
+
+      expect(result.boardOverride).toMatchObject({
+        action: "reassign",
+        stageId: reviewStageId,
+        previousParticipant: { type: "agent", agentId: qaAgentId },
+        newParticipant: { type: "agent", agentId: ctoAgentId },
+      });
+      expect(result.workflowControlledAssignment).toBe(true);
+      expect(result.patch.assigneeAgentId).toBe(ctoAgentId);
+      const nextState = result.patch.executionState as IssueExecutionState;
+      expect(nextState.currentParticipant).toMatchObject({ type: "agent", agentId: ctoAgentId });
+      const patchedPolicy = result.patch.executionPolicy as IssueExecutionPolicy;
+      expect(
+        patchedPolicy.stages[0].participants.some((participant) => participant.agentId === ctoAgentId),
+      ).toBe(true);
+    });
+
+    it("board actor can request changes on a stage they do not participate in", () => {
+      const { issue, policy, reviewStageId } = pendingReviewIssue();
+      const result = applyIssueExecutionPolicyTransition({
+        issue,
+        policy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+        actorIsBoard: true,
+        commentBody: "Board requesting changes",
+      });
+
+      expect(result.decision).toMatchObject({
+        stageId: reviewStageId,
+        stageType: "review",
+        outcome: "changes_requested",
+      });
+      expect(result.boardOverride).toMatchObject({ action: "changes_requested" });
+      expect(result.patch.status).toBe("in_progress");
+      expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+    });
+
+    it("board actor can reset a stage that has no return assignee", () => {
+      const { issue, policy } = pendingReviewIssue(twoStagePolicy(), { returnAssignee: null });
+      const result = applyIssueExecutionPolicyTransition({
+        issue,
+        policy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+        actorIsBoard: true,
+        commentBody: "Board resetting the stage",
+      });
+
+      expect(result.boardOverride).toMatchObject({ action: "reset" });
+      expect(result.patch.executionState).toBeNull();
+      expect(result.patch.status).toBe("in_progress");
+    });
+
+    it("pinned participant still advances without gate evidence (existing policies keep working)", () => {
+      const { issue, policy, reviewStageId } = pendingReviewIssue();
+      const result = applyIssueExecutionPolicyTransition({
+        issue,
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Reviewed and approved",
+      });
+
+      expect(result.decision).toMatchObject({
+        stageId: reviewStageId,
+        outcome: "approved",
+      });
+      expect(result.decision?.gateEvidence).toBeNull();
+      expect(result.boardOverride).toBeUndefined();
+      const nextState = result.patch.executionState as IssueExecutionState;
+      expect(nextState.currentStageType).toBe("approval");
     });
   });
 

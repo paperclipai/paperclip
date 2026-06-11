@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   IssueExecutionDecision,
+  IssueExecutionGateEvidence,
   IssueExecutionMonitorClearReason,
   IssueExecutionMonitorPolicy,
   IssueExecutionMonitorState,
@@ -10,7 +11,11 @@ import type {
   IssueExecutionState,
   IssueMonitorScheduledBy,
 } from "@paperclipai/shared";
-import { issueExecutionPolicySchema, issueExecutionStateSchema } from "@paperclipai/shared";
+import {
+  DEFAULT_ISSUE_EXECUTION_REQUIRED_GATES,
+  issueExecutionPolicySchema,
+  issueExecutionStateSchema,
+} from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 
 type AssigneeLike = {
@@ -47,15 +52,30 @@ type TransitionInput = {
   requestedStatus?: string;
   requestedAssigneePatch: RequestedAssigneePatch;
   actor: ActorLike;
+  /** True when the acting principal passed board/instance-admin authentication. */
+  actorIsBoard?: boolean;
+  /** Gate-suite results submitted with this transition (e.g. clawsweeper/clawpatch/autoreview). */
+  gateEvidence?: IssueExecutionGateEvidence | null;
   commentBody?: string | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   monitorExplicitlyUpdated?: boolean;
 };
 
+export type ExecutionStageBoardOverride = {
+  action: "advance" | "changes_requested" | "reassign" | "reset";
+  stageId: string;
+  stageType: IssueExecutionStage["type"];
+  previousParticipant: IssueExecutionStagePrincipal | null;
+  newParticipant?: IssueExecutionStagePrincipal | null;
+};
+
 type TransitionResult = {
   patch: Record<string, unknown>;
-  decision?: Pick<IssueExecutionDecision, "stageId" | "stageType" | "outcome" | "body">;
+  decision?: Pick<IssueExecutionDecision, "stageId" | "stageType" | "outcome" | "body"> & {
+    gateEvidence?: IssueExecutionGateEvidence | null;
+  };
   workflowControlledAssignment?: boolean;
+  boardOverride?: ExecutionStageBoardOverride;
 };
 
 const COMPLETED_STATUS: IssueExecutionState["status"] = "completed";
@@ -319,6 +339,7 @@ export function stripMonitorFromExecutionPolicy(policy: IssueExecutionPolicy | n
     mode: policy.mode,
     commentRequired: policy.commentRequired,
     stages: policy.stages,
+    ...(policy.requiredGates && policy.requiredGates.length > 0 ? { requiredGates: policy.requiredGates } : {}),
   };
 }
 
@@ -389,6 +410,10 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
 
   const reviewPreset = parsed.data.reviewPreset;
   const authorizationPolicy = parsed.data.authorizationPolicy;
+  const requiredGates = (() => {
+    const trimmed = (parsed.data.requiredGates ?? []).map((gate) => gate.trim()).filter((gate) => gate.length > 0);
+    return trimmed.length > 0 ? Array.from(new Set(trimmed)) : null;
+  })();
 
   if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy) return null;
 
@@ -396,6 +421,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
     mode: parsed.data.mode ?? "normal",
     commentRequired: true,
     stages,
+    ...(requiredGates ? { requiredGates } : {}),
     ...(monitor ? { monitor } : {}),
     ...(reviewPreset ? { reviewPreset } : {}),
     ...(authorizationPolicy ? { authorizationPolicy } : {}),
@@ -429,6 +455,46 @@ function principalsEqual(a: IssueExecutionStagePrincipal | null, b: IssueExecuti
   if (!a || !b) return false;
   if (a.type !== b.type) return false;
   return a.type === "agent" ? a.agentId === b.agentId : a.userId === b.userId;
+}
+
+export function requiredGatesForIssueExecutionPolicy(policy: IssueExecutionPolicy): string[] {
+  const configured = (policy.requiredGates ?? []).map((gate) => gate.trim()).filter((gate) => gate.length > 0);
+  if (configured.length > 0) return Array.from(new Set(configured));
+  return [...DEFAULT_ISSUE_EXECUTION_REQUIRED_GATES];
+}
+
+function missingRequiredGates(policy: IssueExecutionPolicy, evidence: IssueExecutionGateEvidence | null | undefined): string[] {
+  const passed = new Set(
+    (evidence?.gates ?? [])
+      .filter((gate) => gate.status === "passed")
+      .map((gate) => gate.gate.trim().toLowerCase()),
+  );
+  return requiredGatesForIssueExecutionPolicy(policy).filter((gate) => !passed.has(gate.toLowerCase()));
+}
+
+function policyWithStageParticipant(
+  policy: IssueExecutionPolicy,
+  stageId: string,
+  participant: IssueExecutionStagePrincipal,
+): IssueExecutionPolicy {
+  return {
+    ...policy,
+    stages: policy.stages.map((stage) => {
+      if (stage.id !== stageId || stageHasParticipant(stage, participant)) return stage;
+      return {
+        ...stage,
+        participants: [
+          ...stage.participants,
+          {
+            id: randomUUID(),
+            type: participant.type,
+            agentId: participant.type === "agent" ? participant.agentId ?? null : null,
+            userId: participant.type === "user" ? participant.userId ?? null : null,
+          },
+        ],
+      };
+    }),
+  };
 }
 
 function findStageById(policy: IssueExecutionPolicy, stageId: string | null | undefined) {
@@ -695,7 +761,58 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       };
     }
 
-    if (principalsEqual(currentParticipant, actor)) {
+    const actorIsCurrentParticipant = principalsEqual(currentParticipant, actor);
+    const boardOverrideActive = input.actorIsBoard === true && !actorIsCurrentParticipant;
+    const missingGates = missingRequiredGates(input.policy, input.gateEvidence ?? null);
+    // Gate-based advance: any actor — including the executor/returnAssignee — may
+    // advance the stage when the configured gate suite ran clean. Review integrity
+    // is gate-based, not identity-based.
+    const gateAdvanceActive =
+      !actorIsCurrentParticipant &&
+      !boardOverrideActive &&
+      requestedStatus === "done" &&
+      input.gateEvidence != null &&
+      missingGates.length === 0;
+    const boardOverrideMeta = (action: ExecutionStageBoardOverride["action"], newParticipant?: IssueExecutionStagePrincipal | null) =>
+      boardOverrideActive
+        ? {
+          boardOverride: {
+            action,
+            stageId: activeStage.id,
+            stageType: activeStage.type,
+            previousParticipant: currentParticipant,
+            ...(newParticipant !== undefined ? { newParticipant } : {}),
+          } satisfies ExecutionStageBoardOverride,
+        }
+        : {};
+
+    if (
+      boardOverrideActive &&
+      requestedAssigneePatchProvided &&
+      explicitAssignee &&
+      !principalsEqual(explicitAssignee, currentParticipant) &&
+      (requestedStatus === undefined || requestedStatus === "in_review")
+    ) {
+      // Board reassignment of the active stage participant. Persist the new
+      // participant into the stage so the pinning stays coherent on later patches.
+      patch.executionPolicy = policyWithStageParticipant(input.policy, activeStage.id, explicitAssignee);
+      buildPendingStagePatch({
+        patch,
+        previous: existingState,
+        policy: input.policy,
+        stage: activeStage,
+        participant: explicitAssignee,
+        returnAssignee: existingState?.returnAssignee ?? currentAssignee ?? actor,
+        reviewRequest: effectiveReviewRequest,
+      });
+      return {
+        patch,
+        workflowControlledAssignment: true,
+        ...boardOverrideMeta("reassign", explicitAssignee),
+      };
+    }
+
+    if (actorIsCurrentParticipant || boardOverrideActive || gateAdvanceActive) {
       if (requestedStatus === "done") {
         if (!input.commentBody?.trim()) {
           throw unprocessable("Approving a review or approval stage requires a comment");
@@ -715,7 +832,9 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
               stageType: activeStage.type,
               outcome: "approved",
               body: input.commentBody.trim(),
+              gateEvidence: input.gateEvidence ?? null,
             },
+            ...boardOverrideMeta("advance"),
           };
         }
 
@@ -743,16 +862,25 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
             stageType: activeStage.type,
             outcome: "approved",
             body: input.commentBody.trim(),
+            gateEvidence: input.gateEvidence ?? null,
           },
           workflowControlledAssignment: true,
+          ...boardOverrideMeta("advance"),
         };
       }
 
-      if (requestedStatus && requestedStatus !== "in_review") {
+      if ((actorIsCurrentParticipant || boardOverrideActive) && requestedStatus && requestedStatus !== "in_review") {
         if (!input.commentBody?.trim()) {
           throw unprocessable("Requesting changes requires a comment");
         }
         if (!existingState?.returnAssignee) {
+          if (boardOverrideActive) {
+            // Board escape hatch: no return assignee exists, so clear the staged
+            // workflow and honor the requested status as-is.
+            patch.executionState = null;
+            patch.status = requestedStatus;
+            return { patch, ...boardOverrideMeta("reset") };
+          }
           throw unprocessable("This execution stage has no return assignee");
         }
         patch.status = "in_progress";
@@ -765,8 +893,10 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
             stageType: activeStage.type,
             outcome: "changes_requested",
             body: input.commentBody.trim(),
+            gateEvidence: input.gateEvidence ?? null,
           },
           workflowControlledAssignment: true,
+          ...boardOverrideMeta("changes_requested"),
         };
       }
     }
@@ -780,7 +910,15 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       !principalsEqual(existingState?.currentParticipant ?? null, currentParticipant);
 
     if (attemptedStageAdvance && !stageStateDrifted) {
-      throw unprocessable("Only the active reviewer or approver can advance the current execution stage");
+      if (requestedStatus === "done") {
+        throw unprocessable(
+          `Cannot advance the current execution stage without clean gate evidence; missing gates: ${missingGates.join(", ")}. ` +
+            "Provide gateEvidence for the required gates, or have a board owner override the stage.",
+        );
+      }
+      throw unprocessable(
+        "Only the active reviewer or approver, a board owner, or an actor with clean gate evidence can change the current execution stage",
+      );
     }
 
     if (stageStateDrifted) {
@@ -902,6 +1040,12 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
   const invalidReason = input.policy?.monitor
     ? monitorClearReasonForIssue(nextStatus, assigneeAgentId, assigneeUserId)
     : null;
+  // Respect any executionPolicy adjustments already made by the stage transition
+  // (e.g. board reassignment persisting a new stage participant).
+  const stagePatchedPolicy =
+    stagePatch.executionPolicy !== undefined
+      ? (stagePatch.executionPolicy as IssueExecutionPolicy | null)
+      : input.policy;
 
   let targetMonitorState = currentMonitorState;
 
@@ -910,7 +1054,7 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
       if (input.monitorExplicitlyUpdated) {
         throw unprocessable(MONITOR_INVALID_MESSAGE);
       }
-      patch.executionPolicy = stripMonitorFromExecutionPolicy(input.policy);
+      patch.executionPolicy = stripMonitorFromExecutionPolicy(stagePatchedPolicy);
       patch.monitorNextCheckAt = null;
       patch.monitorWakeRequestedAt = null;
       targetMonitorState = buildClearedMonitorState({
@@ -928,7 +1072,7 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
         if (input.monitorExplicitlyUpdated) {
           throw unprocessable(MONITOR_BOUNDS_EXHAUSTED_MESSAGE, { clearReason: exhaustedReason });
         }
-        patch.executionPolicy = stripMonitorFromExecutionPolicy(input.policy);
+        patch.executionPolicy = stripMonitorFromExecutionPolicy(stagePatchedPolicy);
         patch.monitorNextCheckAt = null;
         patch.monitorWakeRequestedAt = null;
         targetMonitorState = buildClearedMonitorState({
