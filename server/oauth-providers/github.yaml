@@ -1,0 +1,22 @@
+id: github
+displayName: GitHub
+iconUrl: https://github.githubassets.com/images/icons/oauth.svg
+docUrl: https://docs.paperclip.ai/integrations/github
+clientCredentials:
+  clientIdEnv: GITHUB_OAUTH_CLIENT_ID
+  clientSecretEnv: GITHUB_OAUTH_CLIENT_SECRET
+endpoints:
+  authorize: https://github.com/login/oauth/authorize
+  token: https://github.com/login/oauth/access_token
+  revoke: https://api.github.com/applications/{client_id}/grant
+  accountInfo: https://api.github.com/user
+scopes:
+  default: [repo, read:user, user:email]
+  offered: [repo, read:user, user:email, workflow, write:packages]
+pkce: required
+authMethod: post
+responseFormat: json
+accountIdField: id
+accountLabelField: login
+refresh:
+  supported: false

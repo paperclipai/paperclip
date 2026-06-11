@@ -1,0 +1,27 @@
+id: linear
+displayName: Linear
+docUrl: https://developers.linear.app/docs/oauth/authentication
+clientCredentials:
+  clientIdEnv: LINEAR_OAUTH_CLIENT_ID
+  clientSecretEnv: LINEAR_OAUTH_CLIENT_SECRET
+endpoints:
+  authorize: https://linear.app/oauth/authorize
+  token: https://api.linear.app/oauth/token
+  # Linear's primary API is GraphQL POST-only — the default GET-based
+  # `fetchAccountInfo` cannot reach it. Linear exposes an OIDC-style userinfo
+  # endpoint on the OAuth surface; we use that here so the default shape can
+  # consume the response. If a real flow surfaces that this endpoint is
+  # unavailable for the configured scopes, Phase 7 integration tests will
+  # catch it and a Linear shape module can be added to override account-info
+  # fetching.
+  accountInfo: https://api.linear.app/oauth/userinfo
+scopes:
+  default: [read]
+  offered: [read, write, admin]
+pkce: required
+authMethod: post
+responseFormat: json
+accountIdField: sub
+accountLabelField: email
+refresh:
+  supported: false

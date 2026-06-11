@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 
@@ -96,5 +97,68 @@ describe("agent local JWT", () => {
     process.env[issuerEnv] = "paperclip";
     process.env[audienceEnv] = "paperclip-api";
     expect(verifyLocalAgentJwt(token!)).toBeNull();
+  });
+
+  it("round-trips an oauth.connectionIds claim through create + verify", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt(
+      "agent-1",
+      "company-1",
+      "claude_local",
+      "run-1",
+      { connectionIds: ["conn-a", "conn-b"] },
+    );
+    expect(typeof token).toBe("string");
+
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims?.oauth?.connectionIds).toEqual(["conn-a", "conn-b"]);
+  });
+
+  it("omits oauth claim when not provided", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims).not.toBeNull();
+    expect(claims?.oauth).toBeUndefined();
+  });
+
+  it("preserves an empty connectionIds array round-trip", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt(
+      "agent-1",
+      "company-1",
+      "claude_local",
+      "run-1",
+      { connectionIds: [] },
+    );
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims?.oauth?.connectionIds).toEqual([]);
+  });
+
+  it("filters non-string entries out of the connectionIds claim on verify", () => {
+    // Hand-craft a token whose payload has a malformed connectionIds entry
+    // to confirm verify defends against non-string values being smuggled in.
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const realToken = createLocalAgentJwt(
+      "agent-1",
+      "company-1",
+      "claude_local",
+      "run-1",
+      { connectionIds: ["conn-a"] },
+    )!;
+    const [headerB64, originalClaimsB64] = realToken.split(".");
+    const claims = JSON.parse(
+      Buffer.from(originalClaimsB64, "base64url").toString("utf8"),
+    );
+    claims.oauth = { connectionIds: ["conn-a", 123, null] };
+    const tamperedClaimsB64 = Buffer.from(JSON.stringify(claims), "utf8").toString(
+      "base64url",
+    );
+    const tamperedSig = createHmac("sha256", "test-secret")
+      .update(`${headerB64}.${tamperedClaimsB64}`)
+      .digest("base64url");
+    const tamperedToken = `${headerB64}.${tamperedClaimsB64}.${tamperedSig}`;
+    const verified = verifyLocalAgentJwt(tamperedToken);
+    expect(verified?.oauth?.connectionIds).toEqual(["conn-a"]);
   });
 });

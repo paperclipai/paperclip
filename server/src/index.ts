@@ -45,6 +45,8 @@ import {
 } from "./services/adapter-registry-bootstrap.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
+import type { ProviderRegistry } from "./oauth/registry.js";
+import { refreshConnection as refreshConnectionImpl } from "./oauth/refresh.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
@@ -743,7 +745,17 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    // OAuth wiring: createApp builds the provider registry and stashes it on
+    // app.locals.oauthRegistry. Reuse it (plus the production refresh fn) so
+    // the scheduler-side resolver agrees with the request-side resolver on
+    // which oauth providers exist and how to lazy-refresh tokens.
+    const oauthRegistryFromApp = (
+      app as unknown as { locals: { oauthRegistry?: ProviderRegistry } }
+    ).locals.oauthRegistry;
+    const oauthDeps = oauthRegistryFromApp
+      ? { registry: oauthRegistryFromApp, refreshFn: refreshConnectionImpl }
+      : undefined;
+    const heartbeat = heartbeatService(db as any, { pluginWorkerManager, oauthDeps });
     const routines = routineService(db as any, { pluginWorkerManager });
   
     // Reap orphaned running runs at startup while in-memory execution state is empty,

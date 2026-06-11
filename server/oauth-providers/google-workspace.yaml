@@ -1,0 +1,29 @@
+id: google-workspace
+displayName: Google Workspace
+docUrl: https://developers.google.com/identity/protocols/oauth2/web-server
+clientCredentials:
+  clientIdEnv: GOOGLE_OAUTH_CLIENT_ID
+  clientSecretEnv: GOOGLE_OAUTH_CLIENT_SECRET
+endpoints:
+  authorize: https://accounts.google.com/o/oauth2/v2/auth
+  token: https://oauth2.googleapis.com/token
+  revoke: https://oauth2.googleapis.com/revoke
+  accountInfo: https://www.googleapis.com/oauth2/v3/userinfo
+scopes:
+  default: [openid, email, profile]
+  offered:
+    - openid
+    - email
+    - profile
+    - https://www.googleapis.com/auth/drive.readonly
+    - https://www.googleapis.com/auth/spreadsheets
+    - https://www.googleapis.com/auth/calendar.readonly
+    - https://www.googleapis.com/auth/gmail.readonly
+pkce: required
+authMethod: post
+responseFormat: json
+accountIdField: sub
+accountLabelField: email
+refresh:
+  supported: true
+  rotatesRefreshToken: false
