@@ -52,7 +52,7 @@ describe("GET /health", () => {
 
     expect(res.status).toBe(200);
     expect(db.execute).toHaveBeenCalledTimes(1);
-    expect(res.body).toMatchObject({ status: "ok", version: serverVersion });
+    expect(res.body).toMatchObject({ status: "ok", version: serverVersion, liveEvents: { mode: "in-process" } });
   });
 
   it("returns 503 when the database probe fails", async () => {
