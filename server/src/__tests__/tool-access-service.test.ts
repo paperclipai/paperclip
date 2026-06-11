@@ -34,7 +34,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { toolAccessService } from "../services/tool-access.js";
+import { classifyRisk, toolAccessService } from "../services/tool-access.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -2049,5 +2049,54 @@ describeEmbeddedPostgres("tool access service", () => {
 
     expect(new Date(usedRow!.lastUsedAt!).toISOString()).toBe(newest.toISOString());
     expect(unusedRow!.lastUsedAt).toBeNull();
+  });
+});
+
+describe("classifyRisk", () => {
+  const risk = (name: string, annotations?: Record<string, unknown>) =>
+    classifyRisk({ name, annotations });
+
+  it("classifies unprefixed write verbs as write", () => {
+    expect(risk("create_widget")).toBe("write");
+    expect(risk("update_zap")).toBe("write");
+    expect(risk("send_message")).toBe("write");
+    expect(risk("set_value")).toBe("write");
+  });
+
+  it("classifies namespaced write verbs as write (PAP-10902)", () => {
+    // Real MCP servers return colon-namespaced names that the old leading-anchor
+    // regex fell through to "read", pre-enabling writes in the Connect wizard.
+    expect(risk("qa10864:create_widget")).toBe("write");
+    expect(risk("github:create_issue")).toBe("write");
+    expect(risk("notion:update_page")).toBe("write");
+    expect(risk("linear:create_issue")).toBe("write");
+  });
+
+  it("classifies camelCase write verbs as write", () => {
+    expect(risk("slack:postMessage")).toBe("write");
+    expect(risk("createIssue")).toBe("write");
+  });
+
+  it("classifies namespaced destructive verbs as destructive", () => {
+    expect(risk("delete_widget")).toBe("destructive");
+    expect(risk("github:delete_repo")).toBe("destructive");
+    expect(risk("notion:remove_page")).toBe("destructive");
+    expect(risk("cms:unpublish_post")).toBe("destructive");
+  });
+
+  it("classifies read verbs and noise as read", () => {
+    expect(risk("search_notes")).toBe("read");
+    expect(risk("github:list_issues")).toBe("read");
+    expect(risk("getUser")).toBe("read");
+    expect(risk("echo")).toBe("read");
+    // Verbs embedded mid-word must not trigger (no segment boundary).
+    expect(risk("settings")).toBe("read");
+    expect(risk("dataset_export")).toBe("read");
+  });
+
+  it("honours explicit annotation hints over name heuristics", () => {
+    expect(risk("list_items", { destructiveHint: true })).toBe("destructive");
+    expect(risk("list_items", { writeHint: true })).toBe("write");
+    expect(risk("list_items", { readOnlyHint: false })).toBe("write");
   });
 });

@@ -72,7 +72,11 @@ async function startMockMcp(options: { expectedHeader?: string } = {}): Promise<
                 inputSchema: { type: "object", properties: {}, additionalProperties: false },
               },
               {
-                name: "create_widget",
+                // Namespaced name (PAP-10902): real MCP servers prefix tool names
+                // ("github:create_issue"). The classifier must still see the "create"
+                // verb and land this under "Can make changes" with the toggle OFF —
+                // the old leading-anchor regex fell through to read-only.
+                name: "qa10864:create_widget",
                 title: "Create widget",
                 description: "Creates a widget — has side effects.",
                 inputSchema: {
@@ -168,6 +172,15 @@ test.describe.serial("PAP-10864 prosumer MCP flow", () => {
     // Verify our seeded tool labels appear (display name is the descriptor title).
     await expect(page.getByText("List widgets")).toBeVisible();
     await expect(page.getByText("Create widget")).toBeVisible();
+
+    // PAP-10902: the namespaced write action ("qa10864:create_widget") must be
+    // classified write and land under "Can make changes" — NOT pre-enabled under
+    // "Read only". Scope the assertions to each action group.
+    const readOnlyGroup = page.locator("div.rounded-xl").filter({ hasText: "Read only" });
+    const canChangeGroup = page.locator("div.rounded-xl").filter({ hasText: "Can make changes" });
+    await expect(canChangeGroup.getByText("Create widget")).toBeVisible();
+    await expect(readOnlyGroup.getByText("Create widget")).toHaveCount(0);
+    await expect(readOnlyGroup.getByText("List widgets")).toBeVisible();
 
     // Toggle the write action on so an Ask-first badge appears + the Continue button enables it.
     const createToggle = page.getByRole("switch").last();
