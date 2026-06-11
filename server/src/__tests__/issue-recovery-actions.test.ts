@@ -438,6 +438,79 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(comments[0]?.body).not.toContain("Recovery action:");
   });
 
+  it("does not suppress routine recovery using a run from another company", async () => {
+    const { companyId, managerId, coderId, sourceIssueId, sourceIssue } = await seedCompany();
+    const other = await seedCompany("OTHER");
+    const routineId = randomUUID();
+    const oldRunId = randomUUID();
+    const dispatchFingerprint = "routine:fingerprint:foreign";
+
+    await db.insert(routines).values({
+      id: routineId,
+      companyId: other.companyId,
+      title: "Foreign routine",
+      description: "Belongs to another company.",
+      assigneeAgentId: other.coderId,
+      priority: "medium",
+      status: "active",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+    });
+    await db.insert(routineRuns).values({
+      id: oldRunId,
+      companyId: other.companyId,
+      routineId,
+      source: "schedule",
+      status: "failed",
+      triggeredAt: new Date("2026-06-10T03:00:00.000Z"),
+      dispatchFingerprint,
+      completedAt: new Date("2026-06-10T03:05:00.000Z"),
+    });
+    await db
+      .update(issues)
+      .set({
+        status: "in_progress",
+        originKind: "routine_execution",
+        originId: routineId,
+        originRunId: oldRunId,
+        originFingerprint: dispatchFingerprint,
+      })
+      .where(eq(issues.id, sourceIssueId));
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: {
+        ...sourceIssue,
+        status: "in_progress",
+        originKind: "routine_execution",
+        originId: routineId,
+        originRunId: oldRunId,
+        originFingerprint: dispatchFingerprint,
+      },
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter failed",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      },
+    });
+
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue?.companyId).toBe(companyId);
+    expect(updatedIssue?.status).toBe("blocked");
+    await expect(db.select().from(issueRecoveryActions)).resolves.toHaveLength(1);
+    expect(enqueueWakeup).toHaveBeenCalledWith(
+      managerId,
+      expect.objectContaining({ payload: expect.objectContaining({ issueId: sourceIssueId }) }),
+    );
+  });
+
   it("reuses the same source-scoped action when latest run IDs change while the cause stays the same", async () => {
     const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
     const enqueueWakeup = vi.fn(async () => null);

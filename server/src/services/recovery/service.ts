@@ -2064,7 +2064,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const currentRun = await db
       .select()
       .from(routineRuns)
-      .where(eq(routineRuns.id, issue.originRunId))
+      .where(and(
+        eq(routineRuns.id, issue.originRunId),
+        eq(routineRuns.companyId, issue.companyId),
+      ))
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!currentRun?.dispatchFingerprint) return null;
@@ -2097,40 +2100,57 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const message = `Routine execution superseded by a newer completed routine run (${newerIssueLabel}). Automatic recovery was suppressed to avoid acting on stale historical work.`;
 
     const now = new Date();
-    await db
-      .update(routineRuns)
-      .set({
-        status: "superseded",
-        coalescedIntoRunId: newerCompletedRun.id,
-        failureReason: message,
-        completedAt: now,
-        updatedAt: now,
-      })
-      .where(eq(routineRuns.id, currentRun.id));
+    const [updated] = await db.transaction(async (tx) => {
+      await tx
+        .update(routineRuns)
+        .set({
+          status: "superseded",
+          coalescedIntoRunId: newerCompletedRun.id,
+          failureReason: message,
+          completedAt: currentRun.completedAt ?? now,
+          updatedAt: now,
+        })
+        .where(eq(routineRuns.id, currentRun.id));
 
-    const updated = await issuesSvc.update(issue.id, { status: "cancelled" });
-    await issuesSvc.addComment(issue.id, message, {}, { authorType: "system" });
+      const [cancelledIssue] = await tx
+        .update(issues)
+        .set({ status: "cancelled", updatedAt: now })
+        .where(eq(issues.id, issue.id))
+        .returning();
 
-    await logActivity(db, {
-      companyId: issue.companyId,
-      actorType: "system",
-      actorId: "system",
-      agentId: null,
-      runId: null,
-      action: "issue.updated",
-      entityType: "issue",
-      entityId: issue.id,
-      details: {
-        identifier: issue.identifier,
-        status: "cancelled",
-        source: "recovery.suppress_superseded_routine_execution",
-        routineRunId: currentRun.id,
-        supersededByRunId: newerCompletedRun.id,
-        supersededByIssueId: newerCompletedRun.linkedIssueId,
-      },
+      await tx.insert(issueComments).values({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        authorAgentId: null,
+        authorUserId: null,
+        authorType: "system",
+        createdByRunId: null,
+        body: message,
+      });
+
+      await tx.insert(activityLog).values({
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          status: "cancelled",
+          source: "recovery.suppress_superseded_routine_execution",
+          routineRunId: currentRun.id,
+          supersededByRunId: newerCompletedRun.id,
+          supersededByIssueId: newerCompletedRun.linkedIssueId,
+        },
+      });
+
+      return [cancelledIssue];
     });
 
-    return updated;
+    return updated ?? null;
   }
 
   function buildStrandedRecoveryActionEvidence(input: {
