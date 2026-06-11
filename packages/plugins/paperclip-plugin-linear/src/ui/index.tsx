@@ -92,6 +92,17 @@ const rowStyle: CSSProperties = {
   gap: "8px",
 };
 
+type ReconcileResult = {
+  reconciled?: number;
+  errors?: number;
+  scanned?: number;
+  skippedOtherCompany?: number;
+  missingPaperclip?: number;
+  missingLinear?: number;
+  complete?: boolean;
+  nextOffset?: number;
+};
+
 // ---------------------------------------------------------------------------
 // Hooks
 // ---------------------------------------------------------------------------
@@ -232,6 +243,7 @@ export function LinearSettingsPage({ context }: PluginSettingsPageProps) {
   const oauthDisconnect = usePluginAction(ACTION_KEYS.oauthDisconnect);
   const triggerImport = usePluginAction(ACTION_KEYS.triggerImport);
   const triggerSync = usePluginAction(ACTION_KEYS.triggerSync);
+  const reconcileLinearMirrors = usePluginAction(ACTION_KEYS.reconcileLinearMirrors);
   const listTeams = usePluginAction(ACTION_KEYS.listTeams);
   const createTeam = usePluginAction(ACTION_KEYS.createTeam);
   const configureAction = usePluginAction(ACTION_KEYS.configure);
@@ -242,6 +254,8 @@ export function LinearSettingsPage({ context }: PluginSettingsPageProps) {
   const [importResult, setImportResult] = useState<Record<string, unknown> | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<Record<string, unknown> | null>(null);
+  const [reconciling, setReconciling] = useState(false);
+  const [reconcileResult, setReconcileResult] = useState<ReconcileResult | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [justConnected, setJustConnected] = useState(false);
@@ -454,6 +468,27 @@ export function LinearSettingsPage({ context }: PluginSettingsPageProps) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function handleReconcileMirrors(resetCursor: boolean) {
+    setReconciling(true);
+    setActionError(null);
+    try {
+      const result = (await reconcileLinearMirrors({
+        companyId: context.companyId,
+        maxPerRun: 200,
+        resetCursor,
+      })) as ReconcileResult & { error?: string };
+      if (result?.error) {
+        setActionError(String(result.error));
+        return;
+      }
+      setReconcileResult(result ?? null);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReconciling(false);
     }
   }
 
@@ -860,6 +895,56 @@ export function LinearSettingsPage({ context }: PluginSettingsPageProps) {
                 Skip for now
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {isConnected && (
+        <div style={cardStyle}>
+          <div style={{ ...stackStyle, gap: "12px" }}>
+            <strong style={{ fontSize: "14px" }}>Mirror repair</strong>
+            <div style={{ fontSize: "12px", color: "var(--muted-foreground, #a1a1aa)" }}>
+              Push Paperclip status, project, and labels to linked Linear issues.
+            </div>
+            <div style={rowStyle}>
+              <button
+                type="button"
+                style={secondaryBtnStyle}
+                onClick={() => handleReconcileMirrors(true)}
+                disabled={reconciling || !context.companyId}
+              >
+                {reconciling ? "Reconciling..." : "Start repair pass"}
+              </button>
+              {reconcileResult && reconcileResult.complete === false && (
+                <button
+                  type="button"
+                  style={secondaryBtnStyle}
+                  onClick={() => handleReconcileMirrors(false)}
+                  disabled={reconciling || !context.companyId}
+                >
+                  Continue from cursor
+                </button>
+              )}
+            </div>
+            {reconcileResult && (
+              <div style={{ fontSize: "12px", color: reconcileResult.errors ? "#eab308" : "#22c55e" }}>
+                {reconcileResult.complete ? "Repair complete" : "Repair paused"}:{" "}
+                {reconcileResult.reconciled ?? 0} reconciled from {reconcileResult.scanned ?? 0} linked issues,{" "}
+                {reconcileResult.errors ?? 0} errors
+                {(reconcileResult.skippedOtherCompany ?? 0) > 0 && (
+                  <> · {reconcileResult.skippedOtherCompany} skipped outside this company</>
+                )}
+                {((reconcileResult.missingPaperclip ?? 0) > 0 || (reconcileResult.missingLinear ?? 0) > 0) && (
+                  <>
+                    {" "}· {reconcileResult.missingPaperclip ?? 0} missing Paperclip,{" "}
+                    {reconcileResult.missingLinear ?? 0} missing Linear
+                  </>
+                )}
+                {!reconcileResult.complete && reconcileResult.nextOffset != null && (
+                  <> · cursor {reconcileResult.nextOffset}</>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
