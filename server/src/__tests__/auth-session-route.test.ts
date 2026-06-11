@@ -66,6 +66,57 @@ describe("actorMiddleware authenticated session profile", () => {
     });
   });
 
+  it("rejects invalid bearer tokens instead of falling back to local trusted board access", async () => {
+    const app = express();
+    app.use(
+      actorMiddleware(createDb(), {
+        deploymentMode: "local_trusted",
+      }),
+    );
+    app.patch("/api/issues/:id", (req, res) => {
+      res.json(req.actor);
+    });
+    app.use(
+      (
+        err: { status?: number; message?: string },
+        _req: express.Request,
+        res: express.Response,
+        _next: express.NextFunction,
+      ) => {
+        res.status(err.status ?? 500).json({ error: err.message ?? "Internal server error" });
+      },
+    );
+
+    const res = await request(app)
+      .patch("/api/issues/issue-1")
+      .set("Authorization", "Bearer definitely-not-valid")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: "Invalid bearer token" });
+  });
+
+  it("keeps local trusted implicit board access when no bearer token is sent", async () => {
+    const app = express();
+    app.use(
+      actorMiddleware(createDb(), {
+        deploymentMode: "local_trusted",
+      }),
+    );
+    app.patch("/api/issues/:id", (req, res) => {
+      res.json(req.actor);
+    });
+
+    const res = await request(app).patch("/api/issues/issue-1").send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+    });
+  });
+
   it("trusts Cloud tenant identity headers and seeds board access", async () => {
     process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "tenant-token";
     const inserts: Array<{ values: Record<string, unknown> }> = [];
