@@ -772,7 +772,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       returnOwnerAgentId: input.agentId,
       cause: input.cause ?? "stranded_assigned_issue",
       attemptCount: 1,
-      maxAttempts: null,
+      maxAttempts: 2,
     });
     expect(action.evidence).toMatchObject({
       sourceIssueId: input.issueId,
@@ -3542,5 +3542,301 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
+  });
+
+  // ── CPL-3191 / CPL-3226: stranded recovery retry limit ──
+
+  it("blocks issue and does not create new retry when stranded recovery limit is exhausted", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+
+    // Pre-create a recovery action at the limit: attemptCount == maxAttempts == 2
+    const now = new Date();
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      cause: "stranded_assigned_issue",
+      evidence: {
+        sourceIssueId: issueId,
+        previousStatus: "in_progress",
+        latestRunId: runId,
+      },
+      nextAction: "Restore a live execution path.",
+      attemptCount: 2,
+      maxAttempts: 2,
+      lastAttemptAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // Must be escalated (blocked), not requeued
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    // Issue must be blocked
+    const updatedIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("blocked");
+
+    // No new recovery wake was scheduled
+    const recoveryWakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.reason, "source_scoped_recovery_action"),
+        ),
+      );
+    // Only the original failed wake exists (from seedStrandedIssueFixture), no new recovery wake
+    expect(recoveryWakes.filter((w) => w.status === "queued" || w.status === "claimed")).toHaveLength(0);
+
+    // No nested recovery issue created
+    const nestedRecoveries = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery"), eq(issues.originId, issueId)));
+    expect(nestedRecoveries).toHaveLength(0);
+  });
+
+  it("writes exhausted recovery comment with diagnostic details", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+
+    const now = new Date();
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      cause: "stranded_assigned_issue",
+      evidence: {
+        sourceIssueId: issueId,
+        previousStatus: "in_progress",
+        latestRunId: runId,
+      },
+      nextAction: "Restore a live execution path.",
+      attemptCount: 2,
+      maxAttempts: 2,
+      lastAttemptAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.reconcileStrandedAssignedIssues();
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(issueComments.createdAt);
+    const exhaustedComment = comments.find((c) =>
+      c.body.includes("stopped automatic stranded"),
+    );
+    expect(exhaustedComment).toBeTruthy();
+    expect(exhaustedComment!.body).toContain("after exhausting the retry limit");
+    expect(exhaustedComment!.body).toContain("Recovery attempts: 2 of 2");
+    expect(exhaustedComment!.body).toContain("Cause: repeated stranded‑work detection");
+    expect(exhaustedComment!.body).toContain("Next action: a board operator");
+
+    // Activity log must contain the exhaustion event
+    const activities = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          eq(activityLog.action, "issue.recovery_exhausted"),
+        ),
+      );
+    expect(activities).toHaveLength(1);
+    expect(activities[0]!.details).toMatchObject({
+      status: "blocked",
+      source: "recovery.reconcile_stranded_assigned_issue",
+      exhausted: true,
+    });
+  });
+
+  it("allows recovery to proceed when maxAttempts is null (backward compatibility)", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+
+    // Recovery action with maxAttempts: null and high attemptCount — should still work
+    const now = new Date();
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      cause: "stranded_assigned_issue",
+      evidence: {
+        sourceIssueId: issueId,
+        previousStatus: "in_progress",
+        latestRunId: runId,
+      },
+      nextAction: "Restore a live execution path.",
+      attemptCount: 5,
+      maxAttempts: null,
+      lastAttemptAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // Must be escalated (blocked), not silently skipped — existing behaviour preserved
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    // Issue blocked as usual
+    const updatedIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("blocked");
+
+    // Recovery action was updated (attemptCount incremented), not exhausted
+    const updatedAction = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, issueId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(updatedAction?.attemptCount).toBe(6); // incremented from 5 to 6
+    expect(updatedAction?.status).toBe("active");
+
+    // No exhausted comment
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    const exhaustedComment = comments.find((c) =>
+      c.body.includes("stopped automatic stranded"),
+    );
+    expect(exhaustedComment).toBeUndefined();
+  });
+
+  it("allows manual recovery reset after exhaustion by removing the exhausted action", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+
+    const now = new Date();
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      cause: "stranded_assigned_issue",
+      evidence: {
+        sourceIssueId: issueId,
+        previousStatus: "in_progress",
+        latestRunId: runId,
+      },
+      nextAction: "Restore a live execution path.",
+      attemptCount: 2,
+      maxAttempts: 2,
+      lastAttemptAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const heartbeat = heartbeatService(db);
+
+    // First reconcile: exhausted → issue blocked
+    const result1 = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result1.escalated).toBe(1);
+
+    let updatedIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("blocked");
+
+    // Manager resolves: remove the exhausted recovery action, unblock the issue,
+    // create a fresh run (simulating manual reset)
+    await db
+      .delete(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, issueId),
+        ),
+      );
+
+    // Simulate new run that fails again
+    const newRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: newRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "failed",
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      startedAt: new Date("2026-03-19T01:00:00.000Z"),
+      finishedAt: new Date("2026-03-19T01:05:00.000Z"),
+      errorCode: "process_lost",
+      error: "run failed after manual reset",
+    });
+    await db
+      .update(issues)
+      .set({ status: "in_progress", executionRunId: null, checkoutRunId: null })
+      .where(eq(issues.id, issueId));
+
+    // Second reconcile: fresh recovery action created, not exhausted
+    const result2 = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result2.escalated).toBe(1);
+    expect(result2.issueIds).toEqual([issueId]);
+
+    // Issue blocked with new recovery
+    updatedIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("blocked");
+
+    // New recovery action with attemptCount = 1 was created
+    const newAction = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, issueId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(newAction?.attemptCount).toBe(1);
+    expect(newAction?.maxAttempts).toBe(2);
+    expect(newAction?.status).toBe("active");
   });
 });
