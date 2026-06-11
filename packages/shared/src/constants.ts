@@ -453,6 +453,7 @@ export const ROUTINE_RUN_STATUSES = [
   "issue_created",
   "completed",
   "failed",
+  "superseded",
  ] as const;
 export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
 

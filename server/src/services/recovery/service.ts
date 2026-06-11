@@ -22,6 +22,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routineRuns,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -2057,6 +2058,81 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ].join(":");
   }
 
+  async function suppressSupersededRoutineExecutionRecovery(issue: typeof issues.$inferSelect) {
+    if (issue.originKind !== "routine_execution" || !issue.originRunId) return null;
+
+    const currentRun = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.id, issue.originRunId))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!currentRun?.dispatchFingerprint) return null;
+
+    const newerCompletedRun = await db
+      .select({
+        id: routineRuns.id,
+        linkedIssueId: routineRuns.linkedIssueId,
+        issueIdentifier: issues.identifier,
+        issueTitle: issues.title,
+      })
+      .from(routineRuns)
+      .leftJoin(issues, eq(issues.id, routineRuns.linkedIssueId))
+      .where(and(
+        eq(routineRuns.companyId, currentRun.companyId),
+        eq(routineRuns.routineId, currentRun.routineId),
+        eq(routineRuns.dispatchFingerprint, currentRun.dispatchFingerprint),
+        eq(routineRuns.status, "completed"),
+        gt(routineRuns.triggeredAt, currentRun.triggeredAt),
+      ))
+      .orderBy(desc(routineRuns.triggeredAt), desc(routineRuns.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!newerCompletedRun) return null;
+
+    const newerIssueLabel = newerCompletedRun.issueIdentifier ??
+      newerCompletedRun.issueTitle ??
+      newerCompletedRun.linkedIssueId ??
+      newerCompletedRun.id;
+    const message = `Routine execution superseded by a newer completed routine run (${newerIssueLabel}). Automatic recovery was suppressed to avoid acting on stale historical work.`;
+
+    const now = new Date();
+    await db
+      .update(routineRuns)
+      .set({
+        status: "superseded",
+        coalescedIntoRunId: newerCompletedRun.id,
+        failureReason: message,
+        completedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(routineRuns.id, currentRun.id));
+
+    const updated = await issuesSvc.update(issue.id, { status: "cancelled" });
+    await issuesSvc.addComment(issue.id, message, {}, { authorType: "system" });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        status: "cancelled",
+        source: "recovery.suppress_superseded_routine_execution",
+        routineRunId: currentRun.id,
+        supersededByRunId: newerCompletedRun.id,
+        supersededByIssueId: newerCompletedRun.linkedIssueId,
+      },
+    });
+
+    return updated;
+  }
+
   function buildStrandedRecoveryActionEvidence(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
@@ -2301,6 +2377,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         latestRun: input.latestRun,
       });
     }
+
+    const supersededRoutineExecution = await suppressSupersededRoutineExecutionRecovery(input.issue);
+    if (supersededRoutineExecution) return supersededRoutineExecution;
 
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
     const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({

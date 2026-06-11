@@ -1023,8 +1023,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         })
     );
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
-    // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
-    expect(issue?.checkoutRunId).toBeNull();
+    // Terminal run cleanup releases the dead run's checkout lock. The retry may
+    // already be running by the time the assertion observes the issue, so the
+    // lock can be either free or owned by the live retry run — never the dead run.
+    expect(issue?.checkoutRunId).not.toBe(runId);
+    if (issue?.checkoutRunId) expect(issue.checkoutRunId).toBe(retryRun?.id);
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {

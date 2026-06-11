@@ -1,5 +1,11 @@
 # @paperclipai/server
 
+## Unreleased
+
+### Patch Changes
+
+- Suppress recovery for stale routine execution issues when a newer run with the same dispatch fingerprint has already completed, marking the old run superseded instead of waking recovery owners.
+
 ## 0.3.1
 
 ### Patch Changes

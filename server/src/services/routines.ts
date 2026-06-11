@@ -168,6 +168,7 @@ function nextResultText(status: string, issueId?: string | null) {
   if (status === "skipped") return "Skipped because a live execution issue already exists";
   if (status === "completed") return "Execution issue completed";
   if (status === "failed") return "Execution failed";
+  if (status === "superseded") return "Superseded by a newer completed routine run";
   return status;
 }
 

@@ -16,6 +16,8 @@ import {
   issueRecoveryActions,
   issueRelations,
   issues,
+  routineRuns,
+  routines,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -136,6 +138,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.delete(issueComments);
     await db.delete(environmentLeases);
     await db.delete(activityLog);
+    await db.delete(routineRuns);
+    await db.delete(routines);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(environments);
@@ -322,6 +326,116 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       sourceIssueId: sourceIssue.id,
       recoveryCause: "stranded_assigned_issue",
     });
+  });
+
+  it("suppresses recovery for routine executions superseded by a newer completed run", async () => {
+    const { companyId, coderId, sourceIssueId, prefix, sourceIssue } = await seedCompany();
+    const routineId = randomUUID();
+    const oldRunId = randomUUID();
+    const newerRunId = randomUUID();
+    const newerIssueId = randomUUID();
+    const dispatchFingerprint = "routine:fingerprint:bobgo";
+
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "BobGo balance check",
+      description: "Check the courier wallet balance.",
+      assigneeAgentId: coderId,
+      priority: "medium",
+      status: "active",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+    });
+    await db
+      .update(issues)
+      .set({
+        title: "BobGo balance check",
+        status: "in_progress",
+        originKind: "routine_execution",
+        originId: routineId,
+        originRunId: oldRunId,
+        originFingerprint: dispatchFingerprint,
+      })
+      .where(eq(issues.id, sourceIssueId));
+    await db.insert(issues).values({
+      id: newerIssueId,
+      companyId,
+      title: "BobGo balance check",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+      originKind: "routine_execution",
+      originId: routineId,
+      originRunId: newerRunId,
+      originFingerprint: dispatchFingerprint,
+    });
+    await db.insert(routineRuns).values([
+      {
+        id: oldRunId,
+        companyId,
+        routineId,
+        source: "schedule",
+        status: "failed",
+        triggeredAt: new Date("2026-06-10T03:00:00.000Z"),
+        dispatchFingerprint,
+        linkedIssueId: sourceIssueId,
+        failureReason: "Execution issue moved to blocked",
+        completedAt: new Date("2026-06-10T03:05:00.000Z"),
+      },
+      {
+        id: newerRunId,
+        companyId,
+        routineId,
+        source: "schedule",
+        status: "completed",
+        triggeredAt: new Date("2026-06-11T03:00:00.000Z"),
+        dispatchFingerprint,
+        linkedIssueId: newerIssueId,
+        completedAt: new Date("2026-06-11T03:03:00.000Z"),
+      },
+    ]);
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: {
+        ...sourceIssue,
+        title: "BobGo balance check",
+        status: "in_progress",
+        originKind: "routine_execution",
+        originId: routineId,
+        originRunId: oldRunId,
+        originFingerprint: dispatchFingerprint,
+      },
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter failed",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      },
+    });
+
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    await expect(db.select().from(issueRecoveryActions)).resolves.toHaveLength(0);
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue?.status).toBe("cancelled");
+    const [updatedRun] = await db.select().from(routineRuns).where(eq(routineRuns.id, oldRunId));
+    expect(updatedRun?.status).toBe("superseded");
+    expect(updatedRun?.coalescedIntoRunId).toBe(newerRunId);
+    expect(updatedRun?.failureReason).toContain(`${prefix}-2`);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("superseded by a newer completed routine run");
+    expect(comments[0]?.body).toContain(`${prefix}-2`);
+    expect(comments[0]?.body).not.toContain("Recovery action:");
   });
 
   it("reuses the same source-scoped action when latest run IDs change while the cause stays the same", async () => {
