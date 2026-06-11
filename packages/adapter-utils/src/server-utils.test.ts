@@ -929,6 +929,234 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("PAP-101 Implement helper (done)");
     expect(prompt).toContain("Added the helper route and tests.");
   });
+
+  it("round-trips a populated cold-wake briefing through normalize/stringify", () => {
+    const payload = {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-9000",
+        title: "Cold wake target",
+        status: "in_progress",
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+      coldWakeBriefing: {
+        thresholdHours: 24,
+        hoursSinceLastRun: 48,
+        lastRunFinishedAt: "2026-06-09T10:15:00.000Z",
+        recentCommits: [
+          {
+            sha: "223740f",
+            subject: "Revert ALL-770 + ALL-777 bundled work",
+            author: "founder",
+            date: "2026-06-10T22:00:00.000Z",
+            touchedReferencedPath: true,
+          },
+        ],
+        recentCommitsTruncated: false,
+        recentlyClosedReferencedIssues: [
+          {
+            id: "issue-770",
+            identifier: "ALL-770",
+            title: "Calibration kill-prob",
+            status: "done",
+            closedAt: "2026-06-10T23:30:00.000Z",
+          },
+        ],
+        siblingInProgressIssues: [
+          {
+            id: "issue-779",
+            identifier: "ALL-779",
+            title: "Re-apply ALL-777",
+            assigneeAgentId: "agent-coder",
+            updatedAt: "2026-06-11T08:00:00.000Z",
+          },
+        ],
+        planDocument: { key: "plan", revisionId: "rev-3", updatedAt: "2026-06-11T09:00:00.000Z" },
+        pendingRequestConfirmation: {
+          interactionId: "int-1",
+          revisionId: "rev-3",
+          createdAt: "2026-06-11T09:05:00.000Z",
+        },
+        recentRelatedComments: [
+          {
+            issueId: "issue-770",
+            issueIdentifier: "ALL-770",
+            commentId: "c-7",
+            authorType: "user",
+            createdAt: "2026-06-11T08:45:00.000Z",
+            bodyPreview: "default-fawn-gamma.vercel.app alias is stuck on dangling commit",
+            bodyTruncated: false,
+          },
+        ],
+        sourcesIncluded: ["git", "closed_issues", "siblings", "plan", "interaction", "comments"],
+        budgetTokens: 1234,
+        budgetTokenCap: 8000,
+        truncated: false,
+        briefingError: null,
+      },
+    };
+
+    const serialized = stringifyPaperclipWakePayload(payload);
+    expect(serialized).not.toBeNull();
+    const roundTrip = JSON.parse(serialized ?? "{}");
+    expect(roundTrip).toMatchObject({
+      coldWakeBriefing: {
+        thresholdHours: 24,
+        hoursSinceLastRun: 48,
+        lastRunFinishedAt: "2026-06-09T10:15:00.000Z",
+        recentCommits: [{ sha: "223740f", touchedReferencedPath: true }],
+        recentlyClosedReferencedIssues: [{ identifier: "ALL-770" }],
+        siblingInProgressIssues: [{ identifier: "ALL-779", assigneeAgentId: "agent-coder" }],
+        planDocument: { key: "plan", revisionId: "rev-3" },
+        pendingRequestConfirmation: { interactionId: "int-1", revisionId: "rev-3" },
+        recentRelatedComments: [
+          {
+            issueIdentifier: "ALL-770",
+            bodyPreview: "default-fawn-gamma.vercel.app alias is stuck on dangling commit",
+          },
+        ],
+        sourcesIncluded: ["git", "closed_issues", "siblings", "plan", "interaction", "comments"],
+        budgetTokens: 1234,
+        budgetTokenCap: 8000,
+        truncated: false,
+        briefingError: null,
+      },
+    });
+  });
+
+  it("renders the cold-wake briefing section when coldWakeBriefing is populated", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-9000",
+        title: "Cold wake target",
+        status: "in_progress",
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+      coldWakeBriefing: {
+        thresholdHours: 24,
+        hoursSinceLastRun: 48,
+        lastRunFinishedAt: "2026-06-09T10:15:00.000Z",
+        recentCommits: [
+          {
+            sha: "223740f",
+            subject: "Revert ALL-770 + ALL-777 bundled work",
+            author: "founder",
+            date: "2026-06-10T22:00:00.000Z",
+            touchedReferencedPath: true,
+          },
+        ],
+        recentCommitsTruncated: false,
+        recentlyClosedReferencedIssues: [],
+        siblingInProgressIssues: [
+          {
+            id: "issue-779",
+            identifier: "ALL-779",
+            title: "Re-apply ALL-777",
+            assigneeAgentId: "agent-coder",
+            updatedAt: "2026-06-11T08:00:00.000Z",
+          },
+        ],
+        planDocument: { key: "plan", revisionId: "rev-3", updatedAt: "2026-06-11T09:00:00.000Z" },
+        pendingRequestConfirmation: {
+          interactionId: "int-1",
+          revisionId: "rev-3",
+          createdAt: "2026-06-11T09:05:00.000Z",
+        },
+        recentRelatedComments: [
+          {
+            issueId: "issue-770",
+            issueIdentifier: "ALL-770",
+            commentId: "c-7",
+            authorType: "user",
+            createdAt: "2026-06-11T08:45:00.000Z",
+            bodyPreview: "default-fawn-gamma.vercel.app alias is stuck",
+            bodyTruncated: false,
+          },
+        ],
+        sourcesIncluded: ["git", "siblings", "plan", "interaction", "comments"],
+        budgetTokens: 1234,
+        budgetTokenCap: 8000,
+        truncated: false,
+        briefingError: null,
+      },
+    });
+
+    expect(prompt).toContain("## Cold-wake briefing");
+    expect(prompt).toContain("Last successful run by this agent: 2026-06-09T10:15:00.000Z (48h ago; threshold 24h)");
+    expect(prompt).toContain("pending request_confirmation: interaction int-1");
+    expect(prompt).toContain("plan document: key=plan revision rev-3");
+    expect(prompt).toContain("- 223740f 2026-06-10T22:00:00.000Z founder: Revert ALL-770 + ALL-777 bundled work [touches referenced path]");
+    expect(prompt).toContain("ALL-779 Re-apply ALL-777 agent agent-coder (updated 2026-06-11T08:00:00.000Z)");
+    expect(prompt).toContain("ALL-770 comment c-7 at 2026-06-11T08:45:00.000Z by user: default-fawn-gamma.vercel.app alias is stuck");
+    expect(prompt).toContain("- briefing budget: 1234/8000 tokens");
+    expect(prompt).toContain("- sources included: git, siblings, plan, interaction, comments");
+    expect(prompt).not.toMatch(/^>\s*\[!WARNING\]/m);
+  });
+
+  it("prepends the BRIEFING FAILED banner when briefingError is set", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-9001",
+        title: "Briefing failed wake",
+        status: "in_progress",
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+      coldWakeBriefing: {
+        thresholdHours: 24,
+        hoursSinceLastRun: 72,
+        lastRunFinishedAt: "2026-06-08T10:00:00.000Z",
+        recentCommits: [],
+        recentCommitsTruncated: false,
+        recentlyClosedReferencedIssues: [],
+        siblingInProgressIssues: [],
+        planDocument: null,
+        pendingRequestConfirmation: null,
+        recentRelatedComments: [],
+        sourcesIncluded: [],
+        budgetTokens: 0,
+        budgetTokenCap: 8000,
+        truncated: false,
+        briefingError: { code: "git_unavailable", message: "simpleGit threw ENOENT on workspace cwd" },
+      },
+    });
+
+    const firstLine = prompt.split("\n")[0];
+    expect(firstLine).toBe(
+      "> [!WARNING] BRIEFING FAILED — agent is operating without context: git_unavailable — simpleGit threw ENOENT on workspace cwd",
+    );
+    expect(prompt).toContain("## Cold-wake briefing");
+    expect(prompt).toContain("## Paperclip Wake Payload");
+  });
+
+  it("does not regress existing wake prompts when coldWakeBriefing is absent", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-9002",
+        title: "Plain wake",
+        status: "in_progress",
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("## Paperclip Wake Payload");
+    expect(prompt).not.toContain("## Cold-wake briefing");
+    expect(prompt).not.toContain("BRIEFING FAILED");
+  });
 });
 
 describe("applyPaperclipWorkspaceEnv", () => {
