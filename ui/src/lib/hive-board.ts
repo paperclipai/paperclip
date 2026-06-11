@@ -88,3 +88,28 @@ export function canDropOnColumn(from: HiveColumnId, to: HiveColumnId): boolean {
 export function targetStatusForColumn(to: HiveColumnId): IssueStatus | null {
   return HIVE_COLUMNS.find((c) => c.id === to)?.dropTarget ?? null;
 }
+
+// Number of first-tier tickets a draft plan would materialize on Activate.
+// Mirrors the server activation rule exactly: server/src/services/plans.ts
+// activate() materializes ONLY tiers[0].requestedChildren and rejects when that
+// list is empty ("Plan has no first-tier tickets to activate"). The UI gates the
+// Activate button on this so an empty plan never reaches that failing call.
+// Keep in sync if the server ever materializes more than the first tier.
+export function planFirstTierTicketCount(
+  tiers: { requestedChildren?: unknown[] }[] | undefined,
+): number {
+  return tiers?.[0]?.requestedChildren?.length ?? 0;
+}
+
+// Build the first-tier requested children for a manually-authored plan. When an
+// assignee is given, each task carries assigneeAgentId so the materialized
+// tickets are assigned on Activate and the agent wakes (issue-assignment-wakeup
+// only fires for assigned issues). Empty/blank assignee → unassigned tasks.
+export function manualRequestedChildren(
+  titles: string[],
+  assigneeAgentId?: string,
+): Record<string, unknown>[] {
+  return titles.map((title) =>
+    assigneeAgentId ? { title, assigneeAgentId } : { title },
+  );
+}

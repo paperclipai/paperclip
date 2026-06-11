@@ -3,6 +3,8 @@ import type { Issue } from "@paperclipai/shared";
 import {
   canDropOnColumn,
   columnForIssue,
+  manualRequestedChildren,
+  planFirstTierTicketCount,
   projectIssuesToHiveColumns,
   targetStatusForColumn,
 } from "./hive-board";
@@ -76,5 +78,44 @@ describe("targetStatusForColumn", () => {
     expect(targetStatusForColumn("in_review")).toBe("in_review");
     expect(targetStatusForColumn("done")).toBe("done");
     expect(targetStatusForColumn("plans")).toBeNull();
+  });
+});
+
+describe("planFirstTierTicketCount", () => {
+  it("returns 0 for undefined or empty tiers (loading / assign-mode draft)", () => {
+    expect(planFirstTierTicketCount(undefined)).toBe(0);
+    expect(planFirstTierTicketCount([])).toBe(0);
+  });
+
+  it("returns 0 when the first tier has no requested children", () => {
+    expect(planFirstTierTicketCount([{ requestedChildren: [] }])).toBe(0);
+    expect(planFirstTierTicketCount([{}])).toBe(0);
+  });
+
+  it("counts only the first tier's requested children", () => {
+    expect(
+      planFirstTierTicketCount([
+        { requestedChildren: [{ title: "a" }, { title: "b" }] },
+        { requestedChildren: [{ title: "c" }] },
+      ]),
+    ).toBe(2);
+  });
+});
+
+describe("manualRequestedChildren", () => {
+  it("maps titles to {title} when no assignee given", () => {
+    expect(manualRequestedChildren(["a", "b"])).toEqual([{ title: "a" }, { title: "b" }]);
+    expect(manualRequestedChildren(["a"], "")).toEqual([{ title: "a" }]);
+  });
+
+  it("attaches assigneeAgentId to every task when given", () => {
+    expect(manualRequestedChildren(["a", "b"], "agent-1")).toEqual([
+      { title: "a", assigneeAgentId: "agent-1" },
+      { title: "b", assigneeAgentId: "agent-1" },
+    ]);
+  });
+
+  it("returns an empty array for no titles", () => {
+    expect(manualRequestedChildren([], "agent-1")).toEqual([]);
   });
 });

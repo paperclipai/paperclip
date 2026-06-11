@@ -5,6 +5,7 @@ import { plansApi } from "../../api/plans";
 import { useToastActions } from "../../context/ToastContext";
 import { queryKeys } from "../../lib/queryKeys";
 import { formatTokens } from "../../lib/utils";
+import { planFirstTierTicketCount } from "../../lib/hive-board";
 import {
   Sheet,
   SheetContent,
@@ -65,6 +66,9 @@ export function PlanDetailDrawer({ companyId }: PlanDetailDrawerProps) {
     plan?.childStatuses.find((c) => c.id === childId)?.status ?? null;
 
   const state = plan?.planDetails.state ?? "draft";
+  // Activate only materializes the first tier's requested children server-side;
+  // gate the button on that so empty drafts can't trigger a failing activation.
+  const canActivate = planFirstTierTicketCount(plan?.planDetails.tiers) > 0;
 
   return (
     <Sheet open={!!planId} onOpenChange={(o) => { if (!o) close(); }}>
@@ -141,9 +145,20 @@ export function PlanDetailDrawer({ companyId }: PlanDetailDrawerProps) {
               </div>
 
               {state === "draft" && (
-                <Button className="w-full" onClick={() => activate.mutate()} disabled={activate.isPending}>
-                  {activate.isPending ? "Activating…" : "Activate plan"}
-                </Button>
+                <div className="space-y-1.5">
+                  <Button
+                    className="w-full"
+                    onClick={() => activate.mutate()}
+                    disabled={activate.isPending || !canActivate}
+                  >
+                    {activate.isPending ? "Activating…" : "Activate plan"}
+                  </Button>
+                  {!canActivate && (
+                    <p className="text-[11px] text-muted-foreground">
+                      Add at least one first-phase task before activating.
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           </>

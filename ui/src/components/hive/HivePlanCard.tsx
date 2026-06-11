@@ -7,6 +7,7 @@ import { plansApi } from "../../api/plans";
 import { useToastActions } from "../../context/ToastContext";
 import { queryKeys } from "../../lib/queryKeys";
 import { formatTokens } from "../../lib/utils";
+import { planFirstTierTicketCount } from "../../lib/hive-board";
 import { ConfirmActionDialog } from "./ConfirmActionDialog";
 
 interface HivePlanCardProps {
@@ -87,6 +88,10 @@ export function HivePlanCard({ issue, companyId }: HivePlanCardProps) {
     (n, t) => n + (t.childIssueIds.length || t.requestedChildren.length),
     0,
   );
+  // Gate Activate on the server's actual rule (first tier only). Undefined while
+  // loading → 0 → disabled, which is the safe default.
+  const firstTierCount = planFirstTierTicketCount(plan?.planDetails.tiers);
+  const canActivate = firstTierCount > 0;
 
   return (
     <div className="rounded-md border bg-card p-3 transition-shadow hover:shadow-sm">
@@ -123,8 +128,9 @@ export function HivePlanCard({ issue, companyId }: HivePlanCardProps) {
             type="button"
             className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             onClick={() => activate.mutate()}
-            disabled={activate.isPending}
+            disabled={activate.isPending || !canActivate}
             aria-label="Activate plan"
+            title={canActivate ? undefined : "Add at least one task before activating"}
           >
             <Play className="h-3 w-3" />
             Activate

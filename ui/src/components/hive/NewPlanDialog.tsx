@@ -4,6 +4,7 @@ import { agentsApi } from "../../api/agents";
 import { plansApi, type PlanTier } from "../../api/plans";
 import { useToastActions } from "../../context/ToastContext";
 import { queryKeys } from "../../lib/queryKeys";
+import { manualRequestedChildren } from "../../lib/hive-board";
 import {
   Dialog,
   DialogContent,
@@ -60,21 +61,25 @@ export function NewPlanDialog({ open, onOpenChange, companyId }: NewPlanDialogPr
     setMode("manual");
   };
 
+  const taskTitles = tasksText
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+
   const create = useMutation({
     mutationFn: () => {
       const tokens = capTokens.trim() ? Number(capTokens.trim()) : null;
       let tiers: PlanTier[] | undefined;
       if (mode === "manual") {
-        const titles = tasksText
-          .split("\n")
-          .map((l) => l.trim())
-          .filter(Boolean);
+        // In manual mode assigneeAgentId (optional) is applied per-task so the
+        // materialized tickets are assigned on Activate and the agent wakes.
+        // (In assign mode the same state means the plan's drafting agent.)
         tiers = [
           {
             id: "tier-1",
             kind: "phase",
             name: "Phase 1",
-            requestedChildren: titles.map((t) => ({ title: t })),
+            requestedChildren: manualRequestedChildren(taskTitles, assigneeAgentId || undefined),
             childIssueIds: [],
           },
         ];
@@ -102,8 +107,11 @@ export function NewPlanDialog({ open, onOpenChange, companyId }: NewPlanDialogPr
       pushToast({ title: "Create failed", body: errMsg(e), tone: "error" }),
   });
 
+  // Manual plans must declare at least one first-phase task, else the resulting
+  // draft has no tier-1 tickets and Activate would fail server-side.
   const canSubmit =
-    title.trim().length > 0 && (mode === "manual" || assigneeAgentId.length > 0);
+    title.trim().length > 0 &&
+    (mode === "manual" ? taskTitles.length > 0 : assigneeAgentId.length > 0);
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) reset(); onOpenChange(o); }}>
@@ -155,16 +163,37 @@ export function NewPlanDialog({ open, onOpenChange, companyId }: NewPlanDialogPr
           </div>
 
           {mode === "manual" ? (
-            <div className="space-y-1.5">
-              <Label htmlFor="plan-tasks">First-phase tasks (one per line)</Label>
-              <Textarea
-                id="plan-tasks"
-                value={tasksText}
-                onChange={(e) => setTasksText(e.target.value)}
-                placeholder={"Set up Stripe webhook\nBuild invoice list view\nAdd usage chart"}
-                rows={4}
-              />
-            </div>
+            <>
+              <div className="space-y-1.5">
+                <Label htmlFor="plan-tasks">First-phase tasks (one per line)</Label>
+                <Textarea
+                  id="plan-tasks"
+                  value={tasksText}
+                  onChange={(e) => setTasksText(e.target.value)}
+                  placeholder={"Set up Stripe webhook\nBuild invoice list view\nAdd usage chart"}
+                  rows={4}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Assign tasks to (optional)</Label>
+                <Select value={assigneeAgentId} onValueChange={setAssigneeAgentId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Unassigned — pick an agent to wake on activate" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(agents ?? []).map((a) => (
+                      <SelectItem key={a.id} value={a.id}>
+                        {a.name}
+                        {a.title ? ` · ${a.title}` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground">
+                  When set, every task is assigned to this agent and it wakes once you activate.
+                </p>
+              </div>
+            </>
           ) : (
             <div className="space-y-1.5">
               <Label>Drafting agent</Label>
