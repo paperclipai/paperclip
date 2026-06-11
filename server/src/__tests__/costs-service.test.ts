@@ -61,6 +61,7 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 const mockHeartbeatService = vi.hoisted(() => ({
   cancelBudgetScopeWork: vi.fn().mockResolvedValue(undefined),
+  cancelRunForReassignedIssue: vi.fn(async () => null),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockFetchAllQuotaWindows = vi.hoisted(() => vi.fn());

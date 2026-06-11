@@ -12,6 +12,7 @@ const mockActivityService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(),
+  cancelRunForReassignedIssue: vi.fn(async () => null),
 }));
 
 const mockIssueService = vi.hoisted(() => ({

@@ -20,6 +20,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockHeartbeatService = vi.hoisted(() => ({
   cancelRun: vi.fn(),
   wakeup: vi.fn(),
+  cancelRunForReassignedIssue: vi.fn(async () => null),
 }));
 
 vi.mock("../services/index.js", () => ({

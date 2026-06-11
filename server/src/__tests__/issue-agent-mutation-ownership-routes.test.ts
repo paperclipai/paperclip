@@ -78,6 +78,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
+  cancelRunForReassignedIssue: vi.fn(async () => null),
 }));
 
 function registerRouteMocks() {
