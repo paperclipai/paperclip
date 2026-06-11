@@ -1,7 +1,3 @@
-import { spawn } from "node:child_process";
-import { promises as fs } from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import {
   definePlugin,
   runWorker,
@@ -11,9 +7,14 @@ import {
   type PluginContext,
 } from "@paperclipai/plugin-sdk";
 import { PLUGIN_ID } from "./manifest.js";
-import { parseWhenOutput } from "./parse.js";
+import {
+  buildAccountRows,
+  tierCacheAge,
+  type ProfilesSnapshot,
+  type RateLimitState,
+  type TierCacheSnapshot,
+} from "./state-snapshot.js";
 import type {
-  AccountRow,
   CcrotateTarget,
   PersistedSnapshot,
   SnapshotResponse,
@@ -30,15 +31,27 @@ const SNAPSHOT_STREAM_CHANNEL = "snapshot";
 
 const TARGETS: CcrotateTarget[] = ["claude", "codex"];
 
-// State-server SSE feed. Reachable inside the cluster via the
+// State-server base. Reachable inside the cluster via the
 // ccrotate-auth-bot-state Service in the paperclip namespace; paperclip-0 gets
 // ingress access via a dedicated NetworkPolicy rule in onprem-k8s. The env
 // override exists for the dev-server harness and for any future migration
 // (e.g. routing through paperclip-public-tools auth-proxy).
-const STATE_SSE_URL =
-  process.env.CCROTATE_STATE_SSE_URL ??
+const STATE_BASE_URL = (
   process.env.CCROTATE_STATE_URL ??
-  "http://ccrotate-auth-bot-state.paperclip.svc:4002";
+  "http://ccrotate-auth-bot-state.paperclip.svc:4002"
+).replace(/\/+$/, "");
+const STATE_SSE_URL =
+  (process.env.CCROTATE_STATE_SSE_URL ?? STATE_BASE_URL).replace(/\/+$/, "");
+const STATE_TOKEN = process.env.CCROTATE_STATE_TOKEN || null;
+
+const CCROTATE_SERVE_BASE_URL = (
+  process.env.CCROTATE_SERVE_BASE_URL ??
+  process.env.CCROTATE_SERVE_URL ??
+  (process.env.CCROTATE_SERVE_SERVICE_HOST && process.env.CCROTATE_SERVE_SERVICE_PORT_SERVE
+    ? `http://${process.env.CCROTATE_SERVE_SERVICE_HOST}:${process.env.CCROTATE_SERVE_SERVICE_PORT_SERVE}`
+    : "http://ccrotate-serve.paperclip.svc:4001")
+).replace(/\/+$/, "");
+const CCROTATE_SERVE_TOKEN = process.env.CCROTATE_SERVE_TOKEN || null;
 
 // Reconnect cadence — start fast, back off exponentially up to 30s. We never
 // stop retrying as long as the worker is alive; the state-server is in the
@@ -55,50 +68,93 @@ function describeError(error: unknown): string {
   return String(error);
 }
 
-function runProcess(
-  command: string,
-  args: string[],
-  timeoutMs: number,
-): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`process timed out after ${timeoutMs}ms: ${command} ${args.join(" ")}`));
-    }, timeoutMs);
-    child.stdout.on("data", (chunk) => stdoutChunks.push(chunk));
-    child.stderr.on("data", (chunk) => stderrChunks.push(chunk));
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({
-        stdout: Buffer.concat(stdoutChunks).toString("utf-8"),
-        stderr: Buffer.concat(stderrChunks).toString("utf-8"),
-        code,
-      });
-    });
+function requestHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return {
+    ...extra,
+    ...(STATE_TOKEN ? { authorization: `Bearer ${STATE_TOKEN}` } : {}),
+  };
+}
+
+async function fetchJson<T>(
+  url: string,
+  init: RequestInit & { timeoutMs?: number } = {},
+): Promise<T> {
+  const controller = new AbortController();
+  const { timeoutMs = 10_000, ...fetchInit } = init;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...fetchInit, signal: controller.signal });
+    const text = await res.text();
+    let body: unknown = null;
+    if (text) {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+    }
+    if (!res.ok) {
+      const message =
+        typeof body === "object" && body && "error" in body
+          ? JSON.stringify((body as { error: unknown }).error).slice(0, 300)
+          : String(body || `HTTP ${res.status}`).slice(0, 300);
+      throw new Error(`${res.status} ${message}`);
+    }
+    return (body ?? {}) as T;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function stateGet<T>(path: string): Promise<T> {
+  return fetchJson<T>(`${STATE_BASE_URL}${path}`, {
+    method: "GET",
+    headers: requestHeaders({ accept: "application/json" }),
   });
 }
 
-// ccrotate `when` text parser lives in ./parse.ts (pure, unit-tested).
+async function statePost<T>(path: string, body: unknown, timeoutMs = 30_000): Promise<T> {
+  return fetchJson<T>(`${STATE_BASE_URL}${path}`, {
+    method: "POST",
+    timeoutMs,
+    headers: requestHeaders({
+      accept: "application/json",
+      "content-type": "application/json",
+    }),
+    body: JSON.stringify(body),
+  });
+}
 
-async function runCcrotateWhen(target: CcrotateTarget): Promise<{
-  cacheAge: string | null;
-  accounts: AccountRow[];
-}> {
-  // ccrotate accepts `--target` as a global flag before the subcommand.
-  const result = await runProcess("ccrotate", ["--target", target, "when"], 30_000);
-  if (result.code !== 0 && result.stdout.trim() === "") {
-    throw new Error(
-      `ccrotate when --target ${target} exited ${result.code}: ${result.stderr.trim() || "(no stderr)"}`,
-    );
+function serveHeaders(): Record<string, string> {
+  if (!CCROTATE_SERVE_TOKEN) {
+    throw new Error("CCROTATE_SERVE_TOKEN is not configured for ccrotate-serve probe operations");
   }
-  return parseWhenOutput(target, result.stdout);
+  return {
+    authorization: `Bearer ${CCROTATE_SERVE_TOKEN}`,
+    "content-type": "application/json",
+    accept: "application/json",
+  };
+}
+
+async function probeOne(
+  target: CcrotateTarget,
+  email: string,
+  timeoutMs: number,
+): Promise<Record<string, unknown>> {
+  return fetchJson<Record<string, unknown>>(`${CCROTATE_SERVE_BASE_URL}/v1/internal/probe-one`, {
+    method: "POST",
+    timeoutMs,
+    headers: serveHeaders(),
+    body: JSON.stringify({ target, email }),
+  });
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function targetQuery(target: CcrotateTarget): string {
+  return target === "codex" ? "?target=codex" : "";
 }
 
 // ─── Route handlers ──────────────────────────────────────────────────────────
@@ -111,12 +167,29 @@ async function handleSnapshot(): Promise<PluginApiResponse> {
   };
   let cacheAge: string | null = null;
 
+  const [current, rateLimitState] = await Promise.all([
+    stateGet<{ email?: string | null }>("/state/current").catch(() => ({ email: null })),
+    stateGet<RateLimitState>("/state/rate-limits").catch(() => ({})),
+  ]);
+
   await Promise.all(
     TARGETS.map(async (target) => {
       try {
-        const result = await runCcrotateWhen(target);
-        targets[target] = { accounts: result.accounts };
-        if (result.cacheAge && !cacheAge) cacheAge = result.cacheAge;
+        const [profiles, tierCache] = await Promise.all([
+          stateGet<ProfilesSnapshot>(`/state/profiles${targetQuery(target)}`),
+          stateGet<TierCacheSnapshot>(`/state/tier-cache${targetQuery(target)}`),
+        ]);
+        targets[target] = {
+          accounts: buildAccountRows({
+            target,
+            profiles,
+            tierCache,
+            rateLimitState,
+            activeEmail: current.email ?? null,
+          }),
+        };
+        const age = tierCacheAge(tierCache.updatedAt);
+        if (age && !cacheAge) cacheAge = age;
       } catch (error) {
         targets[target] = { error: describeError(error) };
       }
@@ -128,45 +201,65 @@ async function handleSnapshot(): Promise<PluginApiResponse> {
 }
 
 async function handleRefresh(): Promise<PluginApiResponse> {
-  // Full per-account refresh — calls Anthropic + Claude/Codex APIs for every
-  // saved account and rewrites the on-disk tier-cache.
-  //
-  // Manually triggered from the UI, so the longer wall-clock vs `refresh-one`
-  // is acceptable. ccrotate's refresh handles its own per-account cooldowns
-  // and skips accounts already throttled, so consecutive button presses
-  // are safe; back-to-back refreshes within the cooldown window will return
-  // the same data without an API hit.
-  //
-  // Run both targets sequentially. ccrotate refresh defaults to the active
-  // CCROTATE_TARGET, so we drive each one explicitly.
+  // Full per-account refresh uses ccrotate-serve's state-store-backed
+  // /v1/internal/probe-one path. Do not shell out to a local `ccrotate`
+  // binary here: in production that can resolve to the legacy
+  // /paperclip/.ccrotate shim and diverge from canonical state.
+  if (!CCROTATE_SERVE_TOKEN) {
+    return {
+      status: 503,
+      body: {
+        ok: false,
+        error: "CCROTATE_SERVE_TOKEN is not configured; refresh cannot run without ccrotate-serve",
+      },
+    };
+  }
   const errors: { target: CcrotateTarget; error: string }[] = [];
+  const probed: Record<CcrotateTarget, number> = { claude: 0, codex: 0 };
+  const delayMs = Math.max(0, Number(process.env.CCROTATE_PLUGIN_REFRESH_INTER_PROBE_DELAY_MS ?? 2000));
   for (const target of TARGETS) {
-    const result = await runProcess("ccrotate", ["--target", target, "refresh"], 180_000);
-    if (result.code !== 0) {
+    let profiles: ProfilesSnapshot;
+    try {
+      profiles = await stateGet<ProfilesSnapshot>(`/state/profiles${targetQuery(target)}`);
+    } catch (error) {
       errors.push({
         target,
-        error: result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`,
+        error: `profiles read failed: ${describeError(error)}`,
       });
+      continue;
+    }
+    const emails = Object.keys(profiles || {});
+    for (let index = 0; index < emails.length; index += 1) {
+      if (index > 0 && delayMs > 0) await sleep(delayMs);
+      const email = emails[index]!;
+      try {
+        await probeOne(target, email, 60_000);
+        probed[target] += 1;
+      } catch (error) {
+        errors.push({ target, error: `${email}: ${describeError(error)}` });
+      }
     }
   }
-  // Even if one target failed, return what we got — the snapshot route on
-  // the next refetch reads the on-disk cache and will surface partial data.
-  // 502 if BOTH targets failed, 200 with errors[] if partial.
-  if (errors.length === TARGETS.length) {
+  if (probed.claude + probed.codex === 0) {
     return {
       status: 502,
       body: { ok: false, errors },
     };
   }
-  return { status: 200, body: { ok: true, errors: errors.length > 0 ? errors : undefined } };
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      probed,
+      errors: errors.length > 0 ? errors : undefined,
+    },
+  };
 }
 
 async function handleSwitch(input: PluginApiRequestInput): Promise<PluginApiResponse> {
-  // Switch the active account (writes current.json via local `ccrotate switch`).
-  // ccrotate-serve picks up the new pointer on its next state read; in HTTP-state
-  // mode (the cluster deploy) that state-server lives in the auth-bot pod and
-  // the bot reflects writes back on its next freshness tick. In file-state mode
-  // the change is immediate.
+  // Switch the active pointer through the canonical state-server. This replaces
+  // the old local `ccrotate switch` fallback, which could write only the stale
+  // in-pod /paperclip/.ccrotate files.
   const body = (input.body ?? {}) as { email?: unknown; target?: unknown };
   const email = typeof body.email === "string" ? body.email.trim() : "";
   const target = typeof body.target === "string" ? body.target.trim() : "claude";
@@ -176,23 +269,17 @@ async function handleSwitch(input: PluginApiRequestInput): Promise<PluginApiResp
   if (target !== "claude" && target !== "codex") {
     return { status: 400, body: { error: "target must be 'claude' or 'codex'" } };
   }
-  const result = await runProcess("ccrotate", ["--target", target, "switch", email], 15_000);
-  if (result.code !== 0) {
-    return {
-      status: 502,
-      body: {
-        ok: false,
-        error: result.stderr.trim() || result.stdout.trim() || `ccrotate switch exit ${result.code}`,
-      },
-    };
+  const profiles = await stateGet<ProfilesSnapshot>(`/state/profiles${targetQuery(target)}`);
+  if (!profiles[email]) {
+    return { status: 404, body: { ok: false, error: `${email} is not in the ${target} pool` } };
   }
+  await statePost("/state/current", { email }, 15_000);
   return {
     status: 200,
     body: {
       ok: true,
       email,
       target,
-      stdout: result.stdout.trim(),
     },
   };
 }
@@ -318,119 +405,30 @@ async function handleCodexRelogin(input: PluginApiRequestInput): Promise<PluginA
   return { status: 200, body: { ok: true, email, snapStdout: reloginBody?.snapStdout } };
 }
 
-function tierCachePathForTarget(target: CcrotateTarget): string {
-  // Mirrors ccrotate's own resolution (see lib/ccrotate.js:226-231):
-  //   claude → ~/.ccrotate/tier-cache.json
-  //   codex  → ~/.ccrotate/tier-cache.codex.json
-  // In the paperclip pod HOME=/paperclip, so this resolves to
-  // /paperclip/.ccrotate/tier-cache*.json (the shared cephfs volume).
-  if (target === "claude") {
-    return path.join(os.homedir(), ".ccrotate", "tier-cache.json");
-  }
-  return path.join(os.homedir(), ".ccrotate", `tier-cache.${target}.json`);
-}
-
 async function handleBulkClearTiers(input: PluginApiRequestInput): Promise<PluginApiResponse> {
-  // Clear `serviceTier:"extra"` labels on tier-cache so the next freshness
-  // probe re-classifies. Motivating use case: kkroo PR #55 ("require positive
-  // monthly_limit before labeling tier 'extra'") flipped accounts that had
-  // monthly_limit=0 out of the extra tier, but pre-#55 cache entries kept
-  // their stale `extra` label until each per-account Usage-API probe ran —
-  // which can take hours due to per-token cooldowns.
-  //
-  // `serviceTier: null` is the canonical "unknown — please re-probe" state
-  // per ccrotate/lib/state-helpers.js:250-258. We zero out the tier label and
-  // also clear the stored `response` string so the UI doesn't keep showing
-  // stale 'extra (...)' text until the re-probe lands.
-  //
-  // After writing, shell `ccrotate refresh` to trigger the re-probe — same
-  // command handleRefresh runs, just scoped to the requested target.
   const body = (input.body ?? {}) as { target?: unknown };
   const target = typeof body.target === "string" ? body.target.trim() : "claude";
   if (target !== "claude" && target !== "codex") {
     return { status: 400, body: { error: "target must be 'claude' or 'codex'" } };
   }
-  const tierCacheFile = tierCachePathForTarget(target);
-  let raw: string;
-  try {
-    raw = await fs.readFile(tierCacheFile, "utf-8");
-  } catch (e: unknown) {
-    return {
-      status: 502,
-      body: { ok: false, error: `cannot read ${tierCacheFile}: ${describeError(e)}` },
-    };
-  }
-  let cache: { accounts?: Array<Record<string, unknown>>; updatedAt?: string };
-  try {
-    cache = JSON.parse(raw);
-  } catch (e: unknown) {
-    return {
-      status: 502,
-      body: { ok: false, error: `tier-cache JSON parse failed: ${describeError(e)}` },
-    };
-  }
-  if (!Array.isArray(cache.accounts)) {
-    return { status: 502, body: { ok: false, error: "tier-cache has no accounts array" } };
-  }
-  const cleared: string[] = [];
-  for (const entry of cache.accounts) {
-    if (entry && typeof entry === "object" && entry.serviceTier === "extra") {
-      const email = typeof entry.email === "string" ? entry.email : "(unknown)";
-      entry.serviceTier = null;
-      // Drop the stored response string so the UI/parser doesn't keep showing
-      // 'extra (...)' until the re-probe writes a fresh one. Leaving
-      // rateLimits intact so the operator still sees the last-known
-      // utilization numbers; refresh will overwrite them.
-      delete entry.response;
-      cleared.push(email);
-    }
-  }
-  if (cleared.length === 0) {
-    return { status: 200, body: { ok: true, cleared: 0, emails: [] } };
-  }
-  cache.updatedAt = new Date().toISOString();
-  // Atomic write: tmp + rename, same shape ccrotate's own writers use.
-  const tmp = `${tierCacheFile}.tmp.${process.pid}`;
-  try {
-    await fs.writeFile(tmp, JSON.stringify(cache, null, 2), "utf-8");
-    await fs.rename(tmp, tierCacheFile);
-  } catch (e: unknown) {
-    return {
-      status: 502,
-      body: { ok: false, error: `tier-cache write failed: ${describeError(e)}` },
-    };
-  }
-  // Kick a refresh on this target — best-effort. If refresh fails we still
-  // report what we cleared; the freshness-loop will eventually re-probe.
-  let refreshError: string | null = null;
-  try {
-    const result = await runProcess("ccrotate", ["--target", target, "refresh"], 30_000);
-    if (result.code !== 0) {
-      refreshError = result.stderr.trim() || result.stdout.trim() || `ccrotate refresh exit ${result.code}`;
-    }
-  } catch (e: unknown) {
-    refreshError = describeError(e);
-  }
+  // This used to mutate ~/.ccrotate/tier-cache*.json directly from the
+  // Paperclip worker. That local-file fallback is intentionally removed; the
+  // state-server has no generic tier-cache rewrite route, and silently editing
+  // a stale pod-local cache is worse than failing closed.
   return {
-    status: 200,
+    status: 410,
     body: {
-      ok: true,
-      cleared: cleared.length,
-      emails: cleared,
-      ...(refreshError ? { refreshError } : {}),
+      ok: false,
+      target,
+      error: "bulk tier-cache file edits are disabled; use per-row refresh or wait for the freshness loop",
     },
   };
 }
 
 async function handleRefreshOne(input: PluginApiRequestInput): Promise<PluginApiResponse> {
-  // Force a single-account re-probe via `ccrotate refresh-one <email>`. The
-  // freshness-loop already probes accounts on its own cadence; an explicit
-  // operator refresh asks ccrotate to make one live Usage API attempt for this
-  // account and report Anthropic cooldown/unavailable errors directly.
-  //
-  // 60s timeout: refresh-one can take 30-50s on slow accounts (Anthropic
-  // Usage-API + Claude/Codex tokens) — covers worst-case without leaving the
-  // request hung.
+  // Force a single-account re-probe through ccrotate-serve. No local
+  // `ccrotate refresh-one` fallback: production's local command may be the
+  // legacy /paperclip/.ccrotate shim and would not update canonical state.
   const body = (input.body ?? {}) as { email?: unknown; target?: unknown };
   const email = typeof body.email === "string" ? body.email.trim() : "";
   const target = typeof body.target === "string" ? body.target.trim() : "claude";
@@ -440,27 +438,12 @@ async function handleRefreshOne(input: PluginApiRequestInput): Promise<PluginApi
   if (target !== "claude" && target !== "codex") {
     return { status: 400, body: { error: "target must be 'claude' or 'codex'" } };
   }
-  const result = await runProcess(
-    "ccrotate",
-    ["--target", target, "refresh-one", email],
-    60_000,
-  );
-  if (result.code !== 0) {
-    return {
-      status: 502,
-      body: {
-        ok: false,
-        error:
-          result.stderr.trim() ||
-          result.stdout.trim() ||
-          `ccrotate refresh-one exit ${result.code}`,
-      },
-    };
-  }
-  // Truncate stdout — refresh-one can emit a few lines of probe detail and
-  // the UI only needs the tail for confirmation/debug.
-  const combined = (result.stdout + result.stderr).trim();
-  const output = combined.length > 200 ? `…${combined.slice(-200)}` : combined;
+  const result = await probeOne(target, email, 60_000);
+  const output = JSON.stringify({
+    status: result.status ?? null,
+    serviceTier: result.serviceTier ?? null,
+    response: result.response ?? null,
+  });
   return {
     status: 200,
     body: { ok: true, email, target, output },
@@ -477,29 +460,10 @@ async function handleImport(input: PluginApiRequestInput): Promise<PluginApiResp
       body: { error: "expected JSON body { blob: string starting with 'mp-gz-b64:' }" },
     };
   }
-  // 1. Run ccrotate import locally on the paperclip pod so the live tier-cache
-  //    immediately reflects the imported state (the snapshot route reads
-  //    ccrotate's on-disk cache via `ccrotate when`, not the DB blob).
-  const importResult = await runProcess("ccrotate", ["import", blob, "--force"], 30_000);
-  if (importResult.code !== 0) {
-    return {
-      status: 502,
-      body: {
-        ok: false,
-        error: importResult.stderr.trim() || importResult.stdout.trim() || `exit ${importResult.code}`,
-      },
-    };
-  }
-  // ccrotate import prints e.g. "Import complete: N updated, M kept (local fresher)."
-  const summary = (importResult.stdout + importResult.stderr).match(
-    /(\d+)\s+updated,\s*(\d+)\s+kept/i,
-  );
-  const imported = summary
-    ? { updated: Number(summary[1]), kept: Number(summary[2]) }
-    : undefined;
+  const importResult = await statePost<Record<string, unknown>>("/state/import", { data: blob }, 60_000);
 
-  // 2. Persist the imported blob to plugin_state so the next Job pod's
-  //    preRun hook re-imports the same canonical state.
+  // Persist the imported blob to plugin_state so the next Job pod's preRun hook
+  // can re-import the same canonical state if that hook is enabled.
   const value: PersistedSnapshot = { blob, capturedAt: new Date().toISOString() };
   await ctxRef.state.set(
     {
@@ -509,7 +473,7 @@ async function handleImport(input: PluginApiRequestInput): Promise<PluginApiResp
     },
     value,
   );
-  return { status: 200, body: { ok: true, imported, capturedAt: value.capturedAt } };
+  return { status: 200, body: { ok: true, imported: importResult, capturedAt: value.capturedAt } };
 }
 
 async function handleStateGet(_input: PluginApiRequestInput): Promise<PluginApiResponse> {
@@ -615,7 +579,7 @@ async function consumeSseStream(
         // the connected event seeds initial UI state, and each subsequent
         // event signals a tier-cache mutation we want to reflect. emitSnapshot
         // is debounced so a burst (e.g. import.applied + token-refreshed) only
-        // fires one `ccrotate when` invocation downstream.
+        // rebuilds and emits one canonical state-server snapshot downstream.
         emitSnapshot(event || "message");
         // `data` parsing is best-effort — we don't need the payload, just
         // the signal that *something* changed. Keeping the parsed value
@@ -636,7 +600,7 @@ async function snapshotSubscriptionLoop(signal: AbortSignal): Promise<void> {
       const response = await fetch(`${STATE_SSE_URL}/state/events`, {
         method: "GET",
         signal,
-        headers: { accept: "text/event-stream" },
+        headers: requestHeaders({ accept: "text/event-stream" }),
       });
       if (!response.ok) {
         throw new Error(`SSE connect failed: HTTP ${response.status}`);
@@ -666,7 +630,11 @@ const plugin: PaperclipPlugin = definePlugin({
     ctxRef = ctx;
     logger()?.info("ccrotate plugin (visualization) ready", {
       pluginId: PLUGIN_ID,
+      stateUrl: STATE_BASE_URL,
       sseUrl: STATE_SSE_URL,
+      serveUrl: CCROTATE_SERVE_BASE_URL,
+      hasStateToken: !!STATE_TOKEN,
+      hasServeToken: !!CCROTATE_SERVE_TOKEN,
     });
     // Start the SSE → ctx.streams fan-out loop. Fire-and-forget: the loop
     // owns its own retry/backoff and exits cleanly on abort. setup() must
