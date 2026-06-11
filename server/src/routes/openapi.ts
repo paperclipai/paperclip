@@ -4381,6 +4381,21 @@ registerCurrentRoute({
 });
 
 registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/recovery-actions",
+  tags: ["issues"],
+  summary: "List stale recovery actions for a company",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/recovery-actions/{id}/resolve",
+  tags: ["issues"],
+  summary: "Resolve a recovery action by its own ID",
+  body: z.object({ reason: z.string().max(2000) }).strict(),
+});
+
+registerCurrentRoute({
   method: "post",
   path: "/api/issues/{id}/scheduled-retry/retry-now",
   tags: ["issues"],

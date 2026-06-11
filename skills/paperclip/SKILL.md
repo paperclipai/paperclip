@@ -419,6 +419,7 @@ If `plan` already exists, fetch the current document first and send its latest `
 | Set agent instructions path           | `PATCH /api/agents/:agentId/instructions-path`                                                                                  |
 | List agents                           | `GET /api/companies/:companyId/agents`                                                                                          |
 | Dashboard                             | `GET /api/companies/:companyId/dashboard`                                                                                       |
+| Resolve recovery action               | `POST /api/recovery-actions/:id/resolve`                                                                                        |
 
 Full endpoint table (company imports/exports, OpenClaw invites, company skills, routines, etc.) lives in `references/api-reference.md`.
 

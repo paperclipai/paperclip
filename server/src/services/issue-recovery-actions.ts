@@ -67,6 +67,7 @@ function toReadModel(row: IssueRecoveryActionRow): IssueRecoveryAction {
     monitorPolicy: row.monitorPolicy,
     attemptCount: row.attemptCount,
     maxAttempts: row.maxAttempts,
+    stale: row.stale,
     timeoutAt: row.timeoutAt,
     lastAttemptAt: row.lastAttemptAt,
     outcome: row.outcome as IssueRecoveryAction["outcome"],
@@ -118,6 +119,16 @@ export function issueRecoveryActionService(db: Db) {
         upsertQueues.delete(key);
       }
     }
+  }
+
+  async function getById(id: string): Promise<IssueRecoveryAction | null> {
+    const row = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return row ? toReadModel(row) : null;
   }
 
   async function getActiveForIssue(companyId: string, sourceIssueId: string): Promise<IssueRecoveryAction | null> {
@@ -179,6 +190,9 @@ export function issueRecoveryActionService(db: Db) {
     const now = new Date();
     const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
     if (existing) {
+      const newAttemptCount = existing.attemptCount + 1;
+      const effectiveMaxAttempts = input.maxAttempts !== undefined ? input.maxAttempts : existing.maxAttempts;
+      const isNowStale = effectiveMaxAttempts !== null && newAttemptCount >= effectiveMaxAttempts;
       const [updated] = await db
         .update(issueRecoveryActions)
         .set({
@@ -196,8 +210,9 @@ export function issueRecoveryActionService(db: Db) {
           nextAction: input.nextAction,
           wakePolicy: input.wakePolicy ?? null,
           monitorPolicy: input.monitorPolicy ?? null,
-          attemptCount: existing.attemptCount + 1,
-          maxAttempts: input.maxAttempts ?? null,
+          attemptCount: newAttemptCount,
+          maxAttempts: effectiveMaxAttempts,
+          stale: existing.stale || isNowStale,
           timeoutAt: input.timeoutAt ?? null,
           lastAttemptAt: input.lastAttemptAt ?? now,
           outcome: null,
@@ -286,9 +301,31 @@ export function issueRecoveryActionService(db: Db) {
     return updated ? toReadModel(updated) : null;
   }
 
+  async function listStale(
+    companyId: string,
+    options: { ownerAgentId?: string } = {},
+  ): Promise<IssueRecoveryAction[]> {
+    const predicates = [
+      eq(issueRecoveryActions.companyId, companyId),
+      eq(issueRecoveryActions.stale, true),
+      inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+    ];
+    if (options.ownerAgentId) {
+      predicates.push(eq(issueRecoveryActions.ownerAgentId, options.ownerAgentId));
+    }
+    const rows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(...predicates))
+      .orderBy(desc(issueRecoveryActions.updatedAt));
+    return rows.map(toReadModel);
+  }
+
   return {
+    getById,
     getActiveForIssue,
     listActiveForIssues,
+    listStale,
     resolveActiveForIssue,
     upsertSourceScoped,
   };

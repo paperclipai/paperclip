@@ -772,7 +772,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       returnOwnerAgentId: input.agentId,
       cause: input.cause ?? "stranded_assigned_issue",
       attemptCount: 1,
-      maxAttempts: null,
+      maxAttempts: 5,
     });
     expect(action.evidence).toMatchObject({
       sourceIssueId: input.issueId,
@@ -1425,8 +1425,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(recoveryAction?.nextAction).toContain("Repair the source issue workspace link");
 
-    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments.some((comment) => comment.body.includes("workspace failed validation"))).toBe(true);
+    const comments = await waitForValue(async () => {
+      const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      return rows.some((c) => c.body.includes("workspace failed validation")) ? rows : null;
+    }, 5_000);
+    expect(comments?.some((comment) => comment.body.includes("workspace failed validation"))).toBe(true);
   });
 
   it("queues one finish-handoff wake when a successful run leaves in-progress work without a next action", async () => {

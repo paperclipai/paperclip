@@ -337,6 +337,7 @@ export interface IssueRecoveryAction {
   monitorPolicy: Record<string, unknown> | null;
   attemptCount: number;
   maxAttempts: number | null;
+  stale: boolean;
   timeoutAt: Date | string | null;
   lastAttemptAt: Date | string | null;
   outcome: IssueRecoveryActionOutcome | null;
@@ -449,6 +450,7 @@ export interface IssueExecutionPolicy {
   monitor?: IssueExecutionMonitorPolicy | null;
   reviewPreset?: LowTrustReviewPresetPolicy;
   authorizationPolicy?: TrustAuthorizationPolicy;
+  skipHandoff?: boolean;
 }
 
 export interface IssueExecutionMonitorState {

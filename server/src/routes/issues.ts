@@ -1266,7 +1266,17 @@ export function issueRoutes(
       if (readiness.unresolvedBlockerCount > 0) {
         return "Recovery action became stale because the source issue now has unresolved first-class blockers.";
       }
+      if (input.blockersChanged && readiness.unresolvedBlockerCount === 0) {
+        return "Recovery action became stale because the source issue is now blocked with resolved first-class blockers (valid disposition).";
+      }
+      if (input.assigneeChanged && (issue.assigneeAgentId || issue.assigneeUserId)) {
+        return "Recovery action became stale because the source issue now has a new owner while blocked.";
+      }
       return null;
+    }
+
+    if (input.assigneeChanged && (issue.assigneeAgentId || issue.assigneeUserId)) {
+      return "Recovery action became stale because the source issue now has a new owner (stranded assignment resolved).";
     }
 
     if (issue.assigneeUserId && issue.status !== "done" && issue.status !== "cancelled") {
@@ -2554,6 +2564,19 @@ export function issueRoutes(
 
     const count = await svc.count(companyId, blockedCountFilters);
     res.json({ count });
+  });
+
+  router.get("/companies/:companyId/recovery-actions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const staleOnly = req.query.stale === "true";
+    const assigneeAgentId = typeof req.query.assigneeAgentId === "string" ? req.query.assigneeAgentId : undefined;
+    if (!staleOnly) {
+      res.status(400).json({ error: "Query param 'stale=true' is required" });
+      return;
+    }
+    const actions = await recoveryActionsSvc.listStale(companyId, { ownerAgentId: assigneeAgentId });
+    res.json({ actions });
   });
 
   router.get("/companies/:companyId/labels", async (req, res) => {
@@ -7144,6 +7167,99 @@ export function issueRoutes(
     });
 
     res.json({ ok: true });
+  });
+
+  // Escape-hatch: agent marks a recovery action resolved by its own ID (no source issue required in URL).
+  // Auth: issue assignee, recovery action owner, or agent with checkout-management override for either.
+  const resolveRecoveryActionByIdSchema = z.object({ reason: z.string().max(2000) }).strict();
+  const TERMINAL_RECOVERY_STATUSES = ["resolved", "cancelled"] as const;
+
+  router.post("/recovery-actions/:id/resolve", validate(resolveRecoveryActionByIdSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const recoveryAction = await recoveryActionsSvc.getById(id);
+    if (!recoveryAction) {
+      res.status(404).json({ error: "Recovery action not found" });
+      return;
+    }
+    assertCompanyAccess(req, recoveryAction.companyId);
+
+    if ((TERMINAL_RECOVERY_STATUSES as readonly string[]).includes(recoveryAction.status)) {
+      res.json({ recoveryAction });
+      return;
+    }
+
+    const sourceIssue = await svc.getById(recoveryAction.sourceIssueId);
+    if (!sourceIssue) {
+      res.status(404).json({ error: "Source issue not found" });
+      return;
+    }
+
+    if (req.actor.type === "agent") {
+      const actorAgentId = req.actor.agentId;
+      if (!actorAgentId) {
+        res.status(403).json({ error: "Agent authentication required" });
+        return;
+      }
+      const isAssignee = sourceIssue.assigneeAgentId === actorAgentId;
+      const isOwner = recoveryAction.ownerAgentId === actorAgentId;
+      const hasAssigneeOverride =
+        sourceIssue.assigneeAgentId != null &&
+        (await hasActiveCheckoutManagementOverride(actorAgentId, recoveryAction.companyId, sourceIssue.assigneeAgentId));
+      const hasOwnerOverride =
+        recoveryAction.ownerAgentId != null &&
+        (await hasActiveCheckoutManagementOverride(actorAgentId, recoveryAction.companyId, recoveryAction.ownerAgentId));
+      if (!isAssignee && !isOwner && !hasAssigneeOverride && !hasOwnerOverride) {
+        res.status(403).json({
+          error: "Only the issue assignee or recovery action owner may resolve this recovery action",
+          details: {
+            recoveryActionId: id,
+            issueId: sourceIssue.id,
+            actorAgentId,
+            assigneeAgentId: sourceIssue.assigneeAgentId,
+            ownerAgentId: recoveryAction.ownerAgentId,
+          },
+        });
+        return;
+      }
+    }
+
+    const { reason } = req.body as { reason: string };
+    const actor = getActorInfo(req);
+    const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+      companyId: recoveryAction.companyId,
+      sourceIssueId: recoveryAction.sourceIssueId,
+      actionId: id,
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote: reason,
+    });
+
+    if (!resolved) {
+      const current = await recoveryActionsSvc.getById(id);
+      res.json({ recoveryAction: current ?? recoveryAction });
+      return;
+    }
+
+    await logActivity(db, {
+      companyId: resolved.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.recovery_action_resolved",
+      entityType: "issue",
+      entityId: resolved.sourceIssueId,
+      details: {
+        identifier: sourceIssue.identifier,
+        recoveryActionId: resolved.id,
+        recoveryActionStatus: resolved.status,
+        outcome: resolved.outcome,
+        resolutionNote: resolved.resolutionNote,
+        source: "agent_manual_resolve",
+      },
+    });
+
+    res.json({ recoveryAction: resolved });
   });
 
   return router;

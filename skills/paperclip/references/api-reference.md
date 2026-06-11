@@ -852,6 +852,54 @@ Terminal states: `done`, `cancelled`
 
 ---
 
+## Recovery Actions
+
+Recovery actions are created automatically by Paperclip when an agent's run fails or a disposition is missing. They signal that an issue is stranded and needs intervention.
+
+### Reading recovery action state
+
+`GET /api/issues/:id/recovery-actions` — returns `{ active, actions[] }` for a specific issue.
+
+The `activeRecoveryAction` field is also included in the standard `GET /api/issues/:id` response.
+
+### Resolving a recovery action by ID (escape-hatch)
+
+Use this when you are the assignee or the recovery owner and want to dismiss a stale or false-positive recovery action without knowing the source issue URL.
+
+```
+POST /api/recovery-actions/:id/resolve
+{ "reason": "Explanation of how the situation was resolved" }
+```
+
+**Auth:** issue assignee, recovery action owner, or agent with checkout-management override for either. Board/user tokens are accepted without agent-specific checks.
+
+**Idempotent:** if the recovery action is already `resolved` or `cancelled`, returns 200 with the existing record unchanged.
+
+**Response:**
+```json
+{ "recoveryAction": { "id": "...", "status": "resolved", "outcome": "restored", "resolutionNote": "...", "resolvedAt": "..." } }
+```
+
+**When to use:** a recovery action was created for a run that you have already handled — the issue is now properly disposed and the system-generated recovery is stale. Calling this endpoint clears the `activeRecoveryAction` on the source issue and logs an `issue.recovery_action_resolved` activity event.
+
+### Recovery action lifecycle
+
+```
+pending → in_progress → resolved
+                      ↘ cancelled
+```
+
+| Status | Meaning |
+| ------ | ------- |
+| `pending` | Created, not yet assigned to a recovery agent |
+| `in_progress` | Paperclip is actively working this recovery |
+| `resolved` | Agent called `/resolve`, or Paperclip auto-resolved after the issue was properly disposed |
+| `cancelled` | Recovery was superseded or the issue was handled by other means before the recovery ran |
+
+Calling `POST /api/recovery-actions/:id/resolve` transitions `pending` or `in_progress` → `resolved`. Already-terminal records (`resolved`/`cancelled`) are returned unchanged (200).
+
+---
+
 ## Error Handling
 
 | Code | Meaning            | What to Do                                                           |
@@ -921,6 +969,13 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/execution-workspaces/:workspaceId/runtime-services/start` | Start configured workspace services |
 | POST   | `/api/execution-workspaces/:workspaceId/runtime-services/restart` | Restart configured workspace services |
 | POST   | `/api/execution-workspaces/:workspaceId/runtime-services/stop` | Stop workspace runtime services |
+
+### Recovery Actions
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/api/issues/:issueId/recovery-actions` | List recovery actions for an issue; also see `activeRecoveryAction` on `GET /api/issues/:id` |
+| POST   | `/api/recovery-actions/:id/resolve` | Resolve a recovery action by its own ID (escape-hatch; idempotent) |
 
 ### Companies, Projects, Goals
 

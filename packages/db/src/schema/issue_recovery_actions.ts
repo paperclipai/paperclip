@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   index,
   integer,
   jsonb,
@@ -35,6 +36,7 @@ export const issueRecoveryActions = pgTable(
     monitorPolicy: jsonb("monitor_policy").$type<Record<string, unknown>>(),
     attemptCount: integer("attempt_count").notNull().default(0),
     maxAttempts: integer("max_attempts"),
+    stale: boolean("stale").notNull().default(false),
     timeoutAt: timestamp("timeout_at", { withTimezone: true }),
     lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
     outcome: text("outcome"),
@@ -64,5 +66,10 @@ export const issueRecoveryActions = pgTable(
     activeFingerprintIdx: uniqueIndex("issue_recovery_actions_active_fingerprint_uq")
       .on(table.companyId, table.sourceIssueId, table.cause, table.fingerprint)
       .where(sql`${table.status} in ('active', 'escalated')`),
+    companyStaleIdx: index("issue_recovery_actions_company_stale_idx").on(
+      table.companyId,
+      table.stale,
+      table.status,
+    ),
   }),
 );
