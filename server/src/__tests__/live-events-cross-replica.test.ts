@@ -288,6 +288,18 @@ describeEmbeddedPostgres("live-events postgres LISTEN/NOTIFY transport", () => {
     expect(stats.notificationQueueUsage).toBeLessThan(1);
     await transport.close();
   });
+
+  it("routes transport.resync markers to company subscribers through the emitter", async () => {
+    await configureLiveEventsTransport({ mode: "postgres", databaseUrl });
+    const received: LiveEvent[] = [];
+    const unsubscribe = subscribeCompanyLiveEvents("company-resync", (e) => received.push(e));
+    await whenTransportSubscribed("company-resync");
+    publishLiveEvent({ companyId: "company-resync", type: "transport.resync", payload: { __resync: true } });
+    const event = await waitFor(() => received.find((e) => e.type === "transport.resync"));
+    expect(event.payload).toEqual({ __resync: true });
+    unsubscribe();
+    await teardownLiveEventsTransport();
+  });
 });
 
 describe("live-events redis transport (mocked)", () => {

@@ -83,6 +83,7 @@ export function createPgLiveEventsTransport(opts: {
       // connection; drop it and keep listening.
       return;
     }
+    if (typeof envelope !== "object" || envelope === null) return;
     if (envelope.origin === originId) return; // own echo
     const entry = subscriptions.get(companyId);
     if (!entry) return;
