@@ -29,6 +29,8 @@ function hasDevServerStatusToken(providedToken: string | undefined) {
   return timingSafeEqual(expected, provided);
 }
 
+let lastNotificationQueueWarnAtMs = 0;
+
 export function healthRoutes(
   db?: Db,
   opts: {
@@ -111,10 +113,16 @@ export function healthRoutes(
 
     const liveEvents = await getLiveEventsTransportHealth();
     if (liveEvents.mode === "transport" && (liveEvents.notificationQueueUsage ?? 0) > 0.5) {
-      logger.warn(
-        { notificationQueueUsage: liveEvents.notificationQueueUsage },
-        "Postgres notification queue is filling — a lagging LISTEN session is holding back cleanup",
-      );
+      // Health probes fire every few seconds; during a queue incident one
+      // warning per minute is signal, one per probe is noise.
+      const now = Date.now();
+      if (now - lastNotificationQueueWarnAtMs > 60_000) {
+        lastNotificationQueueWarnAtMs = now;
+        logger.warn(
+          { notificationQueueUsage: liveEvents.notificationQueueUsage },
+          "Postgres notification queue is filling — a lagging LISTEN session is holding back cleanup",
+        );
+      }
     }
 
     let bootstrapStatus: "ready" | "bootstrap_pending" = "ready";
