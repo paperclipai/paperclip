@@ -154,6 +154,11 @@ export function healthRoutes(
       });
     }
 
+    // Fetched before the redacted/full branch: the operator identifies the
+    // leader pod via unauthenticated probes; booleans only — the lease row
+    // (ids/hostnames) stays in the full-details view.
+    const scheduler = await getSchedulerHealth(db);
+
     if (!exposeFullDetails) {
       res.json({
         status: "ok",
@@ -162,11 +167,10 @@ export function healthRoutes(
         bootstrapStatus,
         bootstrapInviteActive,
         ...(devServer ? { devServer } : {}),
+        scheduler: { candidate: scheduler.candidate, isLeader: scheduler.isLeader },
       });
       return;
     }
-
-    const scheduler = await getSchedulerHealth(db);
 
     res.json({
       status: "ok",

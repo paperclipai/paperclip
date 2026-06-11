@@ -43,7 +43,23 @@ automatic failover.
 
 ## Monitoring
 
-`GET /api/health` (full-details view) includes:
+`GET /api/health` returns a `scheduler` block in **both** the redacted and
+full-details views, but with different fields:
+
+**Redacted view** (unauthenticated / operator probe contract):
+
+```json
+"scheduler": {
+  "candidate": true,
+  "isLeader": false
+}
+```
+
+The Kubernetes operator polls each pod's `/api/health` unauthenticated to
+identify the scheduler leader (e.g. to apply a pod label). The two booleans
+are sufficient for that — they reveal no sensitive lease data.
+
+**Full-details view** (authenticated board/agent request):
 
 ```json
 "scheduler": {
