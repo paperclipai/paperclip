@@ -31,6 +31,11 @@ const KUBERNETES_PROVIDER_KEY = "kubernetes";
 const KUBERNETES_MANAGED_MARKER = "managedKubernetesSandbox";
 /** Metadata marker for any Paperclip-managed environment (set on managed sandbox envs). */
 const PAPERCLIP_MANAGED_MARKER = "managedByPaperclip";
+/** Metadata marker for a company's managed-by-config generic (non-k8s) sandbox environment. */
+const MANAGED_SANDBOX_MARKER = "managedSandbox";
+const DEFAULT_MANAGED_SANDBOX_ENVIRONMENT_NAME = "Sandbox";
+const DEFAULT_MANAGED_SANDBOX_ENVIRONMENT_DESCRIPTION =
+  "Auto-provisioned sandbox environment for the instance execution policy (executionMode=sandbox).";
 
 /**
  * Configuration accepted by `ensureKubernetesEnvironment`. Mirrors the keys of
@@ -277,6 +282,95 @@ export function environmentService(db: Db) {
                 (candidate.metadata as Record<string, unknown> | null)?.[
                   KUBERNETES_MANAGED_MARKER
                 ] === true,
+            ) ?? null,
+        );
+      if (winner && winner.id !== row.id) {
+        await db.delete(environments).where(eq(environments.id, row.id));
+        return toEnvironment(winner);
+      }
+      return toEnvironment(row);
+    },
+
+    /**
+     * Provider-agnostic counterpart of `ensureKubernetesEnvironment`: ensure the
+     * company's managed sandbox environment for an arbitrary provider (Daytona,
+     * E2B, Modal, …), idempotently. Used by `executionMode=sandbox` so an
+     * uploaded/synced company auto-gets the operator's configured sandbox on
+     * first heartbeat — the tenant never configures cloud details. Config is
+     * refreshed in place on repeat calls (gitops-friendly). The provider plugin
+     * validates the config blob at run time.
+     */
+    ensureManagedSandboxEnvironment: async (
+      companyId: string,
+      input: { provider: string; config?: Record<string, unknown> },
+    ): Promise<Environment> => {
+      const desiredConfig: Record<string, unknown> = {
+        ...(input.config ?? {}),
+        provider: input.provider,
+      };
+      const desiredMetadata: Record<string, unknown> = {
+        [PAPERCLIP_MANAGED_MARKER]: true,
+        [MANAGED_SANDBOX_MARKER]: true,
+      };
+
+      const existing = await db
+        .select()
+        .from(environments)
+        .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")))
+        .then((rows) =>
+          rows.find(
+            (row) => (row.metadata as Record<string, unknown> | null)?.[MANAGED_SANDBOX_MARKER] === true,
+          ) ?? null,
+        );
+
+      const now = new Date();
+      if (existing) {
+        const updated = await db
+          .update(environments)
+          .set({
+            config: desiredConfig,
+            metadata: { ...(existing.metadata ?? {}), ...desiredMetadata },
+            status: "active",
+            updatedAt: now,
+          })
+          .where(eq(environments.id, existing.id))
+          .returning()
+          .then((rows) => rows[0] ?? existing);
+        return toEnvironment(updated);
+      }
+
+      const row = await db
+        .insert(environments)
+        .values({
+          companyId,
+          name: DEFAULT_MANAGED_SANDBOX_ENVIRONMENT_NAME,
+          description: DEFAULT_MANAGED_SANDBOX_ENVIRONMENT_DESCRIPTION,
+          driver: "sandbox",
+          status: "active",
+          config: desiredConfig,
+          metadata: desiredMetadata,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!row) {
+        throw new Error("Failed to ensure managed sandbox environment");
+      }
+
+      // Same race convergence as ensureKubernetesEnvironment (no partial unique
+      // index on managed sandbox rows yet): prefer the oldest managed row,
+      // delete our own insert if it lost.
+      const winner = await db
+        .select()
+        .from(environments)
+        .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")))
+        .orderBy(asc(environments.createdAt), asc(environments.id))
+        .then(
+          (rows) =>
+            rows.find(
+              (candidate) =>
+                (candidate.metadata as Record<string, unknown> | null)?.[MANAGED_SANDBOX_MARKER] === true,
             ) ?? null,
         );
       if (winner && winner.id !== row.id) {

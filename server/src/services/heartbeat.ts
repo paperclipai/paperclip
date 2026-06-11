@@ -8157,20 +8157,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       selectedEnvironmentId = kubernetesEnvironment.id;
     } else if (isExecutionForcedToSandbox(executionPolicy)) {
-      // Provider-agnostic sandbox forcing: pin the run onto whatever sandbox
-      // environment the operator configured for this company (Daytona, E2B,
-      // Modal, …). Unlike the Kubernetes path we cannot lazily provision one —
-      // the provider and its config are operator-specific — so a missing
-      // sandbox environment fails the run with an explicit error rather than
-      // silently falling back to local execution. The allowlist guard below is
-      // the backstop if selection were somehow bypassed.
-      const sandboxEnvironment = await environmentsSvc.findManagedSandboxEnvironment(agent.companyId);
+      // Provider-agnostic sandbox forcing: pin the run onto the sandbox
+      // environment configured for this company (Daytona, E2B, Modal, …).
+      let sandboxEnvironment = await environmentsSvc.findManagedSandboxEnvironment(agent.companyId);
+      if (!sandboxEnvironment) {
+        // Lazily auto-provision from the operator's default sandbox config —
+        // mirrors the Kubernetes path so an uploaded/synced company just works
+        // on first heartbeat without the tenant configuring cloud details.
+        // Only possible when the operator set PAPERCLIP_SANDBOX_PROVIDER; if not
+        // (config drift / manual-env operators), fail loudly below instead of
+        // falling back to local. The allowlist guard after acquisition is the
+        // backstop if selection were somehow bypassed.
+        let sandboxBootstrap: ReturnType<typeof parseExecutionPolicyBootstrapEnv> = null;
+        try {
+          sandboxBootstrap = parseExecutionPolicyBootstrapEnv(process.env);
+        } catch (err) {
+          logger.warn(
+            { runId: run.id, agentId: agent.id, companyId: agent.companyId, err },
+            "executionMode=sandbox is persisted but PAPERCLIP_SANDBOX_* bootstrap env failed to parse; cannot lazily provision",
+          );
+        }
+        if (
+          sandboxBootstrap &&
+          sandboxBootstrap.executionMode === "sandbox" &&
+          sandboxBootstrap.sandbox
+        ) {
+          await environmentsSvc.ensureManagedSandboxEnvironment(
+            agent.companyId,
+            sandboxBootstrap.sandbox,
+          );
+          sandboxEnvironment = await environmentsSvc.findManagedSandboxEnvironment(agent.companyId);
+        }
+      }
       if (!sandboxEnvironment) {
         throw new Error(
           "Instance execution policy requires a sandbox-provider environment " +
             "(executionMode=sandbox) but no active sandbox environment is configured " +
-            "for this company. Configure a sandbox provider (e.g. Kubernetes, Daytona, " +
-            "E2B, Modal) before running agents; refusing to fall back to local execution.",
+            "for this company and no default provider (PAPERCLIP_SANDBOX_PROVIDER) is set " +
+            "to auto-provision one. Configure a sandbox provider before running agents; " +
+            "refusing to fall back to local execution.",
         );
       }
       if (sandboxEnvironment.id !== selectedEnvironmentId) {

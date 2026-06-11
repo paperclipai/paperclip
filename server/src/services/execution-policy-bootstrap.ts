@@ -42,6 +42,11 @@ export type ExecutionPolicyBootstrap =
     }
   | {
       executionMode: Extract<InstanceExecutionMode, "sandbox">;
+      // When set, a managed sandbox environment is auto-provisioned per company
+      // (mirrors the Kubernetes path) so uploaded/synced companies just work.
+      // When absent, the operator manages sandbox environments manually and the
+      // setting is merely persisted.
+      sandbox?: { provider: string; config: Record<string, unknown> };
     };
 
 function parseBool(value: string | undefined): boolean | undefined {
@@ -86,9 +91,32 @@ export function parseExecutionPolicyBootstrapEnv(
   const raw = env.PAPERCLIP_EXECUTION_MODE?.trim();
   if (!raw || raw === "any") return null;
   if (raw === "sandbox") {
-    // Provider-agnostic: the operator configures their sandbox provider via the
-    // normal environment flow; the boot hook only persists the setting.
-    return { executionMode: "sandbox" };
+    // Provider-agnostic. If the operator names a default provider, every company
+    // auto-provisions that sandbox on first heartbeat (mirrors the Kubernetes
+    // path) so an uploaded/synced tenant just works without knowing cloud
+    // details. Without a provider, the setting is persisted and operators manage
+    // sandbox environments themselves.
+    const provider = env.PAPERCLIP_SANDBOX_PROVIDER?.trim();
+    if (!provider) return { executionMode: "sandbox" };
+    let config: Record<string, unknown> = {};
+    const rawConfig = env.PAPERCLIP_SANDBOX_CONFIG?.trim();
+    if (rawConfig) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawConfig);
+      } catch (err) {
+        throw new Error(
+          `PAPERCLIP_SANDBOX_CONFIG must be valid JSON (got a parse error: ${
+            err instanceof Error ? err.message : String(err)
+          }).`,
+        );
+      }
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new Error("PAPERCLIP_SANDBOX_CONFIG must be a JSON object.");
+      }
+      config = parsed as Record<string, unknown>;
+    }
+    return { executionMode: "sandbox", sandbox: { provider, config } };
   }
   if (raw !== "kubernetes") {
     throw new Error(
@@ -169,11 +197,42 @@ export async function applyExecutionPolicyBootstrap(
   await instanceSettings.updateGeneral({ executionMode: bootstrap.executionMode });
 
   if (bootstrap.executionMode === "sandbox") {
+    if (!bootstrap.sandbox) {
+      logger.info(
+        { executionMode: bootstrap.executionMode },
+        "applied provider-agnostic sandbox execution policy (no default provider; configure a sandbox environment per company)",
+      );
+      return { executionMode: bootstrap.executionMode, companiesConfigured: 0 };
+    }
+    const sandboxCompanyIds = await instanceSettings.listCompanyIds();
+    let sandboxConfigured = 0;
+    const sandboxFailedCompanyIds: string[] = [];
+    for (const companyId of sandboxCompanyIds) {
+      try {
+        await environments.ensureManagedSandboxEnvironment(companyId, bootstrap.sandbox);
+        sandboxConfigured += 1;
+      } catch (err) {
+        logger.error(
+          { err, companyId, provider: bootstrap.sandbox.provider },
+          "failed to ensure managed sandbox environment during execution-policy bootstrap",
+        );
+        sandboxFailedCompanyIds.push(companyId);
+      }
+    }
     logger.info(
-      { executionMode: bootstrap.executionMode },
-      "applied provider-agnostic sandbox execution policy (no managed environment provisioned; configure a sandbox provider per company)",
+      {
+        executionMode: bootstrap.executionMode,
+        provider: bootstrap.sandbox.provider,
+        companiesConfigured: sandboxConfigured,
+      },
+      "applied forced sandbox execution policy",
     );
-    return { executionMode: bootstrap.executionMode, companiesConfigured: 0 };
+    if (sandboxFailedCompanyIds.length > 0) {
+      throw new Error(
+        `execution-policy bootstrap: ${sandboxFailedCompanyIds.length} of ${sandboxCompanyIds.length} companies failed to get a managed sandbox environment under executionMode=sandbox (provider=${bootstrap.sandbox.provider}); refusing to start (companies: ${sandboxFailedCompanyIds.join(", ")})`,
+      );
+    }
+    return { executionMode: bootstrap.executionMode, companiesConfigured: sandboxConfigured };
   }
 
   const companyIds = await instanceSettings.listCompanyIds();

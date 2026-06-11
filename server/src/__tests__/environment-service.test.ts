@@ -343,6 +343,46 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect((await svc.findManagedSandboxEnvironment(companyId))?.id).toBe(fake.id);
   });
 
+  it("ensureManagedSandboxEnvironment auto-provisions a generic sandbox and is idempotent", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const created = await svc.ensureManagedSandboxEnvironment(companyId, {
+      provider: "daytona",
+      config: { apiUrl: "https://daytona.example", target: "eu" },
+    });
+    expect(created.driver).toBe("sandbox");
+    expect(created.config.provider).toBe("daytona");
+    expect(created.config.apiUrl).toBe("https://daytona.example");
+    expect(created.metadata?.managedByPaperclip).toBe(true);
+    expect(created.metadata?.managedSandbox).toBe(true);
+
+    // Idempotent: second call refreshes config in place, no new row.
+    const refreshed = await svc.ensureManagedSandboxEnvironment(companyId, {
+      provider: "daytona",
+      config: { apiUrl: "https://daytona.example", target: "us" },
+    });
+    expect(refreshed.id).toBe(created.id);
+    expect(refreshed.config.target).toBe("us");
+
+    // It is the env the provider-agnostic lookup pins onto, and is NOT mistaken
+    // for the managed Kubernetes env.
+    expect((await svc.findManagedSandboxEnvironment(companyId))?.id).toBe(created.id);
+    expect(await svc.findKubernetesEnvironment(companyId)).toBeNull();
+
+    const rows = await db
+      .select()
+      .from(environments)
+      .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")));
+    expect(rows).toHaveLength(1);
+  });
+
   it("findManagedSandboxEnvironment ignores a provider-less sandbox env (treated as unconfigured)", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
