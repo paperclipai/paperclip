@@ -154,10 +154,16 @@ test.describe.serial("PAP-10915 dark-mode Apps surfaces", () => {
     await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10915-05-developer-overview-dark.png`, fullPage: true });
   });
 
-  test("app detail danger zone removes the app", async ({ page }) => {
+  test("app detail rename and danger zone removal", async ({ page }) => {
     await forceDark(page);
     await page.goto(`/${seed.prefix}/apps/${brokenId}`);
     await expect(page.getByText("Danger zone")).toBeVisible({ timeout: 30_000 });
+
+    // Rename from the header pencil.
+    await page.getByRole("button", { name: "Rename app" }).click();
+    await page.getByLabel("App name").fill("QA Renamed App");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "QA Renamed App" })).toBeVisible({ timeout: 20_000 });
     await page.getByRole("button", { name: "Remove app" }).click();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10915-06-danger-zone-dark.png`, fullPage: true });
     await page.getByRole("button", { name: "Yes, remove it" }).click();

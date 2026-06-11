@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpRight, Check, Loader2, Lock } from "lucide-react";
+import { ArrowUpRight, Check, Loader2, Lock, Pencil, Wrench } from "lucide-react";
 import type {
   Agent,
   AppGalleryEntry,
@@ -15,7 +15,8 @@ import {
   humanizeConnectionDisplayName,
   isToolConnectionAttentionHealth as isAttentionHealthStatus,
 } from "@paperclipai/shared";
-import { useParams, useNavigate } from "@/lib/router";
+import { Link, useParams, useNavigate } from "@/lib/router";
+import { advancedTabHref } from "@/pages/tools/tool-tabs";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
@@ -135,6 +136,24 @@ export function AppDetail() {
     onSettled: () => setPending(false),
   });
 
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+  const rename = useMutation({
+    mutationFn: (name: string) => toolsApi.updateConnection(connectionId, { name }),
+    onSuccess: () => {
+      setRenaming(false);
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Couldn’t rename the app",
+        body: error instanceof Error ? error.message : "Please try again.",
+        tone: "error",
+      }),
+  });
+
   const removeApp = useMutation({
     mutationFn: () => toolsApi.archiveConnection(connectionId),
     onSuccess: () => {
@@ -198,7 +217,47 @@ export function AppDetail() {
         <div className="flex items-center gap-3">
           <AppLogo name={appName} logoUrl={logoEntry?.logoUrl} size={44} />
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">{appName}</h1>
+            {renaming ? (
+              <form
+                className="flex items-center gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const next = nameDraft.trim();
+                  if (next && next !== appName) rename.mutate(next);
+                  else setRenaming(false);
+                }}
+              >
+                <Input
+                  aria-label="App name"
+                  value={nameDraft}
+                  onChange={(event) => setNameDraft(event.target.value)}
+                  className="h-9 w-64 text-lg font-bold"
+                  autoFocus
+                />
+                <Button type="submit" size="sm" disabled={rename.isPending || !nameDraft.trim()}>
+                  {rename.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save"}
+                </Button>
+                <Button type="button" size="sm" variant="ghost" onClick={() => setRenaming(false)} disabled={rename.isPending}>
+                  Cancel
+                </Button>
+              </form>
+            ) : (
+              <div className="flex items-center gap-1.5">
+                <h1 className="text-2xl font-bold tracking-tight">{appName}</h1>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-muted-foreground"
+                  aria-label="Rename app"
+                  onClick={() => {
+                    setNameDraft(appName);
+                    setRenaming(true);
+                  }}
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            )}
             {connectionDisplaySecondaryHint(connection) && (
               <p className="text-xs text-muted-foreground">{connectionDisplaySecondaryHint(connection)}</p>
             )}
@@ -298,6 +357,14 @@ export function AppDetail() {
         removing={removeApp.isPending}
         onRemove={() => removeApp.mutate()}
       />
+
+      <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <Wrench className="h-3.5 w-3.5" />
+        Need to change the address or other technical setup?{" "}
+        <Link to={advancedTabHref("applications")} className="font-medium text-primary hover:underline">
+          Open developer tools
+        </Link>
+      </p>
     </div>
   );
 }
