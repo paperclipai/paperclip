@@ -3,9 +3,10 @@
  *
  * The scheduler is the central coordinator for all plugin cron jobs. It
  * periodically ticks (default every 30 seconds), queries the `plugin_jobs`
- * table for jobs whose `nextRunAt` has passed, dispatches `runJob` RPC calls
- * to the appropriate worker processes, records each execution in the
- * `plugin_job_runs` table, and advances the scheduling pointer.
+ * table for jobs whose `nextRunAt` has passed, atomically claims each due
+ * schedule slot (advancing `nextRunAt`), dispatches `runJob` RPC calls to
+ * the appropriate worker processes, and records each execution in the
+ * `plugin_job_runs` table.
  *
  * ## Responsibilities
  *
@@ -14,11 +15,15 @@
  *
  * 2. **Cron parsing & next-run calculation** — Uses the lightweight built-in
  *    cron parser ({@link parseCron}, {@link nextCronTick}) to compute the
- *    `nextRunAt` timestamp after each run or when a new job is registered.
+ *    `nextRunAt` timestamp when a slot is claimed or a new job is registered.
  *
  * 3. **Overlap prevention** — Before dispatching a job, the scheduler checks
  *    for an existing `running` run for the same job. If one exists, the job
  *    is skipped for that tick.
+ *
+ * 3b. **Multi-replica dedup** — Scheduled dispatches claim the schedule slot
+ *     atomically (compare-and-swap on `nextRunAt`) BEFORE creating the run,
+ *     so when N replicas tick concurrently exactly one dispatches the job.
  *
  * 4. **Job run recording** — Every execution creates a `plugin_job_runs` row:
  *    `queued` → `running` → `succeeded` | `failed`. Duration and error are
@@ -34,7 +39,7 @@
  * @see ./cron.ts — Cron parsing utilities
  */
 
-import { and, eq, lte, or } from "drizzle-orm";
+import { and, eq, isNull, lte, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { pluginJobs, pluginJobRuns } from "@paperclipai/db";
 import type { PluginJobStore } from "./plugin-job-store.js";
@@ -337,14 +342,42 @@ export function createPluginJobScheduler(
   // -----------------------------------------------------------------------
 
   /**
-   * Dispatch a single job run — create the run record, call the worker,
-   * record the result, and advance the schedule pointer.
+   * Dispatch a single job run — atomically claim the schedule slot, create
+   * the run record, call the worker, and record the result.
+   *
+   * The schedule pointer (`nextRunAt`) is advanced by the claim itself,
+   * BEFORE the run is created, so it advances exactly once per scheduled
+   * fire regardless of how many replicas observed the job as due.
    */
   async function dispatchJob(
     job: typeof pluginJobs.$inferSelect,
   ): Promise<void> {
     const { id: jobId, pluginId, jobKey, schedule } = job;
     const jobLog = log.child({ jobId, pluginId, jobKey });
+
+    // Atomic schedule-slot claim: advance next_run_at iff it still has the
+    // value this tick observed. With N replicas ticking concurrently, exactly
+    // one UPDATE matches; the rest see zero rows and skip. This is the
+    // multi-instance guard — the in-process activeJobs Set only bounds local
+    // concurrency.
+    const nextRunAt = computeNextRunAt(job);
+    const claimed = await db
+      .update(pluginJobs)
+      .set({ nextRunAt, updatedAt: new Date() })
+      .where(
+        and(
+          eq(pluginJobs.id, jobId),
+          job.nextRunAt === null
+            ? isNull(pluginJobs.nextRunAt)
+            : eq(pluginJobs.nextRunAt, job.nextRunAt),
+        ),
+      )
+      .returning({ id: pluginJobs.id });
+
+    if (claimed.length === 0) {
+      jobLog.debug("job slot claimed elsewhere; skipping");
+      return;
+    }
 
     // Mark as active (overlap prevention)
     activeJobs.add(jobId);
@@ -420,13 +453,18 @@ export function createPluginJobScheduler(
       // Remove from active set
       activeJobs.delete(jobId);
 
-      // 5. Always advance the schedule pointer (even on failure)
+      // 5. Record lastRunAt (even on failure). nextRunAt is NOT touched
+      //    here — it was already advanced by the atomic claim above, and
+      //    re-advancing it after the run would re-open the slot to races.
       try {
-        await advanceSchedulePointer(job);
+        await db
+          .update(pluginJobs)
+          .set({ lastRunAt: new Date(), updatedAt: new Date() })
+          .where(eq(pluginJobs.id, jobId));
       } catch (err) {
         jobLog.error(
           { err: err instanceof Error ? err.message : String(err) },
-          "failed to advance schedule pointer",
+          "failed to record lastRunAt",
         );
       }
     }
@@ -562,28 +600,26 @@ export function createPluginJobScheduler(
   // -----------------------------------------------------------------------
 
   /**
-   * Advance the `lastRunAt` and `nextRunAt` timestamps on a job after a run.
+   * Compute the next occurrence of a job's cron schedule (after now).
+   *
+   * Returns `null` when the schedule is missing or invalid — claiming the
+   * slot with a null `nextRunAt` parks the job until it is re-registered.
    */
-  async function advanceSchedulePointer(
+  function computeNextRunAt(
     job: typeof pluginJobs.$inferSelect,
-  ): Promise<void> {
-    const now = new Date();
-    let nextRunAt: Date | null = null;
+  ): Date | null {
+    if (!job.schedule) return null;
 
-    if (job.schedule) {
-      const validationError = validateCron(job.schedule);
-      if (validationError) {
-        log.warn(
-          { jobId: job.id, schedule: job.schedule, error: validationError },
-          "invalid cron schedule — cannot compute next run",
-        );
-      } else {
-        const cron = parseCron(job.schedule);
-        nextRunAt = nextCronTick(cron, now);
-      }
+    const validationError = validateCron(job.schedule);
+    if (validationError) {
+      log.warn(
+        { jobId: job.id, schedule: job.schedule, error: validationError },
+        "invalid cron schedule — cannot compute next run",
+      );
+      return null;
     }
 
-    await jobStore.updateRunTimestamps(job.id, now, nextRunAt);
+    return nextCronTick(parseCron(job.schedule), new Date());
   }
 
   /**
