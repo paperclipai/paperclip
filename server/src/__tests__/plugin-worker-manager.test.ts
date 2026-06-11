@@ -275,15 +275,14 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 
-  it("allows performAction nested host calls that omit the invocation id when the request is explicitly single-company scoped", async () => {
-    const companiesGet = vi.fn(async (params: { companyId: string }) => ({ id: params.companyId }));
+  it("rejects performAction nested host calls that omit the invocation id", async () => {
     const handlers = createHostClientHandlers({
       pluginId: "test.plugin",
       capabilities: ["companies.read"],
       services: {
         companies: {
           list: vi.fn(async () => []),
-          get: companiesGet,
+          get: vi.fn(async (params: { companyId: string }) => ({ id: params.companyId })),
         },
       } as unknown as HostServices,
     });
@@ -315,14 +314,16 @@ describe("plugin-worker-manager stderr failure context", () => {
           companyId: "company-a",
         },
         renderEnvironment: null,
-      })).resolves.toEqual({ id: "company-b" });
-      expect(companiesGet).toHaveBeenCalledWith({ companyId: "company-b" });
+      })).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+        message: expect.stringContaining("unknown invocation scope"),
+      });
     } finally {
       await handle.stop().catch(() => undefined);
     }
   });
 
-  it("allows nested worker host calls that forge an unknown invocation id when the request is explicitly single-company scoped", async () => {
+  it("rejects nested worker host calls that forge an unknown invocation id", async () => {
     const companiesGet = vi.fn(async (params: { companyId: string }) => ({ id: params.companyId }));
     const handlers = createHostClientHandlers({
       pluginId: "test.plugin",
@@ -362,21 +363,35 @@ describe("plugin-worker-manager stderr failure context", () => {
           companyId: "company-a",
         },
         renderEnvironment: null,
-      })).resolves.toEqual({ id: "company-a" });
-      expect(companiesGet).toHaveBeenCalledWith({ companyId: "company-a" });
+      })).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+        message: expect.stringContaining("unknown invocation scope"),
+      });
+      expect(companiesGet).not.toHaveBeenCalled();
     } finally {
       await handle.stop().catch(() => undefined);
     }
   });
 
-  it("allows missing or unknown invocation ids while a company invocation is active when the nested request is explicitly single-company scoped", async () => {
-    const companiesGet = vi.fn(async () => ({ id: "company-2" }));
+  it("allows invalid local folder status calls when the request stays explicitly single-company scoped", async () => {
+    const localFolderStatus = vi.fn(async (params: { companyId: string; folderKey: string }) => ({
+      companyId: params.companyId,
+      key: params.folderKey,
+      declaration: null,
+      configuredPath: null,
+      resolvedPath: null,
+      isConfigured: false,
+      isAccessible: false,
+      configuredAt: null,
+      lastValidatedAt: null,
+      accessibilityError: null,
+    }));
     const hostHandlers = createHostClientHandlers({
       pluginId: "test.plugin",
-      capabilities: ["companies.read"],
+      capabilities: ["local.folders"],
       services: {
-        companies: {
-          get: companiesGet,
+        localFolders: {
+          status: localFolderStatus,
         },
       } as unknown as HostServices,
     });
@@ -395,18 +410,24 @@ describe("plugin-worker-manager stderr failure context", () => {
     try {
       await handle.start();
 
-      for (const mode of ["omit", "unknown"]) {
+      for (const mode of ["local-folder-omit", "local-folder-unknown"]) {
         await expect(handle.call("getData", {
           key: "probe",
           companyId: "company-1",
           params: {
             mode,
-            requestedCompanyId: "company-2",
+            requestedCompanyId: "company-1",
+            folderKey: "wiki-root",
           },
-        } as HostToWorkerMethods["getData"][0])).resolves.toEqual({ id: "company-2" });
+        } as HostToWorkerMethods["getData"][0])).resolves.toMatchObject({
+          companyId: "company-1",
+          key: "wiki-root",
+        });
       }
 
-      expect(companiesGet).toHaveBeenCalledTimes(2);
+      expect(localFolderStatus).toHaveBeenCalledTimes(2);
+      expect(localFolderStatus).toHaveBeenNthCalledWith(1, { companyId: "company-1", folderKey: "wiki-root" });
+      expect(localFolderStatus).toHaveBeenNthCalledWith(2, { companyId: "company-1", folderKey: "wiki-root" });
     } finally {
       await handle.stop().catch(() => undefined);
     }
