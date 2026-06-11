@@ -26,10 +26,23 @@ import { parseAdapterRegistryEnv } from "./adapter-registry-bootstrap.js";
 
 export type ExecutionPolicyBootstrapEnv = Record<string, string | undefined>;
 
-export interface ExecutionPolicyBootstrap {
-  executionMode: Extract<InstanceExecutionMode, "kubernetes">;
-  kubernetesConfig: KubernetesEnvironmentConfigInput;
-}
+/**
+ * Parsed forced-execution bootstrap.
+ *
+ * - `kubernetes`: provider-pinned; carries the managed Kubernetes config so the
+ *   boot hook can provision a k8s environment per company.
+ * - `sandbox`: provider-agnostic; the operator configures their sandbox provider
+ *   through the normal environment flow, so the boot hook only persists the
+ *   setting and provisions nothing.
+ */
+export type ExecutionPolicyBootstrap =
+  | {
+      executionMode: Extract<InstanceExecutionMode, "kubernetes">;
+      kubernetesConfig: KubernetesEnvironmentConfigInput;
+    }
+  | {
+      executionMode: Extract<InstanceExecutionMode, "sandbox">;
+    };
 
 function parseBool(value: string | undefined): boolean | undefined {
   if (value === undefined) return undefined;
@@ -72,9 +85,14 @@ export function parseExecutionPolicyBootstrapEnv(
 ): ExecutionPolicyBootstrap | null {
   const raw = env.PAPERCLIP_EXECUTION_MODE?.trim();
   if (!raw || raw === "any") return null;
+  if (raw === "sandbox") {
+    // Provider-agnostic: the operator configures their sandbox provider via the
+    // normal environment flow; the boot hook only persists the setting.
+    return { executionMode: "sandbox" };
+  }
   if (raw !== "kubernetes") {
     throw new Error(
-      `PAPERCLIP_EXECUTION_MODE must be "kubernetes" or "any" (got "${raw}").`,
+      `PAPERCLIP_EXECUTION_MODE must be "kubernetes", "sandbox", or "any" (got "${raw}").`,
     );
   }
 
@@ -133,8 +151,13 @@ export function parseExecutionPolicyBootstrapEnv(
 
 /**
  * Apply the parsed bootstrap to the database: persist `executionMode` into
- * instance settings and ensure a configured Kubernetes environment for every
- * company. Idempotent; safe to call on every boot.
+ * instance settings and, for the Kubernetes mode, ensure a configured
+ * Kubernetes environment for every company. Idempotent; safe to call on every
+ * boot.
+ *
+ * For `executionMode=sandbox` there is nothing to provision — the operator
+ * configures their sandbox provider through the normal environment flow — so we
+ * only persist the setting and the per-run heartbeat guard enforces it.
  */
 export async function applyExecutionPolicyBootstrap(
   db: Db,
@@ -144,6 +167,14 @@ export async function applyExecutionPolicyBootstrap(
   const environments = environmentService(db);
 
   await instanceSettings.updateGeneral({ executionMode: bootstrap.executionMode });
+
+  if (bootstrap.executionMode === "sandbox") {
+    logger.info(
+      { executionMode: bootstrap.executionMode },
+      "applied provider-agnostic sandbox execution policy (no managed environment provisioned; configure a sandbox provider per company)",
+    );
+    return { executionMode: bootstrap.executionMode, companiesConfigured: 0 };
+  }
 
   const companyIds = await instanceSettings.listCompanyIds();
   let configured = 0;

@@ -28,6 +28,17 @@ function env(overrides: Record<string, string | undefined>): ExecutionPolicyBoot
   return overrides;
 }
 
+// Narrow a parsed bootstrap to the Kubernetes variant (the union now also has a
+// provider-agnostic `sandbox` variant with no kubernetesConfig).
+function asKubernetes(
+  parsed: ReturnType<typeof parseExecutionPolicyBootstrapEnv>,
+): Extract<ExecutionPolicyBootstrap, { executionMode: "kubernetes" }> {
+  if (!parsed || parsed.executionMode !== "kubernetes") {
+    throw new Error(`expected a kubernetes bootstrap, got ${parsed?.executionMode ?? "null"}`);
+  }
+  return parsed;
+}
+
 const bootstrap: ExecutionPolicyBootstrap = {
   executionMode: "kubernetes",
   kubernetesConfig: { inCluster: true, backend: "job" },
@@ -62,7 +73,7 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
     );
     expect(parsed).not.toBeNull();
     expect(parsed?.executionMode).toBe("kubernetes");
-    expect(parsed?.kubernetesConfig).toMatchObject({
+    expect(asKubernetes(parsed).kubernetesConfig).toMatchObject({
       backend: "job",
       inCluster: true,
       runtimeClassName: "gvisor",
@@ -76,15 +87,20 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
     const parsed = parseExecutionPolicyBootstrapEnv(
       env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }),
     );
-    expect(parsed?.kubernetesConfig.inCluster).toBe(false);
-    expect(parsed?.kubernetesConfig.runtimeClassName).toBeUndefined();
-    expect(parsed?.kubernetesConfig.egressAllowFqdns).toBeUndefined();
+    expect(asKubernetes(parsed).kubernetesConfig.inCluster).toBe(false);
+    expect(asKubernetes(parsed).kubernetesConfig.runtimeClassName).toBeUndefined();
+    expect(asKubernetes(parsed).kubernetesConfig.egressAllowFqdns).toBeUndefined();
   });
 
   it("throws on an unknown execution mode", () => {
     expect(() =>
       parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "vm" })),
     ).toThrow(/PAPERCLIP_EXECUTION_MODE/);
+  });
+
+  it("parses sandbox mode as a provider-agnostic bootstrap with no kubernetes config", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "sandbox" }));
+    expect(parsed).toEqual({ executionMode: "sandbox" });
   });
 
   it("attaches the declared adapter registry to the kubernetes config", () => {
@@ -96,13 +112,13 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
         ]),
       }),
     );
-    expect(parsed?.kubernetesConfig.adapters).toHaveLength(1);
-    expect(parsed?.kubernetesConfig.adapters?.[0].adapterType).toBe("opencode_local");
+    expect(asKubernetes(parsed).kubernetesConfig.adapters).toHaveLength(1);
+    expect(asKubernetes(parsed).kubernetesConfig.adapters?.[0].adapterType).toBe("opencode_local");
   });
 
   it("leaves adapters undefined when PAPERCLIP_ADAPTERS is absent", () => {
     const parsed = parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }));
-    expect(parsed?.kubernetesConfig.adapters).toBeUndefined();
+    expect(asKubernetes(parsed).kubernetesConfig.adapters).toBeUndefined();
   });
 
   it("reads PAPERCLIP_K8S_RPC_TIMEOUT_MS into kubernetesConfig.timeoutMs", () => {
@@ -112,12 +128,12 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
         PAPERCLIP_K8S_RPC_TIMEOUT_MS: "600000",
       }),
     );
-    expect(parsed?.kubernetesConfig.timeoutMs).toBe(600000);
+    expect(asKubernetes(parsed).kubernetesConfig.timeoutMs).toBe(600000);
   });
 
   it("omits timeoutMs when PAPERCLIP_K8S_RPC_TIMEOUT_MS is absent", () => {
     const parsed = parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }));
-    expect(parsed?.kubernetesConfig.timeoutMs).toBeUndefined();
+    expect(asKubernetes(parsed).kubernetesConfig.timeoutMs).toBeUndefined();
   });
 
   it("throws when PAPERCLIP_K8S_RPC_TIMEOUT_MS is not a positive integer", () => {
@@ -164,5 +180,15 @@ describe("applyExecutionPolicyBootstrap", () => {
 
     // It keeps going past the failure (attempts all three companies).
     expect(ensureKubernetesEnvironment).toHaveBeenCalledTimes(3);
+  });
+
+  it("persists sandbox mode without provisioning any managed environment", async () => {
+    listCompanyIds.mockResolvedValue(["c1", "c2"]);
+
+    const result = await applyExecutionPolicyBootstrap(fakeDb, { executionMode: "sandbox" });
+
+    expect(result).toEqual({ executionMode: "sandbox", companiesConfigured: 0 });
+    expect(updateGeneral).toHaveBeenCalledWith({ executionMode: "sandbox" });
+    expect(ensureKubernetesEnvironment).not.toHaveBeenCalled();
   });
 });

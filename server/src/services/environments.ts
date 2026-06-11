@@ -308,6 +308,30 @@ export function environmentService(db: Db) {
       return match ? toEnvironment(match) : null;
     },
 
+    // Provider-agnostic counterpart of findKubernetesEnvironment: the company's
+    // active sandbox environment regardless of which provider backs it. Used by
+    // executionMode="sandbox" to pin runs onto whatever sandbox the operator
+    // configured (Daytona, E2B, Modal, Kubernetes, …). Prefers a Paperclip-
+    // managed environment when several exist, else the most recently updated.
+    findManagedSandboxEnvironment: async (companyId: string): Promise<Environment | null> => {
+      const rows = await db
+        .select()
+        .from(environments)
+        .where(
+          and(
+            eq(environments.companyId, companyId),
+            eq(environments.driver, "sandbox"),
+            eq(environments.status, "active"),
+          ),
+        )
+        .orderBy(desc(environments.updatedAt));
+      if (rows.length === 0) return null;
+      const managed = rows.find(
+        (row) => (row.metadata as Record<string, unknown> | null)?.managedByPaperclip === true,
+      );
+      return toEnvironment(managed ?? rows[0]!);
+    },
+
     create: async (companyId: string, input: CreateEnvironment): Promise<Environment> => {
       const now = new Date();
       const row = await db

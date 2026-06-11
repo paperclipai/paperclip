@@ -318,6 +318,54 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(await svc.findKubernetesEnvironment(companyId)).toBeNull();
   });
 
+  it("findManagedSandboxEnvironment returns any active sandbox provider, unlike findKubernetesEnvironment", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    // No sandbox configured yet → both lookups null.
+    expect(await svc.findManagedSandboxEnvironment(companyId)).toBeNull();
+
+    // A non-Kubernetes sandbox (e.g. Daytona/E2B stand-in): findKubernetes
+    // ignores it, but the provider-agnostic lookup returns it so
+    // executionMode="sandbox" can pin onto it.
+    const fake = await svc.create(companyId, {
+      name: "Fake Sandbox",
+      driver: "sandbox",
+      config: { provider: "fake", image: "busybox", reuseLease: false },
+    });
+    expect(await svc.findKubernetesEnvironment(companyId)).toBeNull();
+    expect((await svc.findManagedSandboxEnvironment(companyId))?.id).toBe(fake.id);
+  });
+
+  it("findManagedSandboxEnvironment prefers a Paperclip-managed sandbox when several exist", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await svc.create(companyId, {
+      name: "Tenant Sandbox",
+      driver: "sandbox",
+      config: { provider: "fake", image: "busybox", reuseLease: false },
+    });
+    const managed = await svc.ensureKubernetesEnvironment(companyId, {
+      backend: "job",
+      inCluster: true,
+    });
+
+    expect((await svc.findManagedSandboxEnvironment(companyId))?.id).toBe(managed.id);
+  });
+
   it("ignores a config.provider=kubernetes sandbox env without the managed marker", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({

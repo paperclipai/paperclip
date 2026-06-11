@@ -135,6 +135,8 @@ import { instanceSettingsService } from "./instance-settings.js";
 import {
   evaluateExecutionAllowlist,
   isExecutionForcedToKubernetes,
+  isExecutionForcedToSandbox,
+  isExecutionForcedToSandboxTier,
 } from "./execution-allowlist.js";
 import {
   RECOVERY_ORIGIN_KINDS,
@@ -8106,13 +8108,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (!bootstrap) {
             bootstrapSkipReason =
               'PAPERCLIP_EXECUTION_MODE bootstrap env is not kubernetes-forced (absent or "any")';
+          } else if (bootstrap.executionMode !== "kubernetes") {
+            bootstrapSkipReason =
+              `PAPERCLIP_EXECUTION_MODE bootstrap env is "${bootstrap.executionMode}", not "kubernetes"; cannot derive a managed Kubernetes config`;
           }
         } catch (err) {
           bootstrapSkipReason = `PAPERCLIP_EXECUTION_MODE bootstrap env failed to parse: ${
             err instanceof Error ? err.message : String(err)
           }`;
         }
-        if (bootstrap) {
+        if (bootstrap && bootstrap.executionMode === "kubernetes") {
           await environmentsSvc.ensureKubernetesEnvironment(
             agent.companyId,
             bootstrap.kubernetesConfig,
@@ -8151,6 +8156,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
       }
       selectedEnvironmentId = kubernetesEnvironment.id;
+    } else if (isExecutionForcedToSandbox(executionPolicy)) {
+      // Provider-agnostic sandbox forcing: pin the run onto whatever sandbox
+      // environment the operator configured for this company (Daytona, E2B,
+      // Modal, …). Unlike the Kubernetes path we cannot lazily provision one —
+      // the provider and its config are operator-specific — so a missing
+      // sandbox environment fails the run with an explicit error rather than
+      // silently falling back to local execution. The allowlist guard below is
+      // the backstop if selection were somehow bypassed.
+      const sandboxEnvironment = await environmentsSvc.findManagedSandboxEnvironment(agent.companyId);
+      if (!sandboxEnvironment) {
+        throw new Error(
+          "Instance execution policy requires a sandbox-provider environment " +
+            "(executionMode=sandbox) but no active sandbox environment is configured " +
+            "for this company. Configure a sandbox provider (e.g. Kubernetes, Daytona, " +
+            "E2B, Modal) before running agents; refusing to fall back to local execution.",
+        );
+      }
+      if (sandboxEnvironment.id !== selectedEnvironmentId) {
+        logger.info(
+          {
+            runId: run.id,
+            issueId,
+            agentId: agent.id,
+            resolvedEnvironmentId: selectedEnvironmentId,
+            forcedSandboxEnvironmentId: sandboxEnvironment.id,
+            sandboxProvider:
+              typeof sandboxEnvironment.config?.provider === "string"
+                ? sandboxEnvironment.config.provider
+                : null,
+          },
+          "Forcing run onto the configured sandbox environment (executionMode=sandbox)",
+        );
+      }
+      selectedEnvironmentId = sandboxEnvironment.id;
     }
     const {
       selectedEnvironmentDriver: lowTrustPreflightEnvironmentDriver,
@@ -8472,11 +8511,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .where(eq(heartbeatRuns.id, run.id));
     }
-    // When execution is forced to Kubernetes, `selectedEnvironmentId` is already
-    // pinned to the managed k8s environment above; ignore any persisted workspace
-    // environmentId (which could point at a stale local/ssh env) so a reused
-    // workspace can never downgrade us off the sandbox.
-    const persistedEnvironmentId = isExecutionForcedToKubernetes(executionPolicy)
+    // When execution is forced to a sandbox tier (kubernetes or sandbox),
+    // `selectedEnvironmentId` is already pinned to the sandbox environment above;
+    // ignore any persisted workspace environmentId (which could point at a stale
+    // local/ssh env) so a reused workspace can never downgrade us off the sandbox.
+    const persistedEnvironmentId = isExecutionForcedToSandboxTier(executionPolicy)
       ? selectedEnvironmentId
       : persistedExecutionWorkspace?.config?.environmentId ?? selectedEnvironmentId;
     const acquiredEnvironment = await envOrchestrator.acquireForRun({
