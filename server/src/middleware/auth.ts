@@ -57,7 +57,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             "Failed to resolve auth session from request headers",
           );
         }
-        if (session?.user?.id) {
+        if (session?.user?.id && session.session?.id) {
           const userId = session.user.id;
           const [roleRow, memberships] = await Promise.all([
             db
@@ -83,6 +83,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           req.actor = {
             type: "board",
             userId,
+            sessionId: session.session.id,
             userName: session.user.name ?? null,
             userEmail: session.user.email ?? null,
             companyIds: memberships.map((row) => row.companyId),

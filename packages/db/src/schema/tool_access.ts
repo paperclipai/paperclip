@@ -126,6 +126,7 @@ export const toolOauthStates = pgTable(
     codeVerifier: text("code_verifier").notNull(),
     createdByActorType: text("created_by_actor_type"),
     createdByActorId: text("created_by_actor_id"),
+    createdBySessionId: text("created_by_session_id"),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

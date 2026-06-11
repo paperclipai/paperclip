@@ -136,6 +136,10 @@ export function toolAccessRoutes(
     const code = typeof req.query.code === "string" ? req.query.code : null;
     const error = typeof req.query.error === "string" ? req.query.error : null;
     const errorDescription = typeof req.query.error_description === "string" ? req.query.error_description : null;
+    const pendingState = state ? await svc.peekOAuthState(state) : null;
+    if (pendingState) {
+      assertToolAppMutationAccess(req, pendingState.companyId);
+    }
     const result = await svc.completeOAuthCallback({
       state,
       code,

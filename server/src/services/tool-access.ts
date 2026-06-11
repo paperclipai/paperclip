@@ -88,6 +88,7 @@ import { createToolRuntimeSupervisor, ToolRuntimeSupervisorError } from "./tool-
 type ActorInfo = {
   actorType?: "agent" | "user" | "system" | "plugin";
   actorId?: string | null;
+  sessionId?: string | null;
 };
 
 type ToolAccessServiceOptions = {
@@ -255,6 +256,7 @@ function actorBinding(actor: ActorInfo | undefined) {
   return {
     actorType: actor?.actorType ?? null,
     actorId: actor?.actorId ?? null,
+    sessionId: typeof actor?.sessionId === "string" && actor.sessionId.trim().length > 0 ? actor.sessionId : null,
   };
 }
 
@@ -266,6 +268,7 @@ function assertSameOAuthActor(stateRow: typeof toolOauthStates.$inferSelect, act
   const expected = {
     actorType: oauthActorType(stateRow.createdByActorType),
     actorId: stateRow.createdByActorId,
+    sessionId: stateRow.createdBySessionId,
   };
   const actual = actorBinding(actor);
   if (!expected.actorType || !expected.actorId) {
@@ -273,6 +276,9 @@ function assertSameOAuthActor(stateRow: typeof toolOauthStates.$inferSelect, act
   }
   if (expected.actorType !== actual.actorType || expected.actorId !== actual.actorId) {
     throw forbidden("OAuth sign-in must be completed by the user who started it");
+  }
+  if (expected.sessionId && expected.sessionId !== actual.sessionId) {
+    throw forbidden("OAuth sign-in must be completed from the same authenticated session");
   }
 }
 
@@ -2736,6 +2742,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       codeVerifier,
       createdByActorType: binding.actorType,
       createdByActorId: binding.actorId,
+      createdBySessionId: binding.sessionId,
       expiresAt,
     });
 
@@ -2771,6 +2778,15 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       authorizationUrl: authorizationUrl.toString(),
       expiresAt: expiresAt.toISOString(),
     };
+  }
+
+  async function peekOAuthState(state: string) {
+    const [row] = await db
+      .select({ companyId: toolOauthStates.companyId })
+      .from(toolOauthStates)
+      .where(eq(toolOauthStates.state, state))
+      .limit(1);
+    return row ?? null;
   }
 
   async function completeOAuthCallback(input: {
@@ -2959,6 +2975,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     finishGalleryAppConnection,
 
     startOAuth,
+
+    peekOAuthState,
 
     completeOAuthCallback,
 

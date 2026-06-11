@@ -82,10 +82,12 @@ function boardSessionActor(
   companyId: string,
   membershipRole: "owner" | "admin" | "operator" | "member" | "viewer",
   userId = `${membershipRole}-${randomUUID()}`,
+  sessionId = `session-${randomUUID()}`,
 ): Express.Request["actor"] {
   return {
     type: "board",
     userId,
+    sessionId,
     userName: `${membershipRole} user`,
     userEmail: null,
     isInstanceAdmin: false,
@@ -587,6 +589,7 @@ describeEmbeddedPostgres("tool access service", () => {
         companyId: company.id,
         createdByActorType: "user",
         createdByActorId: "board-user",
+        createdBySessionId: null,
       }),
     ]);
 
@@ -677,7 +680,8 @@ describeEmbeddedPostgres("tool access service", () => {
       .send({ galleryKey: "slack", name: "Viewer Slack" })
       .expect(403);
 
-    const operatorApp = createRouteApp(db, boardSessionActor(company.id, "operator", "operator-user"));
+    const operatorActor = boardSessionActor(company.id, "operator", "operator-user");
+    const operatorApp = createRouteApp(db, operatorActor);
     const startRes = await request(operatorApp)
       .post(`/api/tools/oauth/${connect.connectionId}/start`)
       .send({})
@@ -692,6 +696,7 @@ describeEmbeddedPostgres("tool access service", () => {
         companyId: company.id,
         createdByActorType: "user",
         createdByActorId: "operator-user",
+        createdBySessionId: operatorActor.sessionId,
       }),
     ]);
   });
@@ -721,6 +726,27 @@ describeEmbeddedPostgres("tool access service", () => {
       .get("/api/tools/oauth/callback")
       .query({ state, code: "oauth-code" })
       .expect(403);
+
+    const otherSessionSameUserApp = createRouteApp(
+      db,
+      boardSessionActor(company.id, "operator", "oauth-operator", "other-session"),
+    );
+    await request(otherSessionSameUserApp)
+      .get("/api/tools/oauth/callback")
+      .query({ state, code: "oauth-code" })
+      .expect(403);
+
+    const downgradedActor = {
+      ...initiatingActor,
+      companyIds: [company.id],
+      memberships: [{ companyId: company.id, membershipRole: "viewer" as const, status: "active" }],
+    };
+    const downgradedApp = createRouteApp(db, downgradedActor);
+    await request(downgradedApp)
+      .get("/api/tools/oauth/callback")
+      .query({ state, code: "oauth-code" })
+      .expect(403);
+
     await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(1);
 
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {

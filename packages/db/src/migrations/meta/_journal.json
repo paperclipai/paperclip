@@ -750,6 +750,13 @@
       "when": 1781222400000,
       "tag": "0106_tool_oauth_state_actor_binding",
       "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1781308800000,
+      "tag": "0107_tool_oauth_state_session_binding",
+      "breakpoints": true
     }
   ]
 }
