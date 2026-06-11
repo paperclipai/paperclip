@@ -561,6 +561,66 @@ describe.sequential("plugin tool and bridge authz", () => {
     vi.clearAllMocks();
   });
 
+  it("allows board tool execution without a runContext", async () => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    const { app } = await createApp(boardActor(), {}, {
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclip.example:search" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: { q: "test" },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalledWith(
+      "paperclip.example:search",
+      { q: "test" },
+      {},
+    );
+  });
+
+  it("allows board tool execution with MCP-style company-only runContext", async () => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok" });
+    const { app } = await createApp(boardActor(), {}, {
+      toolDeps: {
+        toolDispatcher: {
+          listToolsForAgent: vi.fn(),
+          getTool: vi.fn(() => ({ name: "paperclip.example:search" })),
+          executeTool,
+        },
+      },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/tools/execute")
+      .send({
+        tool: "paperclip.example:search",
+        parameters: { q: "test" },
+        runContext: {
+          agentId: null,
+          runId: null,
+          companyId: companyA,
+          projectId: null,
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(executeTool).toHaveBeenCalledWith(
+      "paperclip.example:search",
+      { q: "test" },
+      { companyId: companyA },
+    );
+  });
+
   it("rejects tool execution when the board user cannot access runContext.companyId", async () => {
     const executeTool = vi.fn();
     const getTool = vi.fn();

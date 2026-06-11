@@ -87,24 +87,13 @@ function jsonSchemaPropToZod(raw: unknown): z.ZodTypeAny {
 }
 
 /**
- * Build a per-call `runContext` from environment-derived defaults. Plugin
- * tool handlers expect at least `companyId`; `agentId`/`runId`/`projectId`
- * are optional but improve audit trails. Missing values result in
- * server-side 400 — which we surface as a clear MCP error rather than
- * crashing.
+ * Build a per-call context from environment-derived defaults. The MCP server
+ * does not know a Paperclip project id, so it must not pretend to provide a
+ * complete in-platform agent run context.
  */
-function buildRunContext(client: PaperclipApiClient): {
-  agentId: string | null;
-  runId: string | null;
-  companyId: string | null;
-  projectId: string | null;
-} {
-  return {
-    agentId: client.defaults.agentId ?? null,
-    runId: client.defaults.runId ?? null,
-    companyId: client.defaults.companyId ?? null,
-    projectId: null,
-  };
+function buildRunContext(client: PaperclipApiClient): { companyId?: string } {
+  const companyId = client.defaults.companyId?.trim();
+  return companyId ? { companyId } : {};
 }
 
 /**

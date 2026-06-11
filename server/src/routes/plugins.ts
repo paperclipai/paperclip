@@ -430,8 +430,11 @@ interface PluginToolExecuteRequest {
   tool: string;
   /** Parameters matching the tool's declared JSON Schema. */
   parameters?: unknown;
-  /** Agent run context. */
-  runContext: ToolRunContext;
+  /**
+   * Agent run context when invoked from an in-platform agent run. External
+   * board/MCP callers may omit it or supply only a companyId.
+   */
+  runContext?: unknown;
 }
 
 /**
@@ -779,6 +782,39 @@ export function pluginRoutes(
     return null;
   }
 
+  function normalizeToolRunContext(input: unknown): { context: Partial<ToolRunContext>; error?: string } {
+    if (input === undefined || input === null) {
+      return { context: {} };
+    }
+    if (typeof input !== "object" || Array.isArray(input)) {
+      return { context: {}, error: '"runContext" must be an object when supplied' };
+    }
+
+    const raw = input as Record<string, unknown>;
+    const context: Partial<ToolRunContext> = {};
+    for (const key of ["agentId", "runId", "companyId", "projectId"] as const) {
+      const value = raw[key];
+      if (value === undefined || value === null) continue;
+      if (typeof value !== "string") {
+        return { context: {}, error: `"runContext.${key}" must be a string when supplied` };
+      }
+      const trimmed = value.trim();
+      if (trimmed) {
+        context[key] = trimmed;
+      }
+    }
+    return { context };
+  }
+
+  function hasCompleteToolRunContext(runContext: Partial<ToolRunContext>): runContext is ToolRunContext {
+    return Boolean(
+      runContext.agentId
+      && runContext.runId
+      && runContext.companyId
+      && runContext.projectId,
+    );
+  }
+
   /**
    * GET /api/plugins
    *
@@ -929,7 +965,9 @@ export function pluginRoutes(
    * Request body:
    * - `tool`: Fully namespaced tool name (e.g., "acme.linear:search-issues")
    * - `parameters`: Parameters matching the tool's declared JSON Schema
-   * - `runContext`: Agent run context with agentId, runId, companyId, projectId
+   * - `runContext`: Optional. Agent-run calls include agentId, runId,
+   *   companyId, and projectId. Board/MCP calls may omit it or supply only
+   *   companyId.
    *
    * Response: `ToolExecutionResult`
    * Errors:
@@ -952,7 +990,7 @@ export function pluginRoutes(
       return;
     }
 
-    const { tool, parameters, runContext } = body;
+    const { tool, parameters } = body;
 
     // Validate required fields
     if (!tool || typeof tool !== "string") {
@@ -960,23 +998,31 @@ export function pluginRoutes(
       return;
     }
 
-    if (!runContext || typeof runContext !== "object") {
-      res.status(400).json({ error: '"runContext" is required and must be an object' });
+    const normalizedRunContext = normalizeToolRunContext(body.runContext);
+    if (normalizedRunContext.error) {
+      res.status(400).json({ error: normalizedRunContext.error });
       return;
     }
+    const runContext = normalizedRunContext.context;
 
-    if (!runContext.agentId || !runContext.runId || !runContext.companyId || !runContext.projectId) {
+    const hasRunScopedField = Boolean(runContext.agentId || runContext.runId || runContext.projectId);
+    if (hasRunScopedField && !hasCompleteToolRunContext(runContext)) {
       res.status(400).json({
-        error: '"runContext" must include agentId, runId, companyId, and projectId',
+        error:
+          '"runContext" must include agentId, runId, companyId, and projectId when agentId, runId, or projectId is supplied',
       });
       return;
     }
 
-    assertCompanyAccess(req, runContext.companyId);
-    const scopeError = await validateToolRunContextScope(runContext);
-    if (scopeError) {
-      res.status(403).json({ error: scopeError });
-      return;
+    if (runContext.companyId) {
+      assertCompanyAccess(req, runContext.companyId);
+    }
+    if (hasCompleteToolRunContext(runContext)) {
+      const scopeError = await validateToolRunContextScope(runContext);
+      if (scopeError) {
+        res.status(403).json({ error: scopeError });
+        return;
+      }
     }
 
     // Verify the tool exists
@@ -990,7 +1036,7 @@ export function pluginRoutes(
       const result = await toolDeps.toolDispatcher.executeTool(
         tool,
         parameters ?? {},
-        runContext,
+        runContext as ToolRunContext,
       );
       res.json(result);
     } catch (err) {

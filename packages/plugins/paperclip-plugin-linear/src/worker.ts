@@ -1496,7 +1496,7 @@ const plugin = definePlugin({
         const token = await resolveToken(ctx);
         const teamId = paramTeamId || await getTeamId(ctx).catch(() => "");
         if (!teamId) return { content: "Error: no team ID", data: { error: "No team ID specified" } };
-        const paperclipLinkOptions = await paperclipLinkOptionsForCompany(ctx, runCtx.companyId);
+        const paperclipLinkOptions = await paperclipLinkOptionsForCompany(ctx, runCtx?.companyId);
 
         const issue = await linear.createIssue(ctx.http.fetch.bind(ctx.http), token, {
           title,
@@ -1653,7 +1653,7 @@ const plugin = definePlugin({
         const link = await sync.getLinkByLinear(ctx, linearIssue.id);
         const companyCandidates = [
           link?.paperclipCompanyId,
-          runCtx.companyId,
+          runCtx?.companyId,
           storedCompanyId,
         ].filter((value): value is string => typeof value === "string" && value.length > 0)
           .filter((value, index, values) => values.indexOf(value) === index);
@@ -1874,7 +1874,7 @@ const plugin = definePlugin({
           };
         }
 
-        const companyId = runCtx.companyId || await getCompanyId(ctx);
+        const companyId = runCtx?.companyId || await getCompanyId(ctx);
         if (!companyId) {
           return {
             content: "Error: company id is not configured",
@@ -2117,7 +2117,13 @@ const plugin = definePlugin({
         if (!ref) return { content: "Error: invalid ref", data: { error: "Could not parse Linear issue reference" } };
 
         const issueId = paperclipIssueId;
-        const companyId = runCtx.companyId;
+        const companyId = runCtx?.companyId || await getCompanyId(ctx);
+        if (!companyId) {
+          return {
+            content: "Error: company id is not configured",
+            data: { error: "Company id is not configured for this plugin." },
+          };
+        }
 
         const existing = await sync.getLink(ctx, issueId);
         if (existing) return { content: "Error: already linked", data: { error: `Already linked to ${existing.linearIdentifier}` } };
