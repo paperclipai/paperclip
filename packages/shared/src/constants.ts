@@ -673,6 +673,10 @@ export const LIVE_EVENT_TYPES = [
   "plugin.ui.updated",
   "plugin.worker.crashed",
   "plugin.worker.restarted",
+  // Synthetic marker delivered when a replica's LISTEN connection
+  // reconnected and events may have been missed; payload is
+  // { __resync: true }. Consumers should refetch the state they render.
+  "transport.resync",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
