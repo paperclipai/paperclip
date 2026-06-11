@@ -169,6 +169,72 @@ function toolRequiresFormalApproval(tool: ToolGatewayDescriptor): boolean {
   return tool.risk === "destructive";
 }
 
+const REDACTED_ARGUMENT_SENTINEL = "***REDACTED***";
+
+/** Turn a machine field key (`note_body`, `noteBody`, `note-body`) into a Title-Cased label. */
+function humanizeArgumentKey(key: string): string {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (words.length === 0) return key;
+  return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+}
+
+/** Identifier-ish fields leak raw IDs into the prosumer card; the vocab gate forbids them. */
+function isIdentifierArgumentKey(key: string): boolean {
+  return /(^|[_-])(id|ids|uuid|guid|key|token|hash|sha\d*)$/i.test(key);
+}
+
+/** Render a single argument value as short, plain text — or null if it shouldn't be shown. */
+function humanizeArgumentValue(value: unknown): string | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (trimmed === REDACTED_ARGUMENT_SENTINEL) return "hidden for privacy";
+    return trimmed.length > 140 ? `${trimmed.slice(0, 137)}…` : trimmed;
+  }
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return null;
+}
+
+/**
+ * Build the prosumer-facing "Ask first" preview (M5/M7/M9). Deliberately free of the
+ * words tool/risk/transport/arguments and of raw JSON — those only belong on the
+ * Advanced surfaces (M8a/M8b) and the board-only formal-approval interaction. See PAP-10896.
+ */
+function buildHumanizedActionPreview(input: {
+  tool: ToolGatewayDescriptor;
+  argumentsSummary: ReturnType<typeof summarizeToolValue>;
+}): string {
+  const trustLine =
+    input.tool.risk === "destructive"
+      ? "It can permanently change or remove something, so we’re checking with you first."
+      : "It can change something, so we’re checking with you first.";
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input.argumentsSummary.summary);
+  } catch {
+    return trustLine;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return trustLine;
+
+  const fieldLines: string[] = [];
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (fieldLines.length >= 6) break;
+    if (isIdentifierArgumentKey(key)) continue;
+    const rendered = humanizeArgumentValue(value);
+    if (rendered === null) continue;
+    fieldLines.push(`**${humanizeArgumentKey(key)}:** ${rendered}`);
+  }
+
+  if (fieldLines.length === 0) return trustLine;
+  return [trustLine, "", ...fieldLines].join("\n");
+}
+
 const BUILTIN_TOOLS: ToolGatewayDescriptor[] = [
   {
     name: "mcp-remote-fixture:echo",
@@ -646,7 +712,8 @@ export function createToolGatewayService(
       canonicalArguments,
       signingSecret: options.toolActionSigningSecret,
     });
-    const previewMarkdown = [
+    // Board-only technical detail for the formal-approval interaction (target=custom).
+    const detailsMarkdown = [
       `Tool: \`${input.tool.name}\``,
       `Risk: \`${input.tool.risk}\``,
       "",
@@ -656,6 +723,12 @@ export function createToolGatewayService(
       input.argumentsSummary.summary,
       "```",
     ].join("\n");
+
+    // Prosumer-facing card preview (M5/M7/M9). Respect an already-set custom preview
+    // (e.g. OpenClaw-supplied), otherwise emit plain language with no technical vocab.
+    const previewMarkdown =
+      actionRequest.previewMarkdown?.trim() ||
+      buildHumanizedActionPreview({ tool: input.tool, argumentsSummary: input.argumentsSummary });
 
     let formalApprovalId: string | null = null;
     if (toolRequiresFormalApproval(input.tool)) {
@@ -709,7 +782,7 @@ export function createToolGatewayService(
           rejectLabel: "Reject action",
           rejectRequiresReason: false,
           allowDeclineReason: true,
-          detailsMarkdown: previewMarkdown,
+          detailsMarkdown,
           target: {
             type: "custom",
             key: `tool-action:${actionRequest.id}`,

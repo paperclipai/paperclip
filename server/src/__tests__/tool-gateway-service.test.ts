@@ -156,12 +156,29 @@ describeEmbeddedPostgres("tool gateway service", () => {
       approvalId: null,
     });
     expect(actionRequest.signedArguments).toEqual(expect.any(String));
+
+    // PAP-10896: the prosumer card preview must be plain language — no tool/risk vocab,
+    // no "Arguments reviewed for execution:" header, and no raw JSON code block.
+    const preview = actionRequest.previewMarkdown ?? "";
+    expect(preview).not.toMatch(/Tool:/);
+    expect(preview).not.toMatch(/Risk:/);
+    expect(preview).not.toMatch(/Arguments reviewed for execution:/);
+    expect(preview).not.toMatch(/```/);
+    expect(preview).toContain("checking with you first");
+    // The humanized field label is surfaced (body → "Body"), the raw key is not.
+    expect(preview).toContain("**Body:** short");
+
     const [interaction] = await db.select().from(issueThreadInteractions);
     expect(interaction).toMatchObject({
       kind: "request_confirmation",
       status: "pending",
       issueId: session.issueId,
     });
+    // The board-only formal-approval interaction may keep the technical block.
+    const interactionDetails =
+      (interaction.payload as { detailsMarkdown?: string } | null)?.detailsMarkdown ?? "";
+    expect(interactionDetails).toMatch(/Tool: `mcp-remote-fixture:update_note`/);
+    expect(interactionDetails).toMatch(/Risk: `write`/);
     const [invocation] = await db.select().from(toolInvocations);
     expect(invocation).toMatchObject({
       status: "awaiting_approval",
