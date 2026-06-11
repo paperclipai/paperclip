@@ -772,7 +772,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       returnOwnerAgentId: input.agentId,
       cause: input.cause ?? "stranded_assigned_issue",
       attemptCount: 1,
-      maxAttempts: null,
+      maxAttempts: 5,
     });
     expect(action.evidence).toMatchObject({
       sourceIssueId: input.issueId,
