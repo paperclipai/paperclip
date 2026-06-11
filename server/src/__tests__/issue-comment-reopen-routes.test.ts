@@ -1885,6 +1885,14 @@ describe.sequential("issue comment reopen routes", () => {
     { name: "present-progressive negation", body: "## Review: Not approving" },
     { name: "structured rejection", body: "kind: review\ndecision: rejected\nsummary: ship it" },
     { name: "structured changes_requested", body: "kind: review\ndecision: changes_requested\nsummary: ship it" },
+    {
+      name: "disjoint structured metadata across prose",
+      body: "kind: review\n\nThe previous sprint decision: approved by stakeholders, but this round still needs work.",
+    },
+    {
+      name: "disjoint structured metadata with summary line between",
+      body: "kind: review\nsummary: needs more work\ndecision: approved",
+    },
   ])("does not auto-approve negated approval phrasings ($name)", ({ body }) => {
     it("rejects the auto-approval transition and keeps the comment as a regular comment", async () => {
       const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
@@ -2019,6 +2027,17 @@ describe.sequential("issue comment reopen routes", () => {
         "11111111-1111-4111-8111-111111111111",
         expect.objectContaining({ status: "done" }),
         mockTx,
+      );
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "issue.updated",
+          details: expect.objectContaining({
+            status: "done",
+            source: "auto_approval_comment",
+            _previous: { status: "in_review" },
+          }),
+        }),
       );
     });
   });

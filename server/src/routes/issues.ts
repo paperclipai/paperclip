@@ -582,7 +582,13 @@ function isApprovalReviewComment(body: string) {
       return true;
     }
   }
-  return /^\s*kind\s*:\s*review\s*$/im.test(normalized) && /^\s*decision\s*:\s*approved\s*$/im.test(normalized);
+  // Require the `kind: review` and `decision: approved` lines to appear on consecutive
+  // lines so prose like "the previous sprint decision: approved" can't combine with an
+  // unrelated `kind: review` line elsewhere in the body to trigger auto-approval.
+  return (
+    /^\s*kind\s*:\s*review\s*\n\s*decision\s*:\s*approved\s*$/im.test(normalized)
+    || /^\s*decision\s*:\s*approved\s*\n\s*kind\s*:\s*review\s*$/im.test(normalized)
+  );
 }
 
 function buildExecutionStageWakeContext(input: {
@@ -6772,6 +6778,26 @@ export function issueRoutes(
       }
       comment = txResult.comment;
       currentIssue = txResult.issue;
+      // Mirror the normal status-change audit trail: every other in_review -> done path
+      // emits an `issue.updated` activity, so emit one here too for the auto-approval path.
+      if (issueBeforeCommentDecision.status !== currentIssue.status) {
+        await logActivity(db, {
+          companyId: currentIssue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: currentIssue.id,
+          details: {
+            status: currentIssue.status,
+            identifier: currentIssue.identifier,
+            source: "auto_approval_comment",
+            _previous: { status: issueBeforeCommentDecision.status },
+          },
+        });
+      }
       commentDecisionStageWakeup = buildExecutionStageWakeup({
         issueId: currentIssue.id,
         previousState: currentExecutionState,
