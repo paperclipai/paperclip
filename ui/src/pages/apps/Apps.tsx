@@ -37,8 +37,8 @@ function statusFor(connection: ToolConnection): AppStatus {
 }
 
 const STATUS_CLASS: Record<AppStatus["tone"], string> = {
-  connected: "border-emerald-200 bg-emerald-50 text-emerald-700",
-  attention: "border-amber-200 bg-amber-50 text-amber-700",
+  connected: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+  attention: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
   paused: "border-border bg-muted text-muted-foreground",
 };
 
@@ -129,7 +129,7 @@ export function Apps() {
               {connections.length} {connections.length === 1 ? "app" : "apps"} connected
             </span>
             {needsAttention.length > 0 && (
-              <span className="text-amber-600"> · {needsAttention.length} needs attention</span>
+              <span className="text-amber-600 dark:text-amber-400"> · {needsAttention.length} needs attention</span>
             )}
           </div>
 
@@ -137,18 +137,18 @@ export function Apps() {
             <button
               type="button"
               onClick={() => navigate("/apps/attention")}
-              className="flex w-full items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-left transition-colors hover:bg-amber-100"
+              className="flex w-full items-center gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-left transition-colors hover:bg-amber-500/15"
             >
-              <ShieldAlert className="h-5 w-5 shrink-0 text-amber-600" />
+              <ShieldAlert className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
               <div className="min-w-0 flex-1">
-                <div className="text-sm font-semibold text-amber-900">
+                <div className="text-sm font-semibold text-amber-900 dark:text-amber-100">
                   {needsAttention.length} {needsAttention.length === 1 ? "app needs" : "apps need"} attention
                 </div>
-                <div className="truncate text-xs text-amber-700">
+                <div className="truncate text-xs text-amber-700 dark:text-amber-300">
                   {floatSummary(needsAttention)}
                 </div>
               </div>
-              <span className="shrink-0 text-xs font-semibold text-amber-800">Review →</span>
+              <span className="shrink-0 text-xs font-semibold text-amber-800 dark:text-amber-200">Review →</span>
             </button>
           )}
 
@@ -178,7 +178,7 @@ export function Apps() {
                   return (
                     <tr
                       key={connection.id}
-                      className={cn("border-b border-border last:border-0", attention && "bg-amber-50/40")}
+                      className={cn("border-b border-border last:border-0", attention && "bg-amber-500/[0.06]")}
                     >
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">

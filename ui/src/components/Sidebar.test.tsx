@@ -286,23 +286,23 @@ describe("Sidebar", () => {
     });
   });
 
-  it("shows Tools in the Company section", async () => {
+  it("shows Apps in the Company section", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     const root = await renderSidebar();
 
-    const toolsLink = [...container.querySelectorAll("a")].find(
-      (anchor) => anchor.textContent === "Tools",
+    const appsLink = [...container.querySelectorAll("a")].find(
+      (anchor) => anchor.textContent === "Apps",
     );
-    expect(toolsLink?.getAttribute("href")).toBe("/tools");
+    expect(appsLink?.getAttribute("href")).toBe("/apps");
 
     const companySection = [...container.querySelectorAll("nav div")]
       .find((node) => node.textContent?.includes("Company") && node.textContent.includes("Settings"));
     const companyText = companySection?.textContent ?? "";
     expect(companyText).toContain("Org");
     expect(companyText).toContain("Skills");
-    expect(companyText).toContain("Tools");
-    expect(companyText.indexOf("Skills")).toBeLessThan(companyText.indexOf("Tools"));
-    expect(companyText.indexOf("Tools")).toBeLessThan(companyText.indexOf("Costs"));
+    expect(companyText).toContain("Apps");
+    expect(companyText.indexOf("Skills")).toBeLessThan(companyText.indexOf("Apps"));
+    expect(companyText.indexOf("Apps")).toBeLessThan(companyText.indexOf("Costs"));
 
     flushSync(() => {
       root.unmount();

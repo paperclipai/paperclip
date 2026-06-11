@@ -110,8 +110,9 @@ describe("ToolsSidebar", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Advanced setup");
+    expect(container.textContent).toContain("Developer");
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps/advanced", label: "Overview", end: true }),
+      expect.objectContaining({ to: "/apps/advanced/overview", label: "Overview", end: true }),
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({ to: "/apps/advanced/applications", label: "Applications", end: true }),
@@ -122,8 +123,9 @@ describe("ToolsSidebar", () => {
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({ to: "/apps/advanced/runtime", label: "Runtime", end: true, liveCount: 1 }),
     );
+    // M8a is the door's face: "Paste a config" lives at the bare base path.
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps/advanced/paste-config", label: "Paste a config", end: true }),
+      expect.objectContaining({ to: "/apps/advanced", label: "Paste a config", end: true }),
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({ to: "/apps/advanced/run-your-own", label: "Run your own", end: true }),

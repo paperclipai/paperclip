@@ -745,7 +745,7 @@ function ActionGroup({
                 )}
               </div>
               {showAskFirst && (
-                <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700">
+                <span className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-700 dark:text-amber-300">
                   Ask first
                 </span>
               )}
@@ -783,7 +783,7 @@ function ActionsStep({
   return (
     <div className="space-y-5">
       <div className="flex items-start gap-3">
-        <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full border-2 border-emerald-500 bg-emerald-50 text-emerald-600">
+        <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full border-2 border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
           <Check className="h-3.5 w-3.5" />
         </span>
         <div>
@@ -989,8 +989,8 @@ function SuccessStep({
 }) {
   return (
     <div className="mx-auto max-w-md py-10 text-center">
-      <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full border-2 border-emerald-500 bg-emerald-50">
-        <Check className="h-9 w-9 text-emerald-600" />
+      <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full border-2 border-emerald-500 bg-emerald-500/10">
+        <Check className="h-9 w-9 text-emerald-600 dark:text-emerald-400" />
       </div>
       <div className="mt-6 flex items-center justify-center gap-2">
         <AppLogo name={appName} logoUrl={logoUrl} size={28} />

@@ -73,8 +73,8 @@ export function AppsAttention() {
         </div>
       ) : apps.length === 0 ? (
         <div className="rounded-xl border border-border bg-card p-8 text-center">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-emerald-50">
-            <ShieldAlert className="h-6 w-6 text-emerald-500" />
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/10">
+            <ShieldAlert className="h-6 w-6 text-emerald-500 dark:text-emerald-400" />
           </div>
           <p className="mt-3 text-sm font-medium text-foreground">Nothing needs attention.</p>
           <p className="text-sm text-muted-foreground">All your apps are healthy.</p>
@@ -106,13 +106,13 @@ function AttentionRow({
 }) {
   const reasons = reasonSentences(app);
   return (
-    <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50/50 p-4">
+    <div className="flex items-start gap-3 rounded-xl border border-amber-500/40 bg-amber-500/[0.07] p-4">
       <AppLogo name={humanizeConnectionDisplayName(app.connection)} logoUrl={logoUrl} size={36} />
       <div className="min-w-0 flex-1">
         <div className="text-sm font-bold text-foreground">
           {humanizeConnectionDisplayName(app.connection)}
         </div>
-        <ul className="mt-1 space-y-0.5 text-sm text-amber-800">
+        <ul className="mt-1 space-y-0.5 text-sm text-amber-800 dark:text-amber-200">
           {reasons.map((reason) => (
             <li key={reason}>• {reason}</li>
           ))}

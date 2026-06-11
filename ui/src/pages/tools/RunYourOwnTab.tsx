@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
 import { useToast } from "@/context/ToastContext";
-import { ToolsPageHeader, LoadingState, ErrorState, RelativeTime } from "./shared";
+import { LoadingState, ErrorState, RelativeTime } from "./shared";
 
 const ENV_KEY_RE = /^[A-Z_][A-Z0-9_]*$/i;
 
@@ -93,10 +93,10 @@ export function RunYourOwnTab({ companyId }: { companyId: string }) {
 
   return (
     <div className="space-y-6">
-      <ToolsPageHeader
-        title="Run your own"
-        description="For a tool that runs from a command. Paperclip runs it in your company's own isolated workspace. Administrators only."
-      />
+      <p className="max-w-2xl text-sm text-muted-foreground">
+        For a tool that runs from a command. Paperclip runs it in your company's own isolated workspace.
+        Administrators only.
+      </p>
 
       <div className="space-y-5 rounded-lg border border-border bg-card p-5">
         <div className="space-y-1.5">

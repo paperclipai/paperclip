@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { ShieldAlert } from "lucide-react";
+import { Link } from "@/lib/router";
 import { accessApi } from "@/api/access";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
@@ -42,9 +43,9 @@ export function AdvancedToolsRoute() {
           <p className="text-sm text-muted-foreground">
             This area lets administrators wire up tools that aren't in the gallery. Ask an administrator if you
             need a new app connected, or head back to{" "}
-            <a href="/apps" className="font-medium text-primary hover:underline">
+            <Link to="/apps" className="font-medium text-primary hover:underline">
               your apps
-            </a>
+            </Link>
             .
           </p>
         </div>

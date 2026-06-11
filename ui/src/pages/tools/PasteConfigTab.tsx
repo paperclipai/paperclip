@@ -5,7 +5,7 @@ import type { McpJsonImportDraft, McpJsonImportPreview } from "@paperclipai/shar
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { toolsApi } from "@/api/tools";
-import { ToolsPageHeader, ErrorState } from "./shared";
+import { ErrorState } from "./shared";
 
 const SAMPLE_CONFIG = `{
   "mcpServers": {
@@ -63,10 +63,9 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
 
   return (
     <div className="space-y-5">
-      <ToolsPageHeader
-        title="Paste a config"
-        description="For a tool that isn't in the gallery. Paste the MCP config snippet from the tool's README and we'll turn it into a friendly setup."
-      />
+      <p className="max-w-2xl text-sm text-muted-foreground">
+        Paste the MCP config snippet from the tool's README and we'll turn it into a friendly setup.
+      </p>
 
       <div className="space-y-2">
         <Textarea

@@ -5,7 +5,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
 import { useCompany } from "@/context/CompanyContext";
 import { useSidebar } from "@/context/SidebarContext";
-import { TOOL_TABS, advancedTabHref } from "@/pages/tools/tool-tabs";
+import { ADVANCED_TABS, DEVELOPER_TABS, advancedTabHref } from "@/pages/tools/tool-tabs";
 import { SidebarNavItem } from "./SidebarNavItem";
 
 export function ToolsSidebar() {
@@ -36,7 +36,7 @@ export function ToolsSidebar() {
         <div className="flex items-center gap-2 px-2 py-1">
           <Settings2 className="h-4 w-4 text-muted-foreground shrink-0" />
           <span className="flex-1 truncate text-sm font-bold text-foreground">
-            Advanced setup
+            Developer tools
           </span>
         </div>
       </div>
@@ -46,7 +46,15 @@ export function ToolsSidebar() {
           Advanced setup
         </div>
         <div className="flex flex-col gap-0.5">
-          {TOOL_TABS.map((tab) => (
+          {ADVANCED_TABS.map((tab) => (
+            <SidebarNavItem key={tab.key} to={advancedTabHref(tab.key)} label={tab.label} icon={tab.icon} end />
+          ))}
+        </div>
+        <div className="px-3 pb-1 pt-4 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Developer
+        </div>
+        <div className="flex flex-col gap-0.5">
+          {DEVELOPER_TABS.map((tab) => (
             <SidebarNavItem
               key={tab.key}
               to={advancedTabHref(tab.key)}

@@ -323,7 +323,7 @@ function ActionGroup({
                   className={cn(
                     "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold transition-colors disabled:opacity-50",
                     askFirst
-                      ? "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100"
+                      ? "border-amber-500/40 bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-300"
                       : "border-border bg-background text-muted-foreground hover:text-foreground",
                   )}
                   title={askFirst ? "We’ll check with you before this runs" : "Runs without asking"}
@@ -357,9 +357,9 @@ function QuarantinePill({
 }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-4">
+    <div className="rounded-xl border border-amber-500/40 bg-amber-500/[0.08] p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-sm font-semibold text-amber-800">
+        <div className="text-sm font-semibold text-amber-800 dark:text-amber-200">
           {count} new {count === 1 ? "action" : "actions"} to review
         </div>
         <div className="flex items-center gap-2">
@@ -371,11 +371,11 @@ function QuarantinePill({
           </Button>
         </div>
       </div>
-      <p className="mt-1 text-xs text-amber-700">
+      <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
         This app added actions since you set it up. They stay off until you turn them on.
       </p>
       {open && (
-        <div className="mt-3 divide-y divide-amber-200/70 rounded-lg border border-amber-200 bg-background">
+        <div className="mt-3 divide-y divide-amber-500/25 rounded-lg border border-amber-500/40 bg-background">
           {entries.map((entry) => (
             <div key={entry.id} className="flex items-center gap-3 px-4 py-2.5">
               <div className="min-w-0 flex-1">
@@ -568,9 +568,9 @@ function ReconnectCard({
   onReconnected: () => void;
 }) {
   return (
-    <div className="rounded-xl border border-amber-300 bg-amber-50 p-5">
-      <h2 className="text-sm font-bold text-amber-900">This app needs reconnecting</h2>
-      <p className="mt-1 text-sm text-amber-800">
+    <div className="rounded-xl border border-amber-500/50 bg-amber-500/10 p-5">
+      <h2 className="text-sm font-bold text-amber-900 dark:text-amber-100">This app needs reconnecting</h2>
+      <p className="mt-1 text-sm text-amber-800 dark:text-amber-200">
         {connection.healthMessage?.trim() || "The key stopped working. Paste a new one to get it back online."}
       </p>
       <div className="mt-3">
@@ -789,8 +789,8 @@ function statusFor(connection: ToolConnection): StatusInfo {
 
 function StatusBadge({ status }: { status: StatusInfo }) {
   const klass: Record<StatusInfo["tone"], string> = {
-    connected: "border-emerald-200 bg-emerald-50 text-emerald-700",
-    attention: "border-amber-200 bg-amber-50 text-amber-700",
+    connected: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+    attention: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
     paused: "border-border bg-muted text-muted-foreground",
   };
   return (
