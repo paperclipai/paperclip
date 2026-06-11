@@ -887,7 +887,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // sessionId is dropped server-side. Drop here so resolveNextSessionState
     // calls clearTaskSessions on the next heartbeat. See RED-978 / RED-976.
     const shouldDropSessionForPoison = poisonedPreviousMessageId;
-    const resolvedSessionId = shouldDropSessionForPoison ? null : rawResolvedSessionId;
+    // Verified-session guard (SUP-2320): on a failed run with no assistant
+    // turn, the CLI may emit a freshly minted session id in stream events
+    // without ever writing the conversation to disk (e.g. a failed
+    // `--resume`). Persisting that id poisons every subsequent resume. Only
+    // trust a stream-derived id when the run succeeded or an assistant turn
+    // proves the conversation exists; otherwise keep the previous known
+    // session (fallbackSessionId) or clear.
+    const sessionVerified = !failed || parsedStream.sawAssistantEvent;
+    const resolvedSessionId = shouldDropSessionForPoison
+      ? null
+      : sessionVerified
+      ? rawResolvedSessionId
+      : opts.fallbackSessionId ?? null;
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
@@ -975,10 +987,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   try {
     const initial = await runAttempt(sessionId ?? null);
+    // A failed resume is not always a non-zero exit: the CLI can exit 0 while
+    // the stream-json result carries `is_error: true` (e.g. subtype
+    // error_during_execution for "No conversation found with session ID").
+    // Treat both shapes as failures so the fresh-session retry fires. SUP-2320.
+    const initialFailed =
+      (initial.proc.exitCode ?? 0) !== 0 ||
+      (initial.parsed ? asBoolean(initial.parsed.is_error, false) : false);
     const sessionErrorKind =
       sessionId &&
       !initial.proc.timedOut &&
-      (initial.proc.exitCode ?? 0) !== 0 &&
+      initialFailed &&
       initial.parsed
         ? isClaudeUnknownSessionError(initial.parsed)
           ? "unknown"

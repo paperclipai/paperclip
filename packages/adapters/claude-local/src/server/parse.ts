@@ -18,6 +18,7 @@ export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
   let model = "";
   let finalResult: Record<string, unknown> | null = null;
+  let sawAssistantEvent = false;
   const assistantTexts: string[] = [];
 
   for (const rawLine of stdout.split(/\r?\n/)) {
@@ -34,6 +35,7 @@ export function parseClaudeStreamJson(stdout: string) {
     }
 
     if (type === "assistant") {
+      sawAssistantEvent = true;
       sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
       const message = parseObject(event.message);
       const content = Array.isArray(message.content) ? message.content : [];
@@ -62,6 +64,7 @@ export function parseClaudeStreamJson(stdout: string) {
       usage: null as UsageSummary | null,
       summary: assistantTexts.join("\n\n").trim(),
       resultJson: null as Record<string, unknown> | null,
+      sawAssistantEvent,
     };
   }
 
@@ -82,6 +85,7 @@ export function parseClaudeStreamJson(stdout: string) {
     usage,
     summary,
     resultJson: finalResult,
+    sawAssistantEvent,
   };
 }
 

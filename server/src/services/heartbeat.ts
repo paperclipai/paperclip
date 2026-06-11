@@ -216,6 +216,10 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+// After this many consecutive failed runs against the same task session,
+// stop resuming it and start a fresh session (self-heal for poisoned
+// session ids that fail every resume). SUP-2320.
+const MAX_TASK_SESSION_CONSECUTIVE_FAILURES = 3;
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -2168,6 +2172,15 @@ export function shouldResetTaskSessionForModelChange(input: {
   if (!configuredModel || !taskSessionParams) return false;
   const sessionModel = readConfiguredModelFromSessionParams(taskSessionParams);
   return !!sessionModel && sessionModel !== configuredModel;
+}
+
+// SUP-2320 belt-and-braces: a persisted task session that keeps failing run
+// after run (e.g. a poisoned resume id the adapter never recognizes as a
+// session error) must eventually be abandoned so the agent self-heals.
+export function shouldResetTaskSessionForConsecutiveFailures(
+  consecutiveFailureCount: number | null | undefined,
+) {
+  return (consecutiveFailureCount ?? 0) >= MAX_TASK_SESSION_CONSECUTIVE_FAILURES;
 }
 
 export function stripConfiguredModelFromSessionParams(
@@ -4489,6 +4502,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     sessionDisplayId: string | null;
     lastRunId: string | null;
     lastError: string | null;
+    runFailed: boolean;
   }) {
     const existing = await getTaskSession(
       input.companyId,
@@ -4496,6 +4510,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       input.adapterType,
       input.taskKey,
     );
+    // Track consecutive failed runs so a session that keeps failing (e.g. a
+    // poisoned resume id) can be auto-reset after a threshold. SUP-2320.
+    const consecutiveFailureCount = input.runFailed
+      ? (existing?.consecutiveFailureCount ?? 0) + 1
+      : 0;
     if (existing) {
       return db
         .update(agentTaskSessions)
@@ -4504,6 +4523,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           sessionDisplayId: input.sessionDisplayId,
           lastRunId: input.lastRunId,
           lastError: input.lastError,
+          consecutiveFailureCount,
           updatedAt: new Date(),
         })
         .where(eq(agentTaskSessions.id, existing.id))
@@ -4522,6 +4542,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         sessionDisplayId: input.sessionDisplayId,
         lastRunId: input.lastRunId,
         lastError: input.lastError,
+        consecutiveFailureCount,
       })
       .returning()
       .then((rows) => rows[0] ?? null);
@@ -7893,13 +7914,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       configuredModel,
       taskSessionParams: taskSessionDecodedParams,
     });
-    const resetTaskSession = shouldResetTaskSessionForWake(context) || modelChangedSinceTaskSession;
+    // Belt-and-braces self-heal (SUP-2320): if the persisted session has
+    // produced N consecutive failed runs, stop resuming it and start fresh.
+    // A successful run resets the counter in upsertTaskSession.
+    const taskSessionFailureResetTriggered =
+      shouldResetTaskSessionForConsecutiveFailures(taskSession?.consecutiveFailureCount);
+    const resetTaskSession =
+      shouldResetTaskSessionForWake(context) ||
+      modelChangedSinceTaskSession ||
+      taskSessionFailureResetTriggered;
     const wakeSessionResetReason = describeSessionResetReason(context);
     const taskSessionConfiguredModel = readConfiguredModelFromSessionParams(taskSessionDecodedParams);
     const modelSessionResetReason = modelChangedSinceTaskSession && taskSessionConfiguredModel
       ? `configured model changed from "${taskSessionConfiguredModel}" to "${configuredModel}"`
       : null;
-    const sessionResetReason = [modelSessionResetReason, wakeSessionResetReason]
+    const failureSessionResetReason = taskSessionFailureResetTriggered
+      ? `session failed ${taskSession?.consecutiveFailureCount ?? 0} consecutive runs (threshold ${MAX_TASK_SESSION_CONSECUTIVE_FAILURES})`
+      : null;
+    const sessionResetReason = [modelSessionResetReason, failureSessionResetReason, wakeSessionResetReason]
       .filter((value): value is string => Boolean(value))
       .join("; ") || null;
     const taskSessionForRun = resetTaskSession ? null : taskSession;
@@ -9325,6 +9357,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
               lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
+              runFailed: outcome !== "succeeded",
             });
           }
         }
@@ -9408,6 +9441,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             sessionDisplayId: previousSessionDisplayId,
             lastRunId: failedRun.id,
             lastError: message,
+            runFailed: true,
           });
         }
       }
