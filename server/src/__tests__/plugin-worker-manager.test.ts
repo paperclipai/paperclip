@@ -275,14 +275,15 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 
-  it("rejects performAction nested host calls that omit the invocation id", async () => {
+  it("allows performAction nested host calls that omit the invocation id when the request is explicitly single-company scoped", async () => {
+    const companiesGet = vi.fn(async (params: { companyId: string }) => ({ id: params.companyId }));
     const handlers = createHostClientHandlers({
       pluginId: "test.plugin",
       capabilities: ["companies.read"],
       services: {
         companies: {
           list: vi.fn(async () => []),
-          get: vi.fn(async (params: { companyId: string }) => ({ id: params.companyId })),
+          get: companiesGet,
         },
       } as unknown as HostServices,
     });
@@ -314,16 +315,14 @@ describe("plugin-worker-manager stderr failure context", () => {
           companyId: "company-a",
         },
         renderEnvironment: null,
-      })).rejects.toMatchObject({
-        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
-        message: expect.stringContaining("unknown invocation scope"),
-      });
+      })).resolves.toEqual({ id: "company-b" });
+      expect(companiesGet).toHaveBeenCalledWith({ companyId: "company-b" });
     } finally {
       await handle.stop().catch(() => undefined);
     }
   });
 
-  it("rejects nested worker host calls that forge an unknown invocation id", async () => {
+  it("allows nested worker host calls that forge an unknown invocation id when the request is explicitly single-company scoped", async () => {
     const companiesGet = vi.fn(async (params: { companyId: string }) => ({ id: params.companyId }));
     const handlers = createHostClientHandlers({
       pluginId: "test.plugin",
@@ -363,17 +362,14 @@ describe("plugin-worker-manager stderr failure context", () => {
           companyId: "company-a",
         },
         renderEnvironment: null,
-      })).rejects.toMatchObject({
-        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
-        message: expect.stringContaining("unknown invocation scope"),
-      });
-      expect(companiesGet).not.toHaveBeenCalled();
+      })).resolves.toEqual({ id: "company-a" });
+      expect(companiesGet).toHaveBeenCalledWith({ companyId: "company-a" });
     } finally {
       await handle.stop().catch(() => undefined);
     }
   });
 
-  it("rejects missing or unknown invocation ids while a company invocation is active", async () => {
+  it("allows missing or unknown invocation ids while a company invocation is active when the nested request is explicitly single-company scoped", async () => {
     const companiesGet = vi.fn(async () => ({ id: "company-2" }));
     const hostHandlers = createHostClientHandlers({
       pluginId: "test.plugin",
@@ -407,12 +403,10 @@ describe("plugin-worker-manager stderr failure context", () => {
             mode,
             requestedCompanyId: "company-2",
           },
-        } as HostToWorkerMethods["getData"][0])).rejects.toMatchObject({
-          code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
-        });
+        } as HostToWorkerMethods["getData"][0])).resolves.toEqual({ id: "company-2" });
       }
 
-      expect(companiesGet).not.toHaveBeenCalled();
+      expect(companiesGet).toHaveBeenCalledTimes(2);
     } finally {
       await handle.stop().catch(() => undefined);
     }
