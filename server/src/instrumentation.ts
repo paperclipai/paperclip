@@ -15,14 +15,49 @@
 //   - `http/json`        → @opentelemetry/exporter-trace-otlp-http
 // Any other value logs a warning and falls back to grpc.
 //
-// Must be imported *before* any other module that should be instrumented
-// (express, http, pg, etc.); `server/src/index.ts` imports it as the very
-// first statement for that reason.
+// Timing guarantee: the bootstrap is async (dynamic imports), so it cannot
+// patch modules "before they are evaluated" — by the time the first await
+// yields, index.ts's static imports (http, express, pg) are already loaded.
+// What this module guarantees instead is `instrumentationReady`: the SDK has
+// started (or failed and logged) before that promise resolves. index.ts
+// awaits it at the top of `startServer()`, so tracing is active before any
+// DB connection is opened or the HTTP server is constructed — the patching
+// that matters happens at call time, not import time. Spans are flushed on
+// exit via `shutdownInstrumentation()`, which index.ts awaits in its signal
+// handler before `process.exit`.
 
 const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 
-if (endpoint) {
-  void bootstrapOtel(endpoint);
+let sdkShutdown: (() => Promise<void>) | null = null;
+let shutdownPromise: Promise<void> | null = null;
+
+/**
+ * Resolves once the OTel SDK has started (or once bootstrap has failed and
+ * logged, or immediately when the feature is off). Await before constructing
+ * the HTTP server so trace coverage doesn't depend on incidental timing.
+ */
+export const instrumentationReady: Promise<void> = endpoint
+  ? bootstrapOtel(endpoint)
+  : Promise.resolve();
+
+/**
+ * Flush buffered spans and stop the SDK. Idempotent — concurrent callers
+ * share one shutdown. No-op when tracing is off or bootstrap failed.
+ */
+export function shutdownInstrumentation(): Promise<void> {
+  shutdownPromise ??= (async () => {
+    await instrumentationReady;
+    if (!sdkShutdown) return;
+    try {
+      // Awaiting matters: the SDK flushes buffered spans to the collector
+      // during shutdown; exiting before it settles silently drops them.
+      await sdkShutdown();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[paperclip] OpenTelemetry shutdown failed", err);
+    }
+  })();
+  return shutdownPromise;
 }
 
 type ExporterProtocol = "grpc" | "http/protobuf" | "http/json";
@@ -133,16 +168,14 @@ async function bootstrapOtel(endpoint: string): Promise<void> {
       return;
     }
 
-    const shutdown = () => {
-      sdk.shutdown().catch((err: unknown) => {
-        // eslint-disable-next-line no-console
-        console.error("[paperclip] OpenTelemetry shutdown failed", err);
-      });
-    };
-    // Use `once` so a repeated signal doesn't call shutdown twice (which
-    // would log a spurious second error).
-    process.once("SIGTERM", shutdown);
-    process.once("SIGINT", shutdown);
+    sdkShutdown = () => sdk.shutdown();
+    // index.ts awaits shutdownInstrumentation() in its own signal handler
+    // before process.exit, which is what actually guarantees the flush.
+    // These handlers are a backstop for entrypoints that import this module
+    // without coordinating; shutdownInstrumentation() is idempotent, so the
+    // two paths share a single flush.
+    process.once("SIGTERM", () => void shutdownInstrumentation());
+    process.once("SIGINT", () => void shutdownInstrumentation());
   } catch (err) {
     // OTel packages not installed, or dynamic import failed. Fall through
     // with a single diagnostic so the opt-in path is self-documenting.
