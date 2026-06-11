@@ -30,6 +30,25 @@ import { createPluginJobScheduler } from "../services/plugin-job-scheduler.js";
 import { pluginJobStore } from "../services/plugin-job-store.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
+// ---------------------------------------------------------------------------
+// Helpers for the hanging-call stub
+// ---------------------------------------------------------------------------
+
+interface ControllableCall {
+  /** Resolves the hanging RPC call, causing the scheduler to mark run succeeded. */
+  resolve: () => void;
+  /** The promise that the stub's call() returns — awaited by the scheduler. */
+  promise: Promise<void>;
+}
+
+function makeControllableCall(): ControllableCall {
+  let resolve!: () => void;
+  const promise = new Promise<void>((res) => {
+    resolve = res;
+  });
+  return { resolve, promise };
+}
+
 const support = await getEmbeddedPostgresTestSupport();
 const describeEmbedded = support.supported ? describe : describe.skip;
 
@@ -165,5 +184,100 @@ describeEmbedded("plugin job scheduler — atomic schedule-slot claim", () => {
       .from(pluginJobs)
       .where(eq(pluginJobs.id, jobId));
     expect(after!.nextRunAt!.getTime()).toBeGreaterThan(seededNextRunAt.getTime());
+  });
+
+  it("blocks cross-replica overlap when run outlasts its cron period (bounded guard)", async () => {
+    // Scenario: replica A claims the slot and starts a long-running job (RPC
+    // call hangs). Before A finishes, the cron period elapses — we simulate
+    // this by moving next_run_at back to the past. Replica B (fresh instance,
+    // empty activeJobs) ticks and wins the CAS for that second slot. The
+    // bounded running-run guard must make B skip the fire.
+    //
+    // After A's call resolves we move next_run_at to the past once more; B
+    // ticks again — now no running row exists, so B SHOULD dispatch (row #2).
+
+    const { jobId } = await seedDueJob();
+
+    // Controllable hanging call for replica A
+    const hangingCall = makeControllableCall();
+
+    const workerA: PluginWorkerManager = {
+      isRunning: () => true,
+      call: async () => {
+        await hangingCall.promise;
+        return {};
+      },
+    } as unknown as PluginWorkerManager;
+
+    const replicaA = createPluginJobScheduler({
+      db: dbA,
+      jobStore: pluginJobStore(dbA),
+      workerManager: workerA,
+    });
+
+    // Replica B uses a fast-succeeding stub (empty activeJobs, different instance)
+    const replicaB = createPluginJobScheduler({
+      db: dbB,
+      jobStore: pluginJobStore(dbB),
+      workerManager: stubWorkerManager(5),
+    });
+
+    // Start A's tick — it will hang waiting for the call to resolve.
+    const tickAPromise = replicaA.tick();
+
+    // Give A time to claim the slot, create the run, and call markRunning.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Confirm A created exactly one run and it is in running state.
+    const runsBeforeB = await dbA
+      .select()
+      .from(pluginJobRuns)
+      .where(eq(pluginJobRuns.jobId, jobId));
+    expect(runsBeforeB).toHaveLength(1);
+    expect(runsBeforeB[0]!.status).toBe("running");
+
+    // Simulate the cron period elapsing: push next_run_at back to the past.
+    await dbA
+      .update(pluginJobs)
+      .set({ nextRunAt: new Date(Date.now() - 60_000) })
+      .where(eq(pluginJobs.id, jobId));
+
+    // Replica B ticks — it will win the CAS (slot is due again) but the
+    // running-run guard should make it skip the fire.
+    await replicaB.tick();
+
+    // Still exactly one run row — B skipped.
+    const runsAfterB = await dbA
+      .select()
+      .from(pluginJobRuns)
+      .where(eq(pluginJobRuns.jobId, jobId));
+    expect(runsAfterB).toHaveLength(1);
+
+    // Now release A's hanging call; A completes and marks the run succeeded.
+    hangingCall.resolve();
+    await tickAPromise;
+
+    const runsAfterADone = await dbA
+      .select()
+      .from(pluginJobRuns)
+      .where(eq(pluginJobRuns.jobId, jobId));
+    expect(runsAfterADone).toHaveLength(1);
+    expect(runsAfterADone[0]!.status).toBe("succeeded");
+
+    // Simulate the cron period elapsing again, after A has finished.
+    await dbA
+      .update(pluginJobs)
+      .set({ nextRunAt: new Date(Date.now() - 60_000) })
+      .where(eq(pluginJobs.id, jobId));
+
+    // B ticks once more — no running row now, so it SHOULD dispatch row #2.
+    await replicaB.tick();
+
+    const runsFinal = await dbA
+      .select()
+      .from(pluginJobRuns)
+      .where(eq(pluginJobRuns.jobId, jobId));
+    expect(runsFinal).toHaveLength(2);
+    expect(runsFinal.every((r) => r.status === "succeeded")).toBe(true);
   });
 });

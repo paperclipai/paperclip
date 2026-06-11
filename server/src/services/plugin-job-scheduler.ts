@@ -17,13 +17,24 @@
  *    cron parser ({@link parseCron}, {@link nextCronTick}) to compute the
  *    `nextRunAt` timestamp when a slot is claimed or a new job is registered.
  *
- * 3. **Overlap prevention** — Before dispatching a job, the scheduler checks
- *    for an existing `running` run for the same job. If one exists, the job
- *    is skipped for that tick.
+ * 3. **Overlap prevention** — Two layers prevent concurrent executions of the
+ *    same job:
+ *
+ *    a. **In-process guard** — The in-memory `activeJobs` set blocks a second
+ *       dispatch on the same replica within the same tick cycle.
+ *
+ *    b. **Cross-replica guard** — After winning the atomic CAS slot-claim, the
+ *       scheduler queries `plugin_job_runs` for any `running` row whose
+ *       `startedAt` is within the last {@link RUNNING_RUN_OVERLAP_GUARD_MS}
+ *       (6 h). If one exists, the claiming replica skips the fire, preventing
+ *       a long-running job from being double-dispatched when its cron period
+ *       elapses mid-execution. Rows older than the guard window are treated as
+ *       crashed-replica leftovers and do not block scheduling.
  *
  * 3b. **Multi-replica dedup** — Scheduled dispatches claim the schedule slot
  *     atomically (compare-and-swap on `nextRunAt`) BEFORE creating the run,
- *     so when N replicas tick concurrently exactly one dispatches the job.
+ *     so when N replicas tick concurrently exactly one wins the CAS; the
+ *     cross-replica guard (§3b above) then covers the long-run overlap case.
  *
  * 4. **Job run recording** — Every execution creates a `plugin_job_runs` row:
  *    `queued` → `running` → `succeeded` | `failed`. Duration and error are
@@ -39,7 +50,7 @@
  * @see ./cron.ts — Cron parsing utilities
  */
 
-import { and, eq, isNull, lte, or } from "drizzle-orm";
+import { and, eq, gt, isNull, lte, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { pluginJobs, pluginJobRuns } from "@paperclipai/db";
 import type { PluginJobStore } from "./plugin-job-store.js";
@@ -59,6 +70,15 @@ const DEFAULT_JOB_TIMEOUT_MS = 5 * 60 * 1_000;
 
 /** Maximum number of concurrent job executions across all plugins. */
 const DEFAULT_MAX_CONCURRENT_JOBS = 10;
+
+/**
+ * A run whose `startedAt` is older than this value is treated as a crashed-
+ * replica leftover and does NOT block the next scheduled dispatch. This
+ * prevents a permanently-`running` row (orphaned by a crashed replica) from
+ * parking the schedule forever, while still guarding against legitimate
+ * long-running executions within the window.
+ */
+const RUNNING_RUN_OVERLAP_GUARD_MS = 6 * 60 * 60 * 1_000; // 6 hours
 
 // ---------------------------------------------------------------------------
 // Types
@@ -263,8 +283,9 @@ export function createPluginJobScheduler(
       const now = new Date();
 
       // Query for jobs whose nextRunAt has passed and are active.
-      // We include jobs with null nextRunAt since they may have just been
-      // registered and need their first run calculated.
+      // Note: lte(nextRunAt, now) never matches NULL rows, so jobs with a
+      // null nextRunAt (e.g. missing or invalid schedule) are not included —
+      // they must be assigned a nextRunAt via registerPlugin / ensureNextRunTimestamps.
       const dueJobs = await db
         .select()
         .from(pluginJobs)
@@ -376,6 +397,28 @@ export function createPluginJobScheduler(
 
     if (claimed.length === 0) {
       jobLog.debug("job slot claimed elsewhere; skipping");
+      return;
+    }
+
+    // A run longer than its cron period leaves the job due again mid-run;
+    // the CAS above means exactly one replica claims that next slot, and this
+    // guard makes that claimant skip the fire instead of overlapping the
+    // still-running execution (same invariant the manual path enforces).
+    // Stale running rows (crashed replica) are ignored past the guard window
+    // so they cannot park the schedule forever.
+    const overlapCutoff = new Date(Date.now() - RUNNING_RUN_OVERLAP_GUARD_MS);
+    const runningRuns = await db
+      .select({ id: pluginJobRuns.id })
+      .from(pluginJobRuns)
+      .where(
+        and(
+          eq(pluginJobRuns.jobId, jobId),
+          eq(pluginJobRuns.status, "running"),
+          gt(pluginJobRuns.startedAt, overlapCutoff),
+        ),
+      );
+    if (runningRuns.length > 0) {
+      jobLog.debug("skipping scheduled fire — a run is still in progress (slot already advanced)");
       return;
     }
 
