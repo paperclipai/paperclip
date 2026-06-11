@@ -231,7 +231,7 @@ export async function getSchedulerHealth(db: Db): Promise<SchedulerHealth> {
   const rows = await db
     .select()
     .from(schedulerLeader)
-    .where(eq(schedulerLeader.name, "default"))
+    .where(eq(schedulerLeader.name, LEASE_NAME))
     .limit(1);
   const row = rows[0];
   return {

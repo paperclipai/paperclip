@@ -179,6 +179,35 @@ describeEmbedded("scheduler leadership", () => {
     expect(leader.onLost).toHaveBeenCalledTimes(1);
   });
 
+  it("resigns and yields to a second candidate when onAcquired rejects once", async () => {
+    // A = faulty: its onAcquired always throws — it will never hold the lease
+    // because it resigns immediately after each failed acquire. This prevents
+    // A from sneaking back in during the test window.
+    // B = healthy: competes concurrently and should acquire within a retry cycle.
+    const faultyOnAcquired = vi.fn().mockRejectedValue(new Error("scheduler init failed"));
+    const a = makeInstance(dbA, "leader-faulty", { onAcquired: faultyOnAcquired });
+    const b = makeInstance(dbB, "leader-healthy");
+
+    a.leadership.start();
+    b.leadership.start();
+
+    // B must become leader: A always resigns after its onAcquired throws,
+    // so the lease row eventually lands with B.
+    await waitFor(() => b.leadership.isLeader(), TTL_MS + 10 * RETRY_MS);
+
+    // Exactly one leader at a time: A is not leader, B is.
+    expect(a.leadership.isLeader()).toBe(false);
+    expect(b.leadership.isLeader()).toBe(true);
+
+    const row = await currentLeaderRow();
+    expect(row?.leader_id).toBe("leader-healthy");
+
+    // A tried at least once (the failure path exists and executed).
+    expect(faultyOnAcquired.mock.calls.length).toBeGreaterThanOrEqual(1);
+    // B's onAcquired fired exactly once (no double-acquire).
+    expect(b.onAcquired).toHaveBeenCalledTimes(1);
+  });
+
   it("getSchedulerHealth reports candidate/leader state and leader row", async () => {
     const { leadership } = makeInstance(dbA, "health-test-leader");
 
