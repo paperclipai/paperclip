@@ -325,6 +325,13 @@ export const resolveIssueRecoveryActionSchema = z.object({
 
 export type ResolveIssueRecoveryAction = z.infer<typeof resolveIssueRecoveryActionSchema>;
 
+export const resolveRecoveryActionByIdSchema = z.object({
+  outcome: z.enum(ISSUE_RECOVERY_ACTION_OUTCOMES),
+  resolutionNote: multilineTextSchema.optional().nullable(),
+}).strict();
+
+export type ResolveRecoveryActionById = z.infer<typeof resolveRecoveryActionByIdSchema>;
+
 const issueRequestDepthInputSchema = z
   .number()
   .int()
