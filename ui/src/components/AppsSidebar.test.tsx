@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -63,12 +64,6 @@ vi.mock("./SidebarNavItem", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-async function act(callback: () => void | Promise<void>) {
-  await callback();
-  await Promise.resolve();
-  await new Promise((resolve) => window.setTimeout(resolve, 0));
-}
-
 async function flushReact() {
   for (let i = 0; i < 3; i += 1) {
     await Promise.resolve();
@@ -129,8 +124,11 @@ describe("AppsSidebar", () => {
     expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
       expect.objectContaining({ label: "Paste a config" }),
     );
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ label: "Applications" }),
+    );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps/advanced/applications", label: "Applications", end: true }),
+      expect.objectContaining({ to: "/apps/advanced/profiles", label: "Profiles", end: true }),
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({ to: "/apps/advanced/runtime", label: "Runtime", end: true, liveCount: 1 }),

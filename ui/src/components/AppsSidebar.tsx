@@ -12,7 +12,7 @@ import { SidebarNavItem } from "./SidebarNavItem";
  * Secondary sidebar for the prosumer Apps area (PAP-10856, v1.1).
  *
  *   ← Back · APPS: All apps / Needs attention (n)
- *   DEVELOPER: Applications / Profiles / Policies / Runtime / Audit
+ *   DEVELOPER: Profiles / Policies / Runtime / Audit
  *
  * "Needs attention" links to its own page (M9, PAP-10859) with a live count
  * chip from `GET /tools/apps/attention`. The Developer section was folded in

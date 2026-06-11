@@ -4,8 +4,8 @@ import { AddressInfo } from "node:net";
 
 // PAP-10915 — dark-mode + navigation QA for the prosumer Apps surfaces.
 // Seeds a healthy app and a broken (needs-attention) app, forces dark theme,
-// and screenshots /apps, /apps/attention, and the Advanced door (M8 tabs +
-// developer tabs) to prove the amber/emerald surfaces read correctly on dark.
+// and screenshots /apps, /apps/attention, and the Advanced/developer doors to
+// prove the amber/emerald surfaces read correctly on dark.
 
 const SCREENSHOT_DIR = "test-results";
 
@@ -145,10 +145,12 @@ test.describe.serial("PAP-10915 dark-mode Apps surfaces", () => {
 
   test("developer tabs share the merged Apps sidebar", async ({ page }) => {
     await forceDark(page);
-    await page.goto(`/${seed.prefix}/apps/advanced/applications`);
+    await page.goto(`/${seed.prefix}/apps/advanced/profiles`);
     await expect(page.getByRole("heading", { name: "Developer tools" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("heading", { name: "Tool profiles" })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole("link", { name: "Runtime", exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Audit", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Applications", exact: true })).toHaveCount(0);
     // Apps section lives in the same sidebar now.
     await expect(page.getByRole("link", { name: "All apps" })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10915-05-developer-overview-dark.png`, fullPage: true });

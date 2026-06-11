@@ -224,14 +224,20 @@ function LegacySettingsRedirect() {
 
 function LegacyToolsSettingsRedirect() {
   const { tab } = useParams<{ tab?: string }>();
-  return <Navigate to={tab ? `/apps/advanced/${tab}` : "/apps/advanced"} replace />;
+  return <Navigate to={legacyToolsRedirectTarget(tab)} replace />;
 }
 
 // The developer "Tools" surface moved under the Apps "Advanced setup" door
 // (PAP-10862). `/tools` and `/tools/:tab` redirect to their new home.
 function LegacyToolsRedirect() {
   const { tab } = useParams<{ tab?: string }>();
-  return <Navigate to={tab ? `/apps/advanced/${tab}` : "/apps/advanced"} replace />;
+  return <Navigate to={legacyToolsRedirectTarget(tab)} replace />;
+}
+
+function legacyToolsRedirectTarget(tab?: string) {
+  if (!tab) return "/apps/advanced/profiles";
+  if (tab === "applications" || tab === "connections" || tab === "overview" || tab === "examples") return "/apps";
+  return `/apps/advanced/${tab}`;
 }
 
 function OnboardingRoutePage() {

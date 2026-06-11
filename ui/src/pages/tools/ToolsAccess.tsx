@@ -4,7 +4,6 @@ import { Link, Navigate, useParams } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
-import { ApplicationsTab } from "./ApplicationsTab";
 import { ProfilesTab } from "./ProfilesTab";
 import { PoliciesTab } from "./PoliciesTab";
 import { RuntimeTab } from "./RuntimeTab";
@@ -21,8 +20,6 @@ import {
 
 function renderTab(tab: ToolTabKey, companyId: string) {
   switch (tab) {
-    case "applications":
-      return <ApplicationsTab companyId={companyId} />;
     case "profiles":
       return <ProfilesTab companyId={companyId} />;
     case "policies":
@@ -65,9 +62,14 @@ export function ToolsAccess() {
     return <div className="p-6 text-sm text-muted-foreground">Select a company to open advanced setup.</div>;
   }
 
-  // Retired developer tabs (PAP-10915) — keep old links working.
-  if (params.tab === "connections" || params.tab === "overview" || params.tab === "examples") {
-    return <Navigate to={advancedTabHref("applications")} replace />;
+  // Retired developer tabs (PAP-10915/PAP-10928) — keep old links working.
+  if (
+    params.tab === "applications" ||
+    params.tab === "connections" ||
+    params.tab === "overview" ||
+    params.tab === "examples"
+  ) {
+    return <Navigate to="/apps" replace />;
   }
 
   if (advanced) {
@@ -109,7 +111,7 @@ export function ToolsAccess() {
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Wrench className="h-3.5 w-3.5" />
           Looking for the developer surface?{" "}
-          <Link to={advancedTabHref("applications")} className="font-medium text-primary hover:underline">
+          <Link to={advancedTabHref("profiles")} className="font-medium text-primary hover:underline">
             Open developer tools
           </Link>
         </p>
