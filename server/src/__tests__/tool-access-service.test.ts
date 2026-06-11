@@ -78,6 +78,23 @@ function createRouteApp(db: ReturnType<typeof createDb>, actor?: Express.Request
   return app;
 }
 
+function boardSessionActor(
+  companyId: string,
+  membershipRole: "owner" | "admin" | "operator" | "member" | "viewer",
+  userId = `${membershipRole}-${randomUUID()}`,
+): Express.Request["actor"] {
+  return {
+    type: "board",
+    userId,
+    userName: `${membershipRole} user`,
+    userEmail: null,
+    isInstanceAdmin: false,
+    source: "session",
+    companyIds: [companyId],
+    memberships: [{ companyId, membershipRole, status: "active" }],
+  };
+}
+
 describeEmbeddedPostgres("tool access service", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -564,7 +581,13 @@ describeEmbeddedPostgres("tool access service", () => {
     const state = startUrl.searchParams.get("state");
     expect(state).toBeTruthy();
     await expect(db.select().from(toolOauthStates)).resolves.toEqual([
-      expect.objectContaining({ state, connectionId: connectRes.body.connectionId, companyId: company.id }),
+      expect.objectContaining({
+        state,
+        connectionId: connectRes.body.connectionId,
+        companyId: company.id,
+        createdByActorType: "user",
+        createdByActorId: "board-user",
+      }),
     ]);
 
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
@@ -634,6 +657,110 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(JSON.stringify(connection.config)).not.toContain("refresh-token");
   });
 
+  it("requires non-viewer board access to start OAuth for active app connections", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connect = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack reauth" });
+    await db
+      .update(toolConnections)
+      .set({ status: "active", updatedAt: new Date() })
+      .where(eq(toolConnections.id, connect.connectionId));
+
+    const viewerApp = createRouteApp(db, boardSessionActor(company.id, "viewer", "viewer-user"));
+    await request(viewerApp)
+      .post(`/api/tools/oauth/${connect.connectionId}/start`)
+      .send({})
+      .expect(403);
+    await request(viewerApp)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ galleryKey: "slack", name: "Viewer Slack" })
+      .expect(403);
+
+    const operatorApp = createRouteApp(db, boardSessionActor(company.id, "operator", "operator-user"));
+    const startRes = await request(operatorApp)
+      .post(`/api/tools/oauth/${connect.connectionId}/start`)
+      .send({})
+      .expect(200);
+
+    const state = new URL(startRes.body.authorizationUrl).searchParams.get("state");
+    expect(state).toBeTruthy();
+    await expect(db.select().from(toolOauthStates)).resolves.toEqual([
+      expect.objectContaining({
+        state,
+        connectionId: connect.connectionId,
+        companyId: company.id,
+        createdByActorType: "user",
+        createdByActorId: "operator-user",
+      }),
+    ]);
+  });
+
+  it("binds OAuth callback completion to the initiating board session", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connect = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack bound" });
+    const initiatingActor = boardSessionActor(company.id, "operator", "oauth-operator");
+    const initiatingApp = createRouteApp(db, initiatingActor);
+    const startRes = await request(initiatingApp)
+      .post(`/api/tools/oauth/${connect.connectionId}/start`)
+      .send({})
+      .expect(200);
+    const state = new URL(startRes.body.authorizationUrl).searchParams.get("state")!;
+
+    const anonymousApp = createRouteApp(db, { type: "none", source: "none" });
+    await request(anonymousApp)
+      .get("/api/tools/oauth/callback")
+      .query({ state, code: "oauth-code" })
+      .expect(403);
+
+    const otherApp = createRouteApp(db, boardSessionActor(company.id, "operator", "other-operator"));
+    await request(otherApp)
+      .get("/api/tools/oauth/callback")
+      .query({ state, code: "oauth-code" })
+      .expect(403);
+    await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(1);
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        const body = init?.body as URLSearchParams;
+        expect(body.get("grant_type")).toBe("authorization_code");
+        expect(body.get("code")).toBe("oauth-code");
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            access_token: "bound-access-token",
+            refresh_token: "bound-refresh-token",
+            expires_in: 3600,
+            token_type: "Bearer",
+          }),
+        } as Response;
+      }
+      if (href === "https://mcp.slack.com/mcp") {
+        expect(init?.headers).toEqual(expect.objectContaining({ Authorization: "Bearer bound-access-token" }));
+        return {
+          ok: true,
+          json: async () => ({
+            jsonrpc: "2.0",
+            id: "paperclip-catalog-refresh",
+            result: { tools: [{ name: "search_messages", annotations: { readOnlyHint: true } }] },
+          }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    await request(initiatingApp)
+      .get("/api/tools/oauth/callback")
+      .query({ state, code: "oauth-code" })
+      .expect(200);
+    await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(0);
+  });
+
   it("refreshes expired OAuth access tokens before remote app calls", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
@@ -643,6 +770,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const connect = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack refresh" });
     const start = await service.startOAuth(company.id, connect.connectionId, {
       redirectUri: "http://paperclip.test/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
     });
     const state = new URL(start.authorizationUrl).searchParams.get("state")!;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
@@ -718,7 +846,8 @@ describeEmbeddedPostgres("tool access service", () => {
   });
 
   it("returns a callback error when the provider rejects sign-in", async () => {
-    const app = createRouteApp(db);
+    const company = await createCompany(db);
+    const app = createRouteApp(db, boardSessionActor(company.id, "operator", "operator-user"));
 
     const res = await request(app)
       .get("/api/tools/oauth/callback")

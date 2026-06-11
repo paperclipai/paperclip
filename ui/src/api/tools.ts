@@ -169,7 +169,7 @@ export const toolsApi = {
   }) =>
     api.post<ConnectToolAppResult>(`/companies/${companyId}/tools/apps/connect`, input),
   startOAuth: (connectionId: string) =>
-    api.get<ToolOAuthStartResult>(`/tools/oauth/${connectionId}/start`),
+    api.post<ToolOAuthStartResult>(`/tools/oauth/${connectionId}/start`, {}),
   finishApp: (companyId: string, connectionId: string, input: {
     enabledCatalogEntryIds: string[];
     askFirstCatalogEntryIds: string[];

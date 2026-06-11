@@ -64,6 +64,21 @@ export function toolAccessRoutes(
     throw forbidden("Missing permission: tools:admin");
   }
 
+  function assertToolAppMutationAccess(req: Request, companyId: string) {
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+    const membership = Array.isArray(req.actor.memberships)
+      ? req.actor.memberships.find((item) => item.companyId === companyId)
+      : null;
+    if (!membership || membership.status !== "active") {
+      throw forbidden("User does not have active company access");
+    }
+    if (!membership.membershipRole || membership.membershipRole === "viewer") {
+      throw forbidden("Viewer access is read-only");
+    }
+  }
+
   router.get("/companies/:companyId/tools/gallery", async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
@@ -72,13 +87,15 @@ export function toolAccessRoutes(
   });
 
   router.post("/companies/:companyId/tools/apps/connect", validate(connectToolAppSchema), async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertToolAppMutationAccess(req, companyId);
     try {
       const result = await svc.connectGalleryApp(companyId, req.body, getActorInfo(req));
       if (result.auth?.kind === "oauth") {
-        const start = await svc.startOAuth(companyId, result.connectionId, { redirectUri: oauthRedirectUri(req) });
+        const start = await svc.startOAuth(companyId, result.connectionId, {
+          redirectUri: oauthRedirectUri(req),
+          actor: getActorInfo(req),
+        });
         result.auth.startUrl = start.authorizationUrl;
       }
       await logActivity(db, {
@@ -103,15 +120,18 @@ export function toolAccessRoutes(
     }
   });
 
-  router.get("/tools/oauth/:connectionId/start", async (req, res) => {
-    assertBoard(req);
+  router.post("/tools/oauth/:connectionId/start", async (req, res) => {
     const existing = await svc.getConnection(req.params.connectionId as string);
-    assertCompanyAccess(req, existing.companyId);
-    const result = await svc.startOAuth(existing.companyId, existing.id, { redirectUri: oauthRedirectUri(req) });
+    assertToolAppMutationAccess(req, existing.companyId);
+    const result = await svc.startOAuth(existing.companyId, existing.id, {
+      redirectUri: oauthRedirectUri(req),
+      actor: getActorInfo(req),
+    });
     res.json(result);
   });
 
   router.get("/tools/oauth/callback", async (req, res) => {
+    assertBoard(req);
     const state = typeof req.query.state === "string" ? req.query.state : "";
     const code = typeof req.query.code === "string" ? req.query.code : null;
     const error = typeof req.query.error === "string" ? req.query.error : null;
@@ -122,12 +142,12 @@ export function toolAccessRoutes(
       error,
       errorDescription,
       redirectUri: oauthRedirectUri(req),
-      actor: req.actor ? getActorInfo(req) : { actorType: "system", actorId: "oauth_callback" },
+      actor: getActorInfo(req),
     });
     await logActivity(db, {
       companyId: result.connection.companyId,
-      actorType: req.actor?.type === "agent" ? "agent" : req.actor?.type === "board" ? "user" : "system",
-      actorId: req.actor?.type === "agent" ? req.actor.agentId ?? "agent" : req.actor?.type === "board" ? req.actor.userId ?? "board" : "oauth_callback",
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
       action: "tool_app.oauth_connected",
       entityType: "tool_connection",
       entityId: result.connection.id,

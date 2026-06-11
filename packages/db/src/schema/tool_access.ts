@@ -124,12 +124,15 @@ export const toolOauthStates = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     connectionId: uuid("connection_id").notNull().references(() => toolConnections.id, { onDelete: "cascade" }),
     codeVerifier: text("code_verifier").notNull(),
+    createdByActorType: text("created_by_actor_type"),
+    createdByActorId: text("created_by_actor_id"),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index("tool_oauth_states_company_idx").on(table.companyId),
     index("tool_oauth_states_connection_idx").on(table.connectionId),
+    index("tool_oauth_states_actor_idx").on(table.createdByActorType, table.createdByActorId),
     index("tool_oauth_states_expires_at_idx").on(table.expiresAt),
   ],
 );

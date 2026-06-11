@@ -79,7 +79,7 @@ import type {
   UnbindToolProfileBinding,
 } from "@paperclipai/shared";
 import { getToolAppGalleryEntry } from "@paperclipai/shared";
-import { badRequest, conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
@@ -249,6 +249,31 @@ function normalizeKey(input: string) {
     .replace(/[^a-z0-9._:-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 160) || "tool";
+}
+
+function actorBinding(actor: ActorInfo | undefined) {
+  return {
+    actorType: actor?.actorType ?? null,
+    actorId: actor?.actorId ?? null,
+  };
+}
+
+function oauthActorType(value: string | null): ActorInfo["actorType"] | null {
+  return value === "agent" || value === "user" || value === "system" || value === "plugin" ? value : null;
+}
+
+function assertSameOAuthActor(stateRow: typeof toolOauthStates.$inferSelect, actor: ActorInfo | undefined) {
+  const expected = {
+    actorType: oauthActorType(stateRow.createdByActorType),
+    actorId: stateRow.createdByActorId,
+  };
+  const actual = actorBinding(actor);
+  if (!expected.actorType || !expected.actorId) {
+    throw forbidden("OAuth sign-in state is not bound to an authenticated board session");
+  }
+  if (expected.actorType !== actual.actorType || expected.actorId !== actual.actorId) {
+    throw forbidden("OAuth sign-in must be completed by the user who started it");
+  }
 }
 
 function toApplication(row: typeof toolApplications.$inferSelect): ToolApplication {
@@ -2686,7 +2711,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function startOAuth(
     companyId: string,
     connectionId: string,
-    input: { redirectUri: string },
+    input: { redirectUri: string; actor: ActorInfo },
   ): Promise<ToolOAuthStartResult> {
     const connection = await getConnectionRow(connectionId, companyId);
     if (connection.status === "archived") throw conflict("Archived app connections cannot start sign in");
@@ -2700,11 +2725,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const state = randomOauthToken();
     const codeVerifier = randomOauthToken(48);
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    const binding = actorBinding(input.actor);
+    if (!binding.actorType || !binding.actorId) {
+      throw forbidden("OAuth sign-in requires an authenticated board session");
+    }
     await db.insert(toolOauthStates).values({
       state,
       companyId,
       connectionId: connection.id,
       codeVerifier,
+      createdByActorType: binding.actorType,
+      createdByActorId: binding.actorId,
       expiresAt,
     });
 
@@ -2758,8 +2789,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       .where(eq(toolOauthStates.state, input.state))
       .limit(1);
     if (!stateRow) throw badRequest("OAuth state was not found or has already been used");
-    await db.delete(toolOauthStates).where(eq(toolOauthStates.state, input.state));
     if (stateRow.expiresAt.getTime() <= Date.now()) throw badRequest("OAuth state has expired");
+    assertSameOAuthActor(stateRow, input.actor);
+    await db.delete(toolOauthStates).where(eq(toolOauthStates.state, input.state));
 
     let connection = await getConnectionRow(stateRow.connectionId, stateRow.companyId);
     const galleryEntry = await oauthGalleryEntryForConnection(connection);
