@@ -87,4 +87,4 @@ VOLUME ["/paperclip"]
 EXPOSE 3100
 
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["sh", "-lc", "node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js & SERVER_PID=$!; echo 'Paperclip server starting...'; for i in $(seq 1 60); do if [ -f /paperclip/instances/default/config.json ]; then echo 'Paperclip config found. Generating first-admin invite...'; pnpm paperclipai auth bootstrap-ceo || true; break; fi; echo \"Waiting for Paperclip config... attempt $i/60\"; sleep 5; done; wait $SERVER_PID"]
+CMD ["sh", "-lc", "node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js & SERVER_PID=$!; echo 'Paperclip server started in background. Waiting 90 seconds before bootstrap...'; sleep 90; echo 'Running first-admin bootstrap now...'; pnpm paperclipai auth bootstrap-ceo || true; echo 'Bootstrap step finished. Keeping server alive...'; wait $SERVER_PID"]
