@@ -598,16 +598,62 @@ describeEmbeddedPostgres("authorization service", () => {
       membershipRole: "member",
     });
 
-    const decision = await authorizationService(db).decide({
+    const authorization = authorizationService(db);
+
+    await expect(authorization.decide({
       actor: { type: "board", userId, source: "session" },
       action: "agent:wake",
       resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
-    });
-
-    expect(decision).toMatchObject({
+    })).resolves.toMatchObject({
       allowed: false,
       reason: "deny_unsupported_action",
     });
+    const issue = await createIssue(db, company.id, { title: "Wake denied issue" });
+    await expect(authorization.decide({
+      actor: { type: "board", userId, source: "session" },
+      action: "issue:mutate",
+      resource: { type: "issue", companyId: company.id, issueId: issue.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_unsupported_action",
+    });
+  });
+
+  it("limits viewer members to read-only visibility actions", async () => {
+    const company = await createCompany(db, "BoardViewerVisibility");
+    const userId = `user-${randomUUID()}`;
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "viewer",
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "board", userId, source: "session" } as const;
+
+    await expect(authorization.decide({
+      actor,
+      action: "agent:read",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "runtime:manage",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+    await expect(authorization.decide({
+      actor,
+      action: "secrets:read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
   });
 
   it("denies legacy board assignment context for viewers", async () => {

@@ -967,11 +967,22 @@ export function authorizationService(db: Db) {
           input.action === "secrets:read"
         ) {
           const membership = await getActiveMembership(companyId, "user", input.actor.userId);
-          if (membership) {
+          // Mirroring the tasks:assign carve-out above, viewers keep the
+          // read-only visibility actions but not the privileged ones.
+          const requiresNonViewer =
+            input.action === "runtime:manage" || input.action === "secrets:read";
+          if (membership && (!requiresNonViewer || membership.membershipRole !== "viewer")) {
             return allow({
               action: input.action,
               reason: "allow_simple_company_member",
               explanation: "Allowed by standard same-company board membership visibility.",
+            });
+          }
+          if (membership) {
+            return deny({
+              action: input.action,
+              reason: "deny_missing_grant",
+              explanation: `Viewer membership does not grant ${input.action}.`,
             });
           }
           return deny({
