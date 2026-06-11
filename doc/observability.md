@@ -46,6 +46,9 @@ Minimal setup:
 
 ```bash
 # Required — turns the feature on. Point at your collector.
+# For grpc this is the gRPC target (typically port 4317). For the HTTP
+# protocols give the collector's BASE URL (typically port 4318) — the
+# exporter appends /v1/traces itself.
 export OTEL_EXPORTER_OTLP_ENDPOINT="http://otel-collector:4317"
 
 # Optional — protocol. Defaults to grpc when unset.

@@ -62,7 +62,7 @@ export function shutdownInstrumentation(): Promise<void> {
 
 type ExporterProtocol = "grpc" | "http/protobuf" | "http/json";
 
-function resolveProtocol(): {
+export function resolveProtocol(): {
   protocol: ExporterProtocol;
   packageName: string;
 } {
@@ -99,7 +99,7 @@ function resolveProtocol(): {
 }
 
 async function importExporter(protocol: ExporterProtocol): Promise<{
-  OTLPTraceExporter: new (config: { url: string }) => unknown;
+  OTLPTraceExporter: new (config?: { url: string }) => unknown;
 }> {
   switch (protocol) {
     case "grpc":
@@ -144,7 +144,13 @@ async function bootstrapOtel(endpoint: string): Promise<void> {
         [ATTR_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME || "paperclip",
         [ATTR_SERVICE_VERSION]: process.env.OTEL_SERVICE_VERSION || "unknown",
       }),
-      traceExporter: new OTLPTraceExporter({ url: endpoint }),
+      // For the HTTP protocols OTEL_EXPORTER_OTLP_ENDPOINT is a *base* URL
+      // and the exporter appends /v1/traces only when it reads the env var
+      // itself — an explicit `url` is used verbatim and would silently POST
+      // to the wrong path. Pass `url` only for gRPC, which has no path.
+      traceExporter: protocol === "grpc"
+        ? new OTLPTraceExporter({ url: endpoint })
+        : new OTLPTraceExporter(),
       instrumentations: [
         getNodeAutoInstrumentations({
           // Too chatty for this workload.
