@@ -97,7 +97,7 @@ describe("AppsSidebar", () => {
     vi.clearAllMocks();
   });
 
-  it("renders Apps, Advanced setup, and Developer sections in one sidebar", async () => {
+  it("renders Apps and Developer sections in one sidebar", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -113,9 +113,9 @@ describe("AppsSidebar", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Apps");
-    expect(container.textContent).toContain("Advanced setup");
-    expect(container.textContent).toContain("Admin");
     expect(container.textContent).toContain("Developer");
+    // "Run your own" / "Paste a config" moved to the Connect-an-app page (PAP-10922).
+    expect(container.textContent).not.toContain("Advanced setup");
 
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({ to: "/apps", label: "All apps", end: true }),
@@ -123,12 +123,11 @@ describe("AppsSidebar", () => {
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({ to: "/apps/attention", label: "Needs attention" }),
     );
-    // Run your own is the door's default tab and owns the bare base path (PAP-10915).
-    expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps/advanced", label: "Run your own", end: true }),
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ label: "Run your own" }),
     );
-    expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps/advanced/paste-config", label: "Paste a config", end: true }),
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ label: "Paste a config" }),
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({ to: "/apps/advanced/applications", label: "Applications", end: true }),

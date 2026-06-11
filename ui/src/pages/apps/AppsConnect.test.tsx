@@ -215,4 +215,27 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).toContain("Connect Zapier");
     expect(container.textContent).not.toContain("Does it need a key?");
   });
+
+  // PAP-10922: "Run your own" / "Paste a config" moved from the sidebar to rows
+  // under "Connect with a link" on the gallery step.
+  it("offers 'Run your own' and 'Paste a config' rows that route into the Advanced door", async () => {
+    await render();
+
+    expect(container.textContent).toContain("More ways to connect");
+
+    const buttonContaining = (text: string) =>
+      Array.from(container.querySelectorAll("button")).find((b) =>
+        b.textContent?.includes(text),
+      );
+
+    await act(async () => {
+      buttonContaining("Run your own")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/advanced");
+
+    await act(async () => {
+      buttonContaining("Paste a config")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/advanced/paste-config");
+  });
 });

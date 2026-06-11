@@ -5,20 +5,20 @@ import { useCompany } from "@/context/CompanyContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
-import { ADVANCED_TABS, DEVELOPER_TABS, advancedTabHref } from "@/pages/tools/tool-tabs";
+import { DEVELOPER_TABS, advancedTabHref } from "@/pages/tools/tool-tabs";
 import { SidebarNavItem } from "./SidebarNavItem";
 
 /**
  * Secondary sidebar for the prosumer Apps area (PAP-10856, v1.1).
  *
  *   ← Back · APPS: All apps / Needs attention (n)
- *   ADVANCED SETUP [Admin]: Run your own / Paste a config
  *   DEVELOPER: Applications / Profiles / Policies / Runtime / Audit
  *
  * "Needs attention" links to its own page (M9, PAP-10859) with a live count
- * chip from `GET /tools/apps/attention`. The Advanced setup and Developer
- * sections were folded in from the retired ToolsSidebar (PAP-10915) so the
- * whole Apps area shares one sidebar.
+ * chip from `GET /tools/apps/attention`. The Developer section was folded in
+ * from the retired ToolsSidebar (PAP-10915) so the whole Apps area shares one
+ * sidebar. "Run your own" and "Paste a config" moved out of the sidebar into
+ * rows under "Connect with a link" on the Connect-an-app page (PAP-10922).
  */
 export function AppsSidebar() {
   const { selectedCompany, selectedCompanyId } = useCompany();
@@ -74,19 +74,6 @@ export function AppsSidebar() {
             badgeTone="danger"
             badgeLabel="needing attention"
           />
-        </div>
-        <div className="flex items-center gap-1.5 px-3 pb-1 pt-4">
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Advanced setup
-          </span>
-          <span className="rounded bg-muted px-1 py-px text-[10px] font-semibold text-muted-foreground">
-            Admin
-          </span>
-        </div>
-        <div className="flex flex-col gap-0.5">
-          {ADVANCED_TABS.map((tab) => (
-            <SidebarNavItem key={tab.key} to={advancedTabHref(tab.key)} label={tab.label} icon={tab.icon} end />
-          ))}
         </div>
         <div className="px-3 pb-1 pt-4 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
           Developer

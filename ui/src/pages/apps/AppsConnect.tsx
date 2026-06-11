@@ -1,6 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowUpRight, Check, Link2, Loader2, Lock, Search } from "lucide-react";
+import {
+  ArrowUpRight,
+  Check,
+  ChevronRight,
+  ClipboardPaste,
+  Link2,
+  Loader2,
+  Lock,
+  Search,
+  TerminalSquare,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import type {
   Agent,
   AppGalleryEntry,
@@ -17,6 +28,7 @@ import { ApiError } from "@/api/client";
 import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
 import { appCopyFor, credentialFieldLabel } from "@/lib/app-gallery-copy";
+import { advancedTabHref } from "@/pages/tools/tool-tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -185,6 +197,8 @@ export function AppsConnect() {
             setCredentials({});
             setStep("key");
           }}
+          onRunYourOwn={() => navigate(advancedTabHref("run-your-own"))}
+          onPasteConfig={() => navigate(advancedTabHref("paste-config"))}
         />
       )}
 
@@ -305,11 +319,15 @@ function GalleryStep({
   apps,
   onPick,
   onUseLink,
+  onRunYourOwn,
+  onPasteConfig,
 }: {
   loading: boolean;
   apps: AppGalleryEntry[];
   onPick: (entry: AppGalleryEntry) => void;
   onUseLink: (link: string) => void;
+  onRunYourOwn: () => void;
+  onPasteConfig: () => void;
 }) {
   const [search, setSearch] = useState("");
   const [linkInput, setLinkInput] = useState("");
@@ -438,7 +456,57 @@ function GalleryStep({
           {linkError && <div className="text-xs text-destructive">{linkError}</div>}
         </div>
       </div>
+
+      <div className="border-t border-border pt-5">
+        <div className="text-sm font-semibold text-foreground">More ways to connect</div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          For tools that aren’t in the gallery. You’ll need details from the tool’s docs.
+        </p>
+        <div className="mt-3 flex flex-col gap-2">
+          <ConnectMethodRow
+            icon={TerminalSquare}
+            title="Run your own"
+            description="Register a command Paperclip runs in your workspace for a tool that isn’t listed."
+            onClick={onRunYourOwn}
+          />
+          <ConnectMethodRow
+            icon={ClipboardPaste}
+            title="Paste a config"
+            description="Already have a setup snippet from a README? Paste it and we’ll connect it."
+            onClick={onPasteConfig}
+          />
+        </div>
+      </div>
     </div>
+  );
+}
+
+function ConnectMethodRow({
+  icon: Icon,
+  title,
+  description,
+  onClick,
+}: {
+  icon: LucideIcon;
+  title: string;
+  description: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-left transition-colors hover:border-foreground/30 hover:bg-accent/40"
+    >
+      <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
+        <Icon className="h-4 w-4 text-muted-foreground" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-semibold text-foreground">{title}</div>
+        <div className="truncate text-xs text-muted-foreground">{description}</div>
+      </div>
+      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+    </button>
   );
 }
 
