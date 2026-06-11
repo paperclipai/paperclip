@@ -7,9 +7,16 @@ import type { Db } from "@paperclipai/db";
  * tool that uses advisory locks (Rails migrations, job queues, …). The
  * two-int form with a fixed application namespace partitions Paperclip's
  * locks away from them, and `hashtext` collisions then require both ints
- * to match. Key cardinality must stay low (locks live in shared memory,
- * bounded by max_locks_per_transaction * max_connections) — lock names are
- * coordination points (a handful), never per-row keys.
+ * to match.
+ *
+ * Shared-memory footprint is bounded by locks HELD CONCURRENTLY (capped by
+ * max_locks_per_transaction * max_connections), not by the space of names:
+ * a transaction-scoped lock exists only while its transaction is open, and
+ * open transactions are bounded by the connection pool. Per-entity names
+ * (e.g. one per agent or company) are therefore fine for xact-scoped locks;
+ * what must stay bounded is the number of locks held at once — never take
+ * advisory locks in unbounded batches, and keep session-scoped locks
+ * (which outlive transactions) to a fixed handful.
  */
 // Keep in sync with PAPERCLIP_LOCK_NAMESPACE in packages/db/src/client.ts.
 const PAPERCLIP_LOCK_NAMESPACE = 0x70_63_6c_70; // "pclp"
@@ -21,24 +28,33 @@ const PAPERCLIP_LOCK_NAMESPACE = 0x70_63_6c_70; // "pclp"
  * the lock releases on commit OR rollback, with no manual unlock to lose.
  *
  * The transaction (and therefore one pooled connection) stays open for the
- * duration of `fn` — keep critical sections short; long-running work
- * (backups, migrations) belongs on `trySessionAdvisoryLock` instead.
+ * duration of `fn` — long-running callbacks hold that pooled connection for
+ * their entire duration, so keep critical sections bounded; at call sites
+ * where the protected work is heavier (e.g. skill refresh), state the bound
+ * in a comment. Truly long-running work (backups, migrations) belongs on
+ * `trySessionAdvisoryLock` instead.
+ *
+ * `fn` deliberately receives nothing: the lock's transaction is a mutex
+ * side-channel only, and the work inside `fn` runs its DB operations on the
+ * outer pool (its own connections), not inside the lock's transaction.
  */
-export async function withAdvisoryXactLock<T>(db: Db, name: string, fn: (tx: unknown) => Promise<T>): Promise<T> {
+export async function withAdvisoryXactLock<T>(db: Db, name: string, fn: () => Promise<T>): Promise<T> {
   return await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${PAPERCLIP_LOCK_NAMESPACE}, hashtext(${name}))`);
-    return await fn(tx);
+    return await fn();
   });
 }
 
 /**
  * Non-blocking variant: if the lock is held elsewhere, returns
- * `{ acquired: false }` without running `fn`.
+ * `{ acquired: false }` without running `fn`. Like `withAdvisoryXactLock`,
+ * `fn` runs its DB work on the outer pool — the lock transaction is only a
+ * mutex side-channel.
  */
 export async function tryAdvisoryXactLock<T>(
   db: Db,
   name: string,
-  fn: (tx: unknown) => Promise<T>,
+  fn: () => Promise<T>,
 ): Promise<{ acquired: false } | { acquired: true; result: T }> {
   return await db.transaction(async (tx) => {
     const rows = await tx.execute(
@@ -46,7 +62,7 @@ export async function tryAdvisoryXactLock<T>(
     );
     const acquired = Boolean((rows as unknown as Array<{ acquired: boolean }>)[0]?.acquired);
     if (!acquired) return { acquired: false } as const;
-    return { acquired: true, result: await fn(tx) } as const;
+    return { acquired: true, result: await fn() } as const;
   });
 }
 

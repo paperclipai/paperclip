@@ -2331,6 +2331,12 @@ export function companySkillService(db: Db) {
     // ensure/reconcile writes don't interleave. A second replica blocks, then
     // re-runs the idempotent refresh — duplicate work, never corrupted state.
     // The in-process map above still dedupes callers within this process.
+    //
+    // Held-lock bound (see advisory-locks.ts): refreshes are operator-
+    // triggered and rare, the work is FS+DB-bounded (no network calls), and
+    // per-company concurrency is additionally capped by the in-process
+    // single-flight map above — so the count of concurrently held
+    // skill-refresh locks stays far below the connection-pool size.
     const refreshPromise = withAdvisoryXactLock(db, `skill-refresh:${companyId}`, async () => {
       const companyExists = await db
         .select({ id: companies.id })
