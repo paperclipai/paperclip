@@ -10,6 +10,8 @@ const mockIssueService = vi.hoisted(() => ({
   getDependencyReadiness: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
   findMentionedAgents: vi.fn(),
+  findCrossAssigneeEvidenceLink: vi.fn(async () => null),
+  wasAgentMentionedOnIssue: vi.fn(async () => false),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
 }));

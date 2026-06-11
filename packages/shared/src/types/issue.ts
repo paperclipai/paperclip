@@ -653,10 +653,16 @@ export interface IssueCommentMetadataSection {
   rows: IssueCommentMetadataRow[];
 }
 
+export interface IssueCommentCrossAssigneeContext {
+  trigger: "linked_checkout" | "mention";
+  viaIssueId?: string | null;
+}
+
 export interface IssueCommentMetadata {
   version: 1;
   sourceRunId?: string | null;
-  sections: IssueCommentMetadataSection[];
+  crossAssignee?: IssueCommentCrossAssigneeContext | null;
+  sections?: IssueCommentMetadataSection[];
 }
 
 export interface IssueCommentPresentation {

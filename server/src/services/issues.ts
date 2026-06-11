@@ -6343,6 +6343,80 @@ export function issueService(db: Db) {
       return explicitAgentMentionIds.filter((agentId) => companyAgentIds.has(agentId));
     },
 
+    findCrossAssigneeEvidenceLink: async (input: {
+      companyId: string;
+      actorAgentId: string;
+      actorRunId: string | null;
+      targetIssueId: string;
+      targetParentId: string | null;
+    }): Promise<{ viaIssueId: string } | null> => {
+      if (!input.actorRunId) return null;
+      const checkedOut = await db
+        .select({ id: issues.id, parentId: issues.parentId })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, input.companyId),
+          eq(issues.assigneeAgentId, input.actorAgentId),
+          eq(issues.checkoutRunId, input.actorRunId),
+        ));
+      if (checkedOut.length === 0) return null;
+
+      for (const candidate of checkedOut) {
+        if (candidate.id === input.targetIssueId) continue;
+        if (candidate.parentId === input.targetIssueId) return { viaIssueId: candidate.id };
+        if (input.targetParentId === candidate.id) return { viaIssueId: candidate.id };
+      }
+
+      const candidateIds = checkedOut
+        .map((candidate) => candidate.id)
+        .filter((candidateId) => candidateId !== input.targetIssueId);
+      if (candidateIds.length === 0) return null;
+      const relations = await db
+        .select({ issueId: issueRelations.issueId, relatedIssueId: issueRelations.relatedIssueId })
+        .from(issueRelations)
+        .where(and(
+          eq(issueRelations.companyId, input.companyId),
+          eq(issueRelations.type, "blocks"),
+          or(
+            and(
+              inArray(issueRelations.issueId, candidateIds),
+              eq(issueRelations.relatedIssueId, input.targetIssueId),
+            ),
+            and(
+              eq(issueRelations.issueId, input.targetIssueId),
+              inArray(issueRelations.relatedIssueId, candidateIds),
+            ),
+          ),
+        ))
+        .limit(1);
+      const relation = relations[0];
+      if (!relation) return null;
+      return {
+        viaIssueId: relation.issueId === input.targetIssueId ? relation.relatedIssueId : relation.issueId,
+      };
+    },
+
+    wasAgentMentionedOnIssue: async (issueId: string, agentId: string): Promise<boolean> => {
+      const issue = await db
+        .select({ title: issues.title, description: issues.description })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) return false;
+      for (const source of [issue.title, issue.description ?? ""]) {
+        if (extractAgentMentionIds(source).includes(agentId)) return true;
+      }
+      const comments = await db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(and(
+          eq(issueComments.issueId, issueId),
+          isNull(issueComments.deletedAt),
+          like(issueComments.body, `%${agentId}%`),
+        ));
+      return comments.some((comment) => extractAgentMentionIds(comment.body).includes(agentId));
+    },
+
     findMentionedProjectIds: async (
       issueId: string,
       opts?: { includeCommentBodies?: boolean },
