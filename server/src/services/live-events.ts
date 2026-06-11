@@ -202,9 +202,12 @@ export type LiveEventsHealth =
  * NOTIFY-ing transactions instance-wide start failing at commit.
  */
 export async function getLiveEventsTransportHealth(): Promise<LiveEventsHealth> {
-  if (!transport) return { mode: "in-process" };
-  const stats = transport.stats ? await transport.stats().catch(() => ({})) : {};
-  return { mode: "transport", originId: transport.originId, ...stats };
+  // Local capture: teardownLiveEventsTransport() can null the module-level
+  // reference while we await stats().
+  const t = transport;
+  if (!t) return { mode: "in-process" };
+  const stats = t.stats ? await t.stats().catch(() => ({})) : {};
+  return { mode: "transport", originId: t.originId, ...stats };
 }
 
 // ── Event factory ──────────────────────────────────────────────────────

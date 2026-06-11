@@ -30,6 +30,9 @@ export function pgChannelForCompany(companyId: string): string {
  * revisiting (those would interact with PSUBSCRIBE pattern matching).
  */
 export function redisChannelForCompany(companyId: string): string {
-  if (companyId === "*") return "paperclip:live-events:global";
+  // "$global" cannot collide with a real company id: ids never start with
+  // "$", whereas a company literally named "global" would otherwise share
+  // the broadcast channel's name.
+  if (companyId === "*") return "paperclip:live-events:$global";
   return `paperclip:live-events:${companyId}`;
 }
