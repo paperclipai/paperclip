@@ -640,6 +640,44 @@ describe("paperclip-plugin-linear", () => {
       expect(syncModule.syncToLinear).toHaveBeenCalledOnce();
     });
 
+    it("passes Paperclip project moves through to issue sync", async () => {
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthTeamId },
+        "team-1",
+      );
+
+      syncModule.getLink.mockResolvedValueOnce({
+        paperclipIssueId: "iss-1",
+        paperclipCompanyId: "comp-1",
+        linearIssueId: "lin-1",
+        linearIdentifier: "BLO-1",
+        linearUrl: "https://linear.app/blockcast/issue/BLO-1",
+        syncDirection: "bidirectional",
+        lastSyncAt: "2020-01-01T00:00:00.000Z",
+        lastLinearStateType: "started",
+        lastCommentSyncAt: null,
+      });
+
+      await harness.emit(
+        "issue.updated",
+        { id: "iss-1", projectId: "paperclip-proj-b", companyId: "comp-1" },
+        { entityId: "iss-1", companyId: "comp-1" },
+      );
+
+      expect(syncModule.syncToLinear).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.objectContaining({ projectId: "paperclip-proj-b" }),
+        "lin_token_123",
+        "team-1",
+        expect.anything(),
+      );
+    });
+
     it("skips linked issues when the event company differs from the link company", async () => {
       syncModule.getLink.mockResolvedValueOnce({
         paperclipIssueId: "iss-1",
@@ -1351,6 +1389,61 @@ describe("paperclip-plugin-linear", () => {
         ),
       ).toBe(true);
     });
+
+    it("adopts an existing Paperclip project by name during project catch-up instead of creating a duplicate", async () => {
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthTeamId },
+        "team-1",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+      harness.seed({
+        companies: [
+          {
+            id: "comp-1",
+            name: "Blockcast",
+            issuePrefix: "BLO",
+          } as never,
+        ],
+        projects: [
+          {
+            id: "pc-proj-demand",
+            companyId: "comp-1",
+            urlKey: "demand-smb-2",
+            name: "Demand: SMB 2",
+            status: "active",
+          } as never,
+        ],
+      });
+
+      const { listProjects } = await import("../src/linear.js");
+      (listProjects as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        {
+          id: "lin-proj-demand",
+          name: "Demand: SMB 2",
+          description: "Linear project",
+          state: "started",
+          url: "https://linear.app/test/project/demand-smb-2",
+        },
+      ]);
+      const createProjectSpy = vi.spyOn(harness.ctx.projects, "create");
+
+      await harness.performAction(ACTION_KEYS.triggerSync);
+
+      expect(createProjectSpy).not.toHaveBeenCalled();
+      expect(syncModule.createProjectLink).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        paperclipProjectId: "pc-proj-demand",
+        paperclipCompanyId: "comp-1",
+        linearProjectId: "lin-proj-demand",
+        linearProjectName: "Demand: SMB 2",
+      }));
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -1905,6 +1998,73 @@ describe("paperclip-plugin-linear", () => {
 
       expect(createIssue).not.toHaveBeenCalled();
       expect(syncModule.createLink).not.toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Webhook: project adoption
+  // -----------------------------------------------------------------------
+
+  describe("webhook: project adoption", () => {
+    it("adopts an existing Paperclip project by name instead of creating a duplicate", async () => {
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+      harness.seed({
+        companies: [
+          {
+            id: "comp-1",
+            name: "Blockcast",
+            issuePrefix: "BLO",
+          } as never,
+        ],
+        projects: [
+          {
+            id: "pc-proj-demand",
+            companyId: "comp-1",
+            urlKey: "demand-smb-2",
+            name: "Demand: SMB 2",
+            status: "active",
+          } as never,
+        ],
+      });
+
+      const createProjectSpy = vi.spyOn(harness.ctx.projects, "create");
+      const body = {
+        action: "create",
+        type: "Project",
+        data: {
+          id: "lin-proj-demand",
+          name: "Demand: SMB 2",
+          description: "Linear project",
+          state: "started",
+        },
+      };
+
+      await plugin.definition.onWebhook!({
+        headers: {},
+        rawBody: JSON.stringify(body),
+        parsedBody: body,
+        requestId: "test-webhook-project-adoption",
+      });
+
+      expect(createProjectSpy).not.toHaveBeenCalled();
+      expect(syncModule.createProjectLink).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        paperclipProjectId: "pc-proj-demand",
+        paperclipCompanyId: "comp-1",
+        linearProjectId: "lin-proj-demand",
+        linearProjectName: "Demand: SMB 2",
+      }));
+      expect(syncModule.syncProjectFromLinear).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ paperclipProjectId: "pc-proj-demand" }),
+        expect.objectContaining({ id: "lin-proj-demand", name: "Demand: SMB 2" }),
+      );
     });
   });
 

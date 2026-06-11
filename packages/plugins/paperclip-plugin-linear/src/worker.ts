@@ -234,6 +234,57 @@ async function summarizePaperclipProject(
   };
 }
 
+type AdoptablePaperclipProject = {
+  id: string;
+  name?: string | null;
+  description?: string | null;
+  status?: string | null;
+  urlKey?: string | null;
+};
+
+function normalizeProjectName(value: string | null | undefined): string {
+  return (value ?? "").trim().toLowerCase();
+}
+
+function projectUrlKeyCandidate(value: string): string {
+  return normalizeProjectName(value)
+    .replace(/['"]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+async function findAdoptablePaperclipProject(
+  ctx: PluginContext,
+  companyId: string,
+  linearProjectId: string,
+  linearProjectName: string,
+): Promise<{ project: AdoptablePaperclipProject | null; conflict: boolean }> {
+  const normalizedName = normalizeProjectName(linearProjectName);
+  if (!normalizedName) return { project: null, conflict: false };
+
+  try {
+    const projects = await ctx.projects.list({ companyId, limit: 500 }) as AdoptablePaperclipProject[];
+    const urlKey = projectUrlKeyCandidate(linearProjectName);
+    const candidate = projects.find((project) => normalizeProjectName(project.name) === normalizedName)
+      ?? projects.find((project) => normalizeProjectName(project.urlKey) === urlKey)
+      ?? null;
+    if (!candidate) return { project: null, conflict: false };
+
+    const existingLink = await sync.getProjectLink(ctx, candidate.id);
+    if (existingLink && existingLink.linearProjectId !== linearProjectId) {
+      ctx.logger.warn(
+        `Linear project ${linearProjectName} matched Paperclip project ${candidate.id}, but that project is already linked to Linear project ${existingLink.linearProjectId}; skipping duplicate project create`,
+      );
+      return { project: null, conflict: true };
+    }
+
+    return { project: candidate, conflict: false };
+  } catch (err) {
+    ctx.logger.warn(`Failed to search for an adoptable Paperclip project for Linear project ${linearProjectName}: ${err}`);
+    return { project: null, conflict: false };
+  }
+}
+
 // Write a "Paperclip mirror: <id>" link attachment back to a Linear issue.
 //
 // Shared between the polling-import action and the webhook-create handler so
@@ -2237,6 +2288,16 @@ const plugin = definePlugin({
       if (payload?.description !== undefined) changes.description = payload.description as string;
       if (payload?.estimate !== undefined) changes.estimate = payload.estimate as number | null;
       if (payload?.dueDate !== undefined) changes.dueDate = payload.dueDate as string | null;
+      const patch = payload?.patch as Record<string, unknown> | undefined;
+      const hasProjectIdChange =
+        Object.prototype.hasOwnProperty.call(payload ?? {}, "projectId") ||
+        Object.prototype.hasOwnProperty.call(patch ?? {}, "projectId");
+      const projectIdChange = Object.prototype.hasOwnProperty.call(payload ?? {}, "projectId")
+        ? payload?.projectId
+        : patch?.projectId;
+      if (hasProjectIdChange && (typeof projectIdChange === "string" || projectIdChange === null)) {
+        changes.projectId = projectIdChange;
+      }
 
       if (Object.keys(changes).length === 0) return;
 
@@ -3116,33 +3177,44 @@ async function handleWebhookEvent(
       const status = sync.linearProjectStateToPaperclip(state);
 
       try {
-        const created = await (ctx.projects as any).create({
+        const adoption = await findAdoptablePaperclipProject(ctx, companyId, linearProjectId, name);
+        if (adoption.conflict) return;
+        const adoptedProject = adoption.project;
+        const project = adoptedProject ?? (await (ctx.projects as any).create({
           companyId,
           name,
           description: (data.description as string) ?? undefined,
           status,
-        });
+        }) as AdoptablePaperclipProject);
 
         const link = await sync.createProjectLink(ctx, {
-          paperclipProjectId: created.id,
+          paperclipProjectId: project.id,
           paperclipCompanyId: companyId,
           linearProjectId,
           linearProjectName: name,
           linearState: state,
           syncDirection: "bidirectional",
         });
+        if (adoptedProject) {
+          await sync.syncProjectFromLinear(ctx, link, {
+            id: linearProjectId,
+            name,
+            description: (data.description as string | null) ?? null,
+            state,
+          });
+        }
         const token = await resolveToken(ctx);
-        await writePaperclipProjectBackLink(ctx, token, link, created);
+        await writePaperclipProjectBackLink(ctx, token, link, project);
 
         await ctx.activity.log({
           companyId,
           message: `project.synced_from_linear`,
           entityType: "project",
-          entityId: created.id,
-          metadata: { source: "linear", projectName: name, action: "created" },
+          entityId: project.id,
+          metadata: { source: "linear", projectName: name, action: adoptedProject ? "adopted" : "created" },
         });
 
-        ctx.logger.info(`Webhook created project from Linear: ${name}`);
+        ctx.logger.info(`${adoptedProject ? "Webhook adopted existing Paperclip project for Linear project" : "Webhook created project from Linear"}: ${name}`);
       } catch (err) {
         ctx.logger.warn(`Webhook failed to create project: ${err}`);
       }
@@ -3965,17 +4037,6 @@ async function runProjectSync(
 ): Promise<{ synced: number; created: number; errors: number; skippedDrift: number; skippedCreate: number; skippedOtherCompany: number }> {
   const fetch = ctx.http.fetch.bind(ctx.http);
   const linearProjects = await linear.listProjects(fetch, token, teamId);
-  const existingProjectsByName = new Map<string, { id: string; name: string }>();
-  try {
-    const existingProjects = await ctx.projects.list({ companyId });
-    for (const project of existingProjects) {
-      if (!existingProjectsByName.has(project.name)) {
-        existingProjectsByName.set(project.name, { id: project.id, name: project.name });
-      }
-    }
-  } catch (err) {
-    ctx.logger.warn(`Project sync could not prefetch Paperclip projects for name-based relinking: ${err}`);
-  }
 
   // ctx.projects.create / .update were added after the published SDK that
   // most plugin installs pin to. Try the typed client first; if it's missing
@@ -4046,10 +4107,14 @@ async function runProjectSync(
         continue;
       }
 
-      const existingByName = existingProjectsByName.get(lp.name);
-      if (existingByName) {
+      const adoption = await findAdoptablePaperclipProject(ctx, companyId, lp.id, lp.name);
+      if (adoption.conflict) {
+        skippedCreate++;
+        continue;
+      }
+      if (adoption.project) {
         const link = await sync.createProjectLink(ctx, {
-          paperclipProjectId: existingByName.id,
+          paperclipProjectId: adoption.project.id,
           paperclipCompanyId: companyId,
           linearProjectId: lp.id,
           linearProjectName: lp.name,
@@ -4060,7 +4125,7 @@ async function runProjectSync(
           ctx,
           token,
           link,
-          await getProjectById(ctx, existingByName.id, companyId),
+          adoption.project,
         );
 
         if (!supportsUpdate) {
@@ -4069,7 +4134,7 @@ async function runProjectSync(
         }
 
         const status = sync.linearProjectStateToPaperclip(lp.state?.toLowerCase() ?? "planned");
-        await projectsUpdate!(existingByName.id, {
+        await projectsUpdate!(adoption.project.id, {
           name: lp.name,
           description: lp.description ?? undefined,
           status,

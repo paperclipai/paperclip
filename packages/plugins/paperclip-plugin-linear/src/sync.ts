@@ -326,6 +326,7 @@ export interface SyncChanges {
   description?: string;
   estimate?: number | null;
   dueDate?: string | null;
+  projectId?: string | null;
 }
 
 export async function syncToLinear(
@@ -395,6 +396,32 @@ export async function syncToLinear(
   if (changes.dueDate !== undefined) {
     linearUpdate.dueDate = changes.dueDate;
     synced.push(`dueDate:${changes.dueDate ?? "none"}`);
+  }
+
+  // Paperclip project move → Linear project move
+  if (changes.projectId !== undefined) {
+    const targetPaperclipProjectId = typeof changes.projectId === "string"
+      ? changes.projectId.trim()
+      : "";
+
+    if (!targetPaperclipProjectId) {
+      linearUpdate.projectId = null;
+      synced.push("project:none");
+    } else {
+      const projectLink = await getProjectLink(ctx, targetPaperclipProjectId);
+      if (!projectLink) {
+        ctx.logger.warn(
+          `Skipping Linear project move for ${link.linearIdentifier}: Paperclip project ${targetPaperclipProjectId} is not linked to Linear`,
+        );
+      } else if (projectLink.paperclipCompanyId !== link.paperclipCompanyId) {
+        ctx.logger.warn(
+          `Skipping Linear project move for ${link.linearIdentifier}: target project belongs to another company`,
+        );
+      } else {
+        linearUpdate.projectId = projectLink.linearProjectId;
+        synced.push(`project:${projectLink.linearProjectName ?? projectLink.linearProjectId}`);
+      }
+    }
   }
 
   if (Object.keys(linearUpdate).length === 0) return;

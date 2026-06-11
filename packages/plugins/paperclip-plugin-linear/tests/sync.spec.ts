@@ -1,10 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import { STATE_KEYS } from "../src/constants.js";
 import {
   createLink,
   createGoalLink,
+  createProjectLink,
   getGoalLink,
   getLink,
   getGoalLinkByLinear,
@@ -13,10 +14,12 @@ import {
   getProjectLinkByLinear,
   updateGoalLink,
   syncFromLinear,
+  syncToLinear,
   type GoalLink,
   type IssueLink,
   type ProjectLink,
 } from "../src/sync.js";
+import * as linearApi from "../src/linear.js";
 import type { LinearIssue } from "../src/linear.js";
 
 function makeLink(overrides: Partial<IssueLink> = {}): IssueLink {
@@ -81,6 +84,10 @@ function makeGoalLink(overrides: Partial<GoalLink> = {}): GoalLink {
     ...overrides,
   };
 }
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("link lookup", () => {
   it("ignores malformed issue forward link state", async () => {
@@ -470,6 +477,80 @@ describe("syncFromLinear", () => {
       "pc-1",
       expect.not.objectContaining({ projectId: expect.anything() }),
       "comp-1",
+    );
+  });
+});
+
+describe("syncToLinear", () => {
+  it("moves the Linear issue to the bound Linear project when Paperclip projectId changes", async () => {
+    const harness = createTestHarness({ manifest });
+    await createProjectLink(harness.ctx, {
+      paperclipProjectId: "pc-proj-2",
+      paperclipCompanyId: "comp-1",
+      linearProjectId: "lin-proj-2",
+      linearProjectName: "Target Project",
+      linearState: "started",
+      syncDirection: "bidirectional",
+    });
+    const updateIssue = vi.spyOn(linearApi, "updateIssue").mockResolvedValue(makeLinearIssue());
+
+    await syncToLinear(
+      harness.ctx,
+      makeLink({ lastSyncAt: "2020-01-01T00:00:00.000Z" }),
+      { projectId: "pc-proj-2" },
+      "lin-token",
+      "team-1",
+    );
+
+    expect(updateIssue).toHaveBeenCalledWith(
+      expect.any(Function),
+      "lin-token",
+      "lin-1",
+      { projectId: "lin-proj-2" },
+    );
+  });
+
+  it("clears the Linear project when Paperclip projectId is removed", async () => {
+    const harness = createTestHarness({ manifest });
+    const updateIssue = vi.spyOn(linearApi, "updateIssue").mockResolvedValue(makeLinearIssue());
+
+    await syncToLinear(
+      harness.ctx,
+      makeLink({ lastSyncAt: "2020-01-01T00:00:00.000Z" }),
+      { projectId: null },
+      "lin-token",
+      "team-1",
+    );
+
+    expect(updateIssue).toHaveBeenCalledWith(
+      expect.any(Function),
+      "lin-token",
+      "lin-1",
+      { projectId: null },
+    );
+  });
+
+  it("skips only the project move when the target Paperclip project is not linked", async () => {
+    const harness = createTestHarness({ manifest });
+    const updateIssue = vi.spyOn(linearApi, "updateIssue").mockResolvedValue(makeLinearIssue());
+    const warn = vi.spyOn(harness.ctx.logger, "warn");
+
+    await syncToLinear(
+      harness.ctx,
+      makeLink({ lastSyncAt: "2020-01-01T00:00:00.000Z" }),
+      { title: "Keep syncing other changes", projectId: "missing-project" },
+      "lin-token",
+      "team-1",
+    );
+
+    expect(updateIssue).toHaveBeenCalledWith(
+      expect.any(Function),
+      "lin-token",
+      "lin-1",
+      { title: "Keep syncing other changes" },
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("is not linked to Linear"),
     );
   });
 });
