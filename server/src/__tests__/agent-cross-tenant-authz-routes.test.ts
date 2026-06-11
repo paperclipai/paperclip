@@ -151,6 +151,21 @@ vi.mock("../routes/authz.js", async () => {
     return (req.actor.companyIds ?? []).includes(expectedCompanyId);
   }
 
+  async function getAccessibleResource<T extends { companyId: string }>(
+    req: Express.Request,
+    res: { status(code: number): { json(body: unknown): unknown } },
+    resource: T | null | undefined | Promise<T | null | undefined>,
+    notFoundMessage: string,
+  ): Promise<T | null> {
+    const resolved = await resource;
+    if (!resolved || !hasCompanyAccess(req, resolved.companyId)) {
+      res.status(404).json({ error: notFoundMessage });
+      return null;
+    }
+    assertCompanyAccess(req, resolved.companyId);
+    return resolved;
+  }
+
   function assertInstanceAdmin(req: Express.Request) {
     assertBoard(req);
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
@@ -180,6 +195,7 @@ vi.mock("../routes/authz.js", async () => {
     assertBoard,
     assertCompanyAccess,
     assertInstanceAdmin,
+    getAccessibleResource,
     getActorInfo,
     hasCompanyAccess,
   };

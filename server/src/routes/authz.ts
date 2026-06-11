@@ -1,4 +1,4 @@
-import type { Request } from "express";
+import type { Request, Response } from "express";
 import { forbidden, unauthorized } from "../errors.js";
 
 export function assertAuthenticated(req: Request) {
@@ -85,7 +85,9 @@ export function assertCompanyAccess(req: Request, companyId: string) {
  * in another tenant". Any authenticated user can enumerate IDs and
  * distinguish the two responses.
  *
- * The recommended pattern is:
+ * Most routes should use `getAccessibleResource` below, which wraps the
+ * whole pattern. When composing manually (bespoke not-found responses),
+ * the shape is:
  *
  *     const issue = await svc.getById(id);
  *     if (!issue || !hasCompanyAccess(req, issue.companyId)) {
@@ -111,6 +113,39 @@ export function hasCompanyAccess(req: Request, companyId: string): boolean {
   if (req.actor.type === "agent") return req.actor.companyId === companyId;
   if (req.actor.source === "local_implicit") return true;
   return (req.actor.companyIds ?? []).includes(companyId);
+}
+
+/**
+ * Preferred way to fetch a company-scoped resource by id inside a route
+ * handler. Wraps the two-step pattern described on `hasCompanyAccess` so
+ * new routes cannot accidentally reintroduce the existence oracle:
+ *
+ *   - missing resource          → 404 `{ error: notFoundMessage }`, returns null
+ *   - exists but cross-tenant   → identical 404, returns null
+ *   - accessible                → runs `assertCompanyAccess` (write-path
+ *     membership checks on non-safe methods) and returns the resource
+ *
+ * Usage:
+ *
+ *     const goal = await getAccessibleResource(req, res, svc.getById(id), "Goal not found");
+ *     if (!goal) return;
+ *
+ * Routes with bespoke not-found behavior (legacy `200 []` contracts,
+ * audit-logged denials) should still compose `hasCompanyAccess` directly.
+ */
+export async function getAccessibleResource<T extends { companyId: string }>(
+  req: Request,
+  res: Response,
+  resource: T | null | undefined | Promise<T | null | undefined>,
+  notFoundMessage: string,
+): Promise<T | null> {
+  const resolved = await resource;
+  if (!resolved || !hasCompanyAccess(req, resolved.companyId)) {
+    res.status(404).json({ error: notFoundMessage });
+    return null;
+  }
+  assertCompanyAccess(req, resolved.companyId);
+  return resolved;
 }
 
 export function getActorInfo(req: Request) {

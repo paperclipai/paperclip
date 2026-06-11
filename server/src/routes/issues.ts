@@ -90,7 +90,7 @@ import {
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
-import { assertBoard, assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -2584,12 +2584,8 @@ export function issueRoutes(
 
   router.delete("/labels/:labelId", async (req, res) => {
     const labelId = req.params.labelId as string;
-    const existing = await svc.getLabelById(labelId);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
-      res.status(404).json({ error: "Label not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getLabelById(labelId), "Label not found");
+    if (!existing) return;
     const removed = await svc.deleteLabel(labelId);
     if (!removed) {
       res.status(404).json({ error: "Label not found" });
@@ -2612,12 +2608,8 @@ export function issueRoutes(
 
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
     const wakeCommentId =
@@ -2758,12 +2750,8 @@ export function issueRoutes(
 
   router.get("/issues/:id", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const [
       { project, goal },
@@ -2836,11 +2824,8 @@ export function issueRoutes(
 
   router.get("/issues/:id/recovery-actions", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     const active = await revalidateActiveSourceRecoveryForRead({
       issue,
       trigger: "read_projection",
@@ -2854,12 +2839,8 @@ export function issueRoutes(
 
   router.post("/issues/:id/recovery-actions/resolve", validate(resolveIssueRecoveryActionSchema), async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!existing) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id);
     if (
@@ -3023,12 +3004,8 @@ export function issueRoutes(
 
   router.get("/issues/:id/work-products", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.json(workProducts);
@@ -3036,12 +3013,8 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const docs = await documentsSvc.listIssueDocuments(issue.id, {
       includeSystem: req.query.includeSystem === "true",
@@ -3051,12 +3024,8 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents/:key", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
@@ -3081,11 +3050,8 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents/:key/annotations", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -3104,12 +3070,8 @@ export function issueRoutes(
     validate(createDocumentAnnotationThreadSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await svc.getById(id);
-      if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-        res.status(404).json({ error: "Issue not found" });
-        return;
-      }
-      assertCompanyAccess(req, issue.companyId);
+      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
       if (!keyParsed.success) {
@@ -3155,11 +3117,8 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents/:key/annotations/:threadId", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -3182,12 +3141,8 @@ export function issueRoutes(
     validate(createDocumentAnnotationCommentSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await svc.getById(id);
-      if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-        res.status(404).json({ error: "Issue not found" });
-        return;
-      }
-      assertCompanyAccess(req, issue.companyId);
+      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
       if (!keyParsed.success) {
@@ -3239,12 +3194,8 @@ export function issueRoutes(
     validate(updateDocumentAnnotationThreadSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const issue = await svc.getById(id);
-      if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-        res.status(404).json({ error: "Issue not found" });
-        return;
-      }
-      assertCompanyAccess(req, issue.companyId);
+      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
       if (!keyParsed.success) {
@@ -3283,12 +3234,8 @@ export function issueRoutes(
 
   router.put("/issues/:id/documents/:key", validate(upsertIssueDocumentSchema), async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
@@ -3411,12 +3358,8 @@ export function issueRoutes(
 
   router.post("/issues/:id/documents/:key/lock", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -3459,12 +3402,8 @@ export function issueRoutes(
 
   router.post("/issues/:id/documents/:key/unlock", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -3501,11 +3440,8 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents/:key/revisions", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -3521,12 +3457,8 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const revisionId = req.params.revisionId as string;
-      const issue = await svc.getById(id);
-      if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-        res.status(404).json({ error: "Issue not found" });
-        return;
-      }
-      assertCompanyAccess(req, issue.companyId);
+      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!issue) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
       const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
@@ -3636,12 +3568,8 @@ export function issueRoutes(
 
   router.delete("/issues/:id/documents/:key", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -3711,12 +3639,8 @@ export function issueRoutes(
 
   router.post("/issues/:id/work-products", validate(createIssueWorkProductSchema), async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
     const actor = getActorInfo(req);
@@ -3761,12 +3685,8 @@ export function issueRoutes(
 
   router.post("/issues/:id/low-trust/promotions", validate(promoteLowTrustOutputSchema), async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
@@ -3906,12 +3826,8 @@ export function issueRoutes(
 
   router.patch("/work-products/:id", validate(updateIssueWorkProductSchema), async (req, res) => {
     const id = req.params.id as string;
-    const existing = await workProductsSvc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
-      res.status(404).json({ error: "Work product not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, workProductsSvc.getById(id), "Work product not found");
+    if (!existing) return;
     const issue = await svc.getById(existing.issueId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
@@ -3966,12 +3882,8 @@ export function issueRoutes(
 
   router.delete("/work-products/:id", async (req, res) => {
     const id = req.params.id as string;
-    const existing = await workProductsSvc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
-      res.status(404).json({ error: "Work product not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, workProductsSvc.getById(id), "Work product not found");
+    if (!existing) return;
     const issue = await svc.getById(existing.issueId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
@@ -4007,12 +3919,8 @@ export function issueRoutes(
 
   router.post("/issues/:id/read", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -4039,12 +3947,8 @@ export function issueRoutes(
 
   router.delete("/issues/:id/read", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -4071,12 +3975,8 @@ export function issueRoutes(
 
   router.post("/issues/:id/inbox-archive", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -4103,12 +4003,8 @@ export function issueRoutes(
 
   router.delete("/issues/:id/inbox-archive", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -4135,12 +4031,8 @@ export function issueRoutes(
 
   router.get("/issues/:id/approvals", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return;
     const approvals = await issueApprovalsSvc.listApprovalsForIssue(id);
     res.json(approvals);
@@ -4148,12 +4040,8 @@ export function issueRoutes(
 
   router.post("/issues/:id/approvals", validate(linkIssueApprovalSchema), async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertCanManageIssueApprovalLinks(req, res, issue.companyId))) return;
 
@@ -4182,12 +4070,8 @@ export function issueRoutes(
   router.delete("/issues/:id/approvals/:approvalId", async (req, res) => {
     const id = req.params.id as string;
     const approvalId = req.params.approvalId as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertCanManageIssueApprovalLinks(req, res, issue.companyId))) return;
 
@@ -4354,12 +4238,8 @@ export function issueRoutes(
 
   router.post("/issues/:id/children", applyCreateIssueStatusDefault, validate(createChildIssueSchema), async (req, res) => {
     const parentId = req.params.id as string;
-    const parent = await svc.getById(parentId);
-    if (!parent || !hasCompanyAccess(req, parent.companyId)) {
-      res.status(404).json({ error: "Parent issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, parent.companyId);
+    const parent = await getAccessibleResource(req, res, svc.getById(parentId), "Parent issue not found");
+    if (!parent) return;
     if (!(await assertIssueReadAllowed(req, res, parent))) return;
     if (await assertLowTrustControlPlaneDenied(req, res, parent.companyId, parent)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
@@ -4465,23 +4345,16 @@ export function issueRoutes(
 
   router.get("/issues/:id/accepted-plan-decompositions", async (req, res) => {
     const sourceIssueId = req.params.id as string;
-    const sourceIssue = await svc.getById(sourceIssueId);
-    if (!sourceIssue || !hasCompanyAccess(req, sourceIssue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
+    const sourceIssue = await getAccessibleResource(req, res, svc.getById(sourceIssueId), "Issue not found");
+    if (!sourceIssue) return;
     const decompositions = await svc.listAcceptedPlanDecompositions(sourceIssue.id);
     res.json(decompositions);
   });
 
   router.post("/issues/:id/accepted-plan-decompositions", validate(createAcceptedPlanDecompositionSchema), async (req, res) => {
     const sourceIssueId = req.params.id as string;
-    const sourceIssue = await svc.getById(sourceIssueId);
-    if (!sourceIssue || !hasCompanyAccess(req, sourceIssue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, sourceIssue.companyId);
+    const sourceIssue = await getAccessibleResource(req, res, svc.getById(sourceIssueId), "Issue not found");
+    if (!sourceIssue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, sourceIssue))) return;
 
     const requestedChildren = [];
@@ -4629,12 +4502,8 @@ export function issueRoutes(
 
   router.post("/issues/:id/monitor/check-now", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     await assertCanManageIssueMonitor(access, req, issue.companyId, issue.assigneeAgentId, true);
 
     const actor = getActorInfo(req);
@@ -4651,12 +4520,8 @@ export function issueRoutes(
   router.post("/issues/:id/scheduled-retry/retry-now", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
 
     const actor = getActorInfo(req);
     const result = await heartbeat.retryScheduledRetryNow({
@@ -4688,12 +4553,8 @@ export function issueRoutes(
 
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
@@ -5687,12 +5548,8 @@ export function issueRoutes(
 
   router.delete("/issues/:id", async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!existing) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     const attachments = await svc.listAttachments(id);
 
@@ -5727,12 +5584,8 @@ export function issueRoutes(
 
   router.post("/issues/:id/checkout", validate(checkoutIssueSchema), async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
 
     if (issue.projectId) {
       const project = await projectsSvc.getById(issue.projectId);
@@ -5811,12 +5664,8 @@ export function issueRoutes(
 
   router.post("/issues/:id/release", async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!existing) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;
@@ -5856,12 +5705,8 @@ export function issueRoutes(
     }
 
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!existing) return;
 
     const clearAssignee = req.query.clearAssignee === "true";
     const result = await svc.adminForceRelease(id, { clearAssignee });
@@ -5894,11 +5739,8 @@ export function issueRoutes(
 
   router.get("/issues/:id/comments", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     const afterCommentId =
       typeof req.query.after === "string" && req.query.after.trim().length > 0
         ? req.query.after.trim()
@@ -5927,11 +5769,8 @@ export function issueRoutes(
 
   router.get("/issues/:id/interactions", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     const actor = getActorInfo(req);
     const interactionSvc = issueThreadInteractionService(db);
     const expiredInteractions = await interactionSvc.expireRequestConfirmationsSupersededByHistoricalComments(issue);
@@ -5948,12 +5787,8 @@ export function issueRoutes(
 
   router.post("/issues/:id/interactions", validate(createIssueThreadInteractionSchema), async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (req.actor.type === "agent") {
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return;
@@ -5999,12 +5834,8 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await svc.getById(id);
-      if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-        res.status(404).json({ error: "Issue not found" });
-        return;
-      }
-      assertCompanyAccess(req, issue.companyId);
+      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!issue) return;
       assertBoard(req);
 
       const actor = getActorInfo(req);
@@ -6106,12 +5937,8 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await svc.getById(id);
-      if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-        res.status(404).json({ error: "Issue not found" });
-        return;
-      }
-      assertCompanyAccess(req, issue.companyId);
+      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!issue) return;
       assertBoard(req);
 
       const actor = getActorInfo(req);
@@ -6162,12 +5989,8 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await svc.getById(id);
-      if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-        res.status(404).json({ error: "Issue not found" });
-        return;
-      }
-      assertCompanyAccess(req, issue.companyId);
+      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!issue) return;
       assertBoard(req);
 
       const actor = getActorInfo(req);
@@ -6214,12 +6037,8 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
-      const issue = await svc.getById(id);
-      if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-        res.status(404).json({ error: "Issue not found" });
-        return;
-      }
-      assertCompanyAccess(req, issue.companyId);
+      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!issue) return;
       assertBoard(req);
 
       const actor = getActorInfo(req);
@@ -6263,11 +6082,8 @@ export function issueRoutes(
   router.get("/issues/:id/comments/:commentId", async (req, res) => {
     const id = req.params.id as string;
     const commentId = req.params.commentId as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     const comment = await svc.getComment(commentId);
     if (!comment || comment.issueId !== id) {
       res.status(404).json({ error: "Comment not found" });
@@ -6279,12 +6095,8 @@ export function issueRoutes(
   router.delete("/issues/:id/comments/:commentId", async (req, res) => {
     const id = req.params.id as string;
     const commentId = req.params.commentId as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
 
     const comment = await svc.getComment(commentId);
@@ -6418,11 +6230,8 @@ export function issueRoutes(
 
   router.get("/issues/:id/feedback-votes", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Only board users can view feedback votes" });
       return;
@@ -6434,11 +6243,8 @@ export function issueRoutes(
 
   router.get("/issues/:id/feedback-traces", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Only board users can view feedback traces" });
       return;
@@ -6496,12 +6302,8 @@ export function issueRoutes(
 
   router.post("/issues/:id/comments", validate(addIssueCommentSchema), async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
@@ -6826,12 +6628,8 @@ export function issueRoutes(
 
   router.post("/issues/:id/feedback-votes", validate(upsertIssueFeedbackVoteSchema), async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Only board users can vote on AI feedback" });
       return;
@@ -6925,11 +6723,8 @@ export function issueRoutes(
 
   router.get("/issues/:id/attachments", async (req, res) => {
     const issueId = req.params.id as string;
-    const issue = await svc.getById(issueId);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
+    const issue = await getAccessibleResource(req, res, svc.getById(issueId), "Issue not found");
+    if (!issue) return;
     const attachments = await svc.listAttachments(issueId);
     res.json(attachments.map(withContentPath));
   });
@@ -7032,11 +6827,8 @@ export function issueRoutes(
 
   router.get("/attachments/:attachmentId/content", async (req, res, next) => {
     const attachmentId = req.params.attachmentId as string;
-    const attachment = await svc.getAttachmentById(attachmentId);
-    if (!attachment || !hasCompanyAccess(req, attachment.companyId)) {
-      res.status(404).json({ error: "Attachment not found" });
-      return;
-    }
+    const attachment = await getAccessibleResource(req, res, svc.getAttachmentById(attachmentId), "Attachment not found");
+    if (!attachment) return;
 
     const contentLength = attachment.byteSize;
     const range = parseAttachmentRangeHeader(
@@ -7090,12 +6882,8 @@ export function issueRoutes(
 
   router.delete("/attachments/:attachmentId", async (req, res) => {
     const attachmentId = req.params.attachmentId as string;
-    const attachment = await svc.getAttachmentById(attachmentId);
-    if (!attachment || !hasCompanyAccess(req, attachment.companyId)) {
-      res.status(404).json({ error: "Attachment not found" });
-      return;
-    }
-    assertCompanyAccess(req, attachment.companyId);
+    const attachment = await getAccessibleResource(req, res, svc.getAttachmentById(attachmentId), "Attachment not found");
+    if (!attachment) return;
     const issue = await svc.getById(attachment.issueId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });

@@ -20,7 +20,7 @@ import {
   accessService,
   logActivity,
 } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -181,11 +181,8 @@ export function costRoutes(
 
   router.get("/issues/:id/cost-summary", async (req, res) => {
     const rawId = req.params.id as string;
-    const issue = await resolveIssueByRef(rawId);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
+    const issue = await getAccessibleResource(req, res, resolveIssueByRef(rawId), "Issue not found");
+    if (!issue) return;
     if (!(await assertIssueCostReadAllowed(req, res, issue))) return;
     const excludeRoot = req.query.excludeRoot === "true" || req.query.excludeRoot === "1";
     const summary = await costs.issueTreeSummary(issue.companyId, issue.id, { excludeRoot });
@@ -366,12 +363,8 @@ export function costRoutes(
 
   router.patch("/agents/:agentId/budgets", validate(updateBudgetSchema), async (req, res) => {
     const agentId = req.params.agentId as string;
-    const agent = await agents.getById(agentId);
-    if (!agent || !hasCompanyAccess(req, agent.companyId)) {
-      res.status(404).json({ error: "Agent not found" });
-      return;
-    }
-    assertCompanyAccess(req, agent.companyId);
+    const agent = await getAccessibleResource(req, res, agents.getById(agentId), "Agent not found");
+    if (!agent) return;
 
     assertBoard(req);
 

@@ -28,7 +28,7 @@ import { probeEnvironment } from "../services/environment-probe.js";
 import { secretService } from "../services/secrets.js";
 import { listReadyPluginEnvironmentDrivers } from "../services/plugin-environment-driver.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
-import { assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
@@ -244,11 +244,8 @@ export function environmentRoutes(
   });
 
   router.get("/environments/:id", async (req, res) => {
-    const environment = await svc.getById(req.params.id as string);
-    if (!environment || !hasCompanyAccess(req, environment.companyId)) {
-      res.status(404).json({ error: "Environment not found" });
-      return;
-    }
+    const environment = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Environment not found");
+    if (!environment) return;
     const canReadConfigs = await actorCanReadEnvironmentConfigurations(req, environment.companyId);
     if (canReadConfigs) {
       res.json(environment);
@@ -258,11 +255,8 @@ export function environmentRoutes(
   });
 
   router.get("/environments/:id/leases", async (req, res) => {
-    const environment = await svc.getById(req.params.id as string);
-    if (!environment || !hasCompanyAccess(req, environment.companyId)) {
-      res.status(404).json({ error: "Environment not found" });
-      return;
-    }
+    const environment = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Environment not found");
+    if (!environment) return;
     const canReadConfigs = await actorCanReadEnvironmentConfigurations(req, environment.companyId);
     if (!canReadConfigs) {
       throw forbidden("Missing permission: environments:manage");
@@ -274,11 +268,8 @@ export function environmentRoutes(
   });
 
   router.get("/environment-leases/:leaseId", async (req, res) => {
-    const lease = await svc.getLeaseById(req.params.leaseId as string);
-    if (!lease || !hasCompanyAccess(req, lease.companyId)) {
-      res.status(404).json({ error: "Environment lease not found" });
-      return;
-    }
+    const lease = await getAccessibleResource(req, res, svc.getLeaseById(req.params.leaseId as string), "Environment lease not found");
+    if (!lease) return;
     const canReadConfigs = await actorCanReadEnvironmentConfigurations(req, lease.companyId);
     if (!canReadConfigs) {
       throw forbidden("Missing permission: environments:manage");

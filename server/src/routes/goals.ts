@@ -4,7 +4,7 @@ import { createGoalSchema, updateGoalSchema } from "@paperclipai/shared";
 import { trackGoalCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { goalService, logActivity } from "../services/index.js";
-import { assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { getTelemetryClient } from "../telemetry.js";
 
 export function goalRoutes(db: Db) {
@@ -20,11 +20,8 @@ export function goalRoutes(db: Db) {
 
   router.get("/goals/:id", async (req, res) => {
     const id = req.params.id as string;
-    const goal = await svc.getById(id);
-    if (!goal || !hasCompanyAccess(req, goal.companyId)) {
-      res.status(404).json({ error: "Goal not found" });
-      return;
-    }
+    const goal = await getAccessibleResource(req, res, svc.getById(id), "Goal not found");
+    if (!goal) return;
     res.json(goal);
   });
 
@@ -52,12 +49,8 @@ export function goalRoutes(db: Db) {
 
   router.patch("/goals/:id", validate(updateGoalSchema), async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
-      res.status(404).json({ error: "Goal not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Goal not found");
+    if (!existing) return;
     const goal = await svc.update(id, req.body);
     if (!goal) {
       res.status(404).json({ error: "Goal not found" });
@@ -81,12 +74,8 @@ export function goalRoutes(db: Db) {
 
   router.delete("/goals/:id", async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
-      res.status(404).json({ error: "Goal not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Goal not found");
+    if (!existing) return;
     const goal = await svc.remove(id);
     if (!goal) {
       res.status(404).json({ error: "Goal not found" });

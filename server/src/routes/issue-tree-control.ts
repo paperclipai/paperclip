@@ -9,7 +9,7 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { heartbeatService, issueService, issueTreeControlService, logActivity } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { assertBoard, getAccessibleResource, getActorInfo } from "./authz.js";
 
 const TREE_RUN_CANCELLATION_RESPONSE_WAIT_MS = 1_000;
 
@@ -45,12 +45,8 @@ export function issueTreeControlRoutes(db: Db) {
 
   router.post("/issues/:id/tree-control/preview", validate(previewIssueTreeControlSchema), async (req, res) => {
     assertBoard(req);
-    const root = await resolveRootIssue(req);
-    if (!root || !hasCompanyAccess(req, root.companyId)) {
-      res.status(404).json({ error: "Root issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, root.companyId);
+    const root = await getAccessibleResource(req, res, resolveRootIssue(req), "Root issue not found");
+    if (!root) return;
 
     const preview = await treeControlSvc.preview(root.companyId, root.id, req.body);
     const actor = getActorInfo(req);
@@ -75,12 +71,8 @@ export function issueTreeControlRoutes(db: Db) {
 
   router.post("/issues/:id/tree-holds", validate(createIssueTreeHoldSchema), async (req, res) => {
     assertBoard(req);
-    const root = await resolveRootIssue(req);
-    if (!root || !hasCompanyAccess(req, root.companyId)) {
-      res.status(404).json({ error: "Root issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, root.companyId);
+    const root = await getAccessibleResource(req, res, resolveRootIssue(req), "Root issue not found");
+    if (!root) return;
 
     const actor = getActorInfo(req);
     const actorInput = {
@@ -300,22 +292,16 @@ export function issueTreeControlRoutes(db: Db) {
   router.get("/issues/:id/tree-control/state", async (req, res) => {
     assertBoard(req);
     const issueId = req.params.id as string;
-    const issue = await issuesSvc.getById(issueId);
-    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
+    const issue = await getAccessibleResource(req, res, issuesSvc.getById(issueId), "Issue not found");
+    if (!issue) return;
     const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id);
     res.json({ activePauseHold });
   });
 
   router.get("/issues/:id/tree-holds", async (req, res) => {
     assertBoard(req);
-    const root = await resolveRootIssue(req);
-    if (!root || !hasCompanyAccess(req, root.companyId)) {
-      res.status(404).json({ error: "Root issue not found" });
-      return;
-    }
+    const root = await getAccessibleResource(req, res, resolveRootIssue(req), "Root issue not found");
+    if (!root) return;
     const statusParam = typeof req.query.status === "string" ? req.query.status : null;
     const modeParam = typeof req.query.mode === "string" ? req.query.mode : null;
     const includeMembers = req.query.includeMembers === "true";
@@ -332,11 +318,8 @@ export function issueTreeControlRoutes(db: Db) {
 
   router.get("/issues/:id/tree-holds/:holdId", async (req, res) => {
     assertBoard(req);
-    const root = await resolveRootIssue(req);
-    if (!root || !hasCompanyAccess(req, root.companyId)) {
-      res.status(404).json({ error: "Root issue not found" });
-      return;
-    }
+    const root = await getAccessibleResource(req, res, resolveRootIssue(req), "Root issue not found");
+    if (!root) return;
 
     const holdId = req.params.holdId as string;
     if (!isUuidLike(holdId)) {
@@ -357,12 +340,8 @@ export function issueTreeControlRoutes(db: Db) {
     validate(releaseIssueTreeHoldSchema),
     async (req, res) => {
       assertBoard(req);
-      const root = await resolveRootIssue(req);
-      if (!root || !hasCompanyAccess(req, root.companyId)) {
-        res.status(404).json({ error: "Root issue not found" });
-        return;
-      }
-      assertCompanyAccess(req, root.companyId);
+      const root = await getAccessibleResource(req, res, resolveRootIssue(req), "Root issue not found");
+      if (!root) return;
 
       const holdId = req.params.holdId as string;
       if (!isUuidLike(holdId)) {

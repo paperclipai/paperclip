@@ -11,7 +11,7 @@ import {
 import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { accessService, logActivity, routineService } from "../services/index.js";
-import { assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { forbidden, unauthorized } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -130,11 +130,8 @@ export function routineRoutes(
   });
 
   router.get("/routines/:id", async (req, res) => {
-    const detail = await svc.getDetail(req.params.id as string);
-    if (!detail || !hasCompanyAccess(req, detail.companyId)) {
-      res.status(404).json({ error: "Routine not found" });
-      return;
-    }
+    const detail = await getAccessibleResource(req, res, svc.getDetail(req.params.id as string), "Routine not found");
+    if (!detail) return;
     res.json(detail);
   });
 
@@ -238,11 +235,8 @@ export function routineRoutes(
   });
 
   router.get("/routines/:id/runs", async (req, res) => {
-    const routine = await svc.get(req.params.id as string);
-    if (!routine || !hasCompanyAccess(req, routine.companyId)) {
-      res.status(404).json({ error: "Routine not found" });
-      return;
-    }
+    const routine = await getAccessibleResource(req, res, svc.get(req.params.id as string), "Routine not found");
+    if (!routine) return;
     const limit = Number(req.query.limit ?? 50);
     const result = await svc.listRuns(routine.id, Number.isFinite(limit) ? limit : 50);
     res.json(result);
@@ -291,7 +285,7 @@ export function routineRoutes(
     }
     const routine = await assertCanManageExistingRoutine(req, trigger.routineId);
     if (!routine) {
-      res.status(404).json({ error: "Routine not found" });
+      res.status(404).json({ error: "Routine trigger not found" });
       return;
     }
     await assertBoardCanAssignTasks(req, routine.companyId);
@@ -333,7 +327,7 @@ export function routineRoutes(
     }
     const routine = await assertCanManageExistingRoutine(req, trigger.routineId);
     if (!routine) {
-      res.status(404).json({ error: "Routine not found" });
+      res.status(404).json({ error: "Routine trigger not found" });
       return;
     }
     const deleted = await svc.deleteTrigger(trigger.id, {
@@ -377,7 +371,7 @@ export function routineRoutes(
       }
       const routine = await assertCanManageExistingRoutine(req, trigger.routineId);
       if (!routine) {
-        res.status(404).json({ error: "Routine not found" });
+        res.status(404).json({ error: "Routine trigger not found" });
         return;
       }
       const rotated = await svc.rotateTriggerSecret(trigger.id, {
