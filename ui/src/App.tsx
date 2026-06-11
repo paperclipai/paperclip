@@ -37,6 +37,8 @@ import { BootstrapSetupUxLab } from "./pages/BootstrapSetupUxLab";
 import { CompanySettingsPluginPage } from "./pages/CompanySettingsPluginPage";
 import { CompanyAccess, CompanyAccessLegacyRoute } from "./pages/CompanyAccess";
 import { ToolsAccess } from "./pages/tools/ToolsAccess";
+import { Apps } from "./pages/apps/Apps";
+import { AppsConnect } from "./pages/apps/AppsConnect";
 import { CompanyInvites } from "./pages/CompanyInvites";
 import { CompanySkills } from "./pages/CompanySkills";
 import { Secrets } from "./pages/Secrets";
@@ -87,6 +89,8 @@ function boardRoutes() {
       <Route path="company/settings/tools/:tab" element={<LegacyToolsSettingsRedirect />} />
       <Route path="tools" element={<ToolsAccess />} />
       <Route path="tools/:tab" element={<ToolsAccess />} />
+      <Route path="apps" element={<Apps />} />
+      <Route path="apps/connect" element={<AppsConnect />} />
       <Route path="company/settings/instance" element={<Navigate to="general" replace />} />
       <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
       <Route path="company/settings/instance/general" element={<InstanceGeneralSettings />} />

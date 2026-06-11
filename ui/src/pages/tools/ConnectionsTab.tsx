@@ -403,7 +403,7 @@ export function AddConnectionDialog({
                     <SelectContent>
                       {(templates.data?.templates ?? []).map((t) => (
                         <SelectItem key={t.templateId} value={t.templateId}>
-                          {t.title ?? t.templateId}
+                          {t.name ?? t.templateId}
                         </SelectItem>
                       ))}
                     </SelectContent>

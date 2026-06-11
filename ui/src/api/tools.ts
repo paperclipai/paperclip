@@ -1,6 +1,8 @@
 import type {
   ToolApplication,
   ToolConnection,
+  ConnectToolAppResult,
+  FinishToolAppResult,
   ToolCatalogEntry,
   ToolRuntimeSlot,
   ToolPolicy,
@@ -12,9 +14,11 @@ import type {
   McpJsonImportPreview,
   ToolRuntimeHealthSummary,
   ToolRunDecisionLookup,
+  ToolOAuthStartResult,
   ToolExampleInstallResult,
   ToolExampleSmokeResult,
   ToolExampleSummary,
+  ToolStdioCommandTemplate,
   ToolProfileBinding,
   ToolProfileBindingTargetType,
   ToolProfileDefaultAction,
@@ -26,6 +30,7 @@ import type {
   ToolProfileWithDetails,
   ToolRiskLevel,
   UpdateToolPolicy,
+  AppGalleryEntry,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -47,14 +52,9 @@ export type ToolTrustRulesResponse = { trustRules: ToolPolicy[] };
 export type ToolPoliciesResponse = { policies: ToolPolicy[] };
 export type ToolExamplesResponse = { examples: ToolExampleSummary[] };
 export type ToolProfilesResponse = { profiles: ToolProfileWithDetails[] };
+export type ToolGalleryResponse = { apps: AppGalleryEntry[] };
 
-export interface StdioTemplateSummary {
-  templateId: string;
-  title?: string;
-  description?: string;
-  tools?: Array<{ name: string; description?: string }>;
-  [key: string]: unknown;
-}
+export type StdioTemplateSummary = ToolStdioCommandTemplate;
 export type StdioTemplatesResponse = { templates: StdioTemplateSummary[] };
 
 export interface CreateToolApplicationInput {
@@ -159,6 +159,26 @@ export const toolsApi = {
     api.post<ToolExampleSmokeResult>(`/companies/${companyId}/tools/examples/${exampleId}/smoke`, {}),
 
   // --- Applications ---
+  listGallery: (companyId: string) =>
+    api.get<ToolGalleryResponse>(`/companies/${companyId}/tools/gallery`),
+  connectApp: (companyId: string, input: {
+    galleryKey?: string;
+    link?: string;
+    name?: string;
+    credentialValues?: Record<string, string>;
+  }) =>
+    api.post<ConnectToolAppResult>(`/companies/${companyId}/tools/apps/connect`, input),
+  startOAuth: (connectionId: string) =>
+    api.get<ToolOAuthStartResult>(`/tools/oauth/${connectionId}/start`),
+  finishApp: (companyId: string, connectionId: string, input: {
+    enabledCatalogEntryIds: string[];
+    askFirstCatalogEntryIds: string[];
+    access: "all_agents" | { agentIds: string[] };
+  }) =>
+    api.post<FinishToolAppResult>(
+      `/companies/${companyId}/tools/apps/${connectionId}/finish`,
+      input,
+    ),
   listApplications: (companyId: string) =>
     api.get<ToolApplicationsResponse>(`/companies/${companyId}/tools/applications`),
   createApplication: (companyId: string, input: CreateToolApplicationInput) =>
