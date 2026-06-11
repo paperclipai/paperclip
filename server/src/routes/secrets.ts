@@ -115,11 +115,10 @@ export function secretRoutes(db: Db) {
   router.get("/secret-provider-configs/:id", async (req, res) => {
     assertBoard(req);
     const existing = await svc.getProviderConfigById(req.params.id as string);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Provider vault not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
     res.json(existing);
   });
 
@@ -127,7 +126,7 @@ export function secretRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const existing = await svc.getProviderConfigById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Provider vault not found" });
       return;
     }
@@ -166,7 +165,7 @@ export function secretRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const existing = await svc.getProviderConfigById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Provider vault not found" });
       return;
     }
@@ -199,7 +198,7 @@ export function secretRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const existing = await svc.getProviderConfigById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Provider vault not found" });
       return;
     }
@@ -232,7 +231,7 @@ export function secretRoutes(db: Db) {
     assertBoard(req);
     const id = req.params.id as string;
     const existing = await svc.getProviderConfigById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Provider vault not found" });
       return;
     }
@@ -389,7 +388,6 @@ export function secretRoutes(db: Db) {
       return;
     }
 
-
     const rotated = await svc.rotate(
       id,
       {
@@ -427,7 +425,6 @@ export function secretRoutes(db: Db) {
       res.status(404).json({ error: "Secret not found" });
       return;
     }
-
 
     const updated = await svc.update(id, {
       name: req.body.name,

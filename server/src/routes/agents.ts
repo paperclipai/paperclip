@@ -776,6 +776,9 @@ export function agentRoutes(
   }
 
   async function assertCanUpdateAgent(req: Request, targetAgent: { id: string; companyId: string }) {
+    if (!hasCompanyAccess(req, targetAgent.companyId)) {
+      throw notFound("Agent not found");
+    }
     assertCompanyAccess(req, targetAgent.companyId);
     const decision = await access.decide({
       actor: req.actor,
@@ -787,6 +790,9 @@ export function agentRoutes(
   }
 
   async function assertCanReadAgent(req: Request, targetAgent: { companyId: string }) {
+    if (!hasCompanyAccess(req, targetAgent.companyId)) {
+      throw notFound("Agent not found");
+    }
     assertCompanyAccess(req, targetAgent.companyId);
     if (req.actor.type === "board") {
       await assertCanReadConfigurations(req, targetAgent.companyId);
@@ -1223,6 +1229,9 @@ export function agentRoutes(
   }
 
   async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
+    if (!hasCompanyAccess(req, targetAgent.companyId)) {
+      throw notFound("Agent not found");
+    }
     assertCompanyAccess(req, targetAgent.companyId);
     if (req.actor.type !== "board") {
       throw forbidden(
@@ -1605,7 +1614,7 @@ export function agentRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const agent = await svc.getById(id);
-      if (!agent) {
+      if (!agent || !hasCompanyAccess(req, agent.companyId)) {
         res.status(404).json({ error: "Agent not found" });
         return;
       }
@@ -1970,7 +1979,7 @@ export function agentRoutes(
     const id = req.params.id as string;
     const revisionId = req.params.revisionId as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -2427,7 +2436,7 @@ export function agentRoutes(
 
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -2505,7 +2514,7 @@ export function agentRoutes(
   router.get("/agents/:id/instructions-bundle", async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -2516,7 +2525,7 @@ export function agentRoutes(
   router.patch("/agents/:id/instructions-bundle", validate(updateAgentInstructionsBundleSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -2564,7 +2573,7 @@ export function agentRoutes(
   router.get("/agents/:id/instructions-bundle/file", async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -2582,7 +2591,7 @@ export function agentRoutes(
   router.put("/agents/:id/instructions-bundle/file", validate(upsertAgentInstructionsFileSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -2631,7 +2640,7 @@ export function agentRoutes(
   router.delete("/agents/:id/instructions-bundle/file", async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -2665,7 +2674,7 @@ export function agentRoutes(
   router.patch("/agents/:id", validate(updateAgentSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
@@ -3424,7 +3433,7 @@ export function agentRoutes(
   router.post("/heartbeat-runs/:runId/watchdog-decisions", async (req, res) => {
     const runId = req.params.runId as string;
     const existing = await heartbeat.getRun(runId);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
     }

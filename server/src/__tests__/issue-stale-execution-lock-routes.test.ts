@@ -241,7 +241,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       source: "session",
     }))
       .post(`/api/issues/${issueId}/admin/force-release`)
-      .expect(403);
+      .expect(404);
 
     const res = await request(createApp(boardActor(companyId)))
       .post(`/api/issues/${issueId}/admin/force-release?clearAssignee=true`)

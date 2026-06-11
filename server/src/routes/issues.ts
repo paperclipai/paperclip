@@ -2837,11 +2837,10 @@ export function issueRoutes(
   router.get("/issues/:id/recovery-actions", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
-    if (!issue) {
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
     const active = await revalidateActiveSourceRecoveryForRead({
       issue,
       trigger: "read_projection",
@@ -2856,7 +2855,7 @@ export function issueRoutes(
   router.post("/issues/:id/recovery-actions/resolve", validate(resolveIssueRecoveryActionSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
@@ -3083,11 +3082,10 @@ export function issueRoutes(
   router.get("/issues/:id/documents/:key/annotations", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
-    if (!issue) {
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -3107,7 +3105,7 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const issue = await svc.getById(id);
-      if (!issue) {
+      if (!issue || !hasCompanyAccess(req, issue.companyId)) {
         res.status(404).json({ error: "Issue not found" });
         return;
       }
@@ -3158,11 +3156,10 @@ export function issueRoutes(
   router.get("/issues/:id/documents/:key/annotations/:threadId", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
-    if (!issue) {
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -3186,7 +3183,7 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const issue = await svc.getById(id);
-      if (!issue) {
+      if (!issue || !hasCompanyAccess(req, issue.companyId)) {
         res.status(404).json({ error: "Issue not found" });
         return;
       }
@@ -3243,7 +3240,7 @@ export function issueRoutes(
     async (req, res) => {
       const id = req.params.id as string;
       const issue = await svc.getById(id);
-      if (!issue) {
+      if (!issue || !hasCompanyAccess(req, issue.companyId)) {
         res.status(404).json({ error: "Issue not found" });
         return;
       }
@@ -3415,7 +3412,7 @@ export function issueRoutes(
   router.post("/issues/:id/documents/:key/lock", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
-    if (!issue) {
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
@@ -3463,7 +3460,7 @@ export function issueRoutes(
   router.post("/issues/:id/documents/:key/unlock", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
-    if (!issue) {
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
@@ -3765,7 +3762,7 @@ export function issueRoutes(
   router.post("/issues/:id/low-trust/promotions", validate(promoteLowTrustOutputSchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
-    if (!issue) {
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
@@ -4152,7 +4149,7 @@ export function issueRoutes(
   router.post("/issues/:id/approvals", validate(linkIssueApprovalSchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
-    if (!issue) {
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
@@ -4186,7 +4183,7 @@ export function issueRoutes(
     const id = req.params.id as string;
     const approvalId = req.params.approvalId as string;
     const issue = await svc.getById(id);
-    if (!issue) {
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
@@ -4358,7 +4355,7 @@ export function issueRoutes(
   router.post("/issues/:id/children", applyCreateIssueStatusDefault, validate(createChildIssueSchema), async (req, res) => {
     const parentId = req.params.id as string;
     const parent = await svc.getById(parentId);
-    if (!parent) {
+    if (!parent || !hasCompanyAccess(req, parent.companyId)) {
       res.status(404).json({ error: "Parent issue not found" });
       return;
     }
@@ -4469,11 +4466,10 @@ export function issueRoutes(
   router.get("/issues/:id/accepted-plan-decompositions", async (req, res) => {
     const sourceIssueId = req.params.id as string;
     const sourceIssue = await svc.getById(sourceIssueId);
-    if (!sourceIssue) {
+    if (!sourceIssue || !hasCompanyAccess(req, sourceIssue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, sourceIssue.companyId);
     const decompositions = await svc.listAcceptedPlanDecompositions(sourceIssue.id);
     res.json(decompositions);
   });
@@ -4481,7 +4477,7 @@ export function issueRoutes(
   router.post("/issues/:id/accepted-plan-decompositions", validate(createAcceptedPlanDecompositionSchema), async (req, res) => {
     const sourceIssueId = req.params.id as string;
     const sourceIssue = await svc.getById(sourceIssueId);
-    if (!sourceIssue) {
+    if (!sourceIssue || !hasCompanyAccess(req, sourceIssue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
@@ -4634,7 +4630,7 @@ export function issueRoutes(
   router.post("/issues/:id/monitor/check-now", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
-    if (!issue) {
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
@@ -4656,7 +4652,7 @@ export function issueRoutes(
     assertBoard(req);
     const id = req.params.id as string;
     const issue = await svc.getById(id);
-    if (!issue) {
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
@@ -5861,7 +5857,7 @@ export function issueRoutes(
 
     const id = req.params.id as string;
     const existing = await svc.getById(id);
-    if (!existing) {
+    if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
@@ -5932,11 +5928,10 @@ export function issueRoutes(
   router.get("/issues/:id/interactions", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
-    if (!issue) {
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
     const actor = getActorInfo(req);
     const interactionSvc = issueThreadInteractionService(db);
     const expiredInteractions = await interactionSvc.expireRequestConfirmationsSupersededByHistoricalComments(issue);
@@ -5954,7 +5949,7 @@ export function issueRoutes(
   router.post("/issues/:id/interactions", validate(createIssueThreadInteractionSchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
-    if (!issue) {
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
@@ -6005,7 +6000,7 @@ export function issueRoutes(
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
       const issue = await svc.getById(id);
-      if (!issue) {
+      if (!issue || !hasCompanyAccess(req, issue.companyId)) {
         res.status(404).json({ error: "Issue not found" });
         return;
       }
@@ -6112,7 +6107,7 @@ export function issueRoutes(
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
       const issue = await svc.getById(id);
-      if (!issue) {
+      if (!issue || !hasCompanyAccess(req, issue.companyId)) {
         res.status(404).json({ error: "Issue not found" });
         return;
       }
@@ -6168,7 +6163,7 @@ export function issueRoutes(
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
       const issue = await svc.getById(id);
-      if (!issue) {
+      if (!issue || !hasCompanyAccess(req, issue.companyId)) {
         res.status(404).json({ error: "Issue not found" });
         return;
       }
@@ -6220,7 +6215,7 @@ export function issueRoutes(
       const id = req.params.id as string;
       const interactionId = req.params.interactionId as string;
       const issue = await svc.getById(id);
-      if (!issue) {
+      if (!issue || !hasCompanyAccess(req, issue.companyId)) {
         res.status(404).json({ error: "Issue not found" });
         return;
       }

@@ -182,11 +182,10 @@ export function costRoutes(
   router.get("/issues/:id/cost-summary", async (req, res) => {
     const rawId = req.params.id as string;
     const issue = await resolveIssueByRef(rawId);
-    if (!issue) {
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
     if (!(await assertIssueCostReadAllowed(req, res, issue))) return;
     const excludeRoot = req.query.excludeRoot === "true" || req.query.excludeRoot === "1";
     const summary = await costs.issueTreeSummary(issue.companyId, issue.id, { excludeRoot });
