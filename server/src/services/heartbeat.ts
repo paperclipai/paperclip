@@ -3066,6 +3066,14 @@ export interface HeartbeatServiceOptions {
   environmentRuntime?: HeartbeatEnvironmentRuntime;
 }
 
+/**
+ * Process-wide set of heartbeat run ids currently inside executeRun().
+ * Must be shared across every heartbeatService() instance: routes, scheduler,
+ * and plugin host services each construct their own service object, but orphan
+ * reap on one instance must see runs started by another.
+ */
+export const activeRunExecutions = new Set<string>();
+
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
@@ -3087,7 +3095,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     environmentRuntime,
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
-  const activeRunExecutions = new Set<string>();
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };

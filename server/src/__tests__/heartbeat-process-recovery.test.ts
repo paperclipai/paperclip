@@ -93,6 +93,7 @@ vi.mock("../adapters/index.ts", async () => {
 });
 
 import {
+  activeRunExecutions,
   heartbeatService,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
 } from "../services/heartbeat.ts";
@@ -303,6 +304,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       model: "test-model",
     }));
     runningProcesses.clear();
+    activeRunExecutions.clear();
     for (const child of childProcesses) {
       child.kill("SIGKILL");
     }
@@ -1049,6 +1051,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(lease?.status).toBe("failed");
     expect(lease?.releasedAt).toBeTruthy();
+  });
+
+  it("does not reap a running run tracked by another heartbeat service instance", async () => {
+    const { runId } = await seedRunFixture({
+      processPid: 999_999_999,
+      includeIssue: false,
+    });
+    activeRunExecutions.add(runId);
+    
+    const schedulerHeartbeat = heartbeatService(db);
+    try {
+      const result = await schedulerHeartbeat.reapOrphanedRuns();
+      expect(result.reaped).toBe(0);
+
+      const run = await schedulerHeartbeat.getRun(runId);
+      expect(run?.status).toBe("running");
+    } finally {
+      activeRunExecutions.delete(runId);
+    }
   });
 
   it.skipIf(process.platform === "win32")("reaps orphaned descendant process groups when the parent pid is already gone", async () => {
