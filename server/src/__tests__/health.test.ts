@@ -7,10 +7,17 @@ import * as devServerStatus from "../dev-server-status.js";
 import { serverVersion } from "../version.js";
 
 const mockReadPersistedDevServerStatus = vi.hoisted(() => vi.fn());
+const mockGetSchedulerHealth = vi.hoisted(() => vi.fn().mockResolvedValue({ candidate: false, isLeader: false }));
 
 vi.mock("../dev-server-status.js", () => ({
   readPersistedDevServerStatus: mockReadPersistedDevServerStatus,
   toDevServerHealthStatus: vi.fn(),
+}));
+
+vi.mock("../services/scheduler-leadership.js", () => ({
+  getSchedulerHealth: mockGetSchedulerHealth,
+  registerSchedulerLeadershipForHealth: vi.fn(),
+  getRegisteredSchedulerLeadership: vi.fn().mockReturnValue(null),
 }));
 
 function createApp(db?: Db) {
@@ -23,6 +30,7 @@ describe("GET /health", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockReadPersistedDevServerStatus.mockReturnValue(undefined);
+    mockGetSchedulerHealth.mockResolvedValue({ candidate: false, isLeader: false });
   });
 
   afterEach(() => {
@@ -179,6 +187,7 @@ describe("GET /health", () => {
       features: {
         companyDeletionEnabled: false,
       },
+      scheduler: { candidate: false, isLeader: false },
     });
   });
 });

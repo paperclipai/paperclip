@@ -1,5 +1,6 @@
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { schedulerLeader } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 
 /**
@@ -209,4 +210,42 @@ export function registerSchedulerLeadershipForHealth(handle: SchedulerLeadership
 
 export function getRegisteredSchedulerLeadership(): SchedulerLeadership | null {
   return healthHandle;
+}
+
+// ---------------------------------------------------------------------------
+// Health query
+// ---------------------------------------------------------------------------
+
+export type SchedulerHealth = {
+  candidate: boolean;
+  isLeader: boolean;
+  leader?: { leaderId: string; hostname: string; electedAt: string; expiresAt: string };
+};
+
+/**
+ * Leadership state for /api/health: this replica's role plus the current
+ * lease row (whoever holds it). Read-only; one indexed single-row SELECT.
+ */
+export async function getSchedulerHealth(db: Db): Promise<SchedulerHealth> {
+  const handle = getRegisteredSchedulerLeadership();
+  const rows = await db
+    .select()
+    .from(schedulerLeader)
+    .where(eq(schedulerLeader.name, "default"))
+    .limit(1);
+  const row = rows[0];
+  return {
+    candidate: handle !== null,
+    isLeader: handle?.isLeader() ?? false,
+    ...(row
+      ? {
+          leader: {
+            leaderId: row.leaderId,
+            hostname: row.hostname,
+            electedAt: row.electedAt.toISOString(),
+            expiresAt: row.expiresAt.toISOString(),
+          },
+        }
+      : {}),
+  };
 }
