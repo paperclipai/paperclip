@@ -33,12 +33,18 @@ describeEmbedded("advisory locks", () => {
 
   it("withAdvisoryXactLock serializes critical sections across two clients", async () => {
     const order: string[] = [];
+    // Deterministic latch: A's critical section resolves `aInside` as its
+    // first statement, and the test waits on it before starting B — A is
+    // guaranteed to hold the lock when B contends, with no timing sleep.
+    let aInsideResolve!: () => void;
+    const aInside = new Promise<void>((resolve) => (aInsideResolve = resolve));
     const first = withAdvisoryXactLock(dbA, "test-serialize", async () => {
+      aInsideResolve();
       order.push("a-start");
       await new Promise((resolve) => setTimeout(resolve, 150));
       order.push("a-end");
     });
-    await new Promise((resolve) => setTimeout(resolve, 50)); // let A acquire first
+    await aInside;
     const second = withAdvisoryXactLock(dbB, "test-serialize", async () => {
       order.push("b-start");
     });

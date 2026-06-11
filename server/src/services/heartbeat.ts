@@ -7747,7 +7747,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return claimedRuns;
       });
       if (!outcome.acquired) {
-        logger.info({ agentId }, "agent start skipped; another replica holds the start lock");
+        logger.debug({ agentId }, "agent start skipped; another replica holds the start lock");
         return [];
       }
       return outcome.result;

@@ -11,6 +11,7 @@ import type { Db } from "@paperclipai/db";
  * bounded by max_locks_per_transaction * max_connections) — lock names are
  * coordination points (a handful), never per-row keys.
  */
+// Keep in sync with PAPERCLIP_LOCK_NAMESPACE in packages/db/src/client.ts.
 const PAPERCLIP_LOCK_NAMESPACE = 0x70_63_6c_70; // "pclp"
 
 /**

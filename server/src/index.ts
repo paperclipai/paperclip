@@ -603,7 +603,17 @@ export async function startServer(): Promise<StartedServer> {
     }
 
     databaseBackupInFlight = true;
-    const lock = await trySessionAdvisoryLock(activeDatabaseConnectionString, "database-backup");
+    // Acquire the cross-replica lock under an explicit catch: the main
+    // try/finally (which resets the flag) only starts below, so a throwing
+    // acquisition (e.g. connection failure) must reset the flag here or it
+    // would leak `true` and block all future backups on this replica.
+    let lock: Awaited<ReturnType<typeof trySessionAdvisoryLock>>;
+    try {
+      lock = await trySessionAdvisoryLock(activeDatabaseConnectionString, "database-backup");
+    } catch (err) {
+      databaseBackupInFlight = false;
+      throw err;
+    }
     if (!lock.acquired) {
       databaseBackupInFlight = false;
       const message = "Database backup already in progress on another replica";
