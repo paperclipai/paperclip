@@ -2,6 +2,7 @@
 // advisory locks) without declaring its own postgres dependency/version.
 export { default as postgres } from "postgres";
 export {
+  PAPERCLIP_LOCK_NAMESPACE,
   createDb,
   getPostgresDataDirectory,
   ensurePostgresDatabase,
