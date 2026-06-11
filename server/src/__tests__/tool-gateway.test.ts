@@ -6,11 +6,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  companyMemberships,
   companies,
   createDb,
   heartbeatRuns,
   issueThreadInteractions,
   issues,
+  principalPermissionGrants,
   projects,
   toolAccessAuditEvents,
   toolActionRequests,
@@ -186,6 +188,8 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(projects);
+    await db.delete(principalPermissionGrants);
+    await db.delete(companyMemberships);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -413,9 +417,35 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     expect(audit.body.error).toBe("Board access required");
   });
 
-  it("allows board runtime control and audit reads through explicit board-only routes", async () => {
+  it("allows board runtime control and audit reads through explicit board permissions", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
+    const userId = `board-${randomUUID()}`;
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "operator",
+    });
+    await db.insert(principalPermissionGrants).values([
+      {
+        companyId: company.id,
+        principalType: "user",
+        principalId: userId,
+        permissionKey: "tools:manage_runtime",
+        scope: null,
+        grantedByUserId: "owner",
+      },
+      {
+        companyId: company.id,
+        principalType: "user",
+        principalId: userId,
+        permissionKey: "tools:view_audit",
+        scope: null,
+        grantedByUserId: "owner",
+      },
+    ]);
     const { run } = await createIssueAndRun(db, company.id, agent.id);
     await allowToolsForAgent(db, company.id, agent.id, ["mcp-stdio-fixture:increment_counter"]);
     const gateway = createTestToolGatewayService(db, {
@@ -435,9 +465,11 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
 
     const app = createGatewayRouteApp(db, gateway, {
       type: "board",
-      userId: "local-board",
-      source: "local_implicit",
-      isInstanceAdmin: true,
+      userId,
+      source: "session",
+      companyIds: [company.id],
+      memberships: [{ companyId: company.id, membershipRole: "operator", status: "active" }],
+      isInstanceAdmin: false,
     });
 
     const list = await request(app)
