@@ -50,6 +50,8 @@ export function AppsConnect() {
   const [step, setStep] = useState<Step>("gallery");
   const [entry, setEntry] = useState<AppGalleryEntry | null>(null);
   const [linkUrl, setLinkUrl] = useState("");
+  const [linkName, setLinkName] = useState("");
+  const [linkNeedsKey, setLinkNeedsKey] = useState(false);
   const [linkKey, setLinkKey] = useState("");
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [connectResult, setConnectResult] = useState<ConnectToolAppResult | null>(null);
@@ -77,9 +79,11 @@ export function AppsConnect() {
       if (entry) {
         return toolsApi.connectApp(selectedCompanyId!, { galleryKey: entry.key, credentialValues: credentials });
       }
-      const trimmedKey = linkKey.trim();
+      const trimmedKey = linkNeedsKey ? linkKey.trim() : "";
+      const trimmedName = linkName.trim();
       return toolsApi.connectApp(selectedCompanyId!, {
         link: linkUrl,
+        name: trimmedName || undefined,
         credentialValues: trimmedKey ? { [LINK_CREDENTIAL_CONFIG_PATH]: trimmedKey } : undefined,
       });
     },
@@ -140,7 +144,10 @@ export function AppsConnect() {
     return <div className="p-6 text-sm text-muted-foreground">Select a company to connect apps.</div>;
   }
 
-  const appName = connectResult?.application.name ?? entry?.name ?? defaultLinkName(linkUrl) ?? "this app";
+  const appName =
+    connectResult?.application.name ??
+    entry?.name ??
+    (linkName.trim() || defaultLinkName(linkUrl) || "this app");
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -163,6 +170,8 @@ export function AppsConnect() {
           onPick={(picked) => {
             setEntry(picked);
             setLinkUrl("");
+            setLinkName("");
+            setLinkNeedsKey(false);
             setLinkKey("");
             setCredentials({});
             setStep("key");
@@ -170,6 +179,8 @@ export function AppsConnect() {
           onUseLink={(url) => {
             setEntry(null);
             setLinkUrl(url);
+            setLinkName(defaultLinkName(url) ?? "");
+            setLinkNeedsKey(false);
             setLinkKey("");
             setCredentials({});
             setStep("key");
@@ -189,8 +200,15 @@ export function AppsConnect() {
       )}
 
       {step === "key" && !entry && linkUrl && (
-        <LinkKeyStep
+        <LinkConnectStep
           link={linkUrl}
+          name={linkName}
+          onNameChange={setLinkName}
+          needsKey={linkNeedsKey}
+          onNeedsKeyChange={(next) => {
+            setLinkNeedsKey(next);
+            if (!next) setLinkKey("");
+          }}
           keyValue={linkKey}
           onKeyChange={setLinkKey}
           submitting={connectMutation.isPending}
@@ -442,8 +460,12 @@ function defaultLinkName(link: string): string | null {
   }
 }
 
-function LinkKeyStep({
+function LinkConnectStep({
   link,
+  name,
+  onNameChange,
+  needsKey,
+  onNeedsKeyChange,
   keyValue,
   onKeyChange,
   submitting,
@@ -451,6 +473,10 @@ function LinkKeyStep({
   onConnect,
 }: {
   link: string;
+  name: string;
+  onNameChange: (next: string) => void;
+  needsKey: boolean;
+  onNeedsKeyChange: (next: boolean) => void;
   keyValue: string;
   onKeyChange: (next: string) => void;
   submitting: boolean;
@@ -471,29 +497,64 @@ function LinkKeyStep({
 
       <div className="mt-8 space-y-6">
         <div>
-          <label className="text-sm font-medium text-foreground">App key</label>
+          <label className="text-sm font-medium text-foreground">Name</label>
           <Input
-            type="password"
-            autoComplete="off"
-            value={keyValue}
-            onChange={(e) => onKeyChange(e.target.value)}
-            placeholder="Optional"
-            className="mt-2 h-11 font-mono"
+            value={name}
+            onChange={(e) => onNameChange(e.target.value)}
+            placeholder="My app"
+            className="mt-2 h-11"
           />
           <p className="mt-2 text-xs text-muted-foreground">
-            If this app gave you a key, paste it here. Otherwise leave this blank.
+            We filled this in from the link. Change it if you’d like.
           </p>
         </div>
 
-        <div className="flex items-start gap-3 rounded-lg bg-muted/50 p-4">
-          <Lock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-          <div>
-            <div className="text-sm font-medium text-foreground">Your key is stored securely.</div>
-            <div className="text-xs text-muted-foreground">
-              You can replace it anytime from this app’s page.
+        <div>
+          <label className="text-sm font-medium text-foreground">Does it need a key?</label>
+          <div className="mt-2 inline-flex rounded-lg border border-border bg-muted/50 p-1">
+            <SegmentedOption
+              label="No"
+              selected={!needsKey}
+              onClick={() => onNeedsKeyChange(false)}
+            />
+            <SegmentedOption
+              label="Yes"
+              selected={needsKey}
+              onClick={() => onNeedsKeyChange(true)}
+            />
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {needsKey
+              ? "Paste the key this app gave you."
+              : "Most apps just work from the link — pick Yes only if the app gave you a key."}
+          </p>
+        </div>
+
+        {needsKey && (
+          <div className="space-y-4">
+            <div>
+              <label className="text-sm font-medium text-foreground">App key</label>
+              <Input
+                type="password"
+                autoComplete="off"
+                value={keyValue}
+                onChange={(e) => onKeyChange(e.target.value)}
+                placeholder="••••••••••••••••"
+                className="mt-2 h-11 font-mono"
+              />
+            </div>
+
+            <div className="flex items-start gap-3 rounded-lg bg-muted/50 p-4">
+              <Lock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+              <div>
+                <div className="text-sm font-medium text-foreground">Your key is stored securely.</div>
+                <div className="text-xs text-muted-foreground">
+                  You can replace it anytime from this app’s page.
+                </div>
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
 
       <div className="mt-8 flex items-center justify-between">
@@ -504,13 +565,39 @@ function LinkKeyStep({
           <span className="hidden text-xs text-muted-foreground sm:inline">
             We’ll check the link before turning anything on.
           </span>
-          <Button onClick={onConnect} disabled={submitting}>
+          <Button onClick={onConnect} disabled={submitting || (needsKey && keyValue.trim().length === 0)}>
             {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {submitting ? "Checking…" : "Check link"}
           </Button>
         </div>
       </div>
     </div>
+  );
+}
+
+function SegmentedOption({
+  label,
+  selected,
+  onClick,
+}: {
+  label: string;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={selected}
+      className={cn(
+        "min-w-[64px] rounded-md px-4 py-1.5 text-sm font-medium transition-colors",
+        selected
+          ? "bg-background text-foreground shadow-sm"
+          : "text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {label}
+    </button>
   );
 }
 
