@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="812" viewBox="0 0 375 812"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- Mobile 375x812 — flag ON: Conference Room full-screen chat; activity feed collapses to a Feed tab -->
+  <rect x="0" y="0" width="375" height="812" />
+
+  <!-- top bar -->
+  <rect x="0" y="0" width="375" height="56" />
+  <rect x="16" y="16" width="24" height="24" rx="4" fill="#e6e6e6" />
+  <text x="56" y="36" font-size="14" stroke="none" fill="#000" font-weight="bold">Conference Room</text>
+
+  <!-- chat / feed tabs -->
+  <g transform="translate(16, 72)">
+    <rect width="343" height="40" rx="8" />
+    <rect x="4" y="4" width="168" height="32" rx="4" fill="#e6e6e6" />
+    <text x="88" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#000" font-weight="bold">Chat</text>
+    <text x="256" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#000">Feed</text>
+  </g>
+
+  <!-- agent bubble 1 -->
+  <circle cx="32" cy="144" r="12" fill="#e6e6e6" />
+  <text x="52" y="140" font-size="12" stroke="none" fill="#000" font-weight="bold">CEO</text>
+  <text x="88" y="140" font-size="12" stroke="none" fill="#666">9:14 AM</text>
+  <g transform="translate(52, 152)">
+    <rect width="288" height="72" rx="8" fill="#e6e6e6" />
+    <text x="16" y="28" font-size="14" stroke="none" fill="#000">Morning! Two tasks moved to</text>
+    <text x="16" y="48" font-size="14" stroke="none" fill="#000">review overnight. Summarize?</text>
+  </g>
+  <g transform="translate(52, 232)">
+    <rect width="24" height="16" rx="4" />
+    <rect x="32" width="24" height="16" rx="4" />
+    <text x="64" y="12" font-size="12" stroke="none" fill="#666">copy · vote</text>
+  </g>
+
+  <!-- user bubble -->
+  <g transform="translate(88, 272)">
+    <rect width="272" height="56" rx="8" />
+    <text x="16" y="26" font-size="14" stroke="none" fill="#000">Yes — and queue a release</text>
+    <text x="16" y="46" font-size="14" stroke="none" fill="#000">checklist task.</text>
+  </g>
+
+  <!-- agent bubble 2 with task chip -->
+  <circle cx="32" cy="368" r="12" fill="#e6e6e6" />
+  <text x="52" y="364" font-size="12" stroke="none" fill="#000" font-weight="bold">CEO</text>
+  <g transform="translate(52, 376)">
+    <rect width="288" height="88" rx="8" fill="#e6e6e6" />
+    <text x="16" y="28" font-size="14" stroke="none" fill="#000">Created the checklist task and</text>
+    <text x="16" y="48" font-size="14" stroke="none" fill="#000">assigned QA:</text>
+    <rect x="16" y="56" width="192" height="24" rx="4" fill="#fff" />
+    <text x="28" y="72" font-size="12" stroke="none" fill="#000">PAP-141 · Release checklist</text>
+  </g>
+
+  <!-- typing dots -->
+  <g transform="translate(52, 488)">
+    <rect width="80" height="32" rx="8" fill="#e6e6e6" />
+    <circle cx="24" cy="16" r="4" fill="#666" stroke="none" />
+    <circle cx="40" cy="16" r="4" fill="#666" stroke="none" />
+    <circle cx="56" cy="16" r="4" fill="#666" stroke="none" />
+  </g>
+
+  <!-- composer pinned to bottom -->
+  <g transform="translate(16, 720)">
+    <rect width="343" height="64" rx="8" />
+    <rect x="12" y="20" width="56" height="24" rx="12" fill="#e6e6e6" />
+    <text x="40" y="36" font-size="12" text-anchor="middle" stroke="none" fill="#000">Agent</text>
+    <text x="80" y="37" font-size="14" stroke="none" fill="#666">Message...</text>
+    <rect x="287" y="12" width="44" height="40" rx="4" fill="#000" />
+    <text x="309" y="37" font-size="14" text-anchor="middle" stroke="none" fill="#fff">&#8593;</text>
+  </g>
+
+  <!-- annotation layer -->
+  <g stroke="#d33" stroke-dasharray="6 4" fill="none">
+    <rect x="184" y="76" width="171" height="32" rx="4" />
+  </g>
+  <g stroke="#d33" fill="none">
+    <circle cx="40" cy="568" r="14" />
+    <circle cx="336" cy="128" r="14" />
+  </g>
+  <text x="336" y="133" font-size="14" text-anchor="middle" stroke="none" fill="#d33" font-weight="bold">3</text>
+  <text x="40" y="573" font-size="14" text-anchor="middle" stroke="none" fill="#d33" font-weight="bold">2</text>
+  <text x="64" y="564" font-size="12" stroke="none" fill="#d33">same chat surfaces as desktop;</text>
+  <text x="64" y="580" font-size="12" stroke="none" fill="#d33">feed [3] moves into a Feed tab</text>
+</svg>

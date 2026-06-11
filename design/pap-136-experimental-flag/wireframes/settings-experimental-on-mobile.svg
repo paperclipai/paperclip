@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="812" viewBox="0 0 375 812"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- Mobile 375x812 — toggle just flipped ON; toast confirms; hamburger nav gains Conference Room next time it opens -->
+  <rect x="0" y="0" width="375" height="812" />
+
+  <!-- top bar -->
+  <rect x="0" y="0" width="375" height="56" />
+  <text x="16" y="36" font-size="14" stroke="none" fill="#000">&#8592;</text>
+  <text x="40" y="36" font-size="14" stroke="none" fill="#000" font-weight="bold">Experimental</text>
+
+  <!-- NEW card: Conference Room Chat (ON) -->
+  <g transform="translate(16, 80)">
+    <rect width="343" height="144" rx="8" />
+    <text x="16" y="28" font-size="14" stroke="none" fill="#000" font-weight="bold">Conference Room Chat</text>
+    <text x="16" y="52" font-size="12" stroke="none" fill="#666">Adds a Conference Room — one chat</text>
+    <text x="16" y="70" font-size="12" stroke="none" fill="#666">where you and your whole team work</text>
+    <text x="16" y="88" font-size="12" stroke="none" fill="#666">together — plus the live feed and new</text>
+    <text x="16" y="106" font-size="12" stroke="none" fill="#666">onboarding. Turn off to restore classic UI.</text>
+    <rect x="287" y="24" width="40" height="24" rx="12" fill="#000" />
+    <circle cx="315" cy="36" r="8" fill="#fff" />
+  </g>
+
+  <!-- card: Cloud Sync -->
+  <g transform="translate(16, 240)">
+    <rect width="343" height="96" rx="8" />
+    <text x="16" y="28" font-size="14" stroke="none" fill="#000" font-weight="bold">Cloud Sync</text>
+    <text x="16" y="52" font-size="12" stroke="none" fill="#666">Show Paperclip Cloud upstream</text>
+    <text x="16" y="70" font-size="12" stroke="none" fill="#666">connection and review surfaces.</text>
+    <rect x="287" y="24" width="40" height="24" rx="12" />
+    <circle cx="299" cy="36" r="8" />
+  </g>
+
+  <!-- nav drawer preview (open state) showing new item -->
+  <g transform="translate(16, 376)">
+    <rect width="343" height="296" rx="8" fill="#e6e6e6" />
+    <text x="16" y="28" font-size="12" stroke="none" fill="#666">NAV DRAWER (next open)</text>
+    <rect x="16" y="44" width="311" height="36" rx="4" fill="#fff" />
+    <text x="32" y="67" font-size="14" stroke="none" fill="#000">Inbox</text>
+    <rect x="16" y="88" width="311" height="36" rx="4" fill="#fff" />
+    <text x="32" y="111" font-size="14" stroke="none" fill="#000" font-weight="bold">Conference Room</text>
+    <rect x="16" y="132" width="311" height="36" rx="4" fill="#fff" />
+    <text x="32" y="155" font-size="14" stroke="none" fill="#000">My Tasks</text>
+    <rect x="16" y="176" width="311" height="36" rx="4" fill="#fff" />
+    <text x="32" y="199" font-size="14" stroke="none" fill="#000">Projects</text>
+    <rect x="16" y="220" width="311" height="36" rx="4" fill="#fff" />
+    <text x="32" y="243" font-size="14" stroke="none" fill="#000">Agents</text>
+  </g>
+
+  <!-- toast -->
+  <g transform="translate(48, 720)">
+    <rect width="280" height="48" rx="8" fill="#e6e6e6" />
+    <text x="140" y="29" font-size="14" text-anchor="middle" stroke="none" fill="#000">Experimental settings saved</text>
+  </g>
+
+  <!-- annotation layer -->
+  <g stroke="#d33" stroke-dasharray="6 4" fill="none">
+    <rect x="295" y="96" width="56" height="40" rx="8" />
+    <rect x="24" y="456" width="327" height="52" rx="4" />
+  </g>
+  <g stroke="#d33" fill="none">
+    <circle cx="272" cy="116" r="14" />
+    <circle cx="40" cy="440" r="14" />
+  </g>
+  <text x="272" y="121" font-size="14" text-anchor="middle" stroke="none" fill="#d33" font-weight="bold">1</text>
+  <text x="40" y="445" font-size="14" text-anchor="middle" stroke="none" fill="#d33" font-weight="bold">2</text>
+  <text x="64" y="444" font-size="12" stroke="none" fill="#d33">on mobile, sidebar = drawer; item shows next open</text>
+</svg>

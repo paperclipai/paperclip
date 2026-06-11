@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="440" viewBox="0 0 1280 440"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- Flow map — how the Conference Room Chat experimental flag gates the worktree's features -->
+  <rect x="0" y="0" width="1280" height="440" />
+  <text x="48" y="48" font-size="20" stroke="none" fill="#000" font-weight="bold">Flow — turning "Conference Room Chat" on and off</text>
+
+  <!-- thumb 1: default OFF / classic -->
+  <g transform="translate(48, 88)">
+    <rect width="256" height="192" rx="8" />
+    <text x="16" y="28" font-size="14" stroke="none" fill="#000" font-weight="bold">1 · Default (flag OFF)</text>
+    <rect x="16" y="44" width="48" height="128" fill="#e6e6e6" />
+    <rect x="80" y="44" width="160" height="24" rx="4" />
+    <rect x="80" y="80" width="160" height="24" rx="4" />
+    <rect x="80" y="116" width="160" height="24" rx="4" />
+    <text x="16" y="188" font-size="12" stroke="none" fill="#666">Classic UI — identical to master</text>
+  </g>
+
+  <!-- arrow 1 -->
+  <g stroke="#000" fill="none">
+    <path d="M 312 184 L 360 184" />
+    <path d="M 352 178 L 360 184 L 352 190" />
+  </g>
+  <text x="336" y="168" font-size="12" text-anchor="middle" stroke="none" fill="#666">opens</text>
+
+  <!-- thumb 2: settings -->
+  <g transform="translate(368, 88)">
+    <rect width="256" height="192" rx="8" />
+    <text x="16" y="28" font-size="14" stroke="none" fill="#000" font-weight="bold">2 · Settings &gt; Experimental</text>
+    <rect x="16" y="44" width="224" height="40" rx="4" />
+    <text x="24" y="68" font-size="12" stroke="none" fill="#000">Conference Room Chat</text>
+    <rect x="200" y="52" width="32" height="20" rx="10" />
+    <circle cx="210" cy="62" r="6" />
+    <rect x="16" y="96" width="224" height="40" rx="4" fill="#e6e6e6" />
+    <text x="16" y="188" font-size="12" stroke="none" fill="#666">New card, OFF by default</text>
+  </g>
+
+  <!-- arrow 2 -->
+  <g stroke="#000" fill="none">
+    <path d="M 632 184 L 680 184" />
+    <path d="M 672 178 L 680 184 L 672 190" />
+  </g>
+  <text x="656" y="168" font-size="12" text-anchor="middle" stroke="none" fill="#666">toggle ON</text>
+
+  <!-- thumb 3: flag on -->
+  <g transform="translate(688, 88)">
+    <rect width="256" height="192" rx="8" />
+    <text x="16" y="28" font-size="14" stroke="none" fill="#000" font-weight="bold">3 · Saved instantly</text>
+    <rect x="16" y="44" width="224" height="40" rx="4" />
+    <text x="24" y="68" font-size="12" stroke="none" fill="#000">Conference Room Chat</text>
+    <rect x="200" y="52" width="32" height="20" rx="10" fill="#000" />
+    <circle cx="222" cy="62" r="6" fill="#fff" />
+    <rect x="16" y="140" width="160" height="32" rx="4" fill="#e6e6e6" />
+    <text x="24" y="160" font-size="12" stroke="none" fill="#000">Settings saved</text>
+    <text x="16" y="188" font-size="12" stroke="none" fill="#666">No reload needed</text>
+  </g>
+
+  <!-- arrow 3 -->
+  <g stroke="#000" fill="none">
+    <path d="M 952 184 L 1000 184" />
+    <path d="M 992 178 L 1000 184 L 992 190" />
+  </g>
+
+  <!-- thumb 4: unlocked -->
+  <g transform="translate(1008, 88)">
+    <rect width="256" height="192" rx="8" />
+    <text x="16" y="28" font-size="14" stroke="none" fill="#000" font-weight="bold">4 · New NUX unlocked</text>
+    <rect x="16" y="44" width="48" height="128" fill="#e6e6e6" />
+    <rect x="24" y="56" width="32" height="16" rx="4" fill="#fff" />
+    <rect x="80" y="44" width="104" height="80" rx="4" />
+    <rect x="192" y="44" width="48" height="80" rx="4" fill="#e6e6e6" />
+    <rect x="80" y="136" width="160" height="24" rx="4" />
+    <text x="16" y="188" font-size="12" stroke="none" fill="#666">Conf Room · feed · wizard · bubbles</text>
+  </g>
+
+  <!-- return arrow: toggle off -->
+  <g stroke="#000" fill="none" stroke-dasharray="6 4">
+    <path d="M 1136 296 L 1136 344 L 176 344 L 176 296" />
+    <path d="M 170 304 L 176 296 L 182 304" />
+  </g>
+  <text x="656" y="336" font-size="12" text-anchor="middle" stroke="none" fill="#666">toggle OFF at any time &#8594; instant return to classic UI (no data lost; /board-chat redirects home)</text>
+
+  <!-- annotation -->
+  <g stroke="#d33" fill="none">
+    <circle cx="48" cy="396" r="14" />
+  </g>
+  <text x="48" y="401" font-size="14" text-anchor="middle" stroke="none" fill="#d33" font-weight="bold">!</text>
+  <text x="72" y="400" font-size="12" stroke="none" fill="#d33">One flag gates everything from this worktree; pure bug fixes (typing-dots restore, flyout dedupe, wrap fix) stay unflagged — see plan §3.</text>
+</svg>

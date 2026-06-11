@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="812" viewBox="0 0 375 812"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- Mobile 375x812 — Experimental settings list, new card OFF. Settings nav collapses to back chevron + title. -->
+  <rect x="0" y="0" width="375" height="812" />
+
+  <!-- top bar -->
+  <rect x="0" y="0" width="375" height="56" />
+  <text x="16" y="36" font-size="14" stroke="none" fill="#000">&#8592;</text>
+  <text x="40" y="36" font-size="14" stroke="none" fill="#000" font-weight="bold">Experimental</text>
+  <text x="16" y="84" font-size="12" stroke="none" fill="#666">Settings / Instance settings / Experimental</text>
+
+  <!-- card: Enable Environments -->
+  <g transform="translate(16, 104)">
+    <rect width="343" height="96" rx="8" />
+    <text x="16" y="28" font-size="14" stroke="none" fill="#000" font-weight="bold">Enable Environments</text>
+    <text x="16" y="52" font-size="12" stroke="none" fill="#666">Show environment management in</text>
+    <text x="16" y="70" font-size="12" stroke="none" fill="#666">company settings.</text>
+    <rect x="287" y="24" width="40" height="24" rx="12" />
+    <circle cx="299" cy="36" r="8" />
+  </g>
+
+  <!-- card: Streamlined Left Navigation (on) -->
+  <g transform="translate(16, 216)">
+    <rect width="343" height="96" rx="8" />
+    <text x="16" y="28" font-size="14" stroke="none" fill="#000" font-weight="bold">Streamlined Left Navigation</text>
+    <text x="16" y="52" font-size="12" stroke="none" fill="#666">Fewer items in the left navigation</text>
+    <text x="16" y="70" font-size="12" stroke="none" fill="#666">bar; Projects nested under Work.</text>
+    <rect x="287" y="24" width="40" height="24" rx="12" fill="#000" />
+    <circle cx="315" cy="36" r="8" fill="#fff" />
+  </g>
+
+  <!-- NEW card: Conference Room Chat (off) -->
+  <g transform="translate(16, 328)">
+    <rect width="343" height="144" rx="8" />
+    <text x="16" y="28" font-size="14" stroke="none" fill="#000" font-weight="bold">Conference Room Chat</text>
+    <text x="16" y="52" font-size="12" stroke="none" fill="#666">Adds a Conference Room — one chat</text>
+    <text x="16" y="70" font-size="12" stroke="none" fill="#666">where you and your whole team work</text>
+    <text x="16" y="88" font-size="12" stroke="none" fill="#666">together — plus the live feed and new</text>
+    <text x="16" y="106" font-size="12" stroke="none" fill="#666">onboarding. Turn off to restore classic UI.</text>
+    <rect x="287" y="24" width="40" height="24" rx="12" />
+    <circle cx="299" cy="36" r="8" />
+  </g>
+
+  <!-- card: Cloud Sync -->
+  <g transform="translate(16, 488)">
+    <rect width="343" height="96" rx="8" />
+    <text x="16" y="28" font-size="14" stroke="none" fill="#000" font-weight="bold">Cloud Sync</text>
+    <text x="16" y="52" font-size="12" stroke="none" fill="#666">Show Paperclip Cloud upstream</text>
+    <text x="16" y="70" font-size="12" stroke="none" fill="#666">connection and review surfaces.</text>
+    <rect x="287" y="24" width="40" height="24" rx="12" />
+    <circle cx="299" cy="36" r="8" />
+  </g>
+
+  <!-- card: Auto-Restart (clipped) -->
+  <g transform="translate(16, 600)">
+    <rect width="343" height="96" rx="8" />
+    <text x="16" y="28" font-size="14" stroke="none" fill="#000" font-weight="bold">Auto-Restart Dev Server</text>
+    <text x="16" y="52" font-size="12" stroke="none" fill="#666">Restart the dev server automatically</text>
+    <text x="16" y="70" font-size="12" stroke="none" fill="#666">when the current boot is stale.</text>
+    <rect x="287" y="24" width="40" height="24" rx="12" />
+    <circle cx="299" cy="36" r="8" />
+  </g>
+
+  <!-- annotation layer -->
+  <g stroke="#d33" stroke-dasharray="6 4" fill="none">
+    <rect x="8" y="320" width="359" height="160" rx="8" />
+  </g>
+  <g stroke="#d33" fill="none">
+    <circle cx="40" cy="744" r="14" />
+  </g>
+  <text x="40" y="749" font-size="14" text-anchor="middle" stroke="none" fill="#d33" font-weight="bold">1</text>
+  <text x="64" y="740" font-size="12" stroke="none" fill="#d33">same card, full-width; description</text>
+  <text x="64" y="756" font-size="12" stroke="none" fill="#d33">wraps to 4 lines on mobile</text>
+</svg>

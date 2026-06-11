@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>PAP-136 — "Conference Room Chat" experimental flag</title>
+<style>
+  :root{--bg:#fafaf8;--panel:#fff;--ink:#111;--muted:#666;--line:#e5e5e0;--accent:#d33}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,system-ui,"Segoe UI",sans-serif;line-height:1.5}
+  a{color:inherit}
+  .wrap{display:grid;grid-template-columns:240px 1fr;gap:32px;max-width:1560px;margin:0 auto;padding:24px}
+  .toc{position:sticky;top:24px;align-self:start;border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:16px}
+  .toc h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 8px}
+  .toc a{display:block;padding:6px 8px;border-radius:6px;text-decoration:none;font-size:14px}
+  .toc a:hover{background:var(--bg)}
+  .toc .grp{margin-top:14px}
+  .hero{border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:24px;margin-bottom:24px}
+  .hero .crumb{font-size:12px;color:var(--muted)}
+  .hero h1{margin:6px 0 8px;font-size:28px}
+  .hero p{margin:0 0 12px;max-width:80ch;color:#333}
+  .pills{display:flex;flex-wrap:wrap;gap:8px}
+  .pill{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:4px 10px;background:var(--bg);color:#333}
+  section{border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:20px;margin-bottom:24px;scroll-margin-top:80px}
+  section h3{margin:0 0 4px;font-size:20px}
+  .sub{color:var(--muted);font-size:13px;margin:0 0 16px}
+  .grid{display:grid;grid-template-columns:1.4fr 220px .9fr;gap:24px;align-items:start}
+  .wire{border:1px solid var(--line);border-radius:8px;background:#fff;width:100%;cursor:zoom-in;transition:box-shadow .15s}
+  .wire:hover{box-shadow:0 4px 18px rgba(0,0,0,.10)}
+  .wire.mobile-wire{max-width:220px}
+  .notes h4{margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+  .notes ol{margin:0 0 16px;padding-left:20px}
+  .notes li{margin:4px 0;font-size:14px}
+  .callout{border-left:3px solid var(--accent);background:var(--bg);padding:10px 12px;border-radius:0 6px 6px 0;font-size:14px}
+  table.matrix{border-collapse:collapse;width:100%;font-size:14px}
+  table.matrix th,table.matrix td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  table.matrix th{background:var(--bg);font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+  code{background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:13px}
+  .lb{position:fixed;inset:0;background:rgba(20,20,20,.85);display:none;align-items:center;justify-content:center;padding:24px;z-index:50}
+  .lb.open{display:flex}
+  .lb img{max-width:96vw;max-height:92vh;background:#fff;border-radius:8px}
+  @media(max-width:1180px){.grid{grid-template-columns:1.4fr 220px}.notes{grid-column:1/-1}}
+  @media(max-width:980px){.grid{grid-template-columns:1fr}.wire.mobile-wire{max-width:280px}}
+  @media(max-width:900px){.wrap{grid-template-columns:1fr}.toc{position:static}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="toc">
+    <h2>Contents</h2>
+    <a href="#flow">Interaction flow</a>
+    <div class="grp"><h2>Screens</h2>
+      <a href="#off">Settings — flag OFF (default)</a>
+      <a href="#on">Settings — toggling ON</a>
+      <a href="#unlocked">What turns on</a>
+    </div>
+    <div class="grp"><h2>Plan</h2>
+      <a href="#matrix">Gating matrix</a>
+      <a href="#q">Open questions</a>
+    </div>
+  </nav>
+
+  <main>
+    <div class="hero">
+      <div class="crumb">PAP-136 · Put all the work on this worktree behind an experimental feature flag</div>
+      <h1>"Conference Room Chat" — experimental flag interaction</h1>
+      <p>One new instance-level experimental flag, <code>enableConferenceRoomChat</code>, gates every
+         user-visible change from the <code>PAP-46-nux-tweaks</code> worktree: the Conference Room chat page,
+         the live activity feed, the capsule onboarding wizard, chat-style task threads, brand status chips,
+         and the team-centric copy. <b>OFF by default</b> — with the flag off the app looks and behaves exactly
+         like master. It follows the same pattern the board approved for the Streamlined Left Navigation flag.</p>
+      <div class="pills">
+        <span class="pill">3 screens</span>
+        <span class="pill">Desktop + mobile</span>
+        <span class="pill">Lo-fi · monochrome</span>
+        <span class="pill">Click any wireframe to zoom</span>
+      </div>
+    </div>
+
+    <section id="flow">
+      <h3>Interaction flow</h3>
+      <p class="sub">Default OFF &rarr; settings toggle &rarr; instant unlock &rarr; reversible at any time.</p>
+      <img class="wire" data-zoom src="wireframes/flow.svg" alt="Flow diagram"/>
+    </section>
+
+    <section id="off">
+      <h3>Settings &gt; Instance settings &gt; Experimental — flag OFF (default)</h3>
+      <p class="sub">The new card sits in the existing experimental list, right after "Streamlined Left Navigation Bar".</p>
+      <div class="grid">
+        <img class="wire" data-zoom src="wireframes/settings-experimental-off.svg" alt="Settings, flag off, desktop"/>
+        <img class="wire mobile-wire mobile-col" data-zoom src="wireframes/settings-experimental-off-mobile.svg" alt="Settings, flag off, mobile"/>
+        <div class="notes">
+          <h4>Regions</h4>
+          <ol>
+            <li>New "Conference Room Chat" card — title + two-line description + toggle, identical chrome to every other experimental card</li>
+            <li>Existing flags are untouched and compose independently (e.g. Streamlined Left Nav can be on while this is off)</li>
+          </ol>
+          <h4>Proposed two-line description</h4>
+          <div class="callout">Adds a Conference Room — one chat where you and your whole team work together — plus the live activity feed and the redesigned onboarding. Also restyles task threads as chat bubbles. Turn off anytime to restore the classic UI.</div>
+          <p style="font-size:13px;color:var(--muted)">Mobile: same card full-width; description wraps to four lines.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="on">
+      <h3>Toggling ON — instant, no reload</h3>
+      <p class="sub">Toggle persists via the existing <code>PATCH</code> instance-experimental-settings route; react-query invalidation makes the sidebar pick it up immediately.</p>
+      <div class="grid">
+        <img class="wire" data-zoom src="wireframes/settings-experimental-on.svg" alt="Settings, flag on, desktop"/>
+        <img class="wire mobile-wire mobile-col" data-zoom src="wireframes/settings-experimental-on-mobile.svg" alt="Settings, flag on, mobile"/>
+        <div class="notes">
+          <h4>Regions</h4>
+          <ol>
+            <li>Toggle flips ON — saved per instance, same persistence as all other experimental flags</li>
+            <li>"Conference Room" appears in the app sidebar instantly (on mobile: visible the next time the nav drawer opens)</li>
+            <li>Save confirmation toast</li>
+          </ol>
+          <div class="callout"><b>Reversible.</b> Toggling OFF removes the nav item and restores classic task threads / onboarding immediately. No data is lost — conference-room history and artifacts stay in the DB, just hidden.</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="unlocked">
+      <h3>What the flag unlocks</h3>
+      <p class="sub">Everything user-visible from this worktree, as one switch.</p>
+      <div class="grid">
+        <img class="wire" data-zoom src="wireframes/conference-room-unlocked.svg" alt="Conference room unlocked, desktop"/>
+        <img class="wire mobile-wire mobile-col" data-zoom src="wireframes/conference-room-unlocked-mobile.svg" alt="Conference room unlocked, mobile"/>
+        <div class="notes">
+          <h4>Regions</h4>
+          <ol>
+            <li>"Conference Room" sidebar nav item + <code>/board-chat</code> route</li>
+            <li>Chat surface — agent bubbles with name/icon header + action row, task chips, typing dots, user bubbles</li>
+            <li>Live activity feed rail (on mobile: a "Feed" tab)</li>
+            <li>Shared ChatComposer — Agent/Plan mode chip, translucent surface</li>
+          </ol>
+          <div class="callout"><b>Also gated by the same flag:</b> capsule onboarding wizard (FrontDoor + OnboardingChat + AgentCapsule), chat-style task comment threads, brand status chips, team-centric copy, and the <code>/api/board/chat/stream</code> server endpoint (403 when off).</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="matrix">
+      <h3>Gating matrix (summary)</h3>
+      <p class="sub">Full detail in the plan document on the issue. Tier C ships unflagged — pure bug fixes that master wants anyway.</p>
+      <table class="matrix">
+        <tr><th>Tier</th><th>Surface</th><th>Mechanism when flag is OFF</th></tr>
+        <tr><td rowspan="3">A — new surfaces</td><td>/board-chat route + "Conference Room" nav item</td><td>Nav item hidden; route redirects to company home</td></tr>
+        <tr><td>Activity feed, artifacts panel, board-level /artifacts route</td><td>Unreachable (only mounted inside gated surfaces)</td></tr>
+        <tr><td>POST /api/board/chat/stream</td><td>Server returns 403 unless flag enabled</td></tr>
+        <tr><td rowspan="3">B — modified in place</td><td>Capsule onboarding wizard</td><td>Renders legacy (master) wizard variant</td></tr>
+        <tr><td>Task thread bubbles, status chips, composer chrome, @task picker</td><td>Branch to master presentation per component</td></tr>
+        <tr><td>Team-centric copy (sidebar/menu strings)</td><td>Classic copy strings</td></tr>
+        <tr><td>C — unflagged</td><td>Pure bug fixes: typing-dots restore, onboarding-dismiss fix, quicklook single-flight, composer wrap fix; dev-only DesignGuide</td><td>Always on (board can veto any into tier B)</td></tr>
+      </table>
+    </section>
+
+    <section id="q">
+      <h3>Open questions</h3>
+      <ol>
+        <li><b>Tier C exceptions</b> — OK to leave the four pure bug fixes unflagged, or do you want literally everything behind the flag?</li>
+        <li><b>Card position</b> — proposed right after "Streamlined Left Navigation Bar" (both are NUX flags). Alphabetical or bottom-of-list also fine.</li>
+        <li><b>Flag interplay</b> — if both "Conference Room Chat" and "Streamlined Left Navigation" are on, Conference Room slots into the streamlined nav under the top group. Confirm that's the expected composition.</li>
+      </ol>
+    </section>
+  </main>
+</div>
+
+<div class="lb" id="lb"><img id="lbimg" alt=""/></div>
+<script>
+  const lb=document.getElementById('lb'),lbimg=document.getElementById('lbimg');
+  document.querySelectorAll('[data-zoom]').forEach(el=>el.addEventListener('click',()=>{lbimg.src=el.src;lb.classList.add('open')}));
+  lb.addEventListener('click',()=>lb.classList.remove('open'));
+  addEventListener('keydown',e=>{if(e.key==='Escape')lb.classList.remove('open')});
+</script>
+</body>
+</html>

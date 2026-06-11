@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- Desktop 1280x800 — same page, user just flipped "Conference Room Chat" ON: instant sidebar update, no reload -->
+  <rect x="0" y="0" width="1280" height="800" />
+
+  <!-- far-left app icon rail (gains the Conference Room icon instantly) -->
+  <rect x="0" y="0" width="56" height="800" />
+  <rect x="16" y="24" width="24" height="24" rx="4" fill="#e6e6e6" />
+  <rect x="16" y="64" width="24" height="24" rx="4" fill="#e6e6e6" />
+  <rect x="16" y="104" width="24" height="24" rx="4" />
+  <text x="28" y="121" font-size="12" text-anchor="middle" stroke="none" fill="#000">CR</text>
+  <rect x="16" y="144" width="24" height="24" rx="4" fill="#e6e6e6" />
+  <rect x="16" y="184" width="24" height="24" rx="4" fill="#e6e6e6" />
+
+  <!-- settings nav -->
+  <rect x="56" y="0" width="240" height="800" />
+  <text x="80" y="44" font-size="14" stroke="none" fill="#000" font-weight="bold">Company Settings</text>
+  <text x="80" y="84" font-size="12" stroke="none" fill="#666">COMPANY SETTINGS</text>
+  <text x="80" y="112" font-size="14" stroke="none" fill="#000">General</text>
+  <text x="80" y="140" font-size="14" stroke="none" fill="#000">Members</text>
+  <text x="80" y="168" font-size="14" stroke="none" fill="#000">Invites</text>
+  <text x="80" y="196" font-size="14" stroke="none" fill="#000">Secrets</text>
+  <text x="80" y="240" font-size="12" stroke="none" fill="#666">INSTANCE SETTINGS</text>
+  <text x="80" y="268" font-size="14" stroke="none" fill="#000">Profile</text>
+  <text x="80" y="296" font-size="14" stroke="none" fill="#000">General</text>
+  <text x="80" y="324" font-size="14" stroke="none" fill="#000">Access</text>
+  <text x="80" y="352" font-size="14" stroke="none" fill="#000">Heartbeats</text>
+  <rect x="72" y="368" width="208" height="32" rx="4" fill="#e6e6e6" />
+  <text x="80" y="389" font-size="14" stroke="none" fill="#000" font-weight="bold">Experimental</text>
+  <text x="80" y="428" font-size="14" stroke="none" fill="#000">Plugins</text>
+  <text x="80" y="456" font-size="14" stroke="none" fill="#000">Adapters</text>
+
+  <!-- breadcrumb + page header -->
+  <text x="320" y="44" font-size="12" stroke="none" fill="#666">Settings / Instance settings / Experimental</text>
+  <rect x="320" y="64" width="24" height="24" rx="4" fill="#e6e6e6" />
+  <text x="356" y="82" font-size="20" stroke="none" fill="#000" font-weight="bold">Experimental</text>
+  <text x="320" y="112" font-size="12" stroke="none" fill="#666">Opt into features that are still being evaluated before they become default behavior.</text>
+
+  <!-- card: Streamlined Left Navigation Bar (on) -->
+  <g transform="translate(320, 136)">
+    <rect width="920" height="80" rx="8" />
+    <text x="24" y="32" font-size="14" stroke="none" fill="#000" font-weight="bold">Streamlined Left Navigation Bar</text>
+    <text x="24" y="56" font-size="12" stroke="none" fill="#666">Reduces the maximum number of items in the left navigation bar — nests Projects under Work.</text>
+    <rect x="856" y="28" width="40" height="24" rx="12" fill="#000" />
+    <circle cx="884" cy="40" r="8" fill="#fff" />
+  </g>
+
+  <!-- NEW card: Conference Room Chat — now ON -->
+  <g transform="translate(320, 232)">
+    <rect width="920" height="104" rx="8" />
+    <text x="24" y="36" font-size="14" stroke="none" fill="#000" font-weight="bold">Conference Room Chat</text>
+    <text x="24" y="60" font-size="12" stroke="none" fill="#666">Adds a Conference Room — one chat where you and your whole team work together — plus the live activity feed</text>
+    <text x="24" y="80" font-size="12" stroke="none" fill="#666">and the redesigned onboarding. Also restyles task threads as chat bubbles. Turn off anytime to restore the classic UI.</text>
+    <rect x="856" y="40" width="40" height="24" rx="12" fill="#000" />
+    <circle cx="884" cy="52" r="8" fill="#fff" />
+  </g>
+
+  <!-- card: Cloud Sync (off) -->
+  <g transform="translate(320, 352)">
+    <rect width="920" height="80" rx="8" />
+    <text x="24" y="32" font-size="14" stroke="none" fill="#000" font-weight="bold">Cloud Sync</text>
+    <text x="24" y="56" font-size="12" stroke="none" fill="#666">Show local Paperclip Cloud upstream connection, preview, push, retry, and activation review surfaces.</text>
+    <rect x="856" y="28" width="40" height="24" rx="12" />
+    <circle cx="868" cy="40" r="8" />
+  </g>
+
+  <!-- toast -->
+  <g transform="translate(960, 712)">
+    <rect width="280" height="48" rx="8" fill="#e6e6e6" />
+    <text x="24" y="29" font-size="14" stroke="none" fill="#000">Experimental settings saved</text>
+  </g>
+
+  <!-- annotation layer -->
+  <g stroke="#d33" stroke-dasharray="6 4" fill="none">
+    <rect x="848" y="264" width="56" height="40" rx="8" />
+    <rect x="8" y="96" width="40" height="40" rx="4" />
+    <path d="M 304 116 L 64 116" />
+  </g>
+  <g stroke="#d33" fill="none">
+    <circle cx="936" cy="284" r="14" />
+    <circle cx="80" cy="72" r="14" />
+    <circle cx="936" cy="736" r="14" />
+  </g>
+  <text x="936" y="289" font-size="14" text-anchor="middle" stroke="none" fill="#d33" font-weight="bold">1</text>
+  <text x="960" y="288" font-size="12" stroke="none" fill="#d33">toggle ON — persists per instance (PATCH instance experimental settings)</text>
+  <text x="80" y="77" font-size="14" text-anchor="middle" stroke="none" fill="#d33" font-weight="bold">2</text>
+  <text x="104" y="76" font-size="12" stroke="none" fill="#d33">Conference Room appears in the sidebar instantly — no reload (react-query invalidate)</text>
+  <text x="936" y="741" font-size="14" text-anchor="middle" stroke="none" fill="#d33" font-weight="bold">3</text>
+  <text x="744" y="740" font-size="12" stroke="none" fill="#d33" text-anchor="end">save confirmation</text>
+</svg>
