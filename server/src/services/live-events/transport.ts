@@ -25,8 +25,10 @@ export interface LiveEventsTransport {
   unsubscribe(companyId: string, handler: TransportEventHandler): void;
   /** Tear-down for tests and graceful shutdown. */
   close(): Promise<void>;
-  /** Optional transport-level diagnostics surfaced via /api/health. */
+  /** Optional transport-level diagnostics. */
   stats?: () => Promise<{ notificationQueueUsage?: number }>;
+  /** Resolves once the channel subscription for companyId is established. Tests/tools; no-op for transports without async subscription setup. */
+  whenSubscribed?: (companyId: string) => Promise<void>;
 }
 
 export type TransportEventHandler = (event: LiveEvent) => void;
@@ -50,9 +52,9 @@ export type TransportEnvelope =
   | { kind: "resync"; origin: string; companyId: string; type: LiveEventType };
 
 /**
- * Postgres NOTIFY caps payloads at 8000 bytes (server-side default). We
- * truncate well below that to leave headroom for envelope framing and
- * UTF-8 expansion in case payload fields contain multibyte chars.
+ * Postgres NOTIFY caps payloads at 8000 bytes (server-side default).
+ * Envelope size is measured exactly via Buffer.byteLength of the envelope
+ * JSON; 7500 is a safety margin against non-default server configs.
  */
 export const PG_NOTIFY_INLINE_LIMIT = 7500;
 
@@ -69,8 +71,10 @@ export const REDIS_PUBSUB_INLINE_LIMIT = 1_000_000;
 /**
  * Size-aware packing: greedily coalesce events into `batch` envelopes whose
  * serialized UTF-8 size stays ≤ maxBytes; an event that cannot fit alone
- * degrades to a `resync` marker. Order is preserved for events that travel
- * inline. A batch of one is emitted as `full`.
+ * degrades to a `resync` marker. Envelope order matches event order — the
+ * pending batch is flushed before a resync marker is pushed, so a marker
+ * never overtakes earlier inline events. A batch of one is emitted as
+ * `full`.
  */
 export function packEnvelopes(
   originId: string,
@@ -91,6 +95,7 @@ export function packEnvelopes(
   for (const event of events) {
     const single: TransportEnvelope = { kind: "full", origin: originId, event };
     if (Buffer.byteLength(JSON.stringify(single), "utf8") > maxBytes) {
+      flushBatch(); // keep envelope order aligned with event order
       out.push({ kind: "resync", origin: originId, companyId: event.companyId, type: event.type });
       continue;
     }
@@ -106,25 +111,45 @@ export function packEnvelopes(
 
 /**
  * Decode an inbound envelope into the LiveEvents to deliver locally.
+ *
+ * Total against wire input: unknown `kind`s and shape mismatches decode to
+ * `[]` instead of throwing — a malformed frame must never propagate an
+ * exception into a transport's notify callback. Decoded events are also
+ * filtered to the receiving channel's companyId so a frame can never
+ * deliver another tenant's events (channels for "*" carry events with
+ * companyId === "*", so global routing is unaffected).
+ *
  * Resync markers become synthetic events with payload { __resync: true };
  * id 0 marks receiver-synthesized events (ids are per-process ordering
  * hints, never compared across replicas).
  */
 export function envelopeToEvents(companyId: string, envelope: TransportEnvelope): LiveEvent[] {
-  switch (envelope.kind) {
-    case "full":
-      return [envelope.event];
-    case "batch":
-      return envelope.events;
-    case "resync":
+  const raw = envelope as Partial<Record<"kind" | "event" | "events" | "companyId" | "type", unknown>>;
+  // Rolling deploy: pre-hardening replicas send { origin, event } with no kind.
+  const kind = raw.kind ?? (raw.event !== undefined ? "full" : undefined);
+  switch (kind) {
+    case "full": {
+      const event = raw.event as LiveEvent | null | undefined;
+      if (typeof event !== "object" || event === null) return [];
+      return event.companyId === companyId ? [event] : [];
+    }
+    case "batch": {
+      if (!Array.isArray(raw.events)) return [];
+      return (raw.events as LiveEvent[]).filter((e) => e?.companyId === companyId);
+    }
+    case "resync": {
+      if (raw.companyId !== companyId) return [];
       return [
         {
           id: 0,
-          companyId: envelope.companyId,
-          type: envelope.type,
+          companyId,
+          type: raw.type as LiveEventType,
           createdAt: new Date().toISOString(),
           payload: { __resync: true },
         },
       ];
+    }
+    default:
+      return [];
   }
 }

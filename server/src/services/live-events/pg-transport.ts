@@ -43,6 +43,9 @@ export function createPgLiveEventsTransport(opts: {
     connection: { application_name: "paperclip-live-events" },
   });
   const originId = `${process.pid}-${randomUUID()}`;
+  // Set by close(); demotes expected teardown noise (UNLISTEN/NOTIFY on a
+  // destroyed connection) from warn to debug and drops late publishes.
+  let closed = false;
 
   // companyId -> { unlisten, handlers }
   const subscriptions = new Map<
@@ -52,8 +55,8 @@ export function createPgLiveEventsTransport(opts: {
       // null while the LISTEN call is still in flight; populated once
       // postgres-js resolves the dedicated listener handle.
       unlisten: (() => Promise<void>) | null;
-      // Resolves once initial LISTEN completes; used by callers that
-      // want deterministic teardown (mostly tests).
+      // Settles once the initial LISTEN completes (or fails); consumed by
+      // whenSubscribed so tests/tools get a deterministic readiness signal.
       ready: Promise<void>;
     }
   >();
@@ -76,8 +79,8 @@ export function createPgLiveEventsTransport(opts: {
     try {
       envelope = JSON.parse(raw) as TransportEnvelope;
     } catch {
-      // A single malformed notify should not poison the channel. ioredis
-      // had the same defensive try/catch for the same reason.
+      // A malformed frame must not poison the channel or kill the LISTEN
+      // connection; drop it and keep listening.
       return;
     }
     if (envelope.origin === originId) return; // own echo
@@ -125,9 +128,12 @@ export function createPgLiveEventsTransport(opts: {
       )
       .then((meta) => {
         const current = subscriptions.get(companyId);
-        // The entry may have been deleted while LISTEN was in flight; if
-        // so, unlisten immediately to avoid a leaked socket subscription.
-        if (!current) {
+        // The entry may have been deleted while LISTEN was in flight, or
+        // replaced by a newer subscribe after an unsubscribe (identity
+        // check on `handlers`). Either way this LISTEN is stale: unlisten
+        // immediately to avoid a leaked socket subscription / duplicate
+        // delivery.
+        if (!current || current.handlers !== handlers) {
           void meta.unlisten().catch(() => {});
           return;
         }
@@ -135,9 +141,10 @@ export function createPgLiveEventsTransport(opts: {
       })
       .catch((err) => {
         logger.warn({ err, companyId, channel }, "live-events pg transport: LISTEN failed");
-        // Roll back the seat so a retry can try again. Handlers stay
-        // attached but will only get in-process events until something
-        // re-subscribes successfully.
+        // Drop the seat so a later subscribe() can retry the LISTEN. Note
+        // that live-events.ts keeps its per-company handler registered, so
+        // cross-replica delivery for this company stays dead until the
+        // transport is reconfigured; only in-process events flow.
         const current = subscriptions.get(companyId);
         if (current && current.handlers === handlers) {
           subscriptions.delete(companyId);
@@ -157,7 +164,9 @@ export function createPgLiveEventsTransport(opts: {
     // see the missing entry and unlisten itself.
     if (entry.unlisten) {
       void entry.unlisten().catch((err) => {
-        logger.warn({ err, companyId }, "live-events pg transport: UNLISTEN failed");
+        // During shutdown the dedicated socket may already be gone;
+        // that's expected, not warn-worthy.
+        logger[closed ? "debug" : "warn"]({ err, companyId }, "live-events pg transport: UNLISTEN failed");
       });
     }
   }
@@ -190,13 +199,14 @@ export function createPgLiveEventsTransport(opts: {
         // NOTIFY is fire-and-forget. We attach a catch so a transient
         // database blip doesn't surface as an unhandled rejection.
         sql.notify(channel, JSON.stringify(envelope)).catch((err) => {
-          logger.warn({ err, channel }, "live-events pg transport: NOTIFY failed");
+          logger[closed ? "debug" : "warn"]({ err, channel }, "live-events pg transport: NOTIFY failed");
         });
       }
     }
   }
 
   function publish(event: LiveEvent) {
+    if (closed) return;
     const pending = pendingByCompany.get(event.companyId);
     if (pending) {
       pending.push(event);
@@ -211,6 +221,7 @@ export function createPgLiveEventsTransport(opts: {
 
   async function close() {
     flushPending();
+    closed = true;
     // Best-effort: unlisten everything we know about, then end the pool.
     const pending: Promise<unknown>[] = [];
     for (const [companyId, entry] of subscriptions) {
@@ -226,5 +237,13 @@ export function createPgLiveEventsTransport(opts: {
     return { notificationQueueUsage: Number(rows[0]?.usage ?? 0) };
   }
 
-  return { originId, publish, subscribe, unsubscribe, close, stats };
+  return {
+    originId,
+    publish,
+    subscribe,
+    unsubscribe,
+    close,
+    stats,
+    whenSubscribed: (companyId) => subscriptions.get(companyId)?.ready ?? Promise.resolve(),
+  };
 }

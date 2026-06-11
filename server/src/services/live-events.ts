@@ -167,6 +167,15 @@ function rebindExistingSubscriptions() {
   }
 }
 
+/**
+ * Test/diagnostic helper: resolves once the active transport's channel
+ * subscription for companyId is established. Resolves immediately when no
+ * transport is configured or the transport has no async subscription setup.
+ */
+export function whenTransportSubscribed(companyId: string): Promise<void> {
+  return transport?.whenSubscribed?.(companyId) ?? Promise.resolve();
+}
+
 export async function teardownLiveEventsTransport(): Promise<void> {
   const previous = transport;
   transport = null;

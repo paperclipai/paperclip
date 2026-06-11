@@ -41,9 +41,9 @@ export interface RedisTransportOptions {
   clientFactory?: RedisClientFactory;
 }
 
-async function defaultClientFactory(url: string): ReturnType<RedisClientFactory> extends infer T
-  ? Promise<T>
-  : never {
+async function defaultClientFactory(
+  url: string,
+): Promise<{ publisher: PublishClient; subscriber: SubscribeClient }> {
   // Dynamic import so projects that never set transport=redis don't
   // need ioredis installed. The type assertion keeps this compiling
   // when the optional dep is absent at type-check time.
@@ -54,7 +54,7 @@ async function defaultClientFactory(url: string): ReturnType<RedisClientFactory>
   const publisher = new (Redis as any)(url) as PublishClient;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const subscriber = new (Redis as any)(url) as SubscribeClient;
-  return { publisher, subscriber } as unknown as Awaited<ReturnType<RedisClientFactory>>;
+  return { publisher, subscriber };
 }
 
 function attachErrorLogger(client: RedisEventClient, role: "publisher" | "subscriber") {
@@ -145,8 +145,7 @@ export function createRedisLiveEventsTransport(opts: RedisTransportOptions): Liv
   }
 
   const init = (async () => {
-    const factoryToUse = factory ?? (defaultClientFactory as unknown as RedisClientFactory);
-    const built = await factoryToUse(opts.redisUrl);
+    const built = await (factory ? factory(opts.redisUrl) : defaultClientFactory(opts.redisUrl));
     publisher = built.publisher;
     subscriber = built.subscriber;
     attachErrorLogger(publisher, "publisher");
@@ -238,5 +237,12 @@ export function createRedisLiveEventsTransport(opts: RedisTransportOptions): Liv
     subscribe,
     unsubscribe,
     close,
+    // Subscribes queue in pendingRedisSubscribes until client init
+    // finishes; "established" means init settled and this company's
+    // SUBSCRIBE (if any was pending) has been pushed to redis.
+    whenSubscribed: async (companyId) => {
+      await init;
+      if (pendingRedisSubscribes.has(companyId)) await flushPendingSubscribes();
+    },
   };
 }
