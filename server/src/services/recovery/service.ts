@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -66,6 +66,7 @@ import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js"
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
+const ORPHANED_LOCK_TIMEOUT_MS = ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
@@ -1684,6 +1685,43 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         return { kind: "skipped" as const };
       }
     }
+
+    // Time-based fallback for orphaned locks without detectable process
+    // Covers: non-sessioned adapters, lost PIDs, and runs without process metadata
+    if (processCheck.outcome === "skipped_non_local_adapter" || processCheck.outcome === "no_process_metadata") {
+      // Use the earlier of processStartedAt or startedAt as the run age baseline
+      const runStartedAt = input.run.processStartedAt ?? input.run.startedAt ?? input.run.createdAt;
+      if (runStartedAt) {
+        const runAgeMs = input.now.getTime() - runStartedAt.getTime();
+        if (runAgeMs >= ORPHANED_LOCK_TIMEOUT_MS) {
+          // Check if agent has another live run (besides this one) or agent is idle — strong signal run is orphaned
+          const otherRunningRun = await db
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.agentId, runningAgent.id),
+                eq(heartbeatRuns.status, "running"),
+                ne(heartbeatRuns.id, input.run.id),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          const hasOtherActiveRun = otherRunningRun !== null;
+          const agentIsIdle = runningAgent.status === "idle";
+          if (hasOtherActiveRun || agentIsIdle) {
+            return finalizeOrphanedRun({
+              run: input.run,
+              runningAgent,
+              sourceIssue,
+              existingEvaluation: existing,
+              now: input.now,
+            });
+          }
+        }
+      }
+    }
+
 
     const prefix = await getCompanyIssuePrefix(input.run.companyId);
     const evidence = await collectStaleRunEvidence({
