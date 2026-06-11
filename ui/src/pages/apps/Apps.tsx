@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link2, ShieldAlert } from "lucide-react";
 import type {
   AppGalleryEntry,
-  ToolAppAttentionItem,
+  ToolApplication,
   ToolConnection,
   ToolProfileWithDetails,
 } from "@paperclipai/shared";
@@ -24,22 +24,42 @@ import { AppLogo } from "./AppLogo";
 
 const POPULAR_KEYS = ["zapier", "github", "slack", "notion", "linear", "google-drive"];
 
-type AppStatus = { label: "Connected" | "Needs attention" | "Paused"; tone: "connected" | "attention" | "paused" };
+type AppStatus = {
+  label: "Healthy" | "Needs attention" | "Paused" | "Not connected";
+  tone: "connected" | "attention" | "paused" | "not_connected";
+};
 
-function statusFor(connection: ToolConnection): AppStatus {
-  if (connection.enabled === false || connection.status === "disabled") {
+type AppRow = {
+  application: ToolApplication;
+  primaryConnection: ToolConnection | null;
+  status: AppStatus;
+  actionCount: number;
+  lastUsedAt: Date | string | null;
+  logoUrl?: string | null;
+};
+
+function statusFor(application: ToolApplication, connections: ToolConnection[]): AppStatus {
+  if (connections.length === 0) {
+    return { label: "Not connected", tone: "not_connected" };
+  }
+  if (
+    application.status === "disabled" ||
+    application.status === "archived" ||
+    connections.every((connection) => connection.enabled === false || connection.status === "disabled")
+  ) {
     return { label: "Paused", tone: "paused" };
   }
-  if (isAttentionHealthStatus(connection.healthStatus)) {
+  if (connections.some((connection) => isAttentionHealthStatus(connection.healthStatus))) {
     return { label: "Needs attention", tone: "attention" };
   }
-  return { label: "Connected", tone: "connected" };
+  return { label: "Healthy", tone: "connected" };
 }
 
 const STATUS_CLASS: Record<AppStatus["tone"], string> = {
   connected: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
   attention: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
   paused: "border-border bg-muted text-muted-foreground",
+  not_connected: "border-border bg-background text-muted-foreground",
 };
 
 export function Apps() {
@@ -58,6 +78,11 @@ export function Apps() {
   const galleryQuery = useQuery({
     queryKey: queryKeys.apps.gallery(selectedCompanyId ?? "__none__"),
     queryFn: () => toolsApi.listGallery(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const applicationsQuery = useQuery({
+    queryKey: queryKeys.tools.applications(selectedCompanyId ?? "__none__"),
+    queryFn: () => toolsApi.listApplications(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
   const connectionsQuery = useQuery({
@@ -83,6 +108,11 @@ export function Apps() {
     for (const entry of gallery) map.set(entry.name.toLowerCase(), entry);
     return map;
   }, [gallery]);
+  const logoByKey = useMemo(() => {
+    const map = new Map<string, AppGalleryEntry>();
+    for (const entry of gallery) map.set(entry.key, entry);
+    return map;
+  }, [gallery]);
 
   // "Actions on" = enabled tools in each app's per-connection access profile,
   // mirroring what App detail shows so the count never disagrees with the page.
@@ -97,13 +127,58 @@ export function Apps() {
   const connections = (connectionsQuery.data?.connections ?? []).filter(
     (c) => c.status !== "archived",
   );
-  const needsAttention = attentionQuery.data?.apps ?? [];
+  const applications = applicationsQuery.data?.applications ?? [];
+  const connectionsByApplication = useMemo(() => {
+    const map = new Map<string, ToolConnection[]>();
+    for (const connection of connections) {
+      map.set(connection.applicationId, [...(map.get(connection.applicationId) ?? []), connection]);
+    }
+    return map;
+  }, [connections]);
+
+  const rows = useMemo<AppRow[]>(() => {
+    return applications.map((application) => {
+      const appConnections = connectionsByApplication.get(application.id) ?? [];
+      const primaryConnection = appConnections[0] ?? null;
+      const actionCount = appConnections.reduce(
+        (sum, connection) => sum + (actionCountByConnection.get(`app:${connection.id}`) ?? 0),
+        0,
+      );
+      const lastUsedAt = appConnections.reduce<Date | string | null>((latest, connection) => {
+        if (!connection.lastUsedAt) return latest;
+        if (!latest) return connection.lastUsedAt;
+        return new Date(connection.lastUsedAt).getTime() > new Date(latest).getTime()
+          ? connection.lastUsedAt
+          : latest;
+      }, null);
+      const galleryEntry = application.applicationKey
+        ? logoByKey.get(application.applicationKey)
+        : undefined;
+      return {
+        application,
+        primaryConnection,
+        status: statusFor(application, appConnections),
+        actionCount,
+        lastUsedAt,
+        logoUrl: galleryEntry?.logoUrl ?? logoByName.get(application.name.toLowerCase())?.logoUrl,
+      };
+    });
+  }, [actionCountByConnection, applications, connectionsByApplication, logoByKey, logoByName]);
+
+  const attentionApplicationIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const item of attentionQuery.data?.apps ?? []) ids.add(item.connection.applicationId);
+    return ids;
+  }, [attentionQuery.data]);
+  const rowsNeedingAttention = rows.filter((row) => (
+    row.status.tone === "attention" || attentionApplicationIds.has(row.application.id)
+  ));
 
   if (!selectedCompanyId) {
     return <div className="p-6 text-sm text-muted-foreground">Select a company to manage apps.</div>;
   }
 
-  const loading = connectionsQuery.isLoading || galleryQuery.isLoading;
+  const loading = applicationsQuery.isLoading || connectionsQuery.isLoading || galleryQuery.isLoading;
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -112,7 +187,7 @@ export function Apps() {
           <Skeleton className="h-8 w-40" />
           <Skeleton className="h-64 w-full" />
         </div>
-      ) : connections.length === 0 ? (
+      ) : rows.length === 0 ? (
         <EmptyApps gallery={gallery} onConnect={() => navigate("/apps/connect")} />
       ) : (
         <div className="space-y-5">
@@ -126,14 +201,14 @@ export function Apps() {
 
           <div className="text-sm">
             <span className="font-medium">
-              {connections.length} {connections.length === 1 ? "app" : "apps"} connected
+              {rows.length} {rows.length === 1 ? "app" : "apps"}
             </span>
-            {needsAttention.length > 0 && (
-              <span className="text-amber-600 dark:text-amber-400"> · {needsAttention.length} needs attention</span>
+            {rowsNeedingAttention.length > 0 && (
+              <span className="text-amber-600 dark:text-amber-400"> · {rowsNeedingAttention.length} needs attention</span>
             )}
           </div>
 
-          {needsAttention.length > 0 && (
+          {rowsNeedingAttention.length > 0 && (
             <button
               type="button"
               onClick={() => navigate("/apps/attention")}
@@ -142,10 +217,10 @@ export function Apps() {
               <ShieldAlert className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-semibold text-amber-900 dark:text-amber-100">
-                  {needsAttention.length} {needsAttention.length === 1 ? "app needs" : "apps need"} attention
+                  {rowsNeedingAttention.length} {rowsNeedingAttention.length === 1 ? "app needs" : "apps need"} attention
                 </div>
                 <div className="truncate text-xs text-amber-700 dark:text-amber-300">
-                  {floatSummary(needsAttention)}
+                  {floatSummary(rowsNeedingAttention)}
                 </div>
               </div>
               <span className="shrink-0 text-xs font-semibold text-amber-800 dark:text-amber-200">Review →</span>
@@ -164,32 +239,40 @@ export function Apps() {
                 </tr>
               </thead>
               <tbody>
-                {connections.map((connection) => {
-                  const status = statusFor(connection);
-                  const entry = logoByName.get(connection.name.toLowerCase());
-                  const attention = status.tone === "attention";
+                {rows.map((row) => {
+                  const { application, primaryConnection, status } = row;
+                  const attention = rowsNeedingAttention.some((attentionRow) => attentionRow.application.id === application.id);
                   const hint =
                     status.tone === "attention"
                       ? "The key stopped working — reconnect to fix."
                       : status.tone === "paused"
                         ? "Paused — agents can’t use it right now."
+                        : status.tone === "not_connected"
+                          ? "Connect it so agents can use it."
                         : null;
-                  const actionCount = actionCountByConnection.get(`app:${connection.id}`) ?? 0;
+                  const openApp = () => {
+                    if (primaryConnection) navigate(`/apps/${primaryConnection.id}`);
+                  };
                   return (
                     <tr
-                      key={connection.id}
-                      className={cn("border-b border-border last:border-0", attention && "bg-amber-500/[0.06]")}
+                      key={application.id}
+                      onClick={openApp}
+                      className={cn(
+                        "border-b border-border last:border-0",
+                        primaryConnection && "cursor-pointer transition-colors hover:bg-muted/30",
+                        attention && "bg-amber-500/[0.06]",
+                      )}
                     >
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
                           <AppLogo
-                            name={humanizeConnectionDisplayName(connection)}
-                            logoUrl={entry?.logoUrl}
+                            name={application.name}
+                            logoUrl={row.logoUrl}
                             size={32}
                           />
                           <div className="min-w-0">
                             <div className="font-medium text-foreground">
-                              {humanizeConnectionDisplayName(connection)}
+                              {application.name}
                             </div>
                             {hint && (
                               <div className="truncate text-xs text-muted-foreground">{hint}</div>
@@ -208,20 +291,27 @@ export function Apps() {
                         </span>
                       </td>
                       <td className="px-4 py-3">
-                        <span className="text-xs text-muted-foreground">{actionCount} on</span>
+                        <span className="text-xs text-muted-foreground">{row.actionCount} on</span>
                       </td>
                       <td className="px-4 py-3">
                         <span className="text-xs text-muted-foreground">
-                          {connection.lastUsedAt ? timeAgo(connection.lastUsedAt) : "—"}
+                          {row.lastUsedAt ? timeAgo(row.lastUsedAt) : "—"}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right">
                         <Button
                           variant={attention ? "default" : "outline"}
                           size="sm"
-                          onClick={() => navigate(`/apps/${connection.id}`)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (primaryConnection) {
+                              navigate(`/apps/${primaryConnection.id}`);
+                            } else {
+                              navigate("/apps/connect");
+                            }
+                          }}
                         >
-                          {attention ? "Reconnect" : "Open"}
+                          {primaryConnection ? (attention ? "Reconnect" : "Open") : "Connect"}
                         </Button>
                       </td>
                     </tr>
@@ -248,8 +338,8 @@ function enabledActionCount(profile: ToolProfileWithDetails): number {
   return count;
 }
 
-function floatSummary(apps: ToolAppAttentionItem[]): string {
-  const names = apps.map((app) => humanizeConnectionDisplayName(app.connection));
+function floatSummary(rows: AppRow[]): string {
+  const names = rows.map((row) => humanizeConnectionDisplayName(row.application.name));
   if (names.length <= 2) return names.join(" and ");
   return `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
 }

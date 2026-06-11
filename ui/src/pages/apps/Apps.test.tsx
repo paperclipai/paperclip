@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Apps } from "./Apps";
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
+const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
 const listAppsAttentionMock = vi.hoisted(() => vi.fn());
 const listProfilesMock = vi.hoisted(() => vi.fn());
@@ -15,6 +16,7 @@ const mockNavigate = vi.hoisted(() => vi.fn());
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     listGallery: (companyId: string) => listGalleryMock(companyId),
+    listApplications: (companyId: string) => listApplicationsMock(companyId),
     listConnections: (companyId: string) => listConnectionsMock(companyId),
     listAppsAttention: (companyId: string) => listAppsAttentionMock(companyId),
     listProfiles: (companyId: string) => listProfilesMock(companyId),
@@ -44,6 +46,26 @@ async function flushReact() {
     await Promise.resolve();
     await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
+}
+
+function application(overrides: Record<string, unknown>) {
+  return {
+    id: "app-x",
+    companyId: "company-1",
+    applicationKey: undefined,
+    name: "GitHub",
+    description: null,
+    type: "mcp_http",
+    status: "active",
+    pluginId: null,
+    ownerAgentId: null,
+    ownerUserId: null,
+    metadata: null,
+    archivedAt: null,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+    ...overrides,
+  };
 }
 
 function connection(overrides: Record<string, unknown>) {
@@ -109,6 +131,9 @@ describe("Apps table (M1b)", () => {
   beforeEach(() => {
     listGalleryMock.mockResolvedValue({ apps: [] });
     listAppsAttentionMock.mockResolvedValue({ apps: [] });
+    listApplicationsMock.mockResolvedValue({ applications: [] });
+    listConnectionsMock.mockResolvedValue({ connections: [] });
+    listProfilesMock.mockResolvedValue({ profiles: [] });
     container = document.createElement("div");
     document.body.appendChild(container);
   });
@@ -132,23 +157,78 @@ describe("Apps table (M1b)", () => {
     await flushReact();
   }
 
-  it("drops the redundant Connected hint, keeps attention/paused hints, and adds the new columns", async () => {
+  it("renders applications without connections as not connected with a Connect action", async () => {
+    listApplicationsMock.mockResolvedValue({
+      applications: [application({ id: "app-github", name: "GitHub" })],
+    });
+
+    await renderApps();
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("1 app");
+    expect(text).toContain("GitHub");
+    expect(text).toContain("Not connected");
+    expect(text).toContain("Connect it so agents can use it.");
+    expect(text).toContain("Connect");
+
+    const row = Array.from(container.querySelectorAll("tbody tr")).find((tr) =>
+      tr.textContent?.includes("GitHub"),
+    );
+    row?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(mockNavigate).not.toHaveBeenCalled();
+
+    const connectButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Connect"),
+    );
+    connectButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect");
+  });
+
+  it("rolls up multi-connection status, attention count, actions, and navigation by application", async () => {
+    listApplicationsMock.mockResolvedValue({
+      applications: [
+        application({ id: "app-github", name: "GitHub" }),
+        application({ id: "app-slack", name: "Slack" }),
+        application({ id: "app-notion", name: "Notion" }),
+      ],
+    });
     listConnectionsMock.mockResolvedValue({
       connections: [
-        connection({ id: "c-connected", name: "GitHub", healthStatus: "healthy" }),
+        connection({ id: "c-connected", applicationId: "app-github", name: "GitHub", healthStatus: "healthy" }),
         connection({
           id: "c-attention",
+          applicationId: "app-slack",
           name: "Slack",
           healthStatus: "error",
           lastUsedAt: new Date("2026-06-09T00:00:00Z"),
         }),
-        connection({ id: "c-paused", name: "Notion", enabled: false }),
+        connection({ id: "c-attention-2", applicationId: "app-slack", name: "Slack Team", healthStatus: "healthy" }),
+        connection({ id: "c-paused", applicationId: "app-notion", name: "Notion", enabled: false }),
+      ],
+    });
+    listAppsAttentionMock.mockResolvedValue({
+      apps: [
+        {
+          connection: connection({ id: "c-attention", applicationId: "app-slack", name: "Slack", healthStatus: "error" }),
+          healthNeedsAttention: true,
+          quarantinedCatalogEntryCount: 0,
+          pendingActionRequestCount: 0,
+          reasons: ["health"],
+        },
+        {
+          connection: connection({ id: "c-attention-2", applicationId: "app-slack", name: "Slack Team", healthStatus: "healthy" }),
+          healthNeedsAttention: false,
+          quarantinedCatalogEntryCount: 1,
+          pendingActionRequestCount: 0,
+          reasons: ["quarantined_catalog_entries"],
+        },
       ],
     });
     listProfilesMock.mockResolvedValue({
       profiles: [
         profile("c-connected", ["a", "b", "c"]),
         profile("c-attention", ["a"]),
+        profile("c-attention-2", ["b", "c"]),
       ],
     });
 
@@ -160,14 +240,23 @@ describe("Apps table (M1b)", () => {
     // 2. Attention + Paused rows keep their explanatory hint.
     expect(text).toContain("The key stopped working");
     expect(text).toContain("Paused — agents can");
+    // 3. Count line and attention banner are application-counted, not connection-counted.
+    expect(text).toContain("3 apps");
+    expect(text).toContain("1 needs attention");
     // 3. New header columns are present.
     const headers = Array.from(container.querySelectorAll("th")).map((th) => th.textContent?.trim());
     expect(headers).toEqual(["App", "Status", "Actions", "Last used", ""]);
-    // 4. Actions column reflects enabled catalog entries; missing profile => 0 on.
+    // 4. Actions column reflects enabled catalog entries rolled up by application; missing profile => 0 on.
     expect(text).toContain("3 on");
-    expect(text).toContain("1 on");
     expect(text).toContain("0 on");
     // 5. Last used renders a relative timestamp when present, dash when absent.
     expect(text).toContain("—");
+    // 6. Multi-connection app appears once and opens its first connection detail.
+    expect(Array.from(container.querySelectorAll("tbody tr")).filter((tr) => tr.textContent?.includes("Slack"))).toHaveLength(1);
+    const slackRow = Array.from(container.querySelectorAll("tbody tr")).find((tr) =>
+      tr.textContent?.includes("Slack"),
+    );
+    slackRow?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/c-attention");
   });
 });
