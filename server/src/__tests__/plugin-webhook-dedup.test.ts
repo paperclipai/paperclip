@@ -130,10 +130,26 @@ function createWebhookDb() {
   const update = vi.fn(() => ({
     set: vi.fn((v: Record<string, unknown>) => ({
       where: vi.fn(() => {
-        if (activeRow && typeof v.status === "string") {
-          activeRow.status = v.status;
-        }
-        return Promise.resolve([]);
+        const applyUnconditional = () => {
+          if (activeRow && typeof v.status === "string") {
+            activeRow.status = v.status;
+          }
+          return [] as unknown[];
+        };
+        return {
+          // Conditional reset path (`WHERE … AND status = 'failed'
+          // RETURNING id`): matches only while the row is still failed.
+          returning: vi.fn(() => {
+            if (activeRow && activeRow.status === "failed" && typeof v.status === "string") {
+              activeRow.status = v.status;
+              return Promise.resolve([{ id: activeRow.id }]);
+            }
+            return Promise.resolve([]);
+          }),
+          // Unconditional status updates are awaited directly (thenable).
+          then: (onFulfilled: (value: unknown[]) => unknown, onRejected?: (err: unknown) => unknown) =>
+            Promise.resolve(applyUnconditional()).then(onFulfilled, onRejected),
+        };
       }),
     })),
   }));

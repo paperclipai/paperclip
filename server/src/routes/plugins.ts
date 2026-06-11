@@ -2630,8 +2630,11 @@ export function pluginRoutes(
       }
 
       // Reset the failed row and fall through to the normal dispatch path,
-      // reusing its id as the delivery id.
-      await db
+      // reusing its id as the delivery id. The reset is a conditional
+      // UPDATE: two replicas can race the same retry here, and only the
+      // one whose UPDATE matched the failed status may dispatch — the
+      // loser answers duplicate.
+      const reset = await db
         .update(pluginWebhookDeliveries)
         .set({
           status: "pending",
@@ -2639,7 +2642,17 @@ export function pluginRoutes(
           error: null,
           finishedAt: null,
         })
-        .where(eq(pluginWebhookDeliveries.id, existing.id));
+        .where(
+          and(
+            eq(pluginWebhookDeliveries.id, existing.id),
+            eq(pluginWebhookDeliveries.status, "failed"),
+          ),
+        )
+        .returning({ id: pluginWebhookDeliveries.id });
+      if (reset.length === 0) {
+        res.status(202).json({ status: "duplicate", requestId });
+        return;
+      }
       delivery = { id: existing.id };
     }
 
