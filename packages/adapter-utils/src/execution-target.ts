@@ -23,6 +23,7 @@ import {
   ensureCommandResolvable,
   resolveCommandForLogs,
   runChildProcess,
+  type OutputActivityTimeoutOptions,
   type RunProcessResult,
   type TerminalResultCleanupOptions,
 } from "./server-utils.js";
@@ -82,6 +83,7 @@ export interface AdapterExecutionTargetProcessOptions {
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   terminalResultCleanup?: TerminalResultCleanupOptions;
+  outputActivityTimeout?: OutputActivityTimeoutOptions;
 }
 
 export interface AdapterExecutionTargetShellOptions {
@@ -432,6 +434,7 @@ export async function runAdapterExecutionTargetProcess(
     onLog: options.onLog,
     onSpawn: options.onSpawn,
     terminalResultCleanup: options.terminalResultCleanup,
+    outputActivityTimeout: options.outputActivityTimeout,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
   });
 }
