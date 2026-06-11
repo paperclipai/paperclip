@@ -115,6 +115,7 @@ import {
   type ExecutionWorkspaceInput,
   type RealizedExecutionWorkspace,
   sanitizeRuntimeServiceBaseEnv,
+  WorkspaceGitSubmoduleError,
   WorkspaceRepoMismatchError,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
@@ -10978,7 +10979,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           const setupErrorCode =
             outerErr instanceof EnvironmentRunError
               ? outerErr.code
-              : outerErr instanceof WorkspaceRepoMismatchError
+              : outerErr instanceof WorkspaceRepoMismatchError || outerErr instanceof WorkspaceGitSubmoduleError
                 ? outerErr.code
                 : "adapter_failed";
           await setRunStatus(runId, "failed", {

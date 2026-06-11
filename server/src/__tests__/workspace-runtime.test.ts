@@ -90,6 +90,28 @@ async function createTempRepo(defaultBranch = "main") {
   return repoRoot;
 }
 
+async function createTempRepoWithSubmodule(options: { removeCheckout?: boolean } = {}) {
+  const submodulePath = "vendor/codec";
+  const submoduleRepo = await createTempRepo("main");
+  await fs.writeFile(path.join(submoduleRepo, "codec.txt"), "codec fixture\n", "utf8");
+  await runGit(submoduleRepo, ["add", "codec.txt"]);
+  await runGit(submoduleRepo, ["commit", "-m", "Add codec fixture"]);
+
+  const repoRoot = await createTempRepo("main");
+  await runGit(repoRoot, ["config", "protocol.file.allow", "always"]);
+  await runGit(repoRoot, ["-c", "protocol.file.allow=always", "submodule", "add", submoduleRepo, submodulePath]);
+  await runGit(repoRoot, ["commit", "-m", "Add codec submodule"]);
+
+  if (options.removeCheckout ?? true) {
+    await fs.rm(path.join(repoRoot, submodulePath), { recursive: true, force: true });
+  }
+
+  return {
+    repoRoot,
+    submodulePath,
+  };
+}
+
 function buildWorkspace(cwd: string): RealizedExecutionWorkspace {
   return {
     baseCwd: cwd,
@@ -2065,6 +2087,120 @@ describe("realizeExecutionWorkspace", () => {
       name: WorkspaceRepoMismatchError.name,
     });
   });
+
+  it("repairs missing project_primary submodules before returning the workspace", async () => {
+    const { repoRoot, submodulePath } = await createTempRepoWithSubmodule();
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    const beforeStatus = await readGit(repoRoot, ["submodule", "status", "--recursive"]);
+    expect(beforeStatus.startsWith("-")).toBe(true);
+
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-submodule-repair",
+        workspaceId: "workspace-submodule-repair",
+        repoUrl: null,
+        repoRef: "main",
+      },
+      config: {},
+      issue: {
+        id: "issue-submodule-repair",
+        identifier: "PAP-SUBMODULE-REPAIR",
+        title: "Repair submodules",
+      },
+      agent: {
+        id: "agent-submodule-repair",
+        name: "Codex Coder",
+        companyId: "company-submodule-repair",
+      },
+      recorder,
+    });
+
+    expect(realized.strategy).toBe("project_primary");
+    expect(realized.warnings).toEqual([
+      `Initialized git submodules before starting: ${submodulePath}`,
+    ]);
+    await expect(fs.stat(path.join(repoRoot, submodulePath, "codec.txt"))).resolves.toBeTruthy();
+    const afterStatus = await readGit(repoRoot, ["submodule", "status", "--recursive"]);
+    expect(afterStatus.startsWith("-")).toBe(false);
+    expect(operations.some((operation) => {
+      const submodulePaths = operation.metadata?.submodulePaths;
+      return operation.phase === "worktree_prepare" &&
+        operation.metadata?.action === "repair_uninitialized_submodules" &&
+        Array.isArray(submodulePaths) &&
+        submodulePaths.includes(submodulePath);
+    })).toBe(true);
+  }, 20_000);
+
+  it("repairs worktree submodules before running provision commands", async () => {
+    const { repoRoot, submodulePath } = await createTempRepoWithSubmodule({ removeCheckout: false });
+    const scriptsDir = path.join(repoRoot, "scripts");
+    await fs.mkdir(scriptsDir, { recursive: true });
+    await fs.writeFile(
+      path.join(scriptsDir, "check-submodule.sh"),
+      [
+        "#!/bin/sh",
+        "set -eu",
+        `test -f ${submodulePath}/codec.txt`,
+        "touch provision-ok",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await runGit(repoRoot, ["add", "scripts/check-submodule.sh"]);
+    await runGit(repoRoot, ["commit", "-m", "Add provision check"]);
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    const previousGitAllowProtocol = process.env.GIT_ALLOW_PROTOCOL;
+    process.env.GIT_ALLOW_PROTOCOL = "file";
+    try {
+      const realized = await realizeExecutionWorkspace({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-submodule-provision",
+          workspaceId: "workspace-submodule-provision",
+          repoUrl: null,
+          repoRef: "main",
+        },
+        config: {
+          workspaceStrategy: {
+            type: "git_worktree",
+            branchTemplate: "{{issue.identifier}}-{{slug}}",
+            provisionCommand: "sh ./scripts/check-submodule.sh",
+          },
+        },
+        issue: {
+          id: "issue-submodule-provision",
+          identifier: "PAP-SUBMODULE-PROVISION",
+          title: "Provision needs submodules",
+        },
+        agent: {
+          id: "agent-submodule-provision",
+          name: "Codex Coder",
+          companyId: "company-submodule-provision",
+        },
+        recorder,
+      });
+
+      expect(realized.strategy).toBe("git_worktree");
+      await expect(fs.stat(path.join(realized.cwd, submodulePath, "codec.txt"))).resolves.toBeTruthy();
+      await expect(fs.stat(path.join(realized.cwd, "provision-ok"))).resolves.toBeTruthy();
+
+      const repairIndex = operations.findIndex((operation) =>
+        operation.metadata?.action === "repair_uninitialized_submodules"
+      );
+      const provisionIndex = operations.findIndex((operation) => operation.phase === "workspace_provision");
+      expect(repairIndex).toBeGreaterThanOrEqual(0);
+      expect(provisionIndex).toBeGreaterThanOrEqual(0);
+      expect(repairIndex).toBeLessThan(provisionIndex);
+    } finally {
+      if (previousGitAllowProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+      else process.env.GIT_ALLOW_PROTOCOL = previousGitAllowProtocol;
+    }
+  }, 20_000);
 
   it("auto-detects the default branch when baseRef is not configured", async () => {
     // Create a repo with "master" as default branch (not "main")

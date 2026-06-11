@@ -108,6 +108,15 @@ export class WorkspaceRepoMismatchError extends Error {
   }
 }
 
+export class WorkspaceGitSubmoduleError extends Error {
+  code = "workspace_git_submodule_unavailable";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkspaceGitSubmoduleError";
+  }
+}
+
 interface RuntimeServiceRecord extends RuntimeServiceRef {
   db?: Db;
   child: ChildProcess | null;
@@ -128,6 +137,7 @@ const runtimeServicesById = new Map<string, RuntimeServiceRecord>();
 const runtimeServicesByReuseKey = new Map<string, string>();
 const runtimeServiceLeasesByRun = new Map<string, string[]>();
 const DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES = 256 * 1024;
+const WORKSPACE_SUBMODULE_REPAIR_TIMEOUT_MS = 5 * 60 * 1000;
 
 type ProcessOutputCapture = {
   text: string;
@@ -500,12 +510,14 @@ async function executeProcess(input: {
   args: string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
   maxStdoutBytes?: number;
   maxStderrBytes?: number;
 }): Promise<{
   stdout: string;
   stderr: string;
   code: number | null;
+  timedOut: boolean;
   stdoutTruncated: boolean;
   stderrTruncated: boolean;
   stdoutBytes: number;
@@ -515,12 +527,28 @@ async function executeProcess(input: {
     stdout: ProcessOutputAccumulator;
     stderr: ProcessOutputAccumulator;
     code: number | null;
+    timedOut: boolean;
   }>((resolve, reject) => {
+    let timedOut = false;
+    let killTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
       stdio: ["ignore", "pipe", "pipe"],
       env: input.env ?? process.env,
     });
+    const timeoutMs =
+      typeof input.timeoutMs === "number" && Number.isFinite(input.timeoutMs) && input.timeoutMs > 0
+        ? Math.trunc(input.timeoutMs)
+        : null;
+    const timeoutTimer = timeoutMs
+      ? globalThis.setTimeout(() => {
+          timedOut = true;
+          child.kill("SIGTERM");
+          killTimer = globalThis.setTimeout(() => {
+            child.kill("SIGKILL");
+          }, 5_000);
+        }, timeoutMs)
+      : null;
     const stdout = createProcessOutputCapture(input.maxStdoutBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
     const stderr = createProcessOutputCapture(input.maxStderrBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
     child.stdout?.on("data", (chunk) => {
@@ -529,8 +557,16 @@ async function executeProcess(input: {
     child.stderr?.on("data", (chunk) => {
       stderr.append(String(chunk));
     });
-    child.on("error", reject);
-    child.on("close", (code) => resolve({ stdout, stderr, code }));
+    child.on("error", (error) => {
+      if (timeoutTimer) globalThis.clearTimeout(timeoutTimer);
+      if (killTimer) globalThis.clearTimeout(killTimer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      if (timeoutTimer) globalThis.clearTimeout(timeoutTimer);
+      if (killTimer) globalThis.clearTimeout(killTimer);
+      resolve({ stdout, stderr, code, timedOut });
+    });
   });
   const stdout = proc.stdout.finish();
   const stderr = proc.stderr.finish();
@@ -538,6 +574,7 @@ async function executeProcess(input: {
     stdout: stdout.text,
     stderr: stderr.text,
     code: proc.code,
+    timedOut: proc.timedOut,
     stdoutTruncated: stdout.truncated,
     stderrTruncated: stderr.truncated,
     stdoutBytes: stdout.totalBytes,
@@ -545,12 +582,23 @@ async function executeProcess(input: {
   };
 }
 
-async function runGit(args: string[], cwd: string): Promise<string> {
+async function runGit(
+  args: string[],
+  cwd: string,
+  options: { env?: NodeJS.ProcessEnv; timeoutMs?: number; maxStdoutBytes?: number; maxStderrBytes?: number } = {},
+): Promise<string> {
   const proc = await executeProcess({
     command: "git",
     args,
     cwd,
+    env: options.env,
+    timeoutMs: options.timeoutMs,
+    maxStdoutBytes: options.maxStdoutBytes,
+    maxStderrBytes: options.maxStderrBytes,
   });
+  if (proc.timedOut) {
+    throw new Error(`git ${args.join(" ")} timed out after ${options.timeoutMs}ms`);
+  }
   if (proc.code !== 0) {
     throw new Error(proc.stderr.trim() || proc.stdout.trim() || `git ${args.join(" ")} failed`);
   }
@@ -761,6 +809,161 @@ async function validateProjectPrimaryRepoOrigin(input: {
   );
 }
 
+type GitSubmoduleReadinessEntry = {
+  path: string;
+  state: "uninitialized" | "conflicted";
+};
+
+function parseGitSubmoduleReadiness(output: string): GitSubmoduleReadinessEntry[] {
+  const entries: GitSubmoduleReadinessEntry[] = [];
+  const seen = new Set<string>();
+
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = rawLine.trimEnd();
+    if (!line) continue;
+
+    const state = line[0];
+    if (state !== "-" && state !== "U") continue;
+
+    const body = line.slice(1).trim();
+    const firstWhitespace = body.search(/\s/);
+    if (firstWhitespace < 0) continue;
+
+    let submodulePath = body.slice(firstWhitespace).trim();
+    if (submodulePath.endsWith(")")) {
+      const detailStart = submodulePath.lastIndexOf(" (");
+      if (detailStart > 0) {
+        submodulePath = submodulePath.slice(0, detailStart);
+      }
+    }
+    if (!submodulePath || seen.has(submodulePath)) continue;
+    seen.add(submodulePath);
+    entries.push({
+      path: submodulePath,
+      state: state === "-" ? "uninitialized" : "conflicted",
+    });
+  }
+
+  return entries;
+}
+
+function buildNonInteractiveGitEnv(): NodeJS.ProcessEnv {
+  const env = sanitizeRuntimeServiceBaseEnv(process.env);
+  env.GIT_TERMINAL_PROMPT = "0";
+  if (!env.GIT_SSH_COMMAND) {
+    env.GIT_SSH_COMMAND = "ssh -o BatchMode=yes";
+  }
+  return env;
+}
+
+async function readGitSubmoduleReadiness(cwd: string, env: NodeJS.ProcessEnv): Promise<GitSubmoduleReadinessEntry[]> {
+  const output = await runGit(["submodule", "status", "--recursive"], cwd, {
+    env,
+    timeoutMs: 30_000,
+    maxStdoutBytes: 256 * 1024,
+    maxStderrBytes: 64 * 1024,
+  });
+  return parseGitSubmoduleReadiness(output);
+}
+
+async function ensureGitSubmodulesReady(input: {
+  cwd: string;
+  recorder?: WorkspaceOperationRecorder | null;
+}): Promise<string[]> {
+  const gitmodulesExists = await fs.stat(path.join(input.cwd, ".gitmodules"))
+    .then((entry) => entry.isFile())
+    .catch(() => false);
+  if (!gitmodulesExists) return [];
+
+  const env = buildNonInteractiveGitEnv();
+  let entries: GitSubmoduleReadinessEntry[];
+  try {
+    entries = await readGitSubmoduleReadiness(input.cwd, env);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new WorkspaceGitSubmoduleError(
+      `Could not inspect git submodules for execution workspace "${input.cwd}": ${reason}`,
+    );
+  }
+
+  const conflicted = entries.filter((entry) => entry.state === "conflicted");
+  if (conflicted.length > 0) {
+    throw new WorkspaceGitSubmoduleError(
+      `Execution workspace "${input.cwd}" has conflicted git submodules that need manual resolution before an agent can run: ${conflicted.map((entry) => entry.path).join(", ")}`,
+    );
+  }
+
+  const missingPaths = entries
+    .filter((entry) => entry.state === "uninitialized")
+    .map((entry) => entry.path);
+  if (missingPaths.length === 0) return [];
+
+  const metadata = {
+    cwd: input.cwd,
+    submodulePaths: missingPaths,
+  };
+
+  try {
+    await recordGitOperation(input.recorder, {
+      phase: "worktree_prepare",
+      args: ["submodule", "sync", "--recursive", "--", ...missingPaths],
+      cwd: input.cwd,
+      env,
+      timeoutMs: 60_000,
+      metadata: {
+        ...metadata,
+        action: "sync_submodules",
+      },
+      successMessage: `Synchronized git submodule URLs for ${missingPaths.join(", ")}\n`,
+      failureLabel: "git submodule sync",
+    });
+    await recordGitOperation(input.recorder, {
+      phase: "worktree_prepare",
+      args: [
+        "-c",
+        "protocol.version=2",
+        "submodule",
+        "update",
+        "--init",
+        "--recursive",
+        "--recommend-shallow",
+        "--depth",
+        "1",
+        "--filter=blob:none",
+        "--jobs",
+        "4",
+        "--",
+        ...missingPaths,
+      ],
+      cwd: input.cwd,
+      env,
+      timeoutMs: WORKSPACE_SUBMODULE_REPAIR_TIMEOUT_MS,
+      metadata: {
+        ...metadata,
+        action: "repair_uninitialized_submodules",
+        depth: 1,
+        filter: "blob:none",
+      },
+      successMessage: `Initialized git submodules for ${missingPaths.join(", ")}\n`,
+      failureLabel: "git submodule update",
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new WorkspaceGitSubmoduleError(
+      `Execution workspace "${input.cwd}" has uninitialized git submodules (${missingPaths.join(", ")}), and Paperclip could not restore them before starting the agent: ${reason}`,
+    );
+  }
+
+  const remaining = await readGitSubmoduleReadiness(input.cwd, env);
+  if (remaining.length > 0) {
+    throw new WorkspaceGitSubmoduleError(
+      `Execution workspace "${input.cwd}" still has unavailable git submodules after repair: ${remaining.map((entry) => entry.path).join(", ")}`,
+    );
+  }
+
+  return [`Initialized git submodules before starting: ${missingPaths.join(", ")}`];
+}
+
 async function detectDefaultBranch(repoRoot: string): Promise<string | null> {
   const originMasterRef = "origin/master";
   await refreshRemoteTrackingBaseRef(repoRoot, originMasterRef);
@@ -966,18 +1169,24 @@ async function recordGitOperation(
     phase: "worktree_prepare" | "worktree_cleanup";
     args: string[];
     cwd: string;
+    env?: NodeJS.ProcessEnv;
+    timeoutMs?: number;
     metadata?: Record<string, unknown> | null;
     successMessage?: string | null;
     failureLabel?: string | null;
   },
 ): Promise<string> {
   if (!recorder) {
-    return runGit(input.args, input.cwd);
+    return runGit(input.args, input.cwd, {
+      env: input.env,
+      timeoutMs: input.timeoutMs,
+    });
   }
 
   let stdout = "";
   let stderr = "";
   let code: number | null = null;
+  let timedOut = false;
   await recorder.recordOperation({
     phase: input.phase,
     command: formatCommandForDisplay("git", input.args),
@@ -988,19 +1197,24 @@ async function recordGitOperation(
         command: "git",
         args: input.args,
         cwd: input.cwd,
+        env: input.env,
+        timeoutMs: input.timeoutMs,
       });
       stdout = result.stdout;
       stderr = result.stderr;
       code = result.code;
+      timedOut = result.timedOut;
       return {
-        status: result.code === 0 ? "succeeded" : "failed",
+        status: result.code === 0 && !result.timedOut ? "succeeded" : "failed",
         exitCode: result.code,
         stdout: result.stdout,
         stderr: result.stderr,
         system: result.code === 0 ? input.successMessage ?? null : null,
         metadata:
-          result.stdoutTruncated || result.stderrTruncated
+          result.timedOut || result.stdoutTruncated || result.stderrTruncated
             ? {
+                timedOut: result.timedOut,
+                timeoutMs: input.timeoutMs ?? null,
                 stdoutTruncated: result.stdoutTruncated,
                 stderrTruncated: result.stderrTruncated,
                 stdoutBytes: result.stdoutBytes,
@@ -1010,6 +1224,10 @@ async function recordGitOperation(
       };
     },
   });
+
+  if (timedOut) {
+    throw new Error(`${input.failureLabel ?? `git ${input.args.join(" ")}`} timed out after ${input.timeoutMs}ms`);
+  }
 
   if (code !== 0) {
     const details = [stderr.trim(), stdout.trim()].filter(Boolean).join("\n");
@@ -1188,10 +1406,18 @@ export async function realizeExecutionWorkspace(input: {
   const rawStrategy = parseObject(input.config.workspaceStrategy);
   const strategyType = asString(rawStrategy.type, "project_primary");
   if (strategyType !== "git_worktree") {
-    if (input.base.source === "project_primary" && await isGitCheckout(input.base.baseCwd)) {
+    const baseIsGitCheckout = await isGitCheckout(input.base.baseCwd);
+    let warnings: string[] = [];
+    if (input.base.source === "project_primary" && baseIsGitCheckout) {
       await validateProjectPrimaryRepoOrigin({
         cwd: input.base.baseCwd,
         expectedRepoUrl: input.base.repoUrl,
+      });
+    }
+    if (baseIsGitCheckout) {
+      warnings = await ensureGitSubmodulesReady({
+        cwd: input.base.baseCwd,
+        recorder: input.recorder ?? null,
       });
     }
     return {
@@ -1200,7 +1426,7 @@ export async function realizeExecutionWorkspace(input: {
       cwd: input.base.baseCwd,
       branchName: null,
       worktreePath: null,
-      warnings: [],
+      warnings,
       created: false,
       baseRefSha: null,
     };
@@ -1264,6 +1490,10 @@ export async function realizeExecutionWorkspace(input: {
         }),
       });
     }
+    const submoduleWarnings = await ensureGitSubmodulesReady({
+      cwd: reusablePath,
+      recorder: input.recorder ?? null,
+    });
     await provisionExecutionWorktree({
       strategy: rawStrategy,
       base: input.base,
@@ -1281,7 +1511,7 @@ export async function realizeExecutionWorkspace(input: {
       cwd: reusablePath,
       branchName,
       worktreePath: reusablePath,
-      warnings: [...baseRefreshWarnings, ...baseDrift.warnings],
+      warnings: [...baseRefreshWarnings, ...baseDrift.warnings, ...submoduleWarnings],
       created: false,
       baseRefSha: baseDrift.branchBaseRefSha ?? baseDrift.currentBaseRefSha,
     };
@@ -1363,6 +1593,10 @@ export async function realizeExecutionWorkspace(input: {
       return await reuseExistingWorktree(reusablePath);
     }
   }
+  const submoduleWarnings = await ensureGitSubmodulesReady({
+    cwd: worktreePath,
+    recorder: input.recorder ?? null,
+  });
   await provisionExecutionWorktree({
     strategy: rawStrategy,
     base: input.base,
@@ -1381,7 +1615,7 @@ export async function realizeExecutionWorkspace(input: {
     cwd: worktreePath,
     branchName,
     worktreePath,
-    warnings: baseRefreshWarnings,
+    warnings: [...baseRefreshWarnings, ...submoduleWarnings],
     created: true,
     baseRefSha: currentBaseRefSha,
   };
