@@ -329,9 +329,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
+  const envOverrides: Record<string, string> = {};
+  for (const [key, value] of Object.entries(envConfig)) {
+    if (typeof value === "string") envOverrides[key] = value;
+  }
   const configuredCodexHome =
-    typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
-      ? path.resolve(envConfig.CODEX_HOME.trim())
+    typeof envOverrides.CODEX_HOME === "string" && envOverrides.CODEX_HOME.trim().length > 0
+      ? path.resolve(envOverrides.CODEX_HOME.trim())
       : null;
   const codexSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = resolveCodexDesiredSkillNames(config, codexSkillEntries);
@@ -343,7 +347,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const preparedManagedCodexHome =
     configuredCodexHome
       ? null
-      : await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
+      : await prepareManagedCodexHome({ ...process.env, ...envOverrides }, onLog, agent.companyId, {
           apiKey: configuredOpenAiApiKey,
         });
   const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
@@ -498,6 +502,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     if (runtimePrimaryUrl) {
       env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
+    }
+    for (const [k, v] of Object.entries(envOverrides)) {
+      if (k === "CODEX_HOME") continue;
+      env[k] = v;
     }
     env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
     if (!hasExplicitApiKey && authToken) {
