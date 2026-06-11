@@ -24,9 +24,9 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
-    description: "Use OpenCode's known Codex mini model as the budget lane.",
+    description:
+      "Budget lane: sets variant to low. Preserves the agent's configured model — override model explicitly in adapterConfig if a different model is needed.",
     adapterConfig: {
-      model: "openai/gpt-5.1-codex-mini",
       variant: "low",
     },
     source: "adapter_default",

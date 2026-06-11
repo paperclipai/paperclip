@@ -43,7 +43,7 @@ import { conflict, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
-import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
+import { getServerAdapter, listAdapterModelProfiles, listAdapterModels, runningProcesses } from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
   AdapterInvocationMeta,
@@ -130,7 +130,7 @@ import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
-import { redactEventPayload } from "../redaction.js";
+import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -169,6 +169,8 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+const MAX_INLINE_STALE_RUN_LOG_TAIL_CHARS = 4_000;
+const INLINE_STALE_RUN_LOG_TAIL_BYTES = 8 * 1024;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -291,11 +293,36 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "pi_local",
 ]);
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
+const COMMAND_SCOPED_ENV_KEYS = new Set(["CLOUDFLARE_API_TOKEN"]);
 
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
   "resolveAdapterConfigForRuntime" | "resolveEnvBindings"
 >;
+
+function partitionCommandScopedEnv(
+  env: Record<string, unknown>,
+  secretKeys: Set<string>,
+): {
+  ambientEnv: Record<string, unknown>;
+  commandScopedEnv: Record<string, string>;
+  commandScopedSecretKeys: Set<string>;
+} {
+  const ambientEnv: Record<string, unknown> = {};
+  const commandScopedEnv: Record<string, string> = {};
+  const commandScopedSecretKeys = new Set<string>();
+
+  for (const [key, value] of Object.entries(env)) {
+    if (COMMAND_SCOPED_ENV_KEYS.has(key) && typeof value === "string" && secretKeys.has(key)) {
+      commandScopedEnv[key] = value;
+      commandScopedSecretKeys.add(key);
+      continue;
+    }
+    ambientEnv[key] = value;
+  }
+
+  return { ambientEnv, commandScopedEnv, commandScopedSecretKeys };
+}
 
 export async function resolveExecutionRunAdapterConfig(input: {
   companyId: string;
@@ -319,7 +346,17 @@ export async function resolveExecutionRunAdapterConfig(input: {
       secretKeys.add(key);
     }
   }
-  return { resolvedConfig, secretKeys };
+  const partitioned = partitionCommandScopedEnv(parseObject(resolvedConfig.env), secretKeys);
+  resolvedConfig.env = partitioned.ambientEnv;
+  for (const key of partitioned.commandScopedSecretKeys) {
+    secretKeys.delete(key);
+  }
+  return {
+    resolvedConfig,
+    secretKeys,
+    commandScopedEnv: partitioned.commandScopedEnv,
+    commandScopedSecretKeys: partitioned.commandScopedSecretKeys,
+  };
 }
 
 export function extractMentionedSkillIdsFromSources(
@@ -891,6 +928,28 @@ export function compactRunLogChunk(chunk: string, maxChars = MAX_PERSISTED_LOG_C
   return `${normalized.slice(0, headChars)}${marker}${normalized.slice(normalized.length - tailChars)}`;
 }
 
+export function redactRunLogContent(content: string) {
+  const redactedText = redactSensitiveText(content);
+  return redactedText
+    .split(/(\r?\n)/)
+    .map((part) => {
+      if (part === "\n" || part === "\r\n" || part.trim() === "") return part;
+      try {
+        const parsed = JSON.parse(part) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return part;
+        const record = parsed as Record<string, unknown>;
+        if (typeof record.chunk !== "string") return part;
+        return JSON.stringify({
+          ...record,
+          chunk: redactSensitiveText(record.chunk),
+        });
+      } catch {
+        return part;
+      }
+    })
+    .join("");
+}
+
 function normalizeMaxConcurrentRuns(value: unknown) {
   const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT));
   if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
@@ -1082,10 +1141,51 @@ export function mergeModelProfileAdapterConfig(input: {
   modelProfile: ModelProfileApplication;
   issueAdapterConfig: Record<string, unknown> | null | undefined;
 }): Record<string, unknown> {
-  return {
+  const merged = {
     ...input.baseConfig,
     ...(input.modelProfile.adapterConfig ?? {}),
     ...(input.issueAdapterConfig ?? {}),
+  };
+  // Preserve the agent's explicitly configured model over any model profile default.
+  // Model profiles may set a fallback model (e.g. the "cheap" profile), but an agent
+  // that has an explicit adapterConfig.model should always use that model unless the
+  // issue-level adapterConfig specifically overrides it.
+  const baseModel = typeof input.baseConfig.model === "string" ? input.baseConfig.model.trim() : "";
+  const issueModel =
+    typeof input.issueAdapterConfig?.model === "string" ? input.issueAdapterConfig.model.trim() : "";
+  if (baseModel && !issueModel) {
+    merged.model = baseModel;
+  }
+  return merged;
+}
+
+export function sanitizeIssueAssigneeAdapterConfigForAdapter(input: {
+  adapterType: string;
+  issueAdapterConfig: Record<string, unknown> | null | undefined;
+  adapterModels: Array<{ id: string; label: string }>;
+}): { adapterConfig: Record<string, unknown> | null; warnings: string[] } {
+  const issueAdapterConfig = input.issueAdapterConfig ?? null;
+  if (!issueAdapterConfig) return { adapterConfig: null, warnings: [] };
+
+  const model = readNonEmptyString(issueAdapterConfig.model);
+  if (!model) return { adapterConfig: issueAdapterConfig, warnings: [] };
+
+  const supportedModelIds = new Set(
+    input.adapterModels
+      .map((adapterModel) => adapterModel.id.trim())
+      .filter((id) => id.length > 0),
+  );
+  if (supportedModelIds.size === 0 || supportedModelIds.has(model)) {
+    return { adapterConfig: issueAdapterConfig, warnings: [] };
+  }
+
+  const { model: _ignoredModel, ...remainingConfig } = issueAdapterConfig;
+  const adapterConfig = Object.keys(remainingConfig).length > 0 ? remainingConfig : null;
+  return {
+    adapterConfig,
+    warnings: [
+      `Ignoring issue-level model override "${model}" because adapter "${input.adapterType}" does not support it.`,
+    ],
   };
 }
 
@@ -1786,7 +1886,85 @@ export function mergeCoalescedContextSnapshot(
   return merged;
 }
 
-async function buildPaperclipWakePayload(input: {
+async function buildStaleRunWakeEvidence(input: {
+  db: Db;
+  companyId: string;
+  staleRunId: string | null;
+}) {
+  if (!input.staleRunId) return null;
+  const [run] = await input.db
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      status: heartbeatRuns.status,
+      logStore: heartbeatRuns.logStore,
+      logRef: heartbeatRuns.logRef,
+      logBytes: heartbeatRuns.logBytes,
+      processPid: heartbeatRuns.processPid,
+      processGroupId: heartbeatRunProcessGroupIdColumn,
+      processStartedAt: heartbeatRuns.processStartedAt,
+      lastOutputAt: heartbeatRuns.lastOutputAt,
+      lastOutputSeq: heartbeatRuns.lastOutputSeq,
+      lastOutputStream: heartbeatRuns.lastOutputStream,
+    })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.staleRunId)))
+    .limit(1);
+  if (!run) return null;
+
+  let logTail = "";
+  let logTailAvailable = false;
+  let logTailTruncated = false;
+  if (run.logStore && run.logRef && run.logBytes) {
+    try {
+      const result = await getRunLogStore().read(
+        { store: run.logStore as "local_file", logRef: run.logRef },
+        {
+          offset: Math.max(0, run.logBytes - INLINE_STALE_RUN_LOG_TAIL_BYTES),
+          limitBytes: INLINE_STALE_RUN_LOG_TAIL_BYTES,
+        },
+      );
+      logTailAvailable = true;
+      const redacted = redactRunLogContent(redactSensitiveText(result.content));
+      logTailTruncated = redacted.length > MAX_INLINE_STALE_RUN_LOG_TAIL_CHARS;
+      logTail = logTailTruncated
+        ? `${redacted.slice(redacted.length - MAX_INLINE_STALE_RUN_LOG_TAIL_CHARS)}\n[truncated earlier run-log tail]`
+        : redacted;
+    } catch (err) {
+      logger.warn({ err, runId: run.id }, "failed to inline stale-run log tail in wake payload");
+    }
+  }
+
+  return {
+    runId: run.id,
+    status: run.status,
+    agentId: run.agentId,
+    logRoute: `/api/heartbeat-runs/${run.id}/log`,
+    logTailAvailable,
+    logTail,
+    logTailTruncated,
+    process: {
+      pid: run.processPid ?? null,
+      processGroupId: run.processGroupId ?? null,
+      processStartedAt: run.processStartedAt?.toISOString() ?? null,
+      inMemoryHandle: runningProcesses.has(run.id),
+      recoveryOwner: "watchdog-review-assignee",
+      recoveryAction:
+        "Use the heartbeat run recovery/cancel controls; local process-group termination is authorized only for orphaned local adapter children after preserving useful evidence.",
+    },
+    lastOutput: {
+      at: run.lastOutputAt?.toISOString() ?? null,
+      seq: run.lastOutputSeq ?? 0,
+      stream:
+        run.lastOutputStream === "stdout" || run.lastOutputStream === "stderr"
+          ? run.lastOutputStream
+          : null,
+    },
+  };
+}
+
+export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
   contextSnapshot: Record<string, unknown>;
@@ -1811,6 +1989,11 @@ async function buildPaperclipWakePayload(input: {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
+  const staleRunEvidence = await buildStaleRunWakeEvidence({
+    db: input.db,
+    companyId: input.companyId,
+    staleRunId: readNonEmptyString(input.contextSnapshot.staleRunId),
+  });
   const continuationSummary = input.continuationSummary ?? null;
   const issueSummary =
     input.issueSummary ??
@@ -1944,6 +2127,7 @@ async function buildPaperclipWakePayload(input: {
           updatedAt: continuationSummary.updatedAt.toISOString(),
         }
       : null,
+    staleRunEvidence,
     commentIds,
     latestCommentId: commentIds[commentIds.length - 1] ?? null,
     comments,
@@ -2063,6 +2247,16 @@ async function terminateHeartbeatRunProcess(input: {
   );
 }
 
+type ProcessLossSubcode =
+  | "process_lost_server_restart"
+  | "process_lost_child_pid_exit"
+  | "process_lost_retry_exhausted";
+
+type ProcessLossRetryDisposition =
+  | "safe_retry_queued"
+  | "retry_already_attempted_needs_infra_investigation"
+  | "no_retry_needs_infra_investigation";
+
 function buildProcessLossMessage(run: {
   processPid: number | null;
   processGroupId: number | null;
@@ -2077,6 +2271,63 @@ function buildProcessLossMessage(run: {
     return `Process lost -- process group ${run.processGroupId} is no longer running`;
   }
   return "Process lost -- server may have restarted";
+}
+
+function classifyProcessLossFailure(input: {
+  run: {
+    processPid: number | null;
+    processGroupId: number | null;
+    processLossRetryCount: number | null;
+    lastOutputAt: Date | null;
+    lastOutputSeq: number | null;
+    lastOutputStream: string | null;
+    lastOutputBytes: number | null;
+  };
+  adapterType: string;
+  shouldRetry: boolean;
+  descendantOnlyCleanup: boolean;
+}) {
+  const retryCount = input.run.processLossRetryCount ?? 0;
+  const hasChildEvidence = !!input.run.processPid || !!input.run.processGroupId || input.descendantOnlyCleanup;
+  const subcode: ProcessLossSubcode = !input.shouldRetry && retryCount >= 1
+    ? "process_lost_retry_exhausted"
+    : hasChildEvidence
+      ? "process_lost_child_pid_exit"
+      : "process_lost_server_restart";
+  const retryDisposition: ProcessLossRetryDisposition = input.shouldRetry
+    ? "safe_retry_queued"
+    : retryCount >= 1
+      ? "retry_already_attempted_needs_infra_investigation"
+      : "no_retry_needs_infra_investigation";
+
+  return {
+    subcode,
+    retryDisposition,
+    recoveryAction: input.shouldRetry
+      ? "Automatic retry is safe and has been queued once."
+      : retryCount >= 1
+        ? "Automatic process-loss retry was already attempted; investigate runtime, adapter, and host process evidence before retrying manually."
+        : "No automatic retry was queued; investigate runtime, adapter, and host process evidence before retrying manually.",
+    metadata: {
+      processLoss: {
+        subcode,
+        adapterType: input.adapterType,
+        processPid: input.run.processPid ?? null,
+        processGroupId: input.run.processGroupId ?? null,
+        retryCount,
+        retryLimit: 1,
+        retryDisposition,
+        serverRestartCorrelated: !hasChildEvidence,
+        descendantOnlyCleanup: input.descendantOnlyCleanup,
+        lastOutputAt: input.run.lastOutputAt?.toISOString() ?? null,
+        lastOutputSeq: input.run.lastOutputSeq ?? 0,
+        lastOutputStream: input.run.lastOutputStream === "stdout" || input.run.lastOutputStream === "stderr"
+          ? input.run.lastOutputStream
+          : null,
+        lastOutputBytes: input.run.lastOutputBytes ?? null,
+      },
+    },
+  };
 }
 
 function truncateDisplayId(value: string | null | undefined, max = 128) {
@@ -4224,6 +4475,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       retryOfRunId: run.id,
       wakeReason: "process_lost_retry",
       retryReason: "process_lost",
+      ...(parseObject(run.resultJson).processLoss
+        ? { processLossRecovery: parseObject(run.resultJson).processLoss }
+        : {}),
     };
 
     const queued = await db.transaction(async (tx) => {
@@ -5264,7 +5518,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const claimedIssueId = readNonEmptyString(parseObject(claimed.contextSnapshot).issueId);
     if (claimedIssueId) {
       const claimedAgent = await getAgent(claimed.agentId);
-      await db
+      const issueLock = await db
         .update(issues)
         .set({
           executionRunId: claimed.id,
@@ -5281,7 +5535,58 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             eq(issues.assigneeAgentId, claimed.agentId),
             or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
           ),
-        );
+        )
+        .returning({
+          id: issues.id,
+        })
+        .then((rows) => rows[0] ?? null);
+
+      if (!issueLock) {
+        const currentIssue = await db
+          .select({
+            id: issues.id,
+            assigneeAgentId: issues.assigneeAgentId,
+            executionRunId: issues.executionRunId,
+            executionAgentNameKey: issues.executionAgentNameKey,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, claimedIssueId), eq(issues.companyId, claimed.companyId)))
+          .then((rows) => rows[0] ?? null);
+        const errorCode =
+          !currentIssue
+            ? "issue_not_found"
+            : currentIssue.assigneeAgentId !== claimed.agentId
+            ? "issue_reassigned"
+            : currentIssue?.executionRunId && currentIssue.executionRunId !== claimed.id
+              ? "issue_execution_lock_conflict"
+              : "issue_execution_lock_not_claimed";
+        const error =
+          errorCode === "issue_not_found"
+            ? "Cancelled because the target issue no longer exists"
+            : errorCode === "issue_reassigned"
+            ? "Cancelled because issue ownership changed before the heartbeat could claim the execution lock"
+            : errorCode === "issue_execution_lock_conflict"
+              ? "Cancelled because the issue execution lock is owned by a different run"
+              : "Cancelled because the issue execution lock could not be claimed";
+
+        await setRunStatus(claimed.id, "cancelled", {
+          finishedAt: claimedAt,
+          error,
+          errorCode,
+          resultJson: {
+            ...parseObject(claimed.resultJson),
+            stopReason: errorCode,
+            currentExecutionRunId: currentIssue?.executionRunId ?? null,
+            currentExecutionAgentNameKey: currentIssue?.executionAgentNameKey ?? null,
+            expectedExecutionRunId: claimed.id,
+          },
+        });
+        await setWakeupStatus(claimed.wakeupRequestId, "skipped", {
+          finishedAt: claimedAt,
+          error,
+        });
+        return null;
+      }
     }
 
     return claimed;
@@ -5848,24 +6153,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const processLossFailure = classifyProcessLossFailure({
+        run,
+        adapterType,
+        shouldRetry,
+        descendantOnlyCleanup,
+      });
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-        errorCode: "process_lost",
+        error: shouldRetry
+          ? `${baseMessage}; retrying once; ${processLossFailure.recoveryAction}`
+          : `${baseMessage}; ${processLossFailure.recoveryAction}`,
+        errorCode: processLossFailure.subcode,
         finishedAt: now,
         resultJson: mergeRunStopMetadataForAgent(
           { adapterType, adapterConfig },
           "failed",
           {
-            resultJson: parseObject(run.resultJson),
-            errorCode: "process_lost",
-            errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+            resultJson: {
+              ...parseObject(run.resultJson),
+              ...processLossFailure.metadata,
+            },
+            errorCode: processLossFailure.subcode,
+            errorMessage: shouldRetry
+              ? `${baseMessage}; retrying once; ${processLossFailure.recoveryAction}`
+              : `${baseMessage}; ${processLossFailure.recoveryAction}`,
           },
         ),
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: shouldRetry
+          ? `${baseMessage}; retrying once; ${processLossFailure.recoveryAction}`
+          : `${baseMessage}; ${processLossFailure.recoveryAction}`,
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
@@ -5900,6 +6220,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
+          processLossSubcode: processLossFailure.subcode,
+          retryDisposition: processLossFailure.retryDisposition,
+          lastOutputAt: run.lastOutputAt?.toISOString() ?? null,
+          lastOutputSeq: run.lastOutputSeq ?? 0,
         },
       });
 
@@ -5946,6 +6270,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string }) {
     return recovery.scanSilentActiveRuns(opts);
+  }
+
+  async function scanStaleHeartbeatRunAgents(opts?: { now?: Date; companyId?: string; thresholdMs?: number }) {
+    return recovery.scanStaleHeartbeatRunAgents(opts);
   }
 
   async function reconcileProductivityReviews(opts?: { now?: Date; companyId?: string }) {
@@ -6385,14 +6713,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipModelProfile;
     }
+    let adapterModels: Array<{ id: string; label: string }> = [];
+    try {
+      adapterModels = await listAdapterModels(agent.adapterType);
+    } catch (error) {
+      logger.warn(
+        {
+          err: error,
+          companyId: agent.companyId,
+          agentId: agent.id,
+          adapterType: agent.adapterType,
+          runId: run.id,
+        },
+        "Failed to resolve adapter models; preserving issue-level adapter config",
+      );
+    }
+    const sanitizedIssueAdapterConfig = sanitizeIssueAssigneeAdapterConfigForAdapter({
+      adapterType: agent.adapterType,
+      issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
+      adapterModels,
+    });
     const mergedConfig = mergeModelProfileAdapterConfig({
       baseConfig: persistedWorkspaceManagedConfig,
       modelProfile: modelProfileApplication,
-      issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
+      issueAdapterConfig: sanitizedIssueAdapterConfig.adapterConfig,
     });
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
-    const { resolvedConfig, secretKeys } = await resolveExecutionRunAdapterConfig({
+    const { resolvedConfig, secretKeys, commandScopedEnv, commandScopedSecretKeys } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
       executionRunConfig,
       projectEnv: projectContext?.env ?? null,
@@ -6660,6 +7008,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtimeWorkspaceWarnings = [
       ...resolvedWorkspace.warnings,
       ...executionWorkspace.warnings,
+      ...sanitizedIssueAdapterConfig.warnings,
       ...(runtimeSessionResolution.warning ? [runtimeSessionResolution.warning] : []),
       ...(resetTaskSession && sessionResetReason
         ? [
@@ -6824,6 +7173,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         level: "info",
         message: "run started",
       });
+      if (commandScopedSecretKeys.size > 0) {
+        await appendRunEvent(currentRun, seq++, {
+          eventType: "secret.command_scoped.available",
+          stream: "system",
+          level: "info",
+          message: "command-scoped secret env resolved",
+          payload: {
+            issueId: issueRef?.id ?? null,
+            issueIdentifier: issueRef?.identifier ?? null,
+            runId: run.id,
+            envKeys: Array.from(commandScopedSecretKeys).sort(),
+          },
+        });
+      }
 
       handle = await runLogStore.begin({
         companyId: run.companyId,
@@ -6843,7 +7206,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
         const sanitizedChunk = compactRunLogChunk(
-          redactCurrentUserText(chunk, currentUserRedactionOptions),
+          redactSensitiveText(redactCurrentUserText(chunk, currentUserRedactionOptions)),
         );
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
@@ -6913,6 +7276,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionWorkspaceId: persistedExecutionWorkspace?.id ?? issueRef?.executionWorkspaceId ?? null,
         config: effectiveResolvedConfig,
         adapterEnv,
+        commandScopedEnv,
         onLog,
       });
       if (runtimeServices.length > 0) {
@@ -6947,6 +7311,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const onAdapterMeta = async (meta: AdapterInvocationMeta) => {
         if (meta.env && secretKeys.size > 0) {
           for (const key of secretKeys) {
+            if (key in meta.env) meta.env[key] = "***REDACTED***";
+          }
+        }
+        if (meta.env && commandScopedSecretKeys.size > 0) {
+          for (const key of commandScopedSecretKeys) {
             if (key in meta.env) meta.env[key] = "***REDACTED***";
           }
         }
@@ -8953,9 +9322,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         store: run.logStore,
         logRef: run.logRef,
         ...result,
-        // Run-log chunks are already redacted before they are appended to the store.
-        // Rewriting the full chunk again on every poll creates avoidable string copies.
-        content: result.content,
+        content: redactRunLogContent(result.content),
       };
     },
 
@@ -9010,6 +9377,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reconcileIssueGraphLiveness,
 
     scanSilentActiveRuns,
+
+    scanStaleHeartbeatRunAgents,
 
     reconcileProductivityReviews,
 
