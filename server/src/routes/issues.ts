@@ -6909,7 +6909,10 @@ export function issueRoutes(
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
-      const skipWake = selfComment || isClosed;
+      // Re-derive closed-ness from the post-mutation issue so the auto-approval
+      // transition (in_review -> done) suppresses a stale `issue_commented` wake
+      // to the returnAssignee for an already-completed issue.
+      const skipWake = selfComment || isClosedIssueStatus(currentIssue.status);
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           addWakeup(assigneeId, {

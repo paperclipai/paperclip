@@ -1705,6 +1705,81 @@ describe.sequential("issue comment reopen routes", () => {
     });
   });
 
+  it("does not wake the returnAssignee with issue_commented when auto-approval reassigns the issue", async () => {
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const returnAssigneeAgentId = "22222222-2222-4222-8222-222222222222";
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [{ type: "agent", agentId: reviewerAgentId }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: reviewerAgentId,
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: returnAssigneeAgentId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    const reviewBody = "## Review: APPROVED";
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-review-5",
+      issueId: issue.id,
+      companyId: issue.companyId,
+      body: reviewBody,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: reviewerAgentId,
+      authorUserId: null,
+    });
+    // Simulate the policy transition reassigning the now-done issue back to the
+    // returnAssignee so the post-mutation assignee differs from the reviewer.
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
+      ...issue,
+      ...patch,
+      executionState: patch.executionState,
+      assigneeAgentId: returnAssigneeAgentId,
+      status: "done",
+      completedAt: new Date(),
+      updatedAt: new Date(),
+      _tx: tx,
+    }));
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: reviewerAgentId,
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "run-review-stale-isclosed",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: reviewBody });
+
+    expect(res.status).toBe(201);
+    // Allow any deferred wakeup task to flush before asserting it never fired.
+    await new Promise((resolve) => setImmediate(resolve));
+    const issueCommentedWakeCalls = mockHeartbeatService.wakeup.mock.calls.filter(
+      ([, wakeup]: [string, { reason?: string }]) => wakeup?.reason === "issue_commented",
+    );
+    expect(issueCommentedWakeCalls).toEqual([]);
+  });
+
   it("does not auto-approve APPROVED comments from a non-review participant", async () => {
     const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
     const policy = await normalizePolicy({
