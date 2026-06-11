@@ -172,6 +172,97 @@ function diffExecutionParticipants(
   };
 }
 
+type LinkedGitHubIssueRef = {
+  owner: string;
+  repo: string;
+  issueNumber: number;
+  rawRef: string;
+};
+
+const GH_EXPLICIT_LINE_RE =
+  /(?:^|\n)\s*(?:linked\s+github\s+issue|github\s+issue\s+link|linked\s+gh)\s*:\s*(.+)$/gim;
+const GH_SHORT_REF_RE = /\bGH#(\d+)\b/i;
+const GH_REPO_REF_RE = /\b([^/\s#]+)\/([^/\s#]+)#(\d+)\b/i;
+const GH_URL_REF_RE = /https?:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/issues\/(\d+)\b/i;
+
+function readLinkedGitHubIssueRefs(text: string | null | undefined): LinkedGitHubIssueRef[] {
+  if (!text) return [];
+  const defaultRepo = (process.env.PAPERCLIP_GITHUB_REPO ?? "paperclipai/paperclip").trim();
+  const [defaultOwner, defaultName] = defaultRepo.includes("/")
+    ? defaultRepo.split("/", 2)
+    : ["paperclipai", "paperclip"];
+  const out: LinkedGitHubIssueRef[] = [];
+  const dedupe = new Set<string>();
+
+  for (const lineMatch of text.matchAll(GH_EXPLICIT_LINE_RE)) {
+    const value = (lineMatch[1] ?? "").trim();
+    if (!value) continue;
+
+    const urlMatch = value.match(GH_URL_REF_RE);
+    if (urlMatch) {
+      const owner = (urlMatch[1] ?? "").trim();
+      const repo = (urlMatch[2] ?? "").trim();
+      const issueNumber = Number(urlMatch[3] ?? "");
+      if (owner && repo && Number.isFinite(issueNumber) && issueNumber > 0) {
+        const key = `${owner}/${repo}#${issueNumber}`;
+        if (!dedupe.has(key)) {
+          dedupe.add(key);
+          out.push({ owner, repo, issueNumber, rawRef: value });
+        }
+      }
+      continue;
+    }
+
+    const repoMatch = value.match(GH_REPO_REF_RE);
+    if (repoMatch) {
+      const owner = (repoMatch[1] ?? "").trim();
+      const repo = (repoMatch[2] ?? "").trim();
+      const issueNumber = Number(repoMatch[3] ?? "");
+      if (owner && repo && Number.isFinite(issueNumber) && issueNumber > 0) {
+        const key = `${owner}/${repo}#${issueNumber}`;
+        if (!dedupe.has(key)) {
+          dedupe.add(key);
+          out.push({ owner, repo, issueNumber, rawRef: value });
+        }
+      }
+      continue;
+    }
+
+    const shortMatch = value.match(GH_SHORT_REF_RE);
+    if (!shortMatch) continue;
+    const issueNumber = Number(shortMatch[1] ?? "");
+    if (!Number.isFinite(issueNumber) || issueNumber <= 0) continue;
+    const key = `${defaultOwner}/${defaultName}#${issueNumber}`;
+    if (dedupe.has(key)) continue;
+    dedupe.add(key);
+    out.push({
+      owner: defaultOwner,
+      repo: defaultName,
+      issueNumber,
+      rawRef: value,
+    });
+  }
+
+  return out;
+}
+
+async function fetchGitHubIssueState(ref: LinkedGitHubIssueRef): Promise<"OPEN" | "CLOSED" | null> {
+  const apiUrl = `https://api.github.com/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}/issues/${ref.issueNumber}`;
+  const response = await fetch(apiUrl, {
+    headers: {
+      Accept: "application/vnd.github+json",
+      ...(process.env.GITHUB_TOKEN ? { Authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}),
+      "User-Agent": "paperclip-issues-route",
+    },
+  });
+  if (!response.ok) return null;
+  const payload = await response.json() as { state?: string };
+  const state = (payload.state ?? "").toString().toLowerCase();
+  if (state === "open") return "OPEN";
+  if (state === "closed") return "CLOSED";
+  return null;
+}
+
 function buildExecutionStageWakeup(input: {
   issueId: string;
   previousState: ParsedExecutionState | null;
@@ -589,6 +680,7 @@ export function issueRoutes(
       inboxArchivedByUserId,
       unreadForUserId,
       projectId: req.query.projectId as string | undefined,
+      goalId: req.query.goalId as string | undefined,
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
       parentId: req.query.parentId as string | undefined,
       labelId: req.query.labelId as string | undefined,
@@ -1565,6 +1657,44 @@ export function issueRoutes(
     }
 
     let issue;
+    const isStatusChangeRequested =
+      updateFields.status !== undefined && typeof updateFields.status === "string" && updateFields.status !== existing.status;
+    const transitionSource = actor.runId ? "automation" : "manual";
+    if (
+      transitionSource === "automation" &&
+      updateFields.status === "done"
+    ) {
+      const refs = readLinkedGitHubIssueRefs(existing.description);
+      for (const ref of refs) {
+        const ghState = await fetchGitHubIssueState(ref);
+        if (ghState === "OPEN") {
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.status_transition_blocked",
+            entityType: "issue",
+            entityId: existing.id,
+            details: {
+              identifier: existing.identifier,
+              fromStatus: existing.status,
+              toStatus: "done",
+              source: transitionSource,
+              reason: "linked_github_issue_open",
+              linkedGitHubIssue: `${ref.owner}/${ref.repo}#${ref.issueNumber}`,
+              linkedGitHubRef: ref.rawRef,
+            },
+          });
+          res.status(409).json({
+            error: "LINKED_GITHUB_ISSUE_OPEN",
+            details: `Cannot auto-transition to done while ${ref.owner}/${ref.repo}#${ref.issueNumber} is open.`,
+          });
+          return;
+        }
+      }
+    }
     try {
       if (transition.decision && decisionId) {
         const decision = transition.decision;
@@ -1684,6 +1814,25 @@ export function issueRoutes(
         _previous: hasFieldChanges ? previous : undefined,
       },
     });
+
+    if (isStatusChangeRequested) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.status_transitioned",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          fromStatus: existing.status,
+          toStatus: issue.status,
+          source: transitionSource,
+        },
+      });
+    }
 
     if (Array.isArray(req.body.blockedByIssueIds)) {
       const previousBlockedByIds = new Set((existingRelations?.blockedBy ?? []).map((relation) => relation.id));

@@ -8,6 +8,7 @@ import {
   companies,
   createDb,
   executionWorkspaces,
+  goals,
   instanceSettings,
   issueComments,
   issueInboxArchives,
@@ -69,6 +70,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
+    await db.delete(goals);
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(companies);
@@ -412,6 +414,58 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     const result = await svc.list(companyId, { executionWorkspaceId: targetWorkspaceId });
 
     expect(result.map((issue) => issue.id)).toEqual([linkedIssueId]);
+  });
+
+  it("filters issues by goal id", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const otherGoalId = randomUUID();
+    const matchingIssueId = randomUUID();
+    const nonMatchingIssueId = randomUUID();
+    const noGoalIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(goals).values([
+      { id: goalId, companyId, title: "Primary goal", status: "active", priority: "high" },
+      { id: otherGoalId, companyId, title: "Other goal", status: "active", priority: "medium" },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: matchingIssueId,
+        companyId,
+        goalId,
+        title: "Issue linked to target goal",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: nonMatchingIssueId,
+        companyId,
+        goalId: otherGoalId,
+        title: "Issue linked to different goal",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: noGoalIssueId,
+        companyId,
+        goalId: null,
+        title: "Issue with no goal",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    const result = await svc.list(companyId, { goalId });
+
+    expect(result.map((issue) => issue.id)).toEqual([matchingIssueId]);
   });
 
   it("hides archived inbox issues until new external activity arrives", async () => {

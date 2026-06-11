@@ -57,6 +57,7 @@ import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { logger } from "../middleware/logger.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
@@ -2134,6 +2135,81 @@ export function agentRoutes(db: Db) {
     });
 
     res.status(202).json(run);
+  });
+
+  async function invokeLegacyWakeEndpoint(
+    req: Request,
+    res: { status: (code: number) => { json: (body: unknown) => void } },
+    endpoint: "heartbeat" | "trigger",
+  ) {
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      logger.warn(
+        {
+          endpoint,
+          agentId: id,
+          actorType: req.actor.type,
+          actorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
+        },
+        "legacy agent wake endpoint targeted unknown agent; returning skipped response",
+      );
+      res.status(202).json({
+        status: "skipped",
+        reason: "unknown_agent",
+        message: "Legacy wake endpoint ignored because agent was not found",
+        agentId: id,
+        endpoint,
+      });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+
+    if (req.actor.type === "agent" && req.actor.agentId !== id) {
+      res.status(403).json({ error: "Agent can only invoke itself" });
+      return;
+    }
+
+    const run = await heartbeat.wakeup(id, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: `legacy_${endpoint}_endpoint`,
+      requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
+      requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
+      contextSnapshot: {
+        triggeredBy: req.actor.type,
+        actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
+        legacyEndpoint: endpoint,
+      },
+    });
+
+    if (!run) {
+      res.status(202).json(await buildSkippedWakeupResponse(agent, null));
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "heartbeat.invoked",
+      entityType: "heartbeat_run",
+      entityId: run.id,
+      details: { agentId: id, endpoint: `legacy_${endpoint}` },
+    });
+
+    res.status(202).json(run);
+  }
+
+  router.post("/agents/:id/heartbeat", async (req, res) => {
+    await invokeLegacyWakeEndpoint(req, res, "heartbeat");
+  });
+
+  router.post("/agents/:id/trigger", async (req, res) => {
+    await invokeLegacyWakeEndpoint(req, res, "trigger");
   });
 
   router.post("/agents/:id/heartbeat/invoke", async (req, res) => {

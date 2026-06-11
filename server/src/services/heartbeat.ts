@@ -892,7 +892,7 @@ async function buildPaperclipWakePayload(input: {
             priority: issues.priority,
           })
           .from(issues)
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId), isNull(issues.hiddenAt)))
           .then((rows) => rows[0] ?? null)
       : null);
   if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
@@ -961,6 +961,17 @@ async function buildPaperclipWakePayload(input: {
     });
   }
 
+  const recovery =
+    issueId && !issueSummary
+      ? {
+          code: "wake_issue_not_resolvable",
+          message: "Wake target issueId is missing or hidden; fetch replacement context before continuing.",
+          issueId,
+          taskKey: deriveTaskKey(input.contextSnapshot, null),
+          fallbackFetchNeeded: true,
+        }
+      : null;
+
   return {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
     issue: issueSummary
@@ -983,6 +994,7 @@ async function buildPaperclipWakePayload(input: {
     },
     truncated,
     fallbackFetchNeeded: truncated || missingCommentCount > 0,
+    recovery,
   };
 }
 
@@ -1904,7 +1916,7 @@ export function heartbeatService(db: Db) {
       const issue = await tx
         .select({ id: issues.id })
         .from(issues)
-        .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)))
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id), isNull(issues.hiddenAt)))
         .then((rows) => rows[0] ?? null);
       if (!issue) return null;
 
@@ -2577,7 +2589,7 @@ export function heartbeatService(db: Db) {
             executionWorkspaceSettings: issues.executionWorkspaceSettings,
           })
           .from(issues)
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId), isNull(issues.hiddenAt)))
           .then((rows) => rows[0] ?? null)
       : null;
     const issueAssigneeOverrides =
@@ -4421,7 +4433,14 @@ export function heartbeatService(db: Db) {
     readLog: async (runId: string, opts?: { offset?: number; limitBytes?: number }) => {
       const run = await getRun(runId);
       if (!run) throw notFound("Heartbeat run not found");
-      if (!run.logStore || !run.logRef) throw notFound("Run log not found");
+      if (!run.logStore || !run.logRef) {
+        return {
+          runId,
+          store: run.logStore ?? "local_file",
+          logRef: run.logRef ?? "",
+          content: "",
+        };
+      }
 
       const result = await runLogStore.read(
         {

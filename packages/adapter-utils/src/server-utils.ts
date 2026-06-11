@@ -239,6 +239,13 @@ type PaperclipWakePayload = {
   missingCount: number;
   truncated: boolean;
   fallbackFetchNeeded: boolean;
+  recovery: {
+    code: string | null;
+    message: string | null;
+    issueId: string | null;
+    taskKey: string | null;
+    fallbackFetchNeeded: boolean;
+  } | null;
 };
 
 function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null {
@@ -333,7 +340,23 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     : [];
   const executionStage = normalizePaperclipWakeExecutionStage(payload.executionStage);
 
-  if (comments.length === 0 && commentIds.length === 0 && !executionStage && !normalizePaperclipWakeIssue(payload.issue)) {
+  const recoveryRaw = parseObject(payload.recovery);
+  const recoveryCode = asString(recoveryRaw.code, "").trim() || null;
+  const recoveryMessage = asString(recoveryRaw.message, "").trim() || null;
+  const recoveryIssueId = asString(recoveryRaw.issueId, "").trim() || null;
+  const recoveryTaskKey = asString(recoveryRaw.taskKey, "").trim() || null;
+  const recovery =
+    recoveryCode || recoveryMessage || recoveryIssueId || recoveryTaskKey
+      ? {
+          code: recoveryCode,
+          message: recoveryMessage,
+          issueId: recoveryIssueId,
+          taskKey: recoveryTaskKey,
+          fallbackFetchNeeded: asBoolean(recoveryRaw.fallbackFetchNeeded, false),
+        }
+      : null;
+
+  if (comments.length === 0 && commentIds.length === 0 && !executionStage && !normalizePaperclipWakeIssue(payload.issue) && !recovery) {
     return null;
   }
 
@@ -349,6 +372,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     missingCount: asNumber(commentWindow.missingCount, 0),
     truncated: asBoolean(payload.truncated, false),
     fallbackFetchNeeded: asBoolean(payload.fallbackFetchNeeded, false),
+    recovery,
   };
 }
 
@@ -411,6 +435,19 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.missingCount > 0) {
     lines.push(`- omitted comments: ${normalized.missingCount}`);
+  }
+  if (normalized.recovery) {
+    lines.push(`- recovery code: ${normalized.recovery.code ?? "unknown"}`);
+    if (normalized.recovery.issueId) {
+      lines.push(`- recovery issue id: ${normalized.recovery.issueId}`);
+    }
+    if (normalized.recovery.taskKey) {
+      lines.push(`- recovery task key: ${normalized.recovery.taskKey}`);
+    }
+    lines.push(`- recovery fallback fetch needed: ${normalized.recovery.fallbackFetchNeeded ? "yes" : "no"}`);
+    if (normalized.recovery.message) {
+      lines.push(`- recovery message: ${normalized.recovery.message}`);
+    }
   }
 
   if (executionStage) {

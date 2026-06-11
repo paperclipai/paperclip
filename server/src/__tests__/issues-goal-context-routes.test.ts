@@ -5,6 +5,7 @@ import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
 
 const mockIssueService = vi.hoisted(() => ({
+  list: vi.fn(),
   getById: vi.fn(),
   getAncestors: vi.fn(),
   getRelationSummaries: vi.fn(),
@@ -122,6 +123,7 @@ const projectGoal = {
 describe("issue goal context routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIssueService.list.mockResolvedValue([]);
     mockIssueService.getById.mockResolvedValue(legacyProjectLinkedIssue);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
@@ -231,5 +233,16 @@ describe("issue goal context routes", () => {
         identifier: "PAP-580",
       }),
     ]);
+  });
+
+  it("forwards goalId filter on GET /companies/:companyId/issues", async () => {
+    const res = await request(createApp())
+      .get("/api/companies/company-1/issues")
+      .query({ goalId: projectGoal.id });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      goalId: projectGoal.id,
+    }));
   });
 });
