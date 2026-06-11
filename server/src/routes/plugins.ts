@@ -2561,19 +2561,41 @@ export function pluginRoutes(
     const parsedBody = req.body as unknown;
     const payload = (req.body as Record<string, unknown> | undefined) ?? {};
 
-    // Step 6: Record the delivery in the database
+    // Provider-supplied idempotency id, when present. Covers provider and
+    // load-balancer retries without guessing: no recognized header, no dedup.
+    const externalId =
+      rawHeaders["x-github-delivery"] ??
+      rawHeaders["x-delivery-id"] ??
+      rawHeaders["x-request-id"] ??
+      rawHeaders["idempotency-key"] ??
+      rawHeaders["x-idempotency-key"] ??
+      null;
+
+    // Step 6: Record the delivery in the database. The partial unique index
+    // on (plugin_id, webhook_key, external_id) makes retried deliveries with
+    // the same provider idempotency id a no-op insert (empty `returning`).
     const startedAt = new Date();
-    const [delivery] = await db
+    const inserted = await db
       .insert(pluginWebhookDeliveries)
       .values({
         pluginId: plugin.id,
         webhookKey: endpointKey,
+        externalId,
         status: "pending",
         payload,
         headers: rawHeaders,
         startedAt,
       })
+      .onConflictDoNothing()
       .returning({ id: pluginWebhookDeliveries.id });
+
+    const delivery = inserted[0];
+    if (!delivery) {
+      // Duplicate delivery (same provider idempotency id): acknowledge
+      // without re-dispatching to the worker.
+      res.status(202).json({ status: "duplicate", requestId });
+      return;
+    }
 
     // Step 7: Dispatch to the worker via handleWebhook RPC
     try {

@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   pgTable,
   uuid,
@@ -6,6 +7,7 @@ import {
   timestamp,
   jsonb,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { plugins } from "./plugins.js";
@@ -65,5 +67,13 @@ export const pluginWebhookDeliveries = pgTable(
     companyIdx: index("plugin_webhook_deliveries_company_idx").on(table.companyId),
     statusIdx: index("plugin_webhook_deliveries_status_idx").on(table.status),
     keyIdx: index("plugin_webhook_deliveries_key_idx").on(table.webhookKey),
+    /**
+     * De-duplicates retried deliveries that carry a provider idempotency id
+     * (e.g. GitHub's `X-GitHub-Delivery` GUID). Partial: deliveries without
+     * an external id are never deduplicated.
+     */
+    externalIdUnique: uniqueIndex("plugin_webhook_deliveries_external_id_unique")
+      .on(table.pluginId, table.webhookKey, table.externalId)
+      .where(sql`external_id IS NOT NULL`),
   }),
 );
