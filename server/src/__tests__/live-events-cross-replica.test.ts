@@ -14,11 +14,6 @@ import {
   subscribeCompanyLiveEvents,
   teardownLiveEventsTransport,
 } from "../services/live-events.js";
-import {
-  buildEnvelope,
-  OVERSIZED_EVENT,
-  PG_NOTIFY_INLINE_LIMIT,
-} from "../services/live-events/transport.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -124,73 +119,6 @@ describeEmbeddedPostgres("live-events postgres LISTEN/NOTIFY transport", () => {
     await subscriberA.close();
   });
 
-  it("drops oversized events symmetrically (no local emit, no cross-replica fan-out)", async () => {
-    // Multibyte fixture: each "🦊" is 4 UTF-8 bytes but only 2 UTF-16 code
-    // units. Picking a count that is comfortably under the limit when
-    // measured as JS string length but blows past it when measured as
-    // UTF-8 bytes — that's exactly the bug the byte-length check fixes.
-    // PG_NOTIFY_INLINE_LIMIT is 7500. A count of 2500 fox emoji yields
-    // ~10_000 UTF-8 bytes (definitely over), and the JSON envelope adds
-    // another ~120 bytes for framing. JS string length would be 5000 —
-    // well under 7500 — so the old `.length` check would have wrongly
-    // emitted this event over the wire.
-    const big = "🦊".repeat(2500);
-    const oversized = makeEvent({ id: 999, payload: { big } });
-
-    // Sanity-check the fixture really does exercise the byte-vs-char
-    // distinction the check is guarding against.
-    const serialized = JSON.stringify({ kind: "full", origin: "x", event: oversized });
-    expect(serialized.length).toBeLessThan(PG_NOTIFY_INLINE_LIMIT);
-    expect(Buffer.byteLength(serialized, "utf8")).toBeGreaterThan(PG_NOTIFY_INLINE_LIMIT);
-
-    // Encoder must report the event as oversized.
-    expect(buildEnvelope("test-origin", oversized, PG_NOTIFY_INLINE_LIMIT)).toBe(OVERSIZED_EVENT);
-
-    // End-to-end: publisher tries to publish, subscriber on another
-    // replica must NOT see anything. The originating replica's local
-    // emission is suppressed at the live-events service layer (verified
-    // by the integration test below); here we verify the transport
-    // itself does not put the bytes on the wire.
-    const publisher = createPgLiveEventsTransport({ databaseUrl });
-    const subscriber = createPgLiveEventsTransport({ databaseUrl });
-    const received: LiveEvent[] = [];
-    subscriber.subscribe("company-a", (e) => received.push(e));
-    await new Promise((r) => setTimeout(r, 300));
-
-    publisher.publish(oversized);
-    // Generous window for NOTIFY to (incorrectly) round-trip.
-    await new Promise((r) => setTimeout(r, 500));
-    expect(received).toEqual([]);
-
-    await publisher.close();
-    await subscriber.close();
-  });
-
-  it("suppresses local emission for oversized events when a transport is configured (no cross-replica divergence)", async () => {
-    await configureLiveEventsTransport({ mode: "postgres", databaseUrl });
-    const received: LiveEvent[] = [];
-    const unsubscribe = subscribeCompanyLiveEvents("company-a", (e) => received.push(e));
-    await new Promise((r) => setTimeout(r, 300));
-
-    // Build a payload that crosses PG_NOTIFY_INLINE_LIMIT when measured
-    // as UTF-8 bytes. Each "é" is 2 bytes UTF-8 but 1 JS char.
-    const bigMultibyte = "é".repeat(PG_NOTIFY_INLINE_LIMIT);
-    publishLiveEvent({
-      companyId: "company-a",
-      type: "activity.logged",
-      payload: { big: bigMultibyte },
-    });
-
-    // The originating replica must NOT see the event locally either —
-    // otherwise the originating replica diverges from peers that drop
-    // it. Give the in-process emitter a tick to (incorrectly) fire.
-    await new Promise((r) => setTimeout(r, 50));
-    expect(received).toEqual([]);
-
-    unsubscribe();
-    await teardownLiveEventsTransport();
-  });
-
   it("integrates with publishLiveEvent / subscribeCompanyLiveEvents through configureLiveEventsTransport", async () => {
     await configureLiveEventsTransport({ mode: "postgres", databaseUrl });
     const received: LiveEvent[] = [];
@@ -235,6 +163,54 @@ describeEmbeddedPostgres("live-events postgres LISTEN/NOTIFY transport", () => {
     unsubscribe();
     await replicaA.close();
     await teardownLiveEventsTransport();
+  });
+
+  it("coalesces a burst into batch envelopes and delivers all events", async () => {
+    const sender = createPgLiveEventsTransport({ databaseUrl });
+    const receiver = createPgLiveEventsTransport({ databaseUrl });
+    const received: LiveEvent[] = [];
+    receiver.subscribe("company-a", (event) => received.push(event));
+    await new Promise((resolve) => setTimeout(resolve, 300)); // LISTEN settle
+    for (let i = 1; i <= 20; i++) sender.publish(makeEvent({ id: i }));
+    await waitFor(() => (received.length === 20 ? received : undefined));
+    expect(received.map((e) => e.id)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
+    await sender.close();
+    await receiver.close();
+  });
+
+  it("delivers a resync marker for an oversized event instead of dropping it", async () => {
+    const sender = createPgLiveEventsTransport({ databaseUrl });
+    const receiver = createPgLiveEventsTransport({ databaseUrl });
+    const received: LiveEvent[] = [];
+    receiver.subscribe("company-a", (event) => received.push(event));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    sender.publish(makeEvent({ type: "heartbeat.run.log", payload: { huge: "x".repeat(10_000) } }));
+    const marker = await waitFor(() => received[0]);
+    expect(marker.type).toBe("heartbeat.run.log");
+    expect(marker.payload).toEqual({ __resync: true });
+    await sender.close();
+    await receiver.close();
+  });
+
+  it("close() flushes pending coalesced events", async () => {
+    const sender = createPgLiveEventsTransport({ databaseUrl });
+    const receiver = createPgLiveEventsTransport({ databaseUrl });
+    const received: LiveEvent[] = [];
+    receiver.subscribe("company-a", (event) => received.push(event));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    sender.publish(makeEvent({ id: 42 }));
+    await sender.close(); // before the 25ms window elapses
+    const event = await waitFor(() => received[0]);
+    expect(event.id).toBe(42);
+    await receiver.close();
+  });
+
+  it("reports notification queue usage via stats()", async () => {
+    const transport = createPgLiveEventsTransport({ databaseUrl });
+    const stats = await transport.stats!();
+    expect(stats.notificationQueueUsage).toBeGreaterThanOrEqual(0);
+    expect(stats.notificationQueueUsage).toBeLessThan(1);
+    await transport.close();
   });
 });
 
@@ -400,7 +376,7 @@ describe("live-events redis transport (mocked)", () => {
   });
 
   it("does not apply the Postgres 7.5KB cap to Redis publishes", async () => {
-    // Greptile-flagged regression: buildEnvelope previously hard-coded
+    // Greptile-flagged regression: envelope encoding previously hard-coded
     // PG_NOTIFY_INLINE_LIMIT for every transport, so any event between
     // 7.5KB and Redis's actual buffer limit was silently dropped on the
     // Redis path. A 50KB payload — well within Redis pub/sub buffer
