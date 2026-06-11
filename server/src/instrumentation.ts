@@ -99,7 +99,7 @@ export function resolveProtocol(): {
 }
 
 async function importExporter(protocol: ExporterProtocol): Promise<{
-  OTLPTraceExporter: new (config?: { url: string }) => unknown;
+  OTLPTraceExporter: new (config?: Record<string, unknown>) => unknown;
 }> {
   switch (protocol) {
     case "grpc":
@@ -174,7 +174,18 @@ async function bootstrapOtel(endpoint: string): Promise<void> {
       return;
     }
 
-    sdkShutdown = () => sdk.shutdown();
+    sdkShutdown = () =>
+      Promise.race([
+        sdk.shutdown(),
+        // The SDK waits indefinitely for in-flight export batches; an
+        // unreachable collector must not block process exit. 5s matches the
+        // SDK's own default flush budget. unref() so the timer itself never
+        // keeps the event loop alive after a fast clean shutdown.
+        new Promise<void>((_, reject) => {
+          const timer = setTimeout(() => reject(new Error("OTel shutdown timed out")), 5_000);
+          timer.unref?.();
+        }),
+      ]);
     // index.ts awaits shutdownInstrumentation() in its own signal handler
     // before process.exit, which is what actually guarantees the flush.
     // These handlers are a backstop for entrypoints that import this module

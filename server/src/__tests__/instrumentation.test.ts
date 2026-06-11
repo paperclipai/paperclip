@@ -53,6 +53,8 @@ describe("resolveProtocol", () => {
 
   it("warns and falls back to grpc on an unrecognized protocol", async () => {
     process.env[PROTOCOL_ENV] = "carrier-pigeon";
+    // Spy before the import so the assertion holds even if a future change
+    // makes the warning fire at module load time instead of on the call.
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const { resolveProtocol } = await importFreshInstrumentation();
