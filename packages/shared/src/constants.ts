@@ -761,6 +761,22 @@ export const TOOL_CONNECTION_HEALTH_STATUSES = [
 ] as const;
 export type ToolConnectionHealthStatus = (typeof TOOL_CONNECTION_HEALTH_STATUSES)[number];
 
+/**
+ * Health states that mean an app needs the user's attention (a bad/missing key
+ * or a degraded connection). Single source of truth shared by the needs-
+ * attention aggregation and the prosumer Apps surfaces so their counts agree.
+ */
+export const TOOL_CONNECTION_ATTENTION_HEALTH_STATUSES: readonly ToolConnectionHealthStatus[] = [
+  "degraded",
+  "failed",
+  "error",
+  "missing_secret",
+];
+
+export function isToolConnectionAttentionHealth(status: ToolConnectionHealthStatus): boolean {
+  return TOOL_CONNECTION_ATTENTION_HEALTH_STATUSES.includes(status);
+}
+
 export const TOOL_CATALOG_ENTRY_KINDS = ["tool", "resource", "prompt"] as const;
 export type ToolCatalogEntryKind = (typeof TOOL_CATALOG_ENTRY_KINDS)[number];
 

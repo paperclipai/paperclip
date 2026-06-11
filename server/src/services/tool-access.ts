@@ -81,7 +81,7 @@ import type {
   UpdateToolProfileWithEntries,
   UnbindToolProfileBinding,
 } from "@paperclipai/shared";
-import { getToolAppGalleryEntry } from "@paperclipai/shared";
+import { getToolAppGalleryEntry, isToolConnectionAttentionHealth } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
@@ -805,7 +805,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   }
 
   function isAttentionHealthStatus(status: ToolConnectionHealthStatus): boolean {
-    return status === "failed" || status === "error" || status === "missing_secret" || status === "degraded";
+    return isToolConnectionAttentionHealth(status);
   }
 
   async function audit(input: {

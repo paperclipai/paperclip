@@ -10,6 +10,7 @@ import type {
   ToolPolicy,
   ToolProfileWithDetails,
 } from "@paperclipai/shared";
+import { isToolConnectionAttentionHealth as isAttentionHealthStatus } from "@paperclipai/shared";
 import { useParams, useNavigate } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -769,7 +770,7 @@ function statusFor(connection: ToolConnection): StatusInfo {
   if (connection.enabled === false || connection.status === "disabled") {
     return { label: "Paused", tone: "paused" };
   }
-  if (connection.healthStatus === "failed" || connection.healthStatus === "degraded") {
+  if (isAttentionHealthStatus(connection.healthStatus)) {
     return { label: "Needs attention", tone: "attention" };
   }
   return { label: "Connected", tone: "connected" };

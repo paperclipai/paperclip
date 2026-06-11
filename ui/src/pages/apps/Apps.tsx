@@ -2,6 +2,7 @@ import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link2, ShieldAlert } from "lucide-react";
 import type { AppGalleryEntry, ToolAppAttentionItem, ToolConnection } from "@paperclipai/shared";
+import { isToolConnectionAttentionHealth as isAttentionHealthStatus } from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -20,7 +21,7 @@ function statusFor(connection: ToolConnection): AppStatus {
   if (connection.enabled === false || connection.status === "disabled") {
     return { label: "Paused", tone: "paused" };
   }
-  if (connection.healthStatus === "failed" || connection.healthStatus === "degraded") {
+  if (isAttentionHealthStatus(connection.healthStatus)) {
     return { label: "Needs attention", tone: "attention" };
   }
   return { label: "Connected", tone: "connected" };
@@ -72,7 +73,6 @@ export function Apps() {
   const connections = (connectionsQuery.data?.connections ?? []).filter(
     (c) => c.status !== "archived",
   );
-  const attentionCount = connections.filter((c) => statusFor(c).tone === "attention").length;
   const needsAttention = attentionQuery.data?.apps ?? [];
 
   if (!selectedCompanyId) {
@@ -104,8 +104,8 @@ export function Apps() {
             <span className="font-medium">
               {connections.length} {connections.length === 1 ? "app" : "apps"} connected
             </span>
-            {attentionCount > 0 && (
-              <span className="text-amber-600"> · {attentionCount} needs attention</span>
+            {needsAttention.length > 0 && (
+              <span className="text-amber-600"> · {needsAttention.length} needs attention</span>
             )}
           </div>
 
