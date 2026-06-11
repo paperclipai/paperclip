@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { ClipboardList } from "lucide-react";
+import { Settings2 } from "lucide-react";
 import { Navigate, useParams } from "@/lib/router";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
@@ -10,7 +10,9 @@ import { PoliciesTab } from "./PoliciesTab";
 import { RuntimeTab } from "./RuntimeTab";
 import { AuditTab } from "./AuditTab";
 import { ExamplesTab } from "./ExamplesTab";
-import { TOOL_TABS, type ToolTabKey } from "./tool-tabs";
+import { PasteConfigTab } from "./PasteConfigTab";
+import { RunYourOwnTab } from "./RunYourOwnTab";
+import { TOOL_TABS, advancedTabHref, type ToolTabKey } from "./tool-tabs";
 
 function renderTab(tab: ToolTabKey, companyId: string) {
   switch (tab) {
@@ -26,6 +28,10 @@ function renderTab(tab: ToolTabKey, companyId: string) {
       return <AuditTab companyId={companyId} />;
     case "examples":
       return <ExamplesTab companyId={companyId} />;
+    case "paste-config":
+      return <PasteConfigTab companyId={companyId} />;
+    case "run-your-own":
+      return <RunYourOwnTab companyId={companyId} />;
     case "overview":
     default:
       return <OverviewTab companyId={companyId} />;
@@ -41,22 +47,23 @@ export function ToolsAccess() {
   useEffect(() => {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Tools" },
+      { label: "Apps", href: "/apps" },
+      { label: "Advanced setup" },
     ]);
     return () => setBreadcrumbs([]);
   }, [setBreadcrumbs, selectedCompany?.name]);
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select a company to manage tools &amp; access.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">Select a company to open advanced setup.</div>;
   }
 
-  if (params.tab === "connections") return <Navigate to="/tools/applications" replace />;
+  if (params.tab === "connections") return <Navigate to={advancedTabHref("applications")} replace />;
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 p-4 sm:p-6">
       <div className="flex items-center gap-2">
-        <ClipboardList className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-xl font-bold text-foreground">Tools</h1>
+        <Settings2 className="h-5 w-5 text-muted-foreground" />
+        <h1 className="text-xl font-bold text-foreground">Advanced setup</h1>
       </div>
 
       <div className="min-h-[300px]">{renderTab(activeTab, selectedCompanyId)}</div>

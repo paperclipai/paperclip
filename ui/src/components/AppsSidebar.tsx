@@ -10,9 +10,9 @@ import { SidebarNavItem } from "./SidebarNavItem";
  *   ← Back · APPS: All apps / Needs attention (n) / Advanced setup [Admin]
  *
  * "Needs attention" is its own page in P3; until then we render the entry as a
- * disabled placeholder with no count. "Advanced setup" links to the existing
- * Tools surface (the developer door); its dedicated mount + `/tools/:tab`
- * redirect ship in P5.
+ * disabled placeholder with no count. "Advanced setup" links to the developer
+ * door, now mounted under `/apps/advanced` (PAP-10862); `/tools/:tab` redirects
+ * there.
  */
 export function AppsSidebar() {
   const { selectedCompany } = useCompany();
@@ -53,7 +53,7 @@ export function AppsSidebar() {
             <span className="flex-1 truncate">Needs attention</span>
           </div>
           <SidebarNavItem
-            to="/tools"
+            to="/apps/advanced"
             label="Advanced setup"
             icon={Settings2}
             textBadge="Admin"

@@ -36,7 +36,7 @@ import { CloudUpstreamUxLab } from "./pages/CloudUpstreamUxLab";
 import { BootstrapSetupUxLab } from "./pages/BootstrapSetupUxLab";
 import { CompanySettingsPluginPage } from "./pages/CompanySettingsPluginPage";
 import { CompanyAccess, CompanyAccessLegacyRoute } from "./pages/CompanyAccess";
-import { ToolsAccess } from "./pages/tools/ToolsAccess";
+import { AdvancedToolsRoute } from "./pages/tools/AdvancedToolsRoute";
 import { Apps } from "./pages/apps/Apps";
 import { AppsConnect } from "./pages/apps/AppsConnect";
 import { CompanyInvites } from "./pages/CompanyInvites";
@@ -87,10 +87,12 @@ function boardRoutes() {
       <Route path="company/settings/secrets" element={<Secrets />} />
       <Route path="company/settings/tools" element={<LegacyToolsSettingsRedirect />} />
       <Route path="company/settings/tools/:tab" element={<LegacyToolsSettingsRedirect />} />
-      <Route path="tools" element={<ToolsAccess />} />
-      <Route path="tools/:tab" element={<ToolsAccess />} />
+      <Route path="tools" element={<LegacyToolsRedirect />} />
+      <Route path="tools/:tab" element={<LegacyToolsRedirect />} />
       <Route path="apps" element={<Apps />} />
       <Route path="apps/connect" element={<AppsConnect />} />
+      <Route path="apps/advanced" element={<AdvancedToolsRoute />} />
+      <Route path="apps/advanced/:tab" element={<AdvancedToolsRoute />} />
       <Route path="company/settings/instance" element={<Navigate to="general" replace />} />
       <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
       <Route path="company/settings/instance/general" element={<InstanceGeneralSettings />} />
@@ -218,7 +220,14 @@ function LegacySettingsRedirect() {
 
 function LegacyToolsSettingsRedirect() {
   const { tab } = useParams<{ tab?: string }>();
-  return <Navigate to={tab ? `/tools/${tab}` : "/tools"} replace />;
+  return <Navigate to={tab ? `/apps/advanced/${tab}` : "/apps/advanced"} replace />;
+}
+
+// The developer "Tools" surface moved under the Apps "Advanced setup" door
+// (PAP-10862). `/tools` and `/tools/:tab` redirect to their new home.
+function LegacyToolsRedirect() {
+  const { tab } = useParams<{ tab?: string }>();
+  return <Navigate to={tab ? `/apps/advanced/${tab}` : "/apps/advanced"} replace />;
 }
 
 function OnboardingRoutePage() {

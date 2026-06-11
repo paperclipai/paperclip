@@ -515,6 +515,31 @@ describe("Layout", () => {
     });
   });
 
+  it("shows the tools sidebar on the Apps advanced door route", async () => {
+    currentPathname = "/PAP/apps/advanced/run-your-own";
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Tools sidebar");
+    expect(container.textContent).toContain("Main company nav");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("renders a route-scoped plugin sidebar for a matching plugin page route", async () => {
     currentPathname = "/PAP/wiki";
     mockPluginSlots.slots = [

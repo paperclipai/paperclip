@@ -31,6 +31,12 @@ import type {
   ToolRiskLevel,
   UpdateToolPolicy,
   AppGalleryEntry,
+  ToolAppsAttentionResponse,
+  ToolConnectionActivityResponse,
+  ToolActionRequest,
+  ToolActionRequestStatus,
+  ToolActionRequestsResponse,
+  CreateToolTrustRuleFromActionRequest,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -56,6 +62,16 @@ export type ToolGalleryResponse = { apps: AppGalleryEntry[] };
 
 export type StdioTemplateSummary = ToolStdioCommandTemplate;
 export type StdioTemplatesResponse = { templates: StdioTemplateSummary[] };
+
+/** Admin "run your own" command-template create input (M8b, PAP-10862). */
+export interface CreateStdioTemplateInput {
+  templateId: string;
+  name: string;
+  description?: string | null;
+  command: string;
+  args?: string[];
+  envKeys?: string[];
+}
 
 export interface CreateToolApplicationInput {
   name: string;
@@ -179,6 +195,8 @@ export const toolsApi = {
       `/companies/${companyId}/tools/apps/${connectionId}/finish`,
       input,
     ),
+  listAppsAttention: (companyId: string) =>
+    api.get<ToolAppsAttentionResponse>(`/companies/${companyId}/tools/apps/attention`),
   listApplications: (companyId: string) =>
     api.get<ToolApplicationsResponse>(`/companies/${companyId}/tools/applications`),
   createApplication: (companyId: string, input: CreateToolApplicationInput) =>
@@ -205,10 +223,21 @@ export const toolsApi = {
     api.post<ToolCatalogRefreshResult>(`/tool-connections/${connectionId}/catalog/refresh`, {}),
   listCatalog: (connectionId: string) =>
     api.get<ToolCatalogResponse>(`/tool-connections/${connectionId}/catalog`),
+  listConnectionActivity: (connectionId: string, limit = 20) =>
+    api.get<ToolConnectionActivityResponse>(
+      `/tool-connections/${connectionId}/activity?limit=${limit}`,
+    ),
   importMcpJson: (companyId: string, body: { mcpJson: unknown }) =>
     api.post<McpJsonImportPreview>(`/companies/${companyId}/tools/mcp/import-json`, body),
   listStdioTemplates: (companyId: string) =>
     api.get<StdioTemplatesResponse>(`/companies/${companyId}/tools/stdio-templates`),
+  createStdioTemplate: (companyId: string, input: CreateStdioTemplateInput) =>
+    api.post<StdioTemplateSummary>(`/companies/${companyId}/tools/stdio-templates`, input),
+  disableStdioTemplate: (companyId: string, templateId: string, reason?: string | null) =>
+    api.post<StdioTemplateSummary>(
+      `/companies/${companyId}/tools/stdio-templates/${encodeURIComponent(templateId)}/disable`,
+      { reason: reason ?? null },
+    ),
 
   // --- Profiles ---
   listProfiles: (companyId: string) =>
@@ -263,6 +292,25 @@ export const toolsApi = {
     }),
   testPolicy: (companyId: string, input: Omit<ToolAccessDecisionInput, "companyId">) =>
     api.post<ToolPolicyTestResponse>(`/companies/${companyId}/tools/policy/test`, input),
+
+  // --- Review queue (Ask first) ---
+  listActionRequests: (companyId: string, status: ToolActionRequestStatus = "pending") =>
+    api.get<ToolActionRequestsResponse>(
+      `/companies/${companyId}/tools/action-requests?status=${encodeURIComponent(status)}`,
+    ),
+  approveActionRequest: (companyId: string, actionRequestId: string) =>
+    api.post<ToolActionRequest>(`/tool-gateway/action-requests/${actionRequestId}/approve`, { companyId }),
+  declineActionRequest: (companyId: string, actionRequestId: string) =>
+    api.post<ToolActionRequest>(`/tool-gateway/action-requests/${actionRequestId}/decline`, { companyId }),
+  createTrustRuleFromActionRequest: (
+    companyId: string,
+    actionRequestId: string,
+    input: CreateToolTrustRuleFromActionRequest = {},
+  ) =>
+    api.post<ToolPolicy>(
+      `/companies/${companyId}/tools/action-requests/${actionRequestId}/trust-rule`,
+      input,
+    ),
 
   // --- Audit ---
   listAudit: (companyId: string, limit = 100) =>

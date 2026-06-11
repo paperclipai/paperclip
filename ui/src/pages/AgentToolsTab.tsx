@@ -142,8 +142,8 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
     return <ToolsErrorState error={effective.error} onRetry={() => effective.refetch()} />;
   }
 
-  const policiesHref = "/tools/policies";
-  const profilesHref = "/tools/profiles";
+  const policiesHref = "/apps/advanced/policies";
+  const profilesHref = "/apps/advanced/profiles";
 
   return (
     <div className="space-y-4">

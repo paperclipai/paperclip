@@ -109,19 +109,24 @@ describe("ToolsSidebar", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Paperclip");
-    expect(container.textContent).toContain("Tools");
+    expect(container.textContent).toContain("Advanced setup");
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/tools", label: "Overview", end: true }),
+      expect.objectContaining({ to: "/apps/advanced", label: "Overview", end: true }),
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/tools/applications", label: "Applications", end: true }),
+      expect.objectContaining({ to: "/apps/advanced/applications", label: "Applications", end: true }),
     );
     expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/tools/connections", label: "Connections", end: true }),
+      expect.objectContaining({ to: "/apps/advanced/connections", label: "Connections", end: true }),
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/tools/runtime", label: "Runtime", end: true, liveCount: 1 }),
+      expect.objectContaining({ to: "/apps/advanced/runtime", label: "Runtime", end: true, liveCount: 1 }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "/apps/advanced/paste-config", label: "Paste a config", end: true }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "/apps/advanced/run-your-own", label: "Run your own", end: true }),
     );
 
     await act(async () => {

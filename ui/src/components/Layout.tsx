@@ -82,6 +82,9 @@ export function Layout() {
   const isCompanySettingsRoute = location.pathname.includes("/company/settings");
   const isToolsRoute = getCompanyRouteSegment(location.pathname, companyPrefix) === "tools";
   const isAppsRoute = getCompanyRouteSegment(location.pathname, companyPrefix) === "apps";
+  // The Advanced door (`/apps/advanced`) mounts the developer Tools surface, so
+  // it keeps the Tools tab sidebar rather than the prosumer Apps sidebar.
+  const isAdvancedToolsRoute = isAppsRoute && /(^|\/)apps\/advanced(\/|$)/.test(location.pathname);
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
   const previousPathname = useRef<string | null>(null);
@@ -123,6 +126,8 @@ export function Layout() {
   // both desktop (SecondarySidebar) and mobile (off-canvas drawer).
   const secondarySidebar = isCompanySettingsRoute ? (
     <CompanySettingsSidebar />
+  ) : isAdvancedToolsRoute ? (
+    <ToolsSidebar />
   ) : isAppsRoute ? (
     <AppsSidebar />
   ) : isToolsRoute ? (

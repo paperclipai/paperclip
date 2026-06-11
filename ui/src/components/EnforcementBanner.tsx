@@ -165,7 +165,7 @@ export function EnforcementBanner(props: EnforcementBannerProps) {
         )}
       </div>
       <Link
-        to="/tools/audit"
+        to="/apps/advanced/audit"
         className="shrink-0 text-xs font-medium text-primary hover:underline"
       >
         View audit →
