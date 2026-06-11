@@ -3436,12 +3436,35 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     },
 
     archiveConnection: async (connectionId: string): Promise<ToolConnection> => {
-      const [row] = await db
-        .update(toolConnections)
-        .set({ status: "archived", enabled: false, updatedAt: new Date() })
-        .where(eq(toolConnections.id, connectionId))
-        .returning();
-      if (!row) throw notFound("Tool connection not found");
+      const row = await db.transaction(async (tx) => {
+        const [updatedConnection] = await tx
+          .update(toolConnections)
+          .set({ status: "archived", enabled: false, updatedAt: new Date() })
+          .where(eq(toolConnections.id, connectionId))
+          .returning();
+        if (!updatedConnection) throw notFound("Tool connection not found");
+
+        const remainingConnections = await tx
+          .select({ id: toolConnections.id })
+          .from(toolConnections)
+          .where(
+            and(
+              eq(toolConnections.applicationId, updatedConnection.applicationId),
+              ne(toolConnections.status, "archived"),
+            ),
+          )
+          .limit(1);
+
+        if (remainingConnections.length === 0) {
+          const now = new Date();
+          await tx
+            .update(toolApplications)
+            .set({ status: "archived", archivedAt: now, updatedAt: now })
+            .where(eq(toolApplications.id, updatedConnection.applicationId));
+        }
+
+        return updatedConnection;
+      });
       return toConnection(row);
     },
 

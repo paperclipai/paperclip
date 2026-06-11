@@ -397,7 +397,9 @@ export function toolAccessRoutes(
     assertBoard(req);
     const existing = await svc.getConnection(req.params.connectionId as string);
     assertCompanyAccess(req, existing.companyId);
+    const applicationBefore = await svc.getApplication(existing.applicationId);
     const connection = await svc.archiveConnection(existing.id);
+    const applicationAfter = await svc.getApplication(existing.applicationId);
     await logActivity(db, {
       companyId: connection.companyId,
       actorType: "user",
@@ -407,6 +409,17 @@ export function toolAccessRoutes(
       entityId: connection.id,
       details: { transport: connection.transport },
     });
+    if (applicationBefore.status !== "archived" && applicationAfter.status === "archived") {
+      await logActivity(db, {
+        companyId: applicationAfter.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "tool_application.archived",
+        entityType: "tool_application",
+        entityId: applicationAfter.id,
+        details: { type: applicationAfter.type, name: applicationAfter.name, reason: "last_connection_removed" },
+      });
+    }
     res.json(connection);
   });
 

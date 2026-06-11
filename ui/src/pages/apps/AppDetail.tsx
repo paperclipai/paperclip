@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpRight, Check, Loader2, Lock, Pencil, Wrench } from "lucide-react";
+import { ArrowUpRight, Check, Loader2, Lock, Pencil, RefreshCw } from "lucide-react";
 import type {
   Agent,
   AppGalleryEntry,
@@ -16,7 +16,6 @@ import {
   isToolConnectionAttentionHealth as isAttentionHealthStatus,
 } from "@paperclipai/shared";
 import { Link, useParams, useNavigate } from "@/lib/router";
-import { advancedTabHref } from "@/pages/tools/tool-tabs";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
@@ -158,6 +157,7 @@ export function AppDetail() {
     mutationFn: () => toolsApi.archiveConnection(connectionId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
       pushToast({
         title: "App removed",
@@ -169,6 +169,52 @@ export function AppDetail() {
     onError: (error) =>
       pushToast({
         title: "Couldn’t remove the app",
+        body: error instanceof Error ? error.message : "Please try again.",
+        tone: "error",
+      }),
+  });
+
+  const toggleEnabled = useMutation({
+    mutationFn: () => toolsApi.updateConnection(connectionId, { enabled: !connection?.enabled }),
+    onSuccess: (updated) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
+      pushToast({
+        title: updated.enabled ? "App resumed" : "App paused",
+        body: updated.enabled
+          ? `${humanizeConnectionDisplayName(updated)} is available to agents again.`
+          : `${humanizeConnectionDisplayName(updated)} is paused for agents.`,
+        tone: "success",
+      });
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Couldn’t update the app",
+        body: error instanceof Error ? error.message : "Please try again.",
+        tone: "error",
+      }),
+  });
+
+  const refreshTools = useMutation({
+    mutationFn: () => toolsApi.refreshCatalog(connectionId),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.catalog(connectionId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
+      pushToast({
+        title: `Found ${result.discoveredCount} ${result.discoveredCount === 1 ? "action" : "actions"}`,
+        body: result.quarantinedCount > 0
+          ? `${result.quarantinedCount} new ${result.quarantinedCount === 1 ? "action needs" : "actions need"} your OK.`
+          : undefined,
+        tone: "success",
+      });
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Couldn’t refresh actions",
         body: error instanceof Error ? error.message : "Please try again.",
         tone: "error",
       }),
@@ -288,11 +334,32 @@ export function AppDetail() {
 
       <ReviewQueueCard connectionId={connectionId} heading="Waiting for your OK" />
 
+      <AppLifecycleSection
+        connection={connection}
+        disabled={toggleEnabled.isPending || removeApp.isPending}
+        onToggle={() => toggleEnabled.mutate()}
+      />
+
       {/* Actions */}
       <section className="space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-lg font-bold text-foreground">Actions</h2>
-          {pending && <span className="text-xs text-muted-foreground">Saving…</span>}
+          <div className="flex items-center gap-2">
+            {pending && <span className="text-xs text-muted-foreground">Saving…</span>}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => refreshTools.mutate()}
+              disabled={refreshTools.isPending || pending}
+            >
+              {refreshTools.isPending ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              Refresh tools
+            </Button>
+          </div>
         </div>
 
         {quarantined.length > 0 && (
@@ -344,6 +411,8 @@ export function AppDetail() {
         }}
       />
 
+      <TechnicalDetails connection={connection} />
+
       {/* Recent activity */}
       <RecentActivity
         events={activityQuery.data?.events ?? []}
@@ -357,15 +426,60 @@ export function AppDetail() {
         removing={removeApp.isPending}
         onRemove={() => removeApp.mutate()}
       />
-
-      <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        <Wrench className="h-3.5 w-3.5" />
-        Need to change the address or other technical setup?{" "}
-        <Link to={advancedTabHref("applications")} className="font-medium text-primary hover:underline">
-          Open developer tools
-        </Link>
-      </p>
     </div>
+  );
+}
+
+// ---------- Lifecycle ----------
+
+function AppLifecycleSection({
+  connection,
+  disabled,
+  onToggle,
+}: {
+  connection: ToolConnection;
+  disabled: boolean;
+  onToggle: () => void;
+}) {
+  const enabled = connection.enabled !== false && connection.status !== "disabled";
+  return (
+    <section className="rounded-xl border border-border bg-card px-5 py-4">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <h2 className="text-sm font-bold text-foreground">
+            {enabled ? "Agents can use this app" : "This app is paused"}
+          </h2>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            {enabled
+              ? "Pause it to stop every agent from using its actions."
+              : "Resume it when agents should be able to use its actions again."}
+          </p>
+        </div>
+        <ToggleSwitch
+          aria-label={enabled ? "Pause this app" : "Resume this app"}
+          checked={enabled}
+          disabled={disabled}
+          onCheckedChange={onToggle}
+          size="lg"
+        />
+      </div>
+    </section>
+  );
+}
+
+// ---------- Technical details ----------
+
+function TechnicalDetails({ connection }: { connection: ToolConnection }) {
+  return (
+    <section className="rounded-xl border border-border bg-card px-5 py-4">
+      <h2 className="text-sm font-bold text-foreground">Technical details</h2>
+      <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-[8rem_1fr]">
+        <dt className="text-muted-foreground">Address</dt>
+        <dd className="break-all font-mono text-foreground">{connectionAddress(connection)}</dd>
+        <dt className="text-muted-foreground">Connection type</dt>
+        <dd className="text-foreground">{connectionTransportLabel(connection.transport)}</dd>
+      </dl>
+    </section>
   );
 }
 
@@ -942,6 +1056,20 @@ function StatusBadge({ status }: { status: StatusInfo }) {
       {status.label}
     </span>
   );
+}
+
+function connectionAddress(connection: ToolConnection): string {
+  const config = connection.config ?? connection.transportConfig ?? {};
+  const value = config.url ?? config.endpoint ?? config.remoteUrl;
+  if (typeof value === "string" && value.trim().length > 0) return value;
+  if (connection.transport === "local_stdio") return "Local command";
+  return "Not set";
+}
+
+function connectionTransportLabel(transport: ToolConnection["transport"]): string {
+  if (transport === "remote_http") return "Remote HTTP";
+  if (transport === "local_stdio") return "Local command";
+  return "Unknown";
 }
 
 function enabledCatalogIds(profile: ToolProfileWithDetails | undefined): Set<string> {

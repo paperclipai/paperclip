@@ -127,7 +127,9 @@ export function Apps() {
   const connections = (connectionsQuery.data?.connections ?? []).filter(
     (c) => c.status !== "archived",
   );
-  const applications = applicationsQuery.data?.applications ?? [];
+  const applications = (applicationsQuery.data?.applications ?? []).filter(
+    (application) => application.status !== "archived",
+  );
   const connectionsByApplication = useMemo(() => {
     const map = new Map<string, ToolConnection[]>();
     for (const connection of connections) {

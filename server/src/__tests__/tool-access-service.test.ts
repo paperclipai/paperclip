@@ -1474,6 +1474,86 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(remaining).toHaveLength(1);
   });
 
+  it("archives the application when its last connection is removed", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const app = createRouteApp(db);
+    const connection = await service.createConnection(company.id, {
+      name: "Single connection",
+      transport: "remote_http",
+      config: { url: "https://fixture.example/mcp" },
+      status: "active",
+      enabled: true,
+    });
+
+    const res = await request(app).delete(`/api/tool-connections/${connection.id}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: connection.id, status: "archived", enabled: false });
+
+    const [application] = await db
+      .select()
+      .from(toolApplications)
+      .where(eq(toolApplications.id, connection.applicationId));
+    expect(application).toMatchObject({ status: "archived" });
+    expect(application?.archivedAt).toBeInstanceOf(Date);
+
+    const activities = await db.select().from(activityLog).where(eq(activityLog.companyId, company.id));
+    expect(activities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "tool_connection.archived",
+          entityId: connection.id,
+        }),
+        expect.objectContaining({
+          action: "tool_application.archived",
+          entityId: connection.applicationId,
+          details: expect.objectContaining({ reason: "last_connection_removed" }),
+        }),
+      ]),
+    );
+  });
+
+  it("keeps the application active when another connection remains", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const app = createRouteApp(db);
+    const application = await service.createApplication(company.id, {
+      name: "Shared app",
+      type: "mcp_http",
+    });
+    const first = await service.createConnection(company.id, {
+      applicationId: application.id,
+      name: "First connection",
+      transport: "remote_http",
+      config: { url: "https://one.example/mcp" },
+      status: "active",
+      enabled: true,
+    });
+    await service.createConnection(company.id, {
+      applicationId: application.id,
+      name: "Second connection",
+      transport: "remote_http",
+      config: { url: "https://two.example/mcp" },
+      status: "active",
+      enabled: true,
+    });
+
+    const res = await request(app).delete(`/api/tool-connections/${first.id}`);
+
+    expect(res.status).toBe(200);
+    const [remainingApplication] = await db
+      .select()
+      .from(toolApplications)
+      .where(eq(toolApplications.id, application.id));
+    expect(remainingApplication).toMatchObject({ status: "active", archivedAt: null });
+    const activities = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, application.id));
+    expect(activities.some((activity) => activity.action === "tool_application.archived")).toBe(false);
+  });
+
   it("fails closed at the database when a connection races an application delete (no silent cascade)", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);
