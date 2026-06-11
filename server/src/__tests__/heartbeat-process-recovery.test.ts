@@ -74,6 +74,9 @@ const mockListLiveAgentJobRunIds = vi.hoisted(() =>
 const mockDeleteAgentJobsForRun = vi.hoisted(() =>
   vi.fn<(runId: string) => Promise<number | null>>(async () => 1),
 );
+const mockHasActiveJobForAgent = vi.hoisted(() =>
+  vi.fn<(agentId: string) => Promise<boolean>>(async () => false),
+);
 const mockListAgentJobRunStatuses = vi.hoisted(() =>
   vi.fn<
     () => Promise<
@@ -113,6 +116,7 @@ vi.mock("../services/k8s-job-liveness.ts", () => ({
   listAgentJobRunStatuses: mockListAgentJobRunStatuses,
   readAgentJobRunStatusByName: mockReadAgentJobRunStatusByName,
   deleteAgentJobsForRun: mockDeleteAgentJobsForRun,
+  hasActiveJobForAgent: mockHasActiveJobForAgent,
 }));
 
 vi.mock("@paperclipai/shared/telemetry", async () => {
@@ -580,6 +584,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   async function seedAssignedTodoNoRunFixture(input?: {
     agentStatus?: "paused" | "idle" | "running";
+    adapterType?: string;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -599,7 +604,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: input?.agentStatus ?? "idle",
-      adapterType: "codex_local",
+      adapterType: input?.adapterType ?? "codex_local",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
@@ -2253,6 +2258,44 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(agentWakeupRequests.id, newerWakeupId))
       .then((rows) => rows[0] ?? null);
     expect(loserWakeup?.status).toBe("skipped");
+  });
+
+  it("defers external-lifecycle queued dispatch while a terminating k8s pod still holds the agent slot", async () => {
+    const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture({
+      adapterType: "opencode_k8s",
+    });
+    const queuedWakeupId = randomUUID();
+    const queuedRunId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: queuedWakeupId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      status: "queued",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: queuedRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: queuedWakeupId,
+      contextSnapshot: { issueId },
+      createdAt: new Date("2026-06-11T19:45:40.000Z"),
+      updatedAt: new Date("2026-06-11T19:45:40.000Z"),
+    });
+    mockHasActiveJobForAgent.mockResolvedValueOnce(true);
+
+    await heartbeat.resumeQueuedRuns();
+
+    const run = await heartbeat.getRun(queuedRunId);
+    expect(mockHasActiveJobForAgent).toHaveBeenCalledWith(agentId);
+    expect(run?.status).toBe("queued");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
   it("reaps orphaned k8s runs before dispatching queued work for the same issue", async () => {

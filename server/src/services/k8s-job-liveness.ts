@@ -48,7 +48,7 @@ export type AgentJobRunStatusByName =
 type ClientState =
   | { kind: "uninitialized" }
   | { kind: "unavailable"; reason: string }
-  | { kind: "ready"; api: k8s.BatchV1Api };
+  | { kind: "ready"; batchApi: k8s.BatchV1Api; coreApi: k8s.CoreV1Api };
 
 let clientState: ClientState = { kind: "uninitialized" };
 
@@ -87,8 +87,9 @@ function initClient(): ClientState {
       clientState = { kind: "unavailable", reason: "not running in a kubernetes pod" };
       return clientState;
     }
-    const api = kc.makeApiClient(k8s.BatchV1Api);
-    clientState = { kind: "ready", api };
+    const batchApi = kc.makeApiClient(k8s.BatchV1Api);
+    const coreApi = kc.makeApiClient(k8s.CoreV1Api);
+    clientState = { kind: "ready", batchApi, coreApi };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     logger.warn({ error: reason }, "k8s job-liveness client init failed; falling back to staleness heuristic");
@@ -159,7 +160,7 @@ export async function readAgentJobRunStatusByName(
   const state = initClient();
   if (state.kind !== "ready") return null;
   try {
-    const job = await state.api.readNamespacedJob(
+    const job = await state.batchApi.readNamespacedJob(
       {
         name: trimmed,
         namespace: PAPERCLIP_K8S_NAMESPACE,
@@ -195,7 +196,7 @@ export async function listAgentJobRunStatuses(): Promise<Map<string, AgentJobRun
   const state = initClient();
   if (state.kind !== "ready") return null;
   try {
-    const list = await state.api.listNamespacedJob(
+    const list = await state.batchApi.listNamespacedJob(
       {
         namespace: PAPERCLIP_K8S_NAMESPACE,
         labelSelector: AGENT_JOB_LABEL_SELECTOR,
@@ -260,7 +261,7 @@ export async function deleteAgentJobsForRun(runId: string): Promise<number | nul
   const state = initClient();
   if (state.kind !== "ready") return null;
   try {
-    const list = await state.api.listNamespacedJob(
+    const list = await state.batchApi.listNamespacedJob(
       {
         namespace: PAPERCLIP_K8S_NAMESPACE,
         labelSelector: `${AGENT_JOB_LABEL_SELECTOR},${RUN_ID_LABEL_FILTER_PREFIX}${runId}`,
@@ -273,7 +274,7 @@ export async function deleteAgentJobsForRun(runId: string): Promise<number | nul
       const name = job.metadata?.name;
       if (!name) continue;
       try {
-        await state.api.deleteNamespacedJob(
+        await state.batchApi.deleteNamespacedJob(
           {
             name,
             namespace: PAPERCLIP_K8S_NAMESPACE,
@@ -304,6 +305,12 @@ export async function deleteAgentJobsForRun(runId: string): Promise<number | nul
 // which set "paperclip.io/agent-id" (hyphen) on every agent Job.
 const AGENT_ID_LABEL = "paperclip.io/agent-id";
 
+export function isActiveOrTerminatingAgentPod(pod: k8s.V1Pod): boolean {
+  if (pod.metadata?.deletionTimestamp) return true;
+  const phase = pod.status?.phase;
+  return phase !== "Succeeded" && phase !== "Failed";
+}
+
 /**
  * Returns true when there is at least one active (not yet completed) Job for
  * the given agent in the paperclip namespace. Returns false when the kube API
@@ -314,7 +321,7 @@ export async function hasActiveJobForAgent(agentId: string): Promise<boolean> {
   const state = initClient();
   if (state.kind !== "ready") return false;
   try {
-    const res = await state.api.listNamespacedJob(
+    const res = await state.batchApi.listNamespacedJob(
       {
         namespace: PAPERCLIP_K8S_NAMESPACE,
         labelSelector: `${AGENT_JOB_LABEL_SELECTOR},${AGENT_ID_LABEL}=${agentId}`,
@@ -323,7 +330,7 @@ export async function hasActiveJobForAgent(agentId: string): Promise<boolean> {
       requestOptionsWithTimeout(),
     );
     const items = res.items ?? [];
-    return items.some((job) => {
+    const hasActiveJob = items.some((job) => {
       const status = job.status;
       if (!status) return true;
       const active = status.active ?? 0;
@@ -331,6 +338,21 @@ export async function hasActiveJobForAgent(agentId: string): Promise<boolean> {
       const failed = status.failed ?? 0;
       return active > 0 || (succeeded === 0 && failed === 0);
     });
+    if (hasActiveJob) {
+      return true;
+    }
+
+    // A just-deleted Job can already look terminal while its Pod is still
+    // terminating and holding a ReadWriteOnce agent PVC on the old node.
+    const podRes = await state.coreApi.listNamespacedPod(
+      {
+        namespace: PAPERCLIP_K8S_NAMESPACE,
+        labelSelector: `${AGENT_JOB_LABEL_SELECTOR},${AGENT_ID_LABEL}=${agentId}`,
+        timeoutSeconds: K8S_JOB_LIVENESS_TIMEOUT_SECONDS,
+      },
+      requestOptionsWithTimeout(),
+    );
+    return (podRes.items ?? []).some(isActiveOrTerminatingAgentPod);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     logger.warn({ agentId, error: reason }, "k8s in-flight check failed; falling back to DB-only");

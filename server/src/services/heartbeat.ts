@@ -65,6 +65,7 @@ import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import {
   deleteAgentJobsForRun,
+  hasActiveJobForAgent,
   listAgentJobRunStatuses,
   listLiveAgentJobRunIds,
   readAgentJobRunStatusByName,
@@ -9177,6 +9178,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         logger.debug(
           { agentId, adapterType: agent.adapterType, runningCount },
           "startNextQueuedRunForAgent: external-lifecycle agent already has an active run",
+        );
+        return [];
+      }
+      if (hasExternalLifecycle(agent.adapterType) && await hasActiveJobForAgent(agentId)) {
+        logger.debug(
+          { agentId, adapterType: agent.adapterType },
+          "startNextQueuedRunForAgent: external-lifecycle agent still has an active Kubernetes Job or Pod",
         );
         return [];
       }

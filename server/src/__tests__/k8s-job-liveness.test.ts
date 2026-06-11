@@ -1,7 +1,10 @@
-import type { V1Job } from "@kubernetes/client-node";
+import type { V1Job, V1Pod } from "@kubernetes/client-node";
 import { describe, expect, it } from "vitest";
 
-import { classifyAgentJobRunStatus } from "../services/k8s-job-liveness.js";
+import {
+  classifyAgentJobRunStatus,
+  isActiveOrTerminatingAgentPod,
+} from "../services/k8s-job-liveness.js";
 
 describe("classifyAgentJobRunStatus", () => {
   it("keeps multi-completion Jobs active when only one pod succeeded and no Complete condition exists", () => {
@@ -35,5 +38,30 @@ describe("classifyAgentJobRunStatus", () => {
       reason: null,
       message: null,
     });
+  });
+});
+
+describe("isActiveOrTerminatingAgentPod", () => {
+  it("treats terminating pods as active so RWO volumes can detach before retry dispatch", () => {
+    const pod = {
+      metadata: {
+        deletionTimestamp: "2026-06-11T19:45:40.000Z",
+      },
+      status: {
+        phase: "Running",
+      },
+    } as unknown as V1Pod;
+
+    expect(isActiveOrTerminatingAgentPod(pod)).toBe(true);
+  });
+
+  it("ignores completed pods that are not terminating", () => {
+    const pod = {
+      status: {
+        phase: "Succeeded",
+      },
+    } as V1Pod;
+
+    expect(isActiveOrTerminatingAgentPod(pod)).toBe(false);
   });
 });
