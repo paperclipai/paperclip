@@ -176,6 +176,10 @@ describe("issue dependency wakeups in issue routes", () => {
         "agent-2",
         expect.objectContaining({
           reason: "issue_blockers_resolved",
+          // Per-pair idempotency key lets the workspace_finalize re-fire
+          // path suppress a duplicate wake on the same (dependent, blocker)
+          // pair (HMS-449 / paperclipai/paperclip#TBD).
+          idempotencyKey: "issue_blockers_resolved:issue-2:issue-1",
           payload: expect.objectContaining({
             issueId: "issue-2",
             resolvedBlockerIssueId: "issue-1",
