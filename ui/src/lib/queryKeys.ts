@@ -6,6 +6,7 @@ export const queryKeys = {
   },
   apps: {
     gallery: (companyId: string) => ["apps", companyId, "gallery"] as const,
+    attention: (companyId: string) => ["apps", companyId, "attention"] as const,
   },
   tools: {
     examples: (companyId: string) => ["tools", companyId, "examples"] as const,
@@ -13,6 +14,10 @@ export const queryKeys = {
     connections: (companyId: string) => ["tools", companyId, "connections"] as const,
     connection: (connectionId: string) => ["tools", "connection", connectionId] as const,
     catalog: (connectionId: string) => ["tools", "connection", connectionId, "catalog"] as const,
+    connectionActivity: (connectionId: string) =>
+      ["tools", "connection", connectionId, "activity"] as const,
+    actionRequests: (companyId: string, status: string) =>
+      ["tools", companyId, "action-requests", status] as const,
     profiles: (companyId: string) => ["tools", companyId, "profiles"] as const,
     effectiveProfilesForAgent: (companyId: string, agentId: string) =>
       ["tools", companyId, "profiles", "effective", "agent", agentId] as const,

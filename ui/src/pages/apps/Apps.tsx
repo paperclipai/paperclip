@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link2 } from "lucide-react";
-import type { AppGalleryEntry, ToolConnection } from "@paperclipai/shared";
+import { Link2, ShieldAlert } from "lucide-react";
+import type { AppGalleryEntry, ToolAppAttentionItem, ToolConnection } from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -55,6 +55,12 @@ export function Apps() {
     queryFn: () => toolsApi.listConnections(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const attentionQuery = useQuery({
+    queryKey: queryKeys.apps.attention(selectedCompanyId ?? "__none__"),
+    queryFn: () => toolsApi.listAppsAttention(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 30_000,
+  });
 
   const gallery = galleryQuery.data?.apps ?? [];
   const logoByName = useMemo(() => {
@@ -67,6 +73,7 @@ export function Apps() {
     (c) => c.status !== "archived",
   );
   const attentionCount = connections.filter((c) => statusFor(c).tone === "attention").length;
+  const needsAttention = attentionQuery.data?.apps ?? [];
 
   if (!selectedCompanyId) {
     return <div className="p-6 text-sm text-muted-foreground">Select a company to manage apps.</div>;
@@ -101,6 +108,25 @@ export function Apps() {
               <span className="text-amber-600"> · {attentionCount} needs attention</span>
             )}
           </div>
+
+          {needsAttention.length > 0 && (
+            <button
+              type="button"
+              onClick={() => navigate("/apps/attention")}
+              className="flex w-full items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-left transition-colors hover:bg-amber-100"
+            >
+              <ShieldAlert className="h-5 w-5 shrink-0 text-amber-600" />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-amber-900">
+                  {needsAttention.length} {needsAttention.length === 1 ? "app needs" : "apps need"} attention
+                </div>
+                <div className="truncate text-xs text-amber-700">
+                  {floatSummary(needsAttention)}
+                </div>
+              </div>
+              <span className="shrink-0 text-xs font-semibold text-amber-800">Review →</span>
+            </button>
+          )}
 
           <div className="overflow-hidden rounded-lg border border-border">
             <table className="w-full text-sm">
@@ -147,7 +173,11 @@ export function Apps() {
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right">
-                        <Button variant={attention ? "default" : "outline"} size="sm" disabled>
+                        <Button
+                          variant={attention ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => navigate(`/apps/${connection.id}`)}
+                        >
                           {attention ? "Reconnect" : "Open"}
                         </Button>
                       </td>
@@ -165,6 +195,12 @@ export function Apps() {
       )}
     </div>
   );
+}
+
+function floatSummary(apps: ToolAppAttentionItem[]): string {
+  const names = apps.map((app) => app.connection.name);
+  if (names.length <= 2) return names.join(" and ");
+  return `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
 }
 
 function EmptyApps({ gallery, onConnect }: { gallery: AppGalleryEntry[]; onConnect: () => void }) {

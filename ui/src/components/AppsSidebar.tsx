@@ -1,7 +1,10 @@
 import { ChevronLeft, AppWindow, Settings2, ShieldAlert } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useSidebar } from "@/context/SidebarContext";
+import { queryKeys } from "@/lib/queryKeys";
+import { toolsApi } from "@/api/tools";
 import { SidebarNavItem } from "./SidebarNavItem";
 
 /**
@@ -9,14 +12,22 @@ import { SidebarNavItem } from "./SidebarNavItem";
  *
  *   ← Back · APPS: All apps / Needs attention (n) / Advanced setup [Admin]
  *
- * "Needs attention" is its own page in P3; until then we render the entry as a
- * disabled placeholder with no count. "Advanced setup" links to the developer
- * door, now mounted under `/apps/advanced` (PAP-10862); `/tools/:tab` redirects
- * there.
+ * "Needs attention" links to its own page (M9, PAP-10859) with a live count
+ * chip from `GET /tools/apps/attention`. "Advanced setup" links to the
+ * developer door, mounted under `/apps/advanced` (PAP-10862); `/tools/:tab`
+ * redirects there.
  */
 export function AppsSidebar() {
-  const { selectedCompany } = useCompany();
+  const { selectedCompany, selectedCompanyId } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
+
+  const attentionQuery = useQuery({
+    queryKey: queryKeys.apps.attention(selectedCompanyId ?? "__none__"),
+    queryFn: () => toolsApi.listAppsAttention(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 30_000,
+  });
+  const attentionCount = attentionQuery.data?.apps.length ?? 0;
 
   return (
     <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">
@@ -43,15 +54,14 @@ export function AppsSidebar() {
         </div>
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to="/apps" label="All apps" icon={AppWindow} end />
-          {/* Needs attention page lands in P3 — show the entry, no count yet. */}
-          <div
-            className="flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium text-foreground/40"
-            aria-disabled="true"
-            title="Coming soon"
-          >
-            <ShieldAlert className="h-4 w-4 shrink-0" />
-            <span className="flex-1 truncate">Needs attention</span>
-          </div>
+          <SidebarNavItem
+            to="/apps/attention"
+            label="Needs attention"
+            icon={ShieldAlert}
+            badge={attentionCount > 0 ? attentionCount : undefined}
+            badgeTone="danger"
+            badgeLabel="needing attention"
+          />
           <SidebarNavItem
             to="/apps/advanced"
             label="Advanced setup"

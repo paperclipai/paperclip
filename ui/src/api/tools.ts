@@ -219,6 +219,10 @@ export const toolsApi = {
     api.delete<ToolConnection>(`/tool-connections/${connectionId}`),
   checkConnectionHealth: (connectionId: string) =>
     api.post<ToolConnectionHealthCheckResult>(`/tool-connections/${connectionId}/health-check`, {}),
+  reconnectConnection: (connectionId: string, credentialValues: Record<string, string>) =>
+    api.post<ToolConnectionHealthCheckResult>(`/tool-connections/${connectionId}/reconnect`, {
+      credentialValues,
+    }),
   refreshCatalog: (connectionId: string) =>
     api.post<ToolCatalogRefreshResult>(`/tool-connections/${connectionId}/catalog/refresh`, {}),
   listCatalog: (connectionId: string) =>
