@@ -17,9 +17,15 @@
 //   pending request_confirmation, recent related comments). Each section is
 //   wrapped in a try/catch so a single failure degrades the briefing rather
 //   than failing the wake.
+// - Step 4 (token-budget guard): `DEFAULT_COLD_WAKE_BRIEFING_TOKEN_CAP`,
+//   `resolveColdWakeBriefingTokenCap`, `estimateBriefingTokens`,
+//   `enforceBriefingBudget`. Deterministic eviction order per parent plan
+//   §3.3: oldest comments → oldest commits → siblings beyond top-3 →
+//   closed-issues beyond top-3 → set `truncated: true`. Staleness header,
+//   `planDocument`, and `pendingRequestConfirmation` are never dropped.
 //
-// The token-budget guard, bypass switch, telemetry, and the call-site wiring
-// land in follow-up PRs (steps 4–6).
+// The bypass switch, telemetry, and the call-site wiring land in follow-up
+// PRs (steps 5–6).
 
 import { execFile } from "node:child_process";
 import { and, desc, eq, gte, inArray, isNull, ne } from "drizzle-orm";
@@ -145,9 +151,11 @@ const COMMENT_PREVIEW_LIMIT = 280;
 const CLOSED_ISSUE_LOOKBACK_DAYS = 14;
 const MS_PER_DAY = 24 * MS_PER_HOUR;
 
-/** Placeholder token-budget cap. Step 4 wires up the real guard and eviction
- *  policy; the field is populated here so the briefing shape round-trips. */
-const DEFAULT_BUDGET_TOKEN_CAP = 8000;
+/** Default cap for the assembled cold-wake briefing, in estimated tokens.
+ *  8000 is the parent plan §3.3 target: room for a meaningful briefing
+ *  without crowding the wake payload itself. Tunable via
+ *  `PAPERCLIP_COLD_WAKE_BRIEFING_TOKEN_CAP`. */
+export const DEFAULT_COLD_WAKE_BRIEFING_TOKEN_CAP = 8000;
 
 export type ColdWakeRecentCommit = {
   sha: string;
@@ -216,13 +224,17 @@ export type ColdWakeBriefing = {
   recentRelatedComments: ColdWakeRelatedComment[];
   /** Section keys actually populated — matches the §3.2 source list:
    *  `"git" | "closed_issues" | "siblings" | "plan" | "interaction" | "comments"`.
-   *  Sections that failed are omitted. */
+   *  Sections that failed are omitted. When `enforceBriefingBudget` evicts
+   *  items from a section, the entry is rewritten as `"<key>:truncated"`. */
   sourcesIncluded: string[];
-  /** Placeholder until step 4 implements the budget guard. */
+  /** Estimated tokens after the budget guard runs. See
+   *  `estimateBriefingTokens`. */
   budgetTokens: number;
-  /** Placeholder until step 4 implements the budget guard. */
+  /** Cap the guard ran against. See `resolveColdWakeBriefingTokenCap`. */
   budgetTokenCap: number;
-  /** Placeholder until step 4 implements eviction. */
+  /** True when any section was reduced by `enforceBriefingBudget`, or when
+   *  the budget could not be hit even after evicting every droppable
+   *  section. */
   truncated: boolean;
   briefingError: ColdWakeBriefingError | null;
 };
@@ -640,10 +652,10 @@ function describeSectionError(err: unknown): string {
  *  briefing rather than failing the wake. `briefingError` is null on partial
  *  success; only set when *every* section throws.
  *
- *  The token-budget guard, eviction policy, and call-site wiring land in
- *  follow-up PRs; `budgetTokens` / `budgetTokenCap` / `truncated` are
- *  populated with safe placeholders so the shape round-trips through the
- *  step-1 normalizer. */
+ *  Step 4: the assembled briefing is passed through `enforceBriefingBudget`
+ *  before return, populating `budgetTokens` / `budgetTokenCap` / `truncated`
+ *  per parent plan §3.3 and updating `sourcesIncluded` with `:truncated`
+ *  markers when a section was evicted. */
 export async function buildColdWakeBriefing(
   input: BuildColdWakeBriefingInput,
 ): Promise<ColdWakeBriefing | null> {
@@ -828,7 +840,8 @@ export async function buildColdWakeBriefing(
             : "All briefing sections failed",
       };
 
-  return {
+  const tokenCap = resolveColdWakeBriefingTokenCap();
+  const assembled: ColdWakeBriefing = {
     thresholdHours: detection.thresholdHours,
     hoursSinceLastRun: detection.hoursSinceLastRun,
     lastRunFinishedAt: detection.lastRunFinishedAt
@@ -843,8 +856,184 @@ export async function buildColdWakeBriefing(
     recentRelatedComments,
     sourcesIncluded,
     budgetTokens: 0,
-    budgetTokenCap: DEFAULT_BUDGET_TOKEN_CAP,
+    budgetTokenCap: tokenCap,
     truncated: false,
     briefingError,
   };
+  return enforceBriefingBudget(assembled, { tokenCap, now });
+}
+
+// =============================================================================
+// Step 4 — token-budget guard + deterministic eviction order.
+//
+// The guard is a pure function: it does not read the env, the DB, or the
+// filesystem. Env resolution lives in `resolveColdWakeBriefingTokenCap`, and
+// `buildColdWakeBriefing` calls that resolver to obtain the cap that gets
+// passed in here. This keeps `enforceBriefingBudget` trivially testable while
+// still picking up operator overrides at the call site.
+// =============================================================================
+
+const BRIEFING_SECTIONS_KEEP_TOP_N = 3;
+
+/** Resolve the cold-wake briefing token cap from the supplied env or
+ *  `process.env`, falling back to the default when unset, non-numeric, zero,
+ *  or negative. Mirrors `resolveHibernationThresholdHours` so operators have
+ *  a single mental model for both knobs. */
+export function resolveColdWakeBriefingTokenCap(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env.PAPERCLIP_COLD_WAKE_BRIEFING_TOKEN_CAP;
+  if (typeof raw !== "string" || raw.length === 0) {
+    return DEFAULT_COLD_WAKE_BRIEFING_TOKEN_CAP;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_COLD_WAKE_BRIEFING_TOKEN_CAP;
+  }
+  return parsed;
+}
+
+/** Cheap, deterministic token estimator. Serializes the briefing to JSON and
+ *  divides the character count by 4 — the well-known rule-of-thumb for
+ *  English text token density. This is intentionally approximate; the guard
+ *  only needs ordering monotonicity to decide whether to keep evicting.
+ *
+ *  Pure function: same input → same output. Unit-testable without a real
+ *  tokenizer. */
+export function estimateBriefingTokens(briefing: ColdWakeBriefing): number {
+  const json = JSON.stringify(briefing) ?? "";
+  return Math.ceil(json.length / 4);
+}
+
+/** Update `sourcesIncluded`, rewriting `"<key>"` as `"<key>:truncated"` for
+ *  every section that lost items. Sections that were not present originally
+ *  are not added — eviction can only mark a section the assembler already
+ *  populated. */
+function markSourcesTruncated(
+  current: ReadonlyArray<string>,
+  truncatedSections: ReadonlySet<string>,
+): string[] {
+  if (truncatedSections.size === 0) return [...current];
+  return current.map((src) => {
+    const baseKey = src.split(":")[0] ?? src;
+    return truncatedSections.has(baseKey) ? `${baseKey}:truncated` : src;
+  });
+}
+
+export type EnforceBriefingBudgetOptions = {
+  /** Override the resolved cap. Falsy / non-finite / non-positive values
+   *  fall back to `DEFAULT_COLD_WAKE_BRIEFING_TOKEN_CAP`. */
+  tokenCap?: number;
+  /** Reserved for symmetry with the rest of the assembler call shape. The
+   *  guard itself does not depend on the clock; accepting `now` keeps the
+   *  signature stable if a future eviction policy needs it (e.g., age-based
+   *  drop of "recent" entries that have since aged out). */
+  now?: Date;
+};
+
+/** Enforce the cold-wake briefing token budget. Pure function: same input →
+ *  same output, no side effects. Returns a new briefing object with
+ *  `budgetTokens`, `budgetTokenCap`, `truncated`, and `sourcesIncluded`
+ *  updated; the input briefing is not mutated.
+ *
+ *  Eviction order (parent plan §3.3, acceptance criterion 5). Drop in this
+ *  order until under budget; re-estimate after every drop so we short-circuit
+ *  as soon as the briefing falls under cap:
+ *
+ *  1. Oldest `recentRelatedComments` (sort by `createdAt`, drop oldest).
+ *  2. Oldest `recentCommits` (sort by `date`, drop oldest).
+ *  3. `siblingInProgressIssues` items beyond top 3 (sort by `updatedAt`
+ *     DESC, keep top 3, drop the rest).
+ *  4. `recentlyClosedReferencedIssues` items beyond top 3 (sort by
+ *     `closedAt` DESC, keep top 3, drop the rest).
+ *  5. If still over budget, set `truncated: true` and stop. The staleness
+ *     header, `planDocument`, and `pendingRequestConfirmation` are NEVER
+ *     mutated, even when the rest of the briefing is empty after eviction. */
+export function enforceBriefingBudget(
+  briefing: ColdWakeBriefing,
+  options: EnforceBriefingBudgetOptions = {},
+): ColdWakeBriefing {
+  const tokenCap =
+    typeof options.tokenCap === "number" &&
+    Number.isFinite(options.tokenCap) &&
+    options.tokenCap > 0
+      ? options.tokenCap
+      : DEFAULT_COLD_WAKE_BRIEFING_TOKEN_CAP;
+
+  let working: ColdWakeBriefing = {
+    ...briefing,
+    budgetTokens: 0,
+    budgetTokenCap: tokenCap,
+    truncated: false,
+  };
+
+  // Short-circuit when already under cap. We still rewrite the budget fields
+  // so callers can rely on `budgetTokens` reflecting the actual estimate.
+  if (estimateBriefingTokens(working) <= tokenCap) {
+    return { ...working, budgetTokens: estimateBriefingTokens(working) };
+  }
+
+  const truncatedSections = new Set<string>();
+
+  // Step 1 — drop oldest comments first. Sort DESC so `pop()` removes the
+  // oldest item; this preserves the original "newest-first" presentation
+  // order for the survivors.
+  let comments = [...working.recentRelatedComments].sort((a, b) =>
+    b.createdAt.localeCompare(a.createdAt),
+  );
+  while (estimateBriefingTokens(working) > tokenCap && comments.length > 0) {
+    comments.pop();
+    truncatedSections.add("comments");
+    working = { ...working, recentRelatedComments: comments };
+  }
+
+  // Step 2 — drop oldest commits next, same DESC-then-pop pattern.
+  let commits = [...working.recentCommits].sort((a, b) =>
+    b.date.localeCompare(a.date),
+  );
+  while (estimateBriefingTokens(working) > tokenCap && commits.length > 0) {
+    commits.pop();
+    truncatedSections.add("git");
+    working = { ...working, recentCommits: commits };
+  }
+
+  // Step 3 — siblings beyond top-3. Sort DESC by updatedAt and pop the
+  // back until we hit the top-3 floor or the budget.
+  let siblings = [...working.siblingInProgressIssues].sort((a, b) =>
+    b.updatedAt.localeCompare(a.updatedAt),
+  );
+  while (
+    estimateBriefingTokens(working) > tokenCap &&
+    siblings.length > BRIEFING_SECTIONS_KEEP_TOP_N
+  ) {
+    siblings.pop();
+    truncatedSections.add("siblings");
+    working = { ...working, siblingInProgressIssues: siblings };
+  }
+
+  // Step 4 — closed-issue references beyond top-3. Same shape as step 3.
+  let closed = [...working.recentlyClosedReferencedIssues].sort((a, b) =>
+    b.closedAt.localeCompare(a.closedAt),
+  );
+  while (
+    estimateBriefingTokens(working) > tokenCap &&
+    closed.length > BRIEFING_SECTIONS_KEEP_TOP_N
+  ) {
+    closed.pop();
+    truncatedSections.add("closed_issues");
+    working = { ...working, recentlyClosedReferencedIssues: closed };
+  }
+
+  // Step 5 — still over budget. Per §3.3 we never drop the staleness header
+  // or section 4 (plan / interaction); flag truncated and return what we
+  // have. The briefing is always returned, never nulled out.
+  const overBudgetAfterEvict = estimateBriefingTokens(working) > tokenCap;
+  const sourcesIncluded = markSourcesTruncated(working.sourcesIncluded, truncatedSections);
+  const truncated = truncatedSections.size > 0 || overBudgetAfterEvict;
+  const finalWorking: ColdWakeBriefing = {
+    ...working,
+    sourcesIncluded,
+    truncated,
+  };
+  return { ...finalWorking, budgetTokens: estimateBriefingTokens(finalWorking) };
 }

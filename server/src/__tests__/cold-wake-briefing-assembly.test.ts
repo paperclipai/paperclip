@@ -214,9 +214,13 @@ describe("buildColdWakeBriefing", () => {
     );
 
     expect(b.briefingError).toBeNull();
-    // Placeholders for step 4's budget guard.
-    expect(b.budgetTokens).toBe(0);
+    // Step 4's budget guard runs at the end of buildColdWakeBriefing — the
+    // populated briefing is well under the default 8000-token cap so it
+    // round-trips unmodified, but `budgetTokens` now reflects the real
+    // estimate rather than the step-3 placeholder zero.
+    expect(b.budgetTokens).toBeGreaterThan(0);
     expect(b.budgetTokenCap).toBeGreaterThan(0);
+    expect(b.budgetTokens).toBeLessThanOrEqual(b.budgetTokenCap);
     expect(b.truncated).toBe(false);
   });
 
