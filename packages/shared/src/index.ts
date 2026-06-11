@@ -51,6 +51,11 @@ export {
   type AppGalleryTransportTemplate,
 } from "./tool-app-gallery.js";
 export {
+  humanizeConnectionDisplayName,
+  connectionDisplaySecondaryHint,
+  type HumanizableConnection,
+} from "./humanize-connection.js";
+export {
   COMPANY_STATUSES,
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,

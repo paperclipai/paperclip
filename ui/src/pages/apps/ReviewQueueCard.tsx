@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, ShieldQuestion, X } from "lucide-react";
 import type { ToolActionRequestListItem } from "@paperclipai/shared";
+import { humanizeConnectionDisplayName } from "@paperclipai/shared";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
@@ -133,7 +134,9 @@ function ReviewRow({ companyId, item }: { companyId: string; item: ToolActionReq
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm">
         <span className="font-bold text-foreground">{actionLabel(item)}</span>
         {item.applicationName && (
-          <span className="text-muted-foreground">in {item.applicationName}</span>
+          <span className="text-muted-foreground">
+            in {humanizeConnectionDisplayName(item.applicationName)}
+          </span>
         )}
         <span className="text-xs text-muted-foreground">· asked {timeAgo(item.request.createdAt)}</span>
       </div>
@@ -167,7 +170,8 @@ function ReviewRow({ companyId, item }: { companyId: string; item: ToolActionReq
 }
 
 function actionLabel(item: ToolActionRequestListItem): string {
-  return item.toolTitle ?? item.toolName ?? "This action";
+  if (!item.toolTitle && !item.toolName) return "This action";
+  return humanizeConnectionDisplayName(item.toolName ?? "", { title: item.toolTitle });
 }
 
 function failToast(

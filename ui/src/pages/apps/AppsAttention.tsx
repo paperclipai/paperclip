@@ -2,6 +2,7 @@ import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ShieldAlert } from "lucide-react";
 import type { AppGalleryEntry, ToolAppAttentionItem } from "@paperclipai/shared";
+import { humanizeConnectionDisplayName } from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -106,9 +107,11 @@ function AttentionRow({
   const reasons = reasonSentences(app);
   return (
     <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50/50 p-4">
-      <AppLogo name={app.connection.name} logoUrl={logoUrl} size={36} />
+      <AppLogo name={humanizeConnectionDisplayName(app.connection)} logoUrl={logoUrl} size={36} />
       <div className="min-w-0 flex-1">
-        <div className="text-sm font-bold text-foreground">{app.connection.name}</div>
+        <div className="text-sm font-bold text-foreground">
+          {humanizeConnectionDisplayName(app.connection)}
+        </div>
         <ul className="mt-1 space-y-0.5 text-sm text-amber-800">
           {reasons.map((reason) => (
             <li key={reason}>• {reason}</li>

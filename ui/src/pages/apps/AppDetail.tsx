@@ -10,7 +10,11 @@ import type {
   ToolPolicy,
   ToolProfileWithDetails,
 } from "@paperclipai/shared";
-import { isToolConnectionAttentionHealth as isAttentionHealthStatus } from "@paperclipai/shared";
+import {
+  connectionDisplaySecondaryHint,
+  humanizeConnectionDisplayName,
+  isToolConnectionAttentionHealth as isAttentionHealthStatus,
+} from "@paperclipai/shared";
 import { useParams, useNavigate } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -74,7 +78,7 @@ export function AppDetail() {
   });
 
   const connection = connectionQuery.data;
-  const appName = connection?.name ?? "App";
+  const appName = connection ? humanizeConnectionDisplayName(connection) : "App";
 
   useEffect(() => {
     setBreadcrumbs([
@@ -172,9 +176,12 @@ export function AppDetail() {
     <div className="mx-auto max-w-3xl space-y-6 pb-12">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex items-center gap-3">
-          <AppLogo name={connection.name} logoUrl={logoEntry?.logoUrl} size={44} />
+          <AppLogo name={appName} logoUrl={logoEntry?.logoUrl} size={44} />
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">{connection.name}</h1>
+            <h1 className="text-2xl font-bold tracking-tight">{appName}</h1>
+            {connectionDisplaySecondaryHint(connection) && (
+              <p className="text-xs text-muted-foreground">{connectionDisplaySecondaryHint(connection)}</p>
+            )}
             <div className="mt-1 flex items-center gap-2">
               <StatusBadge status={status} />
               <span className="text-xs text-muted-foreground">
@@ -601,7 +608,11 @@ function ReconnectForm({
       const healthy =
         result.connection.healthStatus === "healthy" || result.connection.healthStatus === "unknown";
       if (healthy) {
-        pushToast({ title: "Reconnected", body: `${connection.name} is back online.`, tone: "success" });
+        pushToast({
+          title: "Reconnected",
+          body: `${humanizeConnectionDisplayName(connection)} is back online.`,
+          tone: "success",
+        });
         onReconnected();
       } else {
         pushToast({

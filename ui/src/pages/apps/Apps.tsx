@@ -1,8 +1,16 @@
 import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link2, ShieldAlert } from "lucide-react";
-import type { AppGalleryEntry, ToolAppAttentionItem, ToolConnection } from "@paperclipai/shared";
-import { isToolConnectionAttentionHealth as isAttentionHealthStatus } from "@paperclipai/shared";
+import type {
+  AppGalleryEntry,
+  ToolAppAttentionItem,
+  ToolConnection,
+  ToolProfileWithDetails,
+} from "@paperclipai/shared";
+import {
+  humanizeConnectionDisplayName,
+  isToolConnectionAttentionHealth as isAttentionHealthStatus,
+} from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -11,6 +19,7 @@ import { toolsApi } from "@/api/tools";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { timeAgo } from "@/lib/timeAgo";
 import { AppLogo } from "./AppLogo";
 
 const POPULAR_KEYS = ["zapier", "github", "slack", "notion", "linear", "google-drive"];
@@ -62,6 +71,11 @@ export function Apps() {
     enabled: !!selectedCompanyId,
     refetchInterval: 30_000,
   });
+  const profilesQuery = useQuery({
+    queryKey: queryKeys.tools.profiles(selectedCompanyId ?? "__none__"),
+    queryFn: () => toolsApi.listProfiles(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
 
   const gallery = galleryQuery.data?.apps ?? [];
   const logoByName = useMemo(() => {
@@ -69,6 +83,16 @@ export function Apps() {
     for (const entry of gallery) map.set(entry.name.toLowerCase(), entry);
     return map;
   }, [gallery]);
+
+  // "Actions on" = enabled tools in each app's per-connection access profile,
+  // mirroring what App detail shows so the count never disagrees with the page.
+  const actionCountByConnection = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const profile of profilesQuery.data?.profiles ?? []) {
+      map.set(profile.profileKey, enabledActionCount(profile));
+    }
+    return map;
+  }, [profilesQuery.data]);
 
   const connections = (connectionsQuery.data?.connections ?? []).filter(
     (c) => c.status !== "archived",
@@ -134,6 +158,8 @@ export function Apps() {
                 <tr className="border-b border-border bg-muted/40 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                   <th className="px-4 py-2.5">App</th>
                   <th className="px-4 py-2.5">Status</th>
+                  <th className="px-4 py-2.5">Actions</th>
+                  <th className="px-4 py-2.5">Last used</th>
                   <th className="px-4 py-2.5" />
                 </tr>
               </thead>
@@ -142,6 +168,13 @@ export function Apps() {
                   const status = statusFor(connection);
                   const entry = logoByName.get(connection.name.toLowerCase());
                   const attention = status.tone === "attention";
+                  const hint =
+                    status.tone === "attention"
+                      ? "The key stopped working — reconnect to fix."
+                      : status.tone === "paused"
+                        ? "Paused — agents can’t use it right now."
+                        : null;
+                  const actionCount = actionCountByConnection.get(`app:${connection.id}`) ?? 0;
                   return (
                     <tr
                       key={connection.id}
@@ -149,16 +182,18 @@ export function Apps() {
                     >
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
-                          <AppLogo name={connection.name} logoUrl={entry?.logoUrl} size={32} />
+                          <AppLogo
+                            name={humanizeConnectionDisplayName(connection)}
+                            logoUrl={entry?.logoUrl}
+                            size={32}
+                          />
                           <div className="min-w-0">
-                            <div className="font-medium text-foreground">{connection.name}</div>
-                            <div className="truncate text-xs text-muted-foreground">
-                              {attention
-                                ? "The key stopped working — reconnect to fix."
-                                : status.tone === "paused"
-                                  ? "Paused — agents can’t use it right now."
-                                  : "Connected and ready for your agents."}
+                            <div className="font-medium text-foreground">
+                              {humanizeConnectionDisplayName(connection)}
                             </div>
+                            {hint && (
+                              <div className="truncate text-xs text-muted-foreground">{hint}</div>
+                            )}
                           </div>
                         </div>
                       </td>
@@ -170,6 +205,14 @@ export function Apps() {
                           )}
                         >
                           {status.label}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="text-xs text-muted-foreground">{actionCount} on</span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="text-xs text-muted-foreground">
+                          {connection.lastUsedAt ? timeAgo(connection.lastUsedAt) : "—"}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right">
@@ -197,8 +240,16 @@ export function Apps() {
   );
 }
 
+function enabledActionCount(profile: ToolProfileWithDetails): number {
+  let count = 0;
+  for (const entry of profile.entries ?? []) {
+    if (entry.effect === "include" && entry.catalogEntryId) count += 1;
+  }
+  return count;
+}
+
 function floatSummary(apps: ToolAppAttentionItem[]): string {
-  const names = apps.map((app) => app.connection.name);
+  const names = apps.map((app) => humanizeConnectionDisplayName(app.connection));
   if (names.length <= 2) return names.join(" and ");
   return `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
 }
