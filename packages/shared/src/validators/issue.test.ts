@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
+  createChildIssueSchema,
   createIssueSchema,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
@@ -38,6 +39,76 @@ describe("issue validators", () => {
     });
 
     expect(parsed.description).toBe("PR: https://example.com/pr/1\n\nShip the follow-up.");
+  });
+
+  describe("critical-priority owner guardrail (FUL-9946)", () => {
+    const agentId = "11111111-1111-4111-8111-111111111111";
+
+    it("rejects a critical issue created without an owner", () => {
+      const result = createIssueSchema.safeParse({
+        title: "Sev1 outage",
+        priority: "critical",
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues.some((issue) => issue.path.includes("assigneeAgentId"))).toBe(true);
+      }
+    });
+
+    it("rejects a critical issue with explicitly null assignees", () => {
+      const result = createIssueSchema.safeParse({
+        title: "Sev1 outage",
+        priority: "critical",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("accepts a critical issue assigned to an agent", () => {
+      const result = createIssueSchema.safeParse({
+        title: "Sev1 outage",
+        priority: "critical",
+        assigneeAgentId: agentId,
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts a critical issue assigned to a user", () => {
+      const result = createIssueSchema.safeParse({
+        title: "Sev1 outage",
+        priority: "critical",
+        assigneeUserId: "user-123",
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts an unowned critical issue when the missing owner is acknowledged", () => {
+      const result = createIssueSchema.safeParse({
+        title: "Sev1 outage",
+        priority: "critical",
+        missingOwnerAcknowledged: true,
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("does not restrict non-critical priorities", () => {
+      expect(createIssueSchema.safeParse({ title: "Routine", priority: "high" }).success).toBe(true);
+      expect(createIssueSchema.safeParse({ title: "Routine" }).success).toBe(true);
+    });
+
+    it("enforces the guardrail on child issue creation too", () => {
+      expect(
+        createChildIssueSchema.safeParse({ title: "Sev1 child", priority: "critical" }).success,
+      ).toBe(false);
+      expect(
+        createChildIssueSchema.safeParse({
+          title: "Sev1 child",
+          priority: "critical",
+          assigneeAgentId: agentId,
+        }).success,
+      ).toBe(true);
+    });
   });
 
   it("normalizes escaped line breaks in issue update comments", () => {

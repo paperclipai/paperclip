@@ -372,6 +372,35 @@ function withCreateIssueStatusDefault<T extends z.ZodRawShape>(schema: z.ZodObje
   }, schema);
 }
 
+type CriticalOwnerGuardrailInput = {
+  priority?: unknown;
+  assigneeAgentId?: unknown;
+  assigneeUserId?: unknown;
+  missingOwnerAcknowledged?: unknown;
+};
+
+/**
+ * Guardrail (FUL-9946): a `critical` priority issue must be created with an owner
+ * (`assigneeAgentId` or `assigneeUserId`). Creators may explicitly opt out of the
+ * requirement by passing `missingOwnerAcknowledged: true`. Prevents recurrence of
+ * the FUL-9731 finding where 40+ critical issues were created with a null assignee.
+ */
+function enforceCriticalPriorityOwner(value: CriticalOwnerGuardrailInput, ctx: z.RefinementCtx) {
+  if (value.priority !== "critical") return;
+  if (value.missingOwnerAcknowledged === true) return;
+  const hasOwner =
+    (typeof value.assigneeAgentId === "string" && value.assigneeAgentId.length > 0)
+    || (typeof value.assigneeUserId === "string" && value.assigneeUserId.length > 0);
+  if (hasOwner) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message:
+      "Critical-priority issues require an owner (assigneeAgentId or assigneeUserId). "
+      + "Assign the issue, or pass missingOwnerAcknowledged: true to explicitly create an unowned critical issue.",
+    path: ["assigneeAgentId"],
+  });
+}
+
 const createIssueBaseSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
   projectWorkspaceId: z.string().uuid().optional().nullable(),
@@ -386,6 +415,16 @@ const createIssueBaseSchema = z.object({
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
+  // Control-only flag: explicit opt-out of the critical-priority owner guardrail
+  // (see enforceCriticalPriorityOwner). Not persisted — stripped in issueService.create.
+  missingOwnerAcknowledged: z
+    .boolean()
+    .optional()
+    .default(false)
+    .describe(
+      "Set true to explicitly create a critical-priority issue without an owner. "
+      + "Critical issues otherwise require assigneeAgentId or assigneeUserId (FUL-9946).",
+    ),
   requestDepth: issueRequestDepthInputSchema.optional().default(0),
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
@@ -400,7 +439,8 @@ export const createIssueInputSchema = createIssueBaseSchema.extend({
   status: createIssueBaseSchema.shape.status.optional(),
 });
 
-export const createIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema);
+export const createIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema)
+  .superRefine(enforceCriticalPriorityOwner);
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
@@ -412,7 +452,8 @@ export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBa
   .extend({
     acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
     blockParentUntilDone: z.boolean().optional().default(false),
-  }));
+  }))
+  .superRefine(enforceCriticalPriorityOwner);
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 

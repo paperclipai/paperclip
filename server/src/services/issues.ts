@@ -354,6 +354,8 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
+  // Control-only flag for the critical-owner guardrail (FUL-9946); never persisted.
+  missingOwnerAcknowledged?: boolean;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -4857,6 +4859,8 @@ export function issueService(db: Db) {
         labelIds: inputLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
+        // Control-only flag for the critical-owner guardrail (FUL-9946); never persisted.
+        missingOwnerAcknowledged: _missingOwnerAcknowledged,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;

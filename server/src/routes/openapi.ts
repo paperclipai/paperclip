@@ -1334,6 +1334,10 @@ registry.registerPath({
   path: "/api/companies/{companyId}/issues",
   tags: ["issues"],
   summary: "Create an issue",
+  description:
+    "Creates an issue. Guardrail (FUL-9946): a `critical` priority issue must include an owner "
+    + "(`assigneeAgentId` or `assigneeUserId`) or it is rejected with a 400 validation error. "
+    + "Pass `missingOwnerAcknowledged: true` to deliberately create an unowned critical issue.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createIssueSchema),
