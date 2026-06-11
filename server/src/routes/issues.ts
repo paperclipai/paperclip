@@ -4958,6 +4958,7 @@ export function issueRoutes(
       updateFields.assigneeUserId === undefined ? existing.assigneeUserId : (updateFields.assigneeUserId as string | null);
     const assigneeWillChange =
       nextAssigneeAgentId !== existing.assigneeAgentId || nextAssigneeUserId !== existing.assigneeUserId;
+    const previousAssigneeForReassignment = assigneeWillChange ? existing.assigneeAgentId : null;
     const isAgentReturningIssueToCreator =
       req.actor.type === "agent" &&
       !!req.actor.agentId &&
@@ -5087,6 +5088,12 @@ export function issueRoutes(
           details: { source: "issue_status_cancelled", issueId: existing.id },
         });
       }
+    }
+
+    if (previousAssigneeForReassignment) {
+      await heartbeat.cancelRunForReassignedIssue(issue.id, previousAssigneeForReassignment).catch((err) => {
+        logger.warn({ err, issueId: issue.id, previousAgentId: previousAssigneeForReassignment }, "failed to cancel run for reassigned issue");
+      });
     }
 
     if (titleOrDescriptionChanged) {
