@@ -174,6 +174,31 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
     }
   });
 
+  router.post("/tool-gateway/action-requests/:id/decline", async (req, res) => {
+    try {
+      assertBoard(req);
+      const body = (req.body ?? {}) as { companyId?: string };
+      const companyId = body.companyId ?? (typeof req.query.companyId === "string" ? req.query.companyId : null);
+      if (!companyId) {
+        res.status(400).json({ error: "companyId is required" });
+        return;
+      }
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+      const actionRequest = await toolGateway.declineActionRequest({
+        companyId,
+        actionRequestId: req.params.id,
+        actor: {
+          agentId: actor.agentId,
+          userId: req.actor.type === "board" ? req.actor.userId : null,
+        },
+      });
+      res.json(actionRequest);
+    } catch (err) {
+      sendGatewayError(res, err);
+    }
+  });
+
   router.get("/tool-gateway/runtime-slots", async (req, res) => {
     try {
       assertBoard(req);

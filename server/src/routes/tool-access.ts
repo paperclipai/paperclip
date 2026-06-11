@@ -2,6 +2,7 @@ import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   TOOL_APP_GALLERY,
+  TOOL_ACTION_REQUEST_STATUSES,
   type DeploymentExposure,
   type DeploymentMode,
   connectToolAppSchema,
@@ -199,6 +200,17 @@ export function toolAccessRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     res.json(await svc.listAppsNeedingAttention(companyId));
+  });
+
+  router.get("/companies/:companyId/tools/action-requests", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const statusRaw = typeof req.query.status === "string" ? req.query.status : "pending";
+    const status = (TOOL_ACTION_REQUEST_STATUSES as readonly string[]).includes(statusRaw)
+      ? (statusRaw as (typeof TOOL_ACTION_REQUEST_STATUSES)[number])
+      : "pending";
+    res.json({ actionRequests: await svc.listActionRequests(companyId, status) });
   });
 
   router.post("/companies/:companyId/tools/examples/:id/install", async (req, res) => {
@@ -416,6 +428,15 @@ export function toolAccessRoutes(
     const existing = await svc.getConnection(req.params.connectionId as string);
     assertCompanyAccess(req, existing.companyId);
     res.json({ catalog: await svc.listCatalog(existing.id, existing.companyId) });
+  });
+
+  router.get("/tool-connections/:connectionId/activity", async (req, res) => {
+    assertBoard(req);
+    const existing = await svc.getConnection(req.params.connectionId as string);
+    assertCompanyAccess(req, existing.companyId);
+    const limitRaw = Number(req.query.limit ?? 20);
+    const limit = Number.isFinite(limitRaw) ? limitRaw : 20;
+    res.json(await svc.listConnectionActivity(existing.id, existing.companyId, limit));
   });
 
   router.get("/companies/:companyId/tools/profiles", async (req, res) => {

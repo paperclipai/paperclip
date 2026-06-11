@@ -51,6 +51,9 @@ import type {
   ToolOAuthStartResult,
   ToolAppsAttentionResponse,
   ToolActionRequest,
+  ToolActionRequestListItem,
+  ToolActionRequestStatus,
+  ToolConnectionActivityResponse,
   ToolAppConnectionActionSummary,
   ToolExampleInstallResult,
   ToolExampleSmokeCheck,
@@ -3338,6 +3341,86 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         .where(eq(toolCatalogEntries.connectionId, connection.id))
         .orderBy(desc(toolCatalogEntries.updatedAt));
       return rows.map(toCatalogEntry);
+    },
+
+    /** Recent tool-call events for one connection — drives App detail · Recent activity. */
+    listConnectionActivity: async (
+      connectionId: string,
+      companyId?: string,
+      limit = 20,
+    ): Promise<ToolConnectionActivityResponse> => {
+      const connection = await getConnectionRow(connectionId, companyId);
+      const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+      const rows = await db
+        .select()
+        .from(toolCallEvents)
+        .where(
+          and(
+            eq(toolCallEvents.companyId, connection.companyId),
+            eq(toolCallEvents.connectionId, connection.id),
+          ),
+        )
+        .orderBy(desc(toolCallEvents.createdAt))
+        .limit(safeLimit);
+      return { connectionId: connection.id, events: rows.map(toToolCallEvent) };
+    },
+
+    /**
+     * List "Ask first" action requests for the review queue, enriched with the
+     * connection/app context the prosumer card renders. Defaults to pending.
+     */
+    listActionRequests: async (
+      companyId: string,
+      status: ToolActionRequestStatus = "pending",
+    ): Promise<ToolActionRequestListItem[]> => {
+      const requests = await db
+        .select()
+        .from(toolActionRequests)
+        .where(and(eq(toolActionRequests.companyId, companyId), eq(toolActionRequests.status, status)))
+        .orderBy(desc(toolActionRequests.createdAt));
+      if (requests.length === 0) return [];
+
+      const invocationIds = [...new Set(requests.map((request) => request.invocationId))];
+      const invocations = await db
+        .select()
+        .from(toolInvocations)
+        .where(and(eq(toolInvocations.companyId, companyId), inArray(toolInvocations.id, invocationIds)));
+      const invocationById = new Map(invocations.map((invocation) => [invocation.id, invocation]));
+
+      const connectionIds = [...new Set(invocations.map((invocation) => invocation.connectionId).filter(Boolean))] as string[];
+      const connections = connectionIds.length
+        ? await db.select().from(toolConnections).where(inArray(toolConnections.id, connectionIds))
+        : [];
+      const connectionById = new Map(connections.map((connection) => [connection.id, connection]));
+
+      const applicationIds = [...new Set(connections.map((connection) => connection.applicationId).filter(Boolean))] as string[];
+      const applications = applicationIds.length
+        ? await db.select().from(toolApplications).where(inArray(toolApplications.id, applicationIds))
+        : [];
+      const applicationById = new Map(applications.map((application) => [application.id, application]));
+
+      const catalogEntryIds = [...new Set(invocations.map((invocation) => invocation.catalogEntryId).filter(Boolean))] as string[];
+      const catalogEntries = catalogEntryIds.length
+        ? await db.select().from(toolCatalogEntries).where(inArray(toolCatalogEntries.id, catalogEntryIds))
+        : [];
+      const catalogById = new Map(catalogEntries.map((entry) => [entry.id, entry]));
+
+      return requests.map((request) => {
+        const invocation = invocationById.get(request.invocationId);
+        const connection = invocation?.connectionId ? connectionById.get(invocation.connectionId) : undefined;
+        const application = connection?.applicationId ? applicationById.get(connection.applicationId) : undefined;
+        const catalogEntry = invocation?.catalogEntryId ? catalogById.get(invocation.catalogEntryId) : undefined;
+        return {
+          request: toToolActionRequest(request),
+          toolName: invocation?.toolName ?? catalogEntry?.toolName ?? "",
+          toolTitle: catalogEntry?.title ?? null,
+          connectionId: connection?.id ?? invocation?.connectionId ?? null,
+          connectionName: connection?.name ?? null,
+          applicationName: application?.name ?? null,
+          riskLevel: catalogEntry?.riskLevel ?? null,
+          requestedByAgentId: request.requestedByAgentId ?? null,
+        };
+      });
     },
 
     listProfiles: async (companyId: string): Promise<ToolProfileWithDetails[]> => {

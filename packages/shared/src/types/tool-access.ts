@@ -390,6 +390,32 @@ export interface ToolAppsAttentionResponse {
   };
 }
 
+/** Recent tool-call events for a single app connection (App detail · Recent activity). */
+export interface ToolConnectionActivityResponse {
+  connectionId: string;
+  events: ToolCallEvent[];
+}
+
+/**
+ * A pending (or recently resolved) "Ask first" request, enriched with the
+ * connection/app context the review-queue card needs to render a prosumer
+ * sentence without extra round-trips.
+ */
+export interface ToolActionRequestListItem {
+  request: ToolActionRequest;
+  toolName: string;
+  toolTitle: string | null;
+  connectionId: string | null;
+  connectionName: string | null;
+  applicationName: string | null;
+  riskLevel: ToolRiskLevel | null;
+  requestedByAgentId: string | null;
+}
+
+export interface ToolActionRequestsResponse {
+  actionRequests: ToolActionRequestListItem[];
+}
+
 export interface ToolExampleSummary {
   id: string;
   title: string;

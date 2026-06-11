@@ -1203,6 +1203,55 @@ export function createToolGatewayService(
       return updated;
     },
 
+    async declineActionRequest(input: {
+      companyId: string;
+      actionRequestId: string;
+      actor: { agentId?: string | null; userId?: string | null };
+    }) {
+      const [actionRequest] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.id, input.actionRequestId))
+        .limit(1);
+      if (!actionRequest || actionRequest.companyId !== input.companyId) {
+        throw new ToolGatewayHttpError(404, "Tool action request not found", "action_request_not_found");
+      }
+      const [invocation] = await db
+        .select()
+        .from(toolInvocations)
+        .where(eq(toolInvocations.id, actionRequest.invocationId))
+        .limit(1);
+      if (!invocation || invocation.companyId !== input.companyId) {
+        throw new ToolGatewayHttpError(404, "Tool invocation not found", "invocation_not_found");
+      }
+      if (actionRequest.status === "rejected") {
+        return actionRequest;
+      }
+      if (actionRequest.status !== "pending") {
+        throw new ToolGatewayHttpError(409, "Tool action request is no longer pending", "action_not_pending");
+      }
+      const now = new Date();
+      const [updated] = await db
+        .update(toolActionRequests)
+        .set({
+          status: "rejected",
+          resolvedByAgentId: input.actor.agentId ?? null,
+          resolvedByUserId: input.actor.userId ?? null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(eq(toolActionRequests.id, actionRequest.id), eq(toolActionRequests.status, "pending")))
+        .returning();
+      if (!updated) {
+        throw new ToolGatewayHttpError(409, "Tool action request has already been resolved", "action_already_resolved");
+      }
+      await db
+        .update(toolInvocations)
+        .set({ approvalState: "rejected", updatedAt: now })
+        .where(eq(toolInvocations.id, invocation.id));
+      return updated;
+    },
+
     async executeTool(input: ExecuteGatewayToolInput) {
       const session = await getActiveSession(input.sessionToken);
       let invocationId = String(randomUUID());
