@@ -1,15 +1,19 @@
 /**
- * execute()-level regression test for Tier 0 → Tier 1 failover wiring.
+ * execute()-level regression test for Tier 0 → Tier 0b agentic-API failover.
  *
- * ROC-1681 / ROCAA-22: The acceptance suite in failover.acceptance.test.ts
- * tests the orchestrator helper in isolation.  This file proves that the
- * *production entrypoint* (execute()) actually routes recoverable Tier 0
- * failures through executeClaudeLocalWithFailover() so Tier 1 fires.
+ * ROC-1681 / ROC-139: when subscription seats are exhausted on a *recoverable*
+ * failure, the production entrypoint (execute()) must re-run the agent ONE more
+ * time on the metered Anthropic API (runAttempt with ANTHROPIC_API_KEY) before
+ * giving up — a FULLY AGENTIC attempt, gated by the shared Tier-1 cost-cap and
+ * the metered key. The legacy SDK one-shot Tier 1 is disabled (tier1: null)
+ * because it recorded non-agentic completions as silent "successes".
  *
  * Strategy:
- *  - Mock runChildProcess to return a recoverable CLI-panic result.
- *  - Spy on runTier1 to observe whether Tier 1 was invoked.
- *  - Call execute() and assert tierUsed / tierTransitions on the result.
+ *  - Mock runChildProcess: 1st call (subscription) = recoverable CLI panic,
+ *    2nd call (metered re-spawn) = clean exit 0.
+ *  - Mock the cost-cap gate + key fetch so the re-spawn is allowed/keyed.
+ *  - Assert the 2nd spawn fires with ANTHROPIC_API_KEY in its env, that the
+ *    cost is recorded, and that the gate/key gates suppress it when they should.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -43,23 +47,29 @@ vi.mock("./skills.js", () => ({
 }));
 
 // Seat rotation: default to "all exhausted" so the loop exits immediately.
-// Individual tests can override this.
 vi.mock("./seat-rotation.js", () => ({
   pickNextSeat: vi.fn().mockReturnValue({ profileDir: null, allExhausted: true }),
   resetSeatRotation: vi.fn(),
 }));
 
-// Spy on runTier1 — tests control the return value.
-vi.mock("./tier1.js", () => ({
-  runTier1: vi.fn(),
+// Metered-key fetch + cost-cap gate are the two gates on the agentic re-spawn.
+vi.mock("./secret-fetch.js", () => ({
+  fetchBlueprintWorkerKey: vi.fn(),
+  BLUEPRINT_WORKER_SECRET_NAME: "ANTHROPIC_API_KEY_BLUEPRINT_WORKER",
+}));
+
+vi.mock("./tier1-cost-cap.js", () => ({
+  buildTier1Gate: vi.fn(),
+  recordTier1Cost: vi.fn(),
 }));
 
 // ── Imports after mocks are declared ────────────────────────────────────────
 
 import { execute } from "./execute.js";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
-import { runTier1 } from "./tier1.js";
 import { resetSeatRotation } from "./seat-rotation.js";
+import { fetchBlueprintWorkerKey } from "./secret-fetch.js";
+import { buildTier1Gate, recordTier1Cost } from "./tier1-cost-cap.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -106,119 +116,124 @@ function makePanicProc() {
   };
 }
 
-/** Successful Tier 1 SDK result. */
-function makeTier1Success() {
+/** Clean exit-0 result — models a successful metered-API re-spawn. */
+function makeCleanProc() {
   return {
-    exitCode: 0 as const,
-    biller: "anthropic" as const,
-    billingType: "api_key" as const,
-    model: "claude-sonnet-4-6",
-    summary: "Tier 1 handled it",
-    parsed: { type: "result", subtype: "success", result: "Tier 1 handled it" },
-    usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 5 },
-    costUsd: 0,
-    secretSource: "gcp_secret_manager" as const,
-    secretName: "anthropic-api-key-blueprint-worker",
+    exitCode: 0,
+    signal: null,
+    pid: null,
+    startedAt: null,
+    timedOut: false,
+    stdout: "",
+    stderr: "",
   };
 }
 
-/** Failing Tier 1 SDK result (SDK itself rate-limited). */
-function makeTier1Failure() {
-  return {
-    exitCode: 1 as const,
-    biller: "anthropic" as const,
-    billingType: "api_key" as const,
-    model: "claude-sonnet-4-6",
-    summary: "",
-    parsed: {
-      type: "error",
-      subtype: "tier1_rate_limit",
-      message: "Tier 1 SDK rate-limited",
-    },
-    usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
-    costUsd: 0,
-    secretSource: "gcp_secret_manager" as const,
-    secretName: "anthropic-api-key-blueprint-worker",
-  };
-}
+const TEST_KEY = "sk-ant-test-key";
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(runTier1).mockResolvedValue(makeTier1Success());
-  vi.mocked(runChildProcess).mockResolvedValue(makePanicProc());
+  // Gate allows by default; key resolves by default.
+  vi.mocked(buildTier1Gate).mockReturnValue(
+    vi.fn().mockResolvedValue({ allowed: true }) as never,
+  );
+  vi.mocked(recordTier1Cost).mockResolvedValue(null);
+  vi.mocked(fetchBlueprintWorkerKey).mockResolvedValue({
+    value: TEST_KEY,
+    name: "ANTHROPIC_API_KEY_BLUEPRINT_WORKER",
+    source: "env_var",
+    fetchedAt: 0,
+  } as never);
+  // Default: subscription seat panics, metered re-spawn succeeds.
+  vi.mocked(runChildProcess)
+    .mockResolvedValueOnce(makePanicProc() as never)
+    .mockResolvedValue(makeCleanProc() as never);
 });
 
-describe("execute() → Tier 0→Tier 1 failover regression (ROC-1681)", () => {
-  it("fires Tier 1 from the production entrypoint on a recoverable CLI panic", async () => {
-    const ctx = makeCtx();
+describe("execute() → Tier 0b agentic metered-API failover (ROC-139)", () => {
+  it("re-runs the agent on the metered Anthropic API after a recoverable Tier 0 failure", async () => {
+    const result = await execute(makeCtx());
 
-    const result = await execute(ctx);
+    // Two spawns: subscription (Tier 0) then metered re-spawn (Tier 0b).
+    expect(vi.mocked(runChildProcess)).toHaveBeenCalledTimes(2);
 
-    // Tier 1 must have been invoked exactly once via the production wiring.
-    expect(vi.mocked(runTier1)).toHaveBeenCalledTimes(1);
+    // The 2nd spawn carries the metered key → billing flips to "api".
+    const secondCallOpts = vi.mocked(runChildProcess).mock.calls[1]?.[3] as
+      | { env?: Record<string, string> }
+      | undefined;
+    expect(secondCallOpts?.env?.ANTHROPIC_API_KEY).toBe(TEST_KEY);
 
-    // Result must carry the failover metadata.
-    expect(result.tierUsed).toBe("tier_1_anthropic_sdk");
-    expect(result.tierTransitions).toHaveLength(1);
-    expect(result.tierTransitions?.[0]?.from).toBe("tier_0_claude_cli");
-    expect(result.tierTransitions?.[0]?.to).toBe("tier_1_anthropic_sdk");
-    expect(result.classifierVersion).toBeTruthy();
+    // Spend was recorded against the issue for the cost-cap accumulator.
+    expect(vi.mocked(recordTier1Cost)).toHaveBeenCalled();
 
-    // Tier 1 billing fields are surfaced on the result.
+    // The successful re-spawn is the surfaced result.
     expect(result.exitCode).toBe(0);
-    expect(result.biller).toBe("anthropic");
-    expect(result.billingType).toBe("api_key");
+    expect(vi.mocked(resetSeatRotation)).toHaveBeenCalled();
   });
 
-  it("does NOT fire Tier 1 when Tier 0 exits cleanly (exit code 0)", async () => {
-    // Tier 0 returns an empty but exit-0 result — no JSON output, but no crash.
+  it("does NOT re-spawn when Tier 0 exits cleanly (exit code 0)", async () => {
+    vi.mocked(runChildProcess).mockReset();
+    vi.mocked(runChildProcess).mockResolvedValue(makeCleanProc() as never);
+
+    const result = await execute(makeCtx());
+
+    expect(vi.mocked(runChildProcess)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(recordTier1Cost)).not.toHaveBeenCalled();
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("does NOT re-spawn when the cost cap blocks it", async () => {
+    vi.mocked(buildTier1Gate).mockReturnValue(
+      vi
+        .fn()
+        .mockResolvedValue({ allowed: false, reason: "per_issue_cap_tripped", detail: "cap" }) as never,
+    );
+
+    await execute(makeCtx());
+
+    // Only the subscription Tier 0 spawn — the metered re-spawn is suppressed.
+    expect(vi.mocked(runChildProcess)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(recordTier1Cost)).not.toHaveBeenCalled();
+  });
+
+  it("does NOT re-spawn when the metered key is unavailable", async () => {
+    vi.mocked(fetchBlueprintWorkerKey).mockRejectedValue(new Error("secret unavailable"));
+
+    await execute(makeCtx());
+
+    expect(vi.mocked(runChildProcess)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(recordTier1Cost)).not.toHaveBeenCalled();
+  });
+
+  it("threads the issueId into the cost-cap record", async () => {
+    await execute(
+      makeCtx({ context: { issueId: "issue-abc-123" } } as Partial<AdapterExecutionContext>),
+    );
+
+    expect(vi.mocked(recordTier1Cost)).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ issueId: "issue-abc-123" }),
+    );
+  });
+
+  it("does NOT re-spawn on a NON-recoverable Tier 0 failure", async () => {
+    // max_turns is classified non-recoverable → no metered re-spawn.
+    vi.mocked(runChildProcess).mockReset();
     vi.mocked(runChildProcess).mockResolvedValue({
-      exitCode: 0,
+      exitCode: 1,
       signal: null,
       pid: null,
       startedAt: null,
       timedOut: false,
-      stdout: "",
+      stdout: JSON.stringify({ type: "result", subtype: "error_max_turns", is_error: true }),
       stderr: "",
-    });
+    } as never);
 
-    const result = await execute(makeCtx());
-
-    expect(vi.mocked(runTier1)).not.toHaveBeenCalled();
-    expect(result.exitCode).toBe(0);
-  });
-
-  it("loop prevention: Tier 1 failure is the final answer — Tier 1 runs at most once", async () => {
-    vi.mocked(runTier1).mockResolvedValue(makeTier1Failure());
-
-    const result = await execute(makeCtx());
-
-    // Tier 1 must have been called once and only once despite its failure.
-    expect(vi.mocked(runTier1)).toHaveBeenCalledTimes(1);
-
-    // The failed Tier 1 result is surfaced with the transition record intact.
-    expect(result.tierUsed).toBe("tier_1_anthropic_sdk");
-    expect(result.tierTransitions).toHaveLength(1);
-    expect(result.exitCode).toBe(1);
-  });
-
-  it("passes the issueId from context to the failover orchestrator", async () => {
-    const ctx = makeCtx({ context: { issueId: "issue-abc-123" } } as Partial<AdapterExecutionContext>);
-
-    await execute(ctx);
-
-    // The issueId surfaces in the Tier 1 call args (orchestrator threads it
-    // through for ROCAA-23 cost-cap gate; runTier1 itself doesn't use it but
-    // the orchestrator passes it along — verify the call happened at all).
-    expect(vi.mocked(runTier1)).toHaveBeenCalledTimes(1);
-  });
-
-  it("seat rotation reset is called after a successful Tier 1 result", async () => {
     await execute(makeCtx());
 
-    // Tier 1 succeeded (exitCode 0) → resetSeatRotation() should have been called.
-    expect(vi.mocked(resetSeatRotation)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runChildProcess)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(recordTier1Cost)).not.toHaveBeenCalled();
   });
 });

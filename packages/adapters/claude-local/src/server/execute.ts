@@ -36,7 +36,9 @@ import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { pickNextSeat, resetSeatRotation } from "./seat-rotation.js";
 import { executeClaudeLocalWithFailover, type Tier0RawOutcome } from "./failover.js";
-import { runTier1 } from "./tier1.js";
+import { isRecoverable } from "./classifier.js";
+import { buildTier1Gate, recordTier1Cost } from "./tier1-cost-cap.js";
+import { fetchBlueprintWorkerKey } from "./secret-fetch.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -696,13 +698,105 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return candidate;
   }
 
+  // ── Tier 0b: agentic Anthropic-API re-spawn (cost-gated) ─────────────────
+  // Subscription seats are exhausted but the failure is recoverable (e.g.
+  // rate_limit). Run ONE fully-agentic attempt on the metered Anthropic API
+  // before giving up: runAttempt() with ANTHROPIC_API_KEY set flips billing to
+  // the metered key (resolveClaudeBillingType -> "api") while preserving the
+  // entire agent lifecycle (tools/checkout/comment/session) — unlike the SDK
+  // one-shot path. Gated by the shared Tier-1 cost-cap (daily + per-issue) and
+  // the metered key; on success it short-circuits, else it surfaces the
+  // failure honestly (no silent non-agentic "success").
+  {
+    const apiFailoverVerdict = isRecoverable({
+      exitCode: lastRaw.proc.exitCode,
+      stderr: lastRaw.proc.stderr,
+      stdout: lastRaw.proc.stdout,
+      parsed: lastRaw.parsed,
+      timedOut: lastRaw.proc.timedOut,
+    });
+    // Defense-in-depth: if the base env is ALREADY metered (ANTHROPIC_API_KEY
+    // present), this run is not on a subscription seat — never re-spawn (the
+    // metered key is the terminal tier; a second metered attempt would be a
+    // no-win retry). Guards against any future caller that pre-sets the key.
+    const alreadyMetered = hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY");
+    if (apiFailoverVerdict.recoverable && !alreadyMetered) {
+      const apiFailoverIssueId = (ctx.context.issueId ?? ctx.context.taskId ?? null) as
+        | string
+        | null;
+      const gateVerdict = await buildTier1Gate()({ issueId: apiFailoverIssueId });
+      if (!gateVerdict.allowed) {
+        await onLog(
+          "stdout",
+          `[paperclip] Tier 0b (agentic metered API) skipped — cost cap: ${gateVerdict.reason}. ${
+            gateVerdict.detail ?? ""
+          }\n`,
+        );
+      } else {
+        let meteredKey: string | null = null;
+        try {
+          meteredKey = (await fetchBlueprintWorkerKey()).value;
+        } catch (err) {
+          await onLog(
+            "stdout",
+            `[paperclip] Tier 0b (agentic metered API) skipped — key unavailable: ${
+              err instanceof Error ? err.message : String(err)
+            }\n`,
+          );
+        }
+        if (meteredKey) {
+          await onLog(
+            "stdout",
+            `[paperclip] Tier 0 (${apiFailoverVerdict.reason}) exhausted subscription seats — re-running AGENTIC on the metered Anthropic API (ANTHROPIC_API_KEY_BLUEPRINT_WORKER).\n`,
+          );
+          const apiRaw = await runAttempt(null, { ANTHROPIC_API_KEY: meteredKey });
+          const apiCandidate = toAdapterResult(apiRaw, { fallbackSessionId: null });
+          // Best-effort accounting — a cost-record write error must never crash
+          // an otherwise-successful metered run.
+          try {
+            await recordTier1Cost(
+              {},
+              { issueId: apiFailoverIssueId, costUsd: apiCandidate.costUsd ?? 0 },
+            );
+          } catch (err) {
+            await onLog(
+              "stdout",
+              `[paperclip] Tier 0b cost-record failed (non-fatal): ${
+                err instanceof Error ? err.message : String(err)
+              }\n`,
+            );
+          }
+          if ((apiCandidate.exitCode ?? 0) === 0 && !apiCandidate.errorCode) {
+            resetSeatRotation();
+            await onLog(
+              "stdout",
+              `[paperclip] Tier 0b agentic metered-API run succeeded (cost $${(
+                apiCandidate.costUsd ?? 0
+              ).toFixed(4)}).\n`,
+            );
+            await emitUsage(apiCandidate);
+            return apiCandidate;
+          }
+          await onLog(
+            "stdout",
+            `[paperclip] Tier 0b agentic metered-API run did not succeed (errorCode=${
+              apiCandidate.errorCode ?? "unknown"
+            }); surfacing the failure.\n`,
+          );
+          lastRaw = apiRaw;
+          candidate = apiCandidate;
+        }
+      }
+    }
+  }
+
   // ── Tier 0 failed — route through the failover orchestrator ──────────────
-  // executeClaudeLocalWithFailover classifies the raw attempt via isRecoverable().
-  // Recoverable failures (rate-limit, network, CLI panic, etc.) transition to
-  // Tier 1 (Anthropic SDK, billed to ANTHROPIC_API_KEY_BLUEPRINT_WORKER).
-  // Non-recoverable failures surface the already-built Tier 0 result unchanged.
-  // Tier 1 runs at most once per execute() call — loop prevention is enforced
-  // by construction inside executeClaudeLocalWithFailover.
+  // The agentic Tier-0b metered-API attempt above already handled recoverable
+  // failures (and short-circuits on success). The SDK one-shot Tier 1 is left
+  // DISABLED (tier1: null) — it produced a non-agentic completion that recorded
+  // as a "success" without doing the agent's work (no checkout/comment), which
+  // is a silent prod regression. With tier1 null the orchestrator only attaches
+  // tier metadata and surfaces the (already-built) Tier-0/0b result unchanged.
   const capturedLastRaw = lastRaw;
   const capturedCandidate = candidate;
   const failoverResult = await executeClaudeLocalWithFailover({
@@ -713,7 +807,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         return capturedLastRaw;
       },
     },
-    tier1: { runTier1: (args) => runTier1(args) },
+    tier1: null,
     prompt,
     model,
     onLog,
