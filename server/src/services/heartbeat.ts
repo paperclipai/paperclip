@@ -1095,7 +1095,7 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
   if (workspaceExpectation && effectiveCwd && !await hasGitMetadata(effectiveCwd)) {
     fail(
       "missing_git_metadata",
-      `Issue ${issue.identifier ?? issue.id} expected a git workspace for ${input.adapterType}, but "${effectiveCwd}" has no .git metadata.`,
+      `Issue ${issue.identifier ?? issue.id} expected a git worktree for ${input.adapterType}, but "${effectiveCwd}" is not inside a git worktree.`,
     );
   }
 }

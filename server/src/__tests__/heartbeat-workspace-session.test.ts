@@ -342,7 +342,7 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
     );
   });
 
-  it("rejects a workspace-linked issue when adapter cwd has no git metadata", async () => {
+  it("rejects a workspace-linked issue when adapter cwd is outside a git worktree", async () => {
     const input = buildWorkspaceValidationInput();
     const cwd = "/tmp/paperclip-workspace-without-git-metadata";
 
@@ -360,7 +360,7 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
         },
       }),
       "missing_git_metadata",
-      "has no .git metadata",
+      "is not inside a git worktree",
     );
   });
 
