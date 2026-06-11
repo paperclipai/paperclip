@@ -110,6 +110,10 @@ export function createRedisLiveEventsTransport(opts: RedisTransportOptions): Liv
       return;
     }
     if (envelope.origin === originId) return;
+    // Guard malformed payloads: valid JSON without an `event` field would
+    // otherwise throw out of the ioredis "message" callback (no try-catch
+    // upstream), unlike the PG transport where deliver() absorbs it.
+    if (!envelope.event) return;
     const companyId = envelope.event.companyId;
     if (redisChannelForCompany(companyId) !== channel) return;
     const handlers = subscriptions.get(companyId);

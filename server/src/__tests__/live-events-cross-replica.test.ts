@@ -5,6 +5,7 @@ import {
   startEmbeddedPostgresTestDatabase,
   type EmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { redisChannelForCompany } from "../services/live-events/channel.js";
 import { createPgLiveEventsTransport } from "../services/live-events/pg-transport.js";
 import { createRedisLiveEventsTransport } from "../services/live-events/redis-transport.js";
 import {
@@ -341,6 +342,42 @@ describe("live-events redis transport (mocked)", () => {
 
     await replicaA.close();
     await replicaB.close();
+  });
+
+  it("ignores valid-JSON envelopes without an event field instead of throwing", async () => {
+    const factory = makeMockRedisFactory();
+    const replica = createRedisLiveEventsTransport({
+      redisUrl: "redis://test",
+      clientFactory: factory,
+    });
+
+    const seen: LiveEvent[] = [];
+    replica.subscribe("company-a", (e) => seen.push(e));
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Inject a malformed envelope (valid JSON, no `event`) directly via a raw
+    // publisher client. Without the guard this threw a TypeError out of the
+    // ioredis "message" callback; it must be silently dropped instead.
+    const { publisher } = factory("redis://test");
+    await publisher.publish(
+      redisChannelForCompany("company-a"),
+      JSON.stringify({ origin: "someone-else", kind: "full" }),
+    );
+
+    // A well-formed event published afterwards must still arrive — the
+    // subscription survived the malformed payload.
+    const other = createRedisLiveEventsTransport({
+      redisUrl: "redis://test",
+      clientFactory: factory,
+    });
+    // Mock factory is async — wait for init before publishing.
+    await new Promise((r) => setTimeout(r, 20));
+    other.publish(makeEvent({ id: 403 }));
+    await waitFor(() => seen.find((e) => e.id === 403));
+    expect(seen.map((e) => e.id)).toEqual([403]);
+
+    await replica.close();
+    await other.close();
   });
 
   it("isolates traffic across companies (replica subscribed to A doesn't see B)", async () => {
