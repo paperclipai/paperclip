@@ -6,6 +6,7 @@ import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
+import { createInstructionApplyTask } from "./instruction-apply-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
 
 export function approvalService(db: Db) {
@@ -165,7 +166,19 @@ export function approvalService(db: Db) {
         }
       }
 
-      return { approval: updated, applied };
+      let applyTask = null;
+      if (applied && updated.type === "instruction_generation") {
+        // Non-fatal by contract: the hook logs and writes activity on failure
+        // instead of throwing, since the approval transition already committed.
+        applyTask = await createInstructionApplyTask(db, {
+          companyId: updated.companyId,
+          approvalId: id,
+          decidedByUserId,
+          payload: updated.payload as Record<string, unknown>,
+        });
+      }
+
+      return { approval: updated, applied, applyTask };
     },
 
     reject: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {

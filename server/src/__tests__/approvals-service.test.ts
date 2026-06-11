@@ -8,6 +8,7 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockNotifyHireApproved = vi.hoisted(() => vi.fn());
+const mockCreateInstructionApplyTask = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/agents.js", () => ({
   agentService: vi.fn(() => mockAgentService),
@@ -15,6 +16,10 @@ vi.mock("../services/agents.js", () => ({
 
 vi.mock("../services/hire-hook.js", () => ({
   notifyHireApproved: mockNotifyHireApproved,
+}));
+
+vi.mock("../services/instruction-apply-hook.js", () => ({
+  createInstructionApplyTask: mockCreateInstructionApplyTask,
 }));
 
 type ApprovalRecord = {
@@ -26,11 +31,11 @@ type ApprovalRecord = {
   requestedByAgentId: string | null;
 };
 
-function createApproval(status: string): ApprovalRecord {
+function createApproval(status: string, type = "hire_agent"): ApprovalRecord {
   return {
     id: "approval-1",
     companyId: "company-1",
-    type: "hire_agent",
+    type,
     status,
     payload: { agentId: "agent-1" },
     requestedByAgentId: "requester-1",
@@ -103,5 +108,44 @@ describe("approvalService resolution idempotency", () => {
     expect(result.applied).toBe(true);
     expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1");
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates the board-auth apply task when an instruction-generation approval is newly approved", async () => {
+    const approved = createApproval("approved", "instruction_generation");
+    const dbStub = createDbStub(
+      [[createApproval("pending", "instruction_generation")]],
+      [approved],
+    );
+    mockCreateInstructionApplyTask.mockResolvedValue({ issueId: "issue-1", created: true });
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.approve("approval-1", "board", "apply it");
+
+    expect(result.applied).toBe(true);
+    expect(result.applyTask).toEqual({ issueId: "issue-1", created: true });
+    expect(mockCreateInstructionApplyTask).toHaveBeenCalledWith(dbStub.db, {
+      companyId: "company-1",
+      approvalId: "approval-1",
+      decidedByUserId: "board",
+      payload: { agentId: "agent-1" },
+    });
+    expect(mockAgentService.activatePendingApproval).not.toHaveBeenCalled();
+  });
+
+  it("does not create an apply task when an instruction-generation approve retry is a no-op", async () => {
+    const dbStub = createDbStub(
+      [
+        [createApproval("pending", "instruction_generation")],
+        [createApproval("approved", "instruction_generation")],
+      ],
+      [],
+    );
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.approve("approval-1", "board", "apply it");
+
+    expect(result.applied).toBe(false);
+    expect(result.applyTask).toBeNull();
+    expect(mockCreateInstructionApplyTask).not.toHaveBeenCalled();
   });
 });
