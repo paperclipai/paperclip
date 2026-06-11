@@ -891,6 +891,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
+        // Persist the HOST workspace cwd. Heartbeat reads
+        // previousSessionParams.cwd as the local workspace dir for the next
+        // run; using effectiveExecutionCwd here would leak the remote pod
+        // cwd (e.g. "/tmp") into host workspace resolution and cause the
+        // next run to walk/tar the entire host /tmp.
         cwd,
         promptBundleKey: promptBundle.bundleKey,
         ...(executionTargetIsRemote

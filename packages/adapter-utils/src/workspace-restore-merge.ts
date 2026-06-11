@@ -47,10 +47,12 @@ async function walkDirectory(
 
     const fullPath = path.join(root, nextRelative);
     const stats = await fs.lstat(fullPath);
+    // Skip UNIX sockets, FIFOs, char/block devices — anything that's not a
+    // regular file, directory, or symlink. Trying to hash these via
+    // createReadStream throws EOPNOTSUPP / EINVAL.
     if (!stats.isDirectory() && !stats.isSymbolicLink() && !stats.isFile()) {
       continue;
     }
-
     if (stats.isDirectory()) {
       out.set(nextRelative, { kind: "dir" });
       await walkDirectory(root, exclude, nextRelative, out);
@@ -91,8 +93,10 @@ async function readSnapshotEntry(root: string, relative: string): Promise<Snapsh
       target: await fs.readlink(fullPath),
     };
   }
+  // Same guard as walkDirectory: hashing a UNIX socket / FIFO / device
+  // node via createReadStream throws EOPNOTSUPP. Treat unhashable entries
+  // as if they don't exist for snapshot-comparison purposes.
   if (!stats.isFile()) return null;
-
   return {
     kind: "file",
     mode: stats.mode,
