@@ -188,7 +188,11 @@ describeEmbedded("scheduler leadership", () => {
     const a = makeInstance(dbA, "leader-faulty", { onAcquired: faultyOnAcquired });
     const b = makeInstance(dbB, "leader-healthy");
 
+    // Start A alone and wait until its failure path has provably executed —
+    // starting both at once lets B win the first election and A's
+    // onAcquired may never run within the test window.
     a.leadership.start();
+    await waitFor(() => faultyOnAcquired.mock.calls.length >= 1, TTL_MS + 10 * RETRY_MS);
     b.leadership.start();
 
     // B must become leader: A always resigns after its onAcquired throws,
