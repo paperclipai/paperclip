@@ -6406,15 +6406,27 @@ export function issueService(db: Db) {
       for (const source of [issue.title, issue.description ?? ""]) {
         if (extractAgentMentionIds(source).includes(agentId)) return true;
       }
-      const comments = await db
-        .select({ body: issueComments.body })
-        .from(issueComments)
-        .where(and(
-          eq(issueComments.issueId, issueId),
-          isNull(issueComments.deletedAt),
-          like(issueComments.body, `%${agentId}%`),
-        ));
-      return comments.some((comment) => extractAgentMentionIds(comment.body).includes(agentId));
+      // The LIKE prefilter is broader than mention parsing (a raw agent id in
+      // plain text matches it), so scan candidates in bounded batches instead
+      // of a bare limit(1) — the first candidate row is not always a mention.
+      const MENTION_SCAN_BATCH = 100;
+      for (let offset = 0; ; offset += MENTION_SCAN_BATCH) {
+        const comments = await db
+          .select({ body: issueComments.body })
+          .from(issueComments)
+          .where(and(
+            eq(issueComments.issueId, issueId),
+            isNull(issueComments.deletedAt),
+            like(issueComments.body, `%${agentId}%`),
+          ))
+          .orderBy(asc(issueComments.createdAt), asc(issueComments.id))
+          .limit(MENTION_SCAN_BATCH)
+          .offset(offset);
+        if (comments.some((comment) => extractAgentMentionIds(comment.body).includes(agentId))) {
+          return true;
+        }
+        if (comments.length < MENTION_SCAN_BATCH) return false;
+      }
     },
 
     findMentionedProjectIds: async (
