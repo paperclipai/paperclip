@@ -197,6 +197,67 @@ console.log(JSON.stringify({ type: "result", session_id: "22222222-2222-4222-822
   await fs.chmod(commandPath, 0o755);
 }
 
+// Reproduces the SUP-2320 live failure shape: a failed `--resume` where the
+// CLI exits 0 but the stream-json result carries is_error: true
+// (subtype error_during_execution), and the stream mints a NEW session id
+// that is never written to disk. A fresh (non-resume) attempt succeeds.
+async function writeExitZeroResumeFailThenSucceedClaudeCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
+const statePath = process.env.PAPERCLIP_TEST_STATE_PATH;
+const payload = {
+  argv: process.argv.slice(2),
+  prompt: fs.readFileSync(0, "utf8"),
+};
+if (capturePath) {
+  const entries = fs.existsSync(capturePath) ? JSON.parse(fs.readFileSync(capturePath, "utf8")) : [];
+  entries.push(payload);
+  fs.writeFileSync(capturePath, JSON.stringify(entries), "utf8");
+}
+const resumed = process.argv.includes("--resume");
+const shouldFailResume = resumed && statePath && !fs.existsSync(statePath);
+if (shouldFailResume) {
+  fs.writeFileSync(statePath, "retried", "utf8");
+  console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", model: "claude-sonnet" }));
+  console.log(JSON.stringify({
+    type: "result",
+    subtype: "error_during_execution",
+    session_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    is_error: true,
+    result: "No conversation found with session ID: 11111111-1111-4111-8111-111111111111",
+  }));
+  process.exit(0);
+}
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "22222222-2222-4222-8222-222222222222", model: "claude-sonnet" }));
+console.log(JSON.stringify({ type: "assistant", session_id: "22222222-2222-4222-8222-222222222222", message: { content: [{ type: "text", text: "hello" }] } }));
+console.log(JSON.stringify({ type: "result", session_id: "22222222-2222-4222-8222-222222222222", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
+// A run that fails (exit 0 + is_error) with an error that is NOT a session
+// error, after minting a new session id in the init event but before any
+// assistant turn. The minted id was never written to disk, so it must not be
+// persisted; the previous known session id should be kept instead.
+async function writeUnverifiedSessionFailureClaudeCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", model: "claude-sonnet" }));
+console.log(JSON.stringify({
+  type: "result",
+  subtype: "error_during_execution",
+  session_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+  is_error: true,
+  result: "Internal error: something unrelated to sessions failed",
+}));
+process.exit(0);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 async function setupExecuteEnv(
   root: string,
   options?: { commandWriter?: (commandPath: string) => Promise<void> },
@@ -450,6 +511,100 @@ describe("claude execute", () => {
       expect(metaEvents[1]?.commandNotes.some((note) => note.includes("--append-system-prompt-file"))).toBe(true);
       expect(result.sessionId).toBe("22222222-2222-4222-8222-222222222222");
       expect(result.clearSession).toBe(false);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retries with a fresh session when a failed resume exits 0 with an is_error result (SUP-2320)", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-exit0-resume-fail-"));
+    const { workspace, commandPath, capturePath, statePath, restore } = await setupExecuteEnv(root, {
+      commandWriter: writeExitZeroResumeFailThenSucceedClaudeCommand,
+    });
+    try {
+      const result = await execute({
+        runId: "run-exit0-resume-fail",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            PAPERCLIP_TEST_STATE_PATH: statePath,
+          },
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+      const captured = JSON.parse(await fs.readFile(capturePath, "utf-8")) as Array<{ argv: string[] }>;
+      expect(captured).toHaveLength(2);
+      expect(captured[0]?.argv).toContain("--resume");
+      expect(captured[1]?.argv).not.toContain("--resume");
+      expect(result.errorMessage).toBeNull();
+      expect(result.sessionId).toBe("22222222-2222-4222-8222-222222222222");
+      expect(result.clearSession).toBe(false);
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not persist a session id minted by a failed run with no assistant turn (SUP-2320)", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-unverified-session-"));
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      commandWriter: writeUnverifiedSessionFailureClaudeCommand,
+    });
+    try {
+      const result = await execute({
+        runId: "run-unverified-session",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+      // The failed run minted dddddddd-... in stream events but never produced
+      // an assistant turn, so the conversation may not exist on disk. Keep the
+      // previous known session instead of adopting the unverified id.
+      expect(result.errorMessage).toContain("Internal error");
+      expect(result.sessionId).toBe("11111111-1111-4111-8111-111111111111");
+      expect(result.sessionParams).toMatchObject({ sessionId: "11111111-1111-4111-8111-111111111111" });
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns no session id when a fresh run fails before any assistant turn (SUP-2320)", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-unverified-fresh-"));
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      commandWriter: writeUnverifiedSessionFailureClaudeCommand,
+    });
+    try {
+      const result = await execute({
+        runId: "run-unverified-fresh",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+      expect(result.sessionId).toBeNull();
+      expect(result.sessionParams).toBeNull();
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });

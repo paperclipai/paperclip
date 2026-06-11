@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, jsonb, integer, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
@@ -15,6 +15,7 @@ export const agentTaskSessions = pgTable(
     sessionDisplayId: text("session_display_id"),
     lastRunId: uuid("last_run_id").references(() => heartbeatRuns.id),
     lastError: text("last_error"),
+    consecutiveFailureCount: integer("consecutive_failure_count").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
