@@ -566,9 +566,22 @@ function actorMatchesExecutionParticipant(
   return participant.type === "agent" ? participant.agentId === actor.actorId : participant.userId === actor.actorId;
 }
 
+// Negation/rejection markers that invalidate an otherwise approval-looking heading.
+// Match common phrasings ("NOT APPROVED", "Do not approve", "Not approving", "Changes requested",
+// "Rejected", "Denied", "Blocked") so a reviewer comment intending to reject cannot auto-complete
+// the issue. We rely on the heading being a single line, so testing the heading text alone is safe.
+const APPROVAL_NEGATION_REGEX =
+  /\b(?:NOT|REJECT(?:ED|ING|S)?|DENY|DENIED|DENYING|BLOCK(?:ED|ING|S)?|CHANGES?\s+REQUESTED)\b/i;
+
 function isApprovalReviewComment(body: string) {
   const normalized = body.replace(/\r\n?/g, "\n");
-  if (/(^|\n)##\s*Review:.*\bAPPROVED\b/im.test(normalized)) return true;
+  const headingMatch = normalized.match(/(?:^|\n)##\s*Review:\s*([^\n]*)/i);
+  if (headingMatch) {
+    const headingText = headingMatch[1];
+    if (/\bAPPROVED\b/i.test(headingText) && !APPROVAL_NEGATION_REGEX.test(headingText)) {
+      return true;
+    }
+  }
   return /^\s*kind\s*:\s*review\s*$/im.test(normalized) && /^\s*decision\s*:\s*approved\s*$/im.test(normalized);
 }
 
