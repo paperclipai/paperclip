@@ -161,7 +161,7 @@ export function issueRecoveryActionService(db: Db) {
     input: UpsertIssueRecoveryActionInput,
     retryCount: number,
     error?: unknown,
-  ): Promise<IssueRecoveryAction> {
+  ): Promise<IssueRecoveryAction | null> {
     if (retryCount >= MAX_UPSERT_RETRIES) {
       if (error) throw error;
       throw new Error(
@@ -174,11 +174,15 @@ export function issueRecoveryActionService(db: Db) {
   async function upsertSourceScopedUnlocked(
     input: UpsertIssueRecoveryActionInput,
     retryCount = 0,
-  ): Promise<IssueRecoveryAction> {
+  ): Promise<IssueRecoveryAction | null> {
     const existing = await getActiveForIssue(input.companyId, input.sourceIssueId);
     const now = new Date();
     const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
     if (existing) {
+      // Если достигнут лимит попыток — не создаём новую recovery action
+      if (input.maxAttempts != null && existing.attemptCount >= input.maxAttempts) {
+        return null;
+      }
       const [updated] = await db
         .update(issueRecoveryActions)
         .set({
@@ -253,7 +257,7 @@ export function issueRecoveryActionService(db: Db) {
 
   async function upsertSourceScoped(
     input: UpsertIssueRecoveryActionInput,
-  ): Promise<IssueRecoveryAction> {
+  ): Promise<IssueRecoveryAction | null> {
     return runExclusiveUpsert(input, () => upsertSourceScopedUnlocked(input));
   }
 

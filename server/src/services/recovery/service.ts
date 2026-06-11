@@ -202,6 +202,7 @@ const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE = "issue_continuation_waiting_on
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+const DEFAULT_MAX_STRANDED_RECOVERY_ATTEMPTS = 2;
 
 type ContinuationRetryClassification = {
   kind: "transient_infra" | "non_retryable" | "default";
@@ -1859,6 +1860,45 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return result;
   }
 
+  async function cleanupStaleWakeupClaims(opts?: { companyId?: string }) {
+    const now = new Date();
+    const staleClaims = await db
+      .select({
+        wakeup: agentWakeupRequests,
+        runStatus: heartbeatRuns.status,
+      })
+      .from(agentWakeupRequests)
+      .innerJoin(heartbeatRuns, eq(agentWakeupRequests.runId, heartbeatRuns.id))
+      .where(
+        and(
+          opts?.companyId ? eq(agentWakeupRequests.companyId, opts.companyId) : undefined,
+          eq(agentWakeupRequests.status, 'claimed'),
+          inArray(heartbeatRuns.status, ['failed', 'done', 'cancelled']),
+        ),
+      )
+      .limit(100);
+
+    const released = [];
+    for (const row of staleClaims) {
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          status: 'failed',
+          finishedAt: now,
+          runId: null,
+          error: `Stale claim released: terminal run ${row.wakeup.runId} has status "${row.runStatus}"`,
+          updatedAt: now,
+        })
+        .where(eq(agentWakeupRequests.id, row.wakeup.id));
+      released.push(row.wakeup.id);
+    }
+
+    return {
+      scanned: staleClaims.length,
+      released: released.length,
+    };
+  }
+
   async function recordWatchdogDecision(input: {
     runId: string;
     actor: WatchdogDecisionActor;
@@ -2335,7 +2375,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           reason: "no_invokable_recovery_owner",
         },
       monitorPolicy: null,
-      maxAttempts: null,
+      maxAttempts: DEFAULT_MAX_STRANDED_RECOVERY_ATTEMPTS,
       lastAttemptAt: now,
     });
 
@@ -2348,6 +2388,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     latestRun: LatestIssueRun;
     recoveryCause: StrandedRecoveryCause;
   }) {
+    if (!input.action) return;
     if (input.recoveryCause === "workspace_validation_failed") return;
     if (input.recoveryCause === "configuration_incomplete") return;
     if (!input.action.ownerAgentId) return;
@@ -2403,6 +2444,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       "- Guard: recovery issues do not create nested `stranded_issue_recovery` issues.",
       "",
       "Next action: the current recovery owner should inspect the failed run evidence, restore a live execution path or record the manual resolution, then move this recovery issue out of `blocked`.",
+    ].join("\n");
+  }
+  function buildRecoveryExhaustedComment(input: {
+    issue: typeof issues.$inferSelect;
+    attemptCount: number;
+    maxAttempts: number;
+    recoveryActionId: string | null;
+    prefix: string;
+  }) {
+    const recoveryActionLink = input.recoveryActionId
+      ? `[${input.recoveryActionId}](/${input.prefix}/issues/${input.issue.identifier}#recovery-action)`
+      : "none";
+    return [
+      "Paperclip stopped automatic stranded‑issue recovery after exhausting the retry limit.",
+      "",
+      `- Issue: ${issueUiLink({ identifier: input.issue.identifier, id: input.issue.id }, input.prefix)}`,
+      `- Recovery attempts: ${input.attemptCount} of ${input.maxAttempts}`,
+      `- Recovery action: ${recoveryActionLink}`,
+      "- Cause: repeated stranded‑work detection without a successful live execution path.",
+      "",
+      "Next action: a board operator or the issue’s original assignee must inspect the stuck work, restore a live execution path, or record an intentional manual resolution.",
     ].join("\n");
   }
 
@@ -2564,6 +2626,55 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    // Если recovery action не создана из-за исчерпания лимита попыток
+    if (recoveryAction === null) {
+      const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(input.issue.companyId, input.issue.id);
+      const prefix = await getCompanyIssuePrefix(input.issue.companyId);
+      const updated = await issuesSvc.update(input.issue.id, {
+        status: "blocked",
+        blockedByIssueIds: blockerIds,
+        assigneeAgentId: input.issue.assigneeAgentId,
+      });
+      if (!updated) return null;
+      await issuesSvc.addComment(
+        input.issue.id,
+        buildRecoveryExhaustedComment({
+          issue: input.issue,
+          attemptCount: activeRecoveryAction?.attemptCount ?? DEFAULT_MAX_STRANDED_RECOVERY_ATTEMPTS,
+          maxAttempts: activeRecoveryAction?.maxAttempts ?? DEFAULT_MAX_STRANDED_RECOVERY_ATTEMPTS,
+          recoveryActionId: activeRecoveryAction?.id ?? null,
+          prefix,
+        }),
+        {},
+        { authorType: "system" },
+      );
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.recovery_exhausted",
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: {
+          identifier: input.issue.identifier,
+          status: "blocked",
+          previousStatus: input.previousStatus,
+          source: "recovery.reconcile_stranded_assigned_issue",
+          recoveryCause,
+          latestRunId: input.latestRun?.id ?? null,
+          latestRunStatus: input.latestRun?.status ?? null,
+          latestRunErrorCode: input.latestRun?.errorCode ?? null,
+          recoveryActionId: activeRecoveryAction?.id ?? null,
+          attemptCount: activeRecoveryAction?.attemptCount ?? null,
+          maxAttempts: activeRecoveryAction?.maxAttempts ?? null,
+          exhausted: true,
+        },
+      });
+      // Не планируем новый wake
+      return updated;
+    }
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
@@ -4004,6 +4115,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     escalateStrandedAssignedIssue,
     recordWatchdogDecision,
     scanSilentActiveRuns,
+    cleanupStaleWakeupClaims,
     reconcileStrandedAssignedIssues,
     sweepStaleIssueLocks,
     buildIssueGraphLivenessAutoRecoveryPreview,
