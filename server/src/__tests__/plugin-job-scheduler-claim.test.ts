@@ -18,7 +18,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { createDb, plugins, pluginJobs, pluginJobRuns, type Db } from "@paperclipai/db";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
@@ -184,6 +184,68 @@ describeEmbedded("plugin job scheduler — atomic schedule-slot claim", () => {
       .from(pluginJobs)
       .where(eq(pluginJobs.id, jobId));
     expect(after!.nextRunAt!.getTime()).toBeGreaterThan(seededNextRunAt.getTime());
+  });
+
+  it("caps a single tick at maxConcurrentJobs and dispatches deferred jobs on a later tick", async () => {
+    // Seed maxConcurrentJobs + 2 due jobs. A single tick must dispatch at
+    // most maxConcurrentJobs of them; the rest stay due and are picked up
+    // by a later tick. This only works if dispatchJob marks the job active
+    // SYNCHRONOUSLY (before its first await) — tick's loop pushes unawaited
+    // dispatch promises and checks `activeJobs.size` between iterations.
+    const maxConcurrentJobs = 2;
+    const seeded = [
+      await seedDueJob(),
+      await seedDueJob(),
+      await seedDueJob(),
+      await seedDueJob(),
+    ];
+    const jobIds = seeded.map((s) => s.jobId);
+
+    // All runJob RPCs hang on one controllable promise so the first
+    // tick's dispatches are still in-flight when we count run rows.
+    const hangingCall = makeControllableCall();
+    const worker: PluginWorkerManager = {
+      isRunning: () => true,
+      call: async () => {
+        await hangingCall.promise;
+        return {};
+      },
+    } as unknown as PluginWorkerManager;
+
+    const scheduler = createPluginJobScheduler({
+      db: dbA,
+      jobStore: pluginJobStore(dbA),
+      workerManager: worker,
+      maxConcurrentJobs,
+    });
+
+    const tickPromise = scheduler.tick();
+
+    // Give the admitted dispatches time to claim slots and create run rows.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const runsDuring = await dbA
+      .select()
+      .from(pluginJobRuns)
+      .where(inArray(pluginJobRuns.jobId, jobIds));
+    expect(runsDuring.length).toBeLessThanOrEqual(maxConcurrentJobs);
+    expect(runsDuring).toHaveLength(maxConcurrentJobs);
+
+    // Release the hanging calls; the first tick completes.
+    hangingCall.resolve();
+    await tickPromise;
+
+    // The deferred jobs are still due (their nextRunAt was never claimed),
+    // so a later tick dispatches them.
+    await scheduler.tick();
+
+    const runsAfter = await dbA
+      .select()
+      .from(pluginJobRuns)
+      .where(inArray(pluginJobRuns.jobId, jobIds));
+    expect(runsAfter).toHaveLength(jobIds.length);
+    expect(runsAfter.every((r) => r.status === "succeeded")).toBe(true);
+    expect(new Set(runsAfter.map((r) => r.jobId)).size).toBe(jobIds.length);
   });
 
   it("blocks cross-replica overlap when run outlasts its cron period (bounded guard)", async () => {

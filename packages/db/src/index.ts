@@ -1,3 +1,5 @@
+// Re-exported so server code can open dedicated raw connections (session
+// advisory locks) without declaring its own postgres dependency/version.
 export { default as postgres } from "postgres";
 export {
   createDb,

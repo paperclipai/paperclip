@@ -77,10 +77,18 @@ const readyPlugin = {
  * triples; when an insert carries a non-null externalId AND uses
  * `onConflictDoNothing()`, a repeat triple yields an empty `returning` —
  * exactly what Postgres does with the partial unique index in place.
+ *
+ * It also tracks per-row `status` so the route's duplicate handling can
+ * distinguish failed deliveries (retried) from pending/successful ones
+ * (acknowledged as duplicates): `update().set({status})` is applied to the
+ * row last touched by insert, and `select()` resolves to the row matching
+ * the most recent conflicting insert's idempotency triple.
  */
 function createWebhookDb() {
-  const seen = new Set<string>();
+  const rowsByKey = new Map<string, { id: string; status: string }>();
   const insertedValues: Array<Record<string, unknown>> = [];
+  let lastConflictKey: string | null = null;
+  let activeRow: { id: string; status: string } | null = null;
 
   const insert = vi.fn(() => {
     let values: Record<string, unknown> = {};
@@ -99,22 +107,49 @@ function createWebhookDb() {
         const externalId = values.externalId as string | null | undefined;
         if (onConflict && externalId != null) {
           const key = `${values.pluginId}:${values.webhookKey}:${externalId}`;
-          if (seen.has(key)) return Promise.resolve([]);
-          seen.add(key);
+          const existing = rowsByKey.get(key);
+          if (existing) {
+            lastConflictKey = key;
+            activeRow = existing;
+            return Promise.resolve([]);
+          }
+          lastConflictKey = null;
+          const row = { id: randomUUID(), status: "pending" };
+          rowsByKey.set(key, row);
+          activeRow = row;
+          return Promise.resolve([{ id: row.id }]);
         }
-        return Promise.resolve([{ id: randomUUID() }]);
+        lastConflictKey = null;
+        activeRow = { id: randomUUID(), status: "pending" };
+        return Promise.resolve([{ id: activeRow.id }]);
       },
     };
     return chain;
   });
 
   const update = vi.fn(() => ({
-    set: vi.fn(() => ({
-      where: vi.fn(() => Promise.resolve([])),
+    set: vi.fn((v: Record<string, unknown>) => ({
+      where: vi.fn(() => {
+        if (activeRow && typeof v.status === "string") {
+          activeRow.status = v.status;
+        }
+        return Promise.resolve([]);
+      }),
     })),
   }));
 
-  return { db: { insert, update }, insertedValues };
+  const select = vi.fn(() => ({
+    from: vi.fn(() => ({
+      where: vi.fn(() => ({
+        limit: vi.fn(() => {
+          const row = lastConflictKey ? rowsByKey.get(lastConflictKey) : undefined;
+          return Promise.resolve(row ? [{ id: row.id, status: row.status }] : []);
+        }),
+      })),
+    })),
+  }));
+
+  return { db: { insert, update, select }, insertedValues };
 }
 
 async function createApp() {
@@ -196,6 +231,54 @@ describe("plugin webhook delivery dedup (route)", () => {
     expect(second.status).toBe(202);
     expect(second.body.status).toBe("duplicate");
     expect(handleWebhookCall).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-dispatches a delivery whose previous attempt failed (provider retry after 5xx)", async () => {
+    // First POST: the worker RPC rejects, the route records the delivery as
+    // failed and answers 502 — providers retry exactly then. The retry with
+    // the same idempotency id must NOT be swallowed as a duplicate: it must
+    // re-dispatch and reuse the existing delivery row.
+    const { app, handleWebhookCall } = await createApp();
+    handleWebhookCall.mockRejectedValueOnce(new Error("worker crashed"));
+    const url = `/api/plugins/${PLUGIN_ID}/webhooks/${ENDPOINT_KEY}`;
+    const payload = { action: "opened" };
+
+    const first = await request(app)
+      .post(url)
+      .set("x-github-delivery", "guid-retry-1")
+      .send(payload);
+    expect(first.status).toBe(502);
+    expect(first.body.status).toBe("failed");
+    expect(handleWebhookCall).toHaveBeenCalledTimes(1);
+
+    const second = await request(app)
+      .post(url)
+      .set("x-github-delivery", "guid-retry-1")
+      .send(payload);
+    expect(second.status).toBe(200);
+    expect(second.body.status).toBe("success");
+    expect(second.body.deliveryId).toBe(first.body.deliveryId);
+    expect(handleWebhookCall).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not treat x-request-id as an idempotency id (tracing header, proxy-propagated)", async () => {
+    const { app, handleWebhookCall, insertedValues } = await createApp();
+    const url = `/api/plugins/${PLUGIN_ID}/webhooks/${ENDPOINT_KEY}`;
+
+    const first = await request(app)
+      .post(url)
+      .set("x-request-id", "trace-1")
+      .send({ n: 1 });
+    const second = await request(app)
+      .post(url)
+      .set("x-request-id", "trace-1")
+      .send({ n: 2 });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(handleWebhookCall).toHaveBeenCalledTimes(2);
+    expect(insertedValues[0]).toMatchObject({ externalId: null });
+    expect(insertedValues[1]).toMatchObject({ externalId: null });
   });
 
   it("dispatches every delivery when no idempotency header is present", async () => {
