@@ -117,7 +117,7 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
   ) {
     return null;
   }
-  if (action === "issue:mutate") return null;
+  if (action === "issue:mutate") return "issue:mutate";
   return action;
 }
 
