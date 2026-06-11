@@ -374,6 +374,7 @@ function builtInStdioTemplate(templateId: string): ToolStdioCommandTemplate | nu
   return {
     templateId,
     name: template.name,
+    title: template.name,
     description: null,
     status: "active",
     source: "built_in",
@@ -396,6 +397,7 @@ function toStdioCommandTemplate(row: typeof toolStdioCommandTemplates.$inferSele
     companyId: row.companyId,
     templateId: row.templateKey,
     name: row.name,
+    title: row.name,
     description: row.description,
     status: row.status,
     source: "admin",
