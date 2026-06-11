@@ -133,6 +133,9 @@ export function createRedisLiveEventsTransport(opts: RedisTransportOptions): Liv
   }
 
   async function flushPendingSubscribes() {
+    // Concurrent flushes can issue duplicate SUBSCRIBE commands for the same
+    // channel; Redis treats duplicate SUBSCRIBEs as idempotent, so no guard
+    // is needed here — do not add one.
     if (!subscriber) return;
     for (const companyId of [...pendingRedisSubscribes]) {
       const channel = redisChannelForCompany(companyId);
