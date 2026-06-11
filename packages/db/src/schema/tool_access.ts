@@ -117,6 +117,23 @@ export const toolConnections = pgTable(
   ],
 );
 
+export const toolOauthStates = pgTable(
+  "tool_oauth_states",
+  {
+    state: text("state").primaryKey(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    connectionId: uuid("connection_id").notNull().references(() => toolConnections.id, { onDelete: "cascade" }),
+    codeVerifier: text("code_verifier").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("tool_oauth_states_company_idx").on(table.companyId),
+    index("tool_oauth_states_connection_idx").on(table.connectionId),
+    index("tool_oauth_states_expires_at_idx").on(table.expiresAt),
+  ],
+);
+
 export const toolCatalogEntries = pgTable(
   "tool_catalog_entries",
   {
@@ -297,6 +314,32 @@ export const toolRuntimeSlots = pgTable(
     index("tool_runtime_slots_connection_idx").on(table.connectionId),
     index("tool_runtime_slots_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
     uniqueIndex("tool_runtime_slots_slot_key_uq").on(table.companyId, table.slotKey),
+  ],
+);
+
+export const toolStdioCommandTemplates = pgTable(
+  "tool_stdio_command_templates",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    templateKey: text("template_key").notNull(),
+    name: text("name").notNull(),
+    description: text("description"),
+    status: text("status").$type<"active" | "disabled">().notNull().default("active"),
+    command: text("command").notNull(),
+    args: jsonb("args").$type<string[]>().notNull().default([]),
+    envKeys: jsonb("env_keys").$type<string[]>().notNull().default([]),
+    tools: jsonb("tools").$type<Array<Record<string, unknown>>>().notNull().default([]),
+    createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    createdByUserId: text("created_by_user_id"),
+    disabledAt: timestamp("disabled_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("tool_stdio_command_templates_company_idx").on(table.companyId),
+    index("tool_stdio_command_templates_company_status_idx").on(table.companyId, table.status),
+    uniqueIndex("tool_stdio_command_templates_company_key_uq").on(table.companyId, table.templateKey),
   ],
 );
 

@@ -35,6 +35,8 @@ export interface AppGalleryEntry {
   oauth?: {
     provider: string;
     scopes: string[];
+    tokenUrl?: string | null;
+    metadataUrl?: string | null;
     authorizationUrl?: string | null;
   };
 }
@@ -115,6 +117,8 @@ export const TOOL_APP_GALLERY = [
     oauth: {
       provider: "slack",
       scopes: ["channels:read", "chat:write", "search:read"],
+      authorizationUrl: "https://slack.com/oauth/v2/authorize",
+      tokenUrl: "https://slack.com/api/oauth.v2.access",
     },
   },
   {
@@ -136,6 +140,8 @@ export const TOOL_APP_GALLERY = [
     oauth: {
       provider: "notion",
       scopes: ["read_content", "update_content"],
+      authorizationUrl: "https://api.notion.com/v1/oauth/authorize",
+      tokenUrl: "https://api.notion.com/v1/oauth/token",
     },
   },
   {
@@ -157,6 +163,8 @@ export const TOOL_APP_GALLERY = [
     oauth: {
       provider: "linear",
       scopes: ["read", "write"],
+      authorizationUrl: "https://linear.app/oauth/authorize",
+      tokenUrl: "https://api.linear.app/oauth/token",
     },
   },
   {

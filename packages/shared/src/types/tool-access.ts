@@ -260,6 +260,34 @@ export interface ToolRuntimeSlot {
   updatedAt: Date;
 }
 
+export interface ToolStdioTemplateToolSummary {
+  name: string;
+  title?: string | null;
+  description?: string | null;
+  inputSchema?: Record<string, unknown> | null;
+  annotations?: Record<string, unknown> | null;
+}
+
+export interface ToolStdioCommandTemplate {
+  id?: string;
+  companyId?: string;
+  templateId: string;
+  name: string;
+  title?: string | null;
+  description?: string | null;
+  status: "active" | "disabled";
+  source: "built_in" | "admin";
+  command?: string | null;
+  args: string[];
+  envKeys: string[];
+  tools: ToolStdioTemplateToolSummary[];
+  createdByAgentId?: string | null;
+  createdByUserId?: string | null;
+  disabledAt?: Date | string | null;
+  createdAt?: Date | string | null;
+  updatedAt?: Date | string | null;
+}
+
 export type ToolRuntimeAlertSeverity = "info" | "warning" | "critical";
 export type ToolRuntimeAlertStatus = "ok" | "firing" | "not_instrumented";
 
@@ -336,6 +364,30 @@ export interface ToolCatalogRefreshResult {
   catalog: ToolCatalogEntry[];
   discoveredCount: number;
   quarantinedCount: number;
+}
+
+export type ToolAppAttentionReason =
+  | "health"
+  | "quarantined_catalog_entries"
+  | "pending_action_requests";
+
+export interface ToolAppAttentionItem {
+  connection: ToolConnection;
+  healthNeedsAttention: boolean;
+  quarantinedCatalogEntryCount: number;
+  pendingActionRequestCount: number;
+  reasons: ToolAppAttentionReason[];
+}
+
+export interface ToolAppsAttentionResponse {
+  generatedAt: Date | string;
+  apps: ToolAppAttentionItem[];
+  totals: {
+    connections: number;
+    health: number;
+    quarantinedCatalogEntries: number;
+    pendingActionRequests: number;
+  };
 }
 
 export interface ToolExampleSummary {
@@ -429,6 +481,17 @@ export interface ConnectToolAppResult {
     canMakeChanges: ToolAppConnectionActionSummary[];
   };
   suggestedDefaults: Record<string, unknown>;
+  auth?: {
+    kind: "oauth";
+    startUrl: string | null;
+  } | null;
+}
+
+export interface ToolOAuthStartResult {
+  connectionId: string;
+  provider: string;
+  authorizationUrl: string;
+  expiresAt: string;
 }
 
 export interface FinishToolAppResult {

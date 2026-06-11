@@ -144,6 +144,34 @@ export const updateToolConnectionSchema = createToolConnectionSchema.omit({ appl
 
 export type UpdateToolConnection = z.infer<typeof updateToolConnectionSchema>;
 
+const envKeyPattern = /^[A-Z_][A-Z0-9_]*$/i;
+
+export const toolStdioTemplateToolSchema = z.object({
+  name: z.string().trim().min(1).max(240),
+  title: z.string().trim().max(240).optional().nullable(),
+  description: z.string().max(8000).optional().nullable(),
+  inputSchema: jsonSchemaSchema.optional().nullable(),
+  annotations: z.record(z.string(), z.unknown()).optional().nullable(),
+});
+
+export const createToolStdioCommandTemplateSchema = z.object({
+  templateId: z.string().trim().min(1).max(160).regex(safeKeyPattern),
+  name: z.string().trim().min(1).max(160),
+  description: z.string().max(4000).optional().nullable(),
+  command: z.string().trim().min(1).max(2000),
+  args: z.array(z.string().max(2000)).max(100).default([]),
+  envKeys: z.array(z.string().trim().min(1).max(160).regex(envKeyPattern)).max(200).default([]),
+  tools: z.array(toolStdioTemplateToolSchema).max(500).default([]),
+});
+
+export type CreateToolStdioCommandTemplate = z.infer<typeof createToolStdioCommandTemplateSchema>;
+
+export const disableToolStdioCommandTemplateSchema = z.object({
+  reason: z.string().trim().max(1000).optional().nullable(),
+});
+
+export type DisableToolStdioCommandTemplate = z.infer<typeof disableToolStdioCommandTemplateSchema>;
+
 export const connectToolAppSchema = z.object({
   galleryKey: z.string().trim().min(1).max(120).optional(),
   link: z.string().trim().url().max(2000).optional(),

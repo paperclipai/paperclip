@@ -729,6 +729,20 @@
       "when": 1780963200000,
       "tag": "0103_tool_connection_application_no_cascade",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1781049600000,
+      "tag": "0104_tool_stdio_command_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1781136000000,
+      "tag": "0105_tool_oauth_states",
+      "breakpoints": true
     }
   ]
 }

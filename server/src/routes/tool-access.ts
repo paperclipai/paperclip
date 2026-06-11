@@ -1,16 +1,18 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   TOOL_APP_GALLERY,
   type DeploymentExposure,
   type DeploymentMode,
   connectToolAppSchema,
+  createToolStdioCommandTemplateSchema,
   createToolApplicationSchema,
   createToolConnectionSchema,
   createToolPolicySchema,
   createToolProfileBindingForProfileSchema,
   createToolProfileEntryForProfileSchema,
   createToolProfileWithEntriesSchema,
+  disableToolStdioCommandTemplateSchema,
   finishToolAppSchema,
   createToolTrustRuleFromActionRequestSchema,
   importMcpJsonSchema,
@@ -25,7 +27,8 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { getActorInfo, assertBoard, assertCompanyAccess } from "./authz.js";
-import { logActivity, toolAccessPolicyService, toolAccessService } from "../services/index.js";
+import { forbidden } from "../errors.js";
+import { accessService, logActivity, toolAccessPolicyService, toolAccessService } from "../services/index.js";
 
 export function toolAccessRoutes(
   db: Db,
@@ -38,6 +41,28 @@ export function toolAccessRoutes(
   const router = Router();
   const svc = toolAccessService(db, options);
   const policySvc = toolAccessPolicyService(db);
+
+  function requestBaseUrl(req: Request) {
+    const forwardedProto = String(req.headers["x-forwarded-proto"] ?? "").split(",")[0]?.trim();
+    const forwardedHost = String(req.headers["x-forwarded-host"] ?? "").split(",")[0]?.trim();
+    const proto = forwardedProto || req.protocol;
+    const host = forwardedHost || req.get("host");
+    return `${proto}://${host}`;
+  }
+
+  function oauthRedirectUri(req: Request) {
+    return new URL("/api/tools/oauth/callback", requestBaseUrl(req)).toString();
+  }
+  const access = accessService(db);
+
+  async function assertToolsAdmin(req: Request, companyId: string) {
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+    const userId = req.actor.userId;
+    if (userId && await access.hasPermission(companyId, "user", userId, "tools:admin")) return;
+    throw forbidden("Missing permission: tools:admin");
+  }
 
   router.get("/companies/:companyId/tools/gallery", async (req, res) => {
     assertBoard(req);
@@ -52,6 +77,10 @@ export function toolAccessRoutes(
     assertCompanyAccess(req, companyId);
     try {
       const result = await svc.connectGalleryApp(companyId, req.body, getActorInfo(req));
+      if (result.auth?.kind === "oauth") {
+        const start = await svc.startOAuth(companyId, result.connectionId, { redirectUri: oauthRedirectUri(req) });
+        result.auth.startUrl = start.authorizationUrl;
+      }
       await logActivity(db, {
         companyId,
         actorType: "user",
@@ -72,6 +101,42 @@ export function toolAccessRoutes(
     } catch (error) {
       svc.ensureNoDuplicateNameError(error);
     }
+  });
+
+  router.get("/tools/oauth/:connectionId/start", async (req, res) => {
+    assertBoard(req);
+    const existing = await svc.getConnection(req.params.connectionId as string);
+    assertCompanyAccess(req, existing.companyId);
+    const result = await svc.startOAuth(existing.companyId, existing.id, { redirectUri: oauthRedirectUri(req) });
+    res.json(result);
+  });
+
+  router.get("/tools/oauth/callback", async (req, res) => {
+    const state = typeof req.query.state === "string" ? req.query.state : "";
+    const code = typeof req.query.code === "string" ? req.query.code : null;
+    const error = typeof req.query.error === "string" ? req.query.error : null;
+    const errorDescription = typeof req.query.error_description === "string" ? req.query.error_description : null;
+    const result = await svc.completeOAuthCallback({
+      state,
+      code,
+      error,
+      errorDescription,
+      redirectUri: oauthRedirectUri(req),
+      actor: req.actor ? getActorInfo(req) : { actorType: "system", actorId: "oauth_callback" },
+    });
+    await logActivity(db, {
+      companyId: result.connection.companyId,
+      actorType: req.actor?.type === "agent" ? "agent" : req.actor?.type === "board" ? "user" : "system",
+      actorId: req.actor?.type === "agent" ? req.actor.agentId ?? "agent" : req.actor?.type === "board" ? req.actor.userId ?? "board" : "oauth_callback",
+      action: "tool_app.oauth_connected",
+      entityType: "tool_connection",
+      entityId: result.connection.id,
+      details: {
+        applicationId: result.application.id,
+        catalogEntryCount: result.catalog.length,
+      },
+    });
+    res.json(result);
   });
 
   router.post("/companies/:companyId/tools/apps/:connectionId/finish", validate(finishToolAppSchema), async (req, res) => {
@@ -103,6 +168,13 @@ export function toolAccessRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     res.json({ examples: await svc.listExamples(companyId) });
+  });
+
+  router.get("/companies/:companyId/tools/apps/attention", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.listAppsNeedingAttention(companyId));
   });
 
   router.post("/companies/:companyId/tools/examples/:id/install", async (req, res) => {
@@ -645,11 +717,52 @@ export function toolAccessRoutes(
   });
 
   router.get("/companies/:companyId/tools/stdio-templates", async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    res.json({ templates: svc.approvedStdioTemplates() });
+    await assertToolsAdmin(req, companyId);
+    res.json({ templates: await svc.approvedStdioTemplates(companyId) });
   });
+
+  router.post("/companies/:companyId/tools/stdio-templates", validate(createToolStdioCommandTemplateSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertToolsAdmin(req, companyId);
+    const template = await svc.createStdioCommandTemplate(companyId, req.body, getActorInfo(req));
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "tool_stdio_command_template.created",
+      entityType: "tool_stdio_command_template",
+      entityId: template.id ?? template.templateId,
+      details: {
+        templateId: template.templateId,
+        command: template.command,
+        argCount: template.args.length,
+        envKeyCount: template.envKeys.length,
+        toolCount: template.tools.length,
+      },
+    });
+    res.status(201).json(template);
+  });
+
+  router.post(
+    "/companies/:companyId/tools/stdio-templates/:templateId/disable",
+    validate(disableToolStdioCommandTemplateSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertToolsAdmin(req, companyId);
+      const template = await svc.disableStdioCommandTemplate(companyId, req.params.templateId as string);
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "tool_stdio_command_template.disabled",
+        entityType: "tool_stdio_command_template",
+        entityId: template.id ?? template.templateId,
+        details: { templateId: template.templateId, reason: req.body.reason ?? null },
+      });
+      res.json(template);
+    },
+  );
 
   router.post("/companies/:companyId/tools/mcp/import-json", validate(importMcpJsonSchema), async (req, res) => {
     assertBoard(req);

@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gte, inArray, ne } from "drizzle-orm";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { and, asc, desc, eq, gte, inArray, lt, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -15,6 +15,8 @@ import {
   toolActionRequests,
   toolCatalogEntries,
   toolConnections,
+  toolOauthStates,
+  toolStdioCommandTemplates,
   toolCallEvents,
   toolInvocations,
   toolPolicies,
@@ -28,6 +30,7 @@ import type {
   CreateToolConnection,
   ConnectToolApp,
   ConnectToolAppResult,
+  CreateToolStdioCommandTemplate,
   FinishToolApp,
   FinishToolAppResult,
   CreateToolProfileBindingForProfile,
@@ -45,6 +48,8 @@ import type {
   ToolConnectionHealthCheckResult,
   ToolConnectionHealthStatus,
   ToolConnectionTransport,
+  ToolOAuthStartResult,
+  ToolAppsAttentionResponse,
   ToolActionRequest,
   ToolAppConnectionActionSummary,
   ToolExampleInstallResult,
@@ -66,6 +71,7 @@ import type {
   ToolRunDecision,
   ToolRunDecisionLookup,
   ToolRuntimeSlot,
+  ToolStdioCommandTemplate,
   UpdateToolApplication,
   UpdateToolConnection,
   UpdateToolProfileEntry,
@@ -362,6 +368,58 @@ function toRuntimeSlot(row: typeof toolRuntimeSlots.$inferSelect): ToolRuntimeSl
   };
 }
 
+function builtInStdioTemplate(templateId: string): ToolStdioCommandTemplate | null {
+  const template = APPROVED_STDIO_TEMPLATES[templateId];
+  if (!template) return null;
+  return {
+    templateId,
+    name: template.name,
+    description: null,
+    status: "active",
+    source: "built_in",
+    command: null,
+    args: [],
+    envKeys: [],
+    tools: template.tools.map((tool) => ({
+      name: tool.name,
+      title: tool.title ?? null,
+      description: tool.description ?? null,
+      inputSchema: tool.inputSchema ?? { type: "object", properties: {} },
+      annotations: tool.annotations ?? {},
+    })),
+  };
+}
+
+function toStdioCommandTemplate(row: typeof toolStdioCommandTemplates.$inferSelect): ToolStdioCommandTemplate {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    templateId: row.templateKey,
+    name: row.name,
+    description: row.description,
+    status: row.status,
+    source: "admin",
+    command: row.command,
+    args: row.args ?? [],
+    envKeys: row.envKeys ?? [],
+    tools: (row.tools ?? [])
+      .map((tool) => normalizeToolDescriptor(tool))
+      .filter((tool): tool is McpToolDescriptor => Boolean(tool))
+      .map((tool) => ({
+        name: tool.name,
+        title: tool.title ?? null,
+        description: tool.description ?? null,
+        inputSchema: tool.inputSchema ?? { type: "object", properties: {} },
+        annotations: tool.annotations ?? {},
+      })),
+    createdByAgentId: row.createdByAgentId,
+    createdByUserId: row.createdByUserId,
+    disabledAt: row.disabledAt,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
 function toToolInvocation(row: typeof toolInvocations.$inferSelect): ToolInvocation {
   return {
     id: row.id,
@@ -642,12 +700,12 @@ function remoteEndpoint(config: Record<string, unknown>): string {
   return parsed.toString();
 }
 
-function stdioTemplateId(config: Record<string, unknown>): string {
+function readStdioTemplateId(config: Record<string, unknown>): string {
   const templateId = config.templateId;
-  if (typeof templateId !== "string" || !APPROVED_STDIO_TEMPLATES[templateId]) {
+  if (typeof templateId !== "string" || templateId.trim().length === 0) {
     throw badRequest("Local stdio MCP connections must use an approved templateId");
   }
-  return templateId;
+  return templateId.trim();
 }
 
 export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}) {
@@ -673,6 +731,38 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     ) {
       throw unprocessable("Local stdio MCP connections cannot be enabled in authenticated public deployments without a trusted runtime host");
     }
+  }
+
+  async function getAdminStdioTemplate(companyId: string, templateId: string) {
+    return db
+      .select()
+      .from(toolStdioCommandTemplates)
+      .where(and(eq(toolStdioCommandTemplates.companyId, companyId), eq(toolStdioCommandTemplates.templateKey, templateId)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function resolveStdioTemplate(companyId: string, configOrTemplateId: Record<string, unknown> | string) {
+    const templateId = typeof configOrTemplateId === "string" ? configOrTemplateId.trim() : readStdioTemplateId(configOrTemplateId);
+    const builtIn = builtInStdioTemplate(templateId);
+    if (builtIn) return builtIn;
+    const adminTemplate = await getAdminStdioTemplate(companyId, templateId);
+    if (!adminTemplate || adminTemplate.status !== "active") {
+      throw badRequest("Local stdio MCP connections must use an approved templateId");
+    }
+    return toStdioCommandTemplate(adminTemplate);
+  }
+
+  async function stdioTemplateId(companyId: string, config: Record<string, unknown>): Promise<string> {
+    return (await resolveStdioTemplate(companyId, config)).templateId;
+  }
+
+  function shouldQuarantineNewEntries(connection: typeof toolConnections.$inferSelect): boolean {
+    return asRecord(connection.config).quarantineNewEntries === true;
+  }
+
+  function isAttentionHealthStatus(status: ToolConnectionHealthStatus): boolean {
+    return status === "failed" || status === "error" || status === "missing_secret" || status === "degraded";
   }
 
   async function audit(input: {
@@ -1249,6 +1339,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   }
 
   async function resolveCredentialHeaders(connection: typeof toolConnections.$inferSelect): Promise<Record<string, string>> {
+    connection = await maybeRefreshOAuthCredentials(connection);
     const headers: Record<string, string> = {};
     for (const ref of connection.credentialRefs) {
       const value = await secrets.resolveSecretValue(connection.companyId, ref.secretId, ref.version ?? "latest", {
@@ -1287,10 +1378,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return tools.map((tool) => normalizeToolDescriptor(tool)).filter((tool): tool is McpToolDescriptor => Boolean(tool));
   }
 
-  function localTools(connection: typeof toolConnections.$inferSelect): McpToolDescriptor[] {
-    const templateId = stdioTemplateId(connection.config);
-    return APPROVED_STDIO_TEMPLATES[templateId].tools.map((tool) => ({
-      ...tool,
+  async function localTools(connection: typeof toolConnections.$inferSelect): Promise<McpToolDescriptor[]> {
+    const template = await resolveStdioTemplate(connection.companyId, connection.config);
+    return template.tools.map((tool) => ({
+      name: tool.name,
+      title: tool.title ?? null,
+      description: tool.description ?? null,
       inputSchema: tool.inputSchema ?? { type: "object", properties: {} },
       annotations: tool.annotations ?? {},
     }));
@@ -1336,7 +1429,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         await remoteTools(connection);
       } else {
         await resolveCredentialHeaders(connection);
-        stdioTemplateId(connection.config);
+        await stdioTemplateId(connection.companyId, connection.config);
       }
       const updated = await updateConnectionHealth(connection, "ok", connection.transport === "local_stdio"
         ? "Approved stdio template is ready."
@@ -1390,18 +1483,29 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
 
     const existingRows = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connection.id));
-      const existingByName = new Map(existingRows.map((entry) => [entry.toolName, entry]));
+    const existingByName = new Map(existingRows.map((entry) => [entry.toolName, entry]));
     const updatedEntries: ToolCatalogEntry[] = [];
     let quarantinedCount = 0;
-
+    const quarantineOnRefresh = shouldQuarantineNewEntries(connection) && connection.status === "active";
+    const safeDefault = asRecord(connection.config).safeDefault === true;
     for (const descriptor of descriptors) {
       const riskLevel = classifyRisk(descriptor);
       const hash = descriptorHash(descriptor);
+      const schemaHash = stableHash(descriptor.inputSchema ?? {});
       const existing = existingByName.get(descriptor.name);
-      const writeCapable = riskLevel === "write" || riskLevel === "destructive";
-      const changedWrite = existing && existing.versionHash !== hash && (writeCapable || existing.riskLevel !== "read");
-      const shouldQuarantine = writeCapable && (!existing || changedWrite);
-      const status = shouldQuarantine ? "quarantined" : existing?.status === "disabled" ? "disabled" : "active";
+      const changed = existing && (existing.versionHash !== hash || existing.schemaHash !== schemaHash);
+      const shouldQuarantine =
+        quarantineOnRefresh
+        && (!existing || changed)
+        && existing?.status !== "disabled"
+        && (!safeDefault || riskLevel !== "read");
+      const status = shouldQuarantine
+        ? "quarantined"
+        : existing?.status === "disabled"
+          ? "disabled"
+          : existing?.status === "quarantined"
+            ? "quarantined"
+            : "active";
       if (shouldQuarantine) quarantinedCount += 1;
 
       if (existing) {
@@ -1418,12 +1522,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             isDestructive: riskLevel === "destructive",
             status,
             versionHash: hash,
-            schemaHash: stableHash(descriptor.inputSchema ?? {}),
+            schemaHash,
             lastSeenAt: now,
             quarantinedAt: shouldQuarantine ? now : existing.quarantinedAt,
-            quarantineReason: shouldQuarantine
-              ? changedWrite ? "changed_write_tool" : "new_write_tool"
-              : existing.quarantineReason,
+            quarantineReason: shouldQuarantine ? "pending_review" : existing.quarantineReason,
             updatedAt: now,
           })
           .where(eq(toolCatalogEntries.id, existing.id))
@@ -1447,11 +1549,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           isDestructive: riskLevel === "destructive",
           status,
           versionHash: hash,
-          schemaHash: stableHash(descriptor.inputSchema ?? {}),
+          schemaHash,
           firstSeenAt: now,
           lastSeenAt: now,
           quarantinedAt: shouldQuarantine ? now : null,
-          quarantineReason: shouldQuarantine ? "new_write_tool" : null,
+          quarantineReason: shouldQuarantine ? "pending_review" : null,
         }).returning();
         updatedEntries.push(toCatalogEntry(created));
       }
@@ -1493,6 +1595,101 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       catalog: updatedEntries,
       discoveredCount: descriptors.length,
       quarantinedCount,
+    };
+  }
+
+  async function listAppsNeedingAttention(companyId: string): Promise<ToolAppsAttentionResponse> {
+    const generatedAt = now();
+    const [connections, quarantinedEntries, pendingActionRequests, invocations] = await Promise.all([
+      db
+        .select()
+        .from(toolConnections)
+        .where(and(eq(toolConnections.companyId, companyId), ne(toolConnections.status, "archived"))),
+      db
+        .select()
+        .from(toolCatalogEntries)
+        .where(and(eq(toolCatalogEntries.companyId, companyId), eq(toolCatalogEntries.status, "quarantined"))),
+      db
+        .select()
+        .from(toolActionRequests)
+        .where(and(eq(toolActionRequests.companyId, companyId), eq(toolActionRequests.status, "pending"))),
+      db
+        .select()
+        .from(toolInvocations)
+        .where(eq(toolInvocations.companyId, companyId)),
+    ]);
+    const quarantinedCountByConnection = new Map<string, number>();
+    for (const entry of quarantinedEntries) {
+      quarantinedCountByConnection.set(entry.connectionId, (quarantinedCountByConnection.get(entry.connectionId) ?? 0) + 1);
+    }
+    const invocationConnectionById = new Map(invocations.map((invocation) => [invocation.id, invocation.connectionId]));
+    const pendingActionRequestCountByConnection = new Map<string, number>();
+    for (const request of pendingActionRequests) {
+      const connectionId = invocationConnectionById.get(request.invocationId);
+      if (!connectionId) continue;
+      pendingActionRequestCountByConnection.set(connectionId, (pendingActionRequestCountByConnection.get(connectionId) ?? 0) + 1);
+    }
+    const apps = connections.flatMap((connection) => {
+      const healthNeedsAttention = isAttentionHealthStatus(connection.healthStatus);
+      const quarantinedCatalogEntryCount = quarantinedCountByConnection.get(connection.id) ?? 0;
+      const pendingActionRequestCount = pendingActionRequestCountByConnection.get(connection.id) ?? 0;
+      const reasons = [
+        ...(healthNeedsAttention ? ["health" as const] : []),
+        ...(quarantinedCatalogEntryCount > 0 ? ["quarantined_catalog_entries" as const] : []),
+        ...(pendingActionRequestCount > 0 ? ["pending_action_requests" as const] : []),
+      ];
+      return reasons.length > 0
+        ? [{
+            connection: toConnection(connection),
+            healthNeedsAttention,
+            quarantinedCatalogEntryCount,
+            pendingActionRequestCount,
+            reasons,
+          }]
+        : [];
+    });
+    return {
+      generatedAt,
+      apps,
+      totals: {
+        connections: apps.length,
+        health: apps.filter((app) => app.healthNeedsAttention).length,
+        quarantinedCatalogEntries: apps.reduce((sum, app) => sum + app.quarantinedCatalogEntryCount, 0),
+        pendingActionRequests: apps.reduce((sum, app) => sum + app.pendingActionRequestCount, 0),
+      },
+    };
+  }
+
+  async function sweepConnectionHealth(input: { staleAfterMs?: number; limit?: number } = {}) {
+    const generatedAt = now();
+    const staleAfterMs = input.staleAfterMs ?? 15 * 60 * 1000;
+    const limit = input.limit ?? 25;
+    const cutoff = new Date(generatedAt.getTime() - staleAfterMs);
+    const connections = await db
+      .select()
+      .from(toolConnections)
+      .where(and(eq(toolConnections.enabled, true), eq(toolConnections.status, "active")))
+      .orderBy(asc(toolConnections.healthCheckedAt), asc(toolConnections.createdAt));
+    const due = connections
+      .filter((connection) => !connection.healthCheckedAt || connection.healthCheckedAt <= cutoff)
+      .slice(0, limit);
+    let healthy = 0;
+    let failed = 0;
+    const failedConnectionIds: string[] = [];
+    for (const connection of due) {
+      try {
+        await checkConnectionHealth(connection.id, { actorType: "system", actorId: "tool_health_sweep" });
+        healthy += 1;
+      } catch {
+        failed += 1;
+        failedConnectionIds.push(connection.id);
+      }
+    }
+    return {
+      checked: due.length,
+      healthy,
+      failed,
+      failedConnectionIds,
     };
   }
 
@@ -1638,7 +1835,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     applicationId: string,
     existing: typeof toolConnections.$inferSelect | null,
   ) {
-    const config = { templateId: definition.templateId, exampleId: definition.id, safeDefault: true };
+    const config = {
+      templateId: definition.templateId,
+      exampleId: definition.id,
+      safeDefault: true,
+      quarantineNewEntries: true,
+    };
     if (existing) {
       const [updated] = await db
         .update(toolConnections)
@@ -1858,6 +2060,247 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return undefined;
   }
 
+  function oauthEnvName(provider: string, suffix: "CLIENT_ID" | "CLIENT_SECRET") {
+    return `PAPERCLIP_TOOL_OAUTH_${provider.replace(/[^a-z0-9]+/gi, "_").toUpperCase()}_${suffix}`;
+  }
+
+  function oauthClientConfig(provider: string) {
+    const clientIdEnv = oauthEnvName(provider, "CLIENT_ID");
+    const clientSecretEnv = oauthEnvName(provider, "CLIENT_SECRET");
+    return {
+      clientIdEnv,
+      clientSecretEnv,
+      clientId: process.env[clientIdEnv] ?? process.env.PAPERCLIP_TOOL_OAUTH_CLIENT_ID ?? null,
+      clientSecret: process.env[clientSecretEnv] ?? process.env.PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET ?? null,
+    };
+  }
+
+  function base64UrlSha256(input: string) {
+    return createHash("sha256").update(input).digest("base64url");
+  }
+
+  function randomOauthToken(bytes = 32) {
+    return randomBytes(bytes).toString("base64url");
+  }
+
+  function oauthConfig(connection: typeof toolConnections.$inferSelect) {
+    return asRecord(connection.config).oauth ? asRecord(asRecord(connection.config).oauth) : {};
+  }
+
+  function oauthSecretRef(
+    connection: typeof toolConnections.$inferSelect,
+    configPath: "oauth.access_token" | "oauth.refresh_token",
+  ) {
+    return connection.credentialSecretRefs.find((ref) => ref.configPath === configPath) ?? null;
+  }
+
+  function oauthExpiresAtMs(connection: typeof toolConnections.$inferSelect): number | null {
+    const expiresAt = oauthConfig(connection).expiresAt;
+    if (typeof expiresAt !== "string") return null;
+    const ms = Date.parse(expiresAt);
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  async function oauthProviderEndpoints(galleryEntry: NonNullable<ReturnType<typeof getToolAppGalleryEntry>>) {
+    const oauth = galleryEntry.oauth;
+    if (!oauth) throw unprocessable("This app does not support sign in");
+    let authorizationUrl = oauth.authorizationUrl ?? null;
+    let tokenUrl = oauth.tokenUrl ?? null;
+    if ((!authorizationUrl || !tokenUrl) && oauth.metadataUrl) {
+      const response = await fetch(oauth.metadataUrl);
+      if (!response.ok) throw new HttpError(502, "OAuth provider metadata could not be loaded", { code: "oauth_metadata_failed" });
+      const metadata = asRecord(await response.json() as unknown);
+      authorizationUrl = authorizationUrl ?? (typeof metadata.authorization_endpoint === "string" ? metadata.authorization_endpoint : null);
+      tokenUrl = tokenUrl ?? (typeof metadata.token_endpoint === "string" ? metadata.token_endpoint : null);
+    }
+    if (!authorizationUrl || !tokenUrl) {
+      throw unprocessable("OAuth provider endpoints are not configured for this app");
+    }
+    return { provider: oauth.provider, scopes: oauth.scopes, authorizationUrl, tokenUrl };
+  }
+
+  async function oauthGalleryEntryForConnection(connection: typeof toolConnections.$inferSelect) {
+    const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null;
+    if (!sourceTemplateKey) throw unprocessable("This app connection was not created from the app gallery");
+    const galleryEntry = getToolAppGalleryEntry(sourceTemplateKey);
+    if (!galleryEntry || galleryEntry.authKind !== "oauth" || !galleryEntry.oauth) {
+      throw unprocessable("This app connection does not use sign in");
+    }
+    return galleryEntry;
+  }
+
+  async function createOrRotateOAuthSecret(input: {
+    companyId: string;
+    connection: typeof toolConnections.$inferSelect;
+    configPath: "oauth.access_token" | "oauth.refresh_token";
+    label: string;
+    value: string;
+    actor?: ActorInfo;
+  }) {
+    const existing = oauthSecretRef(input.connection, input.configPath);
+    if (existing) {
+      await secrets.rotate(existing.secretId, { value: input.value }, actorForSecret(input.actor));
+      return existing;
+    }
+    const secret = await secrets.create(input.companyId, {
+      name: `${input.connection.name} ${input.label} ${randomUUID().slice(0, 8)}`,
+      key: `tool_app.${randomUUID()}.${input.configPath.replace(/[^a-z0-9_:-]+/gi, "_")}`,
+      provider: "local_encrypted",
+      value: input.value,
+      description: `OAuth ${input.label.toLowerCase()} for ${input.connection.name}.`,
+    }, actorForSecret(input.actor));
+    return {
+      secretId: secret.id,
+      versionSelector: "latest" as const,
+      configPath: input.configPath,
+      required: input.configPath === "oauth.access_token",
+      label: input.label,
+    };
+  }
+
+  async function exchangeOAuthToken(input: {
+    tokenUrl: string;
+    clientId: string;
+    clientSecret?: string | null;
+    redirectUri?: string | null;
+    codeVerifier?: string | null;
+    code?: string | null;
+    refreshToken?: string | null;
+  }) {
+    const body = new URLSearchParams();
+    if (input.refreshToken) {
+      body.set("grant_type", "refresh_token");
+      body.set("refresh_token", input.refreshToken);
+    } else {
+      body.set("grant_type", "authorization_code");
+      body.set("code", input.code ?? "");
+      body.set("redirect_uri", input.redirectUri ?? "");
+      body.set("code_verifier", input.codeVerifier ?? "");
+    }
+    body.set("client_id", input.clientId);
+    if (input.clientSecret) body.set("client_secret", input.clientSecret);
+
+    const response = await fetch(input.tokenUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    const payload = await response.json().catch(() => ({})) as unknown;
+    const record = asRecord(payload);
+    if (!response.ok || record.ok === false) {
+      const message = typeof record.error_description === "string"
+        ? record.error_description
+        : typeof record.error === "string"
+          ? record.error
+          : "OAuth token exchange failed";
+      throw new HttpError(502, message, { code: "oauth_token_exchange_failed", status: response.status });
+    }
+    const accessToken = typeof record.access_token === "string" ? record.access_token : null;
+    if (!accessToken) throw new HttpError(502, "OAuth provider did not return an access token", { code: "oauth_access_token_missing" });
+    const expiresIn = typeof record.expires_in === "number" ? record.expires_in : Number(record.expires_in);
+    return {
+      accessToken,
+      refreshToken: typeof record.refresh_token === "string" ? record.refresh_token : null,
+      expiresIn: Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : null,
+      scope: typeof record.scope === "string" ? record.scope : null,
+      tokenType: typeof record.token_type === "string" ? record.token_type : "Bearer",
+      raw: record,
+    };
+  }
+
+  async function maybeRefreshOAuthCredentials(
+    connection: typeof toolConnections.$inferSelect,
+    actor?: ActorInfo,
+  ): Promise<typeof toolConnections.$inferSelect> {
+    const oauth = oauthConfig(connection);
+    if (typeof oauth.tokenUrl !== "string" || typeof oauth.provider !== "string") return connection;
+    const expiresAtMs = oauthExpiresAtMs(connection);
+    if (expiresAtMs && expiresAtMs > Date.now() + 60_000) return connection;
+    const refreshRef = oauthSecretRef(connection, "oauth.refresh_token");
+    if (!refreshRef) throw new HttpError(422, "OAuth credentials have expired and no refresh token is available", { code: "oauth_refresh_missing" });
+    const client = oauthClientConfig(oauth.provider);
+    if (!client.clientId) throw unprocessable(`OAuth client id is not configured for ${oauth.provider}`);
+    const refreshToken = await secrets.resolveSecretValue(connection.companyId, refreshRef.secretId, refreshRef.versionSelector ?? "latest", {
+      consumerType: "tool_connection",
+      consumerId: connection.id,
+      configPath: "oauth.refresh_token",
+      actorType: actor?.actorType ?? "system",
+      actorId: actor?.actorId ?? null,
+    });
+    const token = await exchangeOAuthToken({
+      tokenUrl: oauth.tokenUrl,
+      clientId: client.clientId,
+      clientSecret: client.clientSecret,
+      refreshToken,
+    });
+    const accessRef = await createOrRotateOAuthSecret({
+      companyId: connection.companyId,
+      connection,
+      configPath: "oauth.access_token",
+      label: "OAuth access token",
+      value: token.accessToken,
+      actor,
+    });
+    const nextCredentialSecretRefs = [
+      ...connection.credentialSecretRefs.filter((ref) => ref.configPath !== "oauth.access_token"),
+      accessRef,
+    ];
+    if (token.refreshToken) {
+      const nextRefreshRef = await createOrRotateOAuthSecret({
+        companyId: connection.companyId,
+        connection,
+        configPath: "oauth.refresh_token",
+        label: "OAuth refresh token",
+        value: token.refreshToken,
+        actor,
+      });
+      const filtered = nextCredentialSecretRefs.filter((ref) => ref.configPath !== "oauth.refresh_token");
+      nextCredentialSecretRefs.splice(0, nextCredentialSecretRefs.length, ...filtered, nextRefreshRef);
+    }
+    const expiresAt = token.expiresIn ? new Date(Date.now() + token.expiresIn * 1000).toISOString() : null;
+    const nextConfig = {
+      ...connection.config,
+      oauth: {
+        ...oauth,
+        expiresAt,
+        scope: token.scope ?? oauth.scope ?? null,
+        tokenType: token.tokenType,
+        refreshedAt: new Date().toISOString(),
+      },
+      providerMetadata: {
+        ...asRecord(connection.config.providerMetadata),
+        oauth: {
+          expiresAt,
+          scope: token.scope ?? oauth.scope ?? null,
+          tokenType: token.tokenType,
+        },
+      },
+    };
+    const [updated] = await db
+      .update(toolConnections)
+      .set({
+        config: nextConfig,
+        transportConfig: nextConfig,
+        credentialSecretRefs: nextCredentialSecretRefs,
+        credentialRefs: [
+          ...connection.credentialRefs.filter((ref) => ref.name !== "oauth.access_token"),
+          {
+            name: "oauth.access_token",
+            secretId: accessRef.secretId,
+            version: "latest" as const,
+            placement: "header" as const,
+            key: "Authorization",
+            prefix: "Bearer ",
+          },
+        ],
+        updatedAt: new Date(),
+      })
+      .where(eq(toolConnections.id, connection.id))
+      .returning();
+    await syncCredentialBindings(updated);
+    return updated;
+  }
+
   function policyNameForApp(connection: typeof toolConnections.$inferSelect, entry: typeof toolCatalogEntries.$inferSelect) {
     const base = `Ask first ${connection.id.slice(0, 8)} ${entry.toolName}`;
     return base.length <= 160 ? base : base.slice(0, 160);
@@ -1870,9 +2313,6 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   ): Promise<ConnectToolAppResult> {
     const galleryEntry = input.galleryKey ? getToolAppGalleryEntry(input.galleryKey) : null;
     if (input.galleryKey && !galleryEntry) throw notFound("Tool app gallery entry not found");
-    if (galleryEntry?.authKind === "oauth") {
-      throw unprocessable("OAuth app connections are selectable in the gallery but require the OAuth broker phase before connecting");
-    }
 
     const name = input.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
     const transportTemplate = galleryEntry?.transportTemplate ?? {
@@ -1884,10 +2324,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       ? { url: transportTemplate.url }
       : { templateId: transportTemplate.templateKey };
     const config = galleryEntry
-      ? { ...baseConfig, sourceTemplateKey: galleryEntry.key }
-      : baseConfig;
+      ? { ...baseConfig, sourceTemplateKey: galleryEntry.key, quarantineNewEntries: true }
+      : { ...baseConfig, quarantineNewEntries: true };
     if (transport === "remote_http") remoteEndpoint(config);
-    if (transport === "local_stdio") stdioTemplateId(config);
+    if (transport === "local_stdio") await stdioTemplateId(companyId, config);
     assertLocalStdioCanBeEnabled(transport, false);
 
     const credentialValues = input.credentialValues ?? {};
@@ -1959,6 +2399,18 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       }).returning();
       await syncCredentialBindings(connectionRow);
       await ensureRuntimeSlot(connectionRow);
+
+      if (galleryEntry?.authKind === "oauth") {
+        return {
+          connectionId: connectionRow.id,
+          application: toApplication(applicationRow),
+          connection: toConnection(connectionRow),
+          catalog: [],
+          actions: { readOnly: [], canMakeChanges: [] },
+          suggestedDefaults: galleryEntry.recommendedDefaults,
+          auth: { kind: "oauth", startUrl: null },
+        };
+      }
 
       await checkConnectionHealth(connectionRow.id, actor);
       const refresh = await refreshCatalog(connectionRow.id, actor);
@@ -2176,6 +2628,22 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       profileBindings.push(toProfileBinding(binding));
     }
 
+    const reviewedAt = new Date();
+    if (enabledIds.length > 0) {
+      await db
+        .update(toolCatalogEntries)
+        .set({
+          status: "active",
+          reviewedAt,
+          reviewedByAgentId: actor?.actorType === "agent" ? actor.actorId ?? null : null,
+          reviewedByUserId: actor?.actorType === "user" ? actor.actorId ?? null : null,
+          quarantinedAt: null,
+          quarantineReason: null,
+          updatedAt: reviewedAt,
+        })
+        .where(and(eq(toolCatalogEntries.companyId, companyId), inArray(toolCatalogEntries.id, enabledIds)));
+    }
+
     const policies = await upsertAskFirstPolicies({
       companyId,
       connection,
@@ -2213,12 +2681,252 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     };
   }
 
+  async function startOAuth(
+    companyId: string,
+    connectionId: string,
+    input: { redirectUri: string },
+  ): Promise<ToolOAuthStartResult> {
+    const connection = await getConnectionRow(connectionId, companyId);
+    if (connection.status === "archived") throw conflict("Archived app connections cannot start sign in");
+    const galleryEntry = await oauthGalleryEntryForConnection(connection);
+    const endpoints = await oauthProviderEndpoints(galleryEntry);
+    const client = oauthClientConfig(endpoints.provider);
+    if (!client.clientId) throw unprocessable(`OAuth client id is not configured for ${endpoints.provider}`);
+
+    await db.delete(toolOauthStates).where(lt(toolOauthStates.expiresAt, new Date()));
+
+    const state = randomOauthToken();
+    const codeVerifier = randomOauthToken(48);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    await db.insert(toolOauthStates).values({
+      state,
+      companyId,
+      connectionId: connection.id,
+      codeVerifier,
+      expiresAt,
+    });
+
+    const authorizationUrl = new URL(endpoints.authorizationUrl);
+    authorizationUrl.searchParams.set("response_type", "code");
+    authorizationUrl.searchParams.set("client_id", client.clientId);
+    authorizationUrl.searchParams.set("redirect_uri", input.redirectUri);
+    authorizationUrl.searchParams.set("state", state);
+    authorizationUrl.searchParams.set("code_challenge", base64UrlSha256(codeVerifier));
+    authorizationUrl.searchParams.set("code_challenge_method", "S256");
+    if (endpoints.scopes.length > 0) authorizationUrl.searchParams.set("scope", endpoints.scopes.join(" "));
+
+    const nextConfig = {
+      ...connection.config,
+      oauth: {
+        ...oauthConfig(connection),
+        provider: endpoints.provider,
+        authorizationUrl: endpoints.authorizationUrl,
+        tokenUrl: endpoints.tokenUrl,
+        scopes: endpoints.scopes,
+        clientIdEnv: client.clientIdEnv,
+        clientSecretEnv: client.clientSecret ? client.clientSecretEnv : null,
+      },
+    };
+    await db
+      .update(toolConnections)
+      .set({ config: nextConfig, transportConfig: nextConfig, updatedAt: new Date() })
+      .where(eq(toolConnections.id, connection.id));
+
+    return {
+      connectionId: connection.id,
+      provider: endpoints.provider,
+      authorizationUrl: authorizationUrl.toString(),
+      expiresAt: expiresAt.toISOString(),
+    };
+  }
+
+  async function completeOAuthCallback(input: {
+    state: string;
+    code?: string | null;
+    error?: string | null;
+    errorDescription?: string | null;
+    redirectUri: string;
+    actor?: ActorInfo;
+  }): Promise<ConnectToolAppResult> {
+    if (input.error) throw badRequest(input.errorDescription ?? `OAuth provider returned ${input.error}`);
+    if (!input.code) throw badRequest("OAuth callback is missing a code");
+    const [stateRow] = await db
+      .select()
+      .from(toolOauthStates)
+      .where(eq(toolOauthStates.state, input.state))
+      .limit(1);
+    if (!stateRow) throw badRequest("OAuth state was not found or has already been used");
+    await db.delete(toolOauthStates).where(eq(toolOauthStates.state, input.state));
+    if (stateRow.expiresAt.getTime() <= Date.now()) throw badRequest("OAuth state has expired");
+
+    let connection = await getConnectionRow(stateRow.connectionId, stateRow.companyId);
+    const galleryEntry = await oauthGalleryEntryForConnection(connection);
+    const endpoints = await oauthProviderEndpoints(galleryEntry);
+    const client = oauthClientConfig(endpoints.provider);
+    if (!client.clientId) throw unprocessable(`OAuth client id is not configured for ${endpoints.provider}`);
+
+    const token = await exchangeOAuthToken({
+      tokenUrl: endpoints.tokenUrl,
+      clientId: client.clientId,
+      clientSecret: client.clientSecret,
+      redirectUri: input.redirectUri,
+      codeVerifier: stateRow.codeVerifier,
+      code: input.code,
+    });
+    const accessRef = await createOrRotateOAuthSecret({
+      companyId: connection.companyId,
+      connection,
+      configPath: "oauth.access_token",
+      label: "OAuth access token",
+      value: token.accessToken,
+      actor: input.actor,
+    });
+    const nextCredentialSecretRefs = [
+      ...connection.credentialSecretRefs.filter((ref) => ref.configPath !== "oauth.access_token" && ref.configPath !== "oauth.refresh_token"),
+      accessRef,
+    ];
+    if (token.refreshToken) {
+      nextCredentialSecretRefs.push(await createOrRotateOAuthSecret({
+        companyId: connection.companyId,
+        connection,
+        configPath: "oauth.refresh_token",
+        label: "OAuth refresh token",
+        value: token.refreshToken,
+        actor: input.actor,
+      }));
+    } else {
+      const existingRefreshRef = oauthSecretRef(connection, "oauth.refresh_token");
+      if (existingRefreshRef) nextCredentialSecretRefs.push(existingRefreshRef);
+    }
+    const expiresAt = token.expiresIn ? new Date(Date.now() + token.expiresIn * 1000).toISOString() : null;
+    const nextConfig = {
+      ...connection.config,
+      oauth: {
+        ...oauthConfig(connection),
+        provider: endpoints.provider,
+        authorizationUrl: endpoints.authorizationUrl,
+        tokenUrl: endpoints.tokenUrl,
+        scopes: endpoints.scopes,
+        clientIdEnv: client.clientIdEnv,
+        clientSecretEnv: client.clientSecret ? client.clientSecretEnv : null,
+        expiresAt,
+        scope: token.scope,
+        tokenType: token.tokenType,
+        connectedAt: new Date().toISOString(),
+      },
+      providerMetadata: {
+        ...asRecord(connection.config.providerMetadata),
+        oauth: { expiresAt, scope: token.scope, tokenType: token.tokenType },
+      },
+    };
+    const [updatedConnection] = await db
+      .update(toolConnections)
+      .set({
+        status: "active",
+        enabled: false,
+        config: nextConfig,
+        transportConfig: nextConfig,
+        credentialSecretRefs: nextCredentialSecretRefs,
+        credentialRefs: [
+          ...connection.credentialRefs.filter((ref) => ref.name !== "oauth.access_token"),
+          {
+            name: "oauth.access_token",
+            secretId: accessRef.secretId,
+            version: "latest" as const,
+            placement: "header" as const,
+            key: "Authorization",
+            prefix: "Bearer ",
+          },
+        ],
+        updatedAt: new Date(),
+      })
+      .where(eq(toolConnections.id, connection.id))
+      .returning();
+    connection = updatedConnection;
+    await db
+      .update(toolApplications)
+      .set({ status: "active", updatedAt: new Date() })
+      .where(eq(toolApplications.id, connection.applicationId));
+    await syncCredentialBindings(connection);
+
+    await checkConnectionHealth(connection.id, input.actor);
+    const refresh = await refreshCatalog(connection.id, input.actor);
+    const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, connection.applicationId));
+    return {
+      connectionId: refresh.connection.id,
+      application: toApplication(application),
+      connection: refresh.connection,
+      catalog: refresh.catalog,
+      actions: groupedActions(refresh.catalog),
+      suggestedDefaults: galleryEntry.recommendedDefaults,
+      auth: null,
+    };
+  }
+
   return {
-    approvedStdioTemplates: () => APPROVED_STDIO_TEMPLATES,
+    approvedStdioTemplates: async (companyId: string): Promise<ToolStdioCommandTemplate[]> => {
+      const adminTemplates = await db
+        .select()
+        .from(toolStdioCommandTemplates)
+        .where(eq(toolStdioCommandTemplates.companyId, companyId))
+        .orderBy(asc(toolStdioCommandTemplates.templateKey));
+      return [
+        ...Object.keys(APPROVED_STDIO_TEMPLATES).sort().map((templateId) => builtInStdioTemplate(templateId)!),
+        ...adminTemplates.map(toStdioCommandTemplate),
+      ];
+    },
+
+    createStdioCommandTemplate: async (
+      companyId: string,
+      input: CreateToolStdioCommandTemplate,
+      actor?: ActorInfo,
+    ): Promise<ToolStdioCommandTemplate> => {
+      if (builtInStdioTemplate(input.templateId)) {
+        throw conflict("A built-in stdio template already uses this templateId");
+      }
+      const existing = await getAdminStdioTemplate(companyId, input.templateId);
+      if (existing) throw conflict("A stdio command template already uses this templateId");
+      const tools = input.tools.map((tool) => normalizeToolDescriptor(tool)).filter((tool): tool is McpToolDescriptor => Boolean(tool));
+      const [row] = await db.insert(toolStdioCommandTemplates).values({
+        companyId,
+        templateKey: input.templateId,
+        name: input.name,
+        description: input.description ?? null,
+        status: "active",
+        command: input.command,
+        args: input.args,
+        envKeys: input.envKeys,
+        tools,
+        createdByAgentId: actor?.actorType === "agent" ? actor.actorId ?? null : null,
+        createdByUserId: actor?.actorType === "user" ? actor.actorId ?? null : null,
+      }).returning();
+      return toStdioCommandTemplate(row);
+    },
+
+    disableStdioCommandTemplate: async (
+      companyId: string,
+      templateId: string,
+    ): Promise<ToolStdioCommandTemplate> => {
+      if (builtInStdioTemplate(templateId)) throw unprocessable("Built-in stdio templates cannot be disabled");
+      const existing = await getAdminStdioTemplate(companyId, templateId);
+      if (!existing) throw notFound("Stdio command template not found");
+      if (existing.status === "disabled") return toStdioCommandTemplate(existing);
+      const at = now();
+      const [row] = await db
+        .update(toolStdioCommandTemplates)
+        .set({ status: "disabled", disabledAt: at, updatedAt: at })
+        .where(and(eq(toolStdioCommandTemplates.companyId, companyId), eq(toolStdioCommandTemplates.templateKey, templateId)))
+        .returning();
+      return toStdioCommandTemplate(row);
+    },
 
     connectGalleryApp,
 
     finishGalleryAppConnection,
+
+    startOAuth,
+
+    completeOAuthCallback,
 
     listExamples: async (companyId: string): Promise<ToolExampleSummary[]> => {
       return Promise.all(TOOL_EXAMPLES.map(async (definition) => {
@@ -2236,13 +2944,35 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const blocker = localStdioInstallBlocker();
       if (blocker) throw unprocessable(blocker);
       assertLocalStdioCanBeEnabled("local_stdio", true);
-      stdioTemplateId({ templateId: definition.templateId });
+      await stdioTemplateId(companyId, { templateId: definition.templateId });
       const before = await exampleRows(companyId, definition);
       const application = await upsertExampleApplication(companyId, definition, before.application);
       const connection = await upsertExampleConnection(companyId, definition, application.row.id, before.connection);
       const refresh = await refreshCatalog(connection.row.id, actor);
+      let catalog = refresh.catalog;
+      const safeReadEntryIds = catalog
+        .filter((entry) => entry.riskLevel === "read")
+        .map((entry) => entry.id);
+      if (safeReadEntryIds.length > 0) {
+        const reviewedAt = new Date();
+        await db
+          .update(toolCatalogEntries)
+          .set({
+            status: "active",
+            reviewedAt,
+            reviewedByAgentId: actor?.actorType === "agent" ? actor.actorId ?? null : null,
+            reviewedByUserId: actor?.actorType === "user" ? actor.actorId ?? null : null,
+            quarantinedAt: null,
+            quarantineReason: null,
+            updatedAt: reviewedAt,
+          })
+          .where(and(eq(toolCatalogEntries.companyId, companyId), inArray(toolCatalogEntries.id, safeReadEntryIds)));
+        catalog = catalog.map((entry) => safeReadEntryIds.includes(entry.id)
+          ? { ...entry, status: "active", reviewedAt, quarantinedAt: null, quarantineReason: null, updatedAt: reviewedAt }
+          : entry);
+      }
       const profile = await upsertExampleProfile(companyId, definition, before.profile);
-      const profileEntries = await syncExampleProfileEntries(companyId, profile.row.id, refresh.catalog);
+      const profileEntries = await syncExampleProfileEntries(companyId, profile.row.id, catalog);
       const profileBinding = await upsertExampleProfileBinding(companyId, profile.row.id, before.profileBinding, actor);
       const after = await exampleRows(companyId, definition);
       return {
@@ -2253,7 +2983,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         profile: toProfile(profile.row),
         profileEntries,
         profileBinding,
-        catalog: refresh.catalog,
+        catalog,
       };
     },
 
@@ -2434,7 +3164,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       if (!transport) throw badRequest("Tool connection transport is required");
       const config = input.config ?? input.transportConfig ?? {};
       if (transport === "remote_http") remoteEndpoint(config);
-      if (transport === "local_stdio") stdioTemplateId(config);
+      if (transport === "local_stdio") await stdioTemplateId(companyId, config);
       assertLocalStdioCanBeEnabled(transport, input.enabled ?? false);
       if (applicationId) {
         const app = await assertApplication(companyId, applicationId);
@@ -2479,7 +3209,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const existing = await getConnectionRow(connectionId);
       const config = input.config ?? input.transportConfig ?? existing.config;
       if (existing.transport === "remote_http") remoteEndpoint(config);
-      if (existing.transport === "local_stdio") stdioTemplateId(config);
+      if (existing.transport === "local_stdio") await stdioTemplateId(existing.companyId, config);
       assertLocalStdioCanBeEnabled(existing.transport, input.enabled ?? existing.enabled);
       await assertSecretRefs(existing.companyId, [...(input.credentialRefs ?? existing.credentialRefs), ...(input.credentialSecretRefs ?? existing.credentialSecretRefs)]);
       const [row] = await db
@@ -2514,6 +3244,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     checkHealth: checkConnectionHealth,
 
     refreshCatalog,
+
+    listAppsNeedingAttention,
+
+    sweepConnectionHealth,
 
     listCatalog: async (connectionId: string, companyId?: string): Promise<ToolCatalogEntry[]> => {
       const connection = await getConnectionRow(connectionId, companyId);

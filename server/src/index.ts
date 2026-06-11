@@ -37,6 +37,7 @@ import {
   reconcileCloudUpstreamRunsOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
+  toolAccessService,
 } from "./services/index.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
@@ -719,7 +720,14 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
-  
+    const tools = toolAccessService(db as any, {
+      deploymentMode: config.deploymentMode,
+      deploymentExposure: config.deploymentExposure,
+      trustedLocalStdioRuntimeHost: process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST
+        ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
+        ?? null,
+    });
+	  
     // Reap orphaned running runs at startup while in-memory execution state is empty,
     // then resume any persisted queued runs that were waiting on the previous process.
     void heartbeat
@@ -764,6 +772,12 @@ export async function startServer(): Promise<StartedServer> {
         const reviewed = await heartbeat.reconcileProductivityReviews();
         if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
           logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
+        }
+      })
+      .then(async () => {
+        const swept = await tools.sweepConnectionHealth();
+        if (swept.failed > 0) {
+          logger.warn({ ...swept }, "startup tool connection health sweep found failing connections");
         }
       })
       .catch((err) => {
@@ -836,6 +850,12 @@ export async function startServer(): Promise<StartedServer> {
           const reviewed = await heartbeat.reconcileProductivityReviews();
           if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
             logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
+          }
+        })
+        .then(async () => {
+          const swept = await tools.sweepConnectionHealth();
+          if (swept.failed > 0) {
+            logger.warn({ ...swept }, "periodic tool connection health sweep found failing connections");
           }
         })
         .catch((err) => {
