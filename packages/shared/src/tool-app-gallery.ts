@@ -218,3 +218,23 @@ export type AppGalleryKey = (typeof TOOL_APP_GALLERY)[number]["key"];
 export function getToolAppGalleryEntry(key: string): AppGalleryEntry | null {
   return TOOL_APP_GALLERY.find((entry) => entry.key === key) ?? null;
 }
+
+function wildcardPatternToRegExp(pattern: string): RegExp {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+  return new RegExp(`^${escaped}$`, "i");
+}
+
+export function getToolAppGalleryEntryForUrl(
+  link: string,
+  entries: readonly AppGalleryEntry[] = TOOL_APP_GALLERY,
+): AppGalleryEntry | null {
+  let normalized: string;
+  try {
+    normalized = new URL(link.trim()).toString();
+  } catch {
+    return null;
+  }
+  return entries.find((entry) =>
+    entry.urlPatterns.some((pattern) => wildcardPatternToRegExp(pattern).test(normalized))
+  ) ?? null;
+}

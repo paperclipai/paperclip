@@ -43,6 +43,7 @@ export {
 export {
   TOOL_APP_GALLERY,
   getToolAppGalleryEntry,
+  getToolAppGalleryEntryForUrl,
   type AppGalleryAuthKind,
   type AppGalleryCredentialField,
   type AppGalleryEntry,

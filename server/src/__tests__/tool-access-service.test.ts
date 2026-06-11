@@ -992,6 +992,69 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(db.select().from(toolCatalogEntries)).resolves.toHaveLength(0);
   });
 
+  it("connects pasted links with an optional secret-backed app key", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const fetchMock = mockToolsList([
+      {
+        name: "read_items",
+        description: "Read items.",
+        inputSchema: { type: "object", properties: {} },
+        annotations: { readOnlyHint: true },
+      },
+    ]);
+
+    const connect = await service.connectGalleryApp(company.id, {
+      link: "https://links.example.test/actions",
+      name: "Linked app",
+      credentialValues: { "credentials.authorization": "link-secret" },
+    }, { actorType: "user", actorId: "board" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://links.example.test/actions",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer link-secret" }),
+      }),
+    );
+    expect(connect.connection).toMatchObject({
+      status: "draft",
+      enabled: false,
+      config: { url: "https://links.example.test/actions", quarantineNewEntries: true },
+      credentialSecretRefs: [
+        expect.objectContaining({
+          configPath: "credentials.authorization",
+          label: "App key",
+        }),
+      ],
+    });
+    expect(JSON.stringify(connect.connection.config)).not.toContain("link-secret");
+    await expect(db.select().from(companySecrets)).resolves.toHaveLength(1);
+    await expect(db.select().from(companySecretBindings)).resolves.toHaveLength(2);
+  });
+
+  it("returns a sign-in-required code when a pasted link answers with an OAuth challenge", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: { get: (name: string) => name.toLowerCase() === "www-authenticate" ? "Bearer realm=\"app\"" : null },
+      json: async () => ({}),
+    } as Response);
+
+    const res = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ link: "https://signin.example.test/actions", name: "Sign-in app" });
+
+    expect(res.status).toBe(502);
+    expect(res.body).toMatchObject({
+      error: "This app needs you to sign in - coming soon.",
+      details: expect.objectContaining({ code: "oauth_challenge" }),
+    });
+    await expect(db.select().from(toolApplications)).resolves.toHaveLength(0);
+    await expect(db.select().from(toolConnections)).resolves.toHaveLength(0);
+  });
+
   it("connects gallery apps and finishes access profiles, bindings, and ask-first policies", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);

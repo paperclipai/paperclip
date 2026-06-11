@@ -1,17 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowUpRight, Check, Loader2, Lock, Search } from "lucide-react";
+import { ArrowUpRight, Check, Link2, Loader2, Lock, Search } from "lucide-react";
 import type {
   Agent,
   AppGalleryEntry,
   ConnectToolAppResult,
   ToolAppConnectionActionSummary,
 } from "@paperclipai/shared";
+import { getToolAppGalleryEntryForUrl } from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
+import { ApiError } from "@/api/client";
 import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
 import { appCopyFor, credentialFieldLabel } from "@/lib/app-gallery-copy";
@@ -24,6 +26,7 @@ import { AppLogo } from "./AppLogo";
 
 type Step = "gallery" | "key" | "actions" | "who" | "success";
 type AppAccessSelection = "all_agents" | { agentIds: string[] };
+const LINK_CREDENTIAL_CONFIG_PATH = "credentials.authorization";
 
 const STEP_LABELS = ["Pick app", "Add your key", "Choose actions"];
 const STEP_INDEX: Record<Exclude<Step, "success">, number> = {
@@ -46,6 +49,8 @@ export function AppsConnect() {
 
   const [step, setStep] = useState<Step>("gallery");
   const [entry, setEntry] = useState<AppGalleryEntry | null>(null);
+  const [linkUrl, setLinkUrl] = useState("");
+  const [linkKey, setLinkKey] = useState("");
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [connectResult, setConnectResult] = useState<ConnectToolAppResult | null>(null);
   const [enabled, setEnabled] = useState<Record<string, boolean>>({});
@@ -68,8 +73,16 @@ export function AppsConnect() {
   });
 
   const connectMutation = useMutation({
-    mutationFn: () =>
-      toolsApi.connectApp(selectedCompanyId!, { galleryKey: entry!.key, credentialValues: credentials }),
+    mutationFn: () => {
+      if (entry) {
+        return toolsApi.connectApp(selectedCompanyId!, { galleryKey: entry.key, credentialValues: credentials });
+      }
+      const trimmedKey = linkKey.trim();
+      return toolsApi.connectApp(selectedCompanyId!, {
+        link: linkUrl,
+        credentialValues: trimmedKey ? { [LINK_CREDENTIAL_CONFIG_PATH]: trimmedKey } : undefined,
+      });
+    },
     onSuccess: (result) => {
       setConnectResult(result);
       const defaults: Record<string, boolean> = {};
@@ -79,9 +92,17 @@ export function AppsConnect() {
       setStep("actions");
     },
     onError: (error) => {
+      const details = error instanceof ApiError && error.body && typeof error.body === "object"
+        ? (error.body as { details?: { code?: unknown } }).details
+        : null;
+      const oauthRequired = details?.code === "oauth_challenge";
       pushToast({
-        title: "Couldn’t connect",
-        body: error instanceof Error ? error.message : "Please check your key and try again.",
+        title: oauthRequired ? "Sign-in required" : "Couldn’t connect",
+        body: oauthRequired
+          ? "This app needs you to sign in - coming soon."
+          : error instanceof Error
+            ? error.message
+            : "Please check your key and try again.",
         tone: "error",
       });
     },
@@ -119,7 +140,7 @@ export function AppsConnect() {
     return <div className="p-6 text-sm text-muted-foreground">Select a company to connect apps.</div>;
   }
 
-  const appName = entry?.name ?? "this app";
+  const appName = connectResult?.application.name ?? entry?.name ?? defaultLinkName(linkUrl) ?? "this app";
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -141,6 +162,15 @@ export function AppsConnect() {
           apps={galleryQuery.data?.apps ?? []}
           onPick={(picked) => {
             setEntry(picked);
+            setLinkUrl("");
+            setLinkKey("");
+            setCredentials({});
+            setStep("key");
+          }}
+          onUseLink={(url) => {
+            setEntry(null);
+            setLinkUrl(url);
+            setLinkKey("");
             setCredentials({});
             setStep("key");
           }}
@@ -152,6 +182,17 @@ export function AppsConnect() {
           entry={entry}
           values={credentials}
           onChange={setCredentials}
+          submitting={connectMutation.isPending}
+          onBack={() => setStep("gallery")}
+          onConnect={() => connectMutation.mutate()}
+        />
+      )}
+
+      {step === "key" && !entry && linkUrl && (
+        <LinkKeyStep
+          link={linkUrl}
+          keyValue={linkKey}
+          onKeyChange={setLinkKey}
           submitting={connectMutation.isPending}
           onBack={() => setStep("gallery")}
           onConnect={() => connectMutation.mutate()}
@@ -245,17 +286,33 @@ function GalleryStep({
   loading,
   apps,
   onPick,
+  onUseLink,
 }: {
   loading: boolean;
   apps: AppGalleryEntry[];
   onPick: (entry: AppGalleryEntry) => void;
+  onUseLink: (link: string) => void;
 }) {
   const [search, setSearch] = useState("");
+  const [linkInput, setLinkInput] = useState("");
+  const [linkError, setLinkError] = useState<string | null>(null);
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return apps;
     return apps.filter((a) => a.name.toLowerCase().includes(q));
   }, [apps, search]);
+  const normalizedLink = normalizeAppLink(linkInput);
+  const matchedEntry = normalizedLink ? getToolAppGalleryEntryForUrl(normalizedLink, apps) : null;
+
+  const continueWithLink = () => {
+    const next = normalizeAppLink(linkInput);
+    if (!next) {
+      setLinkError("Paste a full http or https link.");
+      return;
+    }
+    setLinkError(null);
+    onUseLink(next);
+  };
 
   if (loading) {
     return (
@@ -313,8 +370,145 @@ function GalleryStep({
         <div className="py-10 text-center text-sm text-muted-foreground">No apps match “{search}”.</div>
       )}
 
-      <div className="flex items-center justify-between border-t border-border pt-4 text-xs text-muted-foreground">
-        <span>Have a link from an app’s website? Connect with a link is coming soon.</span>
+      <div className="grid gap-4 border-t border-border pt-5 md:grid-cols-[minmax(0,1fr)_auto]">
+        <div>
+          <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+            <Link2 className="h-4 w-4 text-muted-foreground" />
+            Connect with a link
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Paste a setup link from an app that is not listed here.
+          </p>
+          {matchedEntry && (
+            <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2">
+              <div className="flex min-w-0 items-center gap-2 text-sm">
+                <AppLogo name={matchedEntry.name} logoUrl={matchedEntry.logoUrl} size={24} />
+                <span className="truncate">This looks like {matchedEntry.name}.</span>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setLinkError(null);
+                  onPick(matchedEntry);
+                }}
+              >
+                Use {matchedEntry.name}
+              </Button>
+            </div>
+          )}
+        </div>
+        <div className="flex min-w-0 flex-col gap-2 sm:min-w-[360px]">
+          <div className="flex gap-2">
+            <Input
+              value={linkInput}
+              onChange={(e) => {
+                setLinkInput(e.target.value);
+                setLinkError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") continueWithLink();
+              }}
+              placeholder="https://example.com/actions"
+              className="h-10"
+            />
+            <Button type="button" variant="outline" onClick={continueWithLink}>
+              Continue
+            </Button>
+          </div>
+          {linkError && <div className="text-xs text-destructive">{linkError}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function normalizeAppLink(value: string): string | null {
+  try {
+    const parsed = new URL(value.trim());
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function defaultLinkName(link: string): string | null {
+  try {
+    return new URL(link).hostname.replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+}
+
+function LinkKeyStep({
+  link,
+  keyValue,
+  onKeyChange,
+  submitting,
+  onBack,
+  onConnect,
+}: {
+  link: string;
+  keyValue: string;
+  onKeyChange: (next: string) => void;
+  submitting: boolean;
+  onBack: () => void;
+  onConnect: () => void;
+}) {
+  return (
+    <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-8">
+      <div className="flex items-start gap-3">
+        <span className="mt-1 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
+          <Link2 className="h-5 w-5 text-muted-foreground" />
+        </span>
+        <div className="min-w-0">
+          <h2 className="text-xl font-bold tracking-tight">Connect with a link</h2>
+          <p className="mt-1 truncate text-sm text-muted-foreground">{link}</p>
+        </div>
+      </div>
+
+      <div className="mt-8 space-y-6">
+        <div>
+          <label className="text-sm font-medium text-foreground">App key</label>
+          <Input
+            type="password"
+            autoComplete="off"
+            value={keyValue}
+            onChange={(e) => onKeyChange(e.target.value)}
+            placeholder="Optional"
+            className="mt-2 h-11 font-mono"
+          />
+          <p className="mt-2 text-xs text-muted-foreground">
+            If this app gave you a key, paste it here. Otherwise leave this blank.
+          </p>
+        </div>
+
+        <div className="flex items-start gap-3 rounded-lg bg-muted/50 p-4">
+          <Lock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+          <div>
+            <div className="text-sm font-medium text-foreground">Your key is stored securely.</div>
+            <div className="text-xs text-muted-foreground">
+              You can replace it anytime from this app’s page.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-8 flex items-center justify-between">
+        <Button variant="ghost" onClick={onBack} disabled={submitting}>
+          Back
+        </Button>
+        <div className="flex items-center gap-3">
+          <span className="hidden text-xs text-muted-foreground sm:inline">
+            We’ll check the link before turning anything on.
+          </span>
+          <Button onClick={onConnect} disabled={submitting}>
+            {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {submitting ? "Checking…" : "Check link"}
+          </Button>
+        </div>
       </div>
     </div>
   );

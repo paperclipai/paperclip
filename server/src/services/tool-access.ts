@@ -699,6 +699,13 @@ function descriptorHash(tool: McpToolDescriptor): string {
 function sanitizeHttpFailure(error: unknown): { status: ToolConnectionHealthStatus; message: string; code: string } {
   if (error instanceof HttpError) {
     const code = asRecord(error.details).code;
+    if (code === "oauth_challenge") {
+      return {
+        status: "error",
+        message: "This app needs you to sign in - coming soon.",
+        code: "oauth_challenge",
+      };
+    }
     if (code === "binding_missing" || code === "secret_deleted" || code === "secret_inactive" || code === "version_missing") {
       return {
         status: "missing_secret",
@@ -1403,7 +1410,16 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         params: {},
       }),
     });
-    if (!response.ok) throw new HttpError(502, "Remote MCP server returned an error", { status: response.status });
+    if (!response.ok) {
+      const authenticate = response.headers.get("www-authenticate") ?? "";
+      if (response.status === 401 && /bearer|oauth|authorization/i.test(authenticate)) {
+        throw new HttpError(502, "This app needs you to sign in - coming soon.", {
+          code: "oauth_challenge",
+          status: response.status,
+        });
+      }
+      throw new HttpError(502, "Remote app returned an error", { status: response.status });
+    }
     const payload = await response.json() as unknown;
     const result = asRecord(asRecord(payload).result);
     const payloadTools = asRecord(payload).tools;
@@ -2371,7 +2387,20 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     let connectionRow: typeof toolConnections.$inferSelect | null = null;
 
     try {
-      for (const field of galleryEntry?.credentialFields ?? []) {
+      const credentialFields = galleryEntry?.credentialFields ?? (
+        credentialValues["credentials.authorization"]?.trim()
+          ? [{
+              label: "App key",
+              configPath: "credentials.authorization",
+              helpUrl: "",
+              required: false,
+              placement: "header" as const,
+              key: "Authorization",
+              prefix: "Bearer ",
+            }]
+          : []
+      );
+      for (const field of credentialFields) {
         const value = credentialValues[field.configPath];
         if (!value && field.required !== false) {
           throw badRequest(`Missing credential value for ${field.configPath}`);
@@ -2408,7 +2437,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         companyId,
         applicationKey: `app-gallery:${galleryEntry?.key ?? "link"}:${randomUUID()}`,
         name,
-        description: galleryEntry?.tagline ?? `Connected MCP app at ${input.link}`,
+        description: galleryEntry?.tagline ?? `Connected app at ${input.link}`,
         type: transport === "remote_http" ? "mcp_http" : "mcp_stdio",
         status: "draft",
         metadata: galleryEntry ? { sourceTemplateKey: galleryEntry.key, galleryKey: galleryEntry.key } : { source: "link" },
