@@ -4676,6 +4676,7 @@ export function issueRoutes(
     const {
       comment: commentBody,
       reviewRequest,
+      gateEvidence,
       reopen: reopenRequested,
       resume: resumeRequested,
       interrupt: interruptRequested,
@@ -4873,6 +4874,8 @@ export function issueRoutes(
         agentId: actor.agentId ?? null,
         userId: actor.actorType === "user" ? actor.actorId : null,
       },
+      actorIsBoard: req.actor.type === "board",
+      gateEvidence: gateEvidence === undefined ? undefined : gateEvidence,
       commentBody,
       reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
       monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
@@ -4973,6 +4976,7 @@ export function issueRoutes(
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
             outcome: decision.outcome,
             body: decision.body,
+            gateEvidence: decision.gateEvidence ?? null,
             createdByRunId: actor.runId ?? null,
           });
 
@@ -5011,6 +5015,27 @@ export function issueRoutes(
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
+    }
+
+    if (transition.boardOverride) {
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "execution_stage.board_override",
+        entityType: "issue",
+        entityId: existing.id,
+        details: {
+          overrideAction: transition.boardOverride.action,
+          stageId: transition.boardOverride.stageId,
+          stageType: transition.boardOverride.stageType,
+          previousParticipant: transition.boardOverride.previousParticipant,
+          newParticipant: transition.boardOverride.newParticipant ?? null,
+          requestedStatus: typeof req.body.status === "string" ? req.body.status : null,
+        },
+      });
     }
 
     let cancelledStatusRunId: string | null = null;

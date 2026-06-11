@@ -8,6 +8,7 @@ import type {
   IssueExecutionMonitorRecoveryPolicy,
   IssueExecutionMonitorStateStatus,
   IssueExecutionDecisionOutcome,
+  IssueExecutionGateStatus,
   IssueMonitorScheduledBy,
   IssueExecutionPolicyMode,
   IssueReferenceSourceKind,
@@ -446,9 +447,27 @@ export interface IssueExecutionPolicy {
   mode: IssueExecutionPolicyMode;
   commentRequired: boolean;
   stages: IssueExecutionStage[];
+  /**
+   * Gate suite that must run clean before a non-participant actor (including the
+   * executor/returnAssignee) may advance a review/approval stage with gate evidence.
+   * Defaults to DEFAULT_ISSUE_EXECUTION_REQUIRED_GATES when not configured.
+   */
+  requiredGates?: string[] | null;
   monitor?: IssueExecutionMonitorPolicy | null;
   reviewPreset?: LowTrustReviewPresetPolicy;
   authorizationPolicy?: TrustAuthorizationPolicy;
+}
+
+export interface IssueExecutionGateResult {
+  gate: string;
+  status: IssueExecutionGateStatus;
+  evidenceUrl?: string | null;
+  detail?: string | null;
+  recordedAt?: string | null;
+}
+
+export interface IssueExecutionGateEvidence {
+  gates: IssueExecutionGateResult[];
 }
 
 export interface IssueExecutionMonitorState {
@@ -496,6 +515,7 @@ export interface IssueExecutionDecision {
   actorUserId: string | null;
   outcome: IssueExecutionDecisionOutcome;
   body: string;
+  gateEvidence?: IssueExecutionGateEvidence | null;
   createdByRunId: string | null;
   createdAt: Date;
   updatedAt: Date;

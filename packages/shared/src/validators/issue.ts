@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   ISSUE_EXECUTION_DECISION_OUTCOMES,
+  ISSUE_EXECUTION_GATE_STATUSES,
   ISSUE_EXECUTION_MONITOR_CLEAR_REASONS,
   ISSUE_EXECUTION_MONITOR_KINDS,
   ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES,
@@ -198,10 +199,23 @@ export const issueExecutionPolicySchema = z.object({
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
   commentRequired: z.boolean().optional().default(true),
   stages: z.array(issueExecutionStageSchema).default([]),
+  requiredGates: z.array(z.string().trim().min(1).max(120)).max(20).optional().nullable(),
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
   reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
 });
+
+export const issueExecutionGateResultSchema = z.object({
+  gate: z.string().trim().min(1).max(120),
+  status: z.enum(ISSUE_EXECUTION_GATE_STATUSES),
+  evidenceUrl: z.string().trim().min(1).max(2000).optional().nullable(),
+  detail: z.string().trim().min(1).max(2000).optional().nullable(),
+  recordedAt: z.string().datetime().optional().nullable(),
+}).strict();
+
+export const issueExecutionGateEvidenceSchema = z.object({
+  gates: z.array(issueExecutionGateResultSchema).min(1).max(50),
+}).strict();
 
 export const issueExecutionMonitorStateSchema = z.object({
   status: z.enum(ISSUE_EXECUTION_MONITOR_STATE_STATUSES),
@@ -435,6 +449,7 @@ export const updateIssueSchema = createIssueBaseSchema.partial().extend({
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
   reviewRequest: issueReviewRequestSchema.optional().nullable(),
+  gateEvidence: issueExecutionGateEvidenceSchema.optional().nullable(),
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
