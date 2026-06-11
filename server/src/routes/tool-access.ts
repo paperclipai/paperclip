@@ -1,14 +1,17 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import {
+  TOOL_APP_GALLERY,
   type DeploymentExposure,
   type DeploymentMode,
+  connectToolAppSchema,
   createToolApplicationSchema,
   createToolConnectionSchema,
   createToolPolicySchema,
   createToolProfileBindingForProfileSchema,
   createToolProfileEntryForProfileSchema,
   createToolProfileWithEntriesSchema,
+  finishToolAppSchema,
   createToolTrustRuleFromActionRequestSchema,
   importMcpJsonSchema,
   revokeToolTrustRuleSchema,
@@ -35,6 +38,65 @@ export function toolAccessRoutes(
   const router = Router();
   const svc = toolAccessService(db, options);
   const policySvc = toolAccessPolicyService(db);
+
+  router.get("/companies/:companyId/tools/gallery", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json({ apps: TOOL_APP_GALLERY });
+  });
+
+  router.post("/companies/:companyId/tools/apps/connect", validate(connectToolAppSchema), async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    try {
+      const result = await svc.connectGalleryApp(companyId, req.body, getActorInfo(req));
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "tool_app.connected",
+        entityType: "tool_connection",
+        entityId: result.connectionId,
+        details: {
+          galleryKey: req.body.galleryKey ?? null,
+          link: req.body.link ?? null,
+          applicationId: result.application.id,
+          catalogEntryCount: result.catalog.length,
+          readOnlyActionCount: result.actions.readOnly.length,
+          canMakeChangesActionCount: result.actions.canMakeChanges.length,
+        },
+      });
+      res.status(201).json(result);
+    } catch (error) {
+      svc.ensureNoDuplicateNameError(error);
+    }
+  });
+
+  router.post("/companies/:companyId/tools/apps/:connectionId/finish", validate(finishToolAppSchema), async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const existing = await svc.getConnection(req.params.connectionId as string, companyId);
+    const result = await svc.finishGalleryAppConnection(companyId, existing.id, req.body, getActorInfo(req));
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "tool_app.finished",
+      entityType: "tool_connection",
+      entityId: result.connection.id,
+      details: {
+        profileId: result.profile.id,
+        profileEntryCount: result.profileEntries.length,
+        profileBindingCount: result.profileBindings.length,
+        askFirstPolicyCount: result.policies.length,
+        access: req.body.access,
+      },
+    });
+    res.json(result);
+  });
 
   router.get("/companies/:companyId/tools/examples", async (req, res) => {
     assertBoard(req);

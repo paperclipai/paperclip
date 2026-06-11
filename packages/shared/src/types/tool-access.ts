@@ -407,6 +407,38 @@ export interface ToolExampleSmokeResult {
   checks: ToolExampleSmokeCheck[];
 }
 
+export interface ToolAppConnectionActionSummary {
+  catalogEntryId: string;
+  toolName: string;
+  title: string | null;
+  description: string | null;
+  riskLevel: ToolRiskLevel;
+  isReadOnly: boolean;
+  isWrite: boolean;
+  isDestructive: boolean;
+  status: ToolCatalogEntryStatus;
+}
+
+export interface ConnectToolAppResult {
+  connectionId: string;
+  application: ToolApplication;
+  connection: ToolConnection;
+  catalog: ToolCatalogEntry[];
+  actions: {
+    readOnly: ToolAppConnectionActionSummary[];
+    canMakeChanges: ToolAppConnectionActionSummary[];
+  };
+  suggestedDefaults: Record<string, unknown>;
+}
+
+export interface FinishToolAppResult {
+  connection: ToolConnection;
+  profile: ToolProfile;
+  profileEntries: ToolProfileEntry[];
+  profileBindings: ToolProfileBinding[];
+  policies: ToolPolicy[];
+}
+
 export interface McpJsonImportDraft {
   name: string;
   transport: ToolConnectionTransport;

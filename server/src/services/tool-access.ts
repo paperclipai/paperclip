@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gte, inArray, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -17,6 +17,7 @@ import {
   toolConnections,
   toolCallEvents,
   toolInvocations,
+  toolPolicies,
   toolProfileBindings,
   toolProfileEntries,
   toolProfiles,
@@ -25,6 +26,10 @@ import {
 import type {
   CreateToolApplication,
   CreateToolConnection,
+  ConnectToolApp,
+  ConnectToolAppResult,
+  FinishToolApp,
+  FinishToolAppResult,
   CreateToolProfileBindingForProfile,
   CreateToolProfileEntryForProfile,
   CreateToolProfileWithEntries,
@@ -41,6 +46,7 @@ import type {
   ToolConnectionHealthStatus,
   ToolConnectionTransport,
   ToolActionRequest,
+  ToolAppConnectionActionSummary,
   ToolExampleInstallResult,
   ToolExampleSmokeCheck,
   ToolExampleSmokeResult,
@@ -53,6 +59,7 @@ import type {
   ToolProfileEntry,
   ToolProfileWithDetails,
   ToolPolicyDecision,
+  ToolPolicy,
   ToolRiskLevel,
   ToolRuntimeAlertRecommendation,
   ToolRuntimeHealthSummary,
@@ -65,6 +72,7 @@ import type {
   UpdateToolProfileWithEntries,
   UnbindToolProfileBinding,
 } from "@paperclipai/shared";
+import { getToolAppGalleryEntry } from "@paperclipai/shared";
 import { badRequest, conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
@@ -512,6 +520,25 @@ function toProfileBinding(row: typeof toolProfileBindings.$inferSelect): ToolPro
     targetId: row.targetId,
     priority: row.priority,
     metadata: row.metadata ?? null,
+    createdByAgentId: row.createdByAgentId,
+    createdByUserId: row.createdByUserId,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function toPolicy(row: typeof toolPolicies.$inferSelect): ToolPolicy {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    name: row.name,
+    description: row.description,
+    policyType: row.policyType,
+    priority: row.priority,
+    enabled: row.enabled,
+    selectors: row.selectors ?? {},
+    conditions: row.conditions ?? null,
+    config: row.config ?? null,
     createdByAgentId: row.createdByAgentId,
     createdByUserId: row.createdByUserId,
     createdAt: row.createdAt,
@@ -1302,6 +1329,45 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return updated;
   }
 
+  async function checkConnectionHealth(connectionId: string, actor?: ActorInfo): Promise<ToolConnectionHealthCheckResult> {
+    const connection = await getConnectionRow(connectionId);
+    try {
+      if (connection.transport === "remote_http") {
+        await remoteTools(connection);
+      } else {
+        await resolveCredentialHeaders(connection);
+        stdioTemplateId(connection.config);
+      }
+      const updated = await updateConnectionHealth(connection, "ok", connection.transport === "local_stdio"
+        ? "Approved stdio template is ready."
+        : "Remote MCP server responded to tools/list.");
+      const runtimeSlot = await ensureRuntimeSlot(updated);
+      await audit({
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        action: "tool_connection.health_check",
+        outcome: "success",
+        actor,
+        details: { transport: connection.transport },
+      });
+      return { connection: toConnection(updated), runtimeSlot };
+    } catch (error) {
+      const failure = sanitizeHttpFailure(error);
+      const updated = await updateConnectionHealth(connection, failure.status, failure.message);
+      const runtimeSlot = connection.transport === "local_stdio" ? await ensureRuntimeSlot(updated) : null;
+      await audit({
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        action: "tool_connection.health_check",
+        outcome: "failure",
+        reasonCode: failure.code,
+        actor,
+        details: { status: failure.status, transport: connection.transport },
+      });
+      throw new HttpError(failure.status === "missing_secret" ? 422 : 502, failure.message, { code: failure.code, connection: toConnection(updated), runtimeSlot });
+    }
+  }
+
   async function refreshCatalog(connectionId: string, actor?: ActorInfo): Promise<ToolCatalogRefreshResult> {
     const connection = await getConnectionRow(connectionId);
     const now = new Date();
@@ -1749,8 +1815,410 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     };
   }
 
+  function actionSummary(entry: ToolCatalogEntry): ToolAppConnectionActionSummary {
+    return {
+      catalogEntryId: entry.id,
+      toolName: entry.toolName,
+      title: entry.title,
+      description: entry.description,
+      riskLevel: entry.riskLevel,
+      isReadOnly: entry.isReadOnly,
+      isWrite: entry.isWrite,
+      isDestructive: entry.isDestructive,
+      status: entry.status,
+    };
+  }
+
+  function groupedActions(catalog: ToolCatalogEntry[]): ConnectToolAppResult["actions"] {
+    const readOnly: ToolAppConnectionActionSummary[] = [];
+    const canMakeChanges: ToolAppConnectionActionSummary[] = [];
+    for (const entry of catalog) {
+      const summary = actionSummary(entry);
+      if (entry.isReadOnly && entry.riskLevel === "read" && !entry.isWrite && !entry.isDestructive) {
+        readOnly.push(summary);
+      } else {
+        canMakeChanges.push(summary);
+      }
+    }
+    return { readOnly, canMakeChanges };
+  }
+
+  function defaultLinkName(link: string): string {
+    try {
+      const url = new URL(link);
+      return url.hostname.replace(/^www\./, "") || "MCP app";
+    } catch {
+      return "MCP app";
+    }
+  }
+
+  function actorForSecret(actor?: ActorInfo): { userId?: string | null; agentId?: string | null } | undefined {
+    if (actor?.actorType === "user") return { userId: actor.actorId ?? null };
+    if (actor?.actorType === "agent") return { agentId: actor.actorId ?? null };
+    return undefined;
+  }
+
+  function policyNameForApp(connection: typeof toolConnections.$inferSelect, entry: typeof toolCatalogEntries.$inferSelect) {
+    const base = `Ask first ${connection.id.slice(0, 8)} ${entry.toolName}`;
+    return base.length <= 160 ? base : base.slice(0, 160);
+  }
+
+  async function connectGalleryApp(
+    companyId: string,
+    input: ConnectToolApp,
+    actor?: ActorInfo,
+  ): Promise<ConnectToolAppResult> {
+    const galleryEntry = input.galleryKey ? getToolAppGalleryEntry(input.galleryKey) : null;
+    if (input.galleryKey && !galleryEntry) throw notFound("Tool app gallery entry not found");
+    if (galleryEntry?.authKind === "oauth") {
+      throw unprocessable("OAuth app connections are selectable in the gallery but require the OAuth broker phase before connecting");
+    }
+
+    const name = input.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
+    const transportTemplate = galleryEntry?.transportTemplate ?? {
+      transport: "remote_http" as const,
+      url: input.link ?? "",
+    };
+    const transport = transportTemplate.transport;
+    const baseConfig = transport === "remote_http"
+      ? { url: transportTemplate.url }
+      : { templateId: transportTemplate.templateKey };
+    const config = galleryEntry
+      ? { ...baseConfig, sourceTemplateKey: galleryEntry.key }
+      : baseConfig;
+    if (transport === "remote_http") remoteEndpoint(config);
+    if (transport === "local_stdio") stdioTemplateId(config);
+    assertLocalStdioCanBeEnabled(transport, false);
+
+    const credentialValues = input.credentialValues ?? {};
+    const credentialSecretRefs: CreateToolConnection["credentialSecretRefs"] = [];
+    const credentialRefs: McpConnectionCredentialRef[] = [];
+    const createdSecretIds: string[] = [];
+    let applicationRow: typeof toolApplications.$inferSelect | null = null;
+    let connectionRow: typeof toolConnections.$inferSelect | null = null;
+
+    try {
+      for (const field of galleryEntry?.credentialFields ?? []) {
+        const value = credentialValues[field.configPath];
+        if (!value && field.required !== false) {
+          throw badRequest(`Missing credential value for ${field.configPath}`);
+        }
+        if (!value) continue;
+        const secret = await secrets.create(companyId, {
+          name: `${name} ${field.label} ${randomUUID().slice(0, 8)}`,
+          key: `tool_app.${randomUUID()}.${field.configPath.replace(/[^a-z0-9_:-]+/gi, "_")}`,
+          provider: "local_encrypted",
+          value,
+          description: `Credential for ${name} (${field.configPath}).`,
+        }, actorForSecret(actor));
+        createdSecretIds.push(secret.id);
+        credentialSecretRefs.push({
+          secretId: secret.id,
+          versionSelector: "latest",
+          configPath: field.configPath,
+          required: field.required ?? true,
+          label: field.label,
+        });
+        if (field.placement === "header" && field.key) {
+          credentialRefs.push({
+            name: field.configPath,
+            secretId: secret.id,
+            version: "latest",
+            placement: "header",
+            key: field.key,
+            prefix: field.prefix ?? null,
+          });
+        }
+      }
+
+      [applicationRow] = await db.insert(toolApplications).values({
+        companyId,
+        applicationKey: `app-gallery:${galleryEntry?.key ?? "link"}:${randomUUID()}`,
+        name,
+        description: galleryEntry?.tagline ?? `Connected MCP app at ${input.link}`,
+        type: transport === "remote_http" ? "mcp_http" : "mcp_stdio",
+        status: "draft",
+        metadata: galleryEntry ? { sourceTemplateKey: galleryEntry.key, galleryKey: galleryEntry.key } : { source: "link" },
+      }).returning();
+
+      await assertSecretRefs(companyId, [...credentialRefs, ...credentialSecretRefs]);
+      [connectionRow] = await db.insert(toolConnections).values({
+        companyId,
+        applicationId: applicationRow.id,
+        name,
+        connectionKind: "managed",
+        transport,
+        status: "draft",
+        enabled: false,
+        config,
+        transportConfig: config,
+        credentialRefs,
+        credentialSecretRefs,
+        createdByAgentId: actor?.actorType === "agent" ? actor.actorId ?? null : null,
+        createdByUserId: actor?.actorType === "user" ? actor.actorId ?? null : null,
+      }).returning();
+      await syncCredentialBindings(connectionRow);
+      await ensureRuntimeSlot(connectionRow);
+
+      await checkConnectionHealth(connectionRow.id, actor);
+      const refresh = await refreshCatalog(connectionRow.id, actor);
+      const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, applicationRow.id));
+      return {
+        connectionId: refresh.connection.id,
+        application: toApplication(application),
+        connection: refresh.connection,
+        catalog: refresh.catalog,
+        actions: groupedActions(refresh.catalog),
+        suggestedDefaults: galleryEntry?.recommendedDefaults ?? {
+          access: "all_agents",
+          askFirstRiskLevels: ["write", "destructive"],
+        },
+      };
+    } catch (error) {
+      if (connectionRow) {
+        await db.delete(toolConnections).where(eq(toolConnections.id, connectionRow.id)).catch(() => undefined);
+      }
+      if (applicationRow) {
+        await db.delete(toolApplications).where(eq(toolApplications.id, applicationRow.id)).catch(() => undefined);
+      }
+      for (const secretId of createdSecretIds) {
+        await secrets.remove(secretId).catch(() => undefined);
+      }
+      throw error;
+    }
+  }
+
+  async function assertCatalogEntriesForConnection(
+    companyId: string,
+    connectionId: string,
+    catalogEntryIds: string[],
+  ): Promise<Array<typeof toolCatalogEntries.$inferSelect>> {
+    const uniqueIds = [...new Set(catalogEntryIds)];
+    if (uniqueIds.length === 0) return [];
+    const rows = await db
+      .select()
+      .from(toolCatalogEntries)
+      .where(and(
+        eq(toolCatalogEntries.companyId, companyId),
+        eq(toolCatalogEntries.connectionId, connectionId),
+        inArray(toolCatalogEntries.id, uniqueIds),
+      ));
+    if (rows.length !== uniqueIds.length) {
+      throw unprocessable("All selected catalog entries must belong to this app connection");
+    }
+    return rows;
+  }
+
+  async function assertAgentsInCompany(companyId: string, agentIds: string[]) {
+    if (agentIds.length === 0) return;
+    const rows = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.companyId, companyId), inArray(agents.id, [...new Set(agentIds)])));
+    if (rows.length !== new Set(agentIds).size) {
+      throw unprocessable("All app access agent ids must belong to the same company");
+    }
+  }
+
+  async function upsertAskFirstPolicies(input: {
+    companyId: string;
+    connection: typeof toolConnections.$inferSelect;
+    askFirstEntries: Array<typeof toolCatalogEntries.$inferSelect>;
+    actor?: ActorInfo;
+  }): Promise<ToolPolicy[]> {
+    const existingPolicies = await db
+      .select()
+      .from(toolPolicies)
+      .where(and(eq(toolPolicies.companyId, input.companyId), eq(toolPolicies.policyType, "require_approval")));
+    const managedPolicies = existingPolicies.filter((policy) => {
+      const config = asRecord(policy.config);
+      return config.source === "app_gallery_finish" && config.connectionId === input.connection.id;
+    });
+    const policiesByCatalogEntryId = new Map<string, typeof toolPolicies.$inferSelect>();
+    for (const policy of managedPolicies) {
+      const config = asRecord(policy.config);
+      if (typeof config.catalogEntryId === "string") {
+        policiesByCatalogEntryId.set(config.catalogEntryId, policy);
+      }
+    }
+    const askFirstIds = new Set(input.askFirstEntries.map((entry) => entry.id));
+    const results: ToolPolicy[] = [];
+    for (const entry of input.askFirstEntries) {
+      const config = {
+        source: "app_gallery_finish",
+        connectionId: input.connection.id,
+        catalogEntryId: entry.id,
+      };
+      const existing = policiesByCatalogEntryId.get(entry.id);
+      if (existing) {
+        const [updated] = await db
+          .update(toolPolicies)
+          .set({
+            name: policyNameForApp(input.connection, entry),
+            description: `Ask first before running ${entry.toolName}.`,
+            enabled: true,
+            selectors: { catalogEntryId: entry.id },
+            config,
+            updatedAt: new Date(),
+          })
+          .where(eq(toolPolicies.id, existing.id))
+          .returning();
+        results.push(toPolicy(updated));
+      } else {
+        const [created] = await db.insert(toolPolicies).values({
+          companyId: input.companyId,
+          name: policyNameForApp(input.connection, entry),
+          description: `Ask first before running ${entry.toolName}.`,
+          policyType: "require_approval",
+          priority: 50,
+          enabled: true,
+          selectors: { catalogEntryId: entry.id },
+          config,
+          createdByAgentId: input.actor?.actorType === "agent" ? input.actor.actorId ?? null : null,
+          createdByUserId: input.actor?.actorType === "user" ? input.actor.actorId ?? null : null,
+        }).returning();
+        results.push(toPolicy(created));
+      }
+    }
+    const stalePolicies = managedPolicies.filter((policy) => {
+      const config = asRecord(policy.config);
+      return typeof config.catalogEntryId === "string" && !askFirstIds.has(config.catalogEntryId);
+    });
+    for (const policy of stalePolicies) {
+      await db
+        .update(toolPolicies)
+        .set({ enabled: false, updatedAt: new Date() })
+        .where(eq(toolPolicies.id, policy.id));
+    }
+    return results;
+  }
+
+  async function finishGalleryAppConnection(
+    companyId: string,
+    connectionId: string,
+    input: FinishToolApp,
+    actor?: ActorInfo,
+  ): Promise<FinishToolAppResult> {
+    const connection = await getConnectionRow(connectionId, companyId);
+    if (connection.status === "archived") throw conflict("Archived app connections cannot be finished");
+    const enabledIds = [...new Set([...input.enabledCatalogEntryIds, ...input.askFirstCatalogEntryIds])];
+    const enabledRows = await assertCatalogEntriesForConnection(companyId, connection.id, enabledIds);
+    const askFirstRows = await assertCatalogEntriesForConnection(companyId, connection.id, input.askFirstCatalogEntryIds);
+    if (input.access !== "all_agents") await assertAgentsInCompany(companyId, input.access.agentIds);
+
+    const entries: CreateToolProfileEntryForProfile[] = enabledRows.map((entry) => ({
+      selectorType: "catalog_entry",
+      effect: "include",
+      catalogEntryId: entry.id,
+      connectionId: connection.id,
+      applicationId: connection.applicationId,
+    }));
+    const profileKey = `app:${connection.id}`;
+    const [existingProfile] = await db
+      .select()
+      .from(toolProfiles)
+      .where(and(eq(toolProfiles.companyId, companyId), eq(toolProfiles.profileKey, profileKey)))
+      .limit(1);
+    let profile: ToolProfileWithDetails;
+    if (existingProfile) {
+      await db
+        .delete(toolProfileBindings)
+        .where(and(eq(toolProfileBindings.companyId, companyId), eq(toolProfileBindings.profileId, existingProfile.id)));
+      await replaceProfileEntries(companyId, existingProfile.id, entries);
+      const [updated] = await db
+        .update(toolProfiles)
+        .set({
+          name: connection.name,
+          description: `Access profile for ${connection.name}.`,
+          status: "active",
+          defaultAction: "deny",
+          metadata: { source: "app_gallery_finish", connectionId: connection.id },
+          updatedAt: new Date(),
+        })
+        .where(eq(toolProfiles.id, existingProfile.id))
+        .returning();
+      profile = await profileDetails(updated.id, companyId);
+    } else {
+      const [created] = await db.insert(toolProfiles).values({
+        companyId,
+        profileKey,
+        name: connection.name,
+        description: `Access profile for ${connection.name}.`,
+        status: "active",
+        defaultAction: "deny",
+        metadata: { source: "app_gallery_finish", connectionId: connection.id },
+      }).returning();
+      await createProfileEntries(companyId, created.id, entries);
+      profile = await profileDetails(created.id, companyId);
+    }
+
+    const bindingInputs: CreateToolProfileBindingForProfile[] = input.access === "all_agents"
+      ? [{ targetType: "company", targetId: companyId, priority: 100, metadata: { source: "app_gallery_finish" } }]
+      : input.access.agentIds.map((agentId) => ({
+          targetType: "agent" as const,
+          targetId: agentId,
+          priority: 100,
+          metadata: { source: "app_gallery_finish" },
+        }));
+    const profileBindings: ToolProfileBinding[] = [];
+    for (const bindingInput of bindingInputs) {
+      await assertTargetExists(companyId, bindingInput.targetType, bindingInput.targetId);
+      const [binding] = await db.insert(toolProfileBindings).values({
+        companyId,
+        profileId: profile.id,
+        targetType: bindingInput.targetType,
+        targetId: bindingInput.targetId,
+        priority: bindingInput.priority ?? 100,
+        metadata: bindingInput.metadata ?? {},
+        createdByAgentId: actor?.actorType === "agent" ? actor.actorId ?? null : null,
+        createdByUserId: actor?.actorType === "user" ? actor.actorId ?? null : null,
+      }).returning();
+      profileBindings.push(toProfileBinding(binding));
+    }
+
+    const policies = await upsertAskFirstPolicies({
+      companyId,
+      connection,
+      askFirstEntries: askFirstRows,
+      actor,
+    });
+    const [updatedConnection] = await db
+      .update(toolConnections)
+      .set({ status: "active", enabled: true, updatedAt: new Date() })
+      .where(eq(toolConnections.id, connection.id))
+      .returning();
+    await db
+      .update(toolApplications)
+      .set({ status: "active", updatedAt: new Date() })
+      .where(eq(toolApplications.id, connection.applicationId));
+
+    const details = await profileDetails(profile.id, companyId);
+    return {
+      connection: toConnection(updatedConnection),
+      profile: {
+        id: details.id,
+        companyId: details.companyId,
+        profileKey: details.profileKey,
+        name: details.name,
+        description: details.description,
+        status: details.status,
+        defaultAction: details.defaultAction,
+        metadata: details.metadata,
+        createdAt: details.createdAt,
+        updatedAt: details.updatedAt,
+      },
+      profileEntries: details.entries,
+      profileBindings,
+      policies,
+    };
+  }
+
   return {
     approvedStdioTemplates: () => APPROVED_STDIO_TEMPLATES,
+
+    connectGalleryApp,
+
+    finishGalleryAppConnection,
 
     listExamples: async (companyId: string): Promise<ToolExampleSummary[]> => {
       return Promise.all(TOOL_EXAMPLES.map(async (definition) => {
@@ -2043,44 +2511,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       return toConnection(row);
     },
 
-    checkHealth: async (connectionId: string, actor?: ActorInfo): Promise<ToolConnectionHealthCheckResult> => {
-      const connection = await getConnectionRow(connectionId);
-      try {
-        if (connection.transport === "remote_http") {
-          await remoteTools(connection);
-        } else {
-          await resolveCredentialHeaders(connection);
-          stdioTemplateId(connection.config);
-        }
-        const updated = await updateConnectionHealth(connection, "ok", connection.transport === "local_stdio"
-          ? "Approved stdio template is ready."
-          : "Remote MCP server responded to tools/list.");
-        const runtimeSlot = await ensureRuntimeSlot(updated);
-        await audit({
-          companyId: connection.companyId,
-          connectionId: connection.id,
-          action: "tool_connection.health_check",
-          outcome: "success",
-          actor,
-          details: { transport: connection.transport },
-        });
-        return { connection: toConnection(updated), runtimeSlot };
-      } catch (error) {
-        const failure = sanitizeHttpFailure(error);
-        const updated = await updateConnectionHealth(connection, failure.status, failure.message);
-        const runtimeSlot = connection.transport === "local_stdio" ? await ensureRuntimeSlot(updated) : null;
-        await audit({
-          companyId: connection.companyId,
-          connectionId: connection.id,
-          action: "tool_connection.health_check",
-          outcome: "failure",
-          reasonCode: failure.code,
-          actor,
-          details: { status: failure.status, transport: connection.transport },
-        });
-        throw new HttpError(failure.status === "missing_secret" ? 422 : 502, failure.message, { code: failure.code, connection: toConnection(updated), runtimeSlot });
-      }
-    },
+    checkHealth: checkConnectionHealth,
 
     refreshCatalog,
 

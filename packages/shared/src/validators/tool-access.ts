@@ -144,6 +144,29 @@ export const updateToolConnectionSchema = createToolConnectionSchema.omit({ appl
 
 export type UpdateToolConnection = z.infer<typeof updateToolConnectionSchema>;
 
+export const connectToolAppSchema = z.object({
+  galleryKey: z.string().trim().min(1).max(120).optional(),
+  link: z.string().trim().url().max(2000).optional(),
+  name: z.string().trim().min(1).max(160).optional(),
+  credentialValues: z.record(z.string().trim().min(1).max(200), z.string().min(1)).optional(),
+}).refine(
+  (value) => Boolean(value.galleryKey) !== Boolean(value.link),
+  { message: "Provide exactly one of galleryKey or link" },
+);
+
+export type ConnectToolApp = z.infer<typeof connectToolAppSchema>;
+
+export const finishToolAppSchema = z.object({
+  enabledCatalogEntryIds: z.array(z.string().uuid()).max(500).default([]),
+  askFirstCatalogEntryIds: z.array(z.string().uuid()).max(500).default([]),
+  access: z.union([
+    z.literal("all_agents"),
+    z.object({ agentIds: z.array(z.string().uuid()).min(1).max(250) }),
+  ]),
+});
+
+export type FinishToolApp = z.infer<typeof finishToolAppSchema>;
+
 export const upsertToolCatalogEntrySchema = z.object({
   applicationId: z.string().uuid(),
   connectionId: z.string().uuid(),

@@ -7,6 +7,7 @@ import {
   agents,
   companies,
   companySecretBindings,
+  companySecrets,
   createDb,
   heartbeatRuns,
   issueThreadInteractions,
@@ -18,6 +19,7 @@ import {
   toolCatalogEntries,
   toolConnections,
   toolInvocations,
+  toolPolicies,
   toolProfileBindings,
   toolProfileEntries,
   toolProfiles,
@@ -84,6 +86,7 @@ describeEmbeddedPostgres("tool access service", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await db.delete(companySecretBindings);
+    await db.delete(companySecrets);
     await db.delete(activityLog);
     await db.delete(toolCallEvents);
     await db.delete(toolActionRequests);
@@ -370,6 +373,157 @@ describeEmbeddedPostgres("tool access service", () => {
     const auditRows = await db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.companyId, company.id));
     expect(auditRows.some((row) => row.action === "tool_access.policy_decision" && row.reasonCode === "allow_profile")).toBe(true);
     expect(auditRows.some((row) => row.action === "tool_access.policy_decision" && row.reasonCode === "deny_default")).toBe(true);
+  });
+
+  it("serves the app gallery manifest through the board route", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+
+    const res = await request(app).get(`/api/companies/${company.id}/tools/gallery`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.apps.map((entry: { key: string }) => entry.key)).toEqual([
+      "zapier",
+      "github",
+      "slack",
+      "notion",
+      "linear",
+      "google-drive",
+      "context7",
+    ]);
+    expect(res.body.apps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "slack",
+          authKind: "oauth",
+          oauth: expect.objectContaining({ provider: "slack" }),
+        }),
+        expect.objectContaining({
+          key: "zapier",
+          credentialFields: [
+            expect.objectContaining({
+              configPath: "credentials.authorization",
+              placement: "header",
+              key: "Authorization",
+            }),
+          ],
+        }),
+      ]),
+    );
+  });
+
+  it("rolls back app connect drafts when health check fails", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network down"));
+
+    await expect(service.connectGalleryApp(company.id, {
+      link: "https://broken.example/mcp",
+      name: "Broken app",
+    }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({ status: 502 });
+
+    await expect(db.select().from(toolApplications)).resolves.toHaveLength(0);
+    await expect(db.select().from(toolConnections)).resolves.toHaveLength(0);
+    await expect(db.select().from(toolCatalogEntries)).resolves.toHaveLength(0);
+  });
+
+  it("connects gallery apps and finishes access profiles, bindings, and ask-first policies", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const fetchMock = mockToolsList([
+      {
+        name: "list_zaps",
+        description: "List Zapier actions.",
+        inputSchema: { type: "object", properties: {} },
+        annotations: { readOnlyHint: true },
+      },
+      {
+        name: "update_zap",
+        description: "Update a Zapier action.",
+        inputSchema: { type: "object", properties: { id: { type: "string" } } },
+        annotations: { readOnlyHint: false },
+      },
+    ]);
+    const [agent] = await db.insert(agents).values({
+      companyId: company.id,
+      name: `App Agent ${randomUUID()}`,
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+    }).returning();
+
+    const connect = await service.connectGalleryApp(company.id, {
+      galleryKey: "zapier",
+      name: "Zapier workspace",
+      credentialValues: { "credentials.authorization": "zap-secret" },
+    }, { actorType: "user", actorId: "board" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://mcp.zapier.com/api/mcp",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer zap-secret" }),
+      }),
+    );
+    expect(connect.connection).toMatchObject({
+      status: "draft",
+      enabled: false,
+      config: expect.objectContaining({ sourceTemplateKey: "zapier" }),
+      credentialSecretRefs: [
+        expect.objectContaining({
+          configPath: "credentials.authorization",
+          label: "Zapier MCP token",
+        }),
+      ],
+    });
+    expect(connect.actions.readOnly).toEqual([
+      expect.objectContaining({ toolName: "list_zaps", riskLevel: "read" }),
+    ]);
+    expect(connect.actions.canMakeChanges).toEqual([
+      expect.objectContaining({ toolName: "update_zap", riskLevel: "write" }),
+    ]);
+
+    const listEntry = connect.catalog.find((entry) => entry.toolName === "list_zaps")!;
+    const updateEntry = connect.catalog.find((entry) => entry.toolName === "update_zap")!;
+    const finish = await service.finishGalleryAppConnection(company.id, connect.connectionId, {
+      enabledCatalogEntryIds: [listEntry.id, updateEntry.id],
+      askFirstCatalogEntryIds: [updateEntry.id],
+      access: { agentIds: [agent.id] },
+    }, { actorType: "user", actorId: "board" });
+
+    expect(finish.connection).toMatchObject({ id: connect.connectionId, status: "active", enabled: true });
+    expect(finish.profile).toMatchObject({
+      profileKey: `app:${connect.connectionId}`,
+      defaultAction: "deny",
+      status: "active",
+    });
+    expect(finish.profileEntries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ selectorType: "catalog_entry", catalogEntryId: listEntry.id, effect: "include" }),
+        expect.objectContaining({ selectorType: "catalog_entry", catalogEntryId: updateEntry.id, effect: "include" }),
+      ]),
+    );
+    expect(finish.profileBindings).toEqual([
+      expect.objectContaining({ targetType: "agent", targetId: agent.id }),
+    ]);
+    expect(finish.policies).toEqual([
+      expect.objectContaining({
+        policyType: "require_approval",
+        enabled: true,
+        selectors: { catalogEntryId: updateEntry.id },
+      }),
+    ]);
+    const [policy] = await db.select().from(toolPolicies).where(eq(toolPolicies.companyId, company.id));
+    expect(policy).toMatchObject({
+      policyType: "require_approval",
+      selectors: { catalogEntryId: updateEntry.id },
+      config: expect.objectContaining({
+        source: "app_gallery_finish",
+        connectionId: connect.connectionId,
+        catalogEntryId: updateEntry.id,
+      }),
+    });
   });
 
   it("stops and restarts local stdio runtime slots through the board service", async () => {
