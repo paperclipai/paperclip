@@ -225,6 +225,11 @@ export function environmentRoutes(
       { targetType: "environment", targetId: environment.id },
       await collectEnvironmentSecretRefs({ db, environment }),
     );
+    await secrets.syncEnvBindingsForTarget?.(
+      companyId,
+      { targetType: "environment", targetId: environment.id },
+      parseObject(environment.config).env,
+    );
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,
@@ -340,6 +345,11 @@ export function environmentRoutes(
         environment.companyId,
         { targetType: "environment", targetId: environment.id },
         await collectEnvironmentSecretRefs({ db, environment }),
+      );
+      await secrets.syncEnvBindingsForTarget?.(
+        environment.companyId,
+        { targetType: "environment", targetId: environment.id },
+        parseObject(environment.config).env,
       );
     }
     await logActivity(db, {
