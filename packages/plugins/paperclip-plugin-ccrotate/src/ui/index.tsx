@@ -450,6 +450,7 @@ function PoolTable({
 }) {
   const [busyEmail, setBusyEmail] = useState<string | null>(null);
   const [refreshingEmail, setRefreshingEmail] = useState<string | null>(null);
+  const [reloginEmail, setReloginEmail] = useState<string | null>(null);
   const [sessionFormEmail, setSessionFormEmail] = useState<string | null>(null);
   const [rowError, setRowError] = useState<{ email: string; msg: string } | null>(null);
 
@@ -508,6 +509,20 @@ function PoolTable({
     }
   }
 
+  async function doCodexRelogin(email: string) {
+    if (!companyId) return;
+    setReloginEmail(email);
+    setRowError(null);
+    try {
+      await postJson("/codex-relogin", { companyId, email });
+      onMutated();
+    } catch (e: any) {
+      setRowError({ email, msg: e?.message ?? String(e) });
+    } finally {
+      setReloginEmail(null);
+    }
+  }
+
   return (
     <table style={tableStyle}>
       <thead>
@@ -530,6 +545,7 @@ function PoolTable({
           const { color, label } = tierDot(row);
           const isBusy = busyEmail === row.email;
           const isRefreshing = refreshingEmail === row.email;
+          const isRelogging = reloginEmail === row.email;
           const isSessionFormOpen = sessionFormEmail === row.email;
           const rowIsStale = accountIsStale(row);
           return (
@@ -550,6 +566,14 @@ function PoolTable({
                 <td style={tdStyle}>{row.availability || "—"}</td>
                 <td style={tdStyle}>{row.apiLimit || "unknown"}</td>
                 <td style={{ ...tdStyle, textAlign: "right", whiteSpace: "nowrap" }}>
+                  {/* codex force-relogin for stale/unhealthy rows */}
+                  {target === "codex" && (rowIsStale || !row.isHealthy) && (
+                    <button type="button" style={smallBtnStyle} disabled={isRelogging || !companyId}
+                      onClick={() => doCodexRelogin(row.email)}
+                      title="Trigger codex device-auth relogin (auto-completes via Gmail forwarding)">
+                      {isRelogging ? "relogging…" : "↺ relogin"}
+                    </button>
+                  )}
                   {/* F-UI-1: switch button per row */}
                   {target === "claude" && !row.isActive && (
                     <button

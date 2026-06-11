@@ -141,6 +141,14 @@ const manifest: PaperclipPluginManifestV1 = {
       capability: "api.routes.register",
       companyResolution: { from: "body", key: "companyId" },
     },
+    {
+      routeKey: "codex-relogin",
+      method: "POST",
+      path: "/codex-relogin",
+      auth: "board",
+      capability: "api.routes.register",
+      companyResolution: { from: "body", key: "companyId" },
+    },
   ],
 };
 

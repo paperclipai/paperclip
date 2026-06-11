@@ -297,6 +297,27 @@ async function handleSetSession(input: PluginApiRequestInput): Promise<PluginApi
   };
 }
 
+
+async function handleCodexRelogin(input: PluginApiRequestInput): Promise<PluginApiResponse> {
+  const body = (input.body ?? {}) as { email?: unknown };
+  const email = typeof body.email === "string" ? body.email.trim() : "";
+  if (!email || !email.includes("@")) return { status: 400, body: { error: "email (with @) required" } };
+  const botBase = process.env.CCROTATE_AUTH_BOT_URL ?? "http://ccrotate-auth-bot.paperclip.svc:7000";
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 180_000);
+  let reloginRes: Response;
+  try {
+    reloginRes = await fetch(`${botBase}/relogin`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, target: "codex" }), signal: controller.signal,
+    });
+  } catch (e) { clearTimeout(timer); return { status: 502, body: { error: `auth-bot unreachable: ${describeError(e)}` } }; }
+  clearTimeout(timer);
+  const reloginBody = (await reloginRes.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!reloginRes.ok) return { status: reloginRes.status, body: { ok: false, error: `auth-bot /relogin returned ${reloginRes.status}: ${String(reloginBody?.error || "").slice(0, 300)}` } };
+  return { status: 200, body: { ok: true, email, snapStdout: reloginBody?.snapStdout } };
+}
+
 function tierCachePathForTarget(target: CcrotateTarget): string {
   // Mirrors ccrotate's own resolution (see lib/ccrotate.js:226-231):
   //   claude → ~/.ccrotate/tier-cache.json
@@ -693,6 +714,8 @@ const plugin: PaperclipPlugin = definePlugin({
           return await handleBulkClearTiers(input);
         case "refresh-one":
           return await handleRefreshOne(input);
+        case "codex-relogin":
+          return await handleCodexRelogin(input);
         default:
           return { status: 404, body: { error: `unknown routeKey: ${input.routeKey}` } };
       }
