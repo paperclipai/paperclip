@@ -58,7 +58,7 @@ import { useToast } from "@/context/ToastContext";
 import { EmptyState } from "@/components/EmptyState";
 import { cn } from "@/lib/utils";
 import { ToolsPageHeader, LoadingState, ErrorState, HealthBadge, RelativeTime } from "./shared";
-import { AddConnectionDialog, CatalogDialog, TRANSPORT_LABEL, connectionEndpoint } from "./ConnectionsTab";
+import { AddConnectionDialog, CatalogDialog, TRANSPORT_LABEL, connectionEndpoint } from "./connection-dialogs";
 
 const TYPE_FILTERS: { value: string; label: string }[] = [
   { value: "__all", label: "All types" },

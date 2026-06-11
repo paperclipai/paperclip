@@ -4,13 +4,11 @@ import { Link, Navigate, useParams } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
-import { OverviewTab } from "./OverviewTab";
 import { ApplicationsTab } from "./ApplicationsTab";
 import { ProfilesTab } from "./ProfilesTab";
 import { PoliciesTab } from "./PoliciesTab";
 import { RuntimeTab } from "./RuntimeTab";
 import { AuditTab } from "./AuditTab";
-import { ExamplesTab } from "./ExamplesTab";
 import { PasteConfigTab } from "./PasteConfigTab";
 import { RunYourOwnTab } from "./RunYourOwnTab";
 import {
@@ -23,8 +21,6 @@ import {
 
 function renderTab(tab: ToolTabKey, companyId: string) {
   switch (tab) {
-    case "overview":
-      return <OverviewTab companyId={companyId} />;
     case "applications":
       return <ApplicationsTab companyId={companyId} />;
     case "profiles":
@@ -35,8 +31,6 @@ function renderTab(tab: ToolTabKey, companyId: string) {
       return <RuntimeTab companyId={companyId} />;
     case "audit":
       return <AuditTab companyId={companyId} />;
-    case "examples":
-      return <ExamplesTab companyId={companyId} />;
     case "run-your-own":
       return <RunYourOwnTab companyId={companyId} />;
     case "paste-config":
@@ -71,7 +65,10 @@ export function ToolsAccess() {
     return <div className="p-6 text-sm text-muted-foreground">Select a company to open advanced setup.</div>;
   }
 
-  if (params.tab === "connections") return <Navigate to={advancedTabHref("applications")} replace />;
+  // Retired developer tabs (PAP-10915) — keep old links working.
+  if (params.tab === "connections" || params.tab === "overview" || params.tab === "examples") {
+    return <Navigate to={advancedTabHref("applications")} replace />;
+  }
 
   if (advanced) {
     // M8a/M8b chrome (PAP-10839 wires): Advanced badge, plain-words subtitle,
@@ -112,7 +109,7 @@ export function ToolsAccess() {
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Wrench className="h-3.5 w-3.5" />
           Looking for the developer surface?{" "}
-          <Link to={advancedTabHref("overview")} className="font-medium text-primary hover:underline">
+          <Link to={advancedTabHref("applications")} className="font-medium text-primary hover:underline">
             Open developer tools
           </Link>
         </p>

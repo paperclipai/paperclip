@@ -15,9 +15,6 @@ import type {
   ToolRuntimeHealthSummary,
   ToolRunDecisionLookup,
   ToolOAuthStartResult,
-  ToolExampleInstallResult,
-  ToolExampleSmokeResult,
-  ToolExampleSummary,
   ToolStdioCommandTemplate,
   ToolProfileBinding,
   ToolProfileBindingTargetType,
@@ -56,7 +53,6 @@ export type ToolRuntimeSlotsResponse = { runtimeSlots: ToolRuntimeSlot[] };
 export type ToolRuntimeHealthResponse = ToolRuntimeHealthSummary;
 export type ToolTrustRulesResponse = { trustRules: ToolPolicy[] };
 export type ToolPoliciesResponse = { policies: ToolPolicy[] };
-export type ToolExamplesResponse = { examples: ToolExampleSummary[] };
 export type ToolProfilesResponse = { profiles: ToolProfileWithDetails[] };
 export type ToolGalleryResponse = { apps: AppGalleryEntry[] };
 
@@ -166,14 +162,6 @@ export type ToolPolicyTestResponse = {
 };
 
 export const toolsApi = {
-  // --- Examples ---
-  listExamples: (companyId: string) =>
-    api.get<ToolExamplesResponse>(`/companies/${companyId}/tools/examples`),
-  installExample: (companyId: string, exampleId: string) =>
-    api.post<ToolExampleInstallResult>(`/companies/${companyId}/tools/examples/${exampleId}/install`, {}),
-  smokeExample: (companyId: string, exampleId: string) =>
-    api.post<ToolExampleSmokeResult>(`/companies/${companyId}/tools/examples/${exampleId}/smoke`, {}),
-
   // --- Applications ---
   listGallery: (companyId: string) =>
     api.get<ToolGalleryResponse>(`/companies/${companyId}/tools/gallery`),

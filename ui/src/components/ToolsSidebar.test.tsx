@@ -112,14 +112,12 @@ describe("ToolsSidebar", () => {
     expect(container.textContent).toContain("Advanced setup");
     expect(container.textContent).toContain("Developer");
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps/advanced/overview", label: "Overview", end: true }),
-    );
-    expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({ to: "/apps/advanced/applications", label: "Applications", end: true }),
     );
-    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps/advanced/connections", label: "Connections", end: true }),
-    );
+    // Retired tabs (PAP-10915): Connections, Overview, Examples are gone.
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(expect.objectContaining({ label: "Connections" }));
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(expect.objectContaining({ label: "Overview" }));
+    expect(sidebarNavItemMock).not.toHaveBeenCalledWith(expect.objectContaining({ label: "Examples" }));
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({ to: "/apps/advanced/runtime", label: "Runtime", end: true, liveCount: 1 }),
     );

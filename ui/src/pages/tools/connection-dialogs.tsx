@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { KeyRound, ListTree, Plug, Plus, Power, RefreshCw, Stethoscope, Trash2, Vault } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { KeyRound, Stethoscope, Trash2, Vault } from "lucide-react";
 import type {
   CompanySecret,
   McpConnectionCredentialRef,
@@ -10,10 +10,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi, type CreateToolConnectionInput } from "@/api/tools";
 import { secretsApi } from "@/api/secrets";
 import { ApiError } from "@/api/client";
-import { EmptyState } from "@/components/EmptyState";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -33,14 +30,12 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/context/ToastContext";
 import {
-  ToolsPageHeader,
   LoadingState,
   ErrorState,
   HealthBadge,
   RiskBadge,
   CapabilityBadges,
   QuarantineBadge,
-  RelativeTime,
 } from "./shared";
 
 export const TRANSPORT_LABEL: Record<string, string> = {
@@ -570,246 +565,3 @@ export function AddConnectionDialog({
   );
 }
 
-function NewConnectionDialog(props: { companyId: string; onClose: () => void }) {
-  return <AddConnectionDialog {...props} />;
-}
-
-export function ConnectionsTab({ companyId }: { companyId: string }) {
-  const qc = useQueryClient();
-  const { pushToast } = useToast();
-  const [catalogFor, setCatalogFor] = useState<ToolConnection | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
-
-  const connections = useQuery({
-    queryKey: queryKeys.tools.connections(companyId),
-    queryFn: () => toolsApi.listConnections(companyId),
-  });
-  const apps = useQuery({
-    queryKey: queryKeys.tools.applications(companyId),
-    queryFn: () => toolsApi.listApplications(companyId),
-  });
-
-  const appName = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const a of apps.data?.applications ?? []) map.set(a.id, a.name);
-    return map;
-  }, [apps.data]);
-
-  const list = useMemo(
-    () => (connections.data?.connections ?? []).filter((c) => (c.status ?? "active") !== "archived"),
-    [connections.data],
-  );
-
-  // Per-connection catalog counts — no company-wide aggregate endpoint exists, so
-  // we fan out one cached catalog query per visible connection (same pattern as
-  // ApplicationsTab) to render the "catalog count" column.
-  const catalogs = useQueries({
-    queries: list.map((c) => ({
-      queryKey: queryKeys.tools.catalog(c.id),
-      queryFn: () => toolsApi.listCatalog(c.id),
-      staleTime: 60_000,
-    })),
-  });
-  const catalogCountByConn = useMemo(() => {
-    const counts = new Map<string, number | null>();
-    list.forEach((c, i) => {
-      const q = catalogs[i];
-      counts.set(c.id, q?.data ? q.data.catalog.length : null);
-    });
-    return counts;
-  }, [list, catalogs]);
-
-  const invalidate = () => qc.invalidateQueries({ queryKey: queryKeys.tools.connections(companyId) });
-
-  const healthCheck = useMutation({
-    mutationFn: (id: string) => toolsApi.checkConnectionHealth(id),
-    onSuccess: (res) => {
-      invalidate();
-      pushToast({
-        title: `Health: ${res.connection.healthStatus}`,
-        body: res.connection.healthMessage ?? undefined,
-        tone: res.connection.healthStatus === "error" ? "error" : "success",
-      });
-    },
-    onError: (err) =>
-      pushToast({
-        title: "Health check failed",
-        body: err instanceof ApiError ? err.message : String(err),
-        tone: "error",
-      }),
-  });
-
-  const refresh = useMutation({
-    mutationFn: (id: string) => toolsApi.refreshCatalog(id),
-    onSuccess: (res) => {
-      invalidate();
-      qc.invalidateQueries({ queryKey: queryKeys.tools.catalog(res.connection.id) });
-      pushToast({
-        title: `Discovered ${res.discoveredCount} tools`,
-        body: res.quarantinedCount > 0 ? `${res.quarantinedCount} quarantined for review` : undefined,
-        tone: "success",
-      });
-    },
-    onError: (err) =>
-      pushToast({
-        title: "Catalog refresh failed",
-        body: err instanceof ApiError ? err.message : String(err),
-        tone: "error",
-      }),
-  });
-
-  const toggleEnabled = useMutation({
-    mutationFn: (conn: ToolConnection) => toolsApi.updateConnection(conn.id, { enabled: !conn.enabled }),
-    onSuccess: (conn) => {
-      invalidate();
-      pushToast({
-        title: conn.enabled ? "Connection enabled" : "Connection disabled",
-        tone: "success",
-      });
-    },
-    onError: (err) =>
-      pushToast({
-        title: "Could not update connection",
-        body: err instanceof ApiError ? err.message : String(err),
-        tone: "error",
-      }),
-  });
-
-  if (connections.isLoading) return <LoadingState />;
-  if (connections.error) return <ErrorState error={connections.error} onRetry={() => connections.refetch()} />;
-
-  return (
-    <div className="space-y-4">
-      <ToolsPageHeader
-        title="Connections"
-        description="Managed credentials and transport for each application. Credentials are stored as secret references and only resolve at gateway/runtime use time — never sent to agents."
-        actions={
-          <Button size="sm" onClick={() => setCreateOpen(true)}>
-            <Plus className="mr-1 h-4 w-4" />
-            New connection
-          </Button>
-        }
-      />
-
-      {list.length === 0 ? (
-        <EmptyState
-          icon={Plug}
-          message="No connections yet"
-          description="Add a connection to an application to configure credentials and discover its tools."
-          action="New connection"
-          onAction={() => setCreateOpen(true)}
-        />
-      ) : (
-        <Card>
-          <CardContent className="px-0 py-0">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                  <th className="px-3 py-2.5 font-medium">Connection</th>
-                  <th className="px-3 py-2.5 font-medium">Application</th>
-                  <th className="px-3 py-2.5 font-medium">Transport</th>
-                  <th className="px-3 py-2.5 font-medium">Health</th>
-                  <th className="px-3 py-2.5 font-medium">Catalog</th>
-                  <th className="px-4 py-2.5 text-right font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {list.map((conn) => {
-                  const endpoint = connectionEndpoint(conn);
-                  const credCount = (conn.credentialRefs?.length ?? 0) + conn.credentialSecretRefs.length;
-                  const catalogCount = catalogCountByConn.get(conn.id);
-                  return (
-                    <tr key={conn.id} className="align-top">
-                      <td className="px-3 py-3">
-                        <div className="flex items-start gap-2">
-                          <Plug className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="font-medium text-foreground">{conn.name}</span>
-                              {!conn.enabled ? <Badge variant="outline">disabled</Badge> : null}
-                              {conn.status === "draft" ? <Badge variant="outline">draft</Badge> : null}
-                            </div>
-                            {endpoint ? (
-                              <div className="truncate font-mono text-xs text-muted-foreground" title={endpoint}>
-                                {endpoint}
-                              </div>
-                            ) : null}
-                            <div className="text-[11px] text-muted-foreground">
-                              {credCount} credential ref{credCount === 1 ? "" : "s"}
-                            </div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-3 py-3 text-foreground">
-                        {appName.get(conn.applicationId) ?? <span className="text-muted-foreground">—</span>}
-                      </td>
-                      <td className="px-3 py-3">
-                        <Badge variant="outline">
-                          {TRANSPORT_LABEL[conn.transport ?? ""] ?? conn.transport ?? "—"}
-                        </Badge>
-                      </td>
-                      <td className="px-3 py-3">
-                        <HealthBadge status={conn.healthStatus} />
-                        {conn.lastError ? (
-                          <p className="mt-1 max-w-[14rem] truncate text-[11px] text-destructive" title={conn.lastError}>
-                            {conn.lastError}
-                          </p>
-                        ) : null}
-                      </td>
-                      <td className="px-3 py-3">
-                        <div className="font-medium tabular-nums text-foreground">
-                          {catalogCount == null ? "—" : `${catalogCount} tool${catalogCount === 1 ? "" : "s"}`}
-                        </div>
-                        <div className="text-[11px] text-muted-foreground">
-                          refreshed <RelativeTime value={conn.lastCatalogRefreshAt ?? conn.updatedAt} />
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex justify-end gap-1.5">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={healthCheck.isPending}
-                            onClick={() => healthCheck.mutate(conn.id)}
-                          >
-                            <Stethoscope className="mr-1 h-3.5 w-3.5" />
-                            Test
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={refresh.isPending}
-                            onClick={() => refresh.mutate(conn.id)}
-                          >
-                            <RefreshCw className="mr-1 h-3.5 w-3.5" />
-                            Refresh
-                          </Button>
-                          <Button size="sm" variant="outline" onClick={() => setCatalogFor(conn)}>
-                            <ListTree className="mr-1 h-3.5 w-3.5" />
-                            Tools
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={toggleEnabled.isPending}
-                            onClick={() => toggleEnabled.mutate(conn)}
-                          >
-                            <Power className="mr-1 h-3.5 w-3.5" />
-                            {conn.enabled ? "Disable" : "Enable"}
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </CardContent>
-        </Card>
-      )}
-
-      {catalogFor ? <CatalogDialog connection={catalogFor} onClose={() => setCatalogFor(null)} /> : null}
-      {createOpen ? <NewConnectionDialog companyId={companyId} onClose={() => setCreateOpen(false)} /> : null}
-    </div>
-  );
-}

@@ -143,7 +143,7 @@ test.describe.serial("PAP-10915 dark-mode Apps surfaces", () => {
 
   test("developer tabs keep the developer sidebar", async ({ page }) => {
     await forceDark(page);
-    await page.goto(`/${seed.prefix}/apps/advanced/overview`);
+    await page.goto(`/${seed.prefix}/apps/advanced/applications`);
     await expect(page.getByRole("heading", { name: "Developer tools" })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole("link", { name: "Runtime", exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Audit", exact: true })).toBeVisible();

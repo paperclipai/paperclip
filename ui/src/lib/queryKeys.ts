@@ -9,7 +9,6 @@ export const queryKeys = {
     attention: (companyId: string) => ["apps", companyId, "attention"] as const,
   },
   tools: {
-    examples: (companyId: string) => ["tools", companyId, "examples"] as const,
     applications: (companyId: string) => ["tools", companyId, "applications"] as const,
     connections: (companyId: string) => ["tools", companyId, "connections"] as const,
     connection: (connectionId: string) => ["tools", "connection", connectionId] as const,

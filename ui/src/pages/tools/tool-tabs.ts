@@ -1,12 +1,10 @@
 import {
-  Activity,
   AppWindow,
   ClipboardPaste,
   Layers,
   ScrollText,
   Server,
   Shield,
-  Sparkles,
   TerminalSquare,
 } from "lucide-react";
 
@@ -31,13 +29,11 @@ export const ADVANCED_TABS = [
 
 // The pre-Apps developer surface, kept reachable behind the Advanced door.
 export const DEVELOPER_TABS = [
-  { key: "overview", label: "Overview", icon: Activity },
   { key: "applications", label: "Applications", icon: AppWindow },
   { key: "profiles", label: "Profiles", icon: Layers },
   { key: "policies", label: "Policies", icon: Shield },
   { key: "runtime", label: "Runtime", icon: Server },
   { key: "audit", label: "Audit", icon: ScrollText },
-  { key: "examples", label: "Examples", icon: Sparkles },
 ] as const;
 
 export const TOOL_TABS = [...ADVANCED_TABS, ...DEVELOPER_TABS] as const;
