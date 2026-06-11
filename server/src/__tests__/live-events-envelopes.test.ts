@@ -142,4 +142,29 @@ describe("envelopeToEvents", () => {
     });
     expect(delivered).toEqual([]);
   });
+
+  it("returns [] for a null envelope (parsed JSON null from wire)", () => {
+    expect(envelopeToEvents("company-a", null as any)).toEqual([]);
+  });
+
+  it("returns [] for a non-object envelope (primitive string from wire)", () => {
+    expect(envelopeToEvents("company-a", "x" as any)).toEqual([]);
+  });
+
+  it("returns [] for a resync envelope with a missing or non-string type", () => {
+    const missingType = {
+      kind: "resync",
+      origin: "origin-1",
+      companyId: "company-a",
+    } as unknown as Parameters<typeof envelopeToEvents>[1];
+    expect(envelopeToEvents("company-a", missingType)).toEqual([]);
+
+    const numericType = {
+      kind: "resync",
+      origin: "origin-1",
+      companyId: "company-a",
+      type: 42,
+    } as unknown as Parameters<typeof envelopeToEvents>[1];
+    expect(envelopeToEvents("company-a", numericType)).toEqual([]);
+  });
 });

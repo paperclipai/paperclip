@@ -109,6 +109,7 @@ export function createRedisLiveEventsTransport(opts: RedisTransportOptions): Liv
     } catch {
       return;
     }
+    if (typeof envelope !== "object" || envelope === null) return;
     if (envelope.origin === originId) return;
     // Guard malformed payloads: valid JSON that doesn't carry the fields
     // its `kind` promises would otherwise throw out of the ioredis

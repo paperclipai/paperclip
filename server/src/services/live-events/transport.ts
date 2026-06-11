@@ -124,6 +124,7 @@ export function packEnvelopes(
  * hints, never compared across replicas).
  */
 export function envelopeToEvents(companyId: string, envelope: TransportEnvelope): LiveEvent[] {
+  if (typeof envelope !== "object" || envelope === null) return [];
   const raw = envelope as Partial<Record<"kind" | "event" | "events" | "companyId" | "type", unknown>>;
   // Rolling deploy: pre-hardening replicas send { origin, event } with no kind.
   const kind = raw.kind ?? (raw.event !== undefined ? "full" : undefined);
@@ -139,6 +140,7 @@ export function envelopeToEvents(companyId: string, envelope: TransportEnvelope)
     }
     case "resync": {
       if (raw.companyId !== companyId) return [];
+      if (typeof raw.type !== "string") return [];
       return [
         {
           id: 0,
