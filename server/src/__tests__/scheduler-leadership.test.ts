@@ -8,6 +8,8 @@ import {
 import type { EmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import {
   createSchedulerLeadership,
+  getSchedulerHealth,
+  registerSchedulerLeadershipForHealth,
   type SchedulerLeadership,
   type SchedulerLeadershipOptions,
 } from "../services/scheduler-leadership.js";
@@ -175,6 +177,42 @@ describeEmbedded("scheduler leadership", () => {
 
     await waitFor(() => leader.onLost.mock.calls.length === 1 && !leader.leadership.isLeader(), 5_000, 10);
     expect(leader.onLost).toHaveBeenCalledTimes(1);
+  });
+
+  it("getSchedulerHealth reports candidate/leader state and leader row", async () => {
+    const { leadership } = makeInstance(dbA, "health-test-leader");
+
+    // Before start: not registered as candidate
+    registerSchedulerLeadershipForHealth(null as unknown as SchedulerLeadership);
+    let health = await getSchedulerHealth(dbA);
+    expect(health.candidate).toBe(false);
+    expect(health.isLeader).toBe(false);
+    expect(health.leader).toBeUndefined();
+
+    // After registering but before start
+    registerSchedulerLeadershipForHealth(leadership);
+    health = await getSchedulerHealth(dbA);
+    expect(health.candidate).toBe(true);
+    expect(health.isLeader).toBe(false);
+
+    // After start: eventually becomes leader
+    leadership.start();
+    await waitFor(() => leadership.isLeader());
+    health = await getSchedulerHealth(dbA);
+    expect(health.candidate).toBe(true);
+    expect(health.isLeader).toBe(true);
+    expect(health.leader).toBeDefined();
+    expect(health.leader?.leaderId).toBe("health-test-leader");
+    expect(health.leader?.hostname).toBe("host-health-test-leader");
+    expect(typeof health.leader?.electedAt).toBe("string");
+    expect(typeof health.leader?.expiresAt).toBe("string");
+
+    // After stop + unregister: candidate=false
+    await leadership.stop();
+    registerSchedulerLeadershipForHealth(null as unknown as SchedulerLeadership);
+    health = await getSchedulerHealth(dbA);
+    expect(health.candidate).toBe(false);
+    expect(health.isLeader).toBe(false);
   });
 
   it("stop is idempotent and a never-started instance never acquires", async () => {

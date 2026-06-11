@@ -9,6 +9,7 @@ import { logger } from "../middleware/logger.js";
 import { getServerInfoSnapshot, type ServerInfoSnapshot } from "../server-info.js";
 import { getLiveEventsTransportHealth } from "../services/live-events.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { getSchedulerHealth } from "../services/scheduler-leadership.js";
 import { serverVersion } from "../version.js";
 
 function shouldExposeFullHealthDetails(
@@ -191,6 +192,8 @@ export function healthRoutes(
       return;
     }
 
+    const scheduler = await getSchedulerHealth(db);
+
     res.json({
       status: "ok",
       version: serverVersion,
@@ -205,6 +208,7 @@ export function healthRoutes(
       serverInfo,
       liveEvents,
       ...(devServer ? { devServer } : {}),
+      scheduler,
     });
   });
 

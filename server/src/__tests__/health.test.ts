@@ -27,6 +27,7 @@ const testServerInfo = {
 const mockGetLiveEventsTransportHealth = vi.hoisted(() =>
   vi.fn().mockResolvedValue({ mode: "in-process" }),
 );
+const mockGetSchedulerHealth = vi.hoisted(() => vi.fn().mockResolvedValue({ candidate: false, isLeader: false }));
 
 vi.mock("../dev-server-status.js", () => ({
   readPersistedDevServerStatus: mockReadPersistedDevServerStatus,
@@ -35,6 +36,12 @@ vi.mock("../dev-server-status.js", () => ({
 
 vi.mock("../services/live-events.js", () => ({
   getLiveEventsTransportHealth: mockGetLiveEventsTransportHealth,
+}));
+
+vi.mock("../services/scheduler-leadership.js", () => ({
+  getSchedulerHealth: mockGetSchedulerHealth,
+  registerSchedulerLeadershipForHealth: vi.fn(),
+  getRegisteredSchedulerLeadership: vi.fn().mockReturnValue(null),
 }));
 
 function createApp(db?: Db, serverInfo = testServerInfo) {
@@ -56,6 +63,7 @@ describe("GET /health", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockReadPersistedDevServerStatus.mockReturnValue(undefined);
+    mockGetSchedulerHealth.mockResolvedValue({ candidate: false, isLeader: false });
   });
 
   afterEach(() => {
@@ -245,6 +253,7 @@ describe("GET /health", () => {
         companyDeletionEnabled: false,
       },
       serverInfo: testServerInfo,
+      scheduler: { candidate: false, isLeader: false },
     });
   });
 });
