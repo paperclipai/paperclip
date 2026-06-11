@@ -1130,6 +1130,20 @@ const plugin = definePlugin({
       return await runFullSync(ctx, requestedCompanyId);
     });
 
+    /** Bounded Paperclip -> Linear repair pass for linked issues. */
+    ctx.actions.register(ACTION_KEYS.reconcileLinearMirrors, async (params: any, context: { companyId?: string | null } | undefined) => {
+      const requestedCompanyId =
+        (context?.companyId as string | null | undefined) ??
+        (typeof params?.companyId === "string" ? params.companyId : null);
+      return await runLinearMirrorReconcile(ctx, requestedCompanyId, {
+        maxPerRun: typeof params?.maxPerRun === "number" ? params.maxPerRun : undefined,
+        resetCursor: params?.resetCursor === true,
+        syncStatuses: params?.syncStatuses === false ? false : undefined,
+        syncProjects: params?.syncProjects === false ? false : undefined,
+        syncLabels: params?.syncLabels === false ? false : undefined,
+      });
+    });
+
     // One-time bounded backfill: write Paperclip back-links for already-mirrored
     // issues/projects that predate paperclipBaseUrl. Idempotent (Linear dedupes
     // by URL/external link), bounded per run, and resumable via offset cursors
@@ -2297,6 +2311,15 @@ const plugin = definePlugin({
         : patch?.projectId;
       if (hasProjectIdChange && (typeof projectIdChange === "string" || projectIdChange === null)) {
         changes.projectId = projectIdChange;
+      }
+      const hasLabelIdsChange =
+        Object.prototype.hasOwnProperty.call(payload ?? {}, "labelIds") ||
+        Object.prototype.hasOwnProperty.call(patch ?? {}, "labelIds");
+      const labelIdsChange = Object.prototype.hasOwnProperty.call(payload ?? {}, "labelIds")
+        ? payload?.labelIds
+        : patch?.labelIds;
+      if (hasLabelIdsChange && Array.isArray(labelIdsChange)) {
+        changes.labelIds = labelIdsChange.filter((value): value is string => typeof value === "string");
       }
 
       if (Object.keys(changes).length === 0) return;
@@ -3822,6 +3845,7 @@ async function runImport(ctx: PluginContext): Promise<{
 const LINEAR_LINK_SYNC_PAGE_SIZE = 100;
 const LINEAR_ISSUE_SYNC_BATCH_SIZE = 50;
 const LINEAR_LINK_SYNC_MAX_ENTRIES_PER_RUN = 100;
+const LINEAR_MIRROR_RECONCILE_MAX_ENTRIES_PER_RUN = 100;
 
 function isIssueLink(value: unknown): value is sync.IssueLink {
   if (typeof value !== "object" || value === null) return false;
@@ -3842,6 +3866,12 @@ function isProjectLink(value: unknown): value is sync.ProjectLink {
     && typeof candidate.linearProjectId === "string"
     && typeof candidate.linearProjectName === "string"
     && typeof candidate.syncDirection === "string";
+}
+
+function issueLabelIdsForReconcile(issue: Issue): string[] | undefined {
+  const labelIds = (issue as unknown as { labelIds?: unknown }).labelIds;
+  if (!Array.isArray(labelIds)) return undefined;
+  return labelIds.filter((labelId): labelId is string => typeof labelId === "string");
 }
 
 async function runFullSync(ctx: PluginContext, requestedCompanyId?: string | null): Promise<{
@@ -4017,6 +4047,220 @@ async function runFullSync(ctx: PluginContext, requestedCompanyId?: string | nul
   }
 
   return { synced, errors, scanned, skippedOtherCompany, complete, nextOffset: offset };
+}
+
+async function runLinearMirrorReconcile(
+  ctx: PluginContext,
+  requestedCompanyId?: string | null,
+  options: {
+    maxPerRun?: number;
+    resetCursor?: boolean;
+    syncStatuses?: boolean;
+    syncProjects?: boolean;
+    syncLabels?: boolean;
+  } = {},
+): Promise<{
+  reconciled: number;
+  errors: number;
+  scanned: number;
+  skippedOtherCompany: number;
+  missingPaperclip: number;
+  missingLinear: number;
+  complete: boolean;
+  nextOffset: number;
+}> {
+  let token: string;
+  try {
+    token = await resolveToken(ctx);
+  } catch {
+    return {
+      reconciled: 0,
+      errors: 0,
+      scanned: 0,
+      skippedOtherCompany: 0,
+      missingPaperclip: 0,
+      missingLinear: 0,
+      complete: true,
+      nextOffset: 0,
+    };
+  }
+
+  const teamId = await getTeamId(ctx).catch(() => "");
+  if (!teamId) {
+    return {
+      reconciled: 0,
+      errors: 0,
+      scanned: 0,
+      skippedOtherCompany: 0,
+      missingPaperclip: 0,
+      missingLinear: 0,
+      complete: true,
+      nextOffset: 0,
+    };
+  }
+
+  const connectedCompanyId = await getCompanyId(ctx);
+  if (requestedCompanyId && connectedCompanyId && requestedCompanyId !== connectedCompanyId) {
+    ctx.logger.info(
+      `Linear mirror reconcile skipped: requested company ${requestedCompanyId} does not match connected Linear company ${connectedCompanyId}`,
+    );
+    return {
+      reconciled: 0,
+      errors: 0,
+      scanned: 0,
+      skippedOtherCompany: 0,
+      missingPaperclip: 0,
+      missingLinear: 0,
+      complete: true,
+      nextOffset: 0,
+    };
+  }
+
+  const targetCompanyId = connectedCompanyId ?? requestedCompanyId ?? null;
+  const maxPerRun = Math.max(
+    1,
+    Math.min(
+      LINEAR_MIRROR_RECONCILE_MAX_ENTRIES_PER_RUN,
+      Math.trunc(Number(options.maxPerRun ?? LINEAR_MIRROR_RECONCILE_MAX_ENTRIES_PER_RUN)) || LINEAR_MIRROR_RECONCILE_MAX_ENTRIES_PER_RUN,
+    ),
+  );
+  const syncStatuses = options.syncStatuses !== false;
+  const syncProjects = options.syncProjects !== false;
+  const syncLabels = options.syncLabels !== false;
+  const cursorKey = {
+    scopeKind: "instance" as const,
+    stateKey: STATE_KEYS.linearMirrorReconcileOffset,
+  };
+  if (options.resetCursor === true) {
+    await ctx.state.set(cursorKey, 0);
+  }
+
+  const storedOffset = Number(await ctx.state.get(cursorKey));
+  let offset = Number.isFinite(storedOffset) && storedOffset > 0 ? Math.trunc(storedOffset) : 0;
+  let complete = false;
+  let entriesScanned = 0;
+  let scanned = 0;
+  let reconciled = 0;
+  let errors = 0;
+  let skippedOtherCompany = 0;
+  let missingPaperclip = 0;
+  let missingLinear = 0;
+
+  while (entriesScanned < maxPerRun) {
+    const remaining = maxPerRun - entriesScanned;
+    const page = await ctx.state.list({
+      scopeKind: "instance",
+      namespace: "default",
+      stateKeyPrefix: STATE_KEYS.linkPrefix,
+      limit: Math.min(LINEAR_LINK_SYNC_PAGE_SIZE, remaining),
+      offset,
+    });
+    if (page.entries.length === 0) {
+      offset = 0;
+      complete = true;
+      break;
+    }
+
+    entriesScanned += page.entries.length;
+    const links = page.entries
+      .map((entry) => entry.value)
+      .filter(isIssueLink);
+    scanned += links.length;
+    const currentCompanyLinks = targetCompanyId
+      ? links.filter((link) => {
+          if (link.paperclipCompanyId === targetCompanyId) return true;
+          skippedOtherCompany++;
+          return false;
+        })
+      : links;
+
+    for (let index = 0; index < currentCompanyLinks.length; index += LINEAR_ISSUE_SYNC_BATCH_SIZE) {
+      const batch = currentCompanyLinks.slice(index, index + LINEAR_ISSUE_SYNC_BATCH_SIZE);
+      const linearIds = batch.map((link) => link.linearIssueId);
+      let linearIssues: linear.LinearIssue[];
+      try {
+        linearIssues = await linear.listIssuesByIds(ctx.http.fetch.bind(ctx.http), token, linearIds);
+      } catch (err) {
+        ctx.logger.warn(`Linear mirror reconcile batch fetch failed: ${err}`);
+        errors += batch.length;
+        continue;
+      }
+
+      const linearById = new Map(linearIssues.map((issue) => [issue.id, issue]));
+      for (const link of batch) {
+        const linearIssue = linearById.get(link.linearIssueId);
+        if (!linearIssue) {
+          missingLinear++;
+          continue;
+        }
+
+        const paperclipIssue = await ctx.issues.get(link.paperclipIssueId, link.paperclipCompanyId);
+        if (!paperclipIssue) {
+          missingPaperclip++;
+          continue;
+        }
+
+        const changes: sync.SyncChanges = {};
+        if (syncStatuses) changes.status = paperclipIssue.status;
+        if (syncProjects) changes.projectId = paperclipIssue.projectId ?? null;
+        if (syncLabels) {
+          const labelIds = issueLabelIdsForReconcile(paperclipIssue);
+          if (labelIds !== undefined) changes.labelIds = labelIds;
+        }
+
+        if (Object.keys(changes).length === 0) continue;
+
+        try {
+          await sync.syncToLinear(
+            ctx,
+            {
+              ...link,
+              lastLinearStateType: linearIssue.state.type,
+              lastSyncAt: "1970-01-01T00:00:00.000Z",
+            },
+            changes,
+            token,
+            teamId,
+            {
+              ...(await paperclipLinkOptionsForCompany(ctx, link.paperclipCompanyId)),
+              force: true,
+            },
+          );
+          reconciled++;
+        } catch (err) {
+          ctx.logger.warn(`Linear mirror reconcile failed for ${link.linearIdentifier}: ${err}`);
+          errors++;
+        }
+      }
+    }
+
+    offset += page.entries.length;
+    if (!page.hasMore) {
+      offset = 0;
+      complete = true;
+      break;
+    }
+  }
+
+  await ctx.state.set(cursorKey, offset);
+  const skipSuffix = skippedOtherCompany > 0 ? `, ${skippedOtherCompany} skipped (other company)` : "";
+  const missingSuffix = missingPaperclip > 0 || missingLinear > 0
+    ? `, ${missingPaperclip} missing Paperclip, ${missingLinear} missing Linear`
+    : "";
+  ctx.logger.info(
+    `Linear mirror reconcile ${complete ? "complete" : "paused"}: ${reconciled} reconciled from ${scanned} linked issues, ${errors} errors${skipSuffix}${missingSuffix}`,
+  );
+
+  return {
+    reconciled,
+    errors,
+    scanned,
+    skippedOtherCompany,
+    missingPaperclip,
+    missingLinear,
+    complete,
+    nextOffset: offset,
+  };
 }
 
 /**

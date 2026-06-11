@@ -62,6 +62,7 @@ export const ACTION_KEYS = {
   unlinkIssue: "unlink-issue",
   importIssue: "import-issue",
   backfillBackLinks: "backfill-backlinks",
+  reconcileLinearMirrors: "reconcile-linear-mirrors",
 } as const;
 
 export const DATA_KEYS = {
@@ -94,6 +95,8 @@ export const STATE_KEYS = {
   goalsLinearProjectId: "goals-linear-project-id",
   /** Boolean flag: true if workspace supports Linear Initiatives, false if not (plan limitation). */
   initiativesSupported: "initiatives-supported",
+  /** Cursor for bounded Paperclip -> Linear mirror reconciliation. */
+  linearMirrorReconcileOffset: "linear-mirror-reconcile-offset",
 } as const;
 
 export const LINEAR_OAUTH = {

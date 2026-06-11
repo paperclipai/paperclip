@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   attachmentLinkURL,
+  createIssueLabel,
   ensureProjectLink,
   listIssueLabels,
   listIssuesByIds,
@@ -165,6 +166,42 @@ describe("listIssueLabels", () => {
     expect(body.query).toContain("query ListIssueLabels($after: String)");
     expect(body.query).toContain("issueLabels(first: 100, after: $after)");
     expect(body.variables).toEqual({ after: null });
+  });
+});
+
+describe("createIssueLabel", () => {
+  it("creates a team-scoped Linear issue label", async () => {
+    const fetch = mockFetch([
+      {
+        data: {
+          issueLabelCreate: {
+            issueLabel: {
+              id: "label-new",
+              name: "scope:legacy",
+              color: "#6366f1",
+              team: { id: "team-1", name: "Blockcast", key: "BLO" },
+            },
+          },
+        },
+      },
+    ]);
+
+    const label = await createIssueLabel(fetch, "tok", {
+      name: "scope:legacy",
+      color: "#6366f1",
+      teamId: "team-1",
+    });
+
+    expect(label).toMatchObject({ id: "label-new", name: "scope:legacy" });
+    const body = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(body.query).toContain("mutation CreateIssueLabel($input: IssueLabelCreateInput!)");
+    expect(body.variables).toEqual({
+      input: {
+        name: "scope:legacy",
+        color: "#6366f1",
+        teamId: "team-1",
+      },
+    });
   });
 });
 

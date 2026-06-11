@@ -363,6 +363,30 @@ export async function listIssueLabels(
   return labels;
 }
 
+export async function createIssueLabel(
+  fetch: LinearFetch,
+  token: string,
+  input: { name: string; color: string; teamId: string },
+): Promise<LinearIssueLabel> {
+  const data = await gql<{
+    issueLabelCreate: { issueLabel: LinearIssueLabel };
+  }>(fetch, token, `
+    mutation CreateIssueLabel($input: IssueLabelCreateInput!) {
+      issueLabelCreate(input: $input) {
+        issueLabel { id name color team { id name key } }
+      }
+    }
+  `, {
+    input: {
+      name: input.name,
+      color: input.color,
+      teamId: input.teamId,
+    },
+  });
+
+  return data.issueLabelCreate.issueLabel;
+}
+
 export async function listProjectLabels(
   fetch: LinearFetch,
   token: string,

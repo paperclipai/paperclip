@@ -67,6 +67,12 @@ vi.mock("../src/linear.js", () => ({
       team: { id: "team-1", key: "LUC", name: "Lucitra" },
     },
   ]),
+  createIssueLabel: vi.fn().mockResolvedValue({
+    id: "issue-label-new",
+    name: "scope:test",
+    color: "#6366f1",
+    team: { id: "team-1", key: "LUC", name: "Lucitra" },
+  }),
   listProjectLabels: vi.fn().mockResolvedValue([
     {
       id: "project-label-1",
@@ -672,6 +678,44 @@ describe("paperclip-plugin-linear", () => {
         expect.anything(),
         expect.anything(),
         expect.objectContaining({ projectId: "paperclip-proj-b" }),
+        "lin_token_123",
+        "team-1",
+        expect.anything(),
+      );
+    });
+
+    it("passes Paperclip label changes through to issue sync", async () => {
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthTeamId },
+        "team-1",
+      );
+
+      syncModule.getLink.mockResolvedValueOnce({
+        paperclipIssueId: "iss-1",
+        paperclipCompanyId: "comp-1",
+        linearIssueId: "lin-1",
+        linearIdentifier: "BLO-1",
+        linearUrl: "https://linear.app/blockcast/issue/BLO-1",
+        syncDirection: "bidirectional",
+        lastSyncAt: "2020-01-01T00:00:00.000Z",
+        lastLinearStateType: "started",
+        lastCommentSyncAt: null,
+      });
+
+      await harness.emit(
+        "issue.updated",
+        { id: "iss-1", patch: { labelIds: ["label-a", "label-b"] }, companyId: "comp-1" },
+        { entityId: "iss-1", companyId: "comp-1" },
+      );
+
+      expect(syncModule.syncToLinear).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.objectContaining({ labelIds: ["label-a", "label-b"] }),
         "lin_token_123",
         "team-1",
         expect.anything(),
@@ -1443,6 +1487,97 @@ describe("paperclip-plugin-linear", () => {
         linearProjectId: "lin-proj-demand",
         linearProjectName: "Demand: SMB 2",
       }));
+    });
+
+    it("reconciles linked Paperclip issue status, project, and labels back to Linear", async () => {
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthTeamId },
+        "team-1",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: `${STATE_KEYS.linkPrefix}pc-issue-1` },
+        {
+          paperclipIssueId: "pc-issue-1",
+          paperclipCompanyId: "comp-1",
+          linearIssueId: "lin-issue-1",
+          linearIdentifier: "BLO-1",
+          linearUrl: "https://linear.app/blockcast/issue/BLO-1",
+          syncDirection: "bidirectional",
+          lastSyncAt: "2020-01-01T00:00:00.000Z",
+          lastLinearStateType: "unstarted",
+          lastCommentSyncAt: null,
+        },
+      );
+      harness.seed({
+        issues: [
+          {
+            id: "pc-issue-1",
+            companyId: "comp-1",
+            projectId: "pc-project-current",
+            title: "Paperclip current",
+            status: "done",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+            labelIds: ["label-scope"],
+          } as never,
+        ],
+      });
+      const { listIssuesByIds } = await import("../src/linear.js");
+      (listIssuesByIds as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        {
+          id: "lin-issue-1",
+          identifier: "BLO-1",
+          title: "Linear stale",
+          description: null,
+          state: { name: "Todo", type: "unstarted" },
+          priority: 3,
+          url: "https://linear.app/blockcast/issue/BLO-1",
+          assignee: null,
+          labels: { nodes: [] },
+          project: { id: "lin-project-old", name: "Old", description: null, state: "started" },
+          createdAt: "2026-06-10T00:00:00.000Z",
+          updatedAt: "2026-06-10T00:00:00.000Z",
+        },
+      ]);
+
+      const result = await harness.performAction<{
+        reconciled: number;
+        errors: number;
+        scanned: number;
+        complete: boolean;
+      }>(ACTION_KEYS.reconcileLinearMirrors, { companyId: "comp-1", resetCursor: true });
+
+      expect(result).toMatchObject({
+        reconciled: 1,
+        errors: 0,
+        scanned: 1,
+        complete: true,
+      });
+      expect(syncModule.syncToLinear).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          paperclipIssueId: "pc-issue-1",
+          linearIssueId: "lin-issue-1",
+          lastLinearStateType: "unstarted",
+        }),
+        {
+          status: "done",
+          projectId: "pc-project-current",
+          labelIds: ["label-scope"],
+        },
+        "lin_token_123",
+        "team-1",
+        expect.objectContaining({ force: true }),
+      );
     });
   });
 

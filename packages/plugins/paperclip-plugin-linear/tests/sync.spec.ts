@@ -553,4 +553,79 @@ describe("syncToLinear", () => {
       expect.stringContaining("is not linked to Linear"),
     );
   });
+
+  it("maps Paperclip label ids to Linear label ids and creates missing Linear labels", async () => {
+    const harness = createTestHarness({ manifest });
+    vi.spyOn(harness.ctx.labels, "list").mockResolvedValue([
+      {
+        id: "pc-label-existing",
+        companyId: "comp-1",
+        name: "scope:legacy",
+        color: "#14b8a6",
+      },
+      {
+        id: "pc-label-new",
+        companyId: "comp-1",
+        name: "source:moved",
+        color: "#f59e0b",
+      },
+    ]);
+    vi.spyOn(linearApi, "listIssueLabels").mockResolvedValue([
+      {
+        id: "lin-label-existing",
+        name: "scope:legacy",
+        color: "#14b8a6",
+        team: { id: "team-1", name: "Blockcast", key: "BLO" },
+      },
+    ]);
+    const createIssueLabel = vi.spyOn(linearApi, "createIssueLabel").mockResolvedValue({
+      id: "lin-label-new",
+      name: "source:moved",
+      color: "#f59e0b",
+      team: { id: "team-1", name: "Blockcast", key: "BLO" },
+    });
+    const updateIssue = vi.spyOn(linearApi, "updateIssue").mockResolvedValue(makeLinearIssue());
+
+    await syncToLinear(
+      harness.ctx,
+      makeLink({ lastSyncAt: "2020-01-01T00:00:00.000Z" }),
+      { labelIds: ["pc-label-existing", "pc-label-new"] },
+      "lin-token",
+      "team-1",
+    );
+
+    expect(createIssueLabel).toHaveBeenCalledWith(
+      expect.any(Function),
+      "lin-token",
+      { name: "source:moved", color: "#f59e0b", teamId: "team-1" },
+    );
+    expect(updateIssue).toHaveBeenCalledWith(
+      expect.any(Function),
+      "lin-token",
+      "lin-1",
+      { labelIds: ["lin-label-existing", "lin-label-new"] },
+    );
+  });
+
+  it("clears Linear issue labels when Paperclip labelIds is empty", async () => {
+    const harness = createTestHarness({ manifest });
+    const listIssueLabels = vi.spyOn(linearApi, "listIssueLabels");
+    const updateIssue = vi.spyOn(linearApi, "updateIssue").mockResolvedValue(makeLinearIssue());
+
+    await syncToLinear(
+      harness.ctx,
+      makeLink({ lastSyncAt: "2020-01-01T00:00:00.000Z" }),
+      { labelIds: [] },
+      "lin-token",
+      "team-1",
+    );
+
+    expect(listIssueLabels).not.toHaveBeenCalled();
+    expect(updateIssue).toHaveBeenCalledWith(
+      expect.any(Function),
+      "lin-token",
+      "lin-1",
+      { labelIds: [] },
+    );
+  });
 });

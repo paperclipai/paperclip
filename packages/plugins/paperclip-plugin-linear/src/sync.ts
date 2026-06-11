@@ -319,6 +319,86 @@ function paperclipPriorityToLinear(priority: string): number {
   return map[priority] ?? 0;
 }
 
+const FALLBACK_LINEAR_LABEL_COLOR = "#6366f1";
+
+function normalizeLabelName(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function normalizeLinearLabelColor(value: string | null | undefined): string {
+  const trimmed = value?.trim();
+  return trimmed && /^#[0-9a-fA-F]{6}$/.test(trimmed)
+    ? trimmed
+    : FALLBACK_LINEAR_LABEL_COLOR;
+}
+
+async function resolveLinearIssueLabelIdsForPaperclipLabels(
+  ctx: PluginContext,
+  companyId: string,
+  paperclipLabelIds: string[],
+  token: string,
+  teamId: string,
+): Promise<string[]> {
+  const dedupedPaperclipLabelIds = [...new Set(paperclipLabelIds)];
+  if (dedupedPaperclipLabelIds.length === 0) return [];
+
+  const paperclipLabels = await ctx.labels.list(companyId);
+  const paperclipLabelsById = new Map(paperclipLabels.map((label) => [label.id, label]));
+  const requestedLabels = dedupedPaperclipLabelIds
+    .map((labelId) => paperclipLabelsById.get(labelId) ?? null)
+    .filter((label): label is NonNullable<typeof label> => label !== null);
+  if (requestedLabels.length !== dedupedPaperclipLabelIds.length) {
+    const missing = dedupedPaperclipLabelIds.filter((labelId) => !paperclipLabelsById.has(labelId));
+    ctx.logger.warn(
+      `Skipping ${missing.length} Paperclip labels during Linear sync because they were not found in company ${companyId}`,
+    );
+  }
+  if (requestedLabels.length === 0) return [];
+
+  const linearLabels = await linear.listIssueLabels(ctx.http.fetch.bind(ctx.http), token, {
+    teamId,
+    limit: 500,
+  });
+  const linearLabelsByName = new Map(
+    linearLabels.map((label) => [normalizeLabelName(label.name), label]),
+  );
+  const linearLabelIds: string[] = [];
+
+  for (const paperclipLabel of requestedLabels) {
+    const normalizedName = normalizeLabelName(paperclipLabel.name);
+    const existing = linearLabelsByName.get(normalizedName);
+    if (existing) {
+      linearLabelIds.push(existing.id);
+      continue;
+    }
+
+    try {
+      const created = await linear.createIssueLabel(ctx.http.fetch.bind(ctx.http), token, {
+        name: paperclipLabel.name,
+        color: normalizeLinearLabelColor(paperclipLabel.color),
+        teamId,
+      });
+      linearLabelsByName.set(normalizedName, created);
+      linearLabelIds.push(created.id);
+    } catch (err) {
+      const refreshed = await linear.listIssueLabels(ctx.http.fetch.bind(ctx.http), token, {
+        teamId,
+        query: paperclipLabel.name,
+        limit: 500,
+      });
+      const racedLabel = refreshed.find((label) => normalizeLabelName(label.name) === normalizedName);
+      if (racedLabel) {
+        linearLabelsByName.set(normalizedName, racedLabel);
+        linearLabelIds.push(racedLabel.id);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  return linearLabelIds;
+}
+
 export interface SyncChanges {
   status?: string;
   priority?: string;
@@ -327,6 +407,13 @@ export interface SyncChanges {
   estimate?: number | null;
   dueDate?: string | null;
   projectId?: string | null;
+  labelIds?: string[];
+}
+
+export interface SyncToLinearOptions {
+  baseUrl: string | null;
+  companyPrefix?: string | null;
+  force?: boolean;
 }
 
 export async function syncToLinear(
@@ -335,14 +422,14 @@ export async function syncToLinear(
   changes: SyncChanges,
   token: string,
   teamId: string,
-  paperclipLinkOptions?: { baseUrl: string | null; companyPrefix?: string | null },
+  paperclipLinkOptions?: SyncToLinearOptions,
 ): Promise<void> {
   if (link.syncDirection === "linear-to-paperclip") return;
 
   // Feedback loop prevention: if the last sync was from Linear within 5 seconds,
   // don't push back — this update was likely triggered by an inbound webhook.
   const timeSinceSync = Date.now() - new Date(link.lastSyncAt).getTime();
-  if (timeSinceSync < 5000) {
+  if (!paperclipLinkOptions?.force && timeSinceSync < 5000) {
     ctx.logger.info(`Skipping sync to Linear for ${link.linearIdentifier} — last synced ${timeSinceSync}ms ago (likely webhook echo)`);
     return;
   }
@@ -422,6 +509,19 @@ export async function syncToLinear(
         synced.push(`project:${projectLink.linearProjectName ?? projectLink.linearProjectId}`);
       }
     }
+  }
+
+  // Paperclip labels -> Linear issue labels
+  if (changes.labelIds !== undefined) {
+    const linearLabelIds = await resolveLinearIssueLabelIdsForPaperclipLabels(
+      ctx,
+      link.paperclipCompanyId,
+      Array.isArray(changes.labelIds) ? changes.labelIds : [],
+      token,
+      teamId,
+    );
+    linearUpdate.labelIds = linearLabelIds;
+    synced.push(`labels:${linearLabelIds.length}`);
   }
 
   if (Object.keys(linearUpdate).length === 0) return;
