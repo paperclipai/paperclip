@@ -90,13 +90,25 @@ describe("isClaudeTransientUpstreamError", () => {
     ).toBe(false);
   });
 
-  it("classifies 'empty or malformed response' as transient", () => {
+  it("classifies 'API returned an empty or malformed response (HTTP 200)' as transient", () => {
     expect(
       isClaudeTransientUpstreamError({
         parsed: {
           subtype: "success",
           is_error: true,
           result: "API Error: API returned an empty or malformed response (HTTP 200) — check for a proxy or gateway intercepting the request",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("classifies 'API returned a empty or malformed response, HTTP 200' variant as transient", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: {
+          subtype: "success",
+          is_error: true,
+          result: "API Error: API returned a empty or malformed response, HTTP 200",
         },
       }),
     ).toBe(true);
