@@ -657,8 +657,7 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
   }
 }
 
-// Keep in sync with PAPERCLIP_LOCK_NAMESPACE in server/src/services/advisory-locks.ts.
-const PAPERCLIP_LOCK_NAMESPACE = 0x70_63_6c_70; // "pclp"
+export const PAPERCLIP_LOCK_NAMESPACE = 0x70_63_6c_70; // "pclp" — namespaces Paperclip's advisory locks away from other tools' keys
 
 async function applyPendingMigrationsLocked(url: string): Promise<void> {
   const initialState = await inspectMigrations(url);

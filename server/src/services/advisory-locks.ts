@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { postgres } from "@paperclipai/db";
+import { PAPERCLIP_LOCK_NAMESPACE, postgres } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 
 /**
@@ -18,8 +18,6 @@ import type { Db } from "@paperclipai/db";
  * advisory locks in unbounded batches, and keep session-scoped locks
  * (which outlive transactions) to a fixed handful.
  */
-// Keep in sync with PAPERCLIP_LOCK_NAMESPACE in packages/db/src/client.ts.
-const PAPERCLIP_LOCK_NAMESPACE = 0x70_63_6c_70; // "pclp"
 
 /**
  * Run `fn` inside a transaction holding `pg_advisory_xact_lock` on the
