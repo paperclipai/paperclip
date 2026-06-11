@@ -39,6 +39,8 @@ This starts:
 
 `pnpm dev` runs the server in watch mode and restarts on changes from workspace packages (including adapter packages). Use `pnpm dev:once` to run without file watching.
 
+Drizzle schema edits under `packages/db/src/schema/` are intentionally excluded from the watch trigger. Generate a migration (`pnpm db:generate`) after schema changes; the resulting migration/meta write is what restarts dev so startup can apply or reconcile the new schema safely.
+
 `pnpm dev:once` auto-applies pending local migrations by default before starting the dev server.
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.
