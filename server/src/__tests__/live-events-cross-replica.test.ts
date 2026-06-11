@@ -11,6 +11,7 @@ import { createPgLiveEventsTransport } from "../services/live-events/pg-transpor
 import { createRedisLiveEventsTransport } from "../services/live-events/redis-transport.js";
 import {
   configureLiveEventsTransport,
+  getLiveEventsTransportHealth,
   publishLiveEvent,
   subscribeCompanyLiveEvents,
   teardownLiveEventsTransport,
@@ -287,6 +288,20 @@ describeEmbeddedPostgres("live-events postgres LISTEN/NOTIFY transport", () => {
     expect(stats.notificationQueueUsage).toBeGreaterThanOrEqual(0);
     expect(stats.notificationQueueUsage).toBeLessThan(1);
     await transport.close();
+  });
+
+  it("reports transport health with queue usage when the pg transport is active", async () => {
+    await teardownLiveEventsTransport();
+    expect(await getLiveEventsTransportHealth()).toEqual({ mode: "in-process" });
+    await configureLiveEventsTransport({ mode: "postgres", databaseUrl });
+    const health = await getLiveEventsTransportHealth();
+    expect(health.mode).toBe("transport");
+    if (health.mode === "transport") {
+      expect(health.originId).toBeTruthy();
+      expect(health.notificationQueueUsage).toBeGreaterThanOrEqual(0);
+      expect(health.notificationQueueUsage).toBeLessThan(1);
+    }
+    await teardownLiveEventsTransport();
   });
 
   it("routes transport.resync markers to company subscribers through the emitter", async () => {

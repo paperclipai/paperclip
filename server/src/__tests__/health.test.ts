@@ -7,10 +7,17 @@ import * as devServerStatus from "../dev-server-status.js";
 import { serverVersion } from "../version.js";
 
 const mockReadPersistedDevServerStatus = vi.hoisted(() => vi.fn());
+const mockGetLiveEventsTransportHealth = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({ mode: "in-process" }),
+);
 
 vi.mock("../dev-server-status.js", () => ({
   readPersistedDevServerStatus: mockReadPersistedDevServerStatus,
   toDevServerHealthStatus: vi.fn(),
+}));
+
+vi.mock("../services/live-events.js", () => ({
+  getLiveEventsTransportHealth: mockGetLiveEventsTransportHealth,
 }));
 
 function createApp(db?: Db) {

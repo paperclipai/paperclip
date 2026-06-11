@@ -192,6 +192,21 @@ export async function teardownLiveEventsTransport(): Promise<void> {
   }
 }
 
+export type LiveEventsHealth =
+  | { mode: "in-process" }
+  | { mode: "transport"; originId: string; notificationQueueUsage?: number };
+
+/**
+ * Transport health for /api/health. Queue usage approaching 1.0 means a
+ * lagging listener is filling the 8GB notification queue — at 1.0,
+ * NOTIFY-ing transactions instance-wide start failing at commit.
+ */
+export async function getLiveEventsTransportHealth(): Promise<LiveEventsHealth> {
+  if (!transport) return { mode: "in-process" };
+  const stats = transport.stats ? await transport.stats().catch(() => ({})) : {};
+  return { mode: "transport", originId: transport.originId, ...stats };
+}
+
 // ── Event factory ──────────────────────────────────────────────────────
 
 function toLiveEvent(input: {
