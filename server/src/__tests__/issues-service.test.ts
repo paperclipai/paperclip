@@ -4734,3 +4734,132 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(record?.childIssues.every((child) => typeof child.title === "string")).toBe(true);
   });
 });
+
+describeEmbeddedPostgres("issueService.update closes terminal execution workspaces (#7790)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-ews-close-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projects);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seed() {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "WS project",
+      status: "in_progress",
+    });
+    return { companyId, projectId };
+  }
+
+  async function insertWorkspace(companyId: string, projectId: string) {
+    const workspaceId = randomUUID();
+    await db.insert(executionWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      mode: "isolated_workspace",
+      strategyType: "issue_isolated",
+      name: "WS",
+      status: "active",
+      providerType: "local_fs",
+    });
+    return workspaceId;
+  }
+
+  for (const terminal of ["done", "cancelled"] as const) {
+    it(`closes the linked workspace when an issue transitions to ${terminal}`, async () => {
+      const { companyId, projectId } = await seed();
+      const workspaceId = await insertWorkspace(companyId, projectId);
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        projectId,
+        title: "Work",
+        status: "in_progress",
+        priority: "medium",
+        assigneeUserId: "user-1",
+        executionWorkspaceId: workspaceId,
+      });
+
+      await svc.update(issueId, { status: terminal });
+
+      const ws = await db
+        .select()
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, workspaceId))
+        .then((rows) => rows[0]);
+      expect(ws?.status).toBe("archived");
+      expect(ws?.closedAt).toBeInstanceOf(Date);
+      expect(ws?.cleanupEligibleAt).toBeInstanceOf(Date);
+      expect(ws?.cleanupReason).toBe(`issue_${terminal}`);
+    });
+  }
+
+  it("keeps a shared workspace open while another non-terminal issue still references it", async () => {
+    const { companyId, projectId } = await seed();
+    const workspaceId = await insertWorkspace(companyId, projectId);
+    const doneIssueId = randomUUID();
+    const activeIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: doneIssueId,
+        companyId,
+        projectId,
+        title: "Finishing",
+        status: "in_progress",
+        priority: "medium",
+        assigneeUserId: "user-1",
+        executionWorkspaceId: workspaceId,
+      },
+      {
+        id: activeIssueId,
+        companyId,
+        projectId,
+        title: "Still running",
+        status: "in_progress",
+        priority: "medium",
+        assigneeUserId: "user-1",
+        executionWorkspaceId: workspaceId,
+      },
+    ]);
+
+    await svc.update(doneIssueId, { status: "done" });
+
+    const ws = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, workspaceId))
+      .then((rows) => rows[0]);
+    expect(ws?.status).toBe("active");
+    expect(ws?.closedAt).toBeNull();
+    expect(ws?.cleanupEligibleAt).toBeNull();
+  });
+});

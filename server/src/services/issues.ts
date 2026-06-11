@@ -5215,6 +5215,48 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        // GH #7790: when an issue reaches a terminal state, close its linked
+        // execution workspace so the row doesn't leak at status='active' with a
+        // null closed_at/cleanup_eligible_at forever. Only close when no other
+        // non-terminal issue still references the workspace, so shared
+        // workspaces stay open while other work is still using them.
+        if (
+          (issueData.status === "done" || issueData.status === "cancelled") &&
+          existing.executionWorkspaceId
+        ) {
+          const workspaceId = existing.executionWorkspaceId;
+          const otherActiveIssues = await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.companyId, existing.companyId),
+                eq(issues.executionWorkspaceId, workspaceId),
+                ne(issues.id, id),
+                notInArray(issues.status, ["done", "cancelled"]),
+              ),
+            )
+            .limit(1);
+          if (otherActiveIssues.length === 0) {
+            const closedAt = new Date();
+            await tx
+              .update(executionWorkspaces)
+              .set({
+                status: "archived",
+                closedAt,
+                cleanupEligibleAt: closedAt,
+                cleanupReason: `issue_${issueData.status}`,
+                updatedAt: closedAt,
+              })
+              .where(
+                and(
+                  eq(executionWorkspaces.id, workspaceId),
+                  eq(executionWorkspaces.companyId, existing.companyId),
+                  isNull(executionWorkspaces.closedAt),
+                ),
+              );
+          }
+        }
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
         }
