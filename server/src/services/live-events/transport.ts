@@ -1,4 +1,4 @@
-import type { LiveEvent } from "@paperclipai/shared";
+import type { LiveEvent, LiveEventType } from "@paperclipai/shared";
 
 /**
  * Cross-replica fan-out transport for live events.
@@ -17,14 +17,6 @@ import type { LiveEvent } from "@paperclipai/shared";
 export interface LiveEventsTransport {
   /** Stable per-process id; receivers drop messages with a matching origin. */
   readonly originId: string;
-  /**
-   * Max UTF-8 byte size for the serialized envelope this transport will
-   * carry. Used by both the transport itself (when deciding whether to
-   * publish) and live-events.ts (when deciding whether to suppress local
-   * emit for symmetric drop). Different transports have different wire
-   * caps — see PG_NOTIFY_INLINE_LIMIT vs REDIS_PUBSUB_INLINE_LIMIT.
-   */
-  readonly maxEnvelopeBytes: number;
   /** Best-effort fan-out. Errors are logged, not thrown — live events are best-effort. */
   publish(event: LiveEvent): void;
   /** Idempotent: multiple subscribes for the same companyId reuse the channel. */
@@ -33,22 +25,29 @@ export interface LiveEventsTransport {
   unsubscribe(companyId: string, handler: TransportEventHandler): void;
   /** Tear-down for tests and graceful shutdown. */
   close(): Promise<void>;
+  /** Optional transport-level diagnostics surfaced via /api/health. */
+  stats?: () => Promise<{ notificationQueueUsage?: number }>;
 }
 
 export type TransportEventHandler = (event: LiveEvent) => void;
 
 /**
- * Wire-format envelope carried by NOTIFY / Redis PUBLISH. Only one variant:
- * `full` — the LiveEvent travels inline.
- *
- * We do not split oversized events; doing so requires a DB-backed event
- * store, which Paperclip's LiveEvent layer does not have. Live events
- * are best-effort UI hints, not state-machine signals — oversized events
- * are logged at error and dropped symmetrically across all replicas
- * (including the originating replica) so cross-replica behavior never
- * diverges silently.
+ * Wire-format envelope carried by NOTIFY / Redis PUBLISH.
+ *  - `full`  — one LiveEvent inline.
+ *  - `batch` — several LiveEvents coalesced into one frame. Postgres NOTIFY
+ *    takes a global AccessExclusiveLock at commit that serializes all
+ *    NOTIFY-ing commits, so bursty publishers must coalesce rather than
+ *    issue one NOTIFY per event.
+ *  - `resync` — a payload-free marker for an event whose serialized form
+ *    exceeds the transport cap. The receiver synthesizes a LiveEvent of the
+ *    original type with payload { __resync: true }; consumers refetch.
+ *    The originating replica still emits the full event locally — remote
+ *    replicas degrade to a refetch hint instead of the event being dropped.
  */
-export type TransportEnvelope = { kind: "full"; origin: string; event: LiveEvent };
+export type TransportEnvelope =
+  | { kind: "full"; origin: string; event: LiveEvent }
+  | { kind: "batch"; origin: string; events: LiveEvent[] }
+  | { kind: "resync"; origin: string; companyId: string; type: LiveEventType };
 
 /**
  * Postgres NOTIFY caps payloads at 8000 bytes (server-side default). We
@@ -68,30 +67,64 @@ export const PG_NOTIFY_INLINE_LIMIT = 7500;
 export const REDIS_PUBSUB_INLINE_LIMIT = 1_000_000;
 
 /**
- * Sentinel returned by {@link buildEnvelope} when the serialized envelope
- * exceeds the transport's max byte size. Callers MUST treat this as
- * "drop event symmetrically": skip cross-replica publish AND skip local
- * in-process emission, otherwise the originating replica sees the event
- * while every other replica does not — exactly the silent divergence
- * the noisy-drop policy is designed to prevent.
+ * Size-aware packing: greedily coalesce events into `batch` envelopes whose
+ * serialized UTF-8 size stays ≤ maxBytes; an event that cannot fit alone
+ * degrades to a `resync` marker. Order is preserved for events that travel
+ * inline. A batch of one is emitted as `full`.
  */
-export const OVERSIZED_EVENT: unique symbol = Symbol("live-events.oversized");
-export type OversizedSentinel = typeof OVERSIZED_EVENT;
+export function packEnvelopes(
+  originId: string,
+  events: LiveEvent[],
+  maxBytes: number,
+): TransportEnvelope[] {
+  const out: TransportEnvelope[] = [];
+  let batch: LiveEvent[] = [];
+  const flushBatch = () => {
+    if (batch.length === 0) return;
+    out.push(
+      batch.length === 1
+        ? { kind: "full", origin: originId, event: batch[0] }
+        : { kind: "batch", origin: originId, events: batch },
+    );
+    batch = [];
+  };
+  for (const event of events) {
+    const single: TransportEnvelope = { kind: "full", origin: originId, event };
+    if (Buffer.byteLength(JSON.stringify(single), "utf8") > maxBytes) {
+      out.push({ kind: "resync", origin: originId, companyId: event.companyId, type: event.type });
+      continue;
+    }
+    if (batch.length > 0) {
+      const candidate: TransportEnvelope = { kind: "batch", origin: originId, events: [...batch, event] };
+      if (Buffer.byteLength(JSON.stringify(candidate), "utf8") > maxBytes) flushBatch();
+    }
+    batch.push(event);
+  }
+  flushBatch();
+  return out;
+}
 
 /**
- * Encode a LiveEvent for cross-replica fan-out, or return
- * {@link OVERSIZED_EVENT} if the serialized envelope exceeds `maxBytes`.
- * Length is measured in UTF-8 bytes (not JS string `.length`, which
- * counts UTF-16 code units) because Postgres enforces its NOTIFY limit
- * at the wire-encoded byte level and Redis client buffers count bytes.
+ * Decode an inbound envelope into the LiveEvents to deliver locally.
+ * Resync markers become synthetic events with payload { __resync: true };
+ * id 0 marks receiver-synthesized events (ids are per-process ordering
+ * hints, never compared across replicas).
  */
-export function buildEnvelope(
-  originId: string,
-  event: LiveEvent,
-  maxBytes: number,
-): TransportEnvelope | OversizedSentinel {
-  const full: TransportEnvelope = { kind: "full", origin: originId, event };
-  const serialized = JSON.stringify(full);
-  if (Buffer.byteLength(serialized, "utf8") <= maxBytes) return full;
-  return OVERSIZED_EVENT;
+export function envelopeToEvents(companyId: string, envelope: TransportEnvelope): LiveEvent[] {
+  switch (envelope.kind) {
+    case "full":
+      return [envelope.event];
+    case "batch":
+      return envelope.events;
+    case "resync":
+      return [
+        {
+          id: 0,
+          companyId: envelope.companyId,
+          type: envelope.type,
+          createdAt: new Date().toISOString(),
+          payload: { __resync: true },
+        },
+      ];
+  }
 }
