@@ -1,7 +1,7 @@
 // ccrotate plugin UI v0.6.0 — three slots: page, sidebarPanel, settingsPage.
 //
 // All components hit the plugin's `apiRoutes` (snapshot, refresh, state-get,
-// state-put, import, switch, set-session) via plain `fetch("/api/plugins/<id>/<path>")`.
+// state-put, import, switch, set-session, relogin) via plain `fetch("/api/plugins/<id>/<path>")`.
 // The host's session cookie provides board-level auth (manifest declares
 // `auth: "board"` on each route), so credentials are scoped automatically.
 //
@@ -509,12 +509,12 @@ function PoolTable({
     }
   }
 
-  async function doCodexRelogin(email: string) {
+  async function doRelogin(email: string) {
     if (!companyId) return;
     setReloginEmail(email);
     setRowError(null);
     try {
-      await postJson("/codex-relogin", { companyId, email });
+      await postJson(target === "claude" ? "/claude-relogin" : "/codex-relogin", { companyId, email });
       onMutated();
     } catch (e: any) {
       setRowError({ email, msg: e?.message ?? String(e) });
@@ -548,6 +548,7 @@ function PoolTable({
           const isRelogging = reloginEmail === row.email;
           const isSessionFormOpen = sessionFormEmail === row.email;
           const rowIsStale = accountIsStale(row);
+          const canRelogin = rowIsStale || !row.isHealthy;
           return (
             <>
               <tr key={row.email}>
@@ -566,11 +567,13 @@ function PoolTable({
                 <td style={tdStyle}>{row.availability || "—"}</td>
                 <td style={tdStyle}>{row.apiLimit || "unknown"}</td>
                 <td style={{ ...tdStyle, textAlign: "right", whiteSpace: "nowrap" }}>
-                  {/* codex force-relogin for stale/unhealthy rows */}
-                  {target === "codex" && (rowIsStale || !row.isHealthy) && (
+                  {/* force-relogin for stale/unhealthy rows */}
+                  {canRelogin && (
                     <button type="button" style={smallBtnStyle} disabled={isRelogging || !companyId}
-                      onClick={() => doCodexRelogin(row.email)}
-                      title="Trigger codex device-auth relogin (auto-completes via Gmail forwarding)">
+                      onClick={() => doRelogin(row.email)}
+                      title={target === "claude"
+                        ? "Trigger Claude email-magic relogin (auto-completes via Gmail forwarding)"
+                        : "Trigger Codex device-auth relogin (auto-completes via Gmail forwarding)"}>
                       {isRelogging ? "relogging…" : "↺ relogin"}
                     </button>
                   )}
@@ -578,7 +581,7 @@ function PoolTable({
                   {target === "claude" && !row.isActive && (
                     <button
                       type="button"
-                      style={smallBtnStyle}
+                      style={{ ...smallBtnStyle, marginLeft: "4px" }}
                       disabled={isBusy || !companyId}
                       onClick={() => doSwitch(row.email)}
                       title="Make this the active account"
@@ -593,7 +596,7 @@ function PoolTable({
                     disabled={isRefreshing || !companyId}
                     onClick={() => doRefreshOne(row.email)}
                     title={rowIsStale
-                      ? "Try a live Usage API re-probe; paste sessionKey if the profile remains stale"
+                      ? "Try a live Usage API re-probe; relogin or paste sessionKey if the profile remains stale"
                       : "Force a live Usage API re-probe of this account now"}
                   >
                     {isRefreshing ? "↻…" : "↻"}

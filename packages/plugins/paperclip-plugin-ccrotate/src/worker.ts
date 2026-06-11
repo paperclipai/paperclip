@@ -405,6 +405,37 @@ async function handleCodexRelogin(input: PluginApiRequestInput): Promise<PluginA
   return { status: 200, body: { ok: true, email, snapStdout: reloginBody?.snapStdout } };
 }
 
+async function handleClaudeRelogin(input: PluginApiRequestInput): Promise<PluginApiResponse> {
+  const body = (input.body ?? {}) as { email?: unknown };
+  const email = typeof body.email === "string" ? body.email.trim() : "";
+  if (!email || !email.includes("@")) return { status: 400, body: { error: "email (with @) required" } };
+  const botBase = process.env.CCROTATE_AUTH_BOT_URL ?? "http://ccrotate-auth-bot.paperclip.svc:7000";
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 300_000);
+  let reloginRes: Response;
+  try {
+    reloginRes = await fetch(`${botBase}/reloginViaEmailMagicAuto`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, target: "claude" }), signal: controller.signal,
+    });
+  } catch (e) { clearTimeout(timer); return { status: 502, body: { error: `auth-bot unreachable: ${describeError(e)}` } }; }
+  clearTimeout(timer);
+  const reloginBody = (await reloginRes.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!reloginRes.ok) {
+    return {
+      status: reloginRes.status,
+      body: {
+        ok: false,
+        error: `auth-bot /reloginViaEmailMagicAuto returned ${reloginRes.status}: ${String(reloginBody?.error || "").slice(0, 300)}`,
+        ...(reloginBody?.code ? { code: reloginBody.code } : {}),
+        ...(reloginBody?.reason ? { reason: reloginBody.reason } : {}),
+        ...(reloginBody?.observedEmail ? { observedEmail: reloginBody.observedEmail } : {}),
+      },
+    };
+  }
+  return { status: 200, body: { ok: true, email, snapStdout: reloginBody?.snapStdout } };
+}
+
 async function handleBulkClearTiers(input: PluginApiRequestInput): Promise<PluginApiResponse> {
   const body = (input.body ?? {}) as { target?: unknown };
   const target = typeof body.target === "string" ? body.target.trim() : "claude";
@@ -684,6 +715,8 @@ const plugin: PaperclipPlugin = definePlugin({
           return await handleRefreshOne(input);
         case "codex-relogin":
           return await handleCodexRelogin(input);
+        case "claude-relogin":
+          return await handleClaudeRelogin(input);
         default:
           return { status: 404, body: { error: `unknown routeKey: ${input.routeKey}` } };
       }

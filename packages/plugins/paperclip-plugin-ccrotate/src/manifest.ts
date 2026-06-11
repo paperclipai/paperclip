@@ -149,6 +149,14 @@ const manifest: PaperclipPluginManifestV1 = {
       capability: "api.routes.register",
       companyResolution: { from: "body", key: "companyId" },
     },
+    {
+      routeKey: "claude-relogin",
+      method: "POST",
+      path: "/claude-relogin",
+      auth: "board",
+      capability: "api.routes.register",
+      companyResolution: { from: "body", key: "companyId" },
+    },
   ],
 };
 
