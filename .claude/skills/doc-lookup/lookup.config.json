@@ -1,0 +1,7 @@
+{
+  "name": "doc-lookup",
+  "dataDir": "/Users/user/sourceControl/paperclip/doc",
+  "include": ["**/*.md"],
+  "exclude": ["**/node_modules/**", "assets/**", "screenshots/**"],
+  "parser": "markdown"
+}
