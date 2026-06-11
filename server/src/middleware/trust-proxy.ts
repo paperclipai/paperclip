@@ -73,7 +73,10 @@ export function parseTrustProxyEnv(raw: string | undefined): TrustProxyValue | u
   if (raw === undefined) return undefined;
   // We intentionally trim only the *outer* value — tokens inside the
   // comma list are trimmed individually below. Leading/trailing whitespace
-  // inside an integer like " 2 " is rejected by the strict regex.
+  // around the whole value (e.g. " 2 ") is accepted because trim() reduces
+  // it to "2" before STRICT_POS_INT_RE is applied; only *internal*
+  // whitespace (e.g. "1 2") falls through to the subnet path and errors as
+  // an unrecognised token.
   const value = raw.trim();
   if (value === "" || value === "false" || value === "0") return undefined;
   if (value === "true") return true;
