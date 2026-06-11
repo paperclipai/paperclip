@@ -90,6 +90,30 @@ describe("isClaudeTransientUpstreamError", () => {
     ).toBe(false);
   });
 
+  it("classifies 'empty or malformed response' as transient", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: {
+          subtype: "success",
+          is_error: true,
+          result: "API Error: API returned an empty or malformed response (HTTP 200) — check for a proxy or gateway intercepting the request",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("classifies 'socket connection was closed unexpectedly' as transient", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: {
+          subtype: "success",
+          is_error: true,
+          result: "API Error: The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument",
+        },
+      }),
+    ).toBe(true);
+  });
+
   it("does not classify deterministic validation errors as transient", () => {
     expect(
       isClaudeTransientUpstreamError({
