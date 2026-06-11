@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudAccessGate } from "./components/CloudAccessGate";
 
@@ -79,6 +80,60 @@ function unmountRoot(root: ReturnType<typeof createRoot>) {
   });
 }
 
+async function collectPluginOperationsRoutes() {
+  const uiRoot = process.cwd().endsWith("/ui") ? process.cwd() : `${process.cwd()}/ui`;
+  const appSource = await readFile(`${uiRoot}/src/App.tsx`, "utf8");
+  const sourceFile = ts.createSourceFile("App.tsx", appSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const routes: Array<{ path: string; element: string }> = [];
+
+  function visit(node: ts.Node) {
+    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(sourceFile) === "Route") {
+      let path: string | null = null;
+      let element: string | null = null;
+
+      for (const attribute of node.attributes.properties) {
+        if (!ts.isJsxAttribute(attribute) || !attribute.initializer) continue;
+        const attributeName = attribute.name.getText(sourceFile);
+        if (attributeName === "path" && ts.isStringLiteral(attribute.initializer)) {
+          path = attribute.initializer.text;
+          continue;
+        }
+        if (
+          attributeName === "element" &&
+          ts.isJsxExpression(attribute.initializer) &&
+          attribute.initializer.expression
+        ) {
+          element = attribute.initializer.expression.getText(sourceFile);
+        }
+      }
+
+      if (path && element) {
+        routes.push({ path, element });
+      }
+    }
+
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return routes;
+}
+
+describe("Route registration", () => {
+  it("keeps plugin operations routes registered in App", async () => {
+    const routes = await collectPluginOperationsRoutes();
+
+    expect(routes).toContainEqual({
+      path: "projects/:projectId/plugin-operations",
+      element: "<ProjectDetail />",
+    });
+    expect(routes).toContainEqual({
+      path: "projects/:projectId/plugin-operations",
+      element: "<UnprefixedBoardRedirect />",
+    });
+  });
+});
+
 describe("CloudAccessGate", () => {
   let container: HTMLDivElement;
 
@@ -97,16 +152,6 @@ describe("CloudAccessGate", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
-  });
-
-  it("keeps plugin operations routes registered in App", async () => {
-    const uiRoot = process.cwd().endsWith("/ui") ? process.cwd() : `${process.cwd()}/ui`;
-    const appSource = await readFile(`${uiRoot}/src/App.tsx`, "utf8");
-
-    expect(appSource).toContain('<Route path="projects/:projectId/plugin-operations" element={<ProjectDetail />} />');
-    expect(appSource).toContain(
-      '<Route path="projects/:projectId/plugin-operations" element={<UnprefixedBoardRedirect />} />',
-    );
   });
 
   it("shows a no-access message for signed-in users without org access", async () => {
