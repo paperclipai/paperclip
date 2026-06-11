@@ -1,4 +1,5 @@
 import type { TranscriptEntry } from "@paperclipai/adapter-utils";
+import { PI_DELTA } from "../pi-event-types.js";
 
 function safeJsonParse(text: string): unknown {
   try {
@@ -189,15 +190,15 @@ export function parsePiStdoutLine(line: string, ts: string): TranscriptEntry[] {
       const msgType = asString(assistantEvent.type);
       
       // Handle thinking deltas
-      if (msgType === "thinking_delta") {
+      if (msgType === PI_DELTA.thinking) {
         const delta = asString(assistantEvent.delta);
         if (delta) {
           return [{ kind: "thinking", ts, text: delta, delta: true }];
         }
       }
-      
+
       // Handle text deltas
-      if (msgType === "text_delta") {
+      if (msgType === PI_DELTA.text) {
         const delta = asString(assistantEvent.delta);
         if (delta) {
           return [{ kind: "assistant", ts, text: delta, delta: true }];

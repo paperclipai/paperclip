@@ -1,5 +1,18 @@
 import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
 
+// Re-export the Pi event constants and filter from the UI-safe module so
+// existing server-side imports continue to work without dragging Node-only
+// dependencies into the UI bundle. See `../pi-event-types.ts` for the
+// definitions.
+export {
+  PI_DELTA,
+  PI_DELTA_EVENT_TYPES,
+  isDroppableDeltaLine,
+  rewriteToolResultLine,
+} from "../pi-event-types.js";
+export type { PiDeltaEventType } from "../pi-event-types.js";
+import { PI_DELTA } from "../pi-event-types.js";
+
 interface ParsedPiOutput {
   sessionId: string | null;
   messages: string[];
@@ -139,7 +152,7 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
       const assistantEvent = asRecord(event.assistantMessageEvent);
       if (assistantEvent) {
         const msgType = asString(assistantEvent.type, "");
-        if (msgType === "text_delta") {
+        if (msgType === PI_DELTA.text) {
           const delta = asString(assistantEvent.delta, "");
           if (delta) {
             // Append to last message or create new

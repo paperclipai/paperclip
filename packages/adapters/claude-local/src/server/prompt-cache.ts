@@ -39,6 +39,16 @@ function resolveManagedClaudePromptCacheRoot(
   );
 }
 
+// Directive appended after the user-supplied AGENTS.md contents so the agent
+// knows where its instructions live and how to resolve sibling files. Exported
+// so the bundle-key hasher can fingerprint the template identity: any edit to
+// this text automatically invalidates resumed sessions on their next heartbeat.
+export const INSTRUCTIONS_PATH_DIRECTIVE_TEMPLATE = (path: string, dir: string): string =>
+  `\nThe above agent instructions were loaded from ${path}. ` +
+  `Resolve any relative file references from ${dir}. ` +
+  `This base directory is authoritative for sibling instruction files such as ` +
+  `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory.`;
+
 async function hashPathContents(
   candidate: string,
   hash: Hash,
@@ -54,6 +64,7 @@ async function hashPathContents(
       hash.update("missing\n");
       return;
     }
+    hash.update(`target:${resolved}\n`);
     await hashPathContents(resolved, hash, relativePath, seenDirectories);
     return;
   }
@@ -76,25 +87,32 @@ async function hashPathContents(
   }
 
   if (stat.isFile()) {
-    hash.update(`file:${relativePath}\n`);
-    hash.update(await fs.readFile(candidate));
-    hash.update("\n");
+    hash.update(`file:${relativePath}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.mode}\n`);
     return;
   }
 
   hash.update(`other:${relativePath}:${stat.mode}\n`);
 }
 
-async function buildClaudePromptBundleKey(input: {
+export async function buildClaudePromptBundleKey(input: {
   skills: SkillEntry[];
-  instructionsContents: string | null;
+  instructionsFilePath: string | null;
+  instructionsFileDir: string;
 }): Promise<string> {
   const hash = createHash("sha256");
-  hash.update("paperclip-claude-prompt-bundle:v1\n");
-  if (input.instructionsContents) {
-    hash.update("instructions\n");
-    hash.update(input.instructionsContents);
-    hash.update("\n");
+  hash.update("paperclip-claude-prompt-bundle:v2\n");
+  if (input.instructionsFilePath) {
+    const stat = await fs.stat(input.instructionsFilePath).catch(() => null);
+    if (stat) {
+      hash.update(`instructions:path:${input.instructionsFilePath}\n`);
+      hash.update(`instructions:dir:${input.instructionsFileDir}\n`);
+      hash.update(`instructions:stat:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.mode}\n`);
+      hash.update("instructions:directive:");
+      hash.update(INSTRUCTIONS_PATH_DIRECTIVE_TEMPLATE("__path__", "__dir__"));
+      hash.update("\n");
+    } else {
+      hash.update(`instructions:missing:${input.instructionsFilePath}\n`);
+    }
   } else {
     hash.update("instructions:none\n");
   }
@@ -134,13 +152,31 @@ async function ensureReadableFile(targetPath: string, contents: string): Promise
 export async function prepareClaudePromptBundle(input: {
   companyId: string;
   skills: SkillEntry[];
-  instructionsContents: string | null;
+  instructionsFilePath: string | null;
+  instructionsFileDir: string;
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<ClaudePromptBundle> {
-  const { companyId, skills, instructionsContents, onLog } = input;
+  const { companyId, skills, instructionsFilePath: sourceInstructionsFilePath, instructionsFileDir, onLog } = input;
+
+  let combinedInstructionsContents: string | null = null;
+  if (sourceInstructionsFilePath) {
+    try {
+      const instructionsContent = await fs.readFile(sourceInstructionsFilePath, "utf-8");
+      combinedInstructionsContents =
+        instructionsContent + INSTRUCTIONS_PATH_DIRECTIVE_TEMPLATE(sourceInstructionsFilePath, instructionsFileDir);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog(
+        "stderr",
+        `[paperclip] Warning: could not read agent instructions file "${sourceInstructionsFilePath}": ${reason}\n`,
+      );
+    }
+  }
+
   const bundleKey = await buildClaudePromptBundleKey({
     skills,
-    instructionsContents,
+    instructionsFilePath: sourceInstructionsFilePath,
+    instructionsFileDir,
   });
   const rootDir = path.join(resolveManagedClaudePromptCacheRoot(process.env, companyId), bundleKey);
   const skillsHome = path.join(rootDir, ".claude", "skills");
@@ -158,17 +194,17 @@ export async function prepareClaudePromptBundle(input: {
     }
   }
 
-  const instructionsFilePath = instructionsContents
+  const materializedInstructionsFilePath = combinedInstructionsContents
     ? path.join(rootDir, "agent-instructions.md")
     : null;
-  if (instructionsFilePath && instructionsContents) {
-    await ensureReadableFile(instructionsFilePath, instructionsContents);
+  if (materializedInstructionsFilePath && combinedInstructionsContents) {
+    await ensureReadableFile(materializedInstructionsFilePath, combinedInstructionsContents);
   }
 
   return {
     bundleKey,
     rootDir,
     addDir: rootDir,
-    instructionsFilePath,
+    instructionsFilePath: materializedInstructionsFilePath,
   };
 }
