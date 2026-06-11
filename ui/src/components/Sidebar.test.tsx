@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -202,7 +202,7 @@ describe("Sidebar", () => {
       container.querySelector('[data-testid="sidebar-agents"]')?.getAttribute("data-streamlined"),
     ).toBe("true");
 
-    await act(async () => {
+    flushSync(() => {
       root.unmount();
     });
   });
@@ -229,7 +229,7 @@ describe("Sidebar", () => {
       container.querySelector('[data-testid="sidebar-agents"]')?.getAttribute("data-streamlined"),
     ).toBe("false");
 
-    await act(async () => {
+    flushSync(() => {
       root.unmount();
     });
   });
@@ -286,6 +286,29 @@ describe("Sidebar", () => {
     });
   });
 
+  it("shows Tools in the Company section", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    const root = await renderSidebar();
+
+    const toolsLink = [...container.querySelectorAll("a")].find(
+      (anchor) => anchor.textContent === "Tools",
+    );
+    expect(toolsLink?.getAttribute("href")).toBe("/tools");
+
+    const companySection = [...container.querySelectorAll("nav div")]
+      .find((node) => node.textContent?.includes("Company") && node.textContent.includes("Settings"));
+    const companyText = companySection?.textContent ?? "";
+    expect(companyText).toContain("Org");
+    expect(companyText).toContain("Skills");
+    expect(companyText).toContain("Tools");
+    expect(companyText.indexOf("Skills")).toBeLessThan(companyText.indexOf("Tools"));
+    expect(companyText.indexOf("Tools")).toBeLessThan(companyText.indexOf("Costs"));
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
   it("shows the Workspaces link when isolated workspaces are enabled", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     const root = await renderSidebar();
@@ -306,7 +329,7 @@ describe("Sidebar", () => {
     expect(toggle).not.toBeNull();
     expect(toggle?.getAttribute("aria-expanded")).toBe("true");
 
-    act(() => {
+    flushSync(() => {
       toggle?.click();
     });
     expect(mockSidebar.toggleCollapsed).toHaveBeenCalledTimes(1);
@@ -363,7 +386,7 @@ describe("Sidebar", () => {
     const pin = container.querySelector<HTMLButtonElement>('button[aria-label="Keep sidebar expanded"]');
     expect(pin).not.toBeNull();
 
-    act(() => {
+    flushSync(() => {
       pin?.click();
     });
     expect(mockSidebar.setCollapsed).toHaveBeenCalledWith(false);

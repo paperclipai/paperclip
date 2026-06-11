@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
+import type { MockInstance } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentActionButtons } from "./AgentActionButtons";
 
@@ -94,7 +95,7 @@ describe("AgentActionButtons", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot> | null;
   let queryClient: QueryClient;
-  let invalidateQueries: ReturnType<typeof vi.spyOn>;
+  let invalidateQueries: MockInstance<QueryClient["invalidateQueries"]>;
 
   beforeEach(() => {
     container = document.createElement("div");

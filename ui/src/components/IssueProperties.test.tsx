@@ -1059,8 +1059,29 @@ describe("IssueProperties", () => {
     expect(container.textContent).toContain("Custom · gpt-5.4 · high");
     expect(container.textContent).toContain("Model lane");
 
+    const modelOptionsTrigger = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Custom · gpt-5.4"));
+    expect(modelOptionsTrigger).not.toBeUndefined();
+
+    await act(async () => {
+      modelOptionsTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    let currentModelButton: HTMLButtonElement | undefined;
+    await waitForAssertion(() => {
+      currentModelButton = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "GPT-5.4" || button.textContent?.trim() === "gpt-5.4");
+      expect(currentModelButton).not.toBeUndefined();
+    });
+
+    await act(async () => {
+      currentModelButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
     const modelButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("GPT-5.5"));
+      .find((button) => button.textContent?.includes("GPT-5.5") || button.textContent?.includes("gpt-5.5"));
     expect(modelButton).not.toBeUndefined();
 
     await act(async () => {

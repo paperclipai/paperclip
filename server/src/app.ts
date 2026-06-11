@@ -24,6 +24,7 @@ import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
+import { toolAccessRoutes } from "./routes/tool-access.js";
 import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
@@ -43,6 +44,7 @@ import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
+import { toolGatewayRoutes } from "./routes/tool-gateway.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
@@ -53,6 +55,7 @@ import { createPluginWorkerManager, type PluginWorkerManager } from "./services/
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
+import { createToolGatewayService } from "./services/tool-gateway.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
@@ -230,6 +233,15 @@ export async function createApp(
   api.use(goalRoutes(db));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(secretRoutes(db));
+  const trustedLocalStdioRuntimeHost =
+    process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST
+    ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
+    ?? null;
+  api.use(toolAccessRoutes(db, {
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+    trustedLocalStdioRuntimeHost,
+  }));
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
@@ -256,6 +268,12 @@ export async function createApp(
     workerManager,
     lifecycleManager: lifecycle,
     db,
+  });
+  const toolGateway = createToolGatewayService(db, {
+    pluginToolDispatcher: toolDispatcher,
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+    trustedLocalStdioRuntimeHost,
   });
   const jobCoordinator = createPluginJobCoordinator({
     db,
@@ -303,6 +321,9 @@ export async function createApp(
     },
   );
   api.use(
+    toolGatewayRoutes(db, toolGateway),
+  );
+  api.use(
     pluginRoutes(
       db,
       loader,
@@ -310,6 +331,7 @@ export async function createApp(
       { workerManager },
       { toolDispatcher },
       { workerManager },
+      { toolGateway },
     ),
   );
   api.use(adapterRoutes());

@@ -60,6 +60,7 @@ Paperclip now treats **bind** as a separate concern from auth:
 - explicit public URL required
 - stricter deployment checks and failures in doctor
 - recommended bind is `loopback` behind a reverse proxy; direct `lan/custom` is advanced
+- local stdio MCP runtime slots fail closed by default; set `PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST` only when a trusted worker/runtime host is configured to supervise those processes. Remote HTTP MCP remains the preferred public-hosted path.
 
 ## 4. Onboarding UX Contract
 

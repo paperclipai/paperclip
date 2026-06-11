@@ -72,6 +72,22 @@ export { companySecrets } from "./company_secrets.js";
 export { companySecretVersions } from "./company_secret_versions.js";
 export { companySecretBindings } from "./company_secret_bindings.js";
 export { secretAccessEvents } from "./secret_access_events.js";
+export {
+  toolApplications,
+  toolConnections,
+  toolCatalogEntries,
+  toolProfiles,
+  toolProfileEntries,
+  toolProfileBindings,
+  toolPolicies,
+  toolRuntimeSlots,
+  toolGatewaySessions,
+  toolInvocations,
+  toolActionRequests,
+  toolCallEvents,
+  toolRateLimitCounters,
+  toolAccessAuditEvents,
+} from "./tool_access.js";
 export { companySkills } from "./company_skills.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";

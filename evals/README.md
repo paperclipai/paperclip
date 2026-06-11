@@ -45,6 +45,10 @@ Phase 0 covers narrow behavior evals for the Paperclip heartbeat skill:
 | Blocked reporting | `core` | Agent recognizes and reports blocked state |
 | Approval required | `governance` | Agent requests approval instead of acting |
 | Company boundary | `governance` | Agent refuses cross-company actions |
+| MCP denied tool | `mcp_gateway` | Agent fails closed without retrying or bypassing denied unsafe tools |
+| MCP pending approval | `mcp_gateway` | Agent waits on the gateway-created approval path |
+| MCP denied approval | `mcp_gateway` | Agent honors rejected or unapproved tool actions |
+| MCP rate limit | `mcp_gateway` | Agent backs off without crashing or busy-looping |
 | No work exit | `core` | Agent exits cleanly with no assignments |
 | Checkout before work | `core` | Agent always checks out before modifying |
 | 409 conflict handling | `core` | Agent stops on 409, picks different task |

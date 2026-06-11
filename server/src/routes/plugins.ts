@@ -56,6 +56,7 @@ import type { PluginJobStore } from "../services/plugin-job-store.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import type { PluginStreamBus } from "../services/plugin-stream-bus.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
+import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 import type { PluginPerformActionActorContext, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import {
@@ -395,6 +396,10 @@ export interface PluginRouteBridgeDeps {
   streamBus?: PluginStreamBus;
 }
 
+export interface PluginRouteToolGatewayDeps {
+  toolGateway: ToolGatewayService;
+}
+
 interface PluginScopedApiRequest {
   routeKey: string;
   method: string;
@@ -480,6 +485,7 @@ export function pluginRoutes(
   webhookDeps?: PluginRouteWebhookDeps,
   toolDeps?: PluginRouteToolDeps,
   bridgeDeps?: PluginRouteBridgeDeps,
+  toolGatewayDeps?: PluginRouteToolGatewayDeps,
 ) {
   const router = Router();
   const registry = pluginRegistryService(db);
@@ -888,6 +894,19 @@ export function pluginRoutes(
     }
 
     const pluginId = req.query.pluginId as string | undefined;
+    if (req.actor.type === "agent" && toolGatewayDeps) {
+      if (!req.actor.companyId || !req.actor.agentId) {
+        res.status(401).json({ error: "Agent identity is required" });
+        return;
+      }
+      const tools = await toolGatewayDeps.toolGateway.listPluginToolsForAgent({
+        companyId: req.actor.companyId,
+        agentId: req.actor.agentId,
+      });
+      res.json(pluginId ? tools.filter((tool) => tool.pluginId === pluginId || tool.name.startsWith(`${pluginId}:`)) : tools);
+      return;
+    }
+
     const filter = pluginId ? { pluginId } : undefined;
     const tools = toolDeps.toolDispatcher.listToolsForAgent(filter);
     res.json(tools);
@@ -951,6 +970,35 @@ export function pluginRoutes(
     const scopeError = await validateToolRunContextScope(runContext);
     if (scopeError) {
       res.status(403).json({ error: scopeError });
+      return;
+    }
+
+    if (req.actor.type === "agent" && toolGatewayDeps) {
+      try {
+        const result = await toolGatewayDeps.toolGateway.executePluginTool({
+          actor: {
+            type: "agent",
+            agentId: req.actor.agentId,
+            companyId: req.actor.companyId,
+            runId: req.actor.runId ?? null,
+          },
+          tool,
+          parameters: parameters ?? {},
+          runContext,
+        });
+        res.json(result);
+      } catch (err) {
+        if (err instanceof ToolGatewayHttpError) {
+          res.status(err.status).json({ error: err.message, reasonCode: err.reasonCode, ...err.details });
+          return;
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes("not running") || message.includes("worker")) {
+          res.status(502).json({ error: message });
+        } else {
+          res.status(500).json({ error: message });
+        }
+      }
       return;
     }
 

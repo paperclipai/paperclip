@@ -114,6 +114,8 @@ import {
 } from "@/components/ui/avatar";
 import { StatusBadge, AgentStatusBadge, AgentStatusCapsule } from "@/components/StatusBadge";
 import { StatusIcon } from "@/components/StatusIcon";
+import { EnforcementBanner } from "@/components/EnforcementBanner";
+import { ActionCard, ActionCardMobile, BindingsTable } from "@/components/actions/ActionCard";
 import { PriorityIcon } from "@/components/PriorityIcon";
 import { EntityRow } from "@/components/EntityRow";
 import { EmptyState } from "@/components/EmptyState";
@@ -1616,6 +1618,158 @@ export function DesignGuide() {
             When a task has produced no artifact work products, the Output section renders nothing
             at all (no placeholder card).
           </p>
+        </SubSection>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  TOOLS & ACCESS (PAP-10389)                                   */}
+      {/* ============================================================ */}
+      <Section title="Tools & Access">
+        <SubSection title="EnforcementBanner — default / denied-detected">
+          <div className="space-y-3">
+            <EnforcementBanner companyId="" forceVariant="default" recentDenialCount={0} />
+            <EnforcementBanner companyId="" forceVariant="denied-detected" recentDenialCount={3} />
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Persistent at the top of the Tools &amp; Access surface. Tints to <code>denied-detected</code> when
+            governed tool calls were denied or failed in the last hour. Observability only — enforcement lives
+            in the tool gateway.
+          </p>
+        </SubSection>
+
+        <SubSection title="EnforcementBanner — presentational tones (info / warning / error)">
+          <div className="space-y-3">
+            <EnforcementBanner
+              tone="info"
+              title="Effective access — server resolved."
+              body="This is exactly what the tool gateway will accept. Profile and policy edits reflect within ~5s; the prompt cannot expand it."
+            />
+            <EnforcementBanner
+              tone="warning"
+              title="Local stdio is local code execution, not a security sandbox."
+              body="A local-stdio slot runs with the orchestrator's privileges. Only bind trusted commands; quarantine anything you would not run yourself."
+            />
+            <EnforcementBanner
+              tone="error"
+              title="Runtime failed closed."
+              body="The supervisor is restarting (attempt 2/3). The gateway returns runtime-error and the agent does not see partial output."
+            />
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Static governance copy with a tone. Used for the PAP-10400 trust-tier banner on Runtime and the
+            effective-access banner on Agent → Tools. Pass <code>title</code>/<code>body</code> and an optional{" "}
+            <code>icon</code>.
+          </p>
+        </SubSection>
+
+        <SubSection title="Action approval card — pending / stale (surfaces 11/12)">
+          <div className="grid gap-4 lg:grid-cols-2">
+            <ActionCard
+              toolName="slack.post_message"
+              risk="medium"
+              isWrite
+              binding={{
+                application: "Slack",
+                manifestVersion: "2.4.1",
+                connection: "https://slack.com/api · acme-workspace",
+                catalogSha256: "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+                payloadSha256: "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+              }}
+              input={{ channel: "#launch", text: "Deploy v2 is live 🎉", unfurl_links: false }}
+              reason="This tool can write to your workspace, so a human signs off before the agent posts."
+              policyNumber={7}
+              expiresInLabel="expires in 23h 51m"
+            />
+            <ActionCard
+              variant="stale"
+              toolName="slack.post_message"
+              risk="medium"
+              isWrite
+              binding={{
+                application: "Slack",
+                manifestVersion: "2.4.1",
+                connection: "https://slack.com/api · acme-workspace",
+                catalogSha256: "sha256:7d793037a0760186574b0282f2f435e7a4b1b2b0b822cd15d6c15b0f00a0e3f1",
+                previousCatalogSha256: "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+                payloadSha256: "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+              }}
+              input={{ channel: "#launch", text: "Deploy v2 is live 🎉", unfurl_links: false }}
+              reason="This tool can write to your workspace, so a human signs off before the agent posts."
+              policyNumber={7}
+              expiresInLabel="expires in 18h 02m"
+            />
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Signed payload sha256 + expiry surface on every variant (PAP-10400). The{" "}
+            <code>stale</code> variant tints the border amber, banners the catalog-hash mismatch, strikes through
+            the previous hash next to the current one, and renders <code>Approve</code> disabled until the request
+            is re-issued.
+          </p>
+        </SubSection>
+
+        <SubSection title="Action approval card — mobile (390×844, surface 99)">
+          <div className="w-[390px] max-w-full rounded-xl border border-border bg-background p-3">
+            <ActionCardMobile
+              toolName="slack.post_message"
+              risk="medium"
+              isWrite
+              binding={{
+                application: "Slack",
+                manifestVersion: "2.4.1",
+                connection: "https://slack.com/api · acme-workspace",
+                catalogSha256: "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+                payloadSha256: "sha256:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+              }}
+              input={{ channel: "#launch", text: "Deploy v2 is live 🎉" }}
+              reason="This tool can write to your workspace, so a human signs off before the agent posts."
+              policyNumber={7}
+              expiresInLabel="expires in 23h 51m"
+            />
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Identical content; the three buttons stack full-width in the order Approve / Deny / Edit &amp; re-sign,
+            and the bindings table uses a 70px label column.
+          </p>
+        </SubSection>
+
+        <SubSection title="BindingsTable (reused in the audit row drilldown)">
+          <BindingsTable
+            rows={[
+              { label: "Application", value: "Slack · manifest v2.4.1" },
+              { label: "Connection", value: "https://slack.com/api · acme-workspace", mono: true },
+              { label: "Catalog", value: "sha256:9f86d081…f00a08", mono: true },
+              { label: "Payload", value: "sha256:2c26b46b…66e7ae", mono: true },
+            ]}
+          />
+          <p className="mt-2 text-xs text-muted-foreground">
+            Two-column key/value block with mono values. Lives inside <code>ActionCard</code> and is reused
+            standalone in the audit row drilldown.
+          </p>
+        </SubSection>
+
+        <SubSection title="Tool-access status keys (StatusBadge)">
+          <div className="flex flex-wrap items-center gap-2">
+            {[
+              "allowed", "denied", "block", "require-approval", "redacted", "rate-limit",
+              "deferred", "hidden", "quarantined", "healthy", "degraded", "runtime-error", "unchecked",
+            ].map((s) => (
+              <StatusBadge key={s} status={s} />
+            ))}
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Policy decisions, connection/runtime health, and catalog quarantine all route through the canonical{" "}
+            <code>StatusBadge</code> keys defined in <code>lib/status-colors</code>.
+          </p>
+        </SubSection>
+
+        <SubSection title="EmptyState (canonical, with description + action)">
+          <EmptyState
+            icon={Inbox}
+            message="No connections yet"
+            description="Add a connection to an application to configure credentials and discover its tools."
+            action="New connection"
+            onAction={() => {}}
+          />
         </SubSection>
       </Section>
     </div>

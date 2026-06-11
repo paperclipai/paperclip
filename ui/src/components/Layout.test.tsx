@@ -59,6 +59,10 @@ vi.mock("./CompanySettingsSidebar", () => ({
   CompanySettingsSidebar: () => <div>Company settings sidebar</div>,
 }));
 
+vi.mock("./ToolsSidebar", () => ({
+  ToolsSidebar: () => <div>Tools sidebar</div>,
+}));
+
 vi.mock("./BreadcrumbBar", () => ({
   BreadcrumbBar: () => <div>Breadcrumbs</div>,
 }));
@@ -477,6 +481,33 @@ describe("Layout", () => {
     expect(container.textContent).toContain("Main company nav");
     expect(container.textContent).not.toContain("Company rail");
     expect(container.textContent).not.toContain("Plugin route sidebar");
+    expect(mockSetForceCollapsed).toHaveBeenCalledWith(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the app sidebar and shows the tools sidebar in the secondary pane on tools routes", async () => {
+    currentPathname = "/PAP/tools/runtime";
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Tools sidebar");
+    expect(container.textContent).toContain("Main company nav");
+    expect(container.textContent).not.toContain("Company settings sidebar");
     expect(mockSetForceCollapsed).toHaveBeenCalledWith(true);
 
     await act(async () => {

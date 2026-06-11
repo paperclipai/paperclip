@@ -541,6 +541,7 @@ export const SECRET_BINDING_TARGET_TYPES = [
   "plugin",
   "issue",
   "run",
+  "tool_connection",
   "system",
 ] as const;
 export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[number];
@@ -724,6 +725,12 @@ export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
 export const PERMISSION_KEYS = [
   "agents:create",
   "environments:manage",
+  "tools:admin",
+  "tools:manage_connections",
+  "tools:manage_profiles",
+  "tools:view_audit",
+  "tools:use",
+  "tools:manage_runtime",
   "users:invite",
   "users:manage_permissions",
   "tasks:assign",
@@ -732,6 +739,153 @@ export const PERMISSION_KEYS = [
   "joins:approve",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
+
+export const TOOL_APPLICATION_TYPES = ["mcp_http", "mcp_stdio", "paperclip_plugin", "a2a"] as const;
+export type ToolApplicationType = (typeof TOOL_APPLICATION_TYPES)[number];
+
+export const TOOL_APPLICATION_STATUSES = ["draft", "active", "disabled", "archived"] as const;
+export type ToolApplicationStatus = (typeof TOOL_APPLICATION_STATUSES)[number];
+
+export const TOOL_CONNECTION_KINDS = ["managed"] as const;
+export type ToolConnectionKind = (typeof TOOL_CONNECTION_KINDS)[number];
+
+export const TOOL_CONNECTION_HEALTH_STATUSES = [
+  "unknown",
+  "healthy",
+  "degraded",
+  "failed",
+  "unchecked",
+  "ok",
+  "error",
+  "missing_secret",
+] as const;
+export type ToolConnectionHealthStatus = (typeof TOOL_CONNECTION_HEALTH_STATUSES)[number];
+
+export const TOOL_CATALOG_ENTRY_KINDS = ["tool", "resource", "prompt"] as const;
+export type ToolCatalogEntryKind = (typeof TOOL_CATALOG_ENTRY_KINDS)[number];
+
+export const TOOL_CATALOG_ENTRY_STATUSES = ["active", "disabled", "quarantined", "removed"] as const;
+export type ToolCatalogEntryStatus = (typeof TOOL_CATALOG_ENTRY_STATUSES)[number];
+
+export const TOOL_RISK_LEVELS = ["low", "medium", "high", "critical", "read", "write", "destructive"] as const;
+export type ToolRiskLevel = (typeof TOOL_RISK_LEVELS)[number];
+
+export const TOOL_PROFILE_STATUSES = ["active", "disabled", "archived"] as const;
+export type ToolProfileStatus = (typeof TOOL_PROFILE_STATUSES)[number];
+
+export const TOOL_PROFILE_DEFAULT_ACTIONS = ["deny", "allow"] as const;
+export type ToolProfileDefaultAction = (typeof TOOL_PROFILE_DEFAULT_ACTIONS)[number];
+
+export const TOOL_PROFILE_ENTRY_SELECTOR_TYPES = [
+  "application",
+  "connection",
+  "catalog_entry",
+  "tool_name",
+  "risk_level",
+] as const;
+export type ToolProfileEntrySelectorType = (typeof TOOL_PROFILE_ENTRY_SELECTOR_TYPES)[number];
+
+export const TOOL_PROFILE_ENTRY_EFFECTS = ["include", "exclude"] as const;
+export type ToolProfileEntryEffect = (typeof TOOL_PROFILE_ENTRY_EFFECTS)[number];
+
+export const TOOL_PROFILE_BINDING_TARGET_TYPES = ["company", "agent", "project", "routine", "issue"] as const;
+export type ToolProfileBindingTargetType = (typeof TOOL_PROFILE_BINDING_TARGET_TYPES)[number];
+
+export const TOOL_POLICY_TYPES = [
+  "allow",
+  "block",
+  "require_approval",
+  "trust_rule",
+  "rate_limit",
+  "redact",
+  "validate",
+] as const;
+export type ToolPolicyType = (typeof TOOL_POLICY_TYPES)[number];
+
+export const TOOL_POLICY_DECISIONS = ["allow", "deny", "require_approval", "rate_limited", "defer_runtime"] as const;
+export type ToolPolicyDecision = (typeof TOOL_POLICY_DECISIONS)[number];
+
+export const TOOL_INVOCATION_STATUSES = [
+  "pending",
+  "authorized",
+  "denied",
+  "awaiting_approval",
+  "executing",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "timed_out",
+  "rate_limited",
+] as const;
+export type ToolInvocationStatus = (typeof TOOL_INVOCATION_STATUSES)[number];
+
+export const TOOL_INVOCATION_APPROVAL_STATES = [
+  "not_required",
+  "required",
+  "pending",
+  "approved",
+  "rejected",
+  "expired",
+] as const;
+export type ToolInvocationApprovalState = (typeof TOOL_INVOCATION_APPROVAL_STATES)[number];
+
+export const TOOL_ACTION_REQUEST_STATUSES = ["pending", "approved", "rejected", "expired", "cancelled", "executed"] as const;
+export type ToolActionRequestStatus = (typeof TOOL_ACTION_REQUEST_STATUSES)[number];
+
+export const TOOL_AUDIT_EVENT_TYPES = [
+  "discovery",
+  "policy_decision",
+  "invocation_created",
+  "call_started",
+  "call_completed",
+  "call_failed",
+  "call_denied",
+  "approval_requested",
+  "approval_resolved",
+  "trust_rule_created",
+  "trust_rule_revoked",
+  "trust_rule_used",
+  "runtime_started",
+  "runtime_stopped",
+  "rate_limited",
+] as const;
+export type ToolAuditEventType = (typeof TOOL_AUDIT_EVENT_TYPES)[number];
+
+export const TOOL_AUDIT_OUTCOMES = ["pending", "success", "failure", "denied", "timeout", "cancelled"] as const;
+export type ToolAuditOutcome = (typeof TOOL_AUDIT_OUTCOMES)[number];
+
+export const TOOL_RUNTIME_KINDS = ["remote_session", "local_stdio"] as const;
+export type ToolRuntimeKind = (typeof TOOL_RUNTIME_KINDS)[number];
+
+export const TOOL_RUNTIME_SLOT_STATUSES = ["starting", "running", "idle", "stopped", "failed", "disabled", "error"] as const;
+export type ToolRuntimeSlotStatus = (typeof TOOL_RUNTIME_SLOT_STATUSES)[number];
+
+export const TOOL_RATE_LIMIT_WINDOW_KINDS = ["minute", "hour", "day", "month"] as const;
+export type ToolRateLimitWindowKind = (typeof TOOL_RATE_LIMIT_WINDOW_KINDS)[number];
+
+export const TOOL_ACCESS_ACTIVITY_ACTIONS = [
+  "tool_application.created",
+  "tool_application.updated",
+  "tool_application.archived",
+  "tool_connection.created",
+  "tool_connection.updated",
+  "tool_connection.tested",
+  "tool_connection.catalog_refreshed",
+  "tool_profile.created",
+  "tool_profile.updated",
+  "tool_profile.bound",
+  "tool_profile.unbound",
+  "tool_policy.created",
+  "tool_policy.updated",
+  "tool_policy.disabled",
+  "tool_trust_rule.created",
+  "tool_trust_rule.revoked",
+  "tool_runtime_slot.started",
+  "tool_runtime_slot.stopped",
+  "tool_action_request.created",
+  "tool_action_request.resolved",
+] as const;
+export type ToolAccessActivityAction = (typeof TOOL_ACCESS_ACTIVITY_ACTIONS)[number];
 
 // ---------------------------------------------------------------------------
 // Plugin System — see doc/plugins/PLUGIN_SPEC.md for the full specification

@@ -9,7 +9,7 @@ import {
   agentStatusMotion,
 } from "../lib/status-colors";
 
-export function StatusBadge({ status }: { status: string }) {
+export function StatusBadge({ status, label }: { status: string; label?: string }) {
   return (
     <span
       className={cn(
@@ -17,7 +17,7 @@ export function StatusBadge({ status }: { status: string }) {
         statusBadge[status] ?? statusBadgeDefault
       )}
     >
-      {status.replace(/_/g, " ")}
+      {label ?? status.replace(/[_-]/g, " ")}
     </span>
   );
 }

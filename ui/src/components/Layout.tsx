@@ -4,6 +4,7 @@ import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "
 import { Sidebar } from "./Sidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 import { CompanySettingsNav } from "./access/CompanySettingsNav";
+import { ToolsSidebar } from "./ToolsSidebar";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
@@ -78,6 +79,7 @@ export function Layout() {
   const location = useLocation();
   const navigationType = useNavigationType();
   const isCompanySettingsRoute = location.pathname.includes("/company/settings");
+  const isToolsRoute = getCompanyRouteSegment(location.pathname, companyPrefix) === "tools";
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
   const previousPathname = useRef<string | null>(null);
@@ -119,6 +121,8 @@ export function Layout() {
   // both desktop (SecondarySidebar) and mobile (off-canvas drawer).
   const secondarySidebar = isCompanySettingsRoute ? (
     <CompanySettingsSidebar />
+  ) : isToolsRoute ? (
+    <ToolsSidebar />
   ) : routeSidebarSlot ? (
     <PluginSlotMount
       slot={routeSidebarSlot}

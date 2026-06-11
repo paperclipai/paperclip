@@ -44,6 +44,8 @@ const apiPrefixes: Record<string, string> = {
   "sidebar-badges.ts": "/api",
   "sidebar-preferences.ts": "/api",
   "teams-catalog.ts": "/api",
+  "tool-access.ts": "/api",
+  "tool-gateway.ts": "/api",
   "user-profiles.ts": "/api",
 };
 
@@ -151,6 +153,8 @@ describe("openapi routes", () => {
         name: { type: "string" },
       },
     });
+    expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools"].get)).not.toContain("sessionToken");
+    expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools/call"].post)).not.toContain("sessionToken");
   });
 
   it("covers the mounted server routes exactly", () => {

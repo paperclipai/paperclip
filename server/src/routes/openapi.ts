@@ -128,6 +128,23 @@ import {
   remoteSecretImportSchema,
   workspaceFileListQuerySchema,
   workspaceFileResourceQuerySchema,
+  // Tool access
+  createToolApplicationSchema,
+  updateToolApplicationSchema,
+  createToolConnectionSchema,
+  updateToolConnectionSchema,
+  createToolPolicySchema,
+  createToolProfileBindingForProfileSchema,
+  createToolProfileEntryForProfileSchema,
+  createToolProfileWithEntriesSchema,
+  updateToolPolicySchema,
+  updateToolProfileEntrySchema,
+  updateToolProfileWithEntriesSchema,
+  createToolTrustRuleFromActionRequestSchema,
+  revokeToolTrustRuleSchema,
+  unbindToolProfileBindingSchema,
+  importMcpJsonSchema,
+  toolPolicyTestRequestSchema,
 } from "@paperclipai/shared";
 
 type JsonSchema = Record<string, unknown>;
@@ -578,6 +595,46 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/issues/{id}/interactions/{interactionId}/accept",
   "POST /api/issues/{id}/interactions/{interactionId}/reject",
   "POST /api/issues/{id}/interactions/{interactionId}/respond",
+  "GET /api/companies/{companyId}/tools/examples",
+  "POST /api/companies/{companyId}/tools/examples/{id}/install",
+  "POST /api/companies/{companyId}/tools/examples/{id}/smoke",
+  "GET /api/companies/{companyId}/tools/applications",
+  "POST /api/companies/{companyId}/tools/applications",
+  "PATCH /api/tool-applications/{applicationId}",
+  "DELETE /api/tool-applications/{applicationId}",
+  "GET /api/companies/{companyId}/tools/connections",
+  "POST /api/companies/{companyId}/tools/connections",
+  "GET /api/tool-connections/{connectionId}",
+  "PATCH /api/tool-connections/{connectionId}",
+  "DELETE /api/tool-connections/{connectionId}",
+  "POST /api/tool-connections/{connectionId}/health-check",
+  "POST /api/tool-connections/{connectionId}/catalog/refresh",
+  "GET /api/tool-connections/{connectionId}/catalog",
+  "GET /api/companies/{companyId}/tools/profiles",
+  "POST /api/companies/{companyId}/tools/profiles",
+  "GET /api/companies/{companyId}/tools/profiles/effective/agents/{agentId}",
+  "PATCH /api/tool-profiles/{profileId}",
+  "POST /api/tool-profiles/{profileId}/entries",
+  "PATCH /api/tool-profile-entries/{entryId}",
+  "DELETE /api/tool-profile-entries/{entryId}",
+  "POST /api/companies/{companyId}/tools/profiles/{profileId}/bind",
+  "POST /api/companies/{companyId}/tools/profiles/{profileId}/unbind",
+  "GET /api/companies/{companyId}/tools/runtime-slots",
+  "POST /api/companies/{companyId}/tools/runtime-slots/{id}/stop",
+  "POST /api/companies/{companyId}/tools/runtime-slots/{id}/restart",
+  "GET /api/companies/{companyId}/tools/runtime-health",
+  "GET /api/companies/{companyId}/tools/runs/{runId}/decisions",
+  "GET /api/companies/{companyId}/tools/trust-rules",
+  "GET /api/companies/{companyId}/tools/policies",
+  "POST /api/companies/{companyId}/tools/policies",
+  "PATCH /api/companies/{companyId}/tools/policies/{policyId}",
+  "DELETE /api/companies/{companyId}/tools/policies/{policyId}",
+  "POST /api/companies/{companyId}/tools/action-requests/{actionRequestId}/trust-rule",
+  "POST /api/companies/{companyId}/tools/trust-rules/{policyId}/revoke",
+  "GET /api/companies/{companyId}/tools/stdio-templates",
+  "POST /api/companies/{companyId}/tools/mcp/import-json",
+  "POST /api/companies/{companyId}/tools/policy/test",
+  "POST /api/tool-gateway/action-requests/{id}/approve",
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
@@ -630,6 +687,10 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/admin/users/{userId}/promote-instance-admin",
   "POST /api/plugins/install",
   "POST /api/instance/database-backups",
+  "POST /api/companies/{companyId}/tools/applications",
+  "POST /api/companies/{companyId}/tools/connections",
+  "POST /api/companies/{companyId}/tools/action-requests/{actionRequestId}/trust-rule",
+  "POST /api/tool-gateway/sessions",
 ]);
 
 const ACCEPTED_OPERATIONS = new Set([
@@ -4435,6 +4496,401 @@ for (const route of [
     ...(route[0] === "post" || route[0] === "put" ? { body: pluginLocalFolderRequestSchema } : {}),
   });
 }
+
+// --- Tool access -------------------------------------------------------------
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/tools/examples",
+  tags: ["tool-access"],
+  summary: "List installable tool examples",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/examples/{id}/install",
+  tags: ["tool-access"],
+  summary: "Install a safe tool example",
+  responses: { 200: r.ok(), 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/examples/{id}/smoke",
+  tags: ["tool-access"],
+  summary: "Run tool example governance smoke checks",
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/tools/applications",
+  tags: ["tool-access"],
+  summary: "List tool applications",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/applications",
+  tags: ["tool-access"],
+  summary: "Create a tool application",
+  body: createToolApplicationSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/tool-applications/{applicationId}",
+  tags: ["tool-access"],
+  summary: "Update a tool application",
+  body: updateToolApplicationSchema,
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/tool-applications/{applicationId}",
+  tags: ["tool-access"],
+  summary: "Delete a tool application",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/tools/connections",
+  tags: ["tool-access"],
+  summary: "List tool connections",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/connections",
+  tags: ["tool-access"],
+  summary: "Create a tool connection",
+  body: createToolConnectionSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-connections/{connectionId}",
+  tags: ["tool-access"],
+  summary: "Get a tool connection",
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/tool-connections/{connectionId}",
+  tags: ["tool-access"],
+  summary: "Update a tool connection",
+  body: updateToolConnectionSchema,
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/tool-connections/{connectionId}",
+  tags: ["tool-access"],
+  summary: "Archive a tool connection",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/health-check",
+  tags: ["tool-access"],
+  summary: "Run a tool connection health check",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/catalog/refresh",
+  tags: ["tool-access"],
+  summary: "Refresh a tool connection catalog",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/catalog",
+  tags: ["tool-access"],
+  summary: "List a tool connection catalog",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/tools/profiles",
+  tags: ["tool-access"],
+  summary: "List tool access profiles with entries and bindings",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/profiles",
+  tags: ["tool-access"],
+  summary: "Create a tool access profile",
+  body: createToolProfileWithEntriesSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/tools/profiles/effective/agents/{agentId}",
+  tags: ["tool-access"],
+  summary: "Resolve effective tool access profiles for an agent",
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/tool-profiles/{profileId}",
+  tags: ["tool-access"],
+  summary: "Update a tool access profile",
+  body: updateToolProfileWithEntriesSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-profiles/{profileId}/entries",
+  tags: ["tool-access"],
+  summary: "Create a tool access profile entry",
+  body: createToolProfileEntryForProfileSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/tool-profile-entries/{entryId}",
+  tags: ["tool-access"],
+  summary: "Update a tool access profile entry",
+  body: updateToolProfileEntrySchema,
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/tool-profile-entries/{entryId}",
+  tags: ["tool-access"],
+  summary: "Delete a tool access profile entry",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/profiles/{profileId}/bind",
+  tags: ["tool-access"],
+  summary: "Bind a tool access profile to a company, agent, project, routine, or issue",
+  body: createToolProfileBindingForProfileSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 409: r.conflict, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/profiles/{profileId}/unbind",
+  tags: ["tool-access"],
+  summary: "Unbind a tool access profile from a company, agent, project, routine, or issue",
+  body: unbindToolProfileBindingSchema,
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/tools/runtime-slots",
+  tags: ["tool-access"],
+  summary: "List MCP runtime slots",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/runtime-slots/{id}/stop",
+  tags: ["tool-access"],
+  summary: "Stop a local stdio MCP runtime slot",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/runtime-slots/{id}/restart",
+  tags: ["tool-access"],
+  summary: "Restart a local stdio MCP runtime slot",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/tools/runtime-health",
+  tags: ["tool-access"],
+  summary: "Summarize MCP runtime health and alert recommendations",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/tools/runs/{runId}/decisions",
+  tags: ["tool-access"],
+  summary: "Get governed tool decisions for a run transcript",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/tools/trust-rules",
+  tags: ["tool-access"],
+  summary: "List tool trust rules",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/tools/policies",
+  tags: ["tool-access"],
+  summary: "List tool policies",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/policies",
+  tags: ["tool-access"],
+  summary: "Create a tool policy",
+  body: createToolPolicySchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/companies/{companyId}/tools/policies/{policyId}",
+  tags: ["tool-access"],
+  summary: "Update a tool policy",
+  body: updateToolPolicySchema,
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/companies/{companyId}/tools/policies/{policyId}",
+  tags: ["tool-access"],
+  summary: "Delete a tool policy",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/action-requests/{actionRequestId}/trust-rule",
+  tags: ["tool-access"],
+  summary: "Create a tool trust rule from an action request",
+  body: createToolTrustRuleFromActionRequestSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/trust-rules/{policyId}/revoke",
+  tags: ["tool-access"],
+  summary: "Revoke a tool trust rule",
+  body: revokeToolTrustRuleSchema,
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/tools/stdio-templates",
+  tags: ["tool-access"],
+  summary: "List approved stdio MCP templates",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/mcp/import-json",
+  tags: ["tool-access"],
+  summary: "Preview MCP JSON import",
+  body: importMcpJsonSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/policy/test",
+  tags: ["tool-access"],
+  summary: "Test tool policy decision",
+  body: toolPolicyTestRequestSchema,
+});
+
+// --- Tool gateway ------------------------------------------------------------
+
+const toolGatewaySessionSchema = z.object({
+  companyId: z.string().optional(),
+  agentId: z.string().optional(),
+  runId: z.string().optional(),
+  issueId: z.string().nullable().optional(),
+  projectId: z.string().nullable().optional(),
+  ttlMs: z.number().int().positive().optional(),
+});
+
+const toolGatewayCallSchema = z.object({
+  tool: z.string(),
+  parameters: z.record(z.unknown()).optional(),
+  timeoutMs: z.number().int().positive().optional(),
+  approvedActionRequestId: z.string().optional(),
+  idempotencyKey: z.string().optional(),
+});
+
+const toolGatewayCompanyQuerySchema = z.object({
+  companyId: z.string().optional(),
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-gateway/sessions",
+  tags: ["tool-gateway"],
+  summary: "Create a tool gateway session",
+  body: toolGatewaySessionSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-gateway/tools",
+  tags: ["tool-gateway"],
+  summary: "List tools available to a gateway session",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-gateway/tools/call",
+  tags: ["tool-gateway"],
+  summary: "Execute a tool through the gateway",
+  body: toolGatewayCallSchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-gateway/action-requests/{id}/approve",
+  tags: ["tool-gateway"],
+  summary: "Approve a deferred tool gateway action request",
+  query: toolGatewayCompanyQuerySchema,
+  body: z.object({ companyId: z.string().optional() }),
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-gateway/runtime-slots",
+  tags: ["tool-gateway"],
+  summary: "List gateway runtime slots",
+  query: toolGatewayCompanyQuerySchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-gateway/runtime-slots/{slotId}/stop",
+  tags: ["tool-gateway"],
+  summary: "Stop a gateway runtime slot",
+  query: toolGatewayCompanyQuerySchema,
+  body: z.object({ companyId: z.string().optional() }),
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-gateway/runtime-slots/{slotId}/restart",
+  tags: ["tool-gateway"],
+  summary: "Restart a gateway runtime slot",
+  query: toolGatewayCompanyQuerySchema,
+  body: z.object({ companyId: z.string().optional() }),
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-gateway/audit",
+  tags: ["tool-gateway"],
+  summary: "List tool gateway audit events",
+  query: z.object({
+    companyId: z.string().optional(),
+    limit: z.number().int().positive().optional(),
+  }),
+});
 
 // ─── Spec builder ─────────────────────────────────────────────────────────────
 

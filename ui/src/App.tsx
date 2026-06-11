@@ -36,6 +36,7 @@ import { CloudUpstreamUxLab } from "./pages/CloudUpstreamUxLab";
 import { BootstrapSetupUxLab } from "./pages/BootstrapSetupUxLab";
 import { CompanySettingsPluginPage } from "./pages/CompanySettingsPluginPage";
 import { CompanyAccess, CompanyAccessLegacyRoute } from "./pages/CompanyAccess";
+import { ToolsAccess } from "./pages/tools/ToolsAccess";
 import { CompanyInvites } from "./pages/CompanyInvites";
 import { CompanySkills } from "./pages/CompanySkills";
 import { Secrets } from "./pages/Secrets";
@@ -78,11 +79,14 @@ function boardRoutes() {
       <Route path="company/settings/cloud-upstream" element={<CloudUpstream />} />
       <Route path="company/settings/members" element={<CompanyAccess />} />
       <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
-      <Route path="company/settings/cloud-upstream" element={<CloudUpstream />} />
       <Route path="company/settings/invites" element={<CompanyInvites />} />
       <Route path="company/export/*" element={<CompanyExport />} />
       <Route path="company/import" element={<CompanyImport />} />
       <Route path="company/settings/secrets" element={<Secrets />} />
+      <Route path="company/settings/tools" element={<LegacyToolsSettingsRedirect />} />
+      <Route path="company/settings/tools/:tab" element={<LegacyToolsSettingsRedirect />} />
+      <Route path="tools" element={<ToolsAccess />} />
+      <Route path="tools/:tab" element={<ToolsAccess />} />
       <Route path="company/settings/instance" element={<Navigate to="general" replace />} />
       <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
       <Route path="company/settings/instance/general" element={<InstanceGeneralSettings />} />
@@ -206,6 +210,11 @@ function LegacySettingsRedirect() {
       replace
     />
   );
+}
+
+function LegacyToolsSettingsRedirect() {
+  const { tab } = useParams<{ tab?: string }>();
+  return <Navigate to={tab ? `/tools/${tab}` : "/tools"} replace />;
 }
 
 function OnboardingRoutePage() {
