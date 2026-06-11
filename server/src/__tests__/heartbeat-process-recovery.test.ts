@@ -962,7 +962,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
     const run = await heartbeat.getRun(runId);
     expect(run?.status).toBe("failed");
-    expect(run?.errorCode).toBe("process_lost");
+    expect(run?.errorCode).toBe("job_missing");
   });
 
   it("reaps a pre-adapter external-lifecycle orphan even when updatedAt is freshly churned by review machinery (BLO-8827)", async () => {
