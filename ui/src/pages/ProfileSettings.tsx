@@ -36,6 +36,7 @@ export function ProfileSettings() {
   const [name, setName] = useState("");
   const [image, setImage] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  const [selectedLocale, setSelectedLocale] = useState(i18n.language);
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -49,6 +50,14 @@ export function ProfileSettings() {
       { label: "Profile" },
     ]);
   }, [setBreadcrumbs]);
+
+  useEffect(() => {
+    const syncLocale = (locale: string) => setSelectedLocale(locale);
+    i18n.on("languageChanged", syncLocale);
+    return () => {
+      i18n.off("languageChanged", syncLocale);
+    };
+  }, [i18n]);
 
   useEffect(() => {
     const session = sessionQuery.data;
@@ -274,7 +283,13 @@ export function ProfileSettings() {
             <Label htmlFor="profile-language">
               {t("settings.language.label", { defaultValue: "Language" })}
             </Label>
-            <Select value={i18n.language} onValueChange={(locale) => setLocale(locale)}>
+            <Select
+              value={selectedLocale}
+              onValueChange={(locale) => {
+                setSelectedLocale(locale);
+                setLocale(locale);
+              }}
+            >
               <SelectTrigger id="profile-language" className="w-full">
                 <SelectValue />
               </SelectTrigger>

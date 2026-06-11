@@ -6,6 +6,8 @@ function matchSupportedLocale(candidate: string): string | null {
   if (supportedLocales.includes(candidate)) return candidate;
 
   const baseLanguage = candidate.split("-")[0];
+  // split("-")[0] is "" only when the candidate starts with "-"; the falsy
+  // check covers both that and undefined.
   if (!baseLanguage) return null;
   if (supportedLocales.includes(baseLanguage)) return baseLanguage;
 
