@@ -14,10 +14,15 @@ function createDbStub(selectResults: SelectResult[]) {
   const selectWhere = vi.fn(async () => pendingSelects.shift() ?? []);
   const selectThen = vi.fn((resolve: (value: unknown[]) => unknown) => Promise.resolve(resolve(pendingSelects.shift() ?? [])));
   const selectOrderBy = vi.fn(async () => pendingSelects.shift() ?? []);
+  const innerJoinWhere = vi.fn(async () => pendingSelects.shift() ?? []);
+  const selectInnerJoin = vi.fn(() => ({
+    where: innerJoinWhere,
+  }));
   const selectFrom = vi.fn(() => ({
     where: selectWhere,
     then: selectThen,
     orderBy: selectOrderBy,
+    innerJoin: selectInnerJoin,
   }));
   const select = vi.fn(() => ({
     from: selectFrom,
@@ -81,6 +86,7 @@ describe("budgetService", () => {
     };
 
     const dbStub = createDbStub([
+      [{ adapterType: null }], // agent adapterType lookup (evaluateCostEvent pre-filter)
       [policy],
       [{ total: 150 }],
       [],
@@ -305,6 +311,107 @@ describe("budgetService", () => {
       expect.objectContaining({
         budgetMonthlyCents: 175,
         updatedAt: expect.any(Date),
+      }),
+    );
+  });
+
+  it("blocks new runs when adapter daily cap is exceeded (smoke: simulated run > 100% rejected)", async () => {
+    const adapterPolicy = {
+      id: "policy-adapter-1",
+      companyId: "company-1",
+      scopeType: "adapter",
+      scopeId: "company-1",
+      adapterName: "claude_local",
+      metric: "billed_cents",
+      windowKind: "calendar_day_utc",
+      amount: 500,
+      warnPercent: 75,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    };
+
+    const dbStub = createDbStub([
+      // agent lookup (adapterType = claude_local)
+      [{ status: "active", pauseReason: null, companyId: "company-1", name: "CTO Chef", adapterType: "claude_local" }],
+      // company lookup
+      [{ status: "active", pauseReason: null, name: "Rende Geruestbau" }],
+      // company policy: none
+      [],
+      // agent policy: none
+      [],
+      // adapter policies query → returns our daily-cap policy
+      [adapterPolicy],
+      // observed spend for the adapter policy → 520 cents (> 500 limit)
+      [{ total: 520 }],
+    ]);
+
+    const service = budgetService(dbStub.db as any);
+    const block = await service.getInvocationBlock("company-1", "agent-1");
+
+    expect(block).toEqual(
+      expect.objectContaining({
+        scopeType: "adapter",
+        reason: expect.stringContaining("claude_local"),
+      }),
+    );
+  });
+
+  it("fires onBudgetAlert for soft threshold when adapter spend exceeds 75%", async () => {
+    const adapterPolicy = {
+      id: "policy-adapter-soft",
+      companyId: "company-1",
+      scopeType: "adapter",
+      scopeId: "company-1",
+      adapterName: "claude_local",
+      metric: "billed_cents",
+      windowKind: "calendar_day_utc",
+      amount: 1000,
+      warnPercent: 75,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    };
+
+    const dbStub = createDbStub([
+      // agent lookup for evaluateCostEvent
+      [{ adapterType: "claude_local" }],
+      // all active policies
+      [adapterPolicy],
+      // innerJoin: observed amount → 800 cents (80%, > 75% threshold of 1000)
+      [{ total: 800 }],
+      // no existing soft incident
+      [],
+      // resolveScopeRecord (company lookup) inside createIncidentIfNeeded
+      [{ companyId: "company-1", name: "Rende Geruestbau" }],
+      // resolveScopeRecord (company lookup) again in evaluateCostEvent for alert payload
+      [{ companyId: "company-1", name: "Rende Geruestbau" }],
+    ]);
+
+    dbStub.queueInsert([{
+      id: "incident-soft-1",
+      companyId: "company-1",
+      policyId: "policy-adapter-soft",
+      thresholdType: "soft",
+      approvalId: null,
+    }]);
+
+    const onBudgetAlert = vi.fn().mockResolvedValue(undefined);
+    const service = budgetService(dbStub.db as any, { onBudgetAlert });
+
+    await service.evaluateCostEvent({
+      companyId: "company-1",
+      agentId: "agent-1",
+      projectId: null,
+    } as any);
+
+    expect(onBudgetAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        thresholdType: "soft",
+        adapterName: "claude_local",
+        windowKind: "calendar_day_utc",
+        limitCents: 1000,
+        observedCents: 800,
       }),
     );
   });
