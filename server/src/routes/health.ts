@@ -6,6 +6,7 @@ import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
 import { logger } from "../middleware/logger.js";
+import { getLiveEventsTransportHealth } from "../services/live-events.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { serverVersion } from "../version.js";
 
@@ -27,6 +28,8 @@ function hasDevServerStatusToken(providedToken: string | undefined) {
   if (expected.length !== provided.length) return false;
   return timingSafeEqual(expected, provided);
 }
+
+let lastNotificationQueueWarnAtMs = 0;
 
 export function healthRoutes(
   db?: Db,
@@ -108,6 +111,20 @@ export function healthRoutes(
       return;
     }
 
+    const liveEvents = await getLiveEventsTransportHealth();
+    if (liveEvents.mode === "transport" && (liveEvents.notificationQueueUsage ?? 0) > 0.5) {
+      // Health probes fire every few seconds; during a queue incident one
+      // warning per minute is signal, one per probe is noise.
+      const now = Date.now();
+      if (now - lastNotificationQueueWarnAtMs > 60_000) {
+        lastNotificationQueueWarnAtMs = now;
+        logger.warn(
+          { notificationQueueUsage: liveEvents.notificationQueueUsage },
+          "Postgres notification queue is filling — a lagging LISTEN session is holding back cleanup",
+        );
+      }
+    }
+
     let bootstrapStatus: "ready" | "bootstrap_pending" = "ready";
     let bootstrapInviteActive = false;
     if (opts.deploymentMode === "authenticated") {
@@ -176,6 +193,7 @@ export function healthRoutes(
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
+      liveEvents,
       ...(devServer ? { devServer } : {}),
     });
   });
