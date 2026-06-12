@@ -33,4 +33,9 @@ export interface DashboardSummary {
     pausedProjects: number;
   };
   runActivity: DashboardRunActivityDay[];
+  orphanCandidates: {
+    projectOrphans: number;
+    goalOrphans: number;
+    total: number;
+  };
 }

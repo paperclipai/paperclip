@@ -302,6 +302,7 @@ const dashboard: DashboardSummary = {
     pausedProjects: 0,
   },
   runActivity: [],
+  orphanCandidates: { projectOrphans: 0, goalOrphans: 0, total: 0 },
 };
 
 describe("inbox helpers", () => {
