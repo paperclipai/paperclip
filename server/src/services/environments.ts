@@ -29,6 +29,7 @@ const DEFAULT_KUBERNETES_ENVIRONMENT_DESCRIPTION =
 const KUBERNETES_PROVIDER_KEY = "kubernetes";
 /** Metadata marker for the company's managed-by-config Kubernetes sandbox environment. */
 const KUBERNETES_MANAGED_MARKER = "managedKubernetesSandbox";
+const KUBERNETES_ENVIRONMENT_LOCK_PREFIX = "environment:managed-kubernetes";
 
 /**
  * Configuration accepted by `ensureKubernetesEnvironment`. Mirrors the keys of
@@ -208,80 +209,60 @@ export function environmentService(db: Db) {
         [KUBERNETES_MANAGED_MARKER]: true,
       };
 
-      const existing = await db
-        .select()
-        .from(environments)
-        .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")))
-        .then((rows) =>
-          rows.find(
-            (row) =>
-              (row.metadata as Record<string, unknown> | null)?.[KUBERNETES_MANAGED_MARKER] === true,
-          ) ?? null,
+      return db.transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtextextended(${`${KUBERNETES_ENVIRONMENT_LOCK_PREFIX}:${companyId}`}, 0))`,
         );
 
-      const now = new Date();
-      if (existing) {
-        const updated = await db
-          .update(environments)
-          .set({
-            config: desiredConfig,
-            metadata: { ...(existing.metadata ?? {}), ...desiredMetadata },
+        const existing = await tx
+          .select()
+          .from(environments)
+          .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")))
+          .orderBy(asc(environments.createdAt), asc(environments.id))
+          .then(
+            (rows) =>
+              rows.find(
+                (row) =>
+                  (row.metadata as Record<string, unknown> | null)?.[KUBERNETES_MANAGED_MARKER] === true,
+              ) ?? null,
+          );
+
+        const now = new Date();
+        if (existing) {
+          const updated = await tx
+            .update(environments)
+            .set({
+              config: desiredConfig,
+              metadata: { ...(existing.metadata ?? {}), ...desiredMetadata },
+              status: "active",
+              updatedAt: now,
+            })
+            .where(eq(environments.id, existing.id))
+            .returning()
+            .then((rows) => rows[0] ?? existing);
+          return toEnvironment(updated);
+        }
+
+        const row = await tx
+          .insert(environments)
+          .values({
+            companyId,
+            name: DEFAULT_KUBERNETES_ENVIRONMENT_NAME,
+            description: DEFAULT_KUBERNETES_ENVIRONMENT_DESCRIPTION,
+            driver: "sandbox",
             status: "active",
+            config: desiredConfig,
+            metadata: desiredMetadata,
+            createdAt: now,
             updatedAt: now,
           })
-          .where(eq(environments.id, existing.id))
           .returning()
-          .then((rows) => rows[0] ?? existing);
-        return toEnvironment(updated);
-      }
-
-      const row = await db
-        .insert(environments)
-        .values({
-          companyId,
-          name: DEFAULT_KUBERNETES_ENVIRONMENT_NAME,
-          description: DEFAULT_KUBERNETES_ENVIRONMENT_DESCRIPTION,
-          driver: "sandbox",
-          status: "active",
-          config: desiredConfig,
-          metadata: desiredMetadata,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      if (!row) {
-        throw new Error("Failed to ensure kubernetes environment");
-      }
-
-      // Concurrency: the schema's (companyId, driver) unique index is partial
-      // on driver='local' only, so there is no DB constraint stopping two
-      // simultaneous callers (e.g. concurrent heartbeats lazily provisioning a
-      // new company) from both inserting a managed k8s row. Until a partial
-      // unique index on (companyId, driver) WHERE the managed marker exists is
-      // added via migration (the proper long-term fix), converge here: re-read,
-      // deterministically prefer the oldest managed row, and delete our own
-      // insert if it lost the race. Both racers compute the same winner, so
-      // duplicates self-heal instead of persisting.
-      const winner = await db
-        .select()
-        .from(environments)
-        .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")))
-        .orderBy(asc(environments.createdAt), asc(environments.id))
-        .then(
-          (rows) =>
-            rows.find(
-              (candidate) =>
-                (candidate.metadata as Record<string, unknown> | null)?.[
-                  KUBERNETES_MANAGED_MARKER
-                ] === true,
-            ) ?? null,
-        );
-      if (winner && winner.id !== row.id) {
-        await db.delete(environments).where(eq(environments.id, row.id));
-        return toEnvironment(winner);
-      }
-      return toEnvironment(row);
+          .then((rows) => rows[0] ?? null);
+        if (!row) {
+          throw new Error("Failed to ensure kubernetes environment");
+        }
+        return toEnvironment(row);
+      });
     },
 
     /**
