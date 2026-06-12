@@ -715,6 +715,13 @@
       "when": 1781490000000,
       "tag": "0101_plugin_company_id_tenant_isolation",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1781500000000,
+      "tag": "0102_plugin_webhook_delivery_dedup",
+      "breakpoints": true
     }
   ]
 }
