@@ -6,8 +6,11 @@ toggle: operators set `HEARTBEAT_SCHEDULER_ENABLED=false` on all but one
 replica, and if that replica died, scheduling stopped until it came back.
 
 With lease leadership, every replica is a candidate by default. One acquires
-the lease and runs the scheduler; the others serve traffic and renew their
-candidacy. Failover is automatic.
+the lease and runs the scheduler — the *triggering* side: ticks, queued-run
+promotion, recovery passes. The others serve traffic and renew their
+candidacy. Failover is automatic. Execution of queued runs is separate and
+distributed: every replica's executor claims and runs work regardless of
+leadership (see `doc/distributed-run-execution.md`).
 
 ## Mechanics
 
