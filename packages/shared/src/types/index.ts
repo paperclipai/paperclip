@@ -279,6 +279,7 @@ export type {
   ToolProfileEntryEffect,
   ToolProfileEntrySelectorType,
   ToolProfileEffectiveSummary,
+  ToolProfileNewToolReviewDecision,
   ToolProfileNewToolReviewItem,
   ToolProfileNewToolsReview,
   ToolProfileNewToolsReviewResult,

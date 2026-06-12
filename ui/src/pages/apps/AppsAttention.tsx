@@ -86,7 +86,14 @@ export function AppsAttention() {
               key={app.connection.id}
               app={app}
               logoUrl={logoByName.get(app.connection.name.toLowerCase())?.logoUrl}
-              onOpen={() => navigate(`/apps/${app.connection.id}`)}
+              onOpen={() => {
+                const profile = app.newToolsPendingProfiles[0];
+                navigate(
+                  profile
+                    ? `/apps/advanced/profiles/${profile.profileId}?review=new-tools`
+                    : `/apps/${app.connection.id}`,
+                );
+              }}
             />
           ))}
         </div>
@@ -137,6 +144,10 @@ function reasonSentences(app: ToolAppAttentionItem): string[] {
   if (app.pendingActionRequestCount > 0) {
     const n = app.pendingActionRequestCount;
     out.push(`${n} ${n === 1 ? "action is" : "actions are"} waiting for your OK.`);
+  }
+  if (app.newToolsPendingReviewCount > 0) {
+    const n = app.newToolsPendingReviewCount;
+    out.push(`${n} new ${n === 1 ? "tool needs" : "tools need"} profile review.`);
   }
   return out.length > 0 ? out : ["Needs a look."];
 }

@@ -60,11 +60,9 @@ const DENIED_TOOLS_DISPLAY_LIMIT = 30;
 /**
  * Agent detail · Tools tab (PAP-10788, surface 09 of the PAP-10771 v2 spec).
  *
- * Communicates the agent's *server-resolved* tool access: the effective-access
- * banner makes clear the list is gateway-authoritative (the prompt can narrow
- * it but never expand it), and the "Why these tools?" panel explains how it was
- * derived — bound profile, governing policies, and the suppressed (denied)
- * catalog tools the agent could name but would be blocked on.
+ * Communicates the agent's resolved tool access: the banner makes clear the
+ * prompt can narrow the list but never expand it, and the side panel explains
+ * which access profiles and rules shape the final list.
  */
 export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; companyId: string }) {
   const effective = useQuery({
@@ -134,7 +132,6 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
   }, [policiesQuery.data?.policies, agent.id]);
 
   const profiles = effective.data?.profiles ?? [];
-  const bindings = effective.data?.bindings ?? [];
   const catalogLoading = catalogQueries.some((q) => q.isLoading);
 
   if (effective.isLoading) return <ToolsLoadingState label="Resolving effective access…" />;
@@ -149,13 +146,13 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
     <div className="space-y-4">
       <EnforcementBanner
         tone="info"
-        title="Effective access — server resolved."
+        title="Effective access"
         body={
           <>
-            This is exactly the tool set the gateway will accept for{" "}
+            This is exactly the tool set Paperclip will accept for{" "}
             <span className="font-medium">{agent.name}</span>. Profile and policy edits are
             reflected within ~5 seconds. The agent's prompt can narrow this list but{" "}
-            <span className="font-medium">cannot expand it</span> — everything else is denied by
+            <span className="font-medium">cannot expand it</span> — everything else is blocked by
             default.
           </>
         }
@@ -223,32 +220,40 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
               Why these tools?
             </h3>
 
-            {/* Bound profile(s) */}
+            {/* Access profiles */}
             <div className="mt-3 space-y-1.5">
-              <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                Bound profile{profiles.length === 1 ? "" : "s"}
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Access profiles
+                </div>
+                <Link
+                  to={`${profilesHref}?check=1`}
+                  className="text-[11px] font-medium text-primary hover:underline"
+                >
+                  Check access
+                </Link>
               </div>
               {profiles.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  No active profile is bound — the agent has no allowed tools.
+                  No active profile applies to this agent, so it has no allowed tools.
                 </p>
               ) : (
                 profiles.map((profile) => {
-                  const agentBinding = bindings.find(
-                    (b) => b.profileId === profile.id && b.targetType === "agent",
-                  );
                   return (
                     <div key={profile.id} className="rounded-md border border-border/70 px-2.5 py-2">
                       <Link
-                        to={profilesHref}
+                        to={`${profilesHref}/${profile.id}`}
                         className="text-xs font-medium text-primary hover:underline"
                       >
                         {profile.name}
                       </Link>
-                      <div className="text-[11px] text-muted-foreground">
-                        default {profile.defaultAction} ·{" "}
-                        {agentBinding ? "bound to agent" : "company default"}
-                      </div>
+                      {profile.summary.isCompanyDefault ? (
+                        <div className="mt-1">
+                          <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+                            Company default
+                          </span>
+                        </div>
+                      ) : null}
                     </div>
                   );
                 })
@@ -291,21 +296,21 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
               )}
             </div>
 
-            {/* Denied tools (suppressed) */}
+            {/* Unavailable tools */}
             <div className="mt-3 space-y-1.5">
               <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                Denied tools (suppressed)
+                Unavailable tools
               </div>
               {catalogLoading ? (
-                <p className="text-xs text-muted-foreground">Resolving catalog…</p>
+                <p className="text-xs text-muted-foreground">Checking tools…</p>
               ) : deniedTools.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  No suppressed tools — every catalog tool this agent could name is allowed.
+                  Every known tool this agent could name is allowed.
                 </p>
               ) : (
                 <>
                   <p className="text-[11px] text-muted-foreground">
-                    Tools the agent could name but the gateway would block:
+                    Tools the agent could name but Paperclip would block:
                   </p>
                   <div className="flex flex-wrap gap-1">
                     {deniedTools.slice(0, DENIED_TOOLS_DISPLAY_LIMIT).map((tool) => (

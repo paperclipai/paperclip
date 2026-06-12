@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArchiveRestore,
@@ -15,12 +15,14 @@ import type {
   ToolProfileBinding,
   ToolProfileDefaultAction,
   ToolProfileEntry,
+  ToolProfileNewToolReviewDecision,
+  ToolProfileNewToolReviewItem,
   ToolProfileWithDetails,
 } from "@paperclipai/shared";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { toolsApi } from "@/api/tools";
 import { queryKeys } from "@/lib/queryKeys";
-import { cn } from "@/lib/utils";
+import { cn, formatShortDate } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -47,6 +49,7 @@ interface AllowRow {
   tool: string;
   capabilities: string;
   source: string;
+  autoAddedAt: Date | string | null;
   degraded: boolean;
   connectionId: string | null;
 }
@@ -55,10 +58,12 @@ export function ProfileDetail({
   companyId,
   profileId,
   initialCreated,
+  initialReviewOpen,
 }: {
   companyId: string;
   profileId: string;
   initialCreated?: boolean;
+  initialReviewOpen?: boolean;
 }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -67,9 +72,17 @@ export function ProfileDetail({
   const data = useProfilesData(companyId);
   const [dialog, setDialog] = useState<DialogKind>(null);
   const [assignmentToRemove, setAssignmentToRemove] = useState<ToolProfileBinding | null>(null);
+  const [reviewOpen, setReviewOpen] = useState(Boolean(initialReviewOpen));
+  const [reviewDecisions, setReviewDecisions] = useState<Record<string, ToolProfileNewToolReviewDecision>>({});
 
   const profile = (data.profiles.data?.profiles ?? []).find((p) => p.id === profileId) ?? null;
   const created = initialCreated ?? searchParams.get("created") === "1";
+  const pendingNewTools = profile?.newToolsPendingCount ?? 0;
+  const newTools = useQuery({
+    queryKey: queryKeys.tools.profileNewTools(profileId),
+    queryFn: () => toolsApi.getProfileNewTools(profileId),
+    enabled: pendingNewTools > 0,
+  });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: queryKeys.tools.profiles(companyId) });
   const errorBody = (error: unknown) => String((error as Error)?.message ?? error);
@@ -78,6 +91,22 @@ export function ProfileDetail({
     () => (profile ? buildAllowRows(profile, data.catalog, data.maps.applicationsById, data.maps.connectionsById, data.connections.data?.connections ?? []) : []),
     [profile, data.catalog, data.maps.applicationsById, data.maps.connectionsById, data.connections.data?.connections],
   );
+  const reviewItems = newTools.data?.tools ?? [];
+
+  useEffect(() => {
+    if (searchParams.get("review") === "new-tools" && pendingNewTools > 0) setReviewOpen(true);
+  }, [pendingNewTools, searchParams]);
+
+  useEffect(() => {
+    if (reviewItems.length === 0) return;
+    setReviewDecisions((current) => {
+      const next = { ...current };
+      for (const tool of reviewItems) {
+        if (!next[tool.catalogEntryId]) next[tool.catalogEntryId] = "keep_blocked";
+      }
+      return next;
+    });
+  }, [reviewItems]);
 
   const updateProfile = useMutation({
     mutationFn: (input: Parameters<typeof toolsApi.updateProfile>[1]) => toolsApi.updateProfile(profileId, input),
@@ -117,6 +146,24 @@ export function ProfileDetail({
       pushToast({ title: "Assignment removed", tone: "success" });
     },
     onError: (error: unknown) => pushToast({ title: "Could not remove assignment", body: errorBody(error), tone: "error" }),
+  });
+
+  const reviewNewTools = useMutation({
+    mutationFn: () =>
+      toolsApi.reviewProfileNewTools(profileId, {
+        decisions: reviewItems.map((tool) => ({
+          catalogEntryId: tool.catalogEntryId,
+          decision: reviewDecisions[tool.catalogEntryId] ?? "keep_blocked",
+        })),
+      }),
+    onSuccess: () => {
+      setReviewOpen(false);
+      setSearchParams({});
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.profiles(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.profileNewTools(profileId) });
+      pushToast({ title: "New tools reviewed", tone: "success" });
+    },
+    onError: (error: unknown) => pushToast({ title: "Could not submit review", body: errorBody(error), tone: "error" }),
   });
 
   if (data.profiles.isLoading) return <LoadingState label="Loading profile..." />;
@@ -195,6 +242,15 @@ export function ProfileDetail({
         </div>
       ) : null}
 
+      {pendingNewTools > 0 ? (
+        <NewToolsReviewBanner
+          count={pendingNewTools}
+          tools={reviewItems}
+          loading={newTools.isLoading}
+          onReview={() => setReviewOpen(true)}
+        />
+      ) : null}
+
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-3">
           <h2 className="text-base font-semibold text-foreground">What it allows</h2>
@@ -255,7 +311,140 @@ export function ProfileDetail({
         onClose={() => setAssignmentToRemove(null)}
         onConfirm={() => assignmentToRemove && removeAssignment.mutate(assignmentToRemove)}
       />
+
+      <NewToolsReviewDialog
+        open={reviewOpen}
+        tools={reviewItems}
+        loading={newTools.isLoading}
+        error={newTools.error}
+        decisions={reviewDecisions}
+        pending={reviewNewTools.isPending}
+        onClose={() => setReviewOpen(false)}
+        onRetry={() => newTools.refetch()}
+        onDecision={(catalogEntryId, decision) =>
+          setReviewDecisions((current) => ({ ...current, [catalogEntryId]: decision }))
+        }
+        onSubmit={() => reviewNewTools.mutate()}
+      />
     </div>
+  );
+}
+
+function NewToolsReviewBanner({
+  count,
+  tools,
+  loading,
+  onReview,
+}: {
+  count: number;
+  tools: ToolProfileNewToolReviewItem[];
+  loading: boolean;
+  onReview: () => void;
+}) {
+  const appLabel = newToolsAppLabel(tools);
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+      <div>
+        <p className="font-medium">
+          {loading ? "New tools need review" : `${appLabel} added ${count} new ${count === 1 ? "tool" : "tools"} since your last review`}
+        </p>
+        <p className="text-amber-900/80">Choose which ones this profile should allow.</p>
+      </div>
+      <Button size="sm" onClick={onReview}>Review</Button>
+    </div>
+  );
+}
+
+function NewToolsReviewDialog({
+  open,
+  tools,
+  loading,
+  error,
+  decisions,
+  pending,
+  onClose,
+  onRetry,
+  onDecision,
+  onSubmit,
+}: {
+  open: boolean;
+  tools: ToolProfileNewToolReviewItem[];
+  loading: boolean;
+  error: unknown;
+  decisions: Record<string, ToolProfileNewToolReviewDecision>;
+  pending: boolean;
+  onClose: () => void;
+  onRetry: () => void;
+  onDecision: (catalogEntryId: string, decision: ToolProfileNewToolReviewDecision) => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Review new tools</DialogTitle>
+          <DialogDescription>
+            Allow the tools this profile should use. Keep the rest blocked.
+          </DialogDescription>
+        </DialogHeader>
+        {loading ? (
+          <LoadingState label="Loading new tools..." />
+        ) : error ? (
+          <ErrorState error={error} onRetry={onRetry} />
+        ) : tools.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">
+            There are no new tools waiting for review.
+          </div>
+        ) : (
+          <div className="max-h-[52vh] divide-y divide-border overflow-y-auto rounded-lg border border-border">
+            {tools.map((tool) => (
+              <div key={tool.catalogEntryId} className="grid gap-3 px-3 py-3 sm:grid-cols-[1fr_auto]">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="truncate text-sm font-medium text-foreground">
+                      {tool.title || tool.toolName}
+                    </p>
+                    <Badge variant="secondary">{capabilityText(tool)}</Badge>
+                  </div>
+                  {tool.description ? (
+                    <p className="mt-1 text-sm text-muted-foreground">{tool.description}</p>
+                  ) : null}
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {tool.applicationName ?? tool.connectionName ?? "App tool"} · added {formatShortDate(tool.addedAt)}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 sm:justify-end">
+                  <label className="inline-flex items-center gap-1.5 text-sm">
+                    <input
+                      type="radio"
+                      name={`review-${tool.catalogEntryId}`}
+                      checked={(decisions[tool.catalogEntryId] ?? "keep_blocked") === "allow"}
+                      onChange={() => onDecision(tool.catalogEntryId, "allow")}
+                    />
+                    Allow
+                  </label>
+                  <label className="inline-flex items-center gap-1.5 text-sm">
+                    <input
+                      type="radio"
+                      name={`review-${tool.catalogEntryId}`}
+                      checked={(decisions[tool.catalogEntryId] ?? "keep_blocked") === "keep_blocked"}
+                      onChange={() => onDecision(tool.catalogEntryId, "keep_blocked")}
+                    />
+                    Keep blocked
+                  </label>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button disabled={pending || loading || tools.length === 0} onClick={onSubmit}>
+            Submit review
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -303,6 +492,11 @@ function AllowList({ rows, total }: { rows: AllowRow[]; total: number }) {
                 ) : (
                   <span className="text-muted-foreground">{row.source}</span>
                 )}
+                {row.autoAddedAt ? (
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    added automatically · {formatShortDate(row.autoAddedAt)}
+                  </div>
+                ) : null}
               </td>
             </tr>
           ))}
@@ -338,7 +532,7 @@ function Assignments({
     return (
       <div className="rounded-lg border border-dashed border-border px-4 py-5">
         <p className="text-sm font-medium text-foreground">Not assigned yet</p>
-        <p className="text-sm text-muted-foreground">This profile has no effect until it is assigned.</p>
+        <p className="text-sm text-muted-foreground">Assign this profile before it changes access.</p>
       </div>
     );
   }
@@ -612,6 +806,7 @@ function buildAllowRows(
         tool: tool.title || tool.toolName,
         capabilities: capabilityLabel(tool),
         source: sourceLabel(match, app),
+        autoAddedAt: profile.defaultAction === "allow" && isRecentTool(tool) ? (tool.addedAt ?? tool.firstSeenAt) : null,
         degraded: Boolean(connection && (connection.status !== "active" || connection.healthStatus === "error")),
         connectionId: tool.connectionId,
       };
@@ -646,6 +841,29 @@ function capabilityLabel(tool: ToolCatalogEntry): string {
   if (tool.isDestructive) return "Destructive";
   if (tool.isWrite) return "Write";
   return "Read";
+}
+
+function capabilityText(tool: ToolProfileNewToolReviewItem): string {
+  if (tool.riskLevel === "destructive") return "Destructive";
+  if (tool.riskLevel === "write") return "Write";
+  if (tool.riskLevel === "read") return "Read";
+  return tool.capability;
+}
+
+function newToolsAppLabel(tools: ToolProfileNewToolReviewItem[]): string {
+  const names = [...new Set(tools.map((tool) => tool.applicationName ?? tool.connectionName).filter(Boolean))] as string[];
+  if (names.length === 0) return "An app";
+  if (names.length === 1) return names[0] ?? "An app";
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names[0]} and ${names.length - 1} more apps`;
+}
+
+function isRecentTool(tool: ToolCatalogEntry): boolean {
+  const value = tool.addedAt ?? tool.firstSeenAt;
+  const added = new Date(value).getTime();
+  if (!Number.isFinite(added)) return false;
+  const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+  return Date.now() - added <= thirtyDaysMs;
 }
 
 function assignmentLabel(

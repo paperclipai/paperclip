@@ -23,6 +23,14 @@ vi.mock("../ProfilesTab", () => ({ EffectiveAgentPanel: () => createElement("div
 
 vi.mock("@/api/tools", () => ({ toolsApi: {} }));
 
+vi.mock("@/components/ui/sheet", () => ({
+  Sheet: ({ open, children }: { open?: boolean; children: unknown }) => (open ? createElement("div", null, children as never) : null),
+  SheetContent: ({ children }: { children: unknown }) => createElement("div", null, children as never),
+  SheetHeader: ({ children }: { children: unknown }) => createElement("div", null, children as never),
+  SheetTitle: ({ children }: { children: unknown }) => createElement("h2", null, children as never),
+  SheetDescription: ({ children }: { children: unknown }) => createElement("p", null, children as never),
+}));
+
 vi.mock("./useProfilesData", () => ({ useProfilesData: () => profilesData.current }));
 
 import { ProfilesIndex } from "./ProfilesIndex";
@@ -111,11 +119,25 @@ describe("ProfilesIndex", () => {
     expect(container.textContent).toContain("Company default");
   });
 
+  it("shows a new-tools chip in the Allows column", async () => {
+    setData([
+      profile({
+        name: "Gmail",
+        newToolsPendingCount: 3,
+        summary: summary({ allowedToolCount: 4, allowedApplicationCount: 1, appliesToAgentCount: 1 }),
+      }),
+    ]);
+    await render();
+
+    expect(container.textContent).toContain("4 tools · 1 app");
+    expect(container.textContent).toContain("3 new");
+  });
+
   it("flags an unassigned profile as having no effect", async () => {
     setData([profile({ name: "Orphan" })]);
     await render();
     expect(container.textContent).toContain("Not assigned yet");
-    expect(container.textContent).toContain("has no effect");
+    expect(container.textContent).toContain("does not change access");
   });
 
   it("offers a Resume affordance on draft rows", async () => {

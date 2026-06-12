@@ -18,6 +18,7 @@ export const queryKeys = {
     actionRequests: (companyId: string, status: string) =>
       ["tools", companyId, "action-requests", status] as const,
     profiles: (companyId: string) => ["tools", companyId, "profiles"] as const,
+    profileNewTools: (profileId: string) => ["tools", "profiles", profileId, "new-tools"] as const,
     effectiveProfilesForAgent: (companyId: string, agentId: string) =>
       ["tools", companyId, "profiles", "effective", "agent", agentId] as const,
     stdioTemplates: (companyId: string) => ["tools", companyId, "stdio-templates"] as const,

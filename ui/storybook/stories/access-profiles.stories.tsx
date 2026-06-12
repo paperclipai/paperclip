@@ -1,8 +1,17 @@
 import { useMemo, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ToolCatalogEntry, ToolConnection, ToolProfileSummary, ToolProfileWithDetails } from "@paperclipai/shared";
+import type {
+  ToolCatalogEntry,
+  ToolConnection,
+  ToolPolicy,
+  ToolProfileEffectiveSummary,
+  ToolProfileNewToolsReview,
+  ToolProfileSummary,
+  ToolProfileWithDetails,
+} from "@paperclipai/shared";
 import { queryKeys } from "@/lib/queryKeys";
+import { AgentToolsTab } from "@/pages/AgentToolsTab";
 import { ProfileDetail } from "@/pages/tools/profiles/ProfileDetail";
 import { ProfilesIndex } from "@/pages/tools/profiles/ProfilesIndex";
 import { StepAssign, StepName } from "@/pages/tools/profiles/ProfileWizard";
@@ -191,6 +200,70 @@ const DETAIL_PROFILE: ToolProfileWithDetails = {
   ],
 };
 
+const NEW_TOOLS_PROFILE: ToolProfileWithDetails = {
+  ...DETAIL_PROFILE,
+  id: "gmail-new-tools",
+  name: "Gmail everyday",
+  newToolsPendingCount: 3,
+};
+
+const AUTO_ALLOW_PROFILE: ToolProfileWithDetails = {
+  ...DETAIL_PROFILE,
+  id: "gmail-auto-allow",
+  name: "Gmail auto-allow",
+  defaultAction: "allow",
+};
+
+const NEW_TOOLS_REVIEW: ToolProfileNewToolsReview = {
+  profileId: NEW_TOOLS_PROFILE.id,
+  reviewedAt: new Date("2026-05-01T00:00:00Z"),
+  pendingCount: 3,
+  tools: [
+    {
+      catalogEntryId: "g-send",
+      applicationId: "app-gmail",
+      applicationName: "Gmail",
+      connectionId: "conn-gmail",
+      connectionName: "Gmail",
+      toolName: "gmail.send_message",
+      title: "Send a message",
+      description: "Send a message from Gmail.",
+      capability: "write",
+      riskLevel: "write",
+      addedAt: new Date("2026-05-28T00:00:00Z"),
+      firstSeenAt: new Date("2026-05-28T00:00:00Z"),
+    },
+    {
+      catalogEntryId: "g-label",
+      applicationId: "app-gmail",
+      applicationName: "Gmail",
+      connectionId: "conn-gmail",
+      connectionName: "Gmail",
+      toolName: "gmail.modify_labels",
+      title: "Add or remove labels",
+      description: "Apply labels to existing messages.",
+      capability: "write",
+      riskLevel: "write",
+      addedAt: new Date("2026-05-28T00:00:00Z"),
+      firstSeenAt: new Date("2026-05-28T00:00:00Z"),
+    },
+    {
+      catalogEntryId: "g-trash",
+      applicationId: "app-gmail",
+      applicationName: "Gmail",
+      connectionId: "conn-gmail",
+      connectionName: "Gmail",
+      toolName: "gmail.trash_message",
+      title: "Move a message to trash",
+      description: "Move a message out of the inbox and into trash.",
+      capability: "destructive",
+      riskLevel: "destructive",
+      addedAt: new Date("2026-05-28T00:00:00Z"),
+      firstSeenAt: new Date("2026-05-28T00:00:00Z"),
+    },
+  ],
+};
+
 const CONNECTIONS: ToolConnection[] = [
   {
     id: "conn-gmail",
@@ -241,9 +314,11 @@ const AGENTS = [
 function SeededIndex({
   profiles,
   initialStatusFilter,
+  initialResolverOpen,
 }: {
   profiles: ToolProfileWithDetails[];
   initialStatusFilter?: "active" | "archived";
+  initialResolverOpen?: boolean;
 }) {
   const client = useMemo(() => {
     const c = new QueryClient({
@@ -252,7 +327,15 @@ function SeededIndex({
     c.setQueryData(queryKeys.tools.profiles(COMPANY), { profiles });
     c.setQueryData(queryKeys.tools.applications(COMPANY), { applications: [] });
     c.setQueryData(queryKeys.tools.connections(COMPANY), { connections: [] });
-    c.setQueryData(queryKeys.agents.list(COMPANY), []);
+    c.setQueryData(queryKeys.agents.list(COMPANY), AGENTS);
+    c.setQueryData(queryKeys.tools.effectiveProfilesForAgent(COMPANY, "a-sage"), {
+      agentId: "a-sage",
+      profiles: [DETAIL_PROFILE],
+      entries: DETAIL_PROFILE.entries,
+      bindings: DETAIL_PROFILE.bindings,
+      allowedTools: GMAIL_TOOLS.slice(0, 4),
+      allowedToolNames: GMAIL_TOOLS.slice(0, 4).map((tool) => tool.toolName),
+    } satisfies ToolProfileEffectiveSummary);
     c.setQueryData(queryKeys.projects.list(COMPANY), []);
     c.setQueryData(queryKeys.routines.list(COMPANY), []);
     return c;
@@ -260,7 +343,11 @@ function SeededIndex({
   return (
     <QueryClientProvider client={client}>
       <div className="mx-auto max-w-6xl p-6">
-        <ProfilesIndex companyId={COMPANY} initialStatusFilter={initialStatusFilter} />
+        <ProfilesIndex
+          companyId={COMPANY}
+          initialStatusFilter={initialStatusFilter}
+          initialResolverOpen={initialResolverOpen}
+        />
       </div>
     </QueryClientProvider>
   );
@@ -271,11 +358,13 @@ function SeededDetail({
   catalog = CATALOG,
   connections = CONNECTIONS,
   initialCreated,
+  initialReviewOpen,
 }: {
   profile: ToolProfileWithDetails;
   catalog?: ToolCatalogEntry[];
   connections?: ToolConnection[];
   initialCreated?: boolean;
+  initialReviewOpen?: boolean;
 }) {
   const client = useMemo(() => {
     const c = new QueryClient({
@@ -291,6 +380,7 @@ function SeededDetail({
     c.setQueryData(queryKeys.tools.connections(COMPANY), { connections });
     c.setQueryData(queryKeys.tools.catalog("conn-gmail"), { catalog: catalog.filter((tool) => tool.connectionId === "conn-gmail") });
     c.setQueryData(queryKeys.tools.catalog("conn-slack"), { catalog: catalog.filter((tool) => tool.connectionId === "conn-slack") });
+    c.setQueryData(queryKeys.tools.profileNewTools(profile.id), profile.newToolsPendingCount ? NEW_TOOLS_REVIEW : { profileId: profile.id, reviewedAt: null, pendingCount: 0, tools: [] });
     c.setQueryData(queryKeys.agents.list(COMPANY), AGENTS);
     c.setQueryData(queryKeys.projects.list(COMPANY), []);
     c.setQueryData(queryKeys.routines.list(COMPANY), []);
@@ -299,7 +389,57 @@ function SeededDetail({
   return (
     <QueryClientProvider client={client}>
       <div className="mx-auto max-w-6xl p-6">
-        <ProfileDetail companyId={COMPANY} profileId={profile.id} initialCreated={initialCreated} />
+        <ProfileDetail
+          companyId={COMPANY}
+          profileId={profile.id}
+          initialCreated={initialCreated}
+          initialReviewOpen={initialReviewOpen}
+        />
+      </div>
+    </QueryClientProvider>
+  );
+}
+
+function SeededAgentTools() {
+  const allowed = GMAIL_TOOLS.slice(0, 6);
+  const policy: ToolPolicy = {
+    id: "policy-write",
+    companyId: COMPANY,
+    name: "Ask first for sending mail",
+    description: "Write tools need a quick human OK.",
+    policyType: "require_approval",
+    priority: 10,
+    enabled: true,
+    selectors: {},
+    conditions: null,
+    config: null,
+    createdByAgentId: null,
+    createdByUserId: null,
+    createdAt: new Date("2026-06-01T00:00:00Z"),
+    updatedAt: new Date("2026-06-01T00:00:00Z"),
+  };
+  const client = useMemo(() => {
+    const c = new QueryClient({
+      defaultOptions: { queries: { staleTime: Infinity, gcTime: Infinity, retry: false, refetchOnMount: false } },
+    });
+    c.setQueryData(queryKeys.tools.effectiveProfilesForAgent(COMPANY, "a-sage"), {
+      agentId: "a-sage",
+      profiles: [{ ...DETAIL_PROFILE, summary: summary({ allowedToolCount: allowed.length, allowedApplicationCount: 1, assignmentCount: 1, appliesToAgentCount: 1, isCompanyDefault: true }) }],
+      entries: DETAIL_PROFILE.entries,
+      bindings: DETAIL_PROFILE.bindings,
+      allowedTools: allowed,
+      allowedToolNames: allowed.map((tool) => tool.toolName),
+    } satisfies ToolProfileEffectiveSummary);
+    c.setQueryData(queryKeys.tools.connections(COMPANY), { connections: CONNECTIONS });
+    c.setQueryData(queryKeys.tools.catalog("conn-gmail"), { catalog: GMAIL_TOOLS });
+    c.setQueryData(queryKeys.tools.catalog("conn-slack"), { catalog: SLACK_TOOLS });
+    c.setQueryData(queryKeys.tools.policies(COMPANY), { policies: [policy] });
+    return c;
+  }, [allowed, policy]);
+  return (
+    <QueryClientProvider client={client}>
+      <div className="mx-auto max-w-6xl p-6">
+        <AgentToolsTab agent={{ id: "a-sage", name: "Sage" } as never} companyId={COMPANY} />
       </div>
     </QueryClientProvider>
   );
@@ -318,6 +458,16 @@ export const IndexPopulated: Story = {
   render: () => <SeededIndex profiles={PROFILES} />,
 };
 
+export const IndexNewToolsChip: Story = {
+  name: "Index — new tools chip (AP1 v2)",
+  render: () => <SeededIndex profiles={[NEW_TOOLS_PROFILE, ...PROFILES]} />,
+};
+
+export const AccessCheckerSheet: Story = {
+  name: "Access checker sheet (AP8)",
+  render: () => <SeededIndex profiles={PROFILES} initialResolverOpen />,
+};
+
 export const IndexEmpty: Story = {
   name: "Index — empty (template cards)",
   render: () => <SeededIndex profiles={[]} />,
@@ -331,6 +481,26 @@ export const IndexArchived: Story = {
 export const DetailAssigned: Story = {
   name: "Detail — assigned",
   render: () => <SeededDetail profile={DETAIL_PROFILE} />,
+};
+
+export const DetailNewToolsBanner: Story = {
+  name: "Detail — new tools banner (AP16)",
+  render: () => <SeededDetail profile={NEW_TOOLS_PROFILE} />,
+};
+
+export const DetailNewToolsModal: Story = {
+  name: "Detail — new tools review modal (AP16)",
+  render: () => <SeededDetail profile={NEW_TOOLS_PROFILE} initialReviewOpen />,
+};
+
+export const DetailAutoAllowedRows: Story = {
+  name: "Detail — auto-added row notes (AP16b)",
+  render: () => <SeededDetail profile={AUTO_ALLOW_PROFILE} />,
+};
+
+export const AgentAccessProfilesCard: Story = {
+  name: "Agent page — access profiles card (AP19)",
+  render: () => <SeededAgentTools />,
 };
 
 export const DetailUnassignedPostCreate: Story = {

@@ -15,6 +15,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const navigate = vi.hoisted(() => vi.fn());
 const setSearchParams = vi.hoisted(() => vi.fn());
 const api = vi.hoisted(() => ({
+  getProfileNewTools: vi.fn(),
+  reviewProfileNewTools: vi.fn(),
   updateProfile: vi.fn(),
   duplicateProfile: vi.fn(),
   deleteProfile: vi.fn(),
@@ -134,6 +136,23 @@ function tool(partial: Partial<ToolCatalogEntry>): ToolCatalogEntry {
   } as ToolCatalogEntry;
 }
 
+function newTool(partial: Record<string, unknown> = {}) {
+  return {
+    catalogEntryId: partial.catalogEntryId ?? "new-1",
+    applicationId: "app-gmail",
+    applicationName: "Gmail",
+    connectionId: "conn-gmail",
+    connectionName: "Gmail",
+    toolName: partial.toolName ?? "gmail.send",
+    title: partial.title ?? "Send mail",
+    description: partial.description ?? "Send a message from Gmail.",
+    capability: partial.capability ?? "write",
+    riskLevel: partial.riskLevel ?? "write",
+    addedAt: partial.addedAt ?? new Date("2026-05-28T00:00:00Z"),
+    firstSeenAt: partial.firstSeenAt ?? new Date("2026-05-28T00:00:00Z"),
+  };
+}
+
 function setData(profiles: ToolProfileWithDetails[], catalog: ToolCatalogEntry[] = [tool({})], connections: Partial<ToolConnection>[] = []) {
   profilesData.current = {
     profiles: { isLoading: false, isError: false, data: { profiles }, refetch: vi.fn() },
@@ -164,6 +183,8 @@ describe("ProfileDetail", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
+    api.getProfileNewTools.mockResolvedValue({ profileId: "p1", reviewedAt: null, pendingCount: 0, tools: [] });
+    api.reviewProfileNewTools.mockResolvedValue({ reviewedAt: new Date(), allowedCount: 0, keptBlockedCount: 0, entriesCreated: [], reviewedCatalogEntryIds: [], profile: profile() });
     api.updateProfile.mockResolvedValue(profile());
     api.duplicateProfile.mockResolvedValue(profile({ id: "copy", name: "Copy" }));
   });
@@ -216,6 +237,61 @@ describe("ProfileDetail", () => {
 
     expect(container.textContent).toContain("allows 0 tools");
     expect(container.textContent).toContain("Not assigned yet");
+    expect(container.textContent).toContain("Assign this profile before it changes access.");
+  });
+
+  it("shows pending new tools and submits per-tool review decisions", async () => {
+    const tools = [
+      newTool({ catalogEntryId: "new-send", toolName: "gmail.send", title: "Send mail" }),
+      newTool({ catalogEntryId: "new-label", toolName: "gmail.label", title: "Manage labels", capability: "write", riskLevel: "write" }),
+      newTool({ catalogEntryId: "new-delete", toolName: "gmail.delete", title: "Delete mail", capability: "destructive", riskLevel: "destructive" }),
+    ];
+    api.getProfileNewTools.mockResolvedValue({ profileId: "p1", reviewedAt: null, pendingCount: 3, tools });
+    setData([profile({ newToolsPendingCount: 3 })]);
+    await render();
+
+    await act(async () => {
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    expect(container.textContent).toContain("Gmail added 3 new tools since your last review");
+
+    const review = [...container.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Review");
+    await act(async () => {
+      review?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(document.body.textContent).toContain("Send mail");
+    expect(document.body.textContent).toContain("Keep blocked");
+
+    const firstAllow = document.body.querySelector('input[name="review-new-send"][type="radio"]') as HTMLInputElement;
+    await act(async () => {
+      firstAllow.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const submit = [...document.body.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Submit review");
+    await act(async () => {
+      submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(api.reviewProfileNewTools).toHaveBeenCalledWith("p1", {
+      decisions: [
+        { catalogEntryId: "new-send", decision: "allow" },
+        { catalogEntryId: "new-label", decision: "keep_blocked" },
+        { catalogEntryId: "new-delete", decision: "keep_blocked" },
+      ],
+    });
+  });
+
+  it("shows recently auto-added tools in the source column", async () => {
+    const recent = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000);
+    setData([profile({ defaultAction: "allow" })], [tool({ addedAt: recent, firstSeenAt: recent })]);
+    await render();
+
+    expect(container.textContent).toContain("added automatically");
   });
 
   it("validates duplicate profile names in the edit dialog", async () => {

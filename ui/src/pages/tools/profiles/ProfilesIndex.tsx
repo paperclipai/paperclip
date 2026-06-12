@@ -9,12 +9,12 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -45,15 +45,17 @@ function statusVariant(status: ToolProfileWithDetails["status"]): "default" | "s
 export function ProfilesIndex({
   companyId,
   initialStatusFilter,
+  initialResolverOpen,
 }: {
   companyId: string;
   initialStatusFilter?: "active" | "archived";
+  initialResolverOpen?: boolean;
 }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const { profiles, agents } = useProfilesData(companyId);
-  const [resolverOpen, setResolverOpen] = useState(false);
+  const [resolverOpen, setResolverOpen] = useState(Boolean(initialResolverOpen));
   const [statusFilter, setStatusFilter] = useState<"active" | "archived">(initialStatusFilter ?? "active");
 
   useEffect(() => {
@@ -130,17 +132,19 @@ export function ProfilesIndex({
   );
 
   const resolverDialog = (
-    <Dialog open={resolverOpen} onOpenChange={setResolverOpen}>
-      <DialogContent className="max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>Check an agent's access</DialogTitle>
-          <DialogDescription>
+    <Sheet open={resolverOpen} onOpenChange={setResolverOpen}>
+      <SheetContent className="w-full gap-0 p-0 sm:max-w-xl">
+        <SheetHeader className="border-b border-border">
+          <SheetTitle>Check an agent's access</SheetTitle>
+          <SheetDescription>
             See exactly which tools an agent can use right now, and which profile allows each one.
-          </DialogDescription>
-        </DialogHeader>
-        <EffectiveAgentPanel companyId={companyId} agentOptions={agentOptions} />
-      </DialogContent>
-    </Dialog>
+          </SheetDescription>
+        </SheetHeader>
+        <div className="flex min-h-0 flex-1 flex-col p-4">
+          <EffectiveAgentPanel companyId={companyId} agentOptions={agentOptions} />
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 
   if (profiles.isLoading) {
@@ -223,12 +227,21 @@ export function ProfilesIndex({
                         {profile.name}
                       </button>
                     </td>
-                    <td className="px-3 py-1.5 text-muted-foreground">{allowsLabel(profile.summary)}</td>
+                    <td className="px-3 py-1.5 text-muted-foreground">
+                      <span className="inline-flex items-center gap-2">
+                        <span>{allowsLabel(profile.summary)}</span>
+                        {(profile.newToolsPendingCount ?? 0) > 0 ? (
+                          <Badge variant="outline" className="border-amber-500/50 bg-amber-500/10 text-amber-800 dark:text-amber-200">
+                            {profile.newToolsPendingCount} new
+                          </Badge>
+                        ) : null}
+                      </span>
+                    </td>
                     <td className="px-3 py-1.5">
                       {assigned.unassigned ? (
                         <span className="text-muted-foreground">
                           {assigned.text}
-                          <span className="ml-1 text-xs text-muted-foreground/70">— has no effect</span>
+                          <span className="ml-1 text-xs text-muted-foreground/70">— does not change access</span>
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1.5 text-foreground">

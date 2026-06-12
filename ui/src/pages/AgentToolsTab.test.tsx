@@ -137,7 +137,7 @@ describe("AgentToolsTab", () => {
     await flushReact();
   }
 
-  it("renders the server-resolved banner, allowed tools, governing policy, and denied tools", async () => {
+  it("renders effective access, access profiles, governing policy, and unavailable tools", async () => {
     const allowed = makeCatalogEntry({ id: "cat-allow", toolName: "github.read_repo" });
     const denied = makeCatalogEntry({
       id: "cat-deny",
@@ -173,7 +173,7 @@ describe("AgentToolsTab", () => {
             totalToolCount: 1,
             assignmentCount: 1,
             appliesToAgentCount: 1,
-            isCompanyDefault: false,
+            isCompanyDefault: true,
           },
         },
       ],
@@ -216,20 +216,23 @@ describe("AgentToolsTab", () => {
     await renderTab();
 
     const text = container.textContent ?? "";
-    expect(text).toContain("Effective access — server resolved.");
+    expect(text).toContain("Effective access");
     expect(text).toContain("github.read_repo");
     expect(text).toContain("Production GitHub");
     expect(text).toContain("GitHub safe");
-    expect(text).toContain("bound to agent");
+    expect(text).toContain("Access profiles");
+    expect(text).toContain("Company default");
+    expect(container.querySelector('a[href="/apps/advanced/profiles/prof-1"]')?.textContent).toBe("GitHub safe");
+    expect(container.querySelector('a[href="/apps/advanced/profiles?check=1"]')?.textContent).toBe("Check access");
     // Governing policy #1 is the company-wide require_approval rule.
     expect(text).toContain("#1 Require approval for writes");
     // The policy that targets a different agent must NOT appear.
     expect(text).not.toContain("Block other agent");
-    // Denied/suppressed tool surfaced from the full catalog minus allowed.
+    // Unavailable tool surfaced from the full tool list minus allowed.
     expect(text).toContain("github.delete_repo");
   });
 
-  it("shows the empty allow-list message when no profile is bound", async () => {
+  it("shows the empty allow-list message when no profile applies", async () => {
     mockToolsApi.getEffectiveProfilesForAgent.mockResolvedValue({
       agentId: "agent-1",
       profiles: [],
@@ -245,6 +248,6 @@ describe("AgentToolsTab", () => {
 
     const text = container.textContent ?? "";
     expect(text).toContain("No tools are allowed for this agent");
-    expect(text).toContain("No active profile is bound");
+    expect(text).toContain("No active profile applies");
   });
 });

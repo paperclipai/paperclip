@@ -470,7 +470,7 @@ function EntryFields({
   );
 }
 
-function EffectiveAgentPanel({ companyId, agentOptions }: { companyId: string; agentOptions: Array<{ id: string; name: string }> }) {
+export function EffectiveAgentPanel({ companyId, agentOptions }: { companyId: string; agentOptions: Array<{ id: string; name: string }> }) {
   const [agentId, setAgentId] = useState("");
   const effective = useQuery({
     queryKey: agentId
@@ -481,48 +481,73 @@ function EffectiveAgentPanel({ companyId, agentOptions }: { companyId: string; a
   });
 
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-3 py-4">
-        <div className="flex flex-wrap items-center gap-3">
-          <ShieldCheck className="h-5 w-5 text-muted-foreground" />
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-foreground">Effective agent access</p>
-            <p className="text-xs text-muted-foreground">Resolve active company and agent bindings into allowed tool names.</p>
-          </div>
-          <div className="ml-auto min-w-64">
-            <Select value={agentId} onValueChange={setAgentId}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select an agent" />
-              </SelectTrigger>
-              <SelectContent>
-                {agentOptions.map((agent) => (
-                  <SelectItem key={agent.id} value={agent.id}>
-                    {agent.name}
-                  </SelectItem>
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
+      <div className="space-y-1.5">
+        <Label>Agent</Label>
+        <Select value={agentId} onValueChange={setAgentId}>
+          <SelectTrigger>
+            <SelectValue placeholder="Select an agent" />
+          </SelectTrigger>
+          <SelectContent>
+            {agentOptions.map((agent) => (
+              <SelectItem key={agent.id} value={agent.id}>
+                {agent.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {!agentId ? (
+        <div className="rounded-lg border border-dashed border-border px-4 py-8 text-sm text-muted-foreground">
+          Pick an agent to see what it can use right now.
+        </div>
+      ) : effective.isLoading ? (
+        <LoadingState label="Checking access..." />
+      ) : effective.error ? (
+        <ErrorState error={effective.error} onRetry={() => effective.refetch()} />
+      ) : (
+        <div className="min-h-0 space-y-5 overflow-y-auto pr-1">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-foreground">Can use</h3>
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {(effective.data?.allowedToolNames ?? []).length} tools
+              </span>
+            </div>
+            {(effective.data?.allowedToolNames ?? []).length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border px-4 py-5 text-sm text-muted-foreground">
+                This agent cannot use any app tools right now.
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {(effective.data?.allowedToolNames ?? []).slice(0, 80).map((tool) => (
+                  <Badge key={tool} variant="outline">{tool}</Badge>
                 ))}
-              </SelectContent>
-            </Select>
+              </div>
+            )}
+          </div>
+          <div className="space-y-2">
+            <h3 className="text-sm font-semibold text-foreground">Access profiles</h3>
+            {(effective.data?.profiles ?? []).length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border px-4 py-5 text-sm text-muted-foreground">
+                No active profile applies to this agent.
+              </div>
+            ) : (
+              <div className="divide-y divide-border rounded-lg border border-border">
+                {(effective.data?.profiles ?? []).map((profile) => (
+                  <div key={profile.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                    <span className="min-w-0 truncate text-sm font-medium text-foreground">{profile.name}</span>
+                    {profile.summary.isCompanyDefault ? (
+                      <Badge variant="secondary">Company default</Badge>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
-        {!agentId ? null : effective.isLoading ? (
-          <LoadingState label="Resolving access..." />
-        ) : effective.error ? (
-          <ErrorState error={effective.error} onRetry={() => effective.refetch()} />
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            {(effective.data?.profiles ?? []).map((profile) => (
-              <Badge key={profile.id} variant="secondary">{profile.name}</Badge>
-            ))}
-            {(effective.data?.allowedToolNames ?? []).slice(0, 24).map((tool) => (
-              <Badge key={tool} variant="outline">{tool}</Badge>
-            ))}
-            {(effective.data?.allowedToolNames ?? []).length === 0 ? (
-              <span className="text-sm text-muted-foreground">No allowed tools resolved for this agent.</span>
-            ) : null}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+      )}
+    </div>
   );
 }
 

@@ -25,6 +25,9 @@ import type {
   ToolProfileEntrySelectorType,
   ToolProfileStatus,
   ToolProfileWithDetails,
+  ToolProfileNewToolReviewDecision,
+  ToolProfileNewToolsReview,
+  ToolProfileNewToolsReviewResult,
   ToolRiskLevel,
   UpdateToolPolicy,
   AppGalleryEntry,
@@ -55,6 +58,9 @@ export type ToolTrustRulesResponse = { trustRules: ToolPolicy[] };
 export type ToolPoliciesResponse = { policies: ToolPolicy[] };
 export type ToolProfilesResponse = { profiles: ToolProfileWithDetails[] };
 export type ToolGalleryResponse = { apps: AppGalleryEntry[] };
+export type ReviewNewToolsInput = {
+  decisions: Array<{ catalogEntryId: string; decision: ToolProfileNewToolReviewDecision }>;
+};
 
 export type StdioTemplateSummary = ToolStdioCommandTemplate;
 export type StdioTemplatesResponse = { templates: StdioTemplateSummary[] };
@@ -235,6 +241,10 @@ export const toolsApi = {
   // --- Profiles ---
   listProfiles: (companyId: string) =>
     api.get<ToolProfilesResponse>(`/companies/${companyId}/tools/profiles`),
+  getProfileNewTools: (profileId: string) =>
+    api.get<ToolProfileNewToolsReview>(`/tool-profiles/${profileId}/new-tools`),
+  reviewProfileNewTools: (profileId: string, input: ReviewNewToolsInput) =>
+    api.post<ToolProfileNewToolsReviewResult>(`/tool-profiles/${profileId}/new-tools/review`, input),
   createProfile: (companyId: string, input: CreateToolProfileInput) =>
     api.post<ToolProfileWithDetails>(`/companies/${companyId}/tools/profiles`, input),
   updateProfile: (profileId: string, input: UpdateToolProfileInput) =>
