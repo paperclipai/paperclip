@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   createRoutineSchema,
   createRoutineTriggerSchema,
+  isUuidLike,
   rotateRoutineTriggerSecretSchema,
   runRoutineSchema,
   updateRoutineSchema,

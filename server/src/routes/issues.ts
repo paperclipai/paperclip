@@ -33,6 +33,7 @@ import {
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
+  isUuidLike,
   type CompanySearchQuery,
   type CompanySearchResponse,
   type ExecutionWorkspace,
@@ -945,9 +946,15 @@ export function issueRoutes(
   function requireAgentRunId(req: Request, res: Response) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
-    if (runId) return runId;
-    res.status(401).json({ error: "Agent run id required" });
-    return null;
+    if (!runId) {
+      res.status(401).json({ error: "Agent run id required" });
+      return null;
+    }
+    if (!isUuidLike(runId)) {
+      res.status(400).json({ error: "X-Paperclip-Run-Id must be a valid UUID" });
+      return null;
+    }
+    return runId;
   }
 
   async function hasActiveCheckoutManagementOverride(
@@ -1380,10 +1387,21 @@ export function issueRoutes(
     }
     const offset = parsedOffset ?? 0;
 
+    const assigneeAgentIdRaw = req.query.assigneeAgentId as string | undefined;
+    const participantAgentIdRaw = req.query.participantAgentId as string | undefined;
+    if (assigneeAgentIdRaw !== undefined && !isUuidLike(assigneeAgentIdRaw)) {
+      res.status(400).json({ error: "assigneeAgentId must be a valid UUID" });
+      return;
+    }
+    if (participantAgentIdRaw !== undefined && !isUuidLike(participantAgentIdRaw)) {
+      res.status(400).json({ error: "participantAgentId must be a valid UUID" });
+      return;
+    }
+
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      assigneeAgentId: assigneeAgentIdRaw,
+      participantAgentId: participantAgentIdRaw,
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
