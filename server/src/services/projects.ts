@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   projects,
@@ -10,6 +10,24 @@ import {
   plugins,
   projectWorkspaces,
   workspaceRuntimeServices,
+  costEvents,
+  financeEvents,
+  issueComments,
+  issueReadStates,
+  feedbackVotes,
+  issueThreadInteractions,
+  issueInboxArchives,
+  documentAnnotationComments,
+  issueDocuments,
+  issueWorkProducts,
+  issueAttachments,
+  issueApprovals,
+  issueRecoveryActions,
+  issuePlanDecompositions,
+  issueReferenceMentions,
+  inboxDismissals,
+  issueExecutionDecisions,
+  issueRelations,
 } from "@paperclipai/db";
 import {
   deriveProjectUrlKey,
@@ -856,16 +874,72 @@ export function projectService(db: Db) {
       return cleared;
     },
 
-    remove: (id: string) =>
-      db
-        .delete(projects)
-        .where(eq(projects.id, id))
-        .returning()
-        .then((rows) => {
-          const row = rows[0] ?? null;
-          if (!row) return null;
-          return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
-        }),
+    remove: async (id: string) => {
+      const existing = await getProjectById(id);
+      if (!existing) return null;
+
+      return db.transaction(async (tx) => {
+        // Get issue IDs for this project to cascade-delete issue children
+        // (must be inside the transaction to avoid TOCTOU — a new issue created
+        // between the SELECT and the transaction could cause an FK violation)
+        const projectIssues = await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(eq(issues.projectId, id));
+        const issueIds = projectIssues.map((i) => i.id);
+
+        // Issue child tables — must be deleted before issues (FK without cascade)
+        if (issueIds.length > 0) {
+          await tx.delete(issueComments).where(inArray(issueComments.issueId, issueIds));
+          await tx.delete(issueReadStates).where(inArray(issueReadStates.issueId, issueIds));
+          await tx.delete(feedbackVotes).where(inArray(feedbackVotes.issueId, issueIds));
+          await tx.delete(issueThreadInteractions).where(inArray(issueThreadInteractions.issueId, issueIds));
+          await tx.delete(issueInboxArchives).where(inArray(issueInboxArchives.issueId, issueIds));
+          // Additional issue-child tables (companies.ts is the source of truth for ordering)
+          await tx.delete(documentAnnotationComments).where(inArray(documentAnnotationComments.issueId, issueIds));
+          await tx.delete(issueDocuments).where(inArray(issueDocuments.issueId, issueIds));
+          await tx.delete(issueWorkProducts).where(inArray(issueWorkProducts.issueId, issueIds));
+          await tx.delete(issueAttachments).where(inArray(issueAttachments.issueId, issueIds));
+          await tx.delete(issueApprovals).where(inArray(issueApprovals.issueId, issueIds));
+          // issueRecoveryActions uses sourceIssueId (FK to issues)
+          await tx.delete(issueRecoveryActions).where(inArray(issueRecoveryActions.sourceIssueId, issueIds));
+          // issuePlanDecompositions uses sourceIssueId (FK to issues)
+          await tx.delete(issuePlanDecompositions).where(inArray(issuePlanDecompositions.sourceIssueId, issueIds));
+          // issueReferenceMentions uses sourceIssueId and targetIssueId (both FK to issues)
+          await tx.delete(issueReferenceMentions).where(
+            or(
+              inArray(issueReferenceMentions.sourceIssueId, issueIds),
+              inArray(issueReferenceMentions.targetIssueId, issueIds),
+            ),
+          );
+          // inboxDismissals has no issue reference — skip (deleted at company level)
+          await tx.delete(issueExecutionDecisions).where(inArray(issueExecutionDecisions.issueId, issueIds));
+          await tx.delete(issueRelations).where(
+            or(
+              inArray(issueRelations.issueId, issueIds),
+              inArray(issueRelations.relatedIssueId, issueIds),
+            ),
+          );
+        }
+        // Cost/finance events — reference project and/or issues (FK without cascade)
+        await tx.delete(costEvents).where(
+          or(eq(costEvents.projectId, id), issueIds.length > 0 ? inArray(costEvents.issueId, issueIds) : sql`false`),
+        );
+        await tx.delete(financeEvents).where(
+          or(eq(financeEvents.projectId, id), issueIds.length > 0 ? inArray(financeEvents.issueId, issueIds) : sql`false`),
+        );
+        // Delete issues (FK to projects, no cascade)
+        await tx.delete(issues).where(eq(issues.projectId, id));
+        // Delete the project
+        const rows = await tx
+          .delete(projects)
+          .where(eq(projects.id, id))
+          .returning();
+        const row = rows[0] ?? null;
+        if (!row) return null;
+        return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
+      });
+    },
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {
       const rows = await db

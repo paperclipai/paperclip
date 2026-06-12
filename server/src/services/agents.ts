@@ -10,11 +10,20 @@ import {
   agentWakeupRequests,
   activityLog,
   costEvents,
+  financeEvents,
   heartbeatRunEvents,
   heartbeatRuns,
   issueExecutionDecisions,
   issues,
   issueComments,
+  approvalComments,
+  approvals,
+  joinRequests,
+  assets,
+  goals,
+  routines,
+  issueThreadInteractions,
+  budgetIncidents,
 } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -601,6 +610,37 @@ export function agentService(db: Db) {
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.agentId, id));
+        await tx.delete(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, id));
+        // Agent-scoped tables with nullable agent FK (no cascade)
+        await tx.delete(costEvents).where(eq(costEvents.agentId, id));
+        await tx.delete(financeEvents).where(eq(financeEvents.agentId, id));
+        // Delete approval comments: first cover comments this agent authored on other agents' approvals,
+        // then cover comments on this agent's own approvals (by approvalId, not authorAgentId)
+        await tx.delete(approvalComments).where(eq(approvalComments.authorAgentId, id));
+        await tx.delete(approvalComments).where(
+          inArray(
+            approvalComments.approvalId,
+            tx.select({ id: approvals.id }).from(approvals).where(eq(approvals.requestedByAgentId, id)),
+          ),
+        );
+        // Delete budget incidents first — budget_incidents.approvalId FK has no ON DELETE CASCADE
+        await tx.delete(budgetIncidents).where(
+          inArray(
+            budgetIncidents.approvalId,
+            tx.select({ id: approvals.id }).from(approvals).where(eq(approvals.requestedByAgentId, id)),
+          ),
+        );
+        await tx.delete(approvals).where(eq(approvals.requestedByAgentId, id));
+        await tx.delete(joinRequests).where(eq(joinRequests.createdAgentId, id));
+        await tx.delete(assets).where(eq(assets.createdByAgentId, id));
+        await tx.delete(goals).where(eq(goals.ownerAgentId, id));
+        await tx.delete(routines).where(eq(routines.assigneeAgentId, id));
+        await tx.delete(issueThreadInteractions).where(
+          or(
+            eq(issueThreadInteractions.createdByAgentId, id),
+            eq(issueThreadInteractions.resolvedByAgentId, id),
+          ),
+        );
         const deleted = await tx
           .delete(agents)
           .where(eq(agents.id, id))
