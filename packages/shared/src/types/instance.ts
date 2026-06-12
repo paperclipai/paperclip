@@ -25,12 +25,17 @@ export const DEFAULT_BACKUP_RETENTION: BackupRetentionPolicy = {
  * - `"any"` (default / absent): unrestricted — any environment driver (local,
  *   ssh, sandbox) may run agents. Preserves single-tenant / local-trusted
  *   behavior.
- * - `"kubernetes"`: force ALL agent execution onto the Kubernetes
- *   sandbox-provider environment and REFUSE local/in-process execution. Used by
- *   shared cloud (cloud_tenant) instances so untrusted tenant agents can never
- *   run in the server process or on an unsandboxed local/ssh adapter.
+ * - `"sandbox"`: force ALL agent execution onto *some* sandbox-provider
+ *   environment (any provider — Kubernetes, Daytona, E2B, Modal, …) and REFUSE
+ *   local/ssh/in-process execution. Provider-agnostic; for shared cloud
+ *   instances whose sandbox is not Kubernetes.
+ * - `"kubernetes"`: stricter, provider-pinned variant of `"sandbox"` — force the
+ *   Kubernetes sandbox provider specifically and REFUSE every other driver
+ *   (including non-Kubernetes sandbox providers). Used by shared cloud
+ *   (cloud_tenant) instances so untrusted tenant agents can never run in the
+ *   server process or on an unsandboxed local/ssh adapter.
  */
-export type InstanceExecutionMode = "kubernetes" | "any";
+export type InstanceExecutionMode = "kubernetes" | "sandbox" | "any";
 
 export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
@@ -38,8 +43,9 @@ export interface InstanceGeneralSettings {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
   /**
-   * Execution policy. Absent/`"any"` = unrestricted; `"kubernetes"` forces the
-   * Kubernetes sandbox provider and denies local/ssh execution.
+   * Execution policy. Absent/`"any"` = unrestricted; `"sandbox"` forces some
+   * sandbox provider (any) and denies local/ssh; `"kubernetes"` forces the
+   * Kubernetes provider specifically.
    */
   executionMode?: InstanceExecutionMode;
 }
