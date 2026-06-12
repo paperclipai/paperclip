@@ -911,6 +911,13 @@
       "when": 1782600100000,
       "tag": "0129_scheduler_leader",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1781111100002,
+      "tag": "0101_plugin_artifact_generations",
+      "breakpoints": true
     }
   ]
 }
