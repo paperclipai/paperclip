@@ -101,13 +101,13 @@ function hashValue(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function discoveryCacheKey(command: string, cwd: string, env: Record<string, string>) {
+function discoveryCacheKey(command: string, cwd: string, env: Record<string, string>, timeoutMs: number) {
   const envKey = Object.entries(env)
     .filter(([key]) => !isVolatileEnvKey(key))
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, value]) => `${key}=${hashValue(value)}`)
     .join("\n");
-  return `${command}\n${cwd}\n${envKey}`;
+  return `${command}\n${cwd}\n${timeoutMs}\n${envKey}`;
 }
 
 function pruneExpiredDiscoveryCache(now: number) {
@@ -175,7 +175,8 @@ export async function discoverOpenCodeModelsCached(input: {
   const command = resolveOpenCodeCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
-  const key = discoveryCacheKey(command, cwd, env);
+  const timeoutMs = resolveModelsDiscoveryTimeoutMs(input.modelsProbeTimeoutSec);
+  const key = discoveryCacheKey(command, cwd, env, timeoutMs);
   const now = Date.now();
   pruneExpiredDiscoveryCache(now);
   const cached = discoveryCache.get(key);

@@ -77,7 +77,7 @@ function resolveOpenCodeBiller(env: Record<string, string>, provider: string | n
   return inferOpenAiCompatibleBiller(env, null) ?? provider ?? "unknown";
 }
 
-const REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC = 20;
+const REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC = 60;
 const REMOTE_OPENCODE_MODELS_PROBE_SANDBOX_TIMEOUT_SEC = 120;
 
 export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
