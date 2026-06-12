@@ -512,6 +512,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const commandNotes = (() => {
       const notes = [...preparedRuntimeConfig.notes];
+      if (sessionId && instructionsPrefix.length > 0) {
+        notes.push(
+          `Resumed session; instructions from ${resolvedInstructionsFilePath} not re-injected to avoid wasting tokens.`,
+        );
+        return notes;
+      }
       if (!resolvedInstructionsFilePath) return notes;
       if (instructionsPrefix.length > 0) {
         notes.push(`Loaded agent instructions from ${resolvedInstructionsFilePath}`);
@@ -543,9 +549,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
     const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
     const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
+    // On any resumed session, skip re-injecting instructions — they are
+    // already cached in the LLM's KV context.  The prompt template may
+    // still be sent when there is no wake content to provide task context.
+    const promptInstructionsPrefix = sessionId ? "" : instructionsPrefix;
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
     const prompt = joinPromptSections([
-      instructionsPrefix,
+      promptInstructionsPrefix,
       renderedBootstrapPrompt,
       wakePrompt,
       sessionHandoffNote,
@@ -553,7 +563,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ]);
     const promptMetrics = {
       promptChars: prompt.length,
-      instructionsChars: instructionsPrefix.length,
+      instructionsChars: promptInstructionsPrefix.length,
       bootstrapPromptChars: renderedBootstrapPrompt.length,
       wakePromptChars: wakePrompt.length,
       sessionHandoffChars: sessionHandoffNote.length,
