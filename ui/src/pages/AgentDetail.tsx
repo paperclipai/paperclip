@@ -32,6 +32,7 @@ import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
 import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
+import { formatRunErrorCode } from "../lib/runErrors";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { CopyText } from "../components/CopyText";
 import { EntityRow } from "../components/EntityRow";
@@ -3358,7 +3359,9 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
             {run.error && (
               <div className="text-xs">
                 <span className="text-red-600 dark:text-red-400">{run.error}</span>
-                {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
+                {run.errorCode && (
+                  <span className="text-muted-foreground ml-1">{formatRunErrorCode(run.errorCode)}</span>
+                )}
               </div>
             )}
             {run.errorCode === "claude_auth_required" && adapterType === "claude_local" && (
