@@ -86,6 +86,7 @@ import {
   RECOVERY_ORIGIN_KINDS,
 } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
+import { gatePrecedence, gateTypeToReason, isGateApprovalType } from "./plan-gates.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -2195,6 +2196,8 @@ type BlockedInboxApprovalRow = {
   approvalId: string;
   issueId: string;
   createdAt: Date;
+  type: string;
+  payload: Record<string, unknown>;
 };
 
 function issueRef(row: Pick<IssueRow, "id" | "identifier" | "title" | "status" | "priority" | "assigneeAgentId" | "assigneeUserId"> | null | undefined): IssueBlockedInboxIssueRef | null {
@@ -2598,6 +2601,8 @@ async function listIssueBlockedInboxAttentionMap(
             approvalId: approvals.id,
             issueId: issueApprovals.issueId,
             createdAt: approvals.createdAt,
+            type: approvals.type,
+            payload: approvals.payload,
           })
           .from(issueApprovals)
           .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
@@ -2683,8 +2688,17 @@ async function listIssueBlockedInboxAttentionMap(
   for (const row of interactionRows as BlockedInboxInteractionRow[]) {
     if (!interactionByIssueId.has(row.issueId)) interactionByIssueId.set(row.issueId, row);
   }
+  // One attention per issue. Pre-sort so that, when an issue carries several
+  // pending approvals, the one surfaced is deterministic: gate approvals win by
+  // precedence (plan > code > wiring) and gates sort ahead of non-gate board
+  // approvals; ties fall back to creation order. First-wins below then picks it.
   const approvalByIssueId = new Map<string, BlockedInboxApprovalRow>();
-  for (const row of approvalRows as BlockedInboxApprovalRow[]) {
+  const sortedApprovalRows = [...(approvalRows as BlockedInboxApprovalRow[])].sort((a, b) => {
+    const precDiff = gatePrecedence(a.type) - gatePrecedence(b.type);
+    if (precDiff !== 0) return precDiff;
+    return a.createdAt.getTime() - b.createdAt.getTime();
+  });
+  for (const row of sortedApprovalRows) {
     if (!approvalByIssueId.has(row.issueId)) approvalByIssueId.set(row.issueId, row);
   }
 
@@ -2772,6 +2786,34 @@ async function listIssueBlockedInboxAttentionMap(
 
     const approval = approvalByIssueId.get(row.id);
     if (approval) {
+      if (isGateApprovalType(approval.type)) {
+        // Advisory dev-team gate. Route to the designated agent recorded on the
+        // gate payload; fall back to the board when the role is unstaffed.
+        const designatedAgentId =
+          typeof approval.payload?.designatedAgentId === "string"
+            ? approval.payload.designatedAgentId
+            : null;
+        const reason = gateTypeToReason(approval.type);
+        const isPlanGate = reason === "pending_plan_approval";
+        result.set(row.id, attentionBase({
+          state: "awaiting_decision",
+          reason,
+          severity: "medium",
+          stoppedSinceAt: approval.createdAt,
+          owner: designatedAgentId
+            ? { type: "agent", agentId: designatedAgentId, userId: null, label: null }
+            : { type: "board", agentId: null, userId: null, label: "Board" },
+          action: {
+            label: isPlanGate ? "Approve plan" : "Review change",
+            detail: isPlanGate
+              ? "Approve or reject the implementation plan before work begins."
+              : "Review the change and approve or reject this gate.",
+          },
+          sourceIssue: source,
+          approvalId: approval.approvalId,
+        }));
+        continue;
+      }
       result.set(row.id, attentionBase({
         state: "awaiting_decision",
         reason: "pending_board_decision",

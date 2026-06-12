@@ -37,7 +37,7 @@ export function approvalService(db: Db) {
   async function resolveApproval(
     id: string,
     targetStatus: "approved" | "rejected",
-    decidedByUserId: string,
+    decider: { userId?: string | null; agentId?: string | null },
     decisionNote: string | null | undefined,
   ): Promise<ResolutionResult> {
     const existing = await getExistingApproval(id);
@@ -55,7 +55,8 @@ export function approvalService(db: Db) {
       .update(approvals)
       .set({
         status: targetStatus,
-        decidedByUserId,
+        decidedByUserId: decider.userId ?? null,
+        decidedByAgentId: decider.agentId ?? null,
         decisionNote: decisionNote ?? null,
         decidedAt: now,
         updatedAt: now,
@@ -103,7 +104,7 @@ export function approvalService(db: Db) {
       const { approval: updated, applied } = await resolveApproval(
         id,
         "approved",
-        decidedByUserId,
+        { userId: decidedByUserId },
         decisionNote,
       );
 
@@ -172,7 +173,7 @@ export function approvalService(db: Db) {
       const { approval: updated, applied } = await resolveApproval(
         id,
         "rejected",
-        decidedByUserId,
+        { userId: decidedByUserId },
         decisionNote,
       );
 
@@ -206,6 +207,19 @@ export function approvalService(db: Db) {
         .where(eq(approvals.id, id))
         .returning()
         .then((rows) => rows[0]);
+    },
+
+    // Decide a gate_* approval as the designated agent. Authorization (agent
+    // actor, gate type, designated-agent match) is enforced at the route layer.
+    // Gate approvals carry no side effects (unlike hire_agent), so this just
+    // records the decision + decidedByAgentId for the audit trail.
+    decideByAgent: async (
+      id: string,
+      agentId: string,
+      decision: "approved" | "rejected",
+      decisionNote?: string | null,
+    ) => {
+      return resolveApproval(id, decision, { agentId }, decisionNote);
     },
 
     resubmit: async (id: string, payload?: Record<string, unknown>) => {

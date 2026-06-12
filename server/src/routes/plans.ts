@@ -24,6 +24,7 @@ const createPlanSchema = z.object({
   tiers: z.array(planTierSchema).optional(),
   budgetCapCents: z.number().int().nonnegative().nullish(),
   budgetCapTokens: z.number().int().nonnegative().nullish(),
+  gateProfile: z.enum(["none", "dev_team"]).optional(),
   assigneeAgentId: z.string().uuid().nullish(),
 });
 
@@ -57,6 +58,7 @@ export function planRoutes(
       tiers: body.tiers as PlanTier[] | undefined,
       budgetCapCents: body.budgetCapCents ?? null,
       budgetCapTokens: body.budgetCapTokens ?? null,
+      gateProfile: body.gateProfile ?? "none",
       assigneeAgentId: body.assigneeAgentId ?? null,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
       createdByAgentId: actor.agentId,
@@ -71,7 +73,11 @@ export function planRoutes(
       action: "plan.created",
       entityType: "issue",
       entityId: issue.id,
-      details: { title: issue.title, assigneeAgentId: body.assigneeAgentId ?? null },
+      details: {
+        title: issue.title,
+        assigneeAgentId: body.assigneeAgentId ?? null,
+        gateProfile: body.gateProfile ?? "none",
+      },
     });
 
     // If assigned, wake the agent so it can draft the plan (it stays a draft
@@ -128,7 +134,7 @@ export function planRoutes(
     assertCompanyAccess(req, existing.companyId);
     const actor = getActorInfo(req);
 
-    const { planDetails, createdChildren } = await plans.activate(planIssueId, {
+    const { planDetails, createdChildren, gateApprovalIds } = await plans.activate(planIssueId, {
       agentId: actor.agentId,
       userId: actor.actorType === "user" ? actor.actorId : null,
     });
@@ -142,7 +148,10 @@ export function planRoutes(
       action: "plan.activated",
       entityType: "issue",
       entityId: planIssueId,
-      details: { childIssueIds: createdChildren.map((c) => c.id) },
+      details: {
+        childIssueIds: createdChildren.map((c) => c.id),
+        gateApprovalIds,
+      },
     });
 
     for (const child of createdChildren) {

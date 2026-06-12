@@ -1,7 +1,15 @@
 import { eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issues, planDetails } from "@paperclipai/db";
+import { approvals, issueApprovals, issues, planDetails } from "@paperclipai/db";
+import type { PlanGateProfile } from "@paperclipai/shared";
 import { issueService } from "./issues.js";
+import { agentService } from "./agents.js";
+import {
+  GATE_DESIGNATED_URL_KEY,
+  buildGateApprovalsForActivation,
+  isGateApprovalType,
+} from "./plan-gates.js";
+import { logger } from "../middleware/logger.js";
 import { conflict, notFound, unprocessable } from "../errors.js";
 
 // A MyHive "Plan" is an issue with workMode='planning' plus a 1:1 plan_details
@@ -24,6 +32,7 @@ export interface CreatePlanInput {
   tiers?: PlanTier[];
   budgetCapCents?: number | null;
   budgetCapTokens?: number | null;
+  gateProfile?: PlanGateProfile | null;
   assigneeAgentId?: string | null;
   createdByUserId?: string | null;
   createdByAgentId?: string | null;
@@ -41,6 +50,70 @@ function normalizeTiers(tiers: PlanTier[] | undefined): PlanTier[] {
 
 export function planService(db: Db) {
   const issues_ = issueService(db);
+  const agents_ = agentService(db);
+
+  // Resolve the three gate-role agents by urlKey and create the gate approvals
+  // for a dev_team plan activation. A missing/ambiguous agent yields a null
+  // designatedAgentId (board fallback) and a warning — activation never fails
+  // because a gate role is unstaffed. Returns the created approval ids.
+  async function createActivationGates(
+    companyId: string,
+    planRootIssueId: string,
+    leafIssueIds: string[],
+    actor: { agentId: string | null; userId: string | null },
+  ): Promise<string[]> {
+    const urlKeys = Array.from(new Set(Object.values(GATE_DESIGNATED_URL_KEY)));
+    const designatedByUrlKey: Record<string, string | null> = {};
+    for (const urlKey of urlKeys) {
+      const { agent, ambiguous } = await agents_.resolveByReference(companyId, urlKey);
+      designatedByUrlKey[urlKey] = agent?.id ?? null;
+      if (!agent) {
+        logger.warn(
+          { companyId, planRootIssueId, urlKey, ambiguous },
+          "dev_team gate role unresolved — gate falls back to board owner",
+        );
+      }
+    }
+
+    const specs = buildGateApprovalsForActivation({
+      planRootIssueId,
+      leafIssueIds,
+      designatedByUrlKey,
+    });
+
+    const createdApprovalIds: string[] = [];
+    for (const spec of specs) {
+      const [approval] = await db
+        .insert(approvals)
+        .values({
+          companyId,
+          type: spec.type,
+          status: "pending",
+          requestedByAgentId: actor.agentId,
+          requestedByUserId: actor.userId,
+          payload: {
+            gate: true,
+            planRootIssueId,
+            designatedAgentId: spec.designatedAgentId,
+          },
+          decisionNote: null,
+          decidedByUserId: null,
+          decidedByAgentId: null,
+          decidedAt: null,
+          updatedAt: new Date(),
+        })
+        .returning();
+      await db.insert(issueApprovals).values({
+        companyId,
+        issueId: spec.issueId,
+        approvalId: approval.id,
+        linkedByAgentId: actor.agentId,
+        linkedByUserId: actor.userId,
+      });
+      createdApprovalIds.push(approval.id);
+    }
+    return createdApprovalIds;
+  }
 
   return {
     createPlan: async (companyId: string, input: CreatePlanInput) => {
@@ -63,6 +136,7 @@ export function planService(db: Db) {
           tiers: tiers as unknown as Record<string, unknown>[],
           budgetCapCents: input.budgetCapCents ?? null,
           budgetCapTokens: input.budgetCapTokens ?? null,
+          gateProfile: input.gateProfile ?? "none",
           createdByUserId: input.createdByUserId ?? null,
           createdByAgentId: input.createdByAgentId ?? null,
         })
@@ -147,7 +221,20 @@ export function planService(db: Db) {
         .where(eq(planDetails.issueId, issueId))
         .returning();
 
-      return { planDetails: updated, createdChildren };
+      // SOFT gate protocol: gates are advisory — they are materialized as
+      // pending approvals so the board surfaces them, but nothing here blocks
+      // activation or any downstream transition.
+      let gateApprovalIds: string[] = [];
+      if (details.gateProfile === "dev_team") {
+        gateApprovalIds = await createActivationGates(
+          details.companyId,
+          issueId,
+          createdChildren.map((c) => c.id),
+          actor,
+        );
+      }
+
+      return { planDetails: updated, createdChildren, gateApprovalIds };
     },
 
     markStopped: async (issueId: string, reason: string) => {
@@ -190,6 +277,23 @@ export function planService(db: Db) {
       `);
       const list = (ids as unknown as { rows?: { id: string }[] }).rows ?? (ids as unknown as { id: string }[]);
       const ordered = list.map((r) => r.id);
+      // Purge gate_* approvals linked to any subtree issue. The issue_approvals
+      // junction cascades on issue delete, but the approval rows themselves
+      // would otherwise be orphaned (they carry no plan back-reference).
+      if (ordered.length > 0) {
+        const gateLinks = await db
+          .select({ approvalId: issueApprovals.approvalId, type: approvals.type })
+          .from(issueApprovals)
+          .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+          .where(inArray(issueApprovals.issueId, ordered));
+        const gateApprovalIds = Array.from(
+          new Set(gateLinks.filter((l) => isGateApprovalType(l.type)).map((l) => l.approvalId)),
+        );
+        if (gateApprovalIds.length > 0) {
+          await db.delete(issueApprovals).where(inArray(issueApprovals.approvalId, gateApprovalIds));
+          await db.delete(approvals).where(inArray(approvals.id, gateApprovalIds));
+        }
+      }
       // Break self-referential links across the subtree before deletion so FK
       // ordering can never block a row, then delete deepest-first.
       await db

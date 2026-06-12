@@ -2,6 +2,7 @@ import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
+  agentDecideApprovalSchema,
   createApprovalSchema,
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
@@ -18,6 +19,7 @@ import {
   secretService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { isGateApprovalType } from "../services/plan-gates.js";
 import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -297,6 +299,61 @@ export function approvalRoutes(
       res.json(redactApprovalPayload(approval));
     },
   );
+
+  // Agent-only gate decision. The ONLY path by which an agent (not a board
+  // user) decides an approval. Hard boundary: actor must be an agent, the
+  // approval must be a gate_* type, and the actor must be the designated agent
+  // recorded on the gate payload. Board/user actors keep using approve/reject.
+  router.post("/approvals/:id/agent-decide", validate(agentDecideApprovalSchema), async (req, res) => {
+    const id = req.params.id as string;
+    if (req.actor.type !== "agent" || !req.actor.agentId) {
+      res.status(403).json({ error: "Gate decisions are for the designated agent only" });
+      return;
+    }
+    const approval = await svc.getById(id);
+    if (!approval) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
+    assertCompanyAccess(req, approval.companyId);
+    if (!isGateApprovalType(approval.type)) {
+      res.status(403).json({ error: "Only dev-team gate approvals can be decided by an agent" });
+      return;
+    }
+    const designatedAgentId =
+      typeof approval.payload?.designatedAgentId === "string"
+        ? approval.payload.designatedAgentId
+        : null;
+    if (designatedAgentId !== req.actor.agentId) {
+      res.status(403).json({ error: "Only the designated agent can decide this gate" });
+      return;
+    }
+
+    const decision = req.body.decision === "rejected" ? "rejected" : "approved";
+    const { approval: updated } = await svc.decideByAgent(
+      id,
+      req.actor.agentId,
+      decision,
+      req.body.decisionNote,
+    );
+
+    await logActivity(db, {
+      companyId: updated.companyId,
+      actorType: "agent",
+      actorId: req.actor.agentId,
+      agentId: req.actor.agentId,
+      action: decision === "approved" ? "approval.approved" : "approval.rejected",
+      entityType: "approval",
+      entityId: updated.id,
+      details: {
+        type: updated.type,
+        gate: true,
+        decidedByAgentId: req.actor.agentId,
+      },
+    });
+
+    res.json(redactApprovalPayload(updated));
+  });
 
   router.post("/approvals/:id/resubmit", validate(resubmitApprovalSchema), async (req, res) => {
     const id = req.params.id as string;
