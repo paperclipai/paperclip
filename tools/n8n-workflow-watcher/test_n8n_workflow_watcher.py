@@ -200,5 +200,64 @@ class SendMail(unittest.TestCase):
             self.assertEqual(w.send_mail("s", "t", "", []), 500)
 
 
+class MainOrchestration(unittest.TestCase):
+    def test_findings_send_mail_and_persist(self):
+        rows = [("wf1", "Digest", "trigger", "error", 11, "2026-06-12 03:00:00")]
+        with tempfile.TemporaryDirectory() as d:
+            statep = os.path.join(d, "state.json")
+            with mock.patch.object(w, "STATE_PATH", statep), \
+                 mock.patch.object(w, "open_db_ro", return_value=mock.MagicMock()), \
+                 mock.patch.object(w, "fetch_active_workflow_latest", return_value=rows), \
+                 mock.patch.object(w, "count_active", return_value=23), \
+                 mock.patch.object(w, "send_mail", return_value=200) as sm:
+                rc = w.main(["--once"])
+            self.assertEqual(rc, 0)
+            sm.assert_called_once()
+            self.assertIn("1 Workflow", sm.call_args.args[0])     # subject
+            state = w.load_state(statep)
+            self.assertEqual(state["last_reported_ids"], ["wf1"])
+
+    def test_findings_dry_run_does_not_send(self):
+        rows = [("wf1", "Digest", "trigger", "error", 11, "2026-06-12 03:00:00")]
+        with tempfile.TemporaryDirectory() as d:
+            statep = os.path.join(d, "state.json")
+            with mock.patch.object(w, "STATE_PATH", statep), \
+                 mock.patch.object(w, "open_db_ro", return_value=mock.MagicMock()), \
+                 mock.patch.object(w, "fetch_active_workflow_latest", return_value=rows), \
+                 mock.patch.object(w, "count_active", return_value=23), \
+                 mock.patch.object(w, "send_mail", return_value=200) as sm:
+                rc = w.main(["--dry-run"])
+        self.assertEqual(rc, 0)
+        sm.assert_not_called()
+
+    def test_no_findings_non_monday_silent(self):
+        with tempfile.TemporaryDirectory() as d:
+            statep = os.path.join(d, "state.json")
+            with mock.patch.object(w, "STATE_PATH", statep), \
+                 mock.patch.object(w, "open_db_ro", return_value=mock.MagicMock()), \
+                 mock.patch.object(w, "fetch_active_workflow_latest", return_value=[]), \
+                 mock.patch.object(w, "count_active", return_value=23), \
+                 mock.patch.object(w, "should_send_heartbeat", return_value=False), \
+                 mock.patch.object(w, "send_mail", return_value=200) as sm:
+                rc = w.main(["--once"])
+        self.assertEqual(rc, 0)
+        sm.assert_not_called()
+
+    def test_no_findings_heartbeat_due_sends(self):
+        with tempfile.TemporaryDirectory() as d:
+            statep = os.path.join(d, "state.json")
+            with mock.patch.object(w, "STATE_PATH", statep), \
+                 mock.patch.object(w, "open_db_ro", return_value=mock.MagicMock()), \
+                 mock.patch.object(w, "fetch_active_workflow_latest", return_value=[]), \
+                 mock.patch.object(w, "count_active", return_value=23), \
+                 mock.patch.object(w, "should_send_heartbeat", return_value=True), \
+                 mock.patch.object(w, "send_mail", return_value=200) as sm:
+                rc = w.main(["--once"])
+            self.assertEqual(rc, 0)
+            sm.assert_called_once()
+            self.assertIn("grün", sm.call_args.args[0])
+            self.assertIn("last_heartbeat_date", w.load_state(statep))
+
+
 if __name__ == "__main__":
     unittest.main()

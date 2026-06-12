@@ -204,3 +204,80 @@ def send_mail(subject, text_body, html_body, attachments):
     except Exception as e:  # noqa: BLE001
         log("ERROR", f"mailhub send failed: {e}")
         return 0
+
+
+def _parse_args(argv):
+    p = argparse.ArgumentParser(description="n8n-Workflow-Wächter")
+    p.add_argument("--once", action="store_true",
+                   help="Ein Durchlauf (Default-Verhalten; nur Parität zum Sibling)")
+    p.add_argument("--dry-run", action="store_true", help="Rendern + loggen, nicht senden")
+    p.add_argument("--force", action="store_true", help="Tages-Dedup ignorieren")
+    return p.parse_args(argv)
+
+
+def main(argv=None):
+    args = _parse_args(argv)
+    log("INFO", "run start")
+    try:
+        conn = open_db_ro()
+    except sqlite3.Error as e:
+        log("ERROR", f"DB open failed: {e}")
+        return 1
+    try:
+        rows = _dedup_latest(fetch_active_workflow_latest(conn))
+        active_count = count_active(conn)
+    finally:
+        conn.close()
+
+    findings = find_failed_workflows(rows)
+    state = load_state(STATE_PATH)
+    today = datetime.now().date()
+    today_iso = today.isoformat()
+
+    if findings:
+        ids = sorted(f["id"] for f in findings)
+        dup = (state.get("last_run_date") == today_iso
+               and state.get("last_reported_ids") == ids)
+        if dup and not args.force:
+            log("INFO", "findings already reported today; skipping")
+            return 0
+        subject = build_subject(findings)
+        text = render_report_text(findings)
+        html_body = render_report_html(findings)
+        if args.dry_run:
+            log("INFO", f"[dry-run] would send: {subject}")
+            print(subject)
+            print(text)
+            return 0
+        status = send_mail(subject, text, html_body, [])
+        if 200 <= status < 300:
+            state["last_run_date"] = today_iso
+            state["last_reported_ids"] = ids
+            save_state(state, STATE_PATH)
+            log("INFO", f"findings mail sent ({len(findings)})")
+        else:
+            log("ERROR", f"findings mail failed http={status}")
+        return 0
+
+    # keine Findings → ggf. wöchentlicher Heartbeat
+    if should_send_heartbeat(today, state.get("last_heartbeat_date"), False):
+        subject, text, html_body = render_heartbeat(active_count)
+        if args.dry_run:
+            log("INFO", f"[dry-run] would send heartbeat: {subject}")
+            print(subject)
+            print(text)
+            return 0
+        status = send_mail(subject, text, html_body, [])
+        if 200 <= status < 300:
+            state["last_heartbeat_date"] = today_iso
+            save_state(state, STATE_PATH)
+            log("INFO", "heartbeat sent")
+        else:
+            log("ERROR", f"heartbeat failed http={status}")
+    else:
+        log("INFO", "no findings, no heartbeat due")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
