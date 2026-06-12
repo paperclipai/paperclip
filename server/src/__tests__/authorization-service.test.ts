@@ -912,4 +912,185 @@ describeEmbeddedPostgres("authorization service", () => {
       grant: { permissionKey: "tasks:assign" },
     });
   });
+
+  it("lets a manager comment on a child issue assigned to a report", async () => {
+    const company = await createCompany(db, "CommentManagerDown");
+    const ceo = await createAgent(db, company.id, { role: "ceo" });
+    const report = await createAgent(db, company.id, { reportsTo: ceo.id });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: report.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: ceo.id, companyId: company.id, source: "agent_key" },
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        parentIssueId: issue.parentId,
+        assigneeAgentId: issue.assigneeAgentId,
+        status: issue.status,
+      },
+    });
+
+    expect(decision).toMatchObject({ allowed: true, reason: "allow_manager_chain" });
+  });
+
+  it("lets a parent-issue assignee comment on a child assigned to another agent", async () => {
+    const company = await createCompany(db, "CommentParentDown");
+    const parentAssignee = await createAgent(db, company.id);
+    const childAssignee = await createAgent(db, company.id);
+    const parentIssue = await createIssue(db, company.id, { assigneeAgentId: parentAssignee.id });
+    const childIssue = await createIssue(db, company.id, {
+      parentId: parentIssue.id,
+      assigneeAgentId: childAssignee.id,
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: parentAssignee.id, companyId: company.id, source: "agent_key" },
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: childIssue.id,
+        parentIssueId: childIssue.parentId,
+        assigneeAgentId: childIssue.assigneeAgentId,
+        status: childIssue.status,
+      },
+    });
+
+    expect(decision).toMatchObject({ allowed: true, reason: "allow_parent_assignee" });
+  });
+
+  it("lets a mentioned thread participant comment on the mentioning issue", async () => {
+    const company = await createCompany(db, "CommentMentionUp");
+    const assignee = await createAgent(db, company.id);
+    const mentioned = await createAgent(db, company.id);
+    const issue = await createIssue(db, company.id, { assigneeAgentId: assignee.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: mentioned.id, companyId: company.id, source: "agent_key" },
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        parentIssueId: issue.parentId,
+        assigneeAgentId: issue.assigneeAgentId,
+        status: issue.status,
+        threadParticipantAgentIds: [mentioned.id],
+      },
+    });
+
+    expect(decision).toMatchObject({ allowed: true, reason: "allow_thread_participant" });
+  });
+
+  it("denies comments from an unrelated agent that is not assignee, manager, parent, or participant", async () => {
+    const company = await createCompany(db, "CommentUnrelatedDenied");
+    const assignee = await createAgent(db, company.id);
+    const unrelated = await createAgent(db, company.id);
+    const issue = await createIssue(db, company.id, { assigneeAgentId: assignee.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: unrelated.id, companyId: company.id, source: "agent_key" },
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        parentIssueId: issue.parentId,
+        assigneeAgentId: issue.assigneeAgentId,
+        status: issue.status,
+        threadParticipantAgentIds: [],
+      },
+    });
+
+    expect(decision).toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+  });
+
+  it("keeps issue:mutate strictly assignee-only for managers, parents, and participants", async () => {
+    const company = await createCompany(db, "MutateRegression");
+    const ceo = await createAgent(db, company.id, { role: "ceo" });
+    const report = await createAgent(db, company.id, { reportsTo: ceo.id });
+    const parentAssignee = await createAgent(db, company.id);
+    const mentioned = await createAgent(db, company.id);
+    const parentIssue = await createIssue(db, company.id, { assigneeAgentId: parentAssignee.id });
+    const issue = await createIssue(db, company.id, {
+      parentId: parentIssue.id,
+      assigneeAgentId: report.id,
+    });
+
+    const authorization = authorizationService(db);
+    const resource = {
+      type: "issue" as const,
+      companyId: company.id,
+      issueId: issue.id,
+      parentIssueId: issue.parentId,
+      assigneeAgentId: issue.assigneeAgentId,
+      status: issue.status,
+      // Even if a participant set were supplied, mutate must ignore it.
+      threadParticipantAgentIds: [mentioned.id],
+    };
+
+    const managerMutate = await authorization.decide({
+      actor: { type: "agent", agentId: ceo.id, companyId: company.id, source: "agent_key" },
+      action: "issue:mutate",
+      resource,
+    });
+    const parentMutate = await authorization.decide({
+      actor: { type: "agent", agentId: parentAssignee.id, companyId: company.id, source: "agent_key" },
+      action: "issue:mutate",
+      resource,
+    });
+    const mentionedMutate = await authorization.decide({
+      actor: { type: "agent", agentId: mentioned.id, companyId: company.id, source: "agent_key" },
+      action: "issue:mutate",
+      resource,
+    });
+
+    expect(managerMutate).toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+    expect(parentMutate).toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+    expect(mentionedMutate).toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+  });
+
+  it("denies comments from a low-trust agent outside its boundary", async () => {
+    const company = await createCompany(db, "CommentLowTrustOutside");
+    const project = await createProject(db, company.id, "Allowed");
+    const otherProject = await createProject(db, company.id, "Denied");
+    const rootIssueId = randomUUID();
+    const actorAgent = await createAgent(db, company.id, {
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            projectIds: [project.id],
+            rootIssueId,
+          },
+        },
+      },
+    });
+    await createIssue(db, company.id, {
+      id: rootIssueId,
+      projectId: project.id,
+      assigneeAgentId: actorAgent.id,
+    });
+    const outsideIssue = await createIssue(db, company.id, { projectId: otherProject.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: outsideIssue.id,
+        projectId: outsideIssue.projectId,
+        parentIssueId: outsideIssue.parentId,
+        status: outsideIssue.status,
+        // Participation must not override the low-trust boundary.
+        threadParticipantAgentIds: [actorAgent.id],
+      },
+    });
+
+    expect(decision).toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+  });
 });

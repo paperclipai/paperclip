@@ -1775,7 +1775,8 @@ export function issueRoutes(
       assigneeUserId: string | null;
       status: string;
     },
-    action: "issue:read" | "issue:mutate",
+    action: "issue:read" | "issue:mutate" | "issue:comment",
+    extra?: { threadParticipantAgentIds?: string[] | null },
   ) {
     return access.decide({
       actor: req.actor,
@@ -1789,6 +1790,9 @@ export function issueRoutes(
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
         status: issue.status,
+        ...(extra?.threadParticipantAgentIds
+          ? { threadParticipantAgentIds: extra.threadParticipantAgentIds }
+          : {}),
       },
       scope: {
         issueId: issue.id,
@@ -1919,6 +1923,47 @@ export function issueRoutes(
           reason: "stale_checkout_run",
         },
       });
+    }
+    return true;
+  }
+
+  /**
+   * Authorization guard for posting comments. Commenting is a coordination
+   * primitive (`issue:comment`), decoupled from state/field mutation
+   * (`issue:mutate`). An agent may comment when it is the assignee, the issue
+   * has no agent assignee, it manages the assignee, it is assigned the parent
+   * issue, or it participates in / was @-mentioned on the thread — resolved by
+   * `access.decide` against the `issue:comment` action. Low-trust boundary
+   * scoping still applies inside `decide`.
+   *
+   * Unlike mutation, comments are allowed even while another agent holds the
+   * checkout of an `in_progress` issue, so there is intentionally no 409/owner
+   * gate here: the boundary decision is the complete check.
+   */
+  async function assertAgentIssueCommentAllowed(
+    req: Request,
+    res: Response,
+    issue: {
+      id: string;
+      companyId: string;
+      projectId: string | null;
+      parentId: string | null;
+      status: string;
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+    },
+  ) {
+    if (req.actor.type !== "agent") return true;
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+    const threadParticipantAgentIds = await svc.findThreadParticipantAgentIds(issue.id);
+    const decision = await decideIssueAccess(req, issue, "issue:comment", { threadParticipantAgentIds });
+    if (!decision.allowed) {
+      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+      return false;
     }
     return true;
   }
@@ -6624,7 +6669,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertAgentIssueCommentAllowed(req, res, issue))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,

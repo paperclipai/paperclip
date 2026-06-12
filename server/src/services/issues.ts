@@ -6343,6 +6343,49 @@ export function issueService(db: Db) {
       return explicitAgentMentionIds.filter((agentId) => companyAgentIds.has(agentId));
     },
 
+    /**
+     * Resolve the set of agents that "participate" in an issue thread: agents
+     * who authored a (non-deleted) comment on it, plus agents @-mentioned
+     * anywhere on the thread (title, description, or comment bodies). Used by
+     * the comment-authorization guard so coordination participants may comment
+     * on an issue assigned to someone else without holding `issue:mutate`.
+     */
+    findThreadParticipantAgentIds: async (issueId: string): Promise<string[]> => {
+      const issue = await db
+        .select({
+          companyId: issues.companyId,
+          title: issues.title,
+          description: issues.description,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) return [];
+
+      const comments = await db
+        .select({ body: issueComments.body, authorAgentId: issueComments.authorAgentId })
+        .from(issueComments)
+        .where(and(eq(issueComments.issueId, issueId), isNull(issueComments.deletedAt)));
+
+      const candidateIds = new Set<string>();
+      for (const source of [issue.title, issue.description ?? ""]) {
+        for (const agentId of extractAgentMentionIds(source)) candidateIds.add(agentId);
+      }
+      for (const comment of comments) {
+        if (comment.authorAgentId) candidateIds.add(comment.authorAgentId);
+        for (const agentId of extractAgentMentionIds(comment.body)) candidateIds.add(agentId);
+      }
+
+      if (candidateIds.size === 0) return [];
+
+      const rows = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.companyId, issue.companyId), inArray(agents.id, [...candidateIds])));
+      const valid = new Set(rows.map((row) => row.id));
+      return [...candidateIds].filter((agentId) => valid.has(agentId));
+    },
+
     findMentionedProjectIds: async (
       issueId: string,
       opts?: { includeCommentBodies?: boolean },
