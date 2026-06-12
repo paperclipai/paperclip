@@ -508,6 +508,7 @@ const AUTHENTICATED_SECURITY: Array<Record<string, string[]>> = [
 
 const PUBLIC_OPERATIONS = new Set([
   "GET /api/health",
+  "GET /api/health/ready",
   "GET /api/openapi.json",
   "GET /api/board-claim/{token}",
   "POST /api/cli-auth/challenges",
@@ -757,6 +758,17 @@ registry.registerPath({
       bootstrapInviteActive: z.boolean().optional(),
     })),
     503: { description: "Service unavailable", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/health/ready",
+  tags: ["health"],
+  summary: "Readiness probe (plugin snapshot sync gate)",
+  responses: {
+    200: r.ok(z.object({ ready: z.literal(true) })),
+    503: { description: "Not ready: plugin snapshot sync pending", content: { "application/json": { schema: z.object({ ready: z.literal(false), reason: z.string() }) } } },
   },
 });
 
