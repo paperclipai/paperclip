@@ -541,6 +541,25 @@ export interface PluginLoader {
   unloadSingle(pluginId: string, pluginKey: string): Promise<void>;
 
   /**
+   * Converge the in-memory plugin runtime onto the registry: activate
+   * `ready` plugins that have no worker handle and unload workers whose
+   * plugin is no longer `ready` (uninstalled or disabled on another
+   * replica).
+   *
+   * Called after a plugin snapshot swap (plugin-artifact-replication.ts)
+   * when the on-disk plugin tree changed underneath a running server.
+   * Individual load/unload failures are logged and skipped — the rest of
+   * the diff still converges.
+   *
+   * **Requires** `PluginRuntimeServices` to have been provided at
+   * construction.
+   *
+   * @returns Plugin ids that were activated (`loaded`) and deactivated
+   *          (`unloaded`) by this pass.
+   */
+  reconcileLoadedPlugins(): Promise<{ loaded: string[]; unloaded: string[] }>;
+
+  /**
    * Stop all managed plugin workers. Called during server shutdown.
    *
    * Stops the job scheduler and then stops all workers via the worker
@@ -807,6 +826,14 @@ export function pluginLoader(
   const capabilityValidator = pluginCapabilityValidator();
   const log = logger.child({ service: "plugin-loader" });
   const hostVersion = runtimeServices?.instanceInfo.hostVersion;
+  /**
+   * pluginId → pluginKey for every plugin this loader activated. Mirrors the
+   * worker manager's handle map but keeps the key, which subsystem cleanup
+   * (event bus, tool dispatcher) is scoped by and which the registry can no
+   * longer provide once a row was purged. Maintained by activatePlugin /
+   * unloadSingle; read by reconcileLoadedPlugins.
+   */
+  const activePluginKeys = new Map<string, string>();
 
   async function assertPageRoutePathsAvailable(manifest: PaperclipPluginManifestV1): Promise<void> {
     const requestedRoutePaths = getDeclaredPageRoutePaths(manifest);
@@ -1746,10 +1773,81 @@ export function pluginLoader(
         );
       }
 
+      activePluginKeys.delete(pluginId);
+
       log.info(
         { pluginId, pluginKey },
         "plugin-loader: plugin unloaded successfully",
       );
+    },
+
+    // -----------------------------------------------------------------------
+    // reconcileLoadedPlugins
+    // -----------------------------------------------------------------------
+
+    async reconcileLoadedPlugins(): Promise<{ loaded: string[]; unloaded: string[] }> {
+      if (!runtimeServices) {
+        throw new Error(
+          "Cannot reconcileLoadedPlugins: no PluginRuntimeServices provided.",
+        );
+      }
+
+      const { workerManager } = runtimeServices;
+      const readyPlugins = (await registry.listByStatus("ready")) as PluginRecord[];
+      const readyIds = new Set(readyPlugins.map((plugin) => plugin.id));
+      // Any worker handle (running, starting, or crash-restarting) counts as
+      // loaded: loadSingle on such a plugin would double-start its worker.
+      const activeIds = new Set(
+        workerManager.diagnostics().map((diag) => diag.pluginId),
+      );
+
+      const loaded: string[] = [];
+      const unloaded: string[] = [];
+
+      for (const pluginId of activeIds) {
+        if (readyIds.has(pluginId)) continue;
+        // pluginKey for scoped cleanup: prefer the key recorded at
+        // activation, fall back to the registry row (plugin disabled, row
+        // still present), then to the id itself (row purged elsewhere).
+        const pluginKey =
+          activePluginKeys.get(pluginId) ??
+          ((await registry.getById(pluginId)) as PluginRecord | null)?.pluginKey ??
+          pluginId;
+        try {
+          await this.unloadSingle(pluginId, pluginKey);
+          unloaded.push(pluginId);
+        } catch (err) {
+          log.warn(
+            { pluginId, err: err instanceof Error ? err.message : String(err) },
+            "plugin-loader: reconcile unload failed (continuing)",
+          );
+        }
+      }
+
+      for (const plugin of readyPlugins) {
+        if (activeIds.has(plugin.id)) continue;
+        try {
+          const result = await this.loadSingle(plugin.id);
+          if (result.success) {
+            loaded.push(plugin.id);
+          } else {
+            log.warn(
+              { pluginId: plugin.id, error: result.error },
+              "plugin-loader: reconcile load failed (continuing)",
+            );
+          }
+        } catch (err) {
+          log.warn(
+            { pluginId: plugin.id, err: err instanceof Error ? err.message : String(err) },
+            "plugin-loader: reconcile load failed (continuing)",
+          );
+        }
+      }
+
+      if (loaded.length > 0 || unloaded.length > 0) {
+        log.info({ loaded, unloaded }, "plugin-loader: reconciled loaded plugins");
+      }
+      return { loaded, unloaded };
     },
 
     // -----------------------------------------------------------------------
@@ -1978,6 +2076,11 @@ export function pluginLoader(
         },
         "plugin-loader: plugin activated successfully",
       );
+
+      // Remember the key for scoped cleanup in reconcileLoadedPlugins():
+      // after a purge-uninstall on another replica the registry row is gone,
+      // so the key cannot be recovered from the database at unload time.
+      activePluginKeys.set(pluginId, pluginKey);
 
       return { plugin: activePlugin, success: true, registered };
     } catch (err) {
