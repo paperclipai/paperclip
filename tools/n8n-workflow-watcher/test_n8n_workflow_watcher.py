@@ -176,6 +176,26 @@ class DbQuery(unittest.TestCase):
         findings = w.find_failed_workflows(rows)
         self.assertEqual([f["id"] for f in findings], ["wf1"])
 
+    def test_running_newer_execution_suppresses_stale_error(self):
+        conn = self._make_db()
+        # wf4: latest FINISHED run errored, but a NEWER run is currently running
+        conn.execute("INSERT INTO workflow_entity VALUES ('wf4','InProgress',1)")
+        conn.execute("INSERT INTO execution_entity VALUES "
+                     "(50,'wf4','error','trigger',datetime('now','-2 hours'),"
+                     "datetime('now','-2 hours'),NULL)")
+        conn.execute("INSERT INTO execution_entity VALUES "
+                     "(51,'wf4','running','trigger',datetime('now','-10 minutes'),"
+                     "NULL,NULL)")  # in-progress: stoppedAt NULL, started after the error
+        conn.commit()
+        rows = w._dedup_latest(w.fetch_active_workflow_latest(conn))
+        by_id = {r[0]: r for r in rows}
+        # wf4's latest is the running execution (51), NOT the stale error (50)
+        self.assertEqual(by_id["wf4"][4], 51)
+        self.assertEqual(by_id["wf4"][3], "running")
+        # therefore wf4 is NOT flagged
+        findings = w.find_failed_workflows(rows)
+        self.assertNotIn("wf4", [f["id"] for f in findings])
+
 
 class SendMail(unittest.TestCase):
     def test_posts_payload_and_returns_status(self):

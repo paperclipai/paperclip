@@ -132,7 +132,7 @@ FROM workflow_entity w
 JOIN (
     SELECT workflowId, MAX(startedAt) AS ms
     FROM execution_entity
-    WHERE stoppedAt > datetime('now', ?) AND deletedAt IS NULL
+    WHERE startedAt > datetime('now', ?) AND deletedAt IS NULL
     GROUP BY workflowId
 ) m ON m.workflowId = w.id
 JOIN execution_entity e
