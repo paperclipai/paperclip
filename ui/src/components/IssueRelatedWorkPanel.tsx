@@ -126,15 +126,15 @@ export function IssueRelatedWorkPanel({
     <div className="space-y-3">
       <Section
         title="References"
-        description="Other tasks this issue currently points at in its title, description, comments, or documents."
+        description="Other tasks this task currently points at in its title, description, comments, or documents."
         items={outbound}
-        emptyLabel="This issue does not reference any other tasks yet."
+        emptyLabel="This task does not reference any other tasks yet."
       />
       <Section
         title="Referenced by"
-        description="Other tasks that currently point at this issue."
+        description="Other tasks that currently point at this task."
         items={inbound}
-        emptyLabel="No other tasks reference this issue yet."
+        emptyLabel="No other tasks reference this task yet."
       />
     </div>
   );

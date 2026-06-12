@@ -143,12 +143,12 @@ describe("ActivityCharts", () => {
     expect(container.querySelector("[title='2026-04-20: 2 issues']")).not.toBeNull();
   });
 
-  it("PriorityChart shows empty state when activity has no issues", () => {
+  it("PriorityChart shows empty state when activity has no tasks", () => {
     const activity: DashboardIssueActivityDay[] = [
       { date: "2026-04-20", total: 0, byPriority: emptyPriorityBuckets(), byStatus: emptyStatusBuckets() },
     ];
     render(<PriorityChart activity={activity} />);
-    expect(container.textContent).toContain("No issues");
+    expect(container.textContent).toContain("No tasks");
   });
 
   it("IssueStatusChart renders pre-aggregated activity", () => {

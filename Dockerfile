@@ -52,6 +52,7 @@ COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/mcp-server/package.json packages/mcp-server/
 COPY packages/mcp-gateway/package.json packages/mcp-gateway/
 COPY packages/skills-catalog/package.json packages/skills-catalog/
+COPY packages/teams-catalog/package.json packages/teams-catalog/
 COPY packages/adapters/acpx-local/package.json packages/adapters/acpx-local/
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
@@ -266,7 +267,7 @@ COPY --from=github-mcp /server/github-mcp-server /usr/local/bin/github-mcp-serve
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    npm install --global --omit=dev --cache /root/.npm @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai /tmp/ccrotate.tgz \
+    npm install --global --omit=dev --cache /root/.npm @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest /tmp/ccrotate.tgz \
   && rm /tmp/ccrotate.tgz \
   # Upstream ccrotate@1.1.0 bug: dist/cli.js reads `new URL("../package.json", import.meta.url)`,
   # which resolves to /usr/local/lib/node_modules/package.json (one level above the ccrotate
@@ -306,7 +307,8 @@ ENV NODE_ENV=production \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
-  OPENCODE_ALLOW_ALL_MODELS=true
+  OPENCODE_ALLOW_ALL_MODELS=true \
+  GEMINI_SANDBOX=false
 
 VOLUME ["/paperclip"]
 EXPOSE 3100

@@ -57,8 +57,10 @@ import {
   isClaudeUnknownSessionError,
   isClaudeQuotaExhausted,
   isClaudeImmutableThinkingBlockError,
+  isClaudePoisonedPreviousMessageIdError,
+  isClaudeImageProcessingError,
 } from "./parse.js";
-import { prepareClaudeConfigSeed } from "./claude-config.js";
+import { prepareClaudeConfigSeed, resolveSharedClaudeConfigDir } from "./claude-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
@@ -752,8 +754,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // via --append-system-prompt-file on the next claude invocation.
   const hasMatchingPromptBundle =
     runtimePromptBundleKey.length > 0 && runtimePromptBundleKey === promptBundle.bundleKey;
+  const isValidUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runtimeSessionId);
   const canResumeSession =
     runtimeSessionId.length > 0 &&
+    isValidUuid &&
     hasMatchingPromptBundle &&
     claudeSessionCwdMatchesExecutionTarget({
       runtimeSessionCwd,
@@ -762,9 +766,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }) &&
     adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
   const sessionId = canResumeSession ? runtimeSessionId : null;
+  if (runtimeSessionId && !isValidUuid) {
+    await onLog(
+      "stdout",
+      `[paperclip] Claude session "${runtimeSessionId}" is not a valid UUID and will not be passed to --resume.\n`,
+    );
+  }
   if (
     executionTargetIsRemote &&
     runtimeSessionId &&
+    isValidUuid &&
     !canResumeSession
   ) {
     await onLog(
@@ -773,6 +784,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
   } else if (
     runtimeSessionId &&
+    isValidUuid &&
     runtimeSessionCwd.length > 0 &&
     path.resolve(runtimeSessionCwd) !== path.resolve(effectiveExecutionCwd)
   ) {
@@ -780,7 +792,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       "stdout",
       `[paperclip] Claude session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
     );
-  } else if (runtimeSessionId && !canResumeSession) {
+  } else if (runtimeSessionId && isValidUuid && !canResumeSession) {
     await onLog(
       "stdout",
       `[paperclip] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
@@ -1018,9 +1030,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         };
       })();
 
-    const resolvedSessionId =
+    const rawResolvedSessionId =
       parsedStream.sessionId ??
       (asString(parsed.session_id, opts.fallbackSessionId ?? "") || opts.fallbackSessionId);
+    const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
+    const poisonedPreviousMessageId = isClaudePoisonedPreviousMessageIdError(parsed);
+    const parsedIsError = asBoolean(parsed.is_error, false);
+    const resolvedSummary = parsedStream.summary || asString(parsed.result, "");
+    // Validate-before-persist guard: never persist a sessionId whose transcript
+    // is known-poisoned. The Claude CLI keeps an on-disk JSONL keyed by the
+    // session id; if the last entry contains a non-`msg_`-prefixed
+    // `previous_message_id`, every subsequent `--resume` hits a 400 from
+    // /v1/messages and the issue is permanently unrecoverable until the
+    // sessionId is dropped server-side. Drop here so resolveNextSessionState
+    // calls clearTaskSessions on the next heartbeat. See RED-978 / RED-976.
+    const shouldDropSessionForPoison = poisonedPreviousMessageId;
+    const resolvedSessionId = shouldDropSessionForPoison ? null : rawResolvedSessionId;
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
@@ -1036,9 +1061,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
       } as Record<string, unknown>)
       : null;
-    const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
-    const resolvedSummary = parsedStream.summary || asString(parsed.result, "");
-    const parsedIsError = asBoolean(parsed.is_error, false);
     // Trust the SDK's explicit success signal over the CLI's exit code. The
     // Claude CLI sometimes exits non-zero even after emitting
     // `{type:"result", subtype:"success", is_error:false}` (e.g. post-completion
@@ -1081,6 +1103,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       !loginMeta.requiresLogin &&
       !quotaExhausted &&
       !clearSessionForMaxTurns &&
+      !poisonedPreviousMessageId &&
       isClaudeTransientUpstreamError({
         parsed,
         stdout: proc.stdout,
@@ -1101,12 +1124,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? "provider_quota_exhausted"
       : failed && clearSessionForMaxTurns
       ? "max_turns_exhausted"
+      : failed && poisonedPreviousMessageId
+      ? "claude_poisoned_previous_message_id"
       : transientUpstream
       ? "claude_transient_upstream"
       : null;
     const mergedResultJson: Record<string, unknown> = {
       ...parsed,
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
+      ...(failed && poisonedPreviousMessageId ? { stopReason: "claude_poisoned_previous_message_id" } : {}),
       ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
       ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
@@ -1142,7 +1168,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resultJson: mergedResultJson,
       summary: resolvedSummary,
       silentFailure,
-      clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
+      clearSession:
+        clearSessionForMaxTurns ||
+        // Clear-on-error: a poisoned previous_message_id is a deterministic
+        // state error. Force the server to drop persisted session state for
+        // this issue so the next continuation starts from a clean slate.
+        poisonedPreviousMessageId ||
+        Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
     };
   };
 
@@ -1154,21 +1186,63 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     if (sessionId && !attempt.proc.timedOut && (attempt.proc.exitCode ?? 0) !== 0) {
       const fallbackErrorMessage = attempt.parsed ? null : parseFallbackErrorMessage(attempt.proc);
-      const resumeFailureReason = attempt.parsed && isClaudeUnknownSessionError(attempt.parsed)
-        ? "is unavailable"
+      const sessionErrorKind = attempt.parsed
+        ? isClaudeUnknownSessionError(attempt.parsed)
+          ? "unknown"
+          : isClaudePoisonedPreviousMessageIdError(attempt.parsed)
+          ? "poisoned"
+          : isClaudeImageProcessingError(attempt.parsed)
+          ? "image"
+          : isClaudeImmutableThinkingBlockError({
+              parsed: attempt.parsed,
+              stdout: attempt.proc.stdout,
+              stderr: attempt.proc.stderr,
+              errorMessage: fallbackErrorMessage,
+            })
+          ? "immutable"
+          : null
         : isClaudeImmutableThinkingBlockError({
             parsed: attempt.parsed,
             stdout: attempt.proc.stdout,
             stderr: attempt.proc.stderr,
             errorMessage: fallbackErrorMessage,
           })
-        ? "contains immutable thinking blocks rejected by Claude"
+        ? "immutable"
         : null;
-      if (resumeFailureReason) {
+
+      if (sessionErrorKind !== null) {
+        const resumeFailureReason =
+          sessionErrorKind === "poisoned"
+            ? "returned a poisoned message-id"
+            : sessionErrorKind === "image"
+            ? "contains an unprocessable image"
+            : sessionErrorKind === "immutable"
+            ? "contains immutable thinking blocks rejected by Claude"
+            : "is unavailable";
         await onLog(
           "stdout",
           `[paperclip] Claude resume session "${sessionId}" ${resumeFailureReason}; retrying with a fresh session.\n`,
         );
+        if (sessionErrorKind === "poisoned" && !executionTargetIsRemote) {
+          const claudeConfigDir = resolveSharedClaudeConfigDir(effectiveEnv);
+          // Mirrors Claude Code's project-dir encoding: non-alphanumeric chars become "-"; existing hyphens pass through.
+          const encodedCwd = effectiveExecutionCwd.replace(/[^a-zA-Z0-9-]/g, "-");
+          const poisonedJsonlPath = path.join(claudeConfigDir, "projects", encodedCwd, `${sessionId}.jsonl`);
+          let unlinked = false;
+          try {
+            await fs.unlink(poisonedJsonlPath);
+            unlinked = true;
+          } catch {
+            // best-effort; session is cleared server-side regardless
+          }
+          if (unlinked) {
+            try {
+              await onLog("stdout", `[paperclip] Removed poisoned session file: ${poisonedJsonlPath}\n`);
+            } catch {
+              // log stream may be closed; the unlink already succeeded
+            }
+          }
+        }
         attempt = await runAttempt(null);
         resultOpts = { fallbackSessionId: null, clearSessionOnMissingSession: true };
       }

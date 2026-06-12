@@ -1,0 +1,85 @@
+
+ RUN  v4.1.8 /home/oramadan/src/paperclip/paperclip-merge-upstream
+
+[02:36:13] [33mWARN[39m: [36mmissing heartbeat run log while deriving issue comment metadata[39m [90m{"runId":"5fb31958-db6f-452d-9797-eff2db6f59ae","logRef":"missing/run-log.ndjson"}[39m
+    err: {
+      "type": "HttpError",
+      "message": "Run log not found",
+      "stack":
+          Error: Run log not found
+              at notFound (/home/oramadan/src/paperclip/paperclip-merge-upstream/server/src/errors.ts:25:10)
+              at readFileRange (/home/oramadan/src/paperclip/paperclip-merge-upstream/server/src/services/run-log-store.ts:61:22)
+              at readRunLogText (/home/oramadan/src/paperclip/paperclip-merge-upstream/server/src/services/issues.ts:3560:23)
+              at /home/oramadan/src/paperclip/paperclip-merge-upstream/server/src/services/issues.ts:3663:21
+              at async Promise.all (index 0)
+              at enrichCommentsWithDerivedAgentAttribution (/home/oramadan/src/paperclip/paperclip-merge-upstream/server/src/services/issues.ts:3661:29)
+              at Object.listComments (/home/oramadan/src/paperclip/paperclip-merge-upstream/server/src/services/issues.ts:6946:32)
+              at /home/oramadan/src/paperclip/paperclip-merge-upstream/server/src/__tests__/issues-service.test.ts:1460:22
+              at file:///home/oramadan/src/paperclip/paperclip-merge-upstream/node_modules/.pnpm/@vitest+runner@4.1.8/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20
+      "status": 404
+    }
+[02:36:26] [33mWARN[39m: [36mblocked to todo promotion skipped because latest agent comment awaits user input[39m [90m{"event":"sweep_blocked_promotion_skipped_awaiting_user","counter":"sweep.blocked_promotion_skipped_awaiting_user","issueId":"fc326d2c-4045-4224-8e58-6235ca491a60","commentId":"83761a7a-cad9-47b2-a71d-0bac2de0c29d","commentCreatedAt":"2026-05-16T10:08:00.000Z","reason":"explicit_phrase"}[39m
+(node:717153) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[02:36:59] [32mINFO[39m: [36mccrotate.verifier_enabled[39m [90m{"baseUrl":"https://paperclip.blockcast.net/ccrotate/v1"}[39m
+[02:36:59] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"agent.run.started","eventId":"c1476a4c-d883-4b74-9a24-f3a36b2f6719"}[39m
+[02:36:59] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"agent.run.finished","eventId":"99133066-4c7f-420d-9c75-8c3fb8004504"}[39m
+[02:37:00] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"agent.run.started","eventId":"b34e9a43-70fe-48b8-bde8-a9426b69cc81"}[39m
+[02:37:00] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"agent.run.finished","eventId":"d1c040a1-105e-4557-a761-c4723cc82b94"}[39m
+[02:37:00] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"agent.run.started","eventId":"4e7c80c1-827b-4cbd-9b64-44ecdcd98612"}[39m
+[02:37:00] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"agent.run.finished","eventId":"9b8d0187-efc2-4c28-a444-e41759fada6c"}[39m
+(node:717645) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[02:37:11] [32mINFO[39m: [36mccrotate.verifier_enabled[39m [90m{"baseUrl":"https://paperclip.blockcast.net/ccrotate/v1"}[39m
+[02:37:11] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"agent.run.started","eventId":"6535f8ce-ab61-47de-87a6-5ddead764c4c"}[39m
+[02:37:11] [31mERROR[39m: [36mheartbeat execution setup failed[39m [90m{"runId":"41f42e72-20b1-43b3-9e4d-ae039b4e0eed"}[39m
+    err: {
+      "type": "EnvironmentRunError",
+      "message": "Refusing to run: issue targets non-primary project workspace \"8a9a0d14-94bc-4c2a-a866-9ef0184553e9\" but it could not be realized (Selected project workspace path \"/tmp/pcvt-targeted-server-JnWdIx/t/paperclip-missing-1117f481-9428-464a-b08e-e2bb1fc5d3b1\" is not available yet.). Not falling back to project-primary workspace \"7cccb9d0-2017-458a-9320-1acb97f76ff6\".",
+      "stack":
+          EnvironmentRunError: Refusing to run: issue targets non-primary project workspace "8a9a0d14-94bc-4c2a-a866-9ef0184553e9" but it could not be realized (Selected project workspace path "/tmp/pcvt-targeted-server-JnWdIx/t/paperclip-missing-1117f481-9428-464a-b08e-e2bb1fc5d3b1" is not available yet.). Not falling back to project-primary workspace "7cccb9d0-2017-458a-9320-1acb97f76ff6".
+              at executeRun (/home/oramadan/src/paperclip/paperclip-merge-upstream/server/src/services/heartbeat.ts:10503:13)
+      "code": "preferred_workspace_unrealizable",
+      "name": "EnvironmentRunError"
+    }
+[02:37:11] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"agent.run.failed","eventId":"07c677b7-f2bd-4ef3-8e59-ce8b207bb2ac"}[39m
+[02:37:11] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"agent.run.started","eventId":"e3c7d014-9507-46b0-bee4-e38a9ab772bd"}[39m
+[02:37:11] [31mERROR[39m: [36mheartbeat execution setup failed[39m [90m{"runId":"2be3cc4c-b0b0-4412-b608-d5ad058e3bdd"}[39m
+    err: {
+      "type": "EnvironmentRunError",
+      "message": "Refusing to run: issue targets non-primary project workspace \"8a9a0d14-94bc-4c2a-a866-9ef0184553e9\" but it could not be realized (Selected project workspace path \"/tmp/pcvt-targeted-server-JnWdIx/t/paperclip-missing-1117f481-9428-464a-b08e-e2bb1fc5d3b1\" is not available yet.). Not falling back to project-primary workspace \"7cccb9d0-2017-458a-9320-1acb97f76ff6\".",
+      "stack":
+          EnvironmentRunError: Refusing to run: issue targets non-primary project workspace "8a9a0d14-94bc-4c2a-a866-9ef0184553e9" but it could not be realized (Selected project workspace path "/tmp/pcvt-targeted-server-JnWdIx/t/paperclip-missing-1117f481-9428-464a-b08e-e2bb1fc5d3b1" is not available yet.). Not falling back to project-primary workspace "7cccb9d0-2017-458a-9320-1acb97f76ff6".
+              at executeRun (/home/oramadan/src/paperclip/paperclip-merge-upstream/server/src/services/heartbeat.ts:10503:13)
+      "code": "preferred_workspace_unrealizable",
+      "name": "EnvironmentRunError"
+    }
+[02:37:11] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"agent.run.failed","eventId":"618b4130-82b5-4f41-8a83-87f184974187"}[39m
+[02:37:11] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"agent.run.started","eventId":"d07ca553-ab37-4e22-912d-4499ae67cc12"}[39m
+[02:37:12] [31mERROR[39m: [36mheartbeat execution setup failed[39m [90m{"runId":"7b587713-445f-4ebf-bd06-8adeded5803f"}[39m
+    err: {
+      "type": "EnvironmentRunError",
+      "message": "Refusing to run: issue targets non-primary project workspace \"8a9a0d14-94bc-4c2a-a866-9ef0184553e9\" but it could not be realized (Selected project workspace path \"/tmp/pcvt-targeted-server-JnWdIx/t/paperclip-missing-1117f481-9428-464a-b08e-e2bb1fc5d3b1\" is not available yet.). Not falling back to project-primary workspace \"7cccb9d0-2017-458a-9320-1acb97f76ff6\".",
+      "stack":
+          EnvironmentRunError: Refusing to run: issue targets non-primary project workspace "8a9a0d14-94bc-4c2a-a866-9ef0184553e9" but it could not be realized (Selected project workspace path "/tmp/pcvt-targeted-server-JnWdIx/t/paperclip-missing-1117f481-9428-464a-b08e-e2bb1fc5d3b1" is not available yet.). Not falling back to project-primary workspace "7cccb9d0-2017-458a-9320-1acb97f76ff6".
+              at executeRun (/home/oramadan/src/paperclip/paperclip-merge-upstream/server/src/services/heartbeat.ts:10503:13)
+      "code": "preferred_workspace_unrealizable",
+      "name": "EnvironmentRunError"
+    }
+[02:37:12] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"agent.run.failed","eventId":"e05436b3-59ff-49c0-a670-1b72464f48a6"}[39m
+[02:37:12] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"issue.updated","eventId":"ea165873-34da-4b39-8e34-200535a15469"}[39m
+[02:37:12] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"issue.escalation.needs_human_decision","eventId":"f664c08f-41a3-41ba-b543-5327c1d505f8"}[39m
+(node:718177) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[02:37:21] [32mINFO[39m: [36mccrotate.verifier_enabled[39m [90m{"baseUrl":"https://paperclip.blockcast.net/ccrotate/v1"}[39m
+[02:37:21] [33mWARN[39m: [36mswept stale issue lock columns[39m [90m{"cleared":1,"issueIds":["4129334f-d695-400c-a082-d26e7e35f7a9"]}[39m
+[02:37:21] [32mINFO[39m: [36mccrotate.verifier_enabled[39m [90m{"baseUrl":"https://paperclip.blockcast.net/ccrotate/v1"}[39m
+[02:37:21] [32mINFO[39m: [36mccrotate.verifier_enabled[39m [90m{"baseUrl":"https://paperclip.blockcast.net/ccrotate/v1"}[39m
+[02:37:21] [32mINFO[39m: [36mccrotate.verifier_enabled[39m [90m{"baseUrl":"https://paperclip.blockcast.net/ccrotate/v1"}[39m
+[02:37:21] [33mWARN[39m: [36mswept stale issue lock columns[39m [90m{"cleared":1,"issueIds":["a56317a8-3acb-4156-b83e-b8119c2ec766"]}[39m
+
+ Test Files  7 passed (7)
+      Tests  135 passed (135)
+   Start at  02:36:01
+   Duration  84.33s (transform 7.09s, setup 773ms, import 26.62s, tests 55.33s, environment 1ms)
+

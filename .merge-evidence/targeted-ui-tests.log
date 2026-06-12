@@ -1,0 +1,9 @@
+
+ RUN  v4.1.8 /home/oramadan/src/paperclip/paperclip-merge-upstream
+
+
+ Test Files  4 passed (4)
+      Tests  40 passed (40)
+   Start at  02:38:25
+   Duration  3.61s (transform 1.67s, setup 107ms, import 3.70s, tests 1.61s, environment 2.72s)
+

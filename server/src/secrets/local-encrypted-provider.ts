@@ -211,8 +211,17 @@ function decryptValue(masterKey: Buffer, material: LocalEncryptedMaterial): stri
   const ciphertext = Buffer.from(material.ciphertext, "base64");
   const decipher = createDecipheriv("aes-256-gcm", masterKey, iv, { authTagLength: 16 });
   decipher.setAuthTag(tag);
-  const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-  return plain.toString("utf8");
+  try {
+    const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    return plain.toString("utf8");
+  } catch (err) {
+    const keyFingerprint = createHash("sha256").update(masterKey).digest("hex").slice(0, 12);
+    throw new Error(
+      `Secret decryption failed (master key fingerprint: ${keyFingerprint}). ` +
+        `This usually means the master key does not match the key used to encrypt the secret. ` +
+        `Original error: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 function asLocalEncryptedMaterial(value: StoredSecretVersionMaterial): LocalEncryptedMaterial {

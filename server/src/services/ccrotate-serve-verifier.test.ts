@@ -18,7 +18,7 @@ const baseOpts = {
 };
 
 function mockFetch(impl: (url: string, init: RequestInit) => Promise<Response>) {
-  return vi.spyOn(globalThis, "fetch" as never).mockImplementation(impl as never);
+  return vi.spyOn(globalThis, "fetch").mockImplementation(impl as unknown as typeof fetch);
 }
 
 describe("createCcrotateServeVerifier", () => {

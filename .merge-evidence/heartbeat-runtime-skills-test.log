@@ -1,0 +1,18 @@
+
+ RUN  v4.1.8 /home/oramadan/src/paperclip/paperclip-merge-upstream
+
+(node:714487) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[02:35:42] [32mINFO[39m: [36mccrotate.verifier_enabled[39m [90m{"baseUrl":"https://paperclip.blockcast.net/ccrotate/v1"}[39m
+[02:35:43] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"agent.run.started","eventId":"8e61edd9-824a-4c3c-bd2e-be55b15c4658"}[39m
+[02:35:43] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"agent.run.finished","eventId":"2f89a1f5-b23e-4452-9ceb-7bbdf97df83b"}[39m
+[02:35:43] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"agent.run.started","eventId":"c8afb624-f5fd-4017-9fc3-779e550c3014"}[39m
+[02:35:43] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"agent.run.finished","eventId":"8c93bd83-ece8-440f-a1c5-ae9421c9f716"}[39m
+[02:35:43] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"agent.run.started","eventId":"48804323-6605-40d1-a3da-da23b09d582b"}[39m
+[02:35:44] [33mWARN[39m: [36mplugin event outbox db not set; dropping event[39m [90m{"eventType":"agent.run.finished","eventId":"9592ed85-e38d-4c14-926b-074c3b748ecd"}[39m
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  02:35:27
+   Duration  18.10s (transform 6.33s, setup 134ms, import 11.16s, tests 6.46s, environment 0ms)
+

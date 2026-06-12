@@ -17,7 +17,7 @@ export function MyIssues() {
   const { setBreadcrumbs } = useBreadcrumbs();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "My Issues" }]);
+    setBreadcrumbs([{ label: "My Tasks" }]);
   }, [setBreadcrumbs]);
 
   // Push the status filter server-side so the bare `["issues", companyId]`
@@ -37,7 +37,7 @@ export function MyIssues() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={ListTodo} message="Select a company to view your issues." />;
+    return <EmptyState icon={ListTodo} message="Select a company to view your tasks." />;
   }
 
   if (isLoading) {
@@ -54,7 +54,7 @@ export function MyIssues() {
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {myIssues.length === 0 && (
-        <EmptyState icon={ListTodo} message="No issues assigned to you." />
+        <EmptyState icon={ListTodo} message="No tasks assigned to you." />
       )}
 
       {myIssues.length > 0 && (

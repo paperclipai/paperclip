@@ -1,0 +1,4 @@
+
+> @paperclipai/ui@0.3.1 typecheck /home/oramadan/src/paperclip/paperclip-merge-upstream/ui
+> tsc -b
+

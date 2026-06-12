@@ -60,7 +60,6 @@ const generalGroupNames = [generalServerGroupName, generalWorkspacesAGroupName, 
 const serializedServerVitestArgs = [
   "--no-file-parallelism",
   "--maxWorkers=1",
-  "--minWorkers=1",
 ];
 
 function walk(dir) {
@@ -322,7 +321,7 @@ function runSerializedSuites(routeTests, shardIndex, shardCount) {
         "@paperclipai/server",
         routeTest.repoPath,
         "--pool=forks",
-        "--poolOptions.forks.isolate=true",
+        "--isolate",
       ],
       routeTest.repoPath,
     );

@@ -7,11 +7,12 @@ import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EntityRow } from "../components/EntityRow";
+import { ProjectTile } from "../components/ProjectTile";
 import { StatusBadge } from "../components/StatusBadge";
 import { MembershipAction } from "../components/MembershipAction";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { formatDate, projectUrl, cn } from "../lib/utils";
+import { cn, formatDate, formatNumber, formatProjectBudget, projectUrl } from "../lib/utils";
 import {
   resourceMembershipState,
   useResourceMembershipMutation,
@@ -276,6 +277,7 @@ export function Projects() {
                     return (
                       <EntityRow
                         key={project.id}
+                        leading={<ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="sm" />}
                         title={project.name}
                         subtitle={project.description ?? undefined}
                         reserveSubtitleSpace
@@ -283,8 +285,19 @@ export function Projects() {
                         className={state === "left" ? "group text-foreground/55" : "group"}
                         trailing={
                           <div className="flex items-center gap-3">
+                            <span
+                              className="hidden text-xs text-muted-foreground tabular-nums sm:inline"
+                              title={`${formatNumber(project.taskCount ?? 0)} task${(project.taskCount ?? 0) === 1 ? "" : "s"}`}
+                            >
+                              {formatNumber(project.taskCount ?? 0)} task{(project.taskCount ?? 0) === 1 ? "" : "s"}
+                            </span>
+                            {project.budget && (
+                              <span className="hidden text-xs text-muted-foreground tabular-nums sm:inline">
+                                {formatProjectBudget(project.budget)}
+                              </span>
+                            )}
                             {project.targetDate && (
-                              <span className="text-xs text-muted-foreground">
+                              <span className="hidden text-xs text-muted-foreground md:inline">
                                 {formatDate(project.targetDate)}
                               </span>
                             )}

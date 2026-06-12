@@ -149,6 +149,7 @@ vi.mock("../services/index.js", () => ({
     humanGrantsInserted: 0,
   })),
   feedbackService: feedbackServiceFactoryMock,
+  bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
   heartbeatService: vi.fn(() => ({
     reapOrphanedRuns: vi.fn(async () => undefined),
     promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),

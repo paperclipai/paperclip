@@ -598,6 +598,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
     leadAgentId: "agent-codex",
     targetDate: "2026-04-30",
     color: "#0f766e",
+    icon: null,
     env: null,
     pauseReason: null,
     pausedAt: null,

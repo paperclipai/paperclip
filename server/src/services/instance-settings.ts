@@ -36,6 +36,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       quotaExhaustedCmd: normalizeShellCmd(parsed.data.quotaExhaustedCmd),
       preRunCmd: normalizeShellCmd(parsed.data.preRunCmd),
       postRunCmd: normalizeShellCmd(parsed.data.postRunCmd),
+      // Absent => unrestricted; only carry through an explicit policy.
+      ...(parsed.data.executionMode ? { executionMode: parsed.data.executionMode } : {}),
     };
   }
   return {
@@ -55,7 +57,10 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     return {
       enableEnvironments: parsed.data.enableEnvironments ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
+      enableStreamlinedLeftNavigation: parsed.data.enableStreamlinedLeftNavigation ?? false,
+      enableConferenceRoomChat: parsed.data.enableConferenceRoomChat ?? false,
       enableIssuePlanDecompositions: parsed.data.enableIssuePlanDecompositions ?? false,
+      enableExperimentalFileViewer: parsed.data.enableExperimentalFileViewer ?? false,
       enableCloudSync: parsed.data.enableCloudSync ?? false,
       enableDoneExecutionGate: parsed.data.enableDoneExecutionGate ?? false,
       enableInReviewEvidenceGate: parsed.data.enableInReviewEvidenceGate ?? false,
@@ -69,7 +74,10 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
   return {
     enableEnvironments: false,
     enableIsolatedWorkspaces: false,
+    enableStreamlinedLeftNavigation: false,
+    enableConferenceRoomChat: false,
     enableIssuePlanDecompositions: false,
+    enableExperimentalFileViewer: false,
     enableCloudSync: false,
     enableDoneExecutionGate: false,
     enableInReviewEvidenceGate: false,

@@ -287,10 +287,20 @@ describe("agent issue mutation checkout ownership", () => {
     mockAccessService.canUser.mockReset();
     mockAccessService.decide.mockReset();
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
-      allowed: input.action === "tasks:assign",
+      allowed: input.action === "tasks:assign" || input.action === "issue:read" || input.action === "issue:mutate",
       action: input.action,
-      reason: input.action === "tasks:assign" ? "allow_explicit_grant" : "deny_missing_grant",
-      explanation: input.action === "tasks:assign" ? "Allowed by test assignment default." : "Missing permission.",
+      reason:
+        input.action === "tasks:assign"
+          ? "allow_explicit_grant"
+          : input.action === "issue:read" || input.action === "issue:mutate"
+          ? "allow_company_agent"
+          : "deny_missing_grant",
+      explanation:
+        input.action === "tasks:assign"
+          ? "Allowed by test assignment default."
+          : input.action === "issue:read" || input.action === "issue:mutate"
+          ? "Allowed by test issue boundary."
+          : "Missing permission.",
     }));
     mockAccessService.hasPermission.mockReset();
     mockAgentService.getById.mockReset();
@@ -672,6 +682,7 @@ describe("agent issue mutation checkout ownership", () => {
           title: "Downstream source work",
           assigneeAdapterOverrides: { modelProfile: "cheap" },
         }),
+      "Low-trust agents must create child issues inside their assigned boundary",
     ],
     [
       "child issue create",
@@ -680,6 +691,7 @@ describe("agent issue mutation checkout ownership", () => {
           title: "Downstream child source work",
           assigneeAdapterOverrides: { modelProfile: "cheap" },
         }),
+      "cannot assign downstream issue work to the cheap model profile",
     ],
     [
       "issue update",
@@ -687,8 +699,9 @@ describe("agent issue mutation checkout ownership", () => {
         request(app).patch(`/api/issues/${issueId}`).send({
           assigneeAdapterOverrides: { modelProfile: "cheap" },
         }),
+      "cannot assign downstream issue work to the cheap model profile",
     ],
-  ])("blocks cheap status-only recovery runs from propagating cheap profile through %s", async (_name, sendRequest) => {
+  ])("blocks cheap status-only recovery runs from propagating cheap profile through %s", async (_name, sendRequest, expectedError) => {
     const app = await createApp(
       ownerActor(),
       createRunContextDb({
@@ -703,7 +716,7 @@ describe("agent issue mutation checkout ownership", () => {
     const res = await sendRequest(app);
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toContain("cannot assign downstream issue work to the cheap model profile");
+    expect(res.body.error).toContain(expectedError);
     expect(mockIssueService.create).not.toHaveBeenCalled();
     expect(mockIssueService.createChild).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
@@ -782,10 +795,20 @@ describe("agent issue mutation checkout ownership", () => {
 
   it("allows agents with the active-checkout management grant to mutate active checkouts", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
-      allowed: input.action === "tasks:manage_active_checkouts",
+      allowed: input.action === "tasks:manage_active_checkouts" || input.action === "issue:mutate",
       action: input.action,
-      reason: input.action === "tasks:manage_active_checkouts" ? "allow_explicit_grant" : "deny_missing_grant",
-      explanation: input.action === "tasks:manage_active_checkouts" ? "Allowed by checkout management grant." : "Missing permission.",
+      reason:
+        input.action === "tasks:manage_active_checkouts"
+          ? "allow_explicit_grant"
+          : input.action === "issue:mutate"
+          ? "allow_company_agent"
+          : "deny_missing_grant",
+      explanation:
+        input.action === "tasks:manage_active_checkouts"
+          ? "Allowed by checkout management grant."
+          : input.action === "issue:mutate"
+          ? "Allowed by test issue boundary."
+          : "Missing permission.",
     }));
 
     const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ title: "Managed update" });
@@ -928,11 +951,14 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   it("uses the authorization decision path for assignment changes", async () => {
-    const decide = vi.fn(async () => ({
-      allowed: false,
-      action: "tasks:assign",
-      reason: "deny_policy_restricted",
-      explanation: "Target agent requires approval before task assignment.",
+    const decide = vi.fn(async (input: { action: string }) => ({
+      allowed: input.action === "issue:mutate",
+      action: input.action,
+      reason: input.action === "issue:mutate" ? "allow_company_agent" : "deny_policy_restricted",
+      explanation:
+        input.action === "issue:mutate"
+          ? "Allowed by test issue boundary."
+          : "Target agent requires approval before task assignment.",
     }));
     (mockAccessService as any).decide = decide;
     mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));

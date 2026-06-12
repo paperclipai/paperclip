@@ -18,6 +18,12 @@ vi.mock("../services/index.js", async (importOriginal) => {
     ...actual,
     accessService: () => ({
       canUser: vi.fn(),
+      decide: vi.fn(async () => ({
+        allowed: true,
+        action: "company_scope:read",
+        reason: "allow_company_agent",
+        explanation: "Allowed by test.",
+      })),
       hasPermission: vi.fn(),
     }),
     agentService: () => ({

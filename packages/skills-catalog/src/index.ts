@@ -7,7 +7,9 @@ export type {
   CatalogSkill,
   CatalogSkillFile,
   CatalogSkillFileKind,
+  CatalogSkillGitHubSource,
   CatalogSkillKind,
+  CatalogSkillSource,
   CatalogTrustLevel,
   CatalogValidationResult,
 } from "./types.js";

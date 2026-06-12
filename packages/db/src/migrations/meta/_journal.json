@@ -729,6 +729,55 @@
       "when": 1780215524038,
       "tag": "0106_ccrotate_capacity_exhaustion_dedupe",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1780533900000,
+      "tag": "0107_backfill_archived_company_agent_pauses",
+      "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1780507597454,
+      "tag": "0108_issue_comment_tombstones",
+      "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1780507597455,
+      "tag": "0109_document_annotation_issue_comment_links",
+      "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1780534000000,
+      "tag": "0110_low_trust_source_trust",
+      "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1780534200000,
+      "tag": "0111_project_icon",
+      "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1781130000000,
+      "tag": "0112_skills_store_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 110,
+      "version": "7",
+      "when": 1781480000000,
+      "tag": "0113_skill_install_count_backfill",
+      "breakpoints": true
     }
   ]
 }

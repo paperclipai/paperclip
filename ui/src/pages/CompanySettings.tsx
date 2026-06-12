@@ -528,14 +528,6 @@ export function CompanySettings() {
     ]);
   }, [setBreadcrumbs, selectedCompany?.name]);
 
-  if (!selectedCompany) {
-    return (
-      <div className="text-sm text-muted-foreground">
-        No company selected. Select a company from the switcher above.
-      </div>
-    );
-  }
-
   function handleSaveGeneral() {
     generalMutation.mutate({
       name: companyName.trim(),
@@ -668,8 +660,16 @@ export function CompanySettings() {
         (environmentForm.k8sUseInClusterAuth ||
           environmentForm.k8sKubeconfigSecretRef.trim().length > 0) &&
         // Tolerations textarea must be empty or valid JSON array.
-        parseTolerationsJson(environmentForm.k8sTolerations) !== null
+          parseTolerationsJson(environmentForm.k8sTolerations) !== null
       ));
+
+  if (!selectedCompany) {
+    return (
+      <div className="text-sm text-muted-foreground">
+        No company selected. Select a company from the switcher above.
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-2xl space-y-6">

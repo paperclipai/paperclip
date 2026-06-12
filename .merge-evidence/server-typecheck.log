@@ -1,0 +1,8 @@
+
+> @paperclipai/server@0.3.1 typecheck /home/oramadan/src/paperclip/paperclip-merge-upstream/server
+> pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit
+
+
+> @paperclipai/plugin-sdk@1.0.0 ensure-build-deps /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/plugins/sdk
+> node ../../../scripts/ensure-plugin-build-deps.mjs
+

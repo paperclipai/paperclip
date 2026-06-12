@@ -1,3 +1,4 @@
+import { getAgentWorkEligibility, isAgentInvokable } from "@paperclipai/shared";
 import { buildIssueGraphLivenessIncidentKey } from "./origins.js";
 
 export type IssueLivenessSeverity = "warning" | "critical";
@@ -111,9 +112,6 @@ export interface IssueGraphLivenessInput {
   now?: Date | string;
 }
 
-const INVOKABLE_AGENT_STATUSES = new Set(["active", "idle", "running", "error"]);
-const BLOCKING_AGENT_STATUSES = new Set(["paused", "terminated", "pending_approval"]);
-
 function issueLabel(issue: IssueLivenessIssueInput) {
   return issue.identifier ?? issue.id;
 }
@@ -127,8 +125,11 @@ function pathEntry(issue: IssueLivenessIssueInput): IssueLivenessDependencyPathE
   };
 }
 
-function isInvokableAgent(agent: IssueLivenessAgentInput | null | undefined) {
-  return Boolean(agent && INVOKABLE_AGENT_STATUSES.has(agent.status));
+function isInvokableAgent(
+  agent: IssueLivenessAgentInput | null | undefined,
+  agentsById: Map<string, IssueLivenessAgentInput>,
+) {
+  return Boolean(agent && isAgentInvokable({ agent, agents: [...agentsById.values()] }));
 }
 
 function hasActiveExecutionPath(
@@ -214,7 +215,7 @@ function addOwnerCandidate(
 ) {
   if (!agentId || seen.has(agentId)) return;
   const agent = agentsById.get(agentId);
-  if (!agent || agent.companyId !== companyId || !isInvokableAgent(agent)) return;
+  if (!agent || agent.companyId !== companyId || !isInvokableAgent(agent, agentsById)) return;
   seen.add(agentId);
   candidates.push({ agentId, reason, sourceIssueId });
 }
@@ -241,9 +242,13 @@ function addAgentChainCandidates(
   }
 }
 
-function orderedInvokableAgents(agents: IssueLivenessAgentInput[], companyId: string) {
+function orderedInvokableAgents(
+  agents: IssueLivenessAgentInput[],
+  agentsById: Map<string, IssueLivenessAgentInput>,
+  companyId: string,
+) {
   return agents
-    .filter((agent) => agent.companyId === companyId && isInvokableAgent(agent))
+    .filter((agent) => agent.companyId === companyId && isInvokableAgent(agent, agentsById))
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 
@@ -289,7 +294,7 @@ function ownerCandidatesForRecoveryIssue(
     issue.id,
   );
 
-  const invokableAgents = orderedInvokableAgents(agents, issue.companyId);
+  const invokableAgents = orderedInvokableAgents(agents, agentsById, issue.companyId);
   for (const agent of invokableAgents) {
     if (!agent.reportsTo) {
       addOwnerCandidate(candidates, seen, agentsById, issue.companyId, agent.id, "root_agent", issue.id);
@@ -424,7 +429,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     const participantAgentId = readPrincipalAgentId(participant);
     if (participantAgentId) {
       const participantAgent = agentsById.get(participantAgentId);
-      if (isInvokableAgent(participantAgent) && participantAgent?.companyId === reviewIssue.companyId) return null;
+      if (isInvokableAgent(participantAgent, agentsById) && participantAgent?.companyId === reviewIssue.companyId) return null;
 
       return finding({
         issue: source,
@@ -547,12 +552,15 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     if (!blocker.assigneeAgentId) return null;
 
     const blockerAgent = agentsById.get(blocker.assigneeAgentId);
-    if (!blockerAgent || blockerAgent.companyId !== source.companyId || BLOCKING_AGENT_STATUSES.has(blockerAgent.status)) {
+    const blockerEligibility = blockerAgent
+      ? getAgentWorkEligibility({ agent: blockerAgent, agents: input.agents })
+      : null;
+    if (!blockerAgent || blockerAgent.companyId !== source.companyId || !blockerEligibility?.invokable) {
       return finding({
         issue: source,
         state: "blocked_by_uninvokable_assignee",
         reason: blockerAgent
-          ? `${issueLabel(source)} is blocked by ${issueLabel(blocker)}, but its assignee is ${blockerAgent.status}.`
+          ? `${issueLabel(source)} is blocked by ${issueLabel(blocker)}, but its assignee is ${blockerEligibility?.invokabilityReason === "invalid_org_chain" ? "in an invalid org chain" : blockerAgent.status}.`
           : `${issueLabel(source)} is blocked by ${issueLabel(blocker)}, but its assignee no longer exists.`,
         dependencyPath,
         recoveryIssue: blocker,

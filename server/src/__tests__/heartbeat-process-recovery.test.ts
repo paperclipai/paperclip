@@ -927,7 +927,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       new Map([[runId, { phase: "active" as const, name: jobName }]]),
     );
 
-    const result = await heartbeat.reapOrphanedRuns();
+    const result = await heartbeat.reapOrphanedRuns({ suppressDispatchAfterReap: true });
 
     expect(result.reaped).toBe(0);
     const run = await heartbeat.getRun(runId);
@@ -1022,7 +1022,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await seedAdapterInvokeEvent({ companyId, agentId, runId });
     mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set([runId]));
 
-    const result = await heartbeat.reapOrphanedRuns();
+    const result = await heartbeat.reapOrphanedRuns({ suppressDispatchAfterReap: true });
     expect(result.reaped).toBe(1);
     expect(result.runIds).toEqual([runId]);
     const run = await heartbeat.getRun(runId);
@@ -1046,7 +1046,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await seedAdapterInvokeEvent({ companyId, agentId, runId });
     mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set());
 
-    const result = await heartbeat.reapOrphanedRuns();
+    const result = await heartbeat.reapOrphanedRuns({ suppressDispatchAfterReap: true });
     expect(result.reaped).toBe(1);
     expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
   });
@@ -1542,6 +1542,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const stale = new Date(Date.now() - 6 * 60 * 1000);
     const { agentId, runId } = await seedRunFixture({
       adapterType: "opencode_k8s",
+      agentStatus: "idle",
       processPid: null,
       processGroupId: null,
       includeIssue: false,
@@ -1552,7 +1553,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       },
     });
 
-    const result = await heartbeat.reapOrphanedRuns();
+    const result = await heartbeat.reapOrphanedRuns({ suppressDispatchAfterReap: true });
     expect(result.reaped).toBe(1);
     expect(result.runIds).toEqual([runId]);
 
@@ -1576,6 +1577,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   it("queues exactly one retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
       processPid: 999_999_999,
       contextSnapshot: {
         reviewKind: "pr_review",
@@ -1587,7 +1589,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       },
     });
 
-    const result = await heartbeat.reapOrphanedRuns();
+    const result = await heartbeat.reapOrphanedRuns({ suppressDispatchAfterReap: true });
     expect(result.reaped).toBe(1);
     expect(result.runIds).toEqual([runId]);
 
@@ -1619,7 +1621,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
-    expect(issue?.checkoutRunId).toBe(runId);
+    expect(issue?.checkoutRunId).toBeNull();
   });
 
   it("does not queue a process-loss retry for non-PR orphaned local runs", async () => {
@@ -1665,6 +1667,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(isPidAlive(orphan.descendantPid)).toBe(true);
 
     const { agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
       processPid: orphan.processPid,
       processGroupId: orphan.processGroupId,
       contextSnapshot: {
@@ -1673,7 +1676,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       },
     });
 
-    const result = await heartbeat.reapOrphanedRuns();
+    const result = await heartbeat.reapOrphanedRuns({ suppressDispatchAfterReap: true });
     expect(result.reaped).toBe(1);
     expect(result.runIds).toEqual([runId]);
 
@@ -1785,7 +1788,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(comments).toHaveLength(1);
     expect(comments![0]?.body).toContain("retried continuation");
-    expect(comments![0]?.body).toContain(`Recovery action: ${recovery.id}`);
+    expect(comments![0]?.body).toContain(`Recovery action: \`${recovery.id}\``);
   });
 
   it("blocks failed recovery work in place during immediate terminal-run cleanup", async () => {
@@ -1895,7 +1898,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("in_progress");
     expect(issue?.executionRunId).toBeNull();
-    expect(issue?.checkoutRunId).toBe(runId);
+    expect(issue?.checkoutRunId).toBeNull();
 
     const recoveryIssues = await db
       .select()
@@ -2289,13 +2292,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       updatedAt: new Date("2026-06-11T19:45:40.000Z"),
     });
     mockHasActiveJobForAgent.mockResolvedValueOnce(true);
+    mockAdapterExecute.mockClear();
 
     await heartbeat.resumeQueuedRuns();
 
     const run = await heartbeat.getRun(queuedRunId);
     expect(mockHasActiveJobForAgent).toHaveBeenCalledWith(agentId);
     expect(run?.status).toBe("queued");
-    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(mockAdapterExecute.mock.calls.some(([ctx]) => ctx.runId === queuedRunId)).toBe(false);
   });
 
   it("reaps orphaned k8s runs before dispatching queued work for the same issue", async () => {
@@ -2706,7 +2710,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // failed without inspecting the linked run. Secrets are still scrubbed
     // — see the explicit `not.toContain` assertion above where applicable.
     expect(comments[0]?.body).toContain("Latest retry failure:");
-    expect(comments[0]?.body).toContain(`Recovery action: ${recovery.id}`);
+    expect(comments[0]?.body).toContain(`Recovery action: \`${recovery.id}\``);
   });
 
   it("assigns open unassigned blockers back to their creator agent", async () => {
@@ -3022,7 +3026,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // failed without inspecting the linked run. Secrets are still scrubbed
     // — see the explicit `not.toContain` assertion above where applicable.
     expect(comments[0]?.body).toContain("Latest retry failure:");
-    expect(comments[0]?.body).toContain(`Recovery action: ${recovery.id}`);
+    expect(comments[0]?.body).toContain(`Recovery action: \`${recovery.id}\``);
   });
 
   it("emits issue.escalation.needs_human_decision once when stranded assigned recovery blocks the issue", async () => {

@@ -1,0 +1,109 @@
+
+> paperclip@ typecheck /home/oramadan/src/paperclip/paperclip-merge-upstream
+> pnpm run preflight:workspace-links && pnpm -r typecheck
+
+
+> paperclip@ preflight:workspace-links /home/oramadan/src/paperclip/paperclip-merge-upstream
+> node cli/node_modules/tsx/dist/cli.mjs scripts/ensure-workspace-package-links.ts
+
+Scope: 34 of 35 workspace projects
+packages/skills-catalog typecheck$ tsc -p tsconfig.json --noEmit
+packages/adapter-utils typecheck$ tsc --noEmit
+packages/shared typecheck$ tsc --noEmit
+packages/teams-catalog typecheck$ tsc -p tsconfig.json --noEmit
+packages/skills-catalog typecheck: Done
+packages/teams-catalog typecheck: Done
+packages/shared typecheck: Done
+packages/adapter-utils typecheck: Done
+packages/adapters/claude-local typecheck$ tsc --noEmit
+packages/adapters/codex-local typecheck$ tsc --noEmit
+packages/adapters/cursor-cloud typecheck$ tsc --noEmit
+packages/adapters/acpx-local typecheck$ tsc --noEmit
+packages/adapters/cursor-cloud typecheck: Done
+packages/adapters/cursor-local typecheck$ tsc --noEmit
+packages/adapters/acpx-local typecheck: Done
+packages/adapters/gemini-local typecheck$ tsc --noEmit
+packages/adapters/claude-local typecheck: Done
+packages/adapters/grok-local typecheck$ tsc --noEmit
+packages/adapters/codex-local typecheck: Done
+packages/adapters/openclaw-gateway typecheck$ tsc --noEmit
+packages/adapters/cursor-local typecheck: Done
+packages/adapters/opencode-local typecheck$ tsc --noEmit
+packages/adapters/grok-local typecheck: Done
+packages/adapters/pi-local typecheck$ tsc --noEmit
+packages/adapters/gemini-local typecheck: Done
+packages/db typecheck$ pnpm run check:migrations && tsc --noEmit
+packages/adapters/openclaw-gateway typecheck: Done
+packages/mcp-server typecheck$ tsc --noEmit
+packages/db typecheck: > @paperclipai/db@0.3.1 check:migrations /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/db
+packages/db typecheck: > tsx src/check-migration-numbering.ts
+packages/adapters/opencode-local typecheck: Done
+packages/plugins/sdk typecheck$ pnpm --filter @paperclipai/shared build && tsc --noEmit
+packages/plugins/sdk typecheck: > @paperclipai/shared@0.3.1 build /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/shared
+packages/plugins/sdk typecheck: > tsc
+packages/adapters/pi-local typecheck: Done
+packages/plugins/sdk typecheck: Done
+packages/mcp-server typecheck: Done
+packages/db typecheck: Done
+packages/plugins/create-paperclip-plugin typecheck$ tsc --noEmit
+.../plugin-authoring-smoke-example typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit
+.../examples/plugin-hello-world-example typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit
+.../examples/plugin-file-browser-example typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit
+.../examples/plugin-file-browser-example typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/plugins/sdk
+.../examples/plugin-file-browser-example typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs
+.../examples/plugin-hello-world-example typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/plugins/sdk
+.../examples/plugin-hello-world-example typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs
+.../plugin-authoring-smoke-example typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/plugins/sdk
+.../plugin-authoring-smoke-example typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs
+packages/plugins/create-paperclip-plugin typecheck: Done
+.../examples/plugin-kitchen-sink-example typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit
+.../examples/plugin-kitchen-sink-example typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/plugins/sdk
+.../examples/plugin-kitchen-sink-example typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs
+.../examples/plugin-hello-world-example typecheck: Done
+.../paperclip-plugin-alertmanager typecheck$ pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit
+.../plugin-authoring-smoke-example typecheck: Done
+.../plugins/paperclip-plugin-ccrotate typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit
+.../examples/plugin-file-browser-example typecheck: Done
+.../paperclip-plugin-fake-sandbox typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit
+.../paperclip-plugin-alertmanager typecheck: > @paperclipai/plugin-sdk@1.0.0 build /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/plugins/sdk
+.../paperclip-plugin-alertmanager typecheck: > pnpm --filter @paperclipai/shared build && tsc
+.../plugins/paperclip-plugin-ccrotate typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/plugins/sdk
+.../plugins/paperclip-plugin-ccrotate typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs
+.../paperclip-plugin-fake-sandbox typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/plugins/sdk
+.../paperclip-plugin-fake-sandbox typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs
+.../paperclip-plugin-alertmanager typecheck: > @paperclipai/shared@0.3.1 build /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/shared
+.../paperclip-plugin-alertmanager typecheck: > tsc
+.../examples/plugin-kitchen-sink-example typecheck: Done
+packages/plugins/paperclip-plugin-gbrain typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit
+packages/plugins/paperclip-plugin-gbrain typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/plugins/sdk
+packages/plugins/paperclip-plugin-gbrain typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs
+.../paperclip-plugin-fake-sandbox typecheck: Done
+packages/plugins/paperclip-plugin-linear typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit
+packages/plugins/paperclip-plugin-linear typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/plugins/sdk
+packages/plugins/paperclip-plugin-linear typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs
+.../plugins/paperclip-plugin-ccrotate typecheck: Done
+packages/plugins/paperclip-plugin-slack typecheck$ pnpm --filter @paperclipai/plugin-sdk build && tsc --noEmit
+packages/plugins/paperclip-plugin-slack typecheck: > @paperclipai/plugin-sdk@1.0.0 build /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/plugins/sdk
+packages/plugins/paperclip-plugin-slack typecheck: > pnpm --filter @paperclipai/shared build && tsc
+packages/plugins/paperclip-plugin-gbrain typecheck: Done
+packages/plugins/plugin-llm-wiki typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit
+packages/plugins/paperclip-plugin-slack typecheck: > @paperclipai/shared@0.3.1 build /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/shared
+packages/plugins/paperclip-plugin-slack typecheck: > tsc
+packages/plugins/plugin-llm-wiki typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/plugins/sdk
+packages/plugins/plugin-llm-wiki typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs
+.../paperclip-plugin-alertmanager typecheck: Done
+packages/plugins/plugin-workspace-diff typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit && tsc --noEmit -p tsconfig.test.json
+packages/plugins/plugin-workspace-diff typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/plugins/sdk
+packages/plugins/plugin-workspace-diff typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs
+packages/plugins/paperclip-plugin-linear typecheck: Done
+server typecheck$ pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit
+server typecheck: > @paperclipai/plugin-sdk@1.0.0 ensure-build-deps /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/plugins/sdk
+server typecheck: > node ../../../scripts/ensure-plugin-build-deps.mjs
+packages/plugins/paperclip-plugin-slack typecheck: Done
+ui typecheck$ tsc -b
+packages/plugins/plugin-llm-wiki typecheck: Done
+packages/plugins/plugin-workspace-diff typecheck: Done
+server typecheck: Done
+ui typecheck: Done
+cli typecheck$ tsc --noEmit
+cli typecheck: Done

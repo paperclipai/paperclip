@@ -86,6 +86,23 @@ describe("execution workspace policy helpers", () => {
     });
   });
 
+  it("preserves project authorization policy for trust-preset resolution", () => {
+    expect(parseProjectExecutionWorkspacePolicy({
+      enabled: true,
+      authorizationPolicy: {
+        trustBoundary: {
+          mode: "low_trust_review",
+          projectIds: ["33333333-3333-4333-8333-333333333333"],
+        },
+      },
+    })?.authorizationPolicy).toEqual({
+      trustBoundary: {
+        mode: "low_trust_review",
+        projectIds: ["33333333-3333-4333-8333-333333333333"],
+      },
+    });
+  });
+
   it("clears managed workspace strategy when issue opts out to project primary or agent default", () => {
     const baseConfig = {
       workspaceStrategy: { type: "git_worktree", branchTemplate: "{{issue.identifier}}" },

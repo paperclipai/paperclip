@@ -116,6 +116,13 @@ export interface EnvironmentDriverAcquireInput {
   heartbeatRunId: string | null;
   executionWorkspaceId: string | null;
   executionWorkspaceMode: ExecutionWorkspace["mode"] | null;
+  /**
+   * The harness/adapter type for this run (the agent's adapter). Drivers that
+   * materialize a per-run sandbox use it to select the runtime image so a single
+   * environment can serve mixed harnesses; null falls back to the environment's
+   * configured default adapter.
+   */
+  adapterType: string | null;
 }
 
 export interface EnvironmentDriverReleaseInput {
@@ -637,6 +644,14 @@ function createSandboxEnvironmentDriver(
             // a well-formed identifier.
             runId: input.heartbeatRunId ?? randomUUID(),
             workspaceMode: input.executionWorkspaceMode ?? undefined,
+            // The agent's harness for THIS run, so the plugin picks the matching
+            // runtime image (per-run adapter, mixed-harness environments).
+            // NOTE: environment-runtime.ts has TWO drivers calling
+            // environmentAcquireLease; this plugin-sandbox one is the HEARTBEAT
+            // path. Omitting adapterType here silently falls back to the
+            // environment's default adapter image (a pi agent then runs in the
+            // opencode image and the harness binary is missing at exec time).
+            adapterType: input.adapterType ?? undefined,
           },
           resolvePluginSandboxRpcTimeoutMs(workerConfig),
         );
@@ -1045,6 +1060,7 @@ function createPluginEnvironmentDriver(
         config: parsed.config.driverConfig,
         runId: input.heartbeatRunId ?? randomUUID(),
         workspaceMode: input.executionWorkspaceMode ?? undefined,
+        adapterType: input.adapterType ?? undefined,
       });
 
       return await environmentsSvc.acquireLease({
@@ -1261,6 +1277,8 @@ export function environmentRuntimeService(
       /** Null for ad-hoc invocations (e.g. operator-initiated `Test` probes). */
       heartbeatRunId: string | null;
       persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
+      /** The agent's adapter type for this run (mixed-harness environments). */
+      adapterType?: string | null;
     }): Promise<EnvironmentRuntimeLeaseRecord> {
       if (input.environment.status !== "active") {
         throw new Error(`Environment "${input.environment.name}" is not active.`);
@@ -1277,6 +1295,7 @@ export function environmentRuntimeService(
         heartbeatRunId: input.heartbeatRunId,
         executionWorkspaceId: leaseContext.executionWorkspaceId,
         executionWorkspaceMode: leaseContext.executionWorkspaceMode,
+        adapterType: input.adapterType ?? null,
       });
 
       return {

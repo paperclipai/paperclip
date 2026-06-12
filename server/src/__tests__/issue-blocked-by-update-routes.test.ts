@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { companies, createDb, issueRelations, issues } from "@paperclipai/db";
+import { companies, companyMemberships, createDb, issueRelations, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -63,6 +63,13 @@ describeEmbeddedPostgres("issue PATCH blockedByIssueIds persistence", () => {
       name: `Blocked-by tenant ${prefixCounter}`,
       issuePrefix: prefix,
       requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: "cloud-user-1",
+      membershipRole: "owner",
+      status: "active",
     });
     return { companyId, prefix };
   }

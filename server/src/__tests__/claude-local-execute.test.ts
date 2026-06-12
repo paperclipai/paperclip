@@ -42,7 +42,11 @@ process.exit(${exit});
   await fs.chmod(commandPath, 0o755);
 }
 
-async function writeFakeClaudeCommand(commandPath: string): Promise<void> {
+async function writeFakeClaudeCommand(
+  commandPath: string,
+  options: { sessionId?: string } = {},
+): Promise<void> {
+  const sessionId = options.sessionId ?? "claude-session-1";
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
@@ -71,9 +75,9 @@ const payload = {
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
 }
-console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-sonnet" }));
-console.log(JSON.stringify({ type: "assistant", session_id: "claude-session-1", message: { content: [{ type: "text", text: "hello" }] } }));
-console.log(JSON.stringify({ type: "result", session_id: "claude-session-1", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: ${JSON.stringify(sessionId)}, model: "claude-sonnet" }));
+console.log(JSON.stringify({ type: "assistant", session_id: ${JSON.stringify(sessionId)}, message: { content: [{ type: "text", text: "hello" }] } }));
+console.log(JSON.stringify({ type: "result", session_id: ${JSON.stringify(sessionId)}, result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }));
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
@@ -454,6 +458,7 @@ describe("claude execute", () => {
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root, {
       commandWriter: writeImmutableThinkingRetryClaudeCommand,
     });
+    const staleSessionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const unusedSkillDir = path.join(root, "unused-skill");
     await fs.mkdir(unusedSkillDir, { recursive: true });
     const logs: string[] = [];
@@ -462,13 +467,13 @@ describe("claude execute", () => {
         runId: "run-thinking-resume",
         agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
         runtime: {
-          sessionId: "claude-session-1",
+          sessionId: staleSessionId,
           sessionParams: {
-            sessionId: "claude-session-1",
+            sessionId: staleSessionId,
             cwd: workspace,
             promptBundleKey: emptyClaudePromptBundleKey(),
           },
-          sessionDisplayId: "claude-session-1",
+          sessionDisplayId: staleSessionId,
           taskKey: null,
         },
         config: {
@@ -800,9 +805,10 @@ describe("claude execute", () => {
     const capturePath2 = path.join(root, "capture-2.json");
     const instructionsPath = path.join(root, "AGENTS.md");
     const paperclipHome = path.join(root, "paperclip-home");
+    const sessionId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     await fs.mkdir(workspace, { recursive: true });
     await fs.writeFile(instructionsPath, "You are managed instructions.\n", "utf8");
-    await writeFakeClaudeCommand(commandPath);
+    await writeFakeClaudeCommand(commandPath, { sessionId });
 
     const previousHome = process.env.HOME;
     const previousPaperclipHome = process.env.PAPERCLIP_HOME;
@@ -844,7 +850,7 @@ describe("claude execute", () => {
       expect(first.exitCode).toBe(0);
       expect(first.errorMessage).toBeNull();
       expect(first.sessionParams).toMatchObject({
-        sessionId: "claude-session-1",
+        sessionId,
         cwd: workspace,
       });
       expect(typeof first.sessionParams?.promptBundleKey).toBe("string");
@@ -936,7 +942,7 @@ describe("claude execute", () => {
       expect(capture1.instructionsContents).toContain(`The above agent instructions were loaded from ${instructionsPath}.`);
       expect(capture1.skillEntries).toContain("paperclip");
       expect(capture2.argv).toContain("--resume");
-      expect(capture2.argv).toContain("claude-session-1");
+      expect(capture2.argv).toContain(sessionId);
       expect(capture2.prompt).toContain("## Paperclip Resume Delta");
       expect(capture2.prompt).not.toContain("Follow the paperclip heartbeat.");
     } finally {

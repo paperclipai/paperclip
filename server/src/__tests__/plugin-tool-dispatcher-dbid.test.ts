@@ -45,13 +45,12 @@ describe("plugin-tool-dispatcher: registerPluginTools forwards pluginDbId", () =
     expect(tool?.pluginId).toBe(pluginKey);
   });
 
-  it("falls back to pluginKey when pluginDbId is omitted (legacy / test path)", () => {
+  it("throws when pluginDbId is omitted", () => {
     const dispatcher = createPluginToolDispatcher({});
-    dispatcher.registerPluginTools(pluginKey, manifest);
-
-    const tool = dispatcher.getTool(`${pluginKey}:slack_send_dm`);
-    expect(tool).not.toBeNull();
-    expect(tool?.pluginDbId).toBe(pluginKey);
+    expect(() =>
+      // @ts-expect-error - verifies the runtime guard for legacy callers.
+      dispatcher.registerPluginTools(pluginKey, manifest),
+    ).toThrow(/pluginDbId is required/);
   });
 
   it("uses pluginDbId for workerManager.isRunning() at executeTool", async () => {

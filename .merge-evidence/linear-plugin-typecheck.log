@@ -1,0 +1,8 @@
+
+> @kkroo/paperclip-plugin-linear@0.9.3 typecheck /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/plugins/paperclip-plugin-linear
+> pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit
+
+
+> @paperclipai/plugin-sdk@1.0.0 ensure-build-deps /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/plugins/sdk
+> node ../../../scripts/ensure-plugin-build-deps.mjs
+

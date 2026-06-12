@@ -202,6 +202,59 @@ describeEmbeddedPostgres("companySearchService", () => {
     expect(result.results[0]?.snippet).toMatch(/parser/i);
   });
 
+  it("searches artifact projections through the artifacts scope", async () => {
+    const companyId = await createCompany();
+    const agentId = await createAgent(companyId, { name: "Artifact Writer" });
+    const issueId = await createIssue(companyId, {
+      identifier: "TST-88",
+      title: "Produce artifact",
+    });
+    const documentId = randomUUID();
+    await db.insert(documents).values({
+      id: documentId,
+      companyId,
+      title: "Launch Artifact Brief",
+      latestBody: "The searchable artifact body mentions a comet-tail preview.",
+      format: "markdown",
+      createdByAgentId: agentId,
+    });
+    await db.insert(issueDocuments).values({
+      companyId,
+      issueId,
+      documentId,
+      key: "brief",
+    });
+
+    const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "comet-tail", scope: "artifacts" }));
+
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]).toMatchObject({
+      type: "artifact",
+      title: "Launch Artifact Brief",
+      href: expect.stringContaining("#document-brief"),
+      artifact: expect.objectContaining({
+        mediaKind: "document",
+        issueIdentifier: "TST-88",
+      }),
+    });
+    expect(result.results[0]?.snippet).toMatch(/comet tail/i);
+    expect(result.countsByType).toEqual({ issue: 0, artifact: 1, agent: 0, project: 0 });
+  });
+
+  it("does not pass high-offset search fetch windows through to artifact query validation", async () => {
+    const companyId = await createCompany();
+
+    const result = await svc.search(companyId, companySearchQuerySchema.parse({
+      q: "artifact",
+      scope: "artifacts",
+      limit: "50",
+      offset: "75",
+    }));
+
+    expect(result.results).toEqual([]);
+    expect(result.countsByType.artifact).toBe(0);
+  });
+
   it("excludes hidden issues and other companies' data", async () => {
     const companyId = await createCompany("Visible Co");
     const otherCompanyId = await createCompany("Other Co");
@@ -387,7 +440,7 @@ describeEmbeddedPostgres("companySearchService", () => {
     const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "needle", limit: "2", offset: "2" }));
 
     expect(result.results.map((row) => row.id)).toEqual([agentIds[2], projectIds[0]]);
-    expect(result.countsByType).toEqual({ issue: 0, agent: 3, project: 3 });
+    expect(result.countsByType).toEqual({ issue: 0, artifact: 0, agent: 3, project: 3 });
     expect(result.hasMore).toBe(true);
   });
 

@@ -1,0 +1,4 @@
+
+> @paperclipai/db@0.3.1 check:migrations /home/oramadan/src/paperclip/paperclip-merge-upstream/packages/db
+> tsx src/check-migration-numbering.ts
+

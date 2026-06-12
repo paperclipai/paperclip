@@ -38,6 +38,7 @@ import { ApiError } from "@/api/client";
 import { useToastActions, type ToastInput } from "@/context/ToastContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { isGlobalPath, normalizeCompanyPrefix } from "@/lib/company-routes";
+import { normalizeRememberedInstanceSettingsPath } from "@/lib/instance-settings";
 
 // ---------------------------------------------------------------------------
 // Bridge error type (mirrors the SDK's PluginBridgeError)
@@ -282,6 +283,16 @@ function hasCompanyPrefix(pathname: string, companyPrefix: string): boolean {
   return firstSegment?.toUpperCase() === normalizeCompanyPrefix(companyPrefix);
 }
 
+function isLegacyInstanceSettingsPath(pathname: string): boolean {
+  return (
+    pathname === "/instance" ||
+    pathname === "/instance/settings" ||
+    pathname.startsWith("/instance/settings/") ||
+    pathname === "/settings" ||
+    pathname.startsWith("/settings/")
+  );
+}
+
 /**
  * Resolve a plugin-provided Paperclip path to the active company scope.
  *
@@ -296,6 +307,12 @@ export function resolveHostNavigationHref(
   if (sameOriginPath === null) return to;
 
   const { pathname, search, hash } = splitPath(sameOriginPath);
+  if (isLegacyInstanceSettingsPath(pathname)) {
+    const canonicalPath = normalizeRememberedInstanceSettingsPath(`${pathname}${search}${hash}`);
+    if (!companyPrefix) return canonicalPath;
+    return `/${normalizeCompanyPrefix(companyPrefix)}${canonicalPath}`;
+  }
+
   if (!pathname.startsWith("/") || isGlobalPath(pathname) || !companyPrefix) {
     return sameOriginPath;
   }

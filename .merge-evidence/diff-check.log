@@ -1,0 +1,1 @@
+git diff --check passed
