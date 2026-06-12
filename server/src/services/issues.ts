@@ -3675,6 +3675,14 @@ export function issueService(db: Db) {
         return { adopted: null, latest: lockedIssue };
       }
 
+      await Promise.all([
+        tx.execute(
+          sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.expectedCheckoutRunId} for update`,
+        ),
+        tx.execute(
+          sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
+        ),
+      ]);
       const [existingRun, actorRun] = await Promise.all([
         tx
           .select({ status: heartbeatRuns.status })
@@ -3743,6 +3751,9 @@ export function issueService(db: Db) {
     actorRunId: string;
   }) {
     return db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
+      );
       const actorRun = await tx
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns)
@@ -5675,25 +5686,6 @@ export function issueService(db: Db) {
           if (staleAdoption.latest) {
             const latestOwnership = resolveSameRunOwnership(staleAdoption.latest);
             if (latestOwnership) return { ownership: latestOwnership, latest: staleAdoption.latest };
-
-            if (canAdoptUnownedCheckout(staleAdoption.latest)) {
-              const adopted = await adoptUnownedCheckoutRun({
-                issueId: id,
-                actorAgentId,
-                actorRunId: actorRunId!,
-              });
-
-              if (adopted) {
-                return {
-                  ownership: {
-                    ...adopted,
-                    adoptedFromRunId: null as string | null,
-                  },
-                  latest: null,
-                };
-              }
-            }
-
             return { ownership: null, latest: staleAdoption.latest };
           }
         }
@@ -5706,20 +5698,18 @@ export function issueService(db: Db) {
 
       const latest = resolved.latest ?? await loadCurrent();
       if (!latest) throw notFound("Issue not found");
-      if (!resolved.latest) {
-        const resolvedLatest = await resolveOwnership(latest);
-        if (resolvedLatest.ownership) return resolvedLatest.ownership;
-        if (resolvedLatest.latest) {
-          throw conflict("Issue run ownership conflict", {
-            issueId: resolvedLatest.latest.id,
-            status: resolvedLatest.latest.status,
-            assigneeAgentId: resolvedLatest.latest.assigneeAgentId,
-            checkoutRunId: resolvedLatest.latest.checkoutRunId,
-            executionRunId: resolvedLatest.latest.executionRunId,
-            actorAgentId,
-            actorRunId,
-          });
-        }
+      const resolvedLatest = await resolveOwnership(latest);
+      if (resolvedLatest.ownership) return resolvedLatest.ownership;
+      if (resolvedLatest.latest) {
+        throw conflict("Issue run ownership conflict", {
+          issueId: resolvedLatest.latest.id,
+          status: resolvedLatest.latest.status,
+          assigneeAgentId: resolvedLatest.latest.assigneeAgentId,
+          checkoutRunId: resolvedLatest.latest.checkoutRunId,
+          executionRunId: resolvedLatest.latest.executionRunId,
+          actorAgentId,
+          actorRunId,
+        });
       }
 
       throw conflict("Issue run ownership conflict", {
