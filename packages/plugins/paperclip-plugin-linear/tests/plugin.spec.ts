@@ -21,6 +21,7 @@ vi.mock("../src/linear.js", () => ({
     token_type: "Bearer",
   }),
   revokeToken: vi.fn().mockResolvedValue(undefined),
+  isRateLimitError: vi.fn().mockImplementation((err: unknown) => String(err).includes("RATELIMITED")),
   getTeams: vi.fn().mockResolvedValue([
     { id: "team-1", key: "LUC", name: "Lucitra" },
   ]),
@@ -1702,6 +1703,80 @@ describe("paperclip-plugin-linear", () => {
         skippedOtherTeam: 1,
         complete: true,
       });
+      expect(syncModule.syncToLinear).not.toHaveBeenCalled();
+    });
+
+    it("pauses mirror reconciliation without advancing the cursor when Linear rate limits", async () => {
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthTeamId },
+        "team-1",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: `${STATE_KEYS.linkPrefix}pc-issue-1` },
+        {
+          paperclipIssueId: "pc-issue-1",
+          paperclipCompanyId: "comp-1",
+          linearIssueId: "lin-issue-1",
+          linearIdentifier: "BLO-1",
+          linearUrl: "https://linear.app/blockcast/issue/BLO-1",
+          syncDirection: "bidirectional",
+          lastSyncAt: "2020-01-01T00:00:00.000Z",
+          lastLinearStateType: "unstarted",
+          lastCommentSyncAt: null,
+        },
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: `${STATE_KEYS.linkPrefix}pc-issue-2` },
+        {
+          paperclipIssueId: "pc-issue-2",
+          paperclipCompanyId: "comp-1",
+          linearIssueId: "lin-issue-2",
+          linearIdentifier: "BLO-2",
+          linearUrl: "https://linear.app/blockcast/issue/BLO-2",
+          syncDirection: "bidirectional",
+          lastSyncAt: "2020-01-01T00:00:00.000Z",
+          lastLinearStateType: "unstarted",
+          lastCommentSyncAt: null,
+        },
+      );
+
+      const { listIssuesByIds } = await import("../src/linear.js");
+      (listIssuesByIds as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+        new Error("Linear API error: 400 {\"extensions\":{\"code\":\"RATELIMITED\"}}"),
+      );
+
+      const result = await harness.performAction<{
+        errors: number;
+        scanned: number;
+        rateLimited: boolean;
+        complete: boolean;
+        nextOffset: number;
+      }>(ACTION_KEYS.reconcileLinearMirrors, {
+        companyId: "comp-1",
+        resetCursor: true,
+        maxPerRun: 25,
+      });
+      const cursor = await harness.ctx.state.get({
+        scopeKind: "instance",
+        stateKey: STATE_KEYS.linearMirrorReconcileOffset,
+      });
+
+      expect(result).toMatchObject({
+        errors: 2,
+        scanned: 2,
+        rateLimited: true,
+        complete: false,
+        nextOffset: 0,
+      });
+      expect(cursor).toBe(0);
       expect(syncModule.syncToLinear).not.toHaveBeenCalled();
     });
   });

@@ -4,6 +4,7 @@ import {
   createIssue,
   createIssueLabel,
   ensureProjectLink,
+  isRateLimitError,
   listIssueLabels,
   listIssuesByIds,
   listOpenIssues,
@@ -20,6 +21,14 @@ function mockFetch(jsonResponses: unknown[]) {
   }
   return fn as unknown as typeof fetch;
 }
+
+describe("isRateLimitError", () => {
+  it("detects Linear quota failures from HTTP and GraphQL error text", () => {
+    expect(isRateLimitError(new Error("Linear API error: 400 {\"extensions\":{\"code\":\"RATELIMITED\"}}"))).toBe(true);
+    expect(isRateLimitError(new Error("Linear GraphQL error: Rate limit exceeded"))).toBe(true);
+    expect(isRateLimitError(new Error("Linear API error: 500 boom"))).toBe(false);
+  });
+});
 
 describe("markDuplicate", () => {
   it("creates a duplicate relation dupe -> keeper when none exists", async () => {

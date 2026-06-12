@@ -13,6 +13,15 @@ interface LinearFetch {
   (url: string, init?: RequestInit): Promise<Response>;
 }
 
+export function isRateLimitError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    /rate limit exceeded/i.test(message) ||
+    /\bRATELIMITED\b/i.test(message) ||
+    /statusCode"?\s*:\s*429/i.test(message)
+  );
+}
+
 // ---------------------------------------------------------------------------
 // TTL cache for near-static workspace reads (teams, org, workflow states).
 //

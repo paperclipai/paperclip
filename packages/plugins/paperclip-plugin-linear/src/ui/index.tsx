@@ -99,6 +99,7 @@ type ReconcileResult = {
   skippedOtherCompany?: number;
   missingPaperclip?: number;
   missingLinear?: number;
+  rateLimited?: boolean;
   complete?: boolean;
   nextOffset?: number;
 };
@@ -940,6 +941,7 @@ export function LinearSettingsPage({ context }: PluginSettingsPageProps) {
                     {reconcileResult.missingLinear ?? 0} missing Linear
                   </>
                 )}
+                {reconcileResult.rateLimited && <> · Linear rate limited</>}
                 {!reconcileResult.complete && reconcileResult.nextOffset != null && (
                   <> · cursor {reconcileResult.nextOffset}</>
                 )}

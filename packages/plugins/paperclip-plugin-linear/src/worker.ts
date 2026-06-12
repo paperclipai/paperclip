@@ -4108,6 +4108,7 @@ async function runLinearMirrorReconcile(
   skippedOtherTeam: number;
   missingPaperclip: number;
   missingLinear: number;
+  rateLimited: boolean;
   complete: boolean;
   nextOffset: number;
 }> {
@@ -4123,6 +4124,7 @@ async function runLinearMirrorReconcile(
       skippedOtherTeam: 0,
       missingPaperclip: 0,
       missingLinear: 0,
+      rateLimited: false,
       complete: true,
       nextOffset: 0,
     };
@@ -4138,6 +4140,7 @@ async function runLinearMirrorReconcile(
       skippedOtherTeam: 0,
       missingPaperclip: 0,
       missingLinear: 0,
+      rateLimited: false,
       complete: true,
       nextOffset: 0,
     };
@@ -4156,6 +4159,7 @@ async function runLinearMirrorReconcile(
       skippedOtherTeam: 0,
       missingPaperclip: 0,
       missingLinear: 0,
+      rateLimited: false,
       complete: true,
       nextOffset: 0,
     };
@@ -4191,9 +4195,11 @@ async function runLinearMirrorReconcile(
   let skippedOtherTeam = 0;
   let missingPaperclip = 0;
   let missingLinear = 0;
+  let rateLimited = false;
 
-  while (entriesScanned < maxPerRun) {
+  while (entriesScanned < maxPerRun && !rateLimited) {
     const remaining = maxPerRun - entriesScanned;
+    const pageOffset = offset;
     const page = await ctx.state.list({
       scopeKind: "instance",
       namespace: "default",
@@ -4229,6 +4235,11 @@ async function runLinearMirrorReconcile(
       } catch (err) {
         ctx.logger.warn(`Linear mirror reconcile batch fetch failed: ${err}`);
         errors += batch.length;
+        if (linear.isRateLimitError(err)) {
+          rateLimited = true;
+          offset = pageOffset;
+          break;
+        }
         continue;
       }
 
@@ -4283,10 +4294,17 @@ async function runLinearMirrorReconcile(
         } catch (err) {
           ctx.logger.warn(`Linear mirror reconcile failed for ${link.linearIdentifier}: ${err}`);
           errors++;
+          if (linear.isRateLimitError(err)) {
+            rateLimited = true;
+            offset = pageOffset;
+            break;
+          }
         }
       }
+      if (rateLimited) break;
     }
 
+    if (rateLimited) break;
     offset += page.entries.length;
     if (!page.hasMore) {
       offset = 0;
@@ -4301,8 +4319,9 @@ async function runLinearMirrorReconcile(
   const missingSuffix = missingPaperclip > 0 || missingLinear > 0
     ? `, ${missingPaperclip} missing Paperclip, ${missingLinear} missing Linear`
     : "";
+  const rateLimitSuffix = rateLimited ? ", rate limited" : "";
   ctx.logger.info(
-    `Linear mirror reconcile ${complete ? "complete" : "paused"}: ${reconciled} reconciled from ${scanned} linked issues, ${errors} errors${skipSuffix}${skipTeamSuffix}${missingSuffix}`,
+    `Linear mirror reconcile ${complete ? "complete" : "paused"}: ${reconciled} reconciled from ${scanned} linked issues, ${errors} errors${skipSuffix}${skipTeamSuffix}${missingSuffix}${rateLimitSuffix}`,
   );
 
   return {
@@ -4313,6 +4332,7 @@ async function runLinearMirrorReconcile(
     skippedOtherTeam,
     missingPaperclip,
     missingLinear,
+    rateLimited,
     complete,
     nextOffset: offset,
   };
