@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -56,6 +57,10 @@ export const heartbeatRuns = pgTable(
     contextSnapshot: jsonb("context_snapshot").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    claimedBy: text("claimed_by"),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    executorHeartbeatAt: timestamp("executor_heartbeat_at", { withTimezone: true }),
+    claimAttempts: integer("claim_attempts").notNull().default(0),
   },
   (table) => ({
     companyAgentStartedIdx: index("heartbeat_runs_company_agent_started_idx").on(
@@ -78,5 +83,8 @@ export const heartbeatRuns = pgTable(
       table.status,
       table.processStartedAt,
     ),
+    queuedClaimIdx: index("heartbeat_runs_queued_claim_idx")
+      .on(table.status, table.createdAt)
+      .where(sql`status = 'queued'`),
   }),
 );

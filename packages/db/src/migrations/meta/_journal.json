@@ -918,6 +918,13 @@
       "when": 1782600200000,
       "tag": "0130_plugin_artifact_generations",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1781111100003,
+      "tag": "0102_executor_claim_columns",
+      "breakpoints": true
     }
   ]
 }
