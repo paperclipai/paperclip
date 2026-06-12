@@ -15,6 +15,7 @@ interface PlanCreateOptions extends BaseClientOptions {
   task?: string[];
   tokenCap?: string;
   assigneeAgentId?: string;
+  gateProfile?: string;
 }
 
 function collect(value: string, previous: string[]): string[] {
@@ -36,6 +37,10 @@ export function registerPlanCommands(program: Command): void {
       .option("--task <title>", "Tier-1 task title (repeatable)", collect, [])
       .option("--token-cap <n>", "Token budget cap for the plan")
       .option("--assignee-agent-id <id>", "Agent to assign the plan to")
+      .option(
+        "--gate-profile <profile>",
+        "Gate protocol: none (default) or dev_team (advisory dev-team gates)",
+      )
       .action(async (opts: PlanCreateOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
@@ -55,6 +60,9 @@ export function registerPlanCommands(program: Command): void {
           if (tokenCap !== null && Number.isNaN(tokenCap)) {
             throw new Error("--token-cap must be an integer");
           }
+          if (opts.gateProfile !== undefined && opts.gateProfile !== "none" && opts.gateProfile !== "dev_team") {
+            throw new Error("--gate-profile must be 'none' or 'dev_team'");
+          }
           const payload = {
             companyId: ctx.companyId,
             title: opts.title,
@@ -62,6 +70,7 @@ export function registerPlanCommands(program: Command): void {
             tiers,
             budgetCapTokens: tokenCap,
             assigneeAgentId: opts.assigneeAgentId ?? null,
+            ...(opts.gateProfile ? { gateProfile: opts.gateProfile } : {}),
           };
           const created = await ctx.api.post(apiPath`/api/plans`, payload);
           printOutput(created, { json: ctx.json });
