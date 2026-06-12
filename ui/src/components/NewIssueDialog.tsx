@@ -51,7 +51,6 @@ import {
   ArrowDown,
   AlertTriangle,
   Tag,
-  Calendar,
   Paperclip,
   FileText,
   Flag,
@@ -1992,50 +1991,39 @@ export function NewIssueDialog() {
             </PopoverContent>
           </Popover>
 
-          {/* More */}
+          {/* More — mobile-only overflow for the priority options */}
           <Popover open={moreOpen} onOpenChange={setMoreOpen}>
             <PopoverTrigger asChild>
               <button
                 type="button"
                 data-testid="new-issue-more-menu-trigger"
-                className="inline-flex items-center justify-center rounded-md border border-border p-1 text-xs text-muted-foreground transition-colors hover:bg-accent/50"
+                className="inline-flex items-center justify-center rounded-md border border-border p-1 text-xs text-muted-foreground transition-colors hover:bg-accent/50 sm:hidden"
               >
                 <MoreHorizontal className="h-3 w-3" />
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-44 p-1" align="start" data-testid="new-issue-more-menu">
-              <div className="sm:hidden">
-                <div className="px-2 py-1 text-[10px] font-medium uppercase text-muted-foreground">
-                  Priority
-                </div>
-                {priorities.map((p) => (
-                  <button
-                    type="button"
-                    key={p.value}
-                    data-testid={`new-issue-more-priority-${p.value}`}
-                    className={cn(
-                      "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
-                      p.value === priority && "bg-accent",
-                    )}
-                    onClick={() => {
-                      setPriority(p.value);
-                      setMoreOpen(false);
-                    }}
-                  >
-                    <p.icon className={cn("h-3 w-3", p.color)} />
-                    {p.label}
-                  </button>
-                ))}
-                <div className="my-1 border-t border-border" />
+              <div className="px-2 py-1 text-[10px] font-medium uppercase text-muted-foreground">
+                Priority
               </div>
-              <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
-                <Calendar className="h-3 w-3" />
-                Start date
-              </button>
-              <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
-                <Calendar className="h-3 w-3" />
-                Due date
-              </button>
+              {priorities.map((p) => (
+                <button
+                  type="button"
+                  key={p.value}
+                  data-testid={`new-issue-more-priority-${p.value}`}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
+                    p.value === priority && "bg-accent",
+                  )}
+                  onClick={() => {
+                    setPriority(p.value);
+                    setMoreOpen(false);
+                  }}
+                >
+                  <p.icon className={cn("h-3 w-3", p.color)} />
+                  {p.label}
+                </button>
+              ))}
             </PopoverContent>
           </Popover>
         </div>

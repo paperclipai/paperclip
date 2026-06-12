@@ -789,6 +789,19 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("does not offer non-functional start/due date options in the overflow menu", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const moreTrigger = container.querySelector('[data-testid="new-issue-more-menu-trigger"]');
+    expect(moreTrigger?.className).toContain("sm:hidden");
+
+    expect(container.textContent).not.toContain("Start date");
+    expect(container.textContent).not.toContain("Due date");
+
+    act(() => root.unmount());
+  });
+
   it("allows editor autocomplete portal pointer events inside the modal", async () => {
     const { root } = renderDialog(container);
     await flush();
