@@ -202,6 +202,53 @@ describe("CloudAccessGate", () => {
     unmountRoot(root);
   });
 
+  it("redirects to /auth when the server confirms the user is signed out", async () => {
+    mockAuthApi.getSession.mockResolvedValue(null);
+
+    const root = renderGate(container);
+    await waitForText(container, "Navigate:/auth");
+
+    expect(container.textContent).toContain("Navigate:/auth?next=");
+    expect(container.textContent).not.toContain("Outlet content");
+
+    unmountRoot(root);
+  });
+
+  it("does not redirect to /auth when the session fetch fails transiently", async () => {
+    mockAuthApi.getSession.mockRejectedValueOnce(new Error("Failed to load session (503)"));
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { id: "session-1", userId: "user-1" },
+      user: { id: "user-1", email: "user@example.com", name: "User", image: null },
+    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
+      user: { id: "user-1", email: "user@example.com", name: "User", image: null },
+      userId: "user-1",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+      source: "session",
+      keyId: null,
+    });
+
+    const root = renderGate(container);
+    await waitForText(container, "Failed to load session (503)");
+
+    expect(container.textContent).not.toContain("Navigate:/auth");
+    expect(container.textContent).toContain("You have not been signed out");
+
+    const retry = Array.from(container.querySelectorAll("button")).find((candidate) =>
+      candidate.textContent?.includes("Retry"),
+    );
+    expect(retry).toBeTruthy();
+    flushSync(() => {
+      retry?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await waitForText(container, "Outlet content");
+
+    expect(container.textContent).toContain("Outlet content");
+
+    unmountRoot(root);
+  });
+
   it("keeps public bootstrap-pending instances invite-only", async () => {
     mockHealthApi.get.mockResolvedValue({
       status: "ok",
