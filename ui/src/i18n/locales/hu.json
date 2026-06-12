@@ -5,5 +5,11 @@
       "description": "Kezdje egy vállalat létrehozásával.",
       "newCompany": "Új vállalat"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Nyelv",
+      "description": "Válassza ki a felületen használt nyelvet."
+    }
   }
 }

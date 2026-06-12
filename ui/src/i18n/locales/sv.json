@@ -5,5 +5,11 @@
       "description": "Kom igång genom att skapa ett företag.",
       "newCompany": "Nytt företag"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Språk",
+      "description": "Välj språket som används i gränssnittet."
+    }
   }
 }

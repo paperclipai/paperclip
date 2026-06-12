@@ -5,5 +5,11 @@
       "description": "Începeți prin crearea unei companii.",
       "newCompany": "Companie nouă"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Limbă",
+      "description": "Alegeți limba utilizată în interfață."
+    }
   }
 }

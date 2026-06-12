@@ -5,5 +5,11 @@
       "description": "Kom i gang ved å opprette et selskap.",
       "newCompany": "Nytt selskap"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Språk",
+      "description": "Velg språket som brukes i grensesnittet."
+    }
   }
 }

@@ -5,5 +5,11 @@
       "description": "Mulai dengan membuat perusahaan.",
       "newCompany": "Perusahaan Baru"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Bahasa",
+      "description": "Pilih bahasa yang digunakan di antarmuka."
+    }
   }
 }

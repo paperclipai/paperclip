@@ -11,6 +11,14 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { localeDisplayName, setLocale, supportedLocales, useTranslation } from "@/i18n";
 
 function deriveInitials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -19,6 +27,7 @@ function deriveInitials(name: string) {
 }
 
 export function ProfileSettings() {
+  const { t, i18n } = useTranslation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -27,6 +36,7 @@ export function ProfileSettings() {
   const [name, setName] = useState("");
   const [image, setImage] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  const [selectedLocale, setSelectedLocale] = useState(i18n.language);
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -40,6 +50,14 @@ export function ProfileSettings() {
       { label: "Profile" },
     ]);
   }, [setBreadcrumbs]);
+
+  useEffect(() => {
+    const syncLocale = (locale: string) => setSelectedLocale(locale);
+    i18n.on("languageChanged", syncLocale);
+    return () => {
+      i18n.off("languageChanged", syncLocale);
+    };
+  }, [i18n]);
 
   useEffect(() => {
     const session = sessionQuery.data;
@@ -258,6 +276,35 @@ export function ProfileSettings() {
             />
             <p className="text-xs text-muted-foreground">
               Email is managed by your auth session and is read-only here.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="profile-language">
+              {t("settings.language.label", { defaultValue: "Language" })}
+            </Label>
+            <Select
+              value={selectedLocale}
+              onValueChange={(locale) => {
+                setSelectedLocale(locale);
+                setLocale(locale);
+              }}
+            >
+              <SelectTrigger id="profile-language" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {supportedLocales.map((locale) => (
+                  <SelectItem key={locale} value={locale}>
+                    {localeDisplayName(locale)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {t("settings.language.description", {
+                defaultValue: "Choose the language used across the interface.",
+              })}
             </p>
           </div>
 

@@ -5,5 +5,11 @@
       "description": "התחילו ביצירת חברה.",
       "newCompany": "חברה חדשה"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "שפה",
+      "description": "בחרו את השפה שבה ישתמש הממשק."
+    }
   }
 }

@@ -5,5 +5,11 @@
       "description": "Begin door een bedrijf aan te maken.",
       "newCompany": "Nieuw bedrijf"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Taal",
+      "description": "Kies de taal die in de interface wordt gebruikt."
+    }
   }
 }

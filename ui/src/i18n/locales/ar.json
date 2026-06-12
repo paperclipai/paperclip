@@ -5,5 +5,11 @@
       "description": "ابدأ بإنشاء شركة.",
       "newCompany": "شركة جديدة"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "اللغة",
+      "description": "اختر اللغة المستخدمة في الواجهة."
+    }
   }
 }

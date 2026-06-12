@@ -1,10 +1,15 @@
-import { describe, expect, it } from "vitest";
-import { t } from ".";
+import { beforeAll, describe, expect, it } from "vitest";
+import { i18n, t } from ".";
 import en from "./locales/en.json";
 import { localeMessages } from "./locales";
 import { validateLocaleMessages } from "./locale-validation";
 
 describe("locale validation", () => {
+  beforeAll(async () => {
+    // The initial language follows the host environment; pin it for determinism.
+    await i18n.changeLanguage("en");
+  });
+
   it("resolves English messages with key and default fallbacks", () => {
     expect(t("app.noCompanies.title")).toBe(en.app.noCompanies.title);
     expect(t("app.missing", { defaultValue: "Fallback" })).toBe("Fallback");

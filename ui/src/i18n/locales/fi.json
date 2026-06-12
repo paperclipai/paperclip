@@ -5,5 +5,11 @@
       "description": "Aloita luomalla yritys.",
       "newCompany": "Uusi yritys"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Kieli",
+      "description": "Valitse käyttöliittymässä käytettävä kieli."
+    }
   }
 }

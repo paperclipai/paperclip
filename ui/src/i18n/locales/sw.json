@@ -5,5 +5,11 @@
       "description": "Anza kwa kuunda kampuni.",
       "newCompany": "Kampuni Mpya"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Lugha",
+      "description": "Chagua lugha inayotumika kwenye kiolesura."
+    }
   }
 }

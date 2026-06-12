@@ -5,5 +5,11 @@
       "description": "Bắt đầu bằng cách tạo một công ty.",
       "newCompany": "Công ty mới"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Ngôn ngữ",
+      "description": "Chọn ngôn ngữ được sử dụng trong giao diện."
+    }
   }
 }

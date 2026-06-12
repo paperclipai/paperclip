@@ -5,5 +5,11 @@
       "description": "Bir şirket oluşturarak başlayın.",
       "newCompany": "Yeni Şirket"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Dil",
+      "description": "Arayüzde kullanılacak dili seçin."
+    }
   }
 }
