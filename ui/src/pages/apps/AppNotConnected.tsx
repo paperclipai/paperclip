@@ -83,7 +83,7 @@ export function AppNotConnected() {
   }
   if (applicationsQuery.isLoading || connectionsQuery.isLoading) {
     return (
-      <div className="mx-auto max-w-3xl space-y-3">
+      <div className="max-w-3xl space-y-3">
         <Skeleton className="h-10 w-64" />
         <Skeleton className="h-40 w-full" />
       </div>
@@ -91,7 +91,7 @@ export function AppNotConnected() {
   }
   if (!application) {
     return (
-      <div className="mx-auto max-w-3xl space-y-3 p-6 text-sm text-muted-foreground">
+      <div className="max-w-3xl space-y-3 p-6 text-sm text-muted-foreground">
         <p>This app doesn’t exist anymore.</p>
         <Button variant="outline" size="sm" onClick={() => navigate("/apps")}>Back to apps</Button>
       </div>
@@ -113,7 +113,7 @@ export function AppNotConnected() {
   const connectHref = `/apps/connect?${connectParams.toString()}`;
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5">
+    <div className="max-w-3xl space-y-5">
       <header className="flex flex-wrap items-center gap-4">
         <AppLogo name={application.name} logoUrl={logoUrl} size={48} />
         <div className="min-w-0 flex-1">

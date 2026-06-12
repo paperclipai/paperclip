@@ -2,6 +2,7 @@ import type {
   Agent,
   AppGalleryEntry,
   ToolCallEvent,
+  ToolConnectionActivityResponse,
   ToolCatalogEntry,
   ToolConnection,
 } from "@paperclipai/shared";
@@ -27,6 +28,8 @@ export interface AppDetailSectionProps {
 
 export interface ActivityPanelProps {
   events: ToolCallEvent[];
+  issues: ToolConnectionActivityResponse["issues"];
+  actionRequests: ToolConnectionActivityResponse["actionRequests"];
   loading: boolean;
   agents: Agent[];
 }

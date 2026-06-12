@@ -15,6 +15,8 @@ const listPoliciesMock = vi.hoisted(() => vi.fn());
 const listConnectionActivityMock = vi.hoisted(() => vi.fn());
 const listActionRequestsMock = vi.hoisted(() => vi.fn());
 const updateConnectionMock = vi.hoisted(() => vi.fn());
+const finishAppMock = vi.hoisted(() => vi.fn());
+const refreshCatalogMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockParams = vi.hoisted(() => ({ connectionId: "conn-1", tab: "setup" as string | undefined }));
 const navigateComponentMock = vi.hoisted(() => vi.fn());
@@ -32,9 +34,10 @@ vi.mock("@/api/tools", () => ({
       listActionRequestsMock(companyId, status),
     updateConnection: (connectionId: string, input: unknown) =>
       updateConnectionMock(connectionId, input),
-    finishApp: vi.fn(),
+    finishApp: (companyId: string, connectionId: string, input: unknown) =>
+      finishAppMock(companyId, connectionId, input),
     archiveConnection: vi.fn(),
-    refreshCatalog: vi.fn(),
+    refreshCatalog: (connectionId: string) => refreshCatalogMock(connectionId),
     reconnectConnection: vi.fn(),
   },
 }));
@@ -141,7 +144,22 @@ describe("AppDetail", () => {
     mockParams.connectionId = "conn-1";
     mockParams.tab = "setup";
     getConnectionMock.mockResolvedValue(connection());
-    listGalleryMock.mockResolvedValue({ apps: [] });
+    listGalleryMock.mockResolvedValue({
+      apps: [
+        {
+          key: "github",
+          name: "GitHub",
+          logoUrl: "https://example.com/github.png",
+          tagline: "GitHub tagline",
+          description: "Give agents a governed way to inspect repositories and pull requests.",
+          authKind: "api_key",
+          transportTemplate: { transport: "remote_http", url: "https://github.example/mcp" },
+          credentialFields: [],
+          recommendedDefaults: {},
+          urlPatterns: [],
+        },
+      ],
+    });
     listCatalogMock.mockResolvedValue({
       catalog: [
         catalogEntry(),
@@ -186,9 +204,11 @@ describe("AppDetail", () => {
         },
       ],
     });
-    listConnectionActivityMock.mockResolvedValue({ events: [] });
+    listConnectionActivityMock.mockResolvedValue({ events: [], issues: {}, actionRequests: {} });
     listActionRequestsMock.mockResolvedValue({ actionRequests: [] });
     updateConnectionMock.mockResolvedValue(connection({ enabled: false }));
+    finishAppMock.mockResolvedValue({});
+    refreshCatalogMock.mockResolvedValue({ discoveredCount: 0, quarantinedCount: 0, catalog: [] });
   });
 
   afterEach(() => {
@@ -237,7 +257,7 @@ describe("AppDetail", () => {
   it.each([
     ["setup", "Agents can use this app"],
     ["review", "Nothing is waiting for your OK right now."],
-    ["permissions", "Needs your OK before running"],
+    ["permissions", "Action permissions"],
     ["activity", "No activity yet."],
     ["advanced", "Technical details"],
   ])("renders the %s tab panel", async (tab, expectedText) => {
@@ -248,6 +268,120 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("GitHub");
     expect(container.textContent).toContain("2 actions available");
     expect(container.textContent).toContain(expectedText);
+  });
+
+  it("keeps setup focused on description and lifecycle", async () => {
+    mockParams.tab = "setup";
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("Give agents a governed way to inspect repositories and pull requests.");
+    expect(container.textContent).toContain("Agents can use this app");
+    expect(container.textContent).not.toContain("Read repo");
+    expect(container.textContent).not.toContain("Action permissions");
+  });
+
+  it("renders unified action permission dropdowns in the permissions tab", async () => {
+    mockParams.tab = "permissions";
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("Read only");
+    expect(container.textContent).toContain("Can make changes");
+    expect(container.textContent).toContain("Read repo");
+    expect(container.textContent).toContain("Write issue");
+    expect(container.textContent).toContain("1 new action to review");
+    const readSelect = container.querySelector<HTMLSelectElement>('select[aria-label="Read repo permission"]');
+    const writeSelect = container.querySelector<HTMLSelectElement>('select[aria-label="Write issue permission"]');
+    expect(readSelect?.value).toBe("allowed");
+    expect(writeSelect?.value).toBe("ask");
+  });
+
+  it("persists ask-first for read-only actions from the unified dropdown", async () => {
+    mockParams.tab = "permissions";
+
+    await renderAppDetail();
+
+    const readSelect = container.querySelector<HTMLSelectElement>('select[aria-label="Read repo permission"]');
+    expect(readSelect).toBeTruthy();
+    await act(async () => {
+      readSelect!.value = "ask";
+      readSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(finishAppMock).toHaveBeenCalledWith("company-1", "conn-1", {
+      enabledCatalogEntryIds: expect.arrayContaining(["catalog-read", "catalog-write"]),
+      askFirstCatalogEntryIds: expect.arrayContaining(["catalog-read", "catalog-write"]),
+      access: "all_agents",
+    });
+  });
+
+  it("persists off by removing an action from enabled and ask-first sets", async () => {
+    mockParams.tab = "permissions";
+
+    await renderAppDetail();
+
+    const writeSelect = container.querySelector<HTMLSelectElement>('select[aria-label="Write issue permission"]');
+    expect(writeSelect).toBeTruthy();
+    await act(async () => {
+      writeSelect!.value = "off";
+      writeSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(finishAppMock).toHaveBeenCalledWith("company-1", "conn-1", {
+      enabledCatalogEntryIds: ["catalog-read"],
+      askFirstCatalogEntryIds: [],
+      access: "all_agents",
+    });
+  });
+
+  it("renders activity attribution with issue context and human resolver names", async () => {
+    mockParams.tab = "activity";
+    listConnectionActivityMock.mockResolvedValue({
+      events: [
+        {
+          id: "evt-1",
+          eventType: "call_completed",
+          agentId: "agent-1",
+          issueId: "issue-1",
+          actionRequestId: null,
+          toolName: "Get value",
+          outcome: "success",
+          createdAt: new Date("2026-06-12T10:00:00Z"),
+        },
+        {
+          id: "evt-2",
+          eventType: "approval_resolved",
+          agentId: "agent-1",
+          issueId: "issue-1",
+          actionRequestId: "request-1",
+          toolName: "Mark done",
+          outcome: "success",
+          createdAt: new Date("2026-06-12T10:01:00Z"),
+        },
+      ],
+      issues: {
+        "issue-1": { identifier: "PAP-10912", title: "Fix app connection copy" },
+      },
+      actionRequests: {
+        "request-1": {
+          status: "approved",
+          resolverDisplayName: "Dotta",
+          resolvedByAgentId: null,
+          resolvedByUserId: "board-user",
+        },
+      },
+    });
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("Coder used Get value");
+    expect(container.textContent).toContain("while working on PAP-10912");
+    expect(container.textContent).toContain("Dotta approved Mark done");
+    expect(container.querySelector('a[href="/issues/PAP-10912"]')).toBeTruthy();
+    expect(container.textContent).not.toContain("You reviewed");
   });
 
   it("keeps the header and reconnect banner across tabs", async () => {

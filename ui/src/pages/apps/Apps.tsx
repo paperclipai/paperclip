@@ -183,7 +183,7 @@ export function Apps() {
   const loading = applicationsQuery.isLoading || connectionsQuery.isLoading || galleryQuery.isLoading;
 
   return (
-    <div className="mx-auto max-w-5xl">
+    <div className="max-w-5xl">
       {loading ? (
         <div className="space-y-3">
           <Skeleton className="h-8 w-40" />

@@ -244,7 +244,7 @@ export function AppDetail() {
   }
   if (connectionQuery.isLoading || catalogQuery.isLoading) {
     return (
-      <div className="mx-auto max-w-3xl space-y-4">
+      <div className="max-w-3xl space-y-4">
         <Skeleton className="h-10 w-56" />
         <Skeleton className="h-48 w-full" />
         <Skeleton className="h-40 w-full" />
@@ -253,7 +253,7 @@ export function AppDetail() {
   }
   if (!connection) {
     return (
-      <div className="mx-auto max-w-3xl p-6">
+      <div className="max-w-3xl p-6">
         <p className="text-sm text-muted-foreground">We couldn't find that app.</p>
         <Button className="mt-4" variant="outline" onClick={() => navigate("/apps")}>
           Back to apps
@@ -271,7 +271,7 @@ export function AppDetail() {
   const actionCount = active.length;
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 pb-12">
+    <div className="max-w-3xl space-y-6 pb-12">
       <AppDetailHeader
         appName={appName}
         connection={connection}
@@ -308,17 +308,9 @@ export function AppDetail() {
       {activeTab === "setup" && (
         <SetupPanel
           connection={connection}
-          readOnly={readOnly}
-          canChange={canChange}
-          quarantined={quarantined}
-          enabledIds={enabledIds}
-          pending={pending}
+          galleryEntry={logoEntry}
           appToggleDisabled={toggleEnabled.isPending || removeApp.isPending}
-          refreshPending={refreshTools.isPending}
           onToggleApp={() => toggleEnabled.mutate()}
-          onRefreshTools={() => refreshTools.mutate()}
-          onToggleAction={(id, on) => apply({ enabled: toggle(new Set(enabledIds), id, on) })}
-          onTurnOnQuarantined={(ids) => apply({ enabled: addAll(new Set(enabledIds), ids) })}
         />
       )}
       {activeTab === "review" && <ReviewPanel connectionId={connectionId} />}
@@ -326,17 +318,24 @@ export function AppDetail() {
         <PermissionsPanel
           access={access}
           agents={agents}
+          readOnly={readOnly}
           canChange={canChange}
+          quarantined={quarantined}
           enabledIds={enabledIds}
           askFirstIds={askFirstIds}
           pending={pending}
+          refreshPending={refreshTools.isPending}
           onSaveAccess={(next) => apply({ access: next })}
-          onToggleAskFirst={(id, on) => apply({ askFirst: toggle(new Set(askFirstIds), id, on) })}
+          onRefreshActions={() => refreshTools.mutate()}
+          onSetActionPermission={(id, next) => apply(actionPermissionMutation(id, next, enabledIds, askFirstIds))}
+          onTurnOnQuarantined={(ids) => apply({ enabled: addAll(new Set(enabledIds), ids) })}
         />
       )}
       {activeTab === "activity" && (
         <ActivityPanel
           events={activityQuery.data?.events ?? []}
+          issues={activityQuery.data?.issues ?? {}}
+          actionRequests={activityQuery.data?.actionRequests ?? {}}
           loading={activityQuery.isLoading}
           agents={agents}
         />
@@ -509,15 +508,27 @@ function galleryEntryFor(apps: AppGalleryEntry[], connection: ToolConnection | u
   return apps.find((a) => a.name.toLowerCase() === name) ?? apps.find((a) => a.key === name) ?? null;
 }
 
-function toggle(set: Set<string>, id: string, on: boolean): Set<string> {
-  const next = new Set(set);
-  if (on) next.add(id);
-  else next.delete(id);
-  return next;
-}
-
 function addAll(set: Set<string>, ids: string[]): Set<string> {
   const next = new Set(set);
   for (const id of ids) next.add(id);
   return next;
+}
+
+function actionPermissionMutation(
+  id: string,
+  next: "off" | "allowed" | "ask",
+  enabledIds: Set<string>,
+  askFirstIds: Set<string>,
+) {
+  const enabled = new Set(enabledIds);
+  const askFirst = new Set(askFirstIds);
+  if (next === "off") {
+    enabled.delete(id);
+    askFirst.delete(id);
+  } else {
+    enabled.add(id);
+    if (next === "ask") askFirst.add(id);
+    else askFirst.delete(id);
+  }
+  return { enabled, askFirst };
 }

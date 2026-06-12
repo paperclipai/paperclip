@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Loader2, RefreshCw } from "lucide-react";
 import type { ToolCatalogEntry, ToolConnection } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -7,79 +6,23 @@ import type { AppDetailSectionProps } from "./types";
 
 export function SetupPanel({
   connection,
-  readOnly,
-  canChange,
-  quarantined,
-  enabledIds,
-  pending,
+  galleryEntry,
   onToggleApp,
   appToggleDisabled,
-  onToggleAction,
-  onTurnOnQuarantined,
-  onRefreshTools,
-  refreshPending,
 }: Pick<
   AppDetailSectionProps,
-  "connection" | "readOnly" | "canChange" | "quarantined" | "enabledIds" | "pending"
+  "connection" | "galleryEntry"
 > & {
   onToggleApp: () => void;
   appToggleDisabled: boolean;
-  onToggleAction: (id: string, on: boolean) => void;
-  onTurnOnQuarantined: (ids: string[]) => void;
-  onRefreshTools: () => void;
-  refreshPending: boolean;
 }) {
+  const description = galleryEntry?.description ?? galleryEntry?.tagline ?? null;
   return (
     <div className="space-y-6">
+      {description && (
+        <p className="max-w-2xl text-sm leading-6 text-muted-foreground">{description}</p>
+      )}
       <AppLifecycleSection connection={connection} disabled={appToggleDisabled} onToggle={onToggleApp} />
-
-      <section className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-lg font-bold text-foreground">Actions</h2>
-          <div className="flex items-center gap-2">
-            {pending && <span className="text-xs text-muted-foreground">Saving...</span>}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onRefreshTools}
-              disabled={refreshPending || pending}
-            >
-              {refreshPending ? (
-                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-              )}
-              Refresh tools
-            </Button>
-          </div>
-        </div>
-
-        {quarantined.length > 0 && (
-          <QuarantinePill
-            count={quarantined.length}
-            entries={quarantined}
-            disabled={pending}
-            onTurnOn={onTurnOnQuarantined}
-          />
-        )}
-
-        <ActionGroup
-          title="Read only"
-          hint="these can look but not change anything"
-          actions={readOnly}
-          enabledIds={enabledIds}
-          disabled={pending}
-          onToggle={onToggleAction}
-        />
-        <ActionGroup
-          title="Can make changes"
-          hint="these change something in another app"
-          actions={canChange}
-          enabledIds={enabledIds}
-          disabled={pending}
-          onToggle={onToggleAction}
-        />
-      </section>
     </div>
   );
 }
@@ -119,53 +62,7 @@ export function AppLifecycleSection({
   );
 }
 
-function ActionGroup({
-  title,
-  hint,
-  actions,
-  enabledIds,
-  disabled,
-  onToggle,
-}: {
-  title: string;
-  hint: string;
-  actions: ToolCatalogEntry[];
-  enabledIds: Set<string>;
-  disabled: boolean;
-  onToggle: (id: string, on: boolean) => void;
-}) {
-  if (actions.length === 0) return null;
-  return (
-    <div className="rounded-xl border border-border bg-card">
-      <div className="border-b border-border px-5 py-3 text-sm">
-        <span className="font-bold text-foreground">{title}</span>
-        <span className="ml-2 text-muted-foreground">- {hint}</span>
-      </div>
-      <div className="divide-y divide-border">
-        {actions.map((action) => {
-          const on = enabledIds.has(action.id);
-          return (
-            <div key={action.id} className="flex items-center gap-4 px-5 py-3">
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium text-foreground">{action.title ?? action.toolName}</div>
-                {action.description && (
-                  <div className="truncate text-xs text-muted-foreground">{action.description}</div>
-                )}
-              </div>
-              <ToggleSwitch
-                checked={on}
-                disabled={disabled}
-                onCheckedChange={(next) => onToggle(action.id, next)}
-              />
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function QuarantinePill({
+export function QuarantinePill({
   count,
   entries,
   disabled,

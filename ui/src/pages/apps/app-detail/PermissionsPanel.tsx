@@ -1,34 +1,51 @@
 import { useEffect, useState } from "react";
+import { Loader2, RefreshCw } from "lucide-react";
 import type { Agent, ToolCatalogEntry } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
-import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { cn } from "@/lib/utils";
+import { QuarantinePill } from "./SetupPanel";
 import type { AccessDraft, AppDetailSectionProps } from "./types";
+
+type ActionPermission = "off" | "allowed" | "ask";
 
 export function PermissionsPanel({
   access,
   agents,
+  readOnly,
   canChange,
+  quarantined,
   enabledIds,
   askFirstIds,
   pending,
   onSaveAccess,
-  onToggleAskFirst,
+  onSetActionPermission,
+  onTurnOnQuarantined,
+  onRefreshActions,
+  refreshPending,
 }: Pick<
   AppDetailSectionProps,
-  "access" | "agents" | "canChange" | "enabledIds" | "askFirstIds" | "pending"
+  "access" | "agents" | "readOnly" | "canChange" | "quarantined" | "enabledIds" | "askFirstIds" | "pending"
 > & {
   onSaveAccess: (next: AccessDraft) => void;
-  onToggleAskFirst: (id: string, on: boolean) => void;
+  onSetActionPermission: (id: string, next: ActionPermission) => void;
+  onTurnOnQuarantined: (ids: string[]) => void;
+  onRefreshActions: () => void;
+  refreshPending: boolean;
 }) {
   return (
     <div className="space-y-6">
       <AccessSection access={access} agents={agents} disabled={pending} onSave={onSaveAccess} />
-      <AskFirstSection
-        actions={canChange}
+      <ActionsSection
+        readOnly={readOnly}
+        canChange={canChange}
+        quarantined={quarantined}
         enabledIds={enabledIds}
         askFirstIds={askFirstIds}
         disabled={pending}
-        onToggleAskFirst={onToggleAskFirst}
+        refreshPending={refreshPending}
+        onSetPermission={onSetActionPermission}
+        onTurnOnQuarantined={onTurnOnQuarantined}
+        onRefreshActions={onRefreshActions}
       />
     </div>
   );
@@ -148,56 +165,150 @@ function AccessSection({
   );
 }
 
-function AskFirstSection({
+function ActionsSection({
+  readOnly,
+  canChange,
+  quarantined,
+  enabledIds,
+  askFirstIds,
+  disabled,
+  refreshPending,
+  onSetPermission,
+  onTurnOnQuarantined,
+  onRefreshActions,
+}: {
+  readOnly: ToolCatalogEntry[];
+  canChange: ToolCatalogEntry[];
+  quarantined: ToolCatalogEntry[];
+  enabledIds: Set<string>;
+  askFirstIds: Set<string>;
+  disabled: boolean;
+  refreshPending: boolean;
+  onSetPermission: (id: string, next: ActionPermission) => void;
+  onTurnOnQuarantined: (ids: string[]) => void;
+  onRefreshActions: () => void;
+}) {
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="text-sm font-bold text-foreground">Action permissions</h2>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            Choose what agents can do and what needs a human first.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {disabled && <span className="text-xs text-muted-foreground">Saving...</span>}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onRefreshActions}
+            disabled={refreshPending || disabled}
+          >
+            {refreshPending ? (
+              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+            )}
+            Refresh actions
+          </Button>
+        </div>
+      </div>
+
+      {quarantined.length > 0 && (
+        <QuarantinePill
+          count={quarantined.length}
+          entries={quarantined}
+          disabled={disabled}
+          onTurnOn={onTurnOnQuarantined}
+        />
+      )}
+
+      <ActionGroup
+        title="Read only"
+        hint="Can look up context without changing anything."
+        actions={readOnly}
+        enabledIds={enabledIds}
+        askFirstIds={askFirstIds}
+        disabled={disabled}
+        onSetPermission={onSetPermission}
+      />
+      <ActionGroup
+        title="Can make changes"
+        hint="Can change something in another app."
+        actions={canChange}
+        enabledIds={enabledIds}
+        askFirstIds={askFirstIds}
+        disabled={disabled}
+        onSetPermission={onSetPermission}
+      />
+    </section>
+  );
+}
+
+function ActionGroup({
+  title,
+  hint,
   actions,
   enabledIds,
   askFirstIds,
   disabled,
-  onToggleAskFirst,
+  onSetPermission,
 }: {
+  title: string;
+  hint: string;
   actions: ToolCatalogEntry[];
   enabledIds: Set<string>;
   askFirstIds: Set<string>;
   disabled: boolean;
-  onToggleAskFirst: (id: string, on: boolean) => void;
+  onSetPermission: (id: string, next: ActionPermission) => void;
 }) {
+  if (actions.length === 0) return null;
   return (
-    <section className="rounded-xl border border-border bg-card">
-      <div className="border-b border-border px-5 py-4">
-        <h2 className="text-sm font-bold text-foreground">Needs your OK before running</h2>
-        <p className="mt-0.5 text-sm text-muted-foreground">
-          Pick which change-making actions should ask before they run.
-        </p>
+    <div className="rounded-xl border border-border bg-card">
+      <div className="border-b border-border px-5 py-3 text-sm">
+        <span className="font-bold text-foreground">{title}</span>
+        <span className="ml-2 text-muted-foreground">- {hint}</span>
       </div>
-      {actions.length === 0 ? (
-        <p className="px-5 py-5 text-sm text-muted-foreground">This app has no change-making actions.</p>
-      ) : (
-        <div className="divide-y divide-border">
-          {actions.map((action) => {
-            const enabled = enabledIds.has(action.id);
-            const askFirst = askFirstIds.has(action.id);
-            return (
-              <div key={action.id} className="flex items-center gap-4 px-5 py-3">
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium text-foreground">{action.title ?? action.toolName}</div>
-                  <div className="truncate text-xs text-muted-foreground">
-                    {enabled
-                      ? askFirst
-                        ? "Will ask before running."
-                        : "Can run without asking."
-                      : "Turn this action on in Setup first."}
-                  </div>
-                </div>
-                <ToggleSwitch
-                  checked={enabled && askFirst}
-                  disabled={disabled || !enabled}
-                  onCheckedChange={(next) => onToggleAskFirst(action.id, next)}
-                />
+      <div className="divide-y divide-border">
+        {actions.map((action) => {
+          const value = actionPermission(action.id, enabledIds, askFirstIds);
+          return (
+            <div key={action.id} className="flex items-center gap-4 px-5 py-3">
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium text-foreground">{action.title ?? action.toolName}</div>
+                {action.description && (
+                  <div className="truncate text-xs text-muted-foreground">{action.description}</div>
+                )}
               </div>
-            );
-          })}
-        </div>
-      )}
-    </section>
+              <select
+                aria-label={`${action.title ?? action.toolName} permission`}
+                className={cn(
+                  "h-9 w-44 rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-xs outline-none",
+                  "focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                  "disabled:cursor-not-allowed disabled:opacity-50",
+                )}
+                value={value}
+                disabled={disabled}
+                onChange={(event) => onSetPermission(action.id, event.currentTarget.value as ActionPermission)}
+              >
+                <option value="off">Off</option>
+                <option value="allowed">Allowed</option>
+                <option value="ask">Ask a human first</option>
+              </select>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
+}
+
+function actionPermission(
+  id: string,
+  enabledIds: Set<string>,
+  askFirstIds: Set<string>,
+): ActionPermission {
+  if (!enabledIds.has(id)) return "off";
+  return askFirstIds.has(id) ? "ask" : "allowed";
 }

@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   activityLog,
   agents,
+  authUsers,
   companies,
   companyMemberships,
   companySecretBindings,
@@ -132,6 +133,7 @@ describeEmbeddedPostgres("tool access service", () => {
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
     await db.delete(companies);
+    await db.delete(authUsers);
   });
 
   afterAll(async () => {
@@ -1860,6 +1862,147 @@ describeEmbeddedPostgres("tool access service", () => {
           }),
         },
       ],
+    });
+  });
+
+  it("enriches connection activity with issue and approval resolver context", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const [agent] = await db.insert(agents).values({
+      companyId: company.id,
+      name: "CodexCoder",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+    }).returning();
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      name: "GitHub",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: "GitHub",
+      transport: "remote_http",
+      status: "active",
+      enabled: true,
+      config: { url: "https://github.example/mcp" },
+      transportConfig: { url: "https://github.example/mcp" },
+    }).returning();
+    const [issue] = await db.insert(issues).values({
+      companyId: company.id,
+      title: "Fix app connection copy",
+      status: "in_progress",
+      identifier: "PAP-10912",
+      assigneeAgentId: agent.id,
+    }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: company.id,
+      agentId: agent.id,
+      invocationSource: "assignment",
+      status: "running",
+      startedAt: new Date("2026-06-12T10:00:00Z"),
+    }).returning();
+    const [catalogEntry] = await db.insert(toolCatalogEntries).values({
+      companyId: company.id,
+      applicationId: application.id,
+      connectionId: connection.id,
+      name: "mark_done",
+      toolName: "mark_done",
+      title: "Mark done",
+      riskLevel: "write",
+      isWrite: true,
+      status: "active",
+      versionHash: "v1",
+      schemaHash: "s1",
+    }).returning();
+    const [invocation] = await db.insert(toolInvocations).values({
+      companyId: company.id,
+      actorType: "agent",
+      actorId: agent.id,
+      agentId: agent.id,
+      issueId: issue.id,
+      runId: run.id,
+      applicationId: application.id,
+      connectionId: connection.id,
+      catalogEntryId: catalogEntry.id,
+      toolName: "Mark done",
+      policyDecision: "require_approval",
+      approvalState: "approved",
+      status: "completed",
+    }).returning();
+    await db.insert(authUsers).values({
+      id: "board-user",
+      name: "Dotta",
+      email: "dotta@example.com",
+      emailVerified: true,
+      createdAt: new Date("2026-06-12T09:00:00Z"),
+      updatedAt: new Date("2026-06-12T09:00:00Z"),
+    });
+    const [actionRequest] = await db.insert(toolActionRequests).values({
+      companyId: company.id,
+      invocationId: invocation.id,
+      issueId: issue.id,
+      status: "approved",
+      canonicalArgumentsHash: "abc123",
+      canonicalArgumentsSummary: { summary: "{}", sha256: "abc123", sizeBytes: 2 },
+      requestedByAgentId: agent.id,
+      resolvedByUserId: "board-user",
+      resolvedAt: new Date("2026-06-12T10:05:00Z"),
+    }).returning();
+    await db.insert(toolCallEvents).values([
+      {
+        companyId: company.id,
+        eventType: "call_completed",
+        actorType: "agent",
+        actorId: agent.id,
+        agentId: agent.id,
+        runId: run.id,
+        issueId: issue.id,
+        applicationId: application.id,
+        connectionId: connection.id,
+        catalogEntryId: catalogEntry.id,
+        invocationId: invocation.id,
+        toolName: "Get value",
+        decision: "allow",
+        outcome: "success",
+        createdAt: new Date("2026-06-12T10:04:00Z"),
+      },
+      {
+        companyId: company.id,
+        eventType: "approval_resolved",
+        actorType: "agent",
+        actorId: agent.id,
+        agentId: agent.id,
+        runId: run.id,
+        issueId: issue.id,
+        applicationId: application.id,
+        connectionId: connection.id,
+        catalogEntryId: catalogEntry.id,
+        invocationId: invocation.id,
+        actionRequestId: actionRequest.id,
+        toolName: "Mark done",
+        decision: "require_approval",
+        outcome: "success",
+        createdAt: new Date("2026-06-12T10:06:00Z"),
+      },
+    ]);
+
+    const activity = await service.listConnectionActivity(connection.id, company.id, 10);
+
+    expect(activity.events.map((event) => event.eventType)).toEqual(["approval_resolved", "call_completed"]);
+    expect(activity.issues[issue.id]).toEqual({
+      identifier: "PAP-10912",
+      title: "Fix app connection copy",
+    });
+    expect(activity.actionRequests[actionRequest.id]).toEqual({
+      status: "approved",
+      resolverDisplayName: "Dotta",
+      resolvedByAgentId: null,
+      resolvedByUserId: "board-user",
     });
   });
 

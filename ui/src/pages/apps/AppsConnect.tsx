@@ -179,7 +179,7 @@ export function AppsConnect() {
     (linkName.trim() || defaultLinkName(linkUrl) || "this app");
 
   return (
-    <div className="mx-auto max-w-5xl">
+    <div className="max-w-5xl">
       {step !== "success" && (
         <StepHeader
           subtitle={

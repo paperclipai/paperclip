@@ -27,6 +27,7 @@ export interface AppGalleryEntry {
   name: string;
   logoUrl: string;
   tagline: string;
+  description?: string;
   authKind: AppGalleryAuthKind;
   transportTemplate: AppGalleryTransportTemplate;
   credentialFields: AppGalleryCredentialField[];
@@ -49,6 +50,7 @@ export const TOOL_APP_GALLERY = [
     name: "Zapier",
     logoUrl: favicon("zapier.com"),
     tagline: "Connect Zapier-hosted MCP actions to Paperclip agents.",
+    description: "Let agents use Zapier automations across the apps your business already runs. Good for handoffs, lightweight operations, and cross-app updates that should stay visible in Paperclip.",
     authKind: "api_key",
     transportTemplate: {
       transport: "remote_http",
@@ -76,6 +78,7 @@ export const TOOL_APP_GALLERY = [
     name: "GitHub",
     logoUrl: favicon("github.com"),
     tagline: "Read and manage GitHub work through the hosted MCP server.",
+    description: "Give agents a governed way to inspect repositories, issues, and pull requests. Useful when engineering work needs GitHub context or small updates without leaving Paperclip.",
     authKind: "api_key",
     transportTemplate: {
       transport: "remote_http",
@@ -103,6 +106,7 @@ export const TOOL_APP_GALLERY = [
     name: "Slack",
     logoUrl: favicon("slack.com"),
     tagline: "Search channels and coordinate Slack actions.",
+    description: "Let agents search workspace conversations and coordinate in Slack when work needs team context. Message-sending actions can still ask a human first.",
     authKind: "oauth",
     transportTemplate: {
       transport: "remote_http",
@@ -126,6 +130,7 @@ export const TOOL_APP_GALLERY = [
     name: "Notion",
     logoUrl: favicon("notion.so"),
     tagline: "Search and update Notion workspace content.",
+    description: "Connect Notion so agents can find docs, read project notes, and update workspace pages. Use it for company memory that lives outside Paperclip.",
     authKind: "oauth",
     transportTemplate: {
       transport: "remote_http",
@@ -149,6 +154,7 @@ export const TOOL_APP_GALLERY = [
     name: "Linear",
     logoUrl: favicon("linear.app"),
     tagline: "Read and update Linear issues from agent workflows.",
+    description: "Let agents look up Linear work and make issue updates when their Paperclip tasks depend on your existing product queue.",
     authKind: "oauth",
     transportTemplate: {
       transport: "remote_http",
@@ -172,6 +178,7 @@ export const TOOL_APP_GALLERY = [
     name: "Google Drive",
     logoUrl: favicon("drive.google.com"),
     tagline: "Search and retrieve files from Google Drive.",
+    description: "Give agents access to Drive files they need for research, planning, and deliverables. Keep editing or sharing actions behind human approval when needed.",
     authKind: "api_key",
     transportTemplate: {
       transport: "remote_http",
@@ -199,6 +206,7 @@ export const TOOL_APP_GALLERY = [
     name: "Context7",
     logoUrl: favicon("context7.com"),
     tagline: "Fetch current library documentation through Context7 MCP.",
+    description: "Let agents pull current library documentation while they work. It is a low-risk reference app for coding and research tasks.",
     authKind: "none",
     transportTemplate: {
       transport: "remote_http",

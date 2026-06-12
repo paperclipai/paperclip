@@ -396,6 +396,16 @@ export interface ToolAppsAttentionResponse {
 export interface ToolConnectionActivityResponse {
   connectionId: string;
   events: ToolCallEvent[];
+  issues: Record<string, {
+    identifier: string;
+    title: string;
+  }>;
+  actionRequests: Record<string, {
+    status: ToolActionRequestStatus;
+    resolverDisplayName: string | null;
+    resolvedByAgentId: string | null;
+    resolvedByUserId: string | null;
+  }>;
 }
 
 /**

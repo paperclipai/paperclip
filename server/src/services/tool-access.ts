@@ -3,6 +3,7 @@ import { and, asc, desc, eq, gte, inArray, lt, max, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  authUsers,
   companySecretBindings,
   companySecrets,
   heartbeatRuns,
@@ -552,6 +553,11 @@ function toToolCallEvent(row: typeof toolCallEvents.$inferSelect): ToolCallEvent
     errorMessage: row.errorMessage,
     createdAt: row.createdAt,
   };
+}
+
+function userFallbackName(userId: string): string {
+  if (userId === "local-board") return "Board";
+  return userId;
 }
 
 function denialReasonForDecision(
@@ -3574,7 +3580,85 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         )
         .orderBy(desc(toolCallEvents.createdAt))
         .limit(safeLimit);
-      return { connectionId: connection.id, events: rows.map(toToolCallEvent) };
+      const events = rows.map(toToolCallEvent);
+
+      const issueIds = [...new Set(rows.map((row) => row.issueId).filter(Boolean))] as string[];
+      const issueRows = issueIds.length
+        ? await db
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            title: issues.title,
+          })
+          .from(issues)
+          .where(and(eq(issues.companyId, connection.companyId), inArray(issues.id, issueIds)))
+        : [];
+      const issueMap = Object.fromEntries(
+        issueRows.map((issue) => [
+          issue.id,
+          {
+            identifier: issue.identifier ?? issue.id,
+            title: issue.title,
+          },
+        ]),
+      );
+
+      const actionRequestIds = [...new Set(rows.map((row) => row.actionRequestId).filter(Boolean))] as string[];
+      const requestRows = actionRequestIds.length
+        ? await db
+          .select({
+            id: toolActionRequests.id,
+            status: toolActionRequests.status,
+            resolvedByAgentId: toolActionRequests.resolvedByAgentId,
+            resolvedByUserId: toolActionRequests.resolvedByUserId,
+          })
+          .from(toolActionRequests)
+          .where(and(
+            eq(toolActionRequests.companyId, connection.companyId),
+            inArray(toolActionRequests.id, actionRequestIds),
+          ))
+        : [];
+
+      const resolverAgentIds = [...new Set(requestRows.map((row) => row.resolvedByAgentId).filter(Boolean))] as string[];
+      const resolverUserIds = [...new Set(requestRows.map((row) => row.resolvedByUserId).filter(Boolean))] as string[];
+      const resolverAgents = resolverAgentIds.length
+        ? await db
+          .select({ id: agents.id, name: agents.name })
+          .from(agents)
+          .where(and(eq(agents.companyId, connection.companyId), inArray(agents.id, resolverAgentIds)))
+        : [];
+      const resolverUsers = resolverUserIds.length
+        ? await db
+          .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email })
+          .from(authUsers)
+          .where(inArray(authUsers.id, resolverUserIds))
+        : [];
+      const resolverAgentNames = new Map(resolverAgents.map((agent) => [agent.id, agent.name]));
+      const resolverUserNames = new Map(
+        resolverUsers.map((user) => [user.id, user.name?.trim() || user.email?.trim() || user.id]),
+      );
+      const actionRequestMap = Object.fromEntries(
+        requestRows.map((request) => [
+          request.id,
+          {
+            status: request.status,
+            resolverDisplayName: request.resolvedByAgentId
+              ? resolverAgentNames.get(request.resolvedByAgentId) ?? request.resolvedByAgentId
+              : request.resolvedByUserId
+                ? resolverUserNames.get(request.resolvedByUserId) ?? userFallbackName(request.resolvedByUserId)
+                : null,
+            resolvedByAgentId: request.resolvedByAgentId,
+            resolvedByUserId: request.resolvedByUserId,
+          },
+        ]),
+      );
+
+      return {
+        connectionId: connection.id,
+        events,
+        issues: issueMap,
+        actionRequests: actionRequestMap,
+      };
     },
 
     /**
