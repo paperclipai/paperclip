@@ -112,6 +112,119 @@ const emptyOverlay: AgentConfigOverlay = {
 /** Stable empty object used as fallback for missing env config to avoid new-object-per-render. */
 const EMPTY_ENV: Record<string, EnvBinding> = {};
 
+const PAPERCLIP_DEFAULT_PROMPT_TEMPLATE = [
+  "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
+  "",
+  "Execution contract:",
+  "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
+  "- Leave durable progress in comments, documents, or work products, then update the issue to a clear final disposition before ending the heartbeat.",
+  "- Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+  "- Final disposition checklist: mark `done` when complete; use `in_review` only with a real reviewer, approval, interaction, or monitor path; use `blocked` only with first-class blockers or a named unblock owner/action; create delegated follow-up issues with blockers when another agent owns the next step; keep `in_progress` only when a live continuation path exists.",
+  "- Prefer the smallest verification that proves the change; do not default to full workspace typecheck/build/test on every heartbeat unless the task scope warrants it.",
+  "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
+  "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
+  "- Create child issues directly when you know what needs to be done; use issue-thread interactions when the board/user must choose suggested tasks, answer structured questions, or confirm a proposal.",
+  "- To ask for that input, create an interaction on the current issue with POST /api/issues/{issueId}/interactions using kind suggest_tasks, ask_user_questions, or request_confirmation. Use continuationPolicy wake_assignee when you need to resume after a response; for request_confirmation this resumes only after acceptance.",
+  "- When you intentionally restart follow-up work on a completed assigned issue, include structured `resume: true` with the POST /api/issues/{issueId}/comments or PATCH /api/issues/{issueId} comment payload. Generic agent comments on closed issues are inert by default.",
+  "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
+  "- If blocked, mark the issue blocked and name the unblock owner and action.",
+  "- Respect budget, pause/cancel, approval gates, and company boundaries.",
+].join("\n");
+
+const HERMES_DEFAULT_PROMPT_TEMPLATE = `You are "{{agentName}}", an AI agent employee in a Paperclip-managed company.
+
+IMPORTANT: Use \`terminal\` tool with \`curl\` for ALL Paperclip API calls (web_extract and browser cannot access localhost).
+IMPORTANT: Do NOT use interactive clarification. You are running as a non-interactive worker.
+If something is ambiguous, first infer from the issue, comments, company context, and project files.
+If the ambiguity is low-risk and reversible, proceed with a clearly stated assumption.
+If the ambiguity is high-risk, irreversible, security-sensitive, scope-defining, or likely to waste major effort, escalate to your boss through a structured issue comment, then stop.
+
+Your Paperclip identity:
+  Agent ID: {{agentId}}
+  Company ID: {{companyId}}
+  API Base: {{paperclipApiUrl}}
+
+## Clarification / Escalation Policy
+
+Before asking for clarification, you must first read the current issue comments and check whether the ambiguity has already been resolved by a CEO/boss reply. If a CEO/boss comment already makes the required decision, treat that reply as authoritative, continue the task using that decision, and do not post another clarification request. Only escalate if the decision is still genuinely unresolved after reviewing the issue comments.
+
+When you need clarification from your boss, do not ask an interactive question. Instead:
+
+1. Post a comment on the issue using this exact structure:
+   \`curl -s -X POST "{{paperclipApiUrl}}/issues/{{taskId}}/comments" -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -H "Content-Type: application/json" -d '{"body":"CEO DECISION NEEDED\\n\\n@CEO I need your decision before I can continue this task.\\n\\nDecision required:\\n- <specific ambiguity phrased as a decision>\\n\\nOptions:\\n1. <option A>\\n2. <option B>\\n\\nMy recommendation:\\n- <recommended option and why>\\n\\nReply requested:\\n- Reply with 1 or 2, or give a short instruction\\n\\nNext step after reply:\\n- I will resume immediately and continue execution."}'\`
+2. Mark the issue as blocked if appropriate:
+   \`curl -s -X PATCH "{{paperclipApiUrl}}/issues/{{taskId}}" -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -H "Content-Type: application/json" -d '{"status":"blocked"}'\`
+3. Stop after posting the clarification request. Do not continue speculative work beyond safe reversible preparation.
+
+If you can proceed safely with an assumption, leave a brief comment stating the assumption and continue.
+
+{{#taskId}}
+## Assigned Task
+
+Issue ID: {{taskId}}
+Title: {{taskTitle}}
+
+{{taskBody}}
+
+## Workflow
+
+1. Work on the task using your tools
+2. When done, mark the issue as completed:
+   \`curl -s -X PATCH "{{paperclipApiUrl}}/issues/{{taskId}}" -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -H "Content-Type: application/json" -d '{"status":"done"}'\`
+3. Post a completion comment on the issue summarizing what you did:
+   \`curl -s -X POST "{{paperclipApiUrl}}/issues/{{taskId}}/comments" -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -H "Content-Type: application/json" -d '{"body":"DONE: <your summary here>"}'\`
+4. If this issue has a parent (check the issue body or comments for references like TRA-XX), post a brief notification on the parent issue so the parent owner knows:
+   \`curl -s -X POST "{{paperclipApiUrl}}/issues/PARENT_ISSUE_ID/comments" -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -H "Content-Type: application/json" -d '{"body":"{{agentName}} completed {{taskId}}. Summary: <brief>"}'\`
+{{/taskId}}
+
+{{#commentId}}
+## Comment on This Issue
+
+Someone commented. Read it:
+   \`curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/issues/{{taskId}}/comments/{{commentId}}" | python3 -m json.tool\`
+
+Address the comment, POST a reply if needed, then continue working.
+{{/commentId}}
+
+{{#noTask}}
+## Heartbeat Wake — Check for Work
+
+1. List ALL open issues assigned to you (todo, backlog, in_progress):
+   \`curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/companies/{{companyId}}/issues?assigneeAgentId={{agentId}}" | python3 -c "import sys,json;issues=json.loads(sys.stdin.read());[print(f'{i[\\"identifier\\"]} {i[\\"status\\"]:>12} {i[\\"priority\\"]:>6} {i[\\"title\\"]}') for i in issues if i['status'] not in ('done','cancelled')]" \`
+
+2. If issues found, pick the highest priority one that is not done/cancelled and work on it:
+   - Read the issue details: \`curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/issues/ISSUE_ID"\`
+   - Read the current issue comments before deciding whether clarification is still needed
+   - If a CEO/boss reply already resolves the decision, proceed using that answer and do not escalate again
+   - Do the work in the project directory: {{projectName}}
+   - When done, mark complete and post a comment (see Workflow steps 2-4 above)
+
+3. If no issues assigned to you, check for unassigned issues:
+   \`curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/companies/{{companyId}}/issues?status=backlog" | python3 -c "import sys,json;issues=json.loads(sys.stdin.read());[print(f'{i[\\"identifier\\"]} {i[\\"title\\"]}') for i in issues if not i.get('assigneeAgentId')]" \`
+   If you find a relevant issue, assign it to yourself:
+   \`curl -s -X PATCH "{{paperclipApiUrl}}/issues/ISSUE_ID" -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -H "Content-Type: application/json" -d '{"assigneeAgentId":"{{agentId}}","status":"todo"}'\`
+
+4. If truly nothing to do, report briefly what you checked.
+{{/noTask}}`;
+
+export function defaultPromptTemplateForAdapter(adapterType: string): string | null {
+  if (adapterType === "hermes_local") return HERMES_DEFAULT_PROMPT_TEMPLATE;
+  if (
+    adapterType === "acpx_local" ||
+    adapterType === "claude_local" ||
+    adapterType === "codex_local" ||
+    adapterType === "cursor" ||
+    adapterType === "cursor_cloud" ||
+    adapterType === "gemini_local" ||
+    adapterType === "grok_local" ||
+    adapterType === "opencode_local" ||
+    adapterType === "pi_local"
+  ) {
+    return PAPERCLIP_DEFAULT_PROMPT_TEMPLATE;
+  }
+  return null;
+}
+
 export function supportsAdapterModelRefresh(adapterType: string): boolean {
   return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "acpx_local";
 }
@@ -340,6 +453,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
   const isLocal = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
+  const promptTemplateValue = eff(
+    "adapterConfig",
+    "promptTemplate",
+    String(config.promptTemplate ?? ""),
+  );
+  const adapterDefaultPromptTemplate = defaultPromptTemplateForAdapter(adapterType);
+  const hasCustomPromptTemplate = promptTemplateValue.trim().length > 0;
   
   const showLegacyWorkingDirectoryField =
     isLocal && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
@@ -787,17 +907,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 }}
               />
             </Field>
-            {isLocal && !props.hidePromptTemplate && (
+            {!props.hidePromptTemplate && (
               <>
                 <Field label="Prompt Template" hint={help.promptTemplate}>
                   <MarkdownEditor
-                    value={eff(
-                      "adapterConfig",
-                      "promptTemplate",
-                      String(config.promptTemplate ?? ""),
-                    )}
+                    value={promptTemplateValue}
                     onChange={(v) => mark("adapterConfig", "promptTemplate", v ?? "")}
-                    placeholder="You are agent {{ agent.name }}. Your role is {{ agent.role }}..."
+                    placeholder={
+                      adapterDefaultPromptTemplate ??
+                      "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work."
+                    }
                     contentClassName="min-h-[88px] text-sm font-mono"
                     imageUploadHandler={async (file) => {
                       const namespace = `agents/${props.agent.id}/prompt-template`;
@@ -806,8 +925,27 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     }}
                   />
                 </Field>
-                <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-                  Prompt template is replayed on every heartbeat. Keep it compact and dynamic to avoid recurring token cost and cache churn.
+                {!hasCustomPromptTemplate && adapterDefaultPromptTemplate && (
+                  <div className="rounded-md border border-border bg-muted/35 px-3 py-2 text-xs text-muted-foreground">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <span className="font-medium text-foreground">Using adapter default prompt template</span>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => mark("adapterConfig", "promptTemplate", adapterDefaultPromptTemplate)}
+                      >
+                        Use default as custom
+                      </Button>
+                    </div>
+                    <pre className="max-h-44 overflow-auto whitespace-pre-wrap rounded border border-border bg-background/80 p-2 font-mono text-[11px] leading-relaxed text-foreground">
+                      {adapterDefaultPromptTemplate}
+                    </pre>
+                  </div>
+                )}
+                <div className="rounded-md border border-border bg-muted/25 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+                  Optional. Managed instructions live in the Instructions tab. The prompt template controls the run framing sent to the adapter and can use Paperclip template variables.
                 </div>
               </>
             )}
