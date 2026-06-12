@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
@@ -80,9 +80,14 @@ export function approvalService(db: Db) {
   }
 
   return {
-    list: (companyId: string, status?: string) => {
+    list: (companyId: string, status?: string, planRootIssueId?: string) => {
       const conditions = [eq(approvals.companyId, companyId)];
       if (status) conditions.push(eq(approvals.status, status));
+      // Scope to a single plan's gates via the payload's planRootIssueId. Lets
+      // the plan rollup pull just its own gates instead of every company approval.
+      if (planRootIssueId) {
+        conditions.push(sql`${approvals.payload} ->> 'planRootIssueId' = ${planRootIssueId}`);
+      }
       return db.select().from(approvals).where(and(...conditions));
     },
 

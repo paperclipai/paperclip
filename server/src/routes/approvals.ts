@@ -69,7 +69,8 @@ export function approvalRoutes(
     assertCompanyAccess(req, companyId);
     if (!(await assertApprovalAccessAllowed(req, res, companyId))) return;
     const status = req.query.status as string | undefined;
-    const result = await svc.list(companyId, status);
+    const planRootIssueId = req.query.planRootIssueId as string | undefined;
+    const result = await svc.list(companyId, status, planRootIssueId);
     res.json(result.map((approval) => redactApprovalPayload(approval)));
   });
 

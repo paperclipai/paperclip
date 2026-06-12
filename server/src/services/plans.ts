@@ -1,6 +1,6 @@
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { approvals, issueApprovals, issues, planDetails } from "@paperclipai/db";
+import { approvals, budgetPolicies, issueApprovals, issues, planDetails } from "@paperclipai/db";
 import type { PlanGateProfile } from "@paperclipai/shared";
 import { issueService } from "./issues.js";
 import { agentService } from "./agents.js";
@@ -116,26 +116,46 @@ export function planService(db: Db) {
     return createdApprovalIds;
   }
 
-  // E6 run hygiene: install an issue-scoped, lifetime, hard-stop budget policy
-  // on the plan-root issue from the plan's caps. Budget enforcement aggregates
-  // over the issue subtree, so one root policy bounds total burn across every
-  // child the dev_team plan spawns — the runaway guard for unattended runs.
-  // Best-effort: a failure here logs a warning but never blocks activation
-  // (same soft-phase philosophy as the gate-role fallback above).
-  async function createActivationBudgetPolicies(
+  // E6 run hygiene: sync issue-scoped, lifetime, hard-stop budget policies on
+  // the plan-root issue from the plan's caps. Budget enforcement aggregates over
+  // the issue subtree, so one root policy bounds total burn across every child
+  // the dev_team plan spawns — the runaway guard for unattended runs.
+  //
+  // `deactivateCleared` controls the cleared-cap behavior: at activation we only
+  // create policies for caps that are actually set; on a later cap edit we also
+  // push amount 0 for a cleared cap so upsertPolicy deactivates the stale policy
+  // (amount 0 -> isActive false) instead of leaving it enforcing an old limit.
+  // Best-effort: a failure logs a warning but never blocks activation.
+  async function syncIssueBudgetPolicies(
     companyId: string,
     planRootIssueId: string,
     caps: { budgetCapCents: number | null; budgetCapTokens: number | null },
     actor: { agentId: string | null; userId: string | null },
+    opts: { deactivateCleared: boolean },
   ): Promise<void> {
     const budgets = budgetService(db);
+    const cents = caps.budgetCapCents ?? 0;
+    const tokens = caps.budgetCapTokens ?? 0;
+    // When deactivating cleared caps, only touch metrics that already have a
+    // policy — so clearing a token cap doesn't conjure a spurious inactive
+    // billed_cents row for a metric that was never set.
+    let existingMetrics = new Set<string>();
+    if (opts.deactivateCleared) {
+      const rows = await db
+        .select({ metric: budgetPolicies.metric })
+        .from(budgetPolicies)
+        .where(
+          and(
+            eq(budgetPolicies.companyId, companyId),
+            eq(budgetPolicies.scopeType, "issue"),
+            eq(budgetPolicies.scopeId, planRootIssueId),
+          ),
+        );
+      existingMetrics = new Set(rows.map((r) => r.metric));
+    }
     const policies: Array<{ metric: "billed_cents" | "total_tokens"; amount: number }> = [];
-    if (caps.budgetCapCents && caps.budgetCapCents > 0) {
-      policies.push({ metric: "billed_cents", amount: caps.budgetCapCents });
-    }
-    if (caps.budgetCapTokens && caps.budgetCapTokens > 0) {
-      policies.push({ metric: "total_tokens", amount: caps.budgetCapTokens });
-    }
+    if (cents > 0 || existingMetrics.has("billed_cents")) policies.push({ metric: "billed_cents", amount: cents });
+    if (tokens > 0 || existingMetrics.has("total_tokens")) policies.push({ metric: "total_tokens", amount: tokens });
     for (const policy of policies) {
       try {
         await budgets.upsertPolicy(
@@ -153,7 +173,7 @@ export function planService(db: Db) {
       } catch (error) {
         logger.warn(
           { companyId, planRootIssueId, metric: policy.metric, error: String(error) },
-          "dev_team plan budget policy not installed — runaway guard missing for this plan",
+          "dev_team plan budget policy sync failed — runaway guard may be missing for this plan",
         );
       }
     }
@@ -276,11 +296,12 @@ export function planService(db: Db) {
           createdChildren.map((c) => c.id),
           actor,
         );
-        await createActivationBudgetPolicies(
+        await syncIssueBudgetPolicies(
           details.companyId,
           issueId,
           { budgetCapCents: details.budgetCapCents, budgetCapTokens: details.budgetCapTokens },
           actor,
+          { deactivateCleared: false },
         );
       }
 
@@ -371,13 +392,15 @@ export function planService(db: Db) {
         .returning();
       // Re-sync the enforcement policy so a cap edited after activation actually
       // bites. upsertPolicy is keyed by scope+metric+window, so this updates the
-      // existing E6 policy in place rather than duplicating it.
+      // existing E6 policy in place; deactivateCleared makes a removed cap
+      // deactivate its stale policy instead of leaving it enforcing the old limit.
       if (updated?.gateProfile === "dev_team") {
-        await createActivationBudgetPolicies(
+        await syncIssueBudgetPolicies(
           updated.companyId,
           issueId,
           { budgetCapCents: updated.budgetCapCents, budgetCapTokens: updated.budgetCapTokens },
           { agentId: null, userId: null },
+          { deactivateCleared: true },
         );
       }
       return updated;

@@ -16,6 +16,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { approvalService } from "../services/approvals.js";
 import { issueService } from "../services/issues.js";
 import { planService } from "../services/plans.js";
 
@@ -256,7 +257,44 @@ describeEmbeddedPostgres("planService gate-profile (soft)", () => {
     // Editing the cap updates the same policy, not a duplicate.
     await plans.setBudgetCaps(issue.id, { budgetCapTokens: 2_000_000 });
     policies = await issueBudgetPolicies(companyId, issue.id);
-    expect(policies).toHaveLength(1);
-    expect(policies[0]!.amount).toBe(2_000_000);
+    const tokenPolicy = policies.find((p) => p.metric === "total_tokens");
+    expect(tokenPolicy?.amount).toBe(2_000_000);
+    expect(tokenPolicy?.isActive).toBe(true);
+  });
+
+  it("A4: approvalService.list filters gates by planRootIssueId", async () => {
+    const { companyId } = await seedCompany({ withGateAgents: true }, "EBG");
+    const planA = await createDevTeamPlan(companyId, "dev_team", ["A task"]);
+    const planB = await createDevTeamPlan(companyId, "dev_team", ["B task"]);
+    await plans.activate(planA.issue.id, { agentId: null, userId: "tester" });
+    await plans.activate(planB.issue.id, { agentId: null, userId: "tester" });
+
+    const approvals_ = approvalService(db);
+    const scoped = await approvals_.list(companyId, undefined, planA.issue.id);
+    expect(scoped.length).toBeGreaterThan(0);
+    expect(scoped.every((a) => (a.payload as Record<string, unknown>).planRootIssueId === planA.issue.id)).toBe(true);
+    // The unscoped list returns both plans' gates.
+    const all = await approvals_.list(companyId);
+    expect(all.length).toBeGreaterThan(scoped.length);
+  });
+
+  it("A5: clearing a cap deactivates the stale enforcement policy", async () => {
+    const { companyId } = await seedCompany({ withGateAgents: true }, "EBF");
+    const { issue } = await createDevTeamPlan(companyId, "dev_team", ["Task"]);
+    await plans.activate(issue.id, { agentId: null, userId: "tester" });
+    await plans.setBudgetCaps(issue.id, { budgetCapTokens: 1_000_000 });
+    expect(
+      (await issueBudgetPolicies(companyId, issue.id)).find((p) => p.metric === "total_tokens")?.isActive,
+    ).toBe(true);
+
+    // Remove the cap -> the token policy must stop enforcing (no stale hard-stop).
+    await plans.setBudgetCaps(issue.id, { budgetCapTokens: null });
+    const tokenPolicy = (await issueBudgetPolicies(companyId, issue.id)).find(
+      (p) => p.metric === "total_tokens",
+    );
+    expect(tokenPolicy?.isActive).toBe(false);
+    // No issue-scoped policy may still be active after the cap is cleared.
+    const active = (await issueBudgetPolicies(companyId, issue.id)).filter((p) => p.isActive);
+    expect(active).toHaveLength(0);
   });
 });
