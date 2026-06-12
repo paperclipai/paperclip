@@ -34,11 +34,14 @@
  */
 
 import type { Db } from "@paperclipai/db";
+import type { WorkerHostCallContext } from "@paperclipai/plugin-sdk";
 import {
   collectSecretRefPaths,
   isUuidSecretRef,
   readConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
+import { secretService } from "./secrets.js";
+import { HttpError } from "../errors.js";
 
 export const PLUGIN_SECRET_REFS_DISABLED_MESSAGE =
   "Plugin secret references are disabled until company-scoped plugin config lands";
@@ -149,11 +152,12 @@ export interface PluginSecretsService {
    * Resolve a secret reference to its current plaintext value.
    *
    * @param params - Contains the `secretRef` (UUID of the secret)
+   * @param context - Worker call context carrying the acting company scope
    * @returns The resolved secret value
-   * @throws {Error} If the secret is not found, has no versions, or
-   *   the provider fails to resolve
+   * @throws {Error} with name `InvalidSecretRefError` if the secret is not
+   *   found, cross-company, or the ref is invalid (same shape — no oracle)
    */
-  resolve(params: PluginSecretsResolveParams): Promise<string>;
+  resolve(params: PluginSecretsResolveParams, context?: WorkerHostCallContext): Promise<string>;
 }
 
 /**
@@ -199,13 +203,13 @@ function createRateLimiter(maxAttempts: number, windowMs: number) {
 export function createPluginSecretsHandler(
   options: PluginSecretsHandlerOptions,
 ): PluginSecretsService {
-  const { pluginId } = options;
+  const { db, pluginId } = options;
 
   // Rate limit: max 30 resolution attempts per plugin per minute
   const rateLimiter = createRateLimiter(30, 60_000);
 
   return {
-    async resolve(params: PluginSecretsResolveParams): Promise<string> {
+    async resolve(params: PluginSecretsResolveParams, context?: WorkerHostCallContext): Promise<string> {
       const { secretRef } = params;
 
       // ---------------------------------------------------------------
@@ -230,9 +234,29 @@ export function createPluginSecretsHandler(
         throw invalidSecretRef(trimmedRef);
       }
 
-      // Fail closed until plugin config and worker runtime both carry an
-      // explicit company scope for secret bindings and resolution.
-      throw new Error(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
+      // ---------------------------------------------------------------
+      // 2. Require an acting company scope (per-invocation)
+      // ---------------------------------------------------------------
+      const actingCompanyId = context?.invocationScope?.companyId;
+      if (!actingCompanyId) {
+        // No company scope — treat as not-found; do not reveal why
+        throw invalidSecretRef(trimmedRef);
+      }
+
+      // ---------------------------------------------------------------
+      // 3. Resolve via the secret provider, enforcing ownership
+      //    Map ownership/not-found errors to InvalidSecretRefError so
+      //    callers cannot distinguish "doesn't exist" from "belongs to
+      //    another company" (PLUGIN_SPEC §22 — no cross-company oracle).
+      // ---------------------------------------------------------------
+      try {
+        return await secretService(db).resolveSecretValue(actingCompanyId, trimmedRef, "latest");
+      } catch (err) {
+        if (err instanceof HttpError && (err.status === 404 || err.status === 422)) {
+          throw invalidSecretRef(trimmedRef);
+        }
+        throw err;
+      }
     },
   };
 }
