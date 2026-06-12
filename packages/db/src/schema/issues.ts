@@ -63,6 +63,8 @@ export const issues = pgTable(
       .references((): AnyPgColumn => executionWorkspaces.id, { onDelete: "set null" }),
     executionWorkspacePreference: text("execution_workspace_preference"),
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
+    // GitHub PR URL opened for this issue's branch (dev-team A3 pipeline).
+    prUrl: text("pr_url"),
     sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
