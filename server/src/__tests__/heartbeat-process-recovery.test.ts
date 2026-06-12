@@ -2368,6 +2368,155 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
   });
 
+  it("escalation preserves assigneeAgentId when recovery owner is an invokable manager (not the doer)", async () => {
+    // Seeds a stranded in_progress issue where doer.reportsTo = manager (idle, invokable).
+    // Continuation-recovery is exhausted (retryReason: "issue_continuation_needed").
+    // After escalation the issue should be status=blocked but STILL assigned to the doer —
+    // the recovery owner (manager) gets woken to shepherd but must not inherit ownership.
+    const companyId = randomUUID();
+    const doerId = randomUUID();
+    const managerId = randomUUID();
+    const runId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const issueId = randomUUID();
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    // Manager must be seeded before doer due to FK self-reference on agents.reportsTo
+    await db.insert(agents).values([
+      {
+        id: managerId,
+        companyId,
+        name: "EngManager",
+        role: "manager",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: doerId,
+        companyId,
+        name: "Doer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+        reportsTo: managerId,
+      },
+    ]);
+
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId: doerId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: { issueId },
+      status: "failed",
+      runId,
+      claimedAt: now,
+      finishedAt: new Date("2026-03-19T00:05:00.000Z"),
+      error: "run failed before issue advanced",
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: doerId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "failed",
+      wakeupRequestId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+      },
+      startedAt: now,
+      finishedAt: new Date("2026-03-19T00:05:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:05:00.000Z"),
+      errorCode: "process_lost",
+      error: "run failed before issue advanced",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Work assigned to doer whose manager is invokable",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: doerId,
+      checkoutRunId: runId,
+      executionRunId: null,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      startedAt: now,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    // Core assertion — assigneeAgentId must NOT be overwritten with the recovery owner (manager).
+    expect(issue?.assigneeAgentId).toBe(doerId);
+
+    // Recovery action must target the manager as owner (shepherd), doer as return owner.
+    const recoveryAction = await waitForValue(async () =>
+      db
+        .select()
+        .from(issueRecoveryActions)
+        .where(
+          and(
+            eq(issueRecoveryActions.companyId, companyId),
+            eq(issueRecoveryActions.sourceIssueId, issueId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null),
+    );
+    expect(recoveryAction?.ownerAgentId).toBe(managerId);
+    expect(recoveryAction?.previousOwnerAgentId).toBe(doerId);
+    expect(recoveryAction?.returnOwnerAgentId).toBe(doerId);
+
+    // The recovery wake must be queued for the manager, not the doer.
+    const managerWake = await waitForValue(async () => {
+      const wakeups = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.agentId, managerId));
+      return (
+        wakeups.find((w) => {
+          const payload = w.payload as Record<string, unknown> | null;
+          return (
+            payload?.issueId === issueId &&
+            payload?.recoveryActionId === recoveryAction?.id
+          );
+        }) ?? null
+      );
+    });
+    expect(managerWake?.reason).toBe("source_scoped_recovery_action");
+  });
+
   it("blocks an already stranded recovery issue without creating a recovery child", async () => {
     const { companyId, issueId } = await seedStrandedIssueFixture({
       status: "todo",
