@@ -109,3 +109,17 @@ export function createTranslator(dict: Dictionary, options: TranslatorOptions = 
     translateTree,
   };
 }
+
+let singleton: Translator | null = null;
+
+export function ensureStarted(dict: Dictionary, options: TranslatorOptions = {}): Translator {
+  if (singleton) return singleton;
+  singleton = createTranslator(dict, options);
+  singleton.start();
+  return singleton;
+}
+
+export function __resetSingletonForTests(): void {
+  singleton?.stop();
+  singleton = null;
+}
