@@ -49,6 +49,7 @@ jobs:
           echo "value=$TOKEN" >> $GITHUB_OUTPUT
         env:
           COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+          COMMITPERCLIP_APP_ID: ${{ vars.COMMITPERCLIP_APP_ID }}
 
       - name: Run quality gates
         id: quality
