@@ -97,6 +97,7 @@ import {
   redactDetectedSuccessfulRunProgressSummaryForBoard,
 } from "../services/heartbeat.ts";
 import {
+  STRANDED_RECOVERY_ACTION_MAX_ATTEMPTS,
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
@@ -772,7 +773,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       returnOwnerAgentId: input.agentId,
       cause: input.cause ?? "stranded_assigned_issue",
       attemptCount: 1,
-      maxAttempts: null,
+      maxAttempts: STRANDED_RECOVERY_ACTION_MAX_ATTEMPTS,
     });
     expect(action.evidence).toMatchObject({
       sourceIssueId: input.issueId,

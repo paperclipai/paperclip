@@ -195,6 +195,23 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+export const STRANDED_RECOVERY_ACTION_MAX_ATTEMPTS = 3;
+
+const STRANDED_RECOVERY_ACTION_KINDS = new Set<string>([
+  "stranded_assigned_issue",
+  "missing_disposition",
+]);
+
+function isExhaustedStrandedRecoveryAction(
+  action: { kind: string; attemptCount: number; maxAttempts: number | null } | null,
+) {
+  return Boolean(
+    action &&
+      STRANDED_RECOVERY_ACTION_KINDS.has(action.kind) &&
+      action.maxAttempts !== null &&
+      action.attemptCount > action.maxAttempts,
+  );
+}
 
 type ContinuationRetryClassification = {
   kind: "transient_infra" | "non_retryable" | "default";
@@ -2324,7 +2341,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           reason: "no_invokable_recovery_owner",
         },
       monitorPolicy: null,
-      maxAttempts: null,
+      maxAttempts: STRANDED_RECOVERY_ACTION_MAX_ATTEMPTS,
       lastAttemptAt: now,
     });
 
@@ -2339,6 +2356,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     if (input.recoveryCause === "workspace_validation_failed") return;
     if (!input.action.ownerAgentId) return;
+    if (isExhaustedStrandedRecoveryAction(input.action)) {
+      logger.info(
+        {
+          issueId: input.issue.id,
+          recoveryActionId: input.action.id,
+          attemptCount: input.action.attemptCount,
+          maxAttempts: input.action.maxAttempts,
+        },
+        "suppressed stranded recovery owner wakeup: attempt cap exhausted",
+      );
+      return;
+    }
     await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",
       triggerDetail: "system",
@@ -2576,6 +2605,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           });
         }
       }
+    }
+
+    if (
+      recoveryAction.maxAttempts !== null &&
+      recoveryAction.attemptCount === recoveryAction.maxAttempts + 1
+    ) {
+      await issuesSvc.addComment(
+        input.issue.id,
+        [
+          `Paperclip reached the automatic recovery attempt cap for this issue (recovery action \`${recoveryAction.id}\`, ` +
+            `${recoveryAction.maxAttempts}× attempts).`,
+          "",
+          "Automatic continuation retries and recovery-owner wakeups are parked so a deterministic failure cannot loop forever.",
+          "Fix the underlying runtime/adapter problem, then resolve the recovery action (restoring the issue to an executable status) to re-arm automatic recovery.",
+        ].join("\n"),
+        {},
+        { authorType: "system" },
+      );
     }
 
     await logActivity(db, {
@@ -2870,6 +2917,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
       if (isUnsuccessfulTerminalIssueRun(latestRun)) {
+        const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
+        if (isExhaustedStrandedRecoveryAction(activeRecoveryAction)) {
+          // Automatic recovery already exhausted its attempt cap for this issue and
+          // the active recovery action is still unresolved, so the failure is not
+          // healing on its own. Park the issue as blocked instead of restarting the
+          // transient retry cycle, which would otherwise loop forever whenever a
+          // non-continuation run resets the consecutive-retry counter.
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_progress",
+            latestRun,
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
         const classification = classifyContinuationFailure(latestRun);
 
         if (classification.kind === "non_retryable") {
