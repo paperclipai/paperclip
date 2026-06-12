@@ -765,6 +765,36 @@ describe("syncToLinear", () => {
     );
   });
 
+  it("does not update Linear when the issue is already in the target project", async () => {
+    const harness = createTestHarness({ manifest });
+    await createProjectLink(harness.ctx, {
+      paperclipProjectId: "pc-proj-2",
+      paperclipCompanyId: "comp-1",
+      linearProjectId: "lin-proj-2",
+      linearProjectName: "Target Project",
+      linearState: "started",
+      syncDirection: "bidirectional",
+    });
+    const updateIssue = vi.spyOn(linearApi, "updateIssue").mockResolvedValue(makeLinearIssue());
+
+    await syncToLinear(
+      harness.ctx,
+      makeLink({ lastSyncAt: "2020-01-01T00:00:00.000Z" }),
+      { projectId: "pc-proj-2" },
+      "lin-token",
+      "team-1",
+      {
+        baseUrl: null,
+        currentLinearIssue: makeLinearIssue({
+          project: { id: "lin-proj-2", name: "Target Project", description: null, state: "started" },
+        }),
+      },
+    );
+
+    expect(updateIssue).not.toHaveBeenCalled();
+  });
+
+
   it("clears the Linear project when Paperclip projectId is removed", async () => {
     const harness = createTestHarness({ manifest });
     const updateIssue = vi.spyOn(linearApi, "updateIssue").mockResolvedValue(makeLinearIssue());
@@ -929,5 +959,26 @@ describe("syncToLinear", () => {
       "lin-1",
       { labelIds: [] },
     );
+  });
+
+  it("does not clear Linear issue labels when the current issue is already unlabeled", async () => {
+    const harness = createTestHarness({ manifest });
+    const listIssueLabels = vi.spyOn(linearApi, "listIssueLabels");
+    const updateIssue = vi.spyOn(linearApi, "updateIssue").mockResolvedValue(makeLinearIssue());
+
+    await syncToLinear(
+      harness.ctx,
+      makeLink({ lastSyncAt: "2020-01-01T00:00:00.000Z" }),
+      { labelIds: [] },
+      "lin-token",
+      "team-1",
+      {
+        baseUrl: null,
+        currentLinearIssue: makeLinearIssue({ labels: { nodes: [] } }),
+      },
+    );
+
+    expect(listIssueLabels).not.toHaveBeenCalled();
+    expect(updateIssue).not.toHaveBeenCalled();
   });
 });

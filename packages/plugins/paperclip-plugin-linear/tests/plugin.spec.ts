@@ -1779,6 +1779,102 @@ describe("paperclip-plugin-linear", () => {
       expect(cursor).toBe(0);
       expect(syncModule.syncToLinear).not.toHaveBeenCalled();
     });
+
+    it("advances the mirror reconciliation cursor past completed entries before a rate limit", async () => {
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthTeamId },
+        "team-1",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+
+      for (const suffix of ["1", "2", "3"]) {
+        await harness.ctx.state.set(
+          { scopeKind: "instance", stateKey: `${STATE_KEYS.linkPrefix}pc-issue-${suffix}` },
+          {
+            paperclipIssueId: `pc-issue-${suffix}`,
+            paperclipCompanyId: "comp-1",
+            linearIssueId: `lin-issue-${suffix}`,
+            linearIdentifier: `BLO-${suffix}`,
+            linearUrl: `https://linear.app/blockcast/issue/BLO-${suffix}`,
+            syncDirection: "bidirectional",
+            lastSyncAt: "2020-01-01T00:00:00.000Z",
+            lastLinearStateType: "unstarted",
+            lastCommentSyncAt: null,
+          },
+        );
+      }
+
+      harness.seed({
+        issues: ["1", "2", "3"].map((suffix) => ({
+          id: `pc-issue-${suffix}`,
+          companyId: "comp-1",
+          projectId: "pc-project-current",
+          title: `Paperclip issue ${suffix}`,
+          status: "done",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+          labelIds: [],
+        } as never)),
+      });
+
+      const { listIssuesByIds } = await import("../src/linear.js");
+      (listIssuesByIds as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+        ["1", "2", "3"].map((suffix) => ({
+          id: `lin-issue-${suffix}`,
+          identifier: `BLO-${suffix}`,
+          title: `Linear issue ${suffix}`,
+          description: null,
+          team: { id: "team-1", name: "Blockcast", key: "BLO" },
+          state: { name: "Todo", type: "unstarted" },
+          priority: 3,
+          url: `https://linear.app/blockcast/issue/BLO-${suffix}`,
+          assignee: null,
+          labels: { nodes: [] },
+          project: null,
+          createdAt: "2026-06-10T00:00:00.000Z",
+          updatedAt: "2026-06-10T00:00:00.000Z",
+        })),
+      );
+      syncModule.syncToLinear
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("Linear API error: 400 {\"extensions\":{\"code\":\"RATELIMITED\"}}"));
+
+      const result = await harness.performAction<{
+        reconciled: number;
+        errors: number;
+        scanned: number;
+        rateLimited: boolean;
+        complete: boolean;
+        nextOffset: number;
+      }>(ACTION_KEYS.reconcileLinearMirrors, {
+        companyId: "comp-1",
+        resetCursor: true,
+        maxPerRun: 25,
+      });
+      const cursor = await harness.ctx.state.get({
+        scopeKind: "instance",
+        stateKey: STATE_KEYS.linearMirrorReconcileOffset,
+      });
+
+      expect(result).toMatchObject({
+        reconciled: 1,
+        errors: 1,
+        scanned: 3,
+        rateLimited: true,
+        complete: false,
+        nextOffset: 1,
+      });
+      expect(cursor).toBe(1);
+      expect(syncModule.syncToLinear).toHaveBeenCalledTimes(2);
+    });
   });
 
   // -----------------------------------------------------------------------
