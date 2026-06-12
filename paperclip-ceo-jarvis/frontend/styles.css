@@ -1,0 +1,86 @@
+:root { color-scheme: dark; --bg:#070a12; --panel:#111827; --panel2:#0f172a; --text:#e5e7eb; --muted:#94a3b8; --line:#243044; --accent:#7dd3fc; --gold:#facc15; --bad:#fb7185; }
+* { box-sizing: border-box; }
+body { margin:0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: radial-gradient(circle at top left, #1e293b, var(--bg) 42%); color:var(--text); }
+.shell { width:min(1440px, calc(100% - 32px)); margin:0 auto; padding:28px 0 48px; }
+.hero { display:flex; justify-content:space-between; gap:24px; align-items:stretch; padding:28px; border:1px solid var(--line); border-radius:28px; background:linear-gradient(135deg, rgba(15,23,42,.94), rgba(8,13,26,.82)); box-shadow:0 20px 70px rgba(0,0,0,.38); }
+.eyebrow { color:var(--accent); letter-spacing:.16em; text-transform:uppercase; font-weight:800; font-size:12px; margin:0 0 12px; }
+h1 { margin:0; font-size:clamp(34px, 5vw, 72px); line-height:.95; letter-spacing:-.06em; }
+.sub { max-width:870px; color:var(--muted); font-size:18px; line-height:1.55; }
+.hero-actions { display:flex; flex-direction:column; align-items:flex-end; gap:12px; min-width:220px; }
+.status { border:1px solid rgba(125,211,252,.35); color:var(--accent); padding:10px 14px; border-radius:999px; background:rgba(14,165,233,.08); font-weight:700; }
+.tabs { display:flex; gap:8px; flex-wrap:wrap; margin:18px 0; }
+button, select, input, textarea { font:inherit; }
+button { border:1px solid rgba(125,211,252,.35); color:#06111a; background:linear-gradient(135deg, var(--accent), #c4b5fd); padding:10px 14px; border-radius:14px; cursor:pointer; font-weight:800; }
+.tabs button { background:rgba(15,23,42,.8); color:var(--text); }
+.tabs button.active { background:linear-gradient(135deg, var(--accent), #c4b5fd); color:#06111a; }
+.panel { display:none; }
+.panel.active { display:block; }
+.grid { display:none; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:16px; }
+.panel.active.grid { display:grid; }
+.card { border:1px solid var(--line); background:linear-gradient(180deg, rgba(17,24,39,.96), rgba(15,23,42,.9)); border-radius:24px; padding:18px; min-height:260px; box-shadow:0 12px 40px rgba(0,0,0,.22); }
+.card.wide { grid-column:span 2; }
+.card-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+h2 { margin:0 0 14px; letter-spacing:-.03em; }
+input, textarea, select { width:100%; border:1px solid var(--line); border-radius:14px; background:#060b16; color:var(--text); padding:12px; margin:0 0 12px; }
+textarea { min-height:110px; resize:vertical; }
+pre { white-space:pre-wrap; word-break:break-word; color:#dbeafe; background:#050814; border:1px solid #1f2937; border-radius:16px; padding:14px; max-height:560px; overflow:auto; line-height:1.45; }
+@media (max-width: 900px) { .hero { flex-direction:column; } .grid { grid-template-columns:1fr; } .card.wide { grid-column:auto; } .hero-actions { align-items:flex-start; } }
+
+.check { display:flex; align-items:center; gap:10px; color:var(--muted); margin:0 0 12px; }
+.check input { width:auto; margin:0; }
+
+.jarvis2-shell { display:flex; flex-direction:column; gap:14px; }
+.jarvis2-head { align-items:flex-start; }
+.jarvis2-kicker { margin:6px 0 0; color:var(--muted); }
+.jarvis2-hero { display:flex; flex-direction:column; align-items:flex-end; gap:10px; min-width:220px; }
+.jarvis2-provider-toolbar { display:grid; grid-template-columns:1.4fr 1fr 1fr; gap:10px; }
+.jarvis2-provider-toolbar input, .jarvis2-provider-toolbar select { margin:0; }
+.jarvis2-provider-grid { display:grid; grid-template-columns:1fr 1.2fr; gap:14px; }
+.jarvis2-provider-list, .jarvis2-provider-detail { min-height:auto; }
+.jarvis2-analytics-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:14px; }
+.jarvis2-chart { display:flex; flex-direction:column; gap:10px; }
+.jarvis2-chart-row { display:grid; grid-template-columns:minmax(90px, 1fr) 2fr auto; gap:10px; align-items:center; }
+.jarvis2-chart-labels { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.jarvis2-chart-labels span { font-weight:700; color:var(--text); font-size:13px; }
+.jarvis2-chart-labels small { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.08em; }
+.jarvis2-chart-bar { height:12px; background:#0b1220; border-radius:999px; overflow:hidden; }
+.jarvis2-chart-bar span { display:block; height:100%; background:linear-gradient(135deg, var(--accent), #c4b5fd); }
+.jarvis2-chart strong { color:var(--text); font-size:12px; text-align:right; }
+.jarvis2-sparkline { width:100%; height:84px; display:block; margin-top:10px; }
+.jarvis2-sparkline polyline { fill:none; stroke:var(--accent); stroke-width:3; stroke-linecap:round; stroke-linejoin:round; }
+.jarvis2-clock { display:flex; flex-direction:column; gap:4px; align-items:flex-end; color:var(--muted); }
+.jarvis2-clock span { font-size:11px; letter-spacing:.14em; text-transform:uppercase; }
+.jarvis2-clock strong { font-size:18px; color:var(--text); }
+.jarvis2-nav { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.jarvis2-nav button { background:rgba(15,23,42,.8); color:var(--text); border:1px solid var(--line); }
+.jarvis2-nav button.active { background:linear-gradient(135deg, var(--accent), #c4b5fd); color:#06111a; }
+.jarvis2-nav button.ghost { margin-left:auto; }
+.jarvis2-meta { display:flex; flex-wrap:wrap; gap:12px; color:var(--muted); font-size:13px; }
+.jarvis2-view { display:grid; gap:14px; }
+.jarvis2-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:14px; }
+.jarvis2-grid-spread { grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); }
+.jarvis2-mini-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:14px; margin-bottom:14px; }
+.jarvis2-card { min-height:auto; }
+.jarvis2-label { margin:0 0 8px; color:var(--muted); font-size:12px; letter-spacing:.08em; text-transform:uppercase; }
+.jarvis2-metric { font-size:22px; font-weight:800; color:var(--text); }
+.jarvis2-detail { margin:8px 0 0; color:var(--muted); font-size:13px; line-height:1.5; }
+.jarvis2-empty { border:1px dashed var(--line); background:rgba(6,11,22,.5); border-radius:18px; padding:18px; color:var(--muted); }
+.jarvis2-list { display:flex; flex-direction:column; gap:10px; }
+.jarvis2-item { border:1px solid var(--line); background:#060b16; border-radius:16px; padding:12px; }
+.jarvis2-item.selected { outline:2px solid rgba(125,211,252,.45); }
+.jarvis2-item-head { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; margin-bottom:8px; }
+.jarvis2-item-head strong { font-size:14px; }
+.jarvis2-item p { margin:0; color:var(--muted); font-size:13px; line-height:1.45; }
+.jarvis2-item-foot { margin-top:8px; color:var(--text); font-size:12px; }
+.jarvis2-actions { display:flex; gap:8px; margin-top:10px; }
+.jarvis2-actions button.secondary { background:transparent; color:var(--text); border:1px solid var(--line); }
+.jarvis2-bar { width:100%; height:8px; background:#0b1220; border-radius:999px; overflow:hidden; margin:8px 0 0; }
+.jarvis2-bar span { display:block; height:100%; background:linear-gradient(135deg, var(--accent), #c4b5fd); }
+.jarvis2-feature { display:flex; flex-direction:column; gap:10px; }
+.jarvis2-badge { display:inline-flex; align-items:center; justify-content:center; border-radius:999px; padding:4px 8px; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.08em; }
+.jarvis2-badge.good { background:rgba(15,110,86,.18); color:#82f0c0; }
+.jarvis2-badge.warn { background:rgba(186,117,23,.18); color:#ffd089; }
+.jarvis2-badge.bad { background:rgba(163,45,45,.18); color:#ffb1b1; }
+.jarvis2-badge.info { background:rgba(24,95,165,.18); color:#9ed0ff; }
+
+@media (max-width: 900px) { .hero { flex-direction:column; } .grid { grid-template-columns:1fr; } .card.wide { grid-column:auto; } .hero-actions { align-items:flex-start; } .jarvis2-hero { align-items:flex-start; } .jarvis2-nav button.ghost { margin-left:0; } .jarvis2-provider-toolbar { grid-template-columns:1fr; } .jarvis2-provider-grid { grid-template-columns:1fr; } }
