@@ -87,4 +87,4 @@ VOLUME ["/paperclip"]
 EXPOSE 3100
 
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["sh", "-lc", "node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js & SERVER_PID=$!; echo 'Paperclip server started in background. Waiting 120 seconds before direct bootstrap...'; sleep 120; echo 'Running direct Render first-admin bootstrap now...'; node scripts/render-bootstrap-ceo.mjs || true; echo 'Direct bootstrap step finished. Keeping server alive...'; wait $SERVER_PID"]
+CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
