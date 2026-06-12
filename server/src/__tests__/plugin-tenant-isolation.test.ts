@@ -11,6 +11,7 @@ import {
   pluginWebhookDeliveries,
   plugins,
 } from "@paperclipai/db";
+import { pluginRegistryService } from "../services/plugin-registry.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -227,6 +228,85 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     // to prove the unique index rejected the duplicate.
     const cause = (err as { cause?: { code?: string } }).cause;
     expect(cause?.code).toBe("23505");
+  });
+
+  it("pluginRegistryService.upsertEntity scopes its lookup by companyId — never overwrites another tenant's row", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const companyB = await seedCompany();
+
+    const registry = pluginRegistryService(db);
+
+    // Company A claims (issue, ext-shared) with title "A".
+    const createdA = await registry.upsertEntity(pluginId, {
+      companyId: companyA,
+      entityType: "issue",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "ext-shared",
+      title: "A",
+      status: "open",
+      data: {},
+    });
+
+    // Company B upserts the SAME (entityType, externalId) tuple under its own
+    // scope — must create a NEW row for B, NOT overwrite A.
+    const createdB = await registry.upsertEntity(pluginId, {
+      companyId: companyB,
+      entityType: "issue",
+      scopeKind: "company",
+      scopeId: companyB,
+      externalId: "ext-shared",
+      title: "B",
+      status: "open",
+      data: {},
+    });
+
+    expect(createdA?.id).toBeTruthy();
+    expect(createdB?.id).toBeTruthy();
+    expect(createdA?.id).not.toBe(createdB?.id);
+
+    // Company B updates its own row — A's row must remain untouched.
+    const updatedB = await registry.upsertEntity(pluginId, {
+      companyId: companyB,
+      entityType: "issue",
+      scopeKind: "company",
+      scopeId: companyB,
+      externalId: "ext-shared",
+      title: "B-updated",
+      status: "closed",
+      data: {},
+    });
+    expect(updatedB?.id).toBe(createdB?.id);
+    expect(updatedB?.title).toBe("B-updated");
+
+    const rows = await db.select().from(pluginEntities);
+    expect(rows).toHaveLength(2);
+    const rowA = rows.find((r) => r.companyId === companyA);
+    const rowB = rows.find((r) => r.companyId === companyB);
+    expect(rowA?.title).toBe("A");
+    expect(rowA?.status).toBe("open");
+    expect(rowB?.title).toBe("B-updated");
+    expect(rowB?.status).toBe("closed");
+
+    // Instance-scope upsert (companyId = NULL) on the same tuple must also
+    // create its own row, not collide with A or B.
+    const createdInstance = await registry.upsertEntity(pluginId, {
+      companyId: null,
+      entityType: "issue",
+      scopeKind: "instance",
+      scopeId: null,
+      externalId: "ext-shared",
+      title: "instance",
+      status: "open",
+      data: {},
+    });
+    expect(createdInstance?.id).toBeTruthy();
+    expect(createdInstance?.id).not.toBe(createdA?.id);
+    expect(createdInstance?.id).not.toBe(createdB?.id);
+
+    const allRows = await db.select().from(pluginEntities);
+    expect(allRows).toHaveLength(3);
   });
 
   it("plugin_entities unique index treats NULL companyId as equal (NULLS NOT DISTINCT) so instance-scope dedup holds", async () => {

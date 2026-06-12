@@ -1,4 +1,4 @@
-import { asc, eq, ne, sql, and } from "drizzle-orm";
+import { asc, eq, isNull, ne, sql, and } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   plugins,
@@ -509,11 +509,22 @@ export function pluginRegistryService(db: Db) {
     ) => {
       // Drizzle doesn't support pg-specific onConflictDoUpdate easily in the insert() call
       // with complex where clauses, so we do it manually.
+      // Match the per-tenant uniqueness of `plugin_entities_external_idx`
+      // (companyId, pluginId, entityType, externalId) with NULLS NOT DISTINCT
+      // semantics: two companies (and instance-scope NULLs across each other)
+      // may share the same (pluginId, entityType, externalId) tuple, so the
+      // lookup MUST scope by companyId — `isNull` for instance-scope, `eq`
+      // otherwise — to avoid returning and overwriting another tenant's row.
+      const companyIdPredicate =
+        input.companyId == null
+          ? isNull(pluginEntities.companyId)
+          : eq(pluginEntities.companyId, input.companyId);
       const existing = await db
         .select()
         .from(pluginEntities)
         .where(
           and(
+            companyIdPredicate,
             eq(pluginEntities.pluginId, pluginId),
             eq(pluginEntities.entityType, input.entityType),
             eq(pluginEntities.externalId, input.externalId ?? ""),
