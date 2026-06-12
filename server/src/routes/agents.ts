@@ -3143,6 +3143,9 @@ export function agentRoutes(
         triggeredBy: req.actor.type,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
         forceFreshSession: req.body.forceFreshSession === true,
+        // E4 model tiering: surface an explicit per-wake tier override so the
+        // heartbeat's resolveModelProfileApplication picks it up.
+        ...(req.body.modelProfile ? { modelProfile: req.body.modelProfile } : {}),
       },
     });
 
