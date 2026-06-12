@@ -154,32 +154,14 @@ env:
     # repo+pr+reason so burst events don't queue redundant reviews.
     - name: PAPERCLIP_PR_REVIEWER_AGENT_ID
       value: "e0a5011d-5c94-4801-be52-64c14f98ac26"
-    # GitHub PAT for the in-image github-mcp-server (stdio mode). The
-    # claude_k8s adapter reads this StatefulSet pod's env spec and copies
-    # any valueFrom entry — incl. secretKeyRef — onto every agent Job pod
-    # it creates (paperclip-adapter-claude-k8s job-manifest.ts:
-    # inheritedEnvValueFrom). The bundled github-mcp-server reads
-    # GITHUB_PERSONAL_ACCESS_TOKEN from process env at startup, so each
-    # agent's spawned stdio MCP picks up the PAT without any per-request
-    # auth-header dance. Secret pre-created out of band.
-    - name: GITHUB_PERSONAL_ACCESS_TOKEN
-      valueFrom:
-        secretKeyRef:
-          name: paperclip-github-mcp-token
-          key: token
-    # Same token, exposed under GH_TOKEN so the `gh` CLI inside agent pods
-    # picks it up. Without this, gh falls back to ~/.config/gh/hosts.yml on
-    # the per-agent PVC — which holds whatever stale PAT was cached when an
-    # agent ran `gh auth login` weeks ago, and the github-app-refresh
-    # CronJob's hourly token rotation never reaches gh. With GH_TOKEN set,
-    # gh ignores hosts.yml and uses the env var directly, so agents always
-    # have a fresh installation token without needing to re-run
-    # `gh auth login` on every rotation.
-    - name: GH_TOKEN
-      valueFrom:
-        secretKeyRef:
-          name: paperclip-github-mcp-token
-          key: token
+    # Put Paperclip-seeded GitHub wrappers before the system binaries. The
+    # wrappers read the mounted `paperclip-github-mcp-token` Secret file at
+    # command startup, so long-running server/agent pods stop snapshotting the
+    # 60-minute App installation token through env vars.
+    - name: PATH
+      value: /paperclip/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    - name: PAPERCLIP_GITHUB_TOKEN_FILE
+      value: /paperclip/.secrets/github-token/token
     # HMAC verification key for the /api/webhooks/github route added in
     # paperclip#118 Phase D. The route reads appConfig.githubWebhookSecret
     # at startup and refuses every request (503) when it is unset, so the
@@ -346,9 +328,16 @@ extraVolumes:
     secret:
       secretName: paperclip-plugin-gbrain-oauth-secrets
       defaultMode: 0444
+  - name: github-mcp-token
+    secret:
+      secretName: paperclip-github-mcp-token
+      defaultMode: 0444
 extraVolumeMounts:
   - name: gbrain-oauth-secrets
     mountPath: /etc/paperclip-plugin-gbrain
+    readOnly: true
+  - name: github-mcp-token
+    mountPath: /paperclip/.secrets/github-token
     readOnly: true
 
 networkPolicy:

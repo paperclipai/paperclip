@@ -320,6 +320,69 @@ spec:
                 chown 1000:1000 "${CLAUDE_DIR}" "${HOOKS_DIR}" "${SETTINGS}" "${HOOKS_DIR}"/*.sh 2>/dev/null || true
               fi
 
+              # Install GitHub command wrappers into the shared Paperclip home.
+              # Agent Job pods mount the same PVC and inherit the Secret volume
+              # from this pod, so gh/git/github-mcp-server read the current
+              # App installation token file at process start instead of carrying
+              # the env snapshot from Job creation time.
+              LOCAL_BIN="${BASE}/.local/bin"
+              mkdir -p "${LOCAL_BIN}"
+              cat > "${LOCAL_BIN}/paperclip-github-token-env" <<'EOF'
+              #!/bin/sh
+              set -eu
+              TOKEN_FILE="${PAPERCLIP_GITHUB_TOKEN_FILE:-/paperclip/.secrets/github-token/token}"
+              if [ ! -r "${TOKEN_FILE}" ]; then
+                echo "paperclip github token file not readable: ${TOKEN_FILE}" >&2
+                exit 1
+              fi
+              TOKEN="$(tr -d '\r\n' < "${TOKEN_FILE}")"
+              if [ -z "${TOKEN}" ]; then
+                echo "paperclip github token file is empty: ${TOKEN_FILE}" >&2
+                exit 1
+              fi
+              export GH_TOKEN="${TOKEN}"
+              export GITHUB_TOKEN="${TOKEN}"
+              export GITHUB_PERSONAL_ACCESS_TOKEN="${TOKEN}"
+              exec "$@"
+              EOF
+              cat > "${LOCAL_BIN}/github-token-credential-helper" <<'EOF'
+              #!/bin/sh
+              [ "${1:-get}" = "get" ] || exit 0
+              INPUT="$(cat)"
+              case "${INPUT}" in
+                *"host=github.com"*) ;;
+                *) exit 0 ;;
+              esac
+              TOKEN_FILE="${PAPERCLIP_GITHUB_TOKEN_FILE:-/paperclip/.secrets/github-token/token}"
+              [ -r "${TOKEN_FILE}" ] || exit 0
+              TOKEN="$(tr -d '\r\n' < "${TOKEN_FILE}")"
+              [ -n "${TOKEN}" ] || exit 0
+              printf 'username=x-access-token\npassword=%s\n\n' "${TOKEN}"
+              EOF
+              cat > "${LOCAL_BIN}/gh" <<'EOF'
+              #!/bin/sh
+              exec /paperclip/.local/bin/paperclip-github-token-env /usr/bin/gh "$@"
+              EOF
+              cat > "${LOCAL_BIN}/github-mcp-server" <<'EOF'
+              #!/bin/sh
+              exec /paperclip/.local/bin/paperclip-github-token-env /usr/local/bin/github-mcp-server "$@"
+              EOF
+              cat > "${LOCAL_BIN}/git" <<'EOF'
+              #!/bin/sh
+              exec /paperclip/.local/bin/paperclip-github-token-env /usr/bin/git \
+                -c credential.https://github.com.helper= \
+                -c credential.https://github.com.helper=/paperclip/.local/bin/github-token-credential-helper \
+                "$@"
+              EOF
+              chmod 0755 \
+                "${LOCAL_BIN}/paperclip-github-token-env" \
+                "${LOCAL_BIN}/github-token-credential-helper" \
+                "${LOCAL_BIN}/gh" \
+                "${LOCAL_BIN}/github-mcp-server" \
+                "${LOCAL_BIN}/git"
+              chown 1000:1000 "${LOCAL_BIN}" "${LOCAL_BIN}"/* 2>/dev/null || true
+              echo "seed: installed fresh-read GitHub token wrappers in ${LOCAL_BIN}"
+
               # Seed a project-scope .mcp.json at $HOME (CWD for k8s Job pods is
               # /paperclip by default — matches PAPERCLIP_HOME) so every claude
               # session in a Job pod auto-loads the bundled paperclip MCP
@@ -390,12 +453,11 @@ spec:
                 #                    /k8s-rw/mcp, /k8s-admin/mcp) so escalations
                 #                    layered in by claude_k8s adapterConfig
                 #                    (k8s-rw, k8s-admin) read consistently.
-                #   - github      — github/github-mcp-server bundled in this
-                #                    image (see Dockerfile github-mcp stage).
-                #                    Stdio mode reads GITHUB_PERSONAL_ACCESS_TOKEN
-                #                    from env, which the claude_k8s adapter
-                #                    inherits from this StatefulSet's container
-                #                    env (paperclip-github-mcp-token Secret).
+                #   - github      — wrapper around github/github-mcp-server
+                #                    bundled in this image (see Dockerfile
+                #                    github-mcp stage). The wrapper reads the
+                #                    mounted paperclip-github-mcp-token Secret
+                #                    file at process start.
                 # Per-agent escalations (k8s-mcp ns-rw, admin, figma) are
                 # layered in later by the claude_k8s adapter from
                 # adapterConfig.mcpServers — this seed only writes the shared
@@ -421,7 +483,7 @@ spec:
                     "url": "http://kubernetes-mcp-server-readonly.paperclip.svc.cluster.local:8080/sse"
                   },
                   "github": {
-                    "command": "/usr/local/bin/github-mcp-server",
+                    "command": "/paperclip/.local/bin/github-mcp-server",
                     "args": ["stdio"]
                   },
                   "linear": {
