@@ -89,6 +89,35 @@
   --chip-match-identifier-bg: var(--muted);
   --chip-match-identifier-fg: var(--muted-foreground);
   --chip-match-identifier-border: var(--border);
+  --paperclip-doc-annotation-highlight-open: #fef08a;
+  --paperclip-doc-annotation-highlight-focused: #fde047;
+  --paperclip-doc-annotation-highlight-stale: #fef08a;
+  --paperclip-doc-annotation-highlight-resolved: #fef9c3;
+
+  /* Brand agent-capsule gradient stops (paperclip.ing/brand/).
+     "The capsule is the agent" — each agent gets a 2-stop gradient,
+     --agent-Na (top) → --agent-Nb (bottom). Brand-fixed hex, identical
+     across themes. Indices 1–10; consumed by AgentCapsule. */
+  --agent-1a: #f7cfdc;
+  --agent-1b: #1f7a3a;
+  --agent-2a: #c9a9e8;
+  --agent-2b: #ee79a1;
+  --agent-3a: #28164b;
+  --agent-3b: #7a1530;
+  --agent-4a: #f3e6c4;
+  --agent-4b: #e3a21a;
+  --agent-5a: #1f4dd6;
+  --agent-5b: #3aa35c;
+  --agent-6a: #e94b27;
+  --agent-6b: #5a1122;
+  --agent-7a: #7eb6e3;
+  --agent-7b: #ee79a1;
+  --agent-8a: #9ce8a7;
+  --agent-8b: #bd7ff0;
+  --agent-9a: #f3b49e;
+  --agent-9b: #1f4ed4;
+  --agent-10a: #f2d95f;
+  --agent-10b: #4fbcba;
 }
 
 .dark {
@@ -136,6 +165,30 @@
   --chip-match-identifier-bg: var(--muted);
   --chip-match-identifier-fg: var(--muted-foreground);
   --chip-match-identifier-border: var(--border);
+  --paperclip-doc-annotation-highlight-open: #a16207;
+  --paperclip-doc-annotation-highlight-focused: #ca8a04;
+  --paperclip-doc-annotation-highlight-stale: #854d0e;
+  --paperclip-doc-annotation-highlight-resolved: #713f12;
+}
+
+::highlight(paperclip-doc-annotation-open) {
+  background-color: var(--paperclip-doc-annotation-highlight-open);
+  color: inherit;
+}
+
+::highlight(paperclip-doc-annotation-focused) {
+  background-color: var(--paperclip-doc-annotation-highlight-focused);
+  color: inherit;
+}
+
+::highlight(paperclip-doc-annotation-stale) {
+  background-color: var(--paperclip-doc-annotation-highlight-stale);
+  color: inherit;
+}
+
+::highlight(paperclip-doc-annotation-resolved) {
+  background-color: var(--paperclip-doc-annotation-highlight-resolved);
+  color: inherit;
 }
 
 @layer base {
@@ -194,7 +247,11 @@
   [data-size="icon-xs"],
   [data-size="icon-sm"],
   input[type="checkbox"],
-  input[type="radio"] {
+  input[type="radio"],
+  /* Auto-resizing title fields are vertically centered inside their own bar,
+     which already provides the touch area; the 44px floor would top-align the
+     single line of text and push it too high (notably on mobile Safari). */
+  textarea[data-autosize-title] {
     min-height: 0;
   }
 }
@@ -266,6 +323,45 @@
 }
 .dark .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb:hover {
   background: oklch(0.5 0 0) !important;
+}
+
+/* Typing indicator — three bouncing dots, used inside an agent chat bubble */
+.typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 0;
+}
+.typing-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--muted-foreground);
+  animation: typing-bounce 1.2s ease-in-out infinite;
+}
+.typing-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes typing-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .typing-dots span {
+    animation: none;
+    opacity: 0.6;
+  }
 }
 
 /* Expandable dialog transition for max-width changes */
@@ -373,6 +469,113 @@
     animation: none;
     -webkit-text-fill-color: unset;
     background: none;
+  }
+}
+
+/* Agent heartbeat capsule motion (PAP-75).
+   `hb-pulse` marks a running agent (live); `hb-blink` marks a broken agent
+   (error). The blink alternates the fill between brand red and the page
+   background so the capsule reads as a faltering heartbeat. */
+@keyframes hb-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes hb-blink {
+  0%, 49.9% { background-color: #DC2626; }
+  50%, 100% { background-color: var(--background); }
+}
+
+.hb-pulse {
+  animation: hb-pulse 1.6s ease-in-out infinite;
+}
+
+.hb-blink {
+  animation: hb-blink 1.2s step-end infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hb-pulse,
+  .hb-blink {
+    animation: none;
+  }
+}
+
+/* Agent capsule motif (PAP-119) — "the capsule is the agent".
+   Three states realized in the AgentCapsule component:
+   - slot:       dashed outline gently pulsing (an empty agent slot)
+   - configured: solid stroke (named/model picked, not yet live)
+   - online:     brand agent-gradient liquid rises to fill + green online-pulse
+   prefers-reduced-motion skips the liquid rise + pulses and renders the
+   final state. */
+@keyframes agent-cap-slot-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+@keyframes agent-cap-rise {
+  0% { height: 0; }
+  100% { height: 100%; }
+}
+
+@keyframes agent-cap-online-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, #22c55e 0%, transparent);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in oklab, #22c55e 18%, transparent);
+    transform: scale(1.03);
+  }
+}
+
+.agent-cap-slot {
+  animation: agent-cap-slot-pulse 1.6s ease-in-out infinite;
+}
+
+.agent-cap-liquid {
+  animation: agent-cap-rise 1.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.agent-cap-online {
+  animation: agent-cap-online-pulse 1.8s ease-in-out infinite;
+}
+
+/* Blue online-glow variant (PAP-125) — the Option 4 wizard's review step.
+   Same breathing ring as the green pulse, recoloured to brand blue (#2563eb). */
+@keyframes agent-cap-online-pulse-blue {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, #2563eb 0%, transparent);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in oklab, #2563eb 22%, transparent);
+    transform: scale(1.03);
+  }
+}
+
+.agent-cap-online-blue {
+  animation: agent-cap-online-pulse-blue 1.8s ease-in-out infinite;
+}
+
+/* Cross-fade the stacked dashed/solid border layers as the capsule evolves
+   in place (border-style itself is not animatable). */
+.agent-cap-layer {
+  transition: opacity 0.5s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-cap-slot,
+  .agent-cap-online,
+  .agent-cap-online-blue {
+    animation: none;
+  }
+  .agent-cap-layer {
+    transition: none;
+  }
+  .agent-cap-liquid {
+    animation: none;
+    height: 100%;
   }
 }
 
@@ -736,7 +939,9 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 .paperclip-markdown-codeblock-action {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 0.25rem;
+  min-height: 1.55rem;
   padding: 0.2rem 0.4rem;
   border-radius: calc(var(--radius) - 4px);
   border: 1px solid color-mix(in oklab, var(--foreground) 14%, transparent);
@@ -745,7 +950,7 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   font-size: 0.7rem;
   line-height: 1;
   cursor: pointer;
-  transition: background-color 0.12s ease, color 0.12s ease;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 
 .paperclip-markdown-codeblock:hover .paperclip-markdown-codeblock-actions,
@@ -761,6 +966,7 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 
 .paperclip-markdown-codeblock-action[data-active],
 .paperclip-markdown-codeblock-action[data-copied] {
+  border-color: color-mix(in oklab, var(--primary) 38%, transparent);
   color: var(--primary);
 }
 

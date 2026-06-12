@@ -17,9 +17,13 @@ const mockWorkspaceOperationService = vi.hoisted(() => ({
   createRecorder: vi.fn(),
 }));
 
+const mockAccessService = vi.hoisted(() => ({
+  decide: vi.fn(),
+}));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("../services/index.js", () => ({
+  accessService: () => mockAccessService,
   executionWorkspaceService: () => mockExecutionWorkspaceService,
   logActivity: mockLogActivity,
   workspaceOperationService: () => mockWorkspaceOperationService,
@@ -46,6 +50,12 @@ function createApp(companyIds = ["company-1"]) {
 describe.sequential("execution workspace routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "company_scope:read",
+      reason: "allow_test",
+      explanation: "Allowed by test mock.",
+    });
     mockExecutionWorkspaceService.list.mockResolvedValue([]);
     mockExecutionWorkspaceService.listSummaries.mockResolvedValue([
       {

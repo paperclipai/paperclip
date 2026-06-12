@@ -43,6 +43,31 @@ function getPluginErrorSummary(plugin: PluginRecord): string {
   return firstNonEmptyLine(plugin.lastError) ?? "Plugin entered an error state without a stored error message.";
 }
 
+function isExperimentalPluginIdentity(input: {
+  packageName?: string | null;
+  packagePath?: string | null;
+  manifestJson?: PluginRecord["manifestJson"] | null;
+  bundledExperimental?: boolean;
+}) {
+  if (input.bundledExperimental) return true;
+
+  const packageName = input.packageName ?? "";
+  const packagePath = input.packagePath ?? "";
+  if (packageName.includes("sandbox") || packagePath.includes("sandbox")) return true;
+  return input.manifestJson?.environmentDrivers?.some((driver) => driver.kind === "sandbox_provider") === true;
+}
+
+function ExperimentalBadge() {
+  return (
+    <Badge
+      variant="outline"
+      className="border-amber-500/30 bg-amber-500/10 text-amber-700 hover:bg-amber-500/10 dark:text-amber-200"
+    >
+      Experimental
+    </Badge>
+  );
+}
+
 /**
  * PluginManager page component.
  *
@@ -75,7 +100,8 @@ export function PluginManager() {
   useEffect(() => {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings", href: "/instance/settings/heartbeats" },
+      { label: "Settings", href: "/company/settings" },
+      { label: "Instance settings", href: "/company/settings/instance/general" },
       { label: "Plugins" },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
@@ -85,9 +111,9 @@ export function PluginManager() {
     queryFn: () => pluginsApi.list(),
   });
 
-  const examplesQuery = useQuery({
+  const bundledQuery = useQuery({
     queryKey: queryKeys.plugins.examples,
-    queryFn: () => pluginsApi.listExamples(),
+    queryFn: () => pluginsApi.listBundled(),
   });
 
   const invalidatePluginQueries = () => {
@@ -144,9 +170,9 @@ export function PluginManager() {
   });
 
   const installedPlugins = plugins ?? [];
-  const examples = examplesQuery.data ?? [];
+  const bundledPlugins = bundledQuery.data ?? [];
   const installedByPackageName = new Map(installedPlugins.map((plugin) => [plugin.packageName, plugin]));
-  const examplePackageNames = new Set(examples.map((example) => example.packageName));
+  const bundledByPackageName = new Map(bundledPlugins.map((plugin) => [plugin.packageName, plugin]));
   const errorSummaryByPluginId = useMemo(
     () =>
       new Map(
@@ -223,30 +249,37 @@ export function PluginManager() {
           <Badge variant="outline">Bundled</Badge>
         </div>
 
-        {examplesQuery.isLoading ? (
+        {bundledQuery.isLoading ? (
           <div className="text-sm text-muted-foreground">Loading bundled plugins...</div>
-        ) : examplesQuery.error ? (
+        ) : bundledQuery.error ? (
           <div className="text-sm text-destructive">Failed to load bundled plugins.</div>
-        ) : examples.length === 0 ? (
+        ) : bundledPlugins.length === 0 ? (
           <div className="rounded-md border border-dashed px-4 py-3 text-sm text-muted-foreground">
             No bundled plugins were found in this checkout.
           </div>
         ) : (
           <ul className="divide-y rounded-md border bg-card">
-            {examples.map((example) => {
-              const installedPlugin = installedByPackageName.get(example.packageName);
+            {bundledPlugins.map((bundledPlugin) => {
+              const installedPlugin = installedByPackageName.get(bundledPlugin.packageName);
               const installPending =
                 installMutation.isPending &&
                 installMutation.variables?.isLocalPath &&
-                installMutation.variables.packageName === example.localPath;
+                installMutation.variables.packageName === bundledPlugin.localPath;
 
               return (
-                <li key={example.packageName}>
+                <li key={bundledPlugin.packageName}>
                   <div className="flex items-center gap-4 px-4 py-3">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium">{example.displayName}</span>
-                        <Badge variant="outline">{example.tag === "first-party" ? "First-party" : "Example"}</Badge>
+                        <span className="font-medium">{bundledPlugin.displayName}</span>
+                        <Badge variant="outline">
+                          {bundledPlugin.tag === "first-party" ? "First-party" : "Example"}
+                        </Badge>
+                        {isExperimentalPluginIdentity({
+                          packageName: bundledPlugin.packageName,
+                          packagePath: bundledPlugin.localPath,
+                          bundledExperimental: bundledPlugin.experimental,
+                        }) && <ExperimentalBadge />}
                         {installedPlugin ? (
                           <Badge
                             variant={installedPlugin.status === "ready" ? "default" : "secondary"}
@@ -258,8 +291,8 @@ export function PluginManager() {
                           <Badge variant="secondary">Not installed</Badge>
                         )}
                       </div>
-                      <p className="mt-1 text-sm text-muted-foreground">{example.description}</p>
-                      <p className="mt-1 text-xs text-muted-foreground">{example.packageName}</p>
+                      <p className="mt-1 text-sm text-muted-foreground">{bundledPlugin.description}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{bundledPlugin.packageName}</p>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       {installedPlugin ? (
@@ -275,7 +308,7 @@ export function PluginManager() {
                             </Button>
                           )}
                           <Button variant="outline" size="sm" asChild>
-                            <Link to={`/instance/settings/plugins/${installedPlugin.id}`}>
+                            <Link to={`/company/settings/instance/plugins/${installedPlugin.id}`}>
                               {installedPlugin.status === "ready" ? "Open Settings" : "Review"}
                             </Link>
                           </Button>
@@ -286,12 +319,12 @@ export function PluginManager() {
                           disabled={installPending || installMutation.isPending}
                           onClick={() =>
                             installMutation.mutate({
-                              packageName: example.localPath,
+                              packageName: bundledPlugin.localPath,
                               isLocalPath: true,
                             })
                           }
                         >
-                          {installPending ? "Installing..." : "Install Example"}
+                          {installPending ? "Installing..." : "Install"}
                         </Button>
                       )}
                     </div>
@@ -327,15 +360,25 @@ export function PluginManager() {
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <Link
-                        to={`/instance/settings/plugins/${plugin.id}`}
+                        to={`/company/settings/instance/plugins/${plugin.id}`}
                         className="font-medium hover:underline truncate block"
                         title={plugin.manifestJson.displayName ?? plugin.packageName}
                       >
                         {plugin.manifestJson.displayName ?? plugin.packageName}
                       </Link>
-                      {examplePackageNames.has(plugin.packageName) && (
-                        <Badge variant="outline">Example</Badge>
+                      {bundledByPackageName.has(plugin.packageName) && (
+                        <Badge variant="outline">
+                          {bundledByPackageName.get(plugin.packageName)?.tag === "first-party"
+                            ? "First-party"
+                            : "Example"}
+                        </Badge>
                       )}
+                      {isExperimentalPluginIdentity({
+                        packageName: plugin.packageName,
+                        packagePath: plugin.packagePath,
+                        manifestJson: plugin.manifestJson,
+                        bundledExperimental: bundledByPackageName.get(plugin.packageName)?.experimental,
+                      }) && <ExperimentalBadge />}
                     </div>
                     <div>
                       <p className="text-xs text-muted-foreground mt-0.5 truncate" title={plugin.packageName}>
@@ -421,7 +464,7 @@ export function PluginManager() {
                         </Button>
                       </div>
                       <Button variant="outline" size="sm" className="mt-2 h-8" asChild>
-                        <Link to={`/instance/settings/plugins/${plugin.id}`}>
+                        <Link to={`/company/settings/instance/plugins/${plugin.id}`}>
                           <Settings className="h-4 w-4" />
                           Configure
                         </Link>

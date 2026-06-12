@@ -12,14 +12,17 @@ import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middlewa
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
+import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
+import { fileResourceRoutes } from "./routes/file-resources.js";
 import { routineRoutes } from "./routes/routines.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
+import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
 import { costRoutes } from "./routes/costs.js";
@@ -28,8 +31,10 @@ import { dashboardRoutes } from "./routes/dashboard.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
+import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
+import { openApiRoutes } from "./routes/openapi.js";
 import {
   instanceDatabaseBackupRoutes,
   type InstanceDatabaseBackupService,
@@ -41,6 +46,7 @@ import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
+import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
@@ -205,8 +211,11 @@ export async function createApp(
       companyDeletionEnabled: opts.companyDeletionEnabled,
     }),
   );
+  api.use(openApiRoutes());
   api.use("/companies", companyRoutes(db, opts.storageService));
+  api.use(llmRoutes(db));
   api.use(companySkillRoutes(db));
+  api.use(teamsCatalogRoutes(db));
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
@@ -215,10 +224,12 @@ export async function createApp(
     pluginWorkerManager: workerManager,
   }));
   api.use(issueTreeControlRoutes(db));
+  api.use(fileResourceRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(executionWorkspaceRoutes(db));
   api.use(goalRoutes(db));
+  api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(secretRoutes(db));
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
@@ -227,6 +238,7 @@ export async function createApp(
   api.use(userProfileRoutes(db));
   api.use(sidebarBadgeRoutes(db));
   api.use(sidebarPreferenceRoutes(db));
+  api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
   if (opts.databaseBackupService) {
@@ -328,7 +340,6 @@ export async function createApp(
     ];
     const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
     if (uiDist) {
-      const indexHtml = applyUiBranding(fs.readFileSync(path.join(uiDist, "index.html"), "utf-8"));
       // Hashed asset files (Vite emits them under /assets/<name>.<hash>.<ext>)
       // never change once built, so they can be cached aggressively.
       app.use(
@@ -368,7 +379,7 @@ export async function createApp(
           .status(200)
           .set("Content-Type", "text/html")
           .set("Cache-Control", "no-cache")
-          .end(indexHtml);
+          .end(readBrandedStaticIndexHtml(uiDist));
       });
     } else {
       console.warn("[paperclip] UI dist not found; running in API-only mode");
@@ -462,7 +473,67 @@ export async function createApp(
     lifecycle,
     async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
   );
-  void loader.loadAll().then((result) => {
+  // Auto-install the bundled kubernetes sandbox-provider plugin so the
+  // "kubernetes" sandbox provider is registered for agent runs. The plugin is
+  // excluded from the pnpm workspace and built standalone into the image (see
+  // Dockerfile), then installed here from its local path. This runs BEFORE
+  // loadAll() so loadAll() can activate it in the same startup pass.
+  //
+  // SAFETY (invariant B): this is fully fail-safe. Any failure (missing path,
+  // install error, load error) is caught, logged, and swallowed so the server
+  // ALWAYS finishes booting. A degraded boot (no kubernetes provider, agents
+  // cannot run) is strictly preferable to a crash loop.
+  const ensureBundledKubernetesPlugin = async (): Promise<void> => {
+    const KUBERNETES_PLUGIN_KEY = "paperclip.kubernetes-sandbox-provider";
+    const pluginPath =
+      process.env["PAPERCLIP_KUBERNETES_PLUGIN_PATH"] ??
+      "/app/packages/plugins/sandbox-providers/kubernetes";
+    try {
+      // Idempotent: skip if already installed (any non-uninstalled status).
+      const existing = await pluginRegistry.getByKey(KUBERNETES_PLUGIN_KEY);
+      if (existing) {
+        logger.info(
+          { pluginKey: KUBERNETES_PLUGIN_KEY, status: existing.status },
+          "kubernetes sandbox plugin already installed; skipping auto-install",
+        );
+        return;
+      }
+      // Skip silently when the bundle is absent (e.g. local dev or an image
+      // built without the plugin). Not an error condition.
+      if (!fs.existsSync(path.join(pluginPath, "dist", "manifest.js"))) {
+        logger.info(
+          { pluginPath },
+          "kubernetes sandbox plugin bundle not present; skipping auto-install",
+        );
+        return;
+      }
+      logger.info({ pluginPath }, "auto-installing bundled kubernetes sandbox plugin");
+      const discovered = await loader.installPlugin({ localPath: pluginPath });
+      if (!discovered.manifest) {
+        logger.error("kubernetes sandbox plugin installed but manifest is missing");
+        return;
+      }
+      // Transition installed -> ready and activate the worker.
+      const installed = await pluginRegistry.getByKey(discovered.manifest.id);
+      if (installed) {
+        await lifecycle.load(installed.id);
+        logger.info(
+          { pluginId: installed.id, pluginKey: installed.pluginKey },
+          "kubernetes sandbox plugin auto-installed and loaded",
+        );
+      } else {
+        logger.error("kubernetes sandbox plugin installed but not found in registry");
+      }
+    } catch (err) {
+      logger.error(
+        { err },
+        "Failed to auto-install the kubernetes sandbox plugin; continuing boot (degraded: kubernetes provider unavailable)",
+      );
+    }
+  };
+  void ensureBundledKubernetesPlugin()
+    .then(() => loader.loadAll())
+    .then((result) => {
     if (!result) return;
     for (const loaded of result.results) {
       if (devWatcher && loaded.success && loaded.plugin.packagePath) {

@@ -6,12 +6,15 @@ import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
 import { Link } from "@/lib/router";
 import { useTheme } from "../context/ThemeContext";
+import { useOptionalCompany } from "../context/CompanyContext";
 import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chips";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
+import { parseWorkspaceFileHref, remarkWorkspaceFileRefs, WORKSPACE_FILE_HREF_PREFIX } from "../lib/remark-workspace-file-refs";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
+import { WorkspaceFileLink } from "./WorkspaceFileLink";
 
 interface MarkdownBodyProps {
   children: string;
@@ -29,6 +32,8 @@ interface MarkdownBodyProps {
   resolveImageSrc?: (src: string) => string | null;
   /** Called when a user clicks an inline image */
   onImageClick?: (src: string) => void;
+  /** Link inline-code workspace file paths to the issue file viewer. */
+  linkWorkspaceFileRefs?: boolean;
 }
 
 let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = null;
@@ -84,6 +89,39 @@ const scrollableBlockStyle: React.CSSProperties = {
   overflowX: "auto",
 };
 
+const codeBlockActionsStyle: React.CSSProperties = {
+  position: "absolute",
+  top: "0.4rem",
+  right: "0.4rem",
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "0.25rem",
+};
+
+const codeBlockActionStyle: React.CSSProperties = {
+  position: "static",
+  opacity: 1,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: "0.25rem",
+  minHeight: "1.55rem",
+  padding: "0.2rem 0.4rem",
+  borderRadius: "calc(var(--radius) - 4px)",
+  border: "1px solid color-mix(in oklab, var(--foreground) 14%, transparent)",
+  backgroundColor: "color-mix(in oklab, var(--muted) 92%, var(--background) 8%)",
+  color: "var(--muted-foreground)",
+  fontSize: "0.7rem",
+  lineHeight: 1,
+  cursor: "pointer",
+};
+
+const codeBlockWrapActionStyle: React.CSSProperties = {
+  ...codeBlockActionStyle,
+  width: "1.55rem",
+  paddingInline: 0,
+};
+
 const tableCellWrapStyle: React.CSSProperties = {
   overflowWrap: "anywhere",
   wordBreak: "normal",
@@ -126,6 +164,7 @@ function extractMermaidSource(children: ReactNode): string | null {
 }
 
 function safeMarkdownUrlTransform(url: string): string {
+  if (url.startsWith(WORKSPACE_FILE_HREF_PREFIX)) return url;
   return parseMentionChipHref(url) ? url : defaultUrlTransform(url);
 }
 
@@ -426,6 +465,7 @@ function CodeBlock({
       </pre>
       <div
         className="paperclip-markdown-codeblock-actions"
+        style={codeBlockActionsStyle}
         data-active={copied || failed || wrapLines || undefined}
       >
         <button
@@ -434,11 +474,17 @@ function CodeBlock({
           aria-label={wrapLabel}
           title={wrapLabel}
           className="paperclip-markdown-codeblock-action paperclip-markdown-codeblock-wrap"
+          style={wrapLines
+            ? {
+                ...codeBlockWrapActionStyle,
+                borderColor: "color-mix(in oklab, var(--primary) 38%, transparent)",
+                color: "var(--primary)",
+              }
+            : codeBlockWrapActionStyle}
           aria-pressed={wrapLines}
           data-active={wrapLines || undefined}
         >
           <WrapText aria-hidden="true" className="h-3.5 w-3.5" />
-          <span className="paperclip-markdown-codeblock-action-label">{wrapLabel}</span>
         </button>
         <button
           type="button"
@@ -446,6 +492,7 @@ function CodeBlock({
           aria-label="Copy code"
           title={copyLabel}
           className="paperclip-markdown-codeblock-action paperclip-markdown-codeblock-copy"
+          style={codeBlockActionStyle}
           data-copied={copied || undefined}
           data-failed={failed || undefined}
         >
@@ -527,14 +574,25 @@ export function MarkdownBody({
   resolveWikiLinkHref,
   resolveImageSrc,
   onImageClick,
+  linkWorkspaceFileRefs = false,
 }: MarkdownBodyProps) {
   const { theme } = useTheme();
+  // Read company prefixes non-throwingly: MarkdownBody renders in surfaces that
+  // may lack a CompanyProvider. A null context (or no companies yet) leaves
+  // knownPrefixes undefined, which keeps issue auto-linking permissive.
+  const company = useOptionalCompany();
+  const knownPrefixes = company?.companies.length
+    ? company.companies.map((c) => c.issuePrefix)
+    : undefined;
   const remarkPlugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm];
   if (enableWikiLinks) {
     remarkPlugins.push(createRemarkWikiLinks({ wikiLinkRoot, resolveWikiLinkHref }));
   }
+  if (linkWorkspaceFileRefs) {
+    remarkPlugins.push(remarkWorkspaceFileRefs);
+  }
   if (linkIssueReferences) {
-    remarkPlugins.push(remarkLinkIssueReferences);
+    remarkPlugins.push([remarkLinkIssueReferences, { knownPrefixes }]);
   }
   if (softBreaks) {
     remarkPlugins.push(remarkSoftBreaks);
@@ -585,6 +643,17 @@ export function MarkdownBody({
       </code>
     ),
     a: ({ node: _node, href, style: linkStyle, children: linkChildren, ...anchorProps }) => {
+      const workspaceFileRef = parseWorkspaceFileHref(href);
+      if (workspaceFileRef) {
+        return (
+          <WorkspaceFileLink
+            workspaceFileRef={workspaceFileRef}
+            label={linkChildren}
+            className={typeof anchorProps.className === "string" ? anchorProps.className : undefined}
+          />
+        );
+      }
+
       const dataProps = anchorProps as Record<string, unknown>;
       const isWikiLink = dataProps["data-paperclip-wiki-link"] === "true";
       if (isWikiLink && href && !/^[a-z][a-z\d+.-]*:/i.test(href) && !href.startsWith("//")) {

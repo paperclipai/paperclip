@@ -532,6 +532,7 @@ function existingProject(): Project {
     leadAgentId: null,
     targetDate: null,
     color: "#0f766e",
+    icon: null,
     env: null,
     pauseReason: null,
     pausedAt: null,

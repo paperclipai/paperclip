@@ -13,7 +13,7 @@
   },
   "type": "module",
   "bin": {
-    "create-paperclip-plugin": "./dist/index.js"
+    "create-paperclip-plugin": "./dist/bin.js"
   },
   "exports": {
     ".": "./src/index.ts"
@@ -21,7 +21,7 @@
   "publishConfig": {
     "access": "public",
     "bin": {
-      "create-paperclip-plugin": "./dist/index.js"
+      "create-paperclip-plugin": "./dist/bin.js"
     },
     "exports": {
       ".": {
@@ -38,6 +38,7 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
+    "test": "pnpm -w exec vitest run --root packages/plugins/create-paperclip-plugin --config vitest.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
