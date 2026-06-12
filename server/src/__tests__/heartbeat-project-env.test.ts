@@ -67,6 +67,24 @@ describe("resolveExecutionRunAdapterConfig", () => {
             outcome: "success",
           },
         ],
+      })
+      .mockResolvedValueOnce({
+        env: {
+          SHARED_KEY: "environment",
+          ENV_ONLY: "env-only",
+        },
+        secretKeys: new Set(["ENV_SECRET"]),
+        manifest: [
+          {
+            configPath: "env.ENV_SECRET",
+            envKey: "ENV_SECRET",
+            secretId: "secret-environment",
+            secretKey: "environment-secret",
+            version: 1,
+            provider: "local_encrypted",
+            outcome: "success",
+          },
+        ],
       });
 
     const result = await resolveExecutionRunAdapterConfig({
@@ -75,6 +93,8 @@ describe("resolveExecutionRunAdapterConfig", () => {
       projectEnv: { SHARED_KEY: "project" },
       routineEnv: { SHARED_KEY: "routine" },
       routineId: "routine-1",
+      environmentEnv: { SHARED_KEY: "environment" },
+      environmentId: "environment-1",
       secretsSvc: {
         resolveAdapterConfigForRuntime,
         resolveEnvBindings,
@@ -84,15 +104,22 @@ describe("resolveExecutionRunAdapterConfig", () => {
     expect(result.resolvedConfig).toMatchObject({
       other: "value",
       env: {
-        SHARED_KEY: "routine",
+        SHARED_KEY: "environment",
         AGENT_ONLY: "agent-only",
         PROJECT_ONLY: "project-only",
         ROUTINE_ONLY: "routine-only",
+        ENV_ONLY: "env-only",
       },
     });
-    expect(Array.from(result.secretKeys).sort()).toEqual(["AGENT_SECRET", "PROJECT_SECRET", "ROUTINE_SECRET"]);
+    expect(Array.from(result.secretKeys).sort()).toEqual([
+      "AGENT_SECRET",
+      "ENV_SECRET",
+      "PROJECT_SECRET",
+      "ROUTINE_SECRET",
+    ]);
     expect(result.secretManifest.map((entry) => entry.secretId).sort()).toEqual([
       "secret-agent",
+      "secret-environment",
       "secret-project",
       "secret-routine",
     ]);
@@ -102,6 +129,10 @@ describe("resolveExecutionRunAdapterConfig", () => {
     expect(resolveEnvBindings.mock.calls[1]?.[2]).toMatchObject({
       consumerType: "routine",
       consumerId: "routine-1",
+    });
+    expect(resolveEnvBindings.mock.calls[2]?.[2]).toMatchObject({
+      consumerType: "environment",
+      consumerId: "environment-1",
     });
   });
 
@@ -213,6 +244,8 @@ describe("resolveExecutionRunAdapterConfig", () => {
       executionRunConfig: { env: {} },
       projectEnv: { PROJECT_FLAG: "plain" },
       routineEnv: { ROUTINE_FLAG: "plain" },
+      environmentEnv: { ENV_FLAG: "plain" },
+      environmentId: "environment-1",
       trustPreset: {
         kind: "low_trust_review",
         preset: LOW_TRUST_REVIEW_PRESET,
@@ -239,6 +272,76 @@ describe("resolveExecutionRunAdapterConfig", () => {
     expect(resolveEnvBindings.mock.calls[1]?.[2]).toMatchObject({
       allowedBindingIds: ["binding-1"],
     });
+    expect(resolveEnvBindings.mock.calls[2]?.[2]).toMatchObject({
+      allowedBindingIds: ["binding-1"],
+    });
+  });
+
+  it("resolves environment env bindings with consumerType environment", async () => {
+    const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
+      config: { env: { AGENT_ONLY: "agent-only" } },
+      secretKeys: new Set<string>(),
+      manifest: [],
+    });
+    const resolveEnvBindings = vi.fn().mockResolvedValue({
+      env: { CURSOR_API_KEY: "resolved-cursor-key" },
+      secretKeys: new Set(["CURSOR_API_KEY"]),
+      manifest: [
+        {
+          configPath: "env.CURSOR_API_KEY",
+          envKey: "CURSOR_API_KEY",
+          secretId: "secret-cursor",
+          secretKey: "cursor-key",
+          version: 1,
+          provider: "local_encrypted",
+          outcome: "success",
+        },
+      ],
+    });
+
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      environmentId: "environment-1",
+      executionRunConfig: { env: { AGENT_ONLY: "agent-only" } },
+      projectEnv: null,
+      environmentEnv: {
+        CURSOR_API_KEY: {
+          type: "secret_ref",
+          secretId: "secret-cursor",
+          version: "latest",
+        },
+      },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime,
+        resolveEnvBindings,
+      } as any,
+    });
+
+    expect(result.resolvedConfig.env).toEqual({
+      AGENT_ONLY: "agent-only",
+      CURSOR_API_KEY: "resolved-cursor-key",
+    });
+    expect(resolveEnvBindings).toHaveBeenCalledWith(
+      "company-1",
+      {
+        CURSOR_API_KEY: {
+          type: "secret_ref",
+          secretId: "secret-cursor",
+          version: "latest",
+        },
+      },
+      expect.objectContaining({
+        consumerType: "environment",
+        consumerId: "environment-1",
+        actorType: "agent",
+        actorId: "agent-1",
+        issueId: "issue-1",
+        heartbeatRunId: "run-1",
+      }),
+    );
   });
 
   it("rejects inline sensitive env values for low-trust runs", async () => {
