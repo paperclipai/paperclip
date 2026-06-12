@@ -306,6 +306,7 @@ export type {
   IssueExecutionDecision,
   IssueComment,
   IssueCommentMetadata,
+  IssueCommentCrossAssigneeContext,
   IssueCommentMetadataSection,
   IssueCommentMetadataRow,
   IssueCommentMetadataTextRow,
