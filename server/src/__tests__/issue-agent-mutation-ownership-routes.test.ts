@@ -318,12 +318,14 @@ describe("agent issue mutation checkout ownership", () => {
         input.action === "tasks:assign" ||
         input.action === "issue:read" ||
         input.action === "issue:mutate" ||
+        input.action === "issue:comment" ||
         input.action === "company_scope:read",
       action: input.action,
       reason:
         input.action === "tasks:assign" ||
           input.action === "issue:read" ||
           input.action === "issue:mutate" ||
+          input.action === "issue:comment" ||
           input.action === "company_scope:read"
           ? "allow_explicit_grant"
           : "deny_missing_grant",
@@ -331,6 +333,7 @@ describe("agent issue mutation checkout ownership", () => {
         input.action === "tasks:assign" ||
           input.action === "issue:read" ||
           input.action === "issue:mutate" ||
+          input.action === "issue:comment" ||
           input.action === "company_scope:read"
           ? "Allowed by test default."
           : "Missing permission.",
@@ -568,7 +571,16 @@ describe("agent issue mutation checkout ownership", () => {
   it.each([
     ["patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked" })],
     ["delete", (app: express.Express) => request(app).delete(`/api/issues/${issueId}`)],
-    ["comment", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "blocked" })],
+    [
+      "reopen comment",
+      (app: express.Express) =>
+        request(app).post(`/api/issues/${issueId}/comments`).send({ body: "reopen it", reopen: true }),
+    ],
+    [
+      "resume comment",
+      (app: express.Express) =>
+        request(app).post(`/api/issues/${issueId}/comments`).send({ body: "resume it", resume: true }),
+    ],
     [
       "document upsert",
       (app: express.Express) =>
@@ -606,6 +618,43 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockWorkProductService.update).not.toHaveBeenCalled();
     expect(mockStorageService.putFile).not.toHaveBeenCalled();
     expect(mockStorageService.deleteObject).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["in_progress"],
+    ["todo"],
+  ])("allows peer agent thread comments on another agent's %s issue", async (status) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status, assigneeAgentId: ownerAgentId }));
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "mention reply" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:comment",
+      resource: expect.objectContaining({ type: "issue", issueId }),
+    }));
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects peer agent comments outside the issue:comment authorization boundary", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action !== "issue:comment",
+      action: input.action,
+      reason: input.action !== "issue:comment" ? "allow_explicit_grant" : "deny_company_boundary",
+      explanation: input.action !== "issue:comment" ? "Allowed by test default." : "Denied by test boundary.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "blocked reply" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("rejects the checked-out owner without a run id on attachment upload (401)", async () => {
@@ -975,7 +1024,12 @@ describe("agent issue mutation checkout ownership", () => {
 
   it.each([
     ["todo", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Todo update" })],
-    ["todo", "comment", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Todo noise" })],
+    [
+      "todo",
+      "reopen comment",
+      (app: express.Express) =>
+        request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Todo reopen", reopen: true }),
+    ],
     ["blocked", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked update" })],
   ])("rejects peer agent %s issue %s mutations outside active checkout ownership", async (status, _kind, sendRequest) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: status as "todo" | "blocked", assigneeAgentId: ownerAgentId }));

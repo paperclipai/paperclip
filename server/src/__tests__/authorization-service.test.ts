@@ -248,6 +248,123 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain("simple mode");
   });
 
+  it("splits same-company comment access from mutation on another agent's issue", async () => {
+    const company = await createCompany(db, "CommentSplit");
+    const otherCompany = await createCompany(db, "CommentSplitOther");
+    const owner = await createAgent(db, company.id);
+    const peer = await createAgent(db, company.id);
+    const outsider = await createAgent(db, otherCompany.id);
+    const issue = await createIssue(db, company.id, { assigneeAgentId: owner.id });
+
+    const authorization = authorizationService(db);
+    const issueResource = {
+      type: "issue" as const,
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      parentIssueId: issue.parentId,
+      assigneeAgentId: issue.assigneeAgentId,
+      status: issue.status,
+    };
+    const peerActor = {
+      type: "agent" as const,
+      agentId: peer.id,
+      companyId: company.id,
+      source: "agent_key" as const,
+    };
+
+    const mutateDecision = await authorization.decide({
+      actor: peerActor,
+      action: "issue:mutate",
+      resource: issueResource,
+    });
+    const commentDecision = await authorization.decide({
+      actor: peerActor,
+      action: "issue:comment",
+      resource: issueResource,
+    });
+    const outsiderDecision = await authorization.decide({
+      actor: {
+        type: "agent" as const,
+        agentId: outsider.id,
+        companyId: otherCompany.id,
+        source: "agent_key" as const,
+      },
+      action: "issue:comment",
+      resource: issueResource,
+    });
+
+    expect(mutateDecision).toMatchObject({ allowed: false });
+    expect(commentDecision).toMatchObject({ allowed: true, reason: "allow_company_agent" });
+    expect(outsiderDecision).toMatchObject({ allowed: false, reason: "deny_company_boundary" });
+  });
+
+  it("limits low-trust comment access to the configured issue boundary", async () => {
+    const company = await createCompany(db, "LowTrustComments");
+    const project = await createProject(db, company.id, "Allowed");
+    const otherProject = await createProject(db, company.id, "Denied");
+    const rootIssueId = randomUUID();
+    const actorAgent = await createAgent(db, company.id, {
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            projectIds: [project.id],
+            rootIssueId,
+          },
+        },
+      },
+    });
+    const owner = await createAgent(db, company.id);
+    const rootIssue = await createIssue(db, company.id, {
+      id: rootIssueId,
+      projectId: project.id,
+      assigneeAgentId: owner.id,
+    });
+    const unrelatedIssue = await createIssue(db, company.id, {
+      projectId: otherProject.id,
+      assigneeAgentId: owner.id,
+    });
+
+    const authorization = authorizationService(db);
+    const actor = {
+      type: "agent" as const,
+      agentId: actorAgent.id,
+      companyId: company.id,
+      source: "agent_key" as const,
+    };
+    const insideDecision = await authorization.decide({
+      actor,
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: rootIssue.id,
+        projectId: rootIssue.projectId,
+        parentIssueId: rootIssue.parentId,
+        assigneeAgentId: rootIssue.assigneeAgentId,
+        status: rootIssue.status,
+      },
+    });
+    const outsideDecision = await authorization.decide({
+      actor,
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: unrelatedIssue.id,
+        projectId: unrelatedIssue.projectId,
+        parentIssueId: unrelatedIssue.parentId,
+        assigneeAgentId: unrelatedIssue.assigneeAgentId,
+        status: unrelatedIssue.status,
+      },
+    });
+
+    expect(insideDecision).toMatchObject({ allowed: true, reason: "allow_low_trust_boundary" });
+    expect(outsideDecision).toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+  });
+
   it("limits low-trust issue reads to the configured project and root issue boundary", async () => {
     const company = await createCompany(db, "LowTrustIssueReads");
     const project = await createProject(db, company.id, "Allowed");
