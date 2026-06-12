@@ -84,7 +84,7 @@
     "@types/express-serve-static-core": "^5.0.0",
     "@types/jsdom": "^28.0.0",
     "@types/multer": "^2.0.0",
-    "@types/node": "^24.6.0",
+    "@types/node": "^22.19.20",
     "@types/sharp": "^0.32.0",
     "@types/supertest": "^6.0.2",
     "@types/ws": "^8.18.1",
