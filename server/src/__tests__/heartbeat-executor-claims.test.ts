@@ -6,6 +6,7 @@ import {
   agentWakeupRequests,
   companies,
   createDb,
+  heartbeatRunEvents,
   heartbeatRuns,
   type Db,
 } from "@paperclipai/db";
@@ -109,6 +110,7 @@ describeEmbedded("heartbeat executor batch claims", () => {
     createdAt?: Date;
     claimAttempts?: number;
     withWakeup?: boolean;
+    contextSnapshot?: Record<string, unknown>;
   }) {
     const runId = randomUUID();
     let wakeupRequestId: string | null = null;
@@ -133,7 +135,7 @@ describeEmbedded("heartbeat executor batch claims", () => {
       triggerDetail: "system",
       status: "queued",
       wakeupRequestId,
-      contextSnapshot: {},
+      contextSnapshot: input.contextSnapshot ?? {},
       ...(input.createdAt ? { createdAt: input.createdAt } : {}),
       ...(typeof input.claimAttempts === "number" ? { claimAttempts: input.claimAttempts } : {}),
     });
@@ -342,6 +344,113 @@ describeEmbedded("heartbeat executor batch claims", () => {
     expect(released?.status).toBe("queued");
     expect(released?.claimedBy).toBeNull();
     expect(released?.claimAttempts).toBe(0);
+  });
+
+  describe("sweep/claim TOCTOU race", () => {
+    async function cancelEventCount(runId: string) {
+      const rows = await dbA
+        .select({ count: sql<number>`count(*)` })
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, runId));
+      return Number(rows[0]?.count ?? 0);
+    }
+
+    it("the sweep's stale-snapshot validation must not cancel a run an executor just claimed", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const { runId, wakeupRequestId } = await seedQueuedRun({ companyId, agentId, withWakeup: true });
+
+      // The leader-side sweep takes its queued snapshot...
+      const staleSnapshot = await getRunRow(runId);
+      expect(staleSnapshot?.status).toBe("queued");
+
+      // ...then an executor batch-claims the run (atomic, status -> running)...
+      const claimed = await replicaB.claimRunsForExecution(1);
+      expect(claimed).toEqual([runId]);
+
+      // ...and a cancel gate flips (agent terminated) before the sweep
+      // validates its stale snapshot.
+      await dbA.update(agents).set({ status: "terminated" }).where(eq(agents.id, agentId));
+
+      const validation = await replicaA.validateQueuedRunForClaim(staleSnapshot!, undefined, {
+        cancelOnlyIf: { status: "queued" },
+      });
+      expect(validation).toEqual({ ok: false, outcome: "unchanged" });
+
+      // The executor's claim survives, with none of the cancel side effects.
+      const run = await getRunRow(runId);
+      expect(run?.status).toBe("running");
+      expect(run?.claimedBy).toBe("replica-b");
+      expect(run?.error).toBeNull();
+      expect(run?.finishedAt).toBeNull();
+
+      const wakeup = await dbA
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId!))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeup?.status).toBe("claimed");
+      expect(await cancelEventCount(runId)).toBe(0);
+    });
+
+    it("post-claim validation does not cancel a run another executor now owns", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const { runId } = await seedQueuedRun({ companyId, agentId });
+
+      const claimed = await replicaB.claimRunsForExecution(1);
+      expect(claimed).toEqual([runId]);
+      const claimedRow = await getRunRow(runId);
+
+      await dbA.update(agents).set({ status: "terminated" }).where(eq(agents.id, agentId));
+
+      // Replica A validating a claim it believes it owns (e.g. after losing
+      // the row to a reap/re-claim cycle) must not touch replica B's claim.
+      const validation = await replicaA.validateQueuedRunForClaim(claimedRow!, undefined, {
+        cancelOnlyIf: { status: "running", claimedBy: "replica-a" },
+      });
+      expect(validation).toEqual({ ok: false, outcome: "unchanged" });
+
+      const run = await getRunRow(runId);
+      expect(run?.status).toBe("running");
+      expect(run?.claimedBy).toBe("replica-b");
+    });
+
+    it("a genuinely queued gated run is still cancelled by the sweep validation", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const { runId, wakeupRequestId } = await seedQueuedRun({ companyId, agentId, withWakeup: true });
+      await dbA.update(agents).set({ status: "terminated" }).where(eq(agents.id, agentId));
+
+      const snapshot = await getRunRow(runId);
+      const validation = await replicaA.validateQueuedRunForClaim(snapshot!, undefined, {
+        cancelOnlyIf: { status: "queued" },
+      });
+      expect(validation).toEqual({ ok: false, outcome: "cancelled" });
+
+      const run = await getRunRow(runId);
+      expect(run?.status).toBe("cancelled");
+      expect(run?.error).toContain("not invokable");
+
+      const wakeup = await dbA
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId!))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeup?.status).toBe("cancelled");
+    });
+
+    it("resumeQueuedRuns end-to-end still cancels a queued run whose issue no longer exists", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const { runId } = await seedQueuedRun({
+        companyId,
+        agentId,
+        contextSnapshot: { issueId: randomUUID() },
+      });
+
+      await replicaA.resumeQueuedRuns();
+
+      const run = await getRunRow(runId);
+      expect(run?.status).toBe("cancelled");
+      expect(run?.errorCode).toBe("issue_not_found");
+    });
   });
 
   describe("claimed_by-aware orphan reaper", () => {

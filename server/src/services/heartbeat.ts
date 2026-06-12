@@ -236,6 +236,18 @@ const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+
+/**
+ * Guard for status-conditioned cancel transitions: the cancel UPDATE only
+ * applies while the run is still in the expected status (and, for running
+ * rows, still claimed by the expected replica). Zero matched rows means the
+ * row moved concurrently (e.g. an executor atomically claimed it between a
+ * caller's status check and the cancel) — the transition and ALL of its
+ * side effects are skipped.
+ */
+type RunCancelGuard =
+  | { status: "queued" }
+  | { status: "running"; claimedBy: string };
 /**
  * A foreign executor's claimed run counts as orphaned once its
  * executor_heartbeat_at is older than this: executors re-stamp claims every
@@ -4745,11 +4757,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     runId: string,
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+    onlyIf?: RunCancelGuard,
   ) {
+    const conditions = [eq(heartbeatRuns.id, runId)];
+    if (onlyIf) {
+      conditions.push(eq(heartbeatRuns.status, onlyIf.status));
+      if (onlyIf.status === "running") {
+        conditions.push(eq(heartbeatRuns.claimedBy, onlyIf.claimedBy));
+      }
+    }
     const updated = await db
       .update(heartbeatRuns)
       .set({ status, ...patch, updatedAt: new Date() })
-      .where(eq(heartbeatRuns.id, runId))
+      .where(and(...conditions))
       .returning()
       .then((rows) => rows[0] ?? null);
 
@@ -6893,11 +6913,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
    */
   async function validateQueuedRunForClaim(
     run: typeof heartbeatRuns.$inferSelect,
-    companyAgents?: AgentOrgRow[],
+    companyAgents: AgentOrgRow[] | undefined,
+    opts: {
+      /**
+       * Caller context for the cancel transitions. The sweep and the per-run
+       * pre-claim path validate rows they expect to still be queued; the
+       * executor batch path validates rows it just claimed (running, owned
+       * by this replica). Every cancel inside is conditioned on this guard
+       * so a concurrent claim (or re-claim by another executor) can never
+       * have its run cancelled from underneath it.
+       */
+      cancelOnlyIf: RunCancelGuard;
+    },
   ): Promise<QueuedRunClaimValidation> {
+    const cancelOnlyIf = opts.cancelOnlyIf;
     const agent = await getAgent(run.agentId);
     if (!agent) {
-      const cancelled = await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
+      const cancelled = await cancelRunInternal(run.id, "Cancelled because the agent no longer exists", {
+        onlyIf: cancelOnlyIf,
+      });
       return { ok: false, outcome: cancelled ? "cancelled" : "unchanged" };
     }
     const invokability = companyAgents
@@ -6907,6 +6941,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const cancelled = await cancelRunInternal(
         run.id,
         `Cancelled because the agent is not invokable: ${invokability.reason}`,
+        { onlyIf: cancelOnlyIf },
       );
       return { ok: false, outcome: cancelled ? "cancelled" : "unchanged" };
     }
@@ -6917,7 +6952,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       projectId: readNonEmptyString(context.projectId),
     });
     if (budgetBlock) {
-      const cancelled = await cancelRunInternal(run.id, budgetBlock.reason);
+      const cancelled = await cancelRunInternal(run.id, budgetBlock.reason, { onlyIf: cancelOnlyIf });
       return { ok: false, outcome: cancelled ? "cancelled" : "unchanged" };
     }
 
@@ -6933,24 +6968,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         contextSnapshot: context,
       });
       if (activePauseHold && !treeHoldInteractionWake) {
-        const cancelled = await cancelRunInternal(run.id, "Cancelled because issue is held by an active subtree pause hold");
-        await logActivity(db, {
-          companyId: run.companyId,
-          actorType: "system",
-          actorId: "system",
-          agentId: run.agentId,
-          runId: run.id,
-          action: "issue.tree_hold_run_interrupted",
-          entityType: "heartbeat_run",
-          entityId: run.id,
-          details: {
-            issueId,
-            holdId: activePauseHold.holdId,
-            rootIssueId: activePauseHold.rootIssueId,
-            source: "heartbeat.claim_queued_run",
-            securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
-          },
+        const cancelled = await cancelRunInternal(run.id, "Cancelled because issue is held by an active subtree pause hold", {
+          onlyIf: cancelOnlyIf,
         });
+        if (cancelled) {
+          await logActivity(db, {
+            companyId: run.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: run.agentId,
+            runId: run.id,
+            action: "issue.tree_hold_run_interrupted",
+            entityType: "heartbeat_run",
+            entityId: run.id,
+            details: {
+              issueId,
+              holdId: activePauseHold.holdId,
+              rootIssueId: activePauseHold.rootIssueId,
+              source: "heartbeat.claim_queued_run",
+              securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
+            },
+          });
+        }
         return { ok: false, outcome: cancelled ? "cancelled" : "unchanged" };
       }
 
@@ -6958,18 +6997,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
       if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
-        const cancelled = await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
-        logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
+        const cancelled = await cancelQueuedRunForBlockedDependencies(
+          run,
+          issueId,
+          readiness?.unresolvedBlockerIssueIds ?? [],
+          cancelOnlyIf,
+        );
+        if (cancelled) {
+          logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
+        }
         return { ok: false, outcome: cancelled ? "cancelled" : "unchanged" };
       }
 
       const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
       if (staleness.stale) {
-        const cancelled = await cancelQueuedRunForStaleIssue(run, issueId, staleness);
-        logger.info(
-          { runId: run.id, issueId, errorCode: staleness.errorCode },
-          "claimQueuedRun: cancelled stale queued run",
-        );
+        const cancelled = await cancelQueuedRunForStaleIssue(run, issueId, staleness, cancelOnlyIf);
+        if (cancelled) {
+          logger.info(
+            { runId: run.id, issueId, errorCode: staleness.errorCode },
+            "claimQueuedRun: cancelled stale queued run",
+          );
+        }
         return { ok: false, outcome: cancelled ? "cancelled" : "unchanged" };
       }
     }
@@ -6985,7 +7033,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
    */
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
-    const validation = await validateQueuedRunForClaim(run, companyAgents);
+    // The snapshot may be stale: an executor can batch-claim the run while
+    // we validate, so cancels only apply to rows still queued.
+    const validation = await validateQueuedRunForClaim(run, companyAgents, {
+      cancelOnlyIf: { status: "queued" },
+    });
     if (!validation.ok) return null;
 
     const claimedAt = new Date();
@@ -7145,7 +7197,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (!invokability.invokable) {
           if (shouldCancelRunsForNonInvokableAgent(invokability)) {
             for (const run of pending) {
-              await cancelRunInternal(run.id, `Cancelled because the agent is not invokable: ${invokability.reason}`);
+              // Post-claim context: only cancel while the row is still OUR
+              // claim — a reap/re-claim by another executor keeps its run.
+              await cancelRunInternal(run.id, `Cancelled because the agent is not invokable: ${invokability.reason}`, {
+                onlyIf: { status: "running", claimedBy: claimReplicaId },
+              });
             }
           } else {
             // e.g. paused agent: the scheduler leaves these queued today —
@@ -7192,7 +7248,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await releaseClaimedRunToQueue(run.id, claimReplicaId);
           continue;
         }
-        const validation = await validateQueuedRunForClaim(run, companyAgents);
+        // Post-claim context: the row is running and owned by us. Cancels
+        // assert that ownership so a reap/re-claim by ANOTHER executor in
+        // the meantime never gets its run cancelled from underneath it.
+        const validation = await validateQueuedRunForClaim(run, companyAgents, {
+          cancelOnlyIf: { status: "running", claimedBy: claimReplicaId },
+        });
         if (!validation.ok) {
           if (validation.outcome === "unchanged") {
             // The per-run claim path would have left this run queued.
@@ -7336,24 +7397,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string,
     unresolvedBlockerIssueIds: string[],
+    onlyIf?: RunCancelGuard,
   ) {
     const now = new Date();
     const reason =
       "Cancelled because issue dependencies are still blocked; Paperclip will wake the assignee when blockers resolve";
-    const cancelled = await setRunStatus(run.id, "cancelled", {
-      finishedAt: now,
-      error: reason,
-      errorCode: "issue_dependencies_blocked",
-      resultJson: {
-        ...parseObject(run.resultJson),
-        stopReason: "issue_dependencies_blocked",
-        effectiveTimeoutSec: 0,
-        timeoutConfigured: false,
-        timeoutSource: "dependency_gate",
-        timeoutFired: false,
+    const cancelled = await setRunStatus(
+      run.id,
+      "cancelled",
+      {
+        finishedAt: now,
+        error: reason,
+        errorCode: "issue_dependencies_blocked",
+        resultJson: {
+          ...parseObject(run.resultJson),
+          stopReason: "issue_dependencies_blocked",
+          effectiveTimeoutSec: 0,
+          timeoutConfigured: false,
+          timeoutSource: "dependency_gate",
+          timeoutFired: false,
+        },
       },
-    });
-    if (!cancelled) return null;
+      onlyIf,
+    );
+    if (!cancelled) {
+      logger.debug({ runId: run.id, issueId }, "blocked-dependency cancel skipped: run moved concurrently");
+      return null;
+    }
 
     await setWakeupStatus(run.wakeupRequestId, "skipped", {
       finishedAt: now,
@@ -7544,22 +7614,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string,
     staleness: Extract<QueuedRunStaleness, { stale: true }>,
+    onlyIf?: RunCancelGuard,
   ) {
     const now = new Date();
-    const cancelled = await setRunStatus(run.id, "cancelled", {
-      finishedAt: now,
-      error: staleness.reason,
-      errorCode: staleness.errorCode,
-      resultJson: {
-        ...parseObject(run.resultJson),
-        stopReason: staleness.errorCode,
-        effectiveTimeoutSec: 0,
-        timeoutConfigured: false,
-        timeoutSource: "stale_queued_run_gate",
-        timeoutFired: false,
+    const cancelled = await setRunStatus(
+      run.id,
+      "cancelled",
+      {
+        finishedAt: now,
+        error: staleness.reason,
+        errorCode: staleness.errorCode,
+        resultJson: {
+          ...parseObject(run.resultJson),
+          stopReason: staleness.errorCode,
+          effectiveTimeoutSec: 0,
+          timeoutConfigured: false,
+          timeoutSource: "stale_queued_run_gate",
+          timeoutFired: false,
+        },
       },
-    });
-    if (!cancelled) return null;
+      onlyIf,
+    );
+    if (!cancelled) {
+      logger.debug({ runId: run.id, issueId }, "stale-issue cancel skipped: run moved concurrently");
+      return null;
+    }
 
     await setWakeupStatus(run.wakeupRequestId, "skipped", {
       finishedAt: now,
@@ -8085,9 +8164,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (validated >= availableSlots) break;
           // An executor may have batch-claimed this run since the select;
           // never run cancellation gates against a run someone now owns.
+          // The freshness check narrows the window, and the queued-only
+          // cancel guard closes the remaining check/cancel race.
           const fresh = await getRun(queuedRun.id);
           if (!fresh || fresh.status !== "queued") continue;
-          const validation = await validateQueuedRunForClaim(queuedRun, companyAgents);
+          const validation = await validateQueuedRunForClaim(fresh, companyAgents, {
+            cancelOnlyIf: { status: "queued" },
+          });
           if (validation.ok) validated += 1;
         }
       });
@@ -11585,11 +11668,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     resultJson?: Record<string, unknown>;
     eventMessage?: string;
     eventPayload?: Record<string, unknown>;
+    /**
+     * Status-conditioned cancel: the transition only applies while the run
+     * is still in the expected state (and claim). When the conditional
+     * UPDATE matches nothing the row moved concurrently — the cancel is
+     * skipped entirely with NONE of its side effects, returning null.
+     */
+    onlyIf?: RunCancelGuard;
   };
 
   async function cancelRunInternal(runId: string, reason = "Cancelled by control plane", options: CancelRunOptions = {}) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
+    if (options.onlyIf && run.status !== options.onlyIf.status) {
+      logger.debug(
+        { runId, status: run.status, expectedStatus: options.onlyIf.status },
+        "cancelRun skipped: run no longer in the caller's expected status",
+      );
+      return null;
+    }
     if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) return run;
     const agent = await getAgent(run.agentId);
     const errorCode = options.errorCode ?? "cancelled";
@@ -11604,31 +11701,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       : options.resultJson;
 
-    const running = runningProcesses.get(run.id);
-    try {
-      if (running) {
-        await terminateHeartbeatRunProcess({
-          pid: running.child.pid ?? run.processPid,
-          processGroupId: running.processGroupId ?? run.processGroupId,
-          graceMs: Math.max(1, running.graceSec) * 1000,
-        });
-      } else if (run.processPid || run.processGroupId) {
-        await terminateHeartbeatRunProcess({
-          pid: run.processPid,
-          processGroupId: run.processGroupId,
-        });
+    const terminateRunProcess = async () => {
+      const running = runningProcesses.get(run.id);
+      try {
+        if (running) {
+          await terminateHeartbeatRunProcess({
+            pid: running.child.pid ?? run.processPid,
+            processGroupId: running.processGroupId ?? run.processGroupId,
+            graceMs: Math.max(1, running.graceSec) * 1000,
+          });
+        } else if (run.processPid || run.processGroupId) {
+          await terminateHeartbeatRunProcess({
+            pid: run.processPid,
+            processGroupId: run.processGroupId,
+          });
+        }
+      } finally {
+        runningProcesses.delete(run.id);
       }
-    } finally {
-      runningProcesses.delete(run.id);
-    }
+    };
 
     const finishedAt = new Date();
-    const cancelled = await setRunStatus(run.id, "cancelled", {
-      finishedAt,
-      error: reason,
-      errorCode,
-      ...(resultJson ? { resultJson } : {}),
-    });
+    let cancelled: typeof heartbeatRuns.$inferSelect | null;
+    if (options.onlyIf) {
+      // Conditional transition FIRST; side effects (process termination,
+      // wakeup/event/lock updates below) only when it actually matched.
+      cancelled = await setRunStatus(
+        run.id,
+        "cancelled",
+        {
+          finishedAt,
+          error: reason,
+          errorCode,
+          ...(resultJson ? { resultJson } : {}),
+        },
+        options.onlyIf,
+      );
+      if (!cancelled) {
+        logger.debug(
+          { runId, expectedStatus: options.onlyIf.status },
+          "cancelRun skipped: run moved concurrently before the conditional cancel applied",
+        );
+        return null;
+      }
+      await terminateRunProcess();
+    } else {
+      await terminateRunProcess();
+      cancelled = await setRunStatus(run.id, "cancelled", {
+        finishedAt,
+        error: reason,
+        errorCode,
+        ...(resultJson ? { resultJson } : {}),
+      });
+    }
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
       finishedAt,
@@ -12012,6 +12137,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     claimRunsForExecution,
     heartbeatExecutorClaims,
     releaseExecutorClaims,
+    // Exposed for the sweep/claim race tests: the shared pre-claim
+    // validation gate with its caller-context cancel guard.
+    validateQueuedRunForClaim,
 
     scheduleBoundedRetry: async (
       runId: string,

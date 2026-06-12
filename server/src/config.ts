@@ -85,6 +85,7 @@ export interface Config {
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
+  runExecutorEnabled: boolean;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
 }
@@ -334,6 +335,10 @@ export function loadConfig(): Config {
     // scheduler). false = traffic-only replica, never a candidate.
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
+    // Run the executor loop that batch-claims and executes queued runs.
+    // false = this replica serves traffic (and may still dispatch runs it
+    // triggers locally) but never batch-claims from the shared queue.
+    runExecutorEnabled: process.env.PAPERCLIP_RUN_EXECUTOR !== "false",
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };

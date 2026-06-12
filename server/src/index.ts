@@ -1015,7 +1015,7 @@ export async function startServer(): Promise<StartedServer> {
   startClaimHeartbeats(db as any, PROCESS_REPLICA_ID);
 
   let runExecutor: RunExecutor | null = null;
-  if (process.env.PAPERCLIP_RUN_EXECUTOR !== "false") {
+  if (config.runExecutorEnabled) {
     runExecutor = createRunExecutor({
       replicaId: PROCESS_REPLICA_ID,
       claimRuns: (limit) => heartbeat.claimRunsForExecution(limit),
