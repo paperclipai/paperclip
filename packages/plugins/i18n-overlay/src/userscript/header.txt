@@ -1,0 +1,10 @@
+// ==UserScript==
+// @name         Paperclip GUI-Übersetzung (DE)
+// @namespace    whitestag.i18n-overlay
+// @version      0.1.0
+// @description  Übersetzt die Paperclip-Oberfläche per JSON-Sprachdatei.
+// @match        http://localhost:*/*
+// @match        http://127.0.0.1:*/*
+// @run-at       document-idle
+// @grant        none
+// ==/UserScript==
