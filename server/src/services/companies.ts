@@ -243,7 +243,7 @@ export function companyService(db: Db) {
     throw new Error("Unable to allocate unique issue prefix");
   }
 
-  return {
+  const svc = {
     list: async () => {
       const rows = await getCompanyQuery(db);
       const hydrated = await hydrateCompanySpend(rows);
@@ -491,5 +491,36 @@ export function companyService(db: Db) {
         }
         return result;
       }),
+
+    // Reason-aware re-activation of a paused company. Each pause reason has its
+    // own safe resume path, so we route rather than force the status:
+    //  - budget   → caller must raise the cap (budget-incident flow); we refuse.
+    //  - archived / company_archived → delegate to update() so the agent-resume
+    //    side effect stays single-sourced.
+    //  - manual / system → clear the pause and activate.
+    reactivate: async (
+      id: string,
+      actor: CompanyActivityActor = SYSTEM_COMPANY_ACTOR,
+    ): Promise<{ outcome: "reactivated" | "already_active" | "budget_blocked" }> => {
+      const existing = await db
+        .select({ status: companies.status, pauseReason: companies.pauseReason })
+        .from(companies)
+        .where(eq(companies.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!existing) throw notFound("Company not found");
+      if (existing.status === "active") return { outcome: "already_active" };
+      if (existing.pauseReason === "budget") return { outcome: "budget_blocked" };
+
+      if (existing.status === "archived" || existing.pauseReason === "company_archived") {
+        await svc.update(id, { status: "active", pauseReason: null, pausedAt: null }, actor);
+      } else {
+        await db
+          .update(companies)
+          .set({ status: "active", pauseReason: null, pausedAt: null, updatedAt: new Date() })
+          .where(eq(companies.id, id));
+      }
+      return { outcome: "reactivated" };
+    },
   };
+  return svc;
 }

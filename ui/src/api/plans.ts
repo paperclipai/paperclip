@@ -87,4 +87,8 @@ export const plansApi = {
     api.post<{ stopped: true }>(`/companies/${companyId}/kill-switch`, {}),
   releaseKillSwitch: (companyId: string) =>
     api.post<{ released: true }>(`/companies/${companyId}/kill-switch/release`, {}),
+  // Reason-aware re-activation; resolves manual/system/archived pauses. Budget
+  // pauses return 409 (raise the budget cap to resume).
+  reactivateCompany: (companyId: string) =>
+    api.post<{ reactivated: true; alreadyActive?: boolean }>(`/companies/${companyId}/reactivate`, {}),
 };

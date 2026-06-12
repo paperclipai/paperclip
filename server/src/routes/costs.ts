@@ -401,6 +401,43 @@ export function costRoutes(
     res.json({ released: true });
   });
 
+  // Reason-aware re-activation of a paused company. Each pause reason has its own
+  // safe resume path; this routes to the right one instead of force-flipping the
+  // status (which would bypass budget enforcement and immediately re-pause).
+  router.post("/companies/:companyId/reactivate", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const actor = getActorInfo(req);
+
+    const { outcome } = await companies.reactivate(companyId, actor);
+    if (outcome === "budget_blocked") {
+      res.status(409).json({
+        error: "Company is paused by a budget cap. Raise the budget cap to resume.",
+        details: { pauseReason: "budget" },
+      });
+      return;
+    }
+    if (outcome === "already_active") {
+      res.json({ reactivated: true, alreadyActive: true });
+      return;
+    }
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.kill_switch_released",
+      entityType: "company",
+      entityId: companyId,
+      details: {},
+    });
+    publishLiveEvent({ companyId, type: "killswitch.released", payload: { companyId } });
+    res.json({ reactivated: true });
+  });
+
   router.post(
     "/companies/:companyId/budget-incidents/:incidentId/resolve",
     validate(resolveBudgetIncidentSchema),

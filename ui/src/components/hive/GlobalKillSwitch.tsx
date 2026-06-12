@@ -6,6 +6,7 @@ import { useCompany } from "../../context/CompanyContext";
 import { useToastActions } from "../../context/ToastContext";
 import { queryKeys } from "../../lib/queryKeys";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ConfirmActionDialog } from "./ConfirmActionDialog";
 
 // Company-wide hard stop. Engaging cancels every running agent and pauses the
@@ -17,8 +18,9 @@ export function GlobalKillSwitch() {
   const { pushToast } = useToastActions();
   const [confirm, setConfirm] = useState(false);
 
-  const engaged =
-    selectedCompany?.status === "paused" && selectedCompany?.pauseReason === "manual";
+  // A paused company (any reason) can be re-activated from here. Budget pauses
+  // are routed by the server to the raise-budget flow (409 with guidance).
+  const paused = selectedCompany?.status === "paused";
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -39,44 +41,60 @@ export function GlobalKillSwitch() {
       pushToast({ title: "Kill switch failed", body: errMsg(e), tone: "error" }),
   });
 
-  const release = useMutation({
-    mutationFn: () => plansApi.releaseKillSwitch(selectedCompanyId!),
+  const reactivate = useMutation({
+    mutationFn: () => plansApi.reactivateCompany(selectedCompanyId!),
     onSuccess: () => {
-      pushToast({ title: "Kill switch released", body: "Company re-activated.", tone: "success" });
+      pushToast({ title: "Company re-activated", body: "Agents can run again.", tone: "success" });
       refresh();
     },
-    onError: (e) => pushToast({ title: "Release failed", body: errMsg(e), tone: "error" }),
+    onError: (e) => pushToast({ title: "Couldn't re-activate", body: errMsg(e), tone: "error" }),
   });
 
   if (!selectedCompanyId) return null;
 
-  if (engaged) {
+  if (paused) {
     return (
-      <Button
-        variant="outline"
-        size="sm"
-        className="gap-1.5 border-red-400/60 text-red-700 dark:text-red-300"
-        onClick={() => release.mutate()}
-        disabled={release.isPending}
-      >
-        <OctagonX className="h-4 w-4" />
-        Release kill switch
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5 border-green-500/60 text-green-700 dark:text-green-300"
+            onClick={() => reactivate.mutate()}
+            disabled={reactivate.isPending}
+          >
+            <OctagonX className="h-4 w-4" />
+            Re-activate company
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="text-xs">
+          Sets the company back to active so agents can run again. If it was
+          paused by a budget cap, raise the cap to resume.
+        </TooltipContent>
+      </Tooltip>
     );
   }
 
   return (
     <>
-      <Button
-        variant="destructive"
-        size="sm"
-        className="gap-1.5"
-        onClick={() => setConfirm(true)}
-        aria-label="Engage global kill switch"
-      >
-        <OctagonX className="h-4 w-4" />
-        Kill switch
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="destructive"
+            size="sm"
+            className="gap-1.5"
+            onClick={() => setConfirm(true)}
+            aria-label="Engage global kill switch"
+          >
+            <OctagonX className="h-4 w-4" />
+            Kill switch
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="text-xs">
+          Immediately cancels every running agent and pauses the company. You can
+          release it again at any time.
+        </TooltipContent>
+      </Tooltip>
       <ConfirmActionDialog
         open={confirm}
         onOpenChange={setConfirm}
