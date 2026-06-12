@@ -2487,6 +2487,14 @@ export function pluginRoutes(
    * verification is the plugin's responsibility.
    *
    * Response: `{ deliveryId: string, status: string }`
+   *
+   * Deliveries carrying a recognized provider idempotency header are
+   * deduplicated: a retry of a pending or successful delivery is answered
+   * `202 { status: "duplicate", requestId }` (no `deliveryId`) without
+   * re-dispatching to the worker. A retry of a FAILED delivery (the
+   * provider retries exactly because we answered 5xx) resets the existing
+   * row to pending and re-dispatches, reusing its delivery id.
+   *
    * Errors:
    * - 404 if plugin not found or endpointKey not declared
    * - 400 if plugin is not in ready state or lacks webhooks.receive capability
@@ -2561,19 +2569,92 @@ export function pluginRoutes(
     const parsedBody = req.body as unknown;
     const payload = (req.body as Record<string, unknown> | undefined) ?? {};
 
-    // Step 6: Record the delivery in the database
+    // Provider-supplied idempotency id, when present. Covers provider and
+    // load-balancer retries without guessing: no recognized header, no dedup.
+    // `x-request-id` is deliberately NOT in this chain — this codebase treats
+    // it as a tracing/correlation header (see sanitizePluginRequestHeaders),
+    // and proxies propagate one id across distinct calls, so keying dedup on
+    // it would swallow different events.
+    const externalId =
+      rawHeaders["x-github-delivery"] ??
+      rawHeaders["x-delivery-id"] ??
+      rawHeaders["idempotency-key"] ??
+      rawHeaders["x-idempotency-key"] ??
+      null;
+
+    // Step 6: Record the delivery in the database. The partial unique index
+    // on (plugin_id, webhook_key, external_id) makes retried deliveries with
+    // the same provider idempotency id a no-op insert (empty `returning`).
     const startedAt = new Date();
-    const [delivery] = await db
+    const inserted = await db
       .insert(pluginWebhookDeliveries)
       .values({
         pluginId: plugin.id,
         webhookKey: endpointKey,
+        externalId,
         status: "pending",
         payload,
         headers: rawHeaders,
         startedAt,
       })
+      .onConflictDoNothing()
       .returning({ id: pluginWebhookDeliveries.id });
+
+    let delivery = inserted[0];
+    if (!delivery) {
+      // Duplicate delivery (same provider idempotency id). Invariant:
+      // duplicates of pending/successful deliveries are acknowledged
+      // without re-dispatch; FAILED deliveries are retried. A failed
+      // delivery was answered with a 5xx, which is exactly when providers
+      // retry — swallowing that retry would lose the event forever.
+      const [existing] = externalId === null
+        ? []
+        : await db
+            .select({
+              id: pluginWebhookDeliveries.id,
+              status: pluginWebhookDeliveries.status,
+            })
+            .from(pluginWebhookDeliveries)
+            .where(
+              and(
+                eq(pluginWebhookDeliveries.pluginId, plugin.id),
+                eq(pluginWebhookDeliveries.webhookKey, endpointKey),
+                eq(pluginWebhookDeliveries.externalId, externalId),
+              ),
+            )
+            .limit(1);
+
+      if (!existing || existing.status !== "failed") {
+        res.status(202).json({ status: "duplicate", requestId });
+        return;
+      }
+
+      // Reset the failed row and fall through to the normal dispatch path,
+      // reusing its id as the delivery id. The reset is a conditional
+      // UPDATE: two replicas can race the same retry here, and only the
+      // one whose UPDATE matched the failed status may dispatch — the
+      // loser answers duplicate.
+      const reset = await db
+        .update(pluginWebhookDeliveries)
+        .set({
+          status: "pending",
+          startedAt,
+          error: null,
+          finishedAt: null,
+        })
+        .where(
+          and(
+            eq(pluginWebhookDeliveries.id, existing.id),
+            eq(pluginWebhookDeliveries.status, "failed"),
+          ),
+        )
+        .returning({ id: pluginWebhookDeliveries.id });
+      if (reset.length === 0) {
+        res.status(202).json({ status: "duplicate", requestId });
+        return;
+      }
+      delivery = { id: existing.id };
+    }
 
     // Step 7: Dispatch to the worker via handleWebhook RPC
     try {
