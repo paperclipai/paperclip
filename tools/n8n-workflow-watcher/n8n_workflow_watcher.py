@@ -101,12 +101,13 @@ def render_report_html(findings, base=N8N_BASE):
     )
 
 
-def render_heartbeat(active_count):
-    subject = f"✅ n8n-Wächter: alle {active_count} aktiven Workflows grün"
-    text = (f"Alle {active_count} aktiven n8n-Workflows sind grün "
-            "(jüngster Lauf erfolgreich). Wächter läuft.")
-    html_body = (f"<h2>✅ n8n-Wächter</h2><p>Alle {active_count} aktiven "
-                 "Workflows grün (jüngster Lauf erfolgreich). Wächter läuft.</p>")
+def render_heartbeat(evaluated_count, active_count):
+    subject = "✅ n8n-Wächter: kein aktiver Workflow steht auf Fehler"
+    detail = (f"Geprüft: {evaluated_count} von {active_count} aktiven "
+              "(übrige hatten keinen Lauf im 14-Tage-Fenster).")
+    text = f"Kein aktiver Workflow steht auf Fehler. {detail} Wächter läuft."
+    html_body = (f"<h2>✅ n8n-Wächter</h2><p>Kein aktiver Workflow steht auf Fehler. "
+                 f"{detail} Wächter läuft.</p>")
     return subject, text, html_body
 
 
@@ -261,7 +262,7 @@ def main(argv=None):
 
     # keine Findings → ggf. wöchentlicher Heartbeat
     if should_send_heartbeat(today, state.get("last_heartbeat_date"), False):
-        subject, text, html_body = render_heartbeat(active_count)
+        subject, text, html_body = render_heartbeat(len(rows), active_count)
         if args.dry_run:
             log("INFO", f"[dry-run] would send heartbeat: {subject}")
             print(subject)

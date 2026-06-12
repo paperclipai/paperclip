@@ -1,9 +1,20 @@
 import json
 import os
 import sqlite3
+import tempfile
 import unittest
 from unittest import mock
 import n8n_workflow_watcher as w
+
+
+def _isolate_log(testcase):
+    """Redirect the watcher's LOG_PATH to a temp file for this test, so log()
+    calls during the test don't pollute the production log."""
+    tmpdir = tempfile.TemporaryDirectory()
+    testcase.addCleanup(tmpdir.cleanup)
+    patcher = mock.patch.object(w, "LOG_PATH", os.path.join(tmpdir.name, "test.log"))
+    patcher.start()
+    testcase.addCleanup(patcher.stop)
 
 
 class FindFailedWorkflows(unittest.TestCase):
@@ -89,9 +100,11 @@ class Rendering(unittest.TestCase):
         self.assertIn("<table", out)
 
     def test_heartbeat_render(self):
-        subject, text, html_body = w.render_heartbeat(23)
-        self.assertIn("23", subject)
+        subject, text, html_body = w.render_heartbeat(14, 23)
+        self.assertIn("Fehler", subject)
+        self.assertIn("14", text)
         self.assertIn("23", text)
+        self.assertIn("14", html_body)
         self.assertIn("23", html_body)
 
 
@@ -198,6 +211,9 @@ class DbQuery(unittest.TestCase):
 
 
 class SendMail(unittest.TestCase):
+    def setUp(self):
+        _isolate_log(self)
+
     def test_posts_payload_and_returns_status(self):
         fake_resp = mock.MagicMock()
         fake_resp.status = 200
@@ -221,6 +237,9 @@ class SendMail(unittest.TestCase):
 
 
 class MainOrchestration(unittest.TestCase):
+    def setUp(self):
+        _isolate_log(self)
+
     def test_findings_send_mail_and_persist(self):
         rows = [("wf1", "Digest", "trigger", "error", 11, "2026-06-12 03:00:00")]
         with tempfile.TemporaryDirectory() as d:
@@ -275,7 +294,7 @@ class MainOrchestration(unittest.TestCase):
                 rc = w.main(["--once"])
             self.assertEqual(rc, 0)
             sm.assert_called_once()
-            self.assertIn("grün", sm.call_args.args[0])
+            self.assertIn("Fehler", sm.call_args.args[0])
             self.assertIn("last_heartbeat_date", w.load_state(statep))
 
 
