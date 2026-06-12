@@ -33,6 +33,11 @@ export interface AppGalleryEntry {
   credentialFields: AppGalleryCredentialField[];
   recommendedDefaults: Record<string, unknown>;
   urlPatterns: string[];
+  availability?: {
+    available: boolean;
+    reason?: string | null;
+    robotEmail?: string | null;
+  };
   oauth?: {
     provider: string;
     scopes: string[];
@@ -174,32 +179,22 @@ export const TOOL_APP_GALLERY = [
     },
   },
   {
-    key: "google-drive",
-    name: "Google Drive",
-    logoUrl: favicon("drive.google.com"),
-    tagline: "Search and retrieve files from Google Drive.",
-    description: "Give agents access to Drive files they need for research, planning, and deliverables. Keep editing or sharing actions behind human approval when needed.",
-    authKind: "api_key",
+    key: "google-sheets",
+    name: "Google Sheets",
+    logoUrl: favicon("sheets.google.com"),
+    tagline: "Read and update selected spreadsheets.",
+    description: "Let agents read and update only the spreadsheets you choose. Share each sheet with the robot email, then paste the sheet links here.",
+    authKind: "none",
     transportTemplate: {
-      transport: "remote_http",
-      url: "https://mcp.google.com/drive",
+      transport: "local_stdio",
+      templateKey: "paperclip.google-sheets",
     },
-    credentialFields: [
-      {
-        label: "Google API token",
-        configPath: "credentials.authorization",
-        helpUrl: "https://console.cloud.google.com/apis/credentials",
-        required: true,
-        placement: "header",
-        key: "Authorization",
-        prefix: "Bearer ",
-      },
-    ],
+    credentialFields: [],
     recommendedDefaults: {
       access: "all_agents",
       askFirstRiskLevels: ["write", "destructive"],
     },
-    urlPatterns: ["https://mcp.google.com/drive*", "https://*.googleapis.com/*"],
+    urlPatterns: ["https://docs.google.com/spreadsheets/*", "https://sheets.google.com/*"],
   },
   {
     key: "context7",

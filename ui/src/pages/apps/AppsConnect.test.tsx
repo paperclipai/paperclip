@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -45,6 +45,14 @@ vi.mock("@/context/ToastContext", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
+
 async function flushReact() {
   await act(async () => {
     await Promise.resolve();
@@ -61,9 +69,24 @@ function setInputValue(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLTextAreaElement.prototype,
+    "value",
+  )?.set;
+  setter?.call(textarea, value);
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 function buttonByText(text: string): HTMLButtonElement | undefined {
   return Array.from(document.body.querySelectorAll("button")).find(
     (b) => b.textContent?.trim() === text,
+  ) as HTMLButtonElement | undefined;
+}
+
+function buttonContaining(text: string): HTMLButtonElement | undefined {
+  return Array.from(document.body.querySelectorAll("button")).find(
+    (b) => b.textContent?.includes(text),
   ) as HTMLButtonElement | undefined;
 }
 
@@ -267,6 +290,111 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       link: "https://www.example.com/actions",
       name: "Bla",
       applicationId: "app-77",
+    });
+  });
+
+  it("shows the Google Sheets robot email and keeps empty sheet links from continuing", async () => {
+    listGalleryMock.mockResolvedValueOnce({
+      apps: [
+        {
+          key: "google-sheets",
+          name: "Google Sheets",
+          tagline: "Read and update selected spreadsheets.",
+          authKind: "none",
+          urlPatterns: ["https://docs.google.com/spreadsheets/*"],
+          logoUrl: "https://example.com/sheets.png",
+          credentialFields: [],
+          availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" },
+        },
+      ],
+    });
+    await render();
+
+    await act(async () => {
+      buttonContaining("Google Sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Share your spreadsheet with this email");
+    expect(
+      Array.from(container.querySelectorAll<HTMLInputElement>("input"))
+        .some((input) => input.value === "robot@paperclip.iam.gserviceaccount.com"),
+    ).toBe(true);
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+  });
+
+  it("shows inline validation for invalid Google Sheets links", async () => {
+    listGalleryMock.mockResolvedValueOnce({
+      apps: [
+        {
+          key: "google-sheets",
+          name: "Google Sheets",
+          tagline: "Read and update selected spreadsheets.",
+          authKind: "none",
+          urlPatterns: ["https://docs.google.com/spreadsheets/*"],
+          logoUrl: "https://example.com/sheets.png",
+          credentialFields: [],
+          availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" },
+        },
+      ],
+    });
+    await render();
+
+    await act(async () => {
+      buttonContaining("Google Sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    await act(async () => setTextareaValue(textarea!, "https://example.com/not-a-sheet"));
+    await flushReact();
+    await act(async () => {
+      buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Use Google Sheets links like docs.google.com/spreadsheets.");
+    expect(connectAppMock).not.toHaveBeenCalled();
+  });
+
+  it("passes parsed Google Sheets IDs as connection config values", async () => {
+    listGalleryMock.mockResolvedValueOnce({
+      apps: [
+        {
+          key: "google-sheets",
+          name: "Google Sheets",
+          tagline: "Read and update selected spreadsheets.",
+          authKind: "none",
+          urlPatterns: ["https://docs.google.com/spreadsheets/*"],
+          logoUrl: "https://example.com/sheets.png",
+          credentialFields: [],
+          availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" },
+        },
+      ],
+    });
+    await render();
+
+    await act(async () => {
+      buttonContaining("Google Sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    await act(async () =>
+      setTextareaValue(
+        textarea!,
+        "https://docs.google.com/spreadsheets/d/sheet_123/edit\nhttps://docs.google.com/spreadsheets/d/sheet_456",
+      )
+    );
+    await flushReact();
+    await act(async () => {
+      buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    const [, input] = connectAppMock.mock.calls[0];
+    expect(input).toMatchObject({
+      galleryKey: "google-sheets",
+      configValues: { allowedSpreadsheetIds: ["sheet_123", "sheet_456"] },
     });
   });
 });

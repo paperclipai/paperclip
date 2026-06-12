@@ -7,12 +7,19 @@ import {
 describe("tool app gallery URL matching", () => {
   it("matches pasted links against gallery URL patterns", () => {
     expect(getToolAppGalleryEntryForUrl("https://mcp.zapier.com/api/mcp")?.key).toBe("zapier");
-    expect(getToolAppGalleryEntryForUrl("https://docs.googleapis.com/drive/v3/files")?.key).toBe("google-drive");
+    expect(getToolAppGalleryEntryForUrl("https://api.githubcopilot.com/mcp/")?.key).toBe("github");
+    expect(getToolAppGalleryEntryForUrl("https://docs.google.com/spreadsheets/d/sheet_123/edit")?.key).toBe("google-sheets");
   });
 
   it("returns null for invalid or unknown links", () => {
     expect(getToolAppGalleryEntryForUrl("not a url")).toBeNull();
     expect(getToolAppGalleryEntryForUrl("https://example.com/mcp")).toBeNull();
+    expect(getToolAppGalleryEntryForUrl("https://docs.googleapis.com/drive/v3/files")).toBeNull();
+  });
+
+  it("does not list Google Drive until its OAuth client flow is supported", () => {
+    expect(TOOL_APP_GALLERY.map((entry) => entry.key)).not.toContain("google-drive");
+    expect(getToolAppGalleryEntryForUrl("https://mcp.google.com/drive")).toBeNull();
   });
 
   it("keeps every gallery entry reachable through at least one pattern", () => {

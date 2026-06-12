@@ -22,7 +22,7 @@ import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
 import { AppLogo } from "./AppLogo";
 
-const POPULAR_KEYS = ["zapier", "github", "slack", "notion", "linear", "google-drive"];
+const POPULAR_KEYS = ["zapier", "github", "slack", "notion", "linear"];
 
 type AppStatus = {
   label: "Healthy" | "Needs attention" | "Paused" | "Not connected";

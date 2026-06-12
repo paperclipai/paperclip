@@ -659,6 +659,122 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  it("keeps duplicate, delete, and new-tools profile routes board-only and viewer-safe", async () => {
+    const company = await createCompany(db);
+    const [agent] = await db.insert(agents).values({
+      companyId: company.id,
+      name: `Route Agent ${randomUUID()}`,
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+    }).returning();
+    const service = toolAccessService(db);
+    const profile = await service.createProfile(company.id, {
+      profileKey: `route-profile-${randomUUID()}`,
+      name: "Route profile",
+      defaultAction: "deny",
+    });
+
+    const agentApp = createRouteApp(db, {
+      type: "agent",
+      companyId: company.id,
+      agentId: agent.id,
+      runId: null,
+      source: "agent_jwt",
+    });
+    const viewerApp = createRouteApp(db, boardSessionActor(company.id, "viewer"));
+
+    const viewerRead = await request(viewerApp).get(`/api/tool-profiles/${profile.id}/new-tools`);
+    expect(viewerRead.status).toBe(200);
+    expect(viewerRead.body).toMatchObject({
+      profileId: profile.id,
+      pendingCount: 0,
+      tools: [],
+    });
+
+    await request(agentApp).get(`/api/tool-profiles/${profile.id}/new-tools`).expect(403);
+    await request(agentApp)
+      .post(`/api/tool-profiles/${profile.id}/duplicate`)
+      .send({ name: "Agent copy", includeAssignments: true })
+      .expect(403);
+    await request(agentApp)
+      .delete(`/api/tool-profiles/${profile.id}`)
+      .send({ force: false })
+      .expect(403);
+    await request(agentApp)
+      .post(`/api/tool-profiles/${profile.id}/new-tools/review`)
+      .send({ decisions: [{ catalogEntryId: randomUUID(), decision: "keep_blocked" }] })
+      .expect(403);
+
+    await request(viewerApp)
+      .post(`/api/tool-profiles/${profile.id}/duplicate`)
+      .send({ name: "Viewer copy", includeAssignments: true })
+      .expect(403);
+    await request(viewerApp)
+      .delete(`/api/tool-profiles/${profile.id}`)
+      .send({ force: false })
+      .expect(403);
+    await request(viewerApp)
+      .post(`/api/tool-profiles/${profile.id}/new-tools/review`)
+      .send({ decisions: [{ catalogEntryId: randomUUID(), decision: "keep_blocked" }] })
+      .expect(403);
+  });
+
+  it("returns 403 for cross-company profile routes and 404 for missing profiles", async () => {
+    const allowedCompany = await createCompany(db);
+    const otherCompany = await createCompany(db);
+    const profile = await toolAccessService(db).createProfile(otherCompany.id, {
+      profileKey: `other-profile-${randomUUID()}`,
+      name: "Other company profile",
+      defaultAction: "deny",
+    });
+    const app = createRouteApp(db, {
+      type: "board",
+      userId: "member-user",
+      userName: "Member User",
+      userEmail: null,
+      companyIds: [allowedCompany.id],
+      memberships: [
+        {
+          companyId: allowedCompany.id,
+          membershipRole: "owner",
+          status: "active",
+        },
+      ],
+      isInstanceAdmin: false,
+      source: "session",
+    });
+
+    await request(app).get(`/api/tool-profiles/${profile.id}/new-tools`).expect(403);
+    await request(app)
+      .post(`/api/tool-profiles/${profile.id}/duplicate`)
+      .send({ name: "Forbidden copy", includeAssignments: false })
+      .expect(403);
+    await request(app)
+      .delete(`/api/tool-profiles/${profile.id}`)
+      .send({ force: false })
+      .expect(403);
+    await request(app)
+      .post(`/api/tool-profiles/${profile.id}/new-tools/review`)
+      .send({ decisions: [{ catalogEntryId: randomUUID(), decision: "keep_blocked" }] })
+      .expect(403);
+
+    await request(createRouteApp(db)).get(`/api/tool-profiles/${randomUUID()}/new-tools`).expect(404);
+    await request(createRouteApp(db))
+      .post(`/api/tool-profiles/${randomUUID()}/duplicate`)
+      .send({ name: "Missing copy", includeAssignments: false })
+      .expect(404);
+    await request(createRouteApp(db))
+      .delete(`/api/tool-profiles/${randomUUID()}`)
+      .send({ force: false })
+      .expect(404);
+    await request(createRouteApp(db))
+      .post(`/api/tool-profiles/${randomUUID()}/new-tools/review`)
+      .send({ decisions: [{ catalogEntryId: randomUUID(), decision: "keep_blocked" }] })
+      .expect(404);
+  });
+
   it("installs the safe example fixture idempotently and smokes allow, deny, and audit paths", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);
@@ -738,9 +854,10 @@ describeEmbeddedPostgres("tool access service", () => {
       "slack",
       "notion",
       "linear",
-      "google-drive",
+      "google-sheets",
       "context7",
     ]);
+    expect(res.body.apps.map((entry: { key: string }) => entry.key)).not.toContain("google-drive");
     expect(res.body.apps).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

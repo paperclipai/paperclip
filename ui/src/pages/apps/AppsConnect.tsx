@@ -4,6 +4,7 @@ import {
   ArrowUpRight,
   Check,
   ChevronRight,
+  Copy,
   ClipboardPaste,
   Link2,
   Loader2,
@@ -31,10 +32,12 @@ import { appCopyFor, credentialFieldLabel } from "@/lib/app-gallery-copy";
 import { advancedTabHref } from "@/pages/tools/tool-tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { AppLogo } from "./AppLogo";
+import { parseGoogleSheetIds } from "./google-sheets";
 
 type Step = "gallery" | "key" | "actions" | "who" | "success";
 type AppAccessSelection = "all_agents" | { agentIds: string[] };
@@ -51,6 +54,10 @@ const STEP_INDEX: Record<Exclude<Step, "success">, number> = {
 function askFirstLevelsFrom(result: ConnectToolAppResult): string[] {
   const raw = (result.suggestedDefaults as { askFirstRiskLevels?: unknown })?.askFirstRiskLevels;
   return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : ["write", "destructive"];
+}
+
+function isGoogleSheetsEntry(entry: AppGalleryEntry | null): boolean {
+  return entry?.key === "google-sheets";
 }
 
 export function AppsConnect() {
@@ -78,6 +85,8 @@ export function AppsConnect() {
   const [linkNeedsKey, setLinkNeedsKey] = useState(false);
   const [linkKey, setLinkKey] = useState("");
   const [credentials, setCredentials] = useState<Record<string, string>>({});
+  const [googleSheetsLinks, setGoogleSheetsLinks] = useState("");
+  const [googleSheetsError, setGoogleSheetsError] = useState<string | null>(null);
   const [connectResult, setConnectResult] = useState<ConnectToolAppResult | null>(null);
   const [enabled, setEnabled] = useState<Record<string, boolean>>({});
   const [access, setAccess] = useState<"all" | "specific">("all");
@@ -101,9 +110,11 @@ export function AppsConnect() {
   const connectMutation = useMutation({
     mutationFn: () => {
       if (entry) {
+        const sheetIds = isGoogleSheetsEntry(entry) ? parseGoogleSheetIds(googleSheetsLinks).ids : [];
         return toolsApi.connectApp(selectedCompanyId!, {
           galleryKey: entry.key,
           credentialValues: credentials,
+          configValues: isGoogleSheetsEntry(entry) ? { allowedSpreadsheetIds: sheetIds } : undefined,
           applicationId: prefill.applicationId,
         });
       }
@@ -188,6 +199,7 @@ export function AppsConnect() {
               : `Step ${STEP_INDEX[step] + 1} of 3`
           }
           step={step}
+          labels={isGoogleSheetsEntry(entry) ? ["Pick app", "Share sheet", "Choose actions"] : STEP_LABELS}
           onCancel={() => navigate("/apps")}
         />
       )}
@@ -203,6 +215,8 @@ export function AppsConnect() {
             setLinkNeedsKey(false);
             setLinkKey("");
             setCredentials({});
+            setGoogleSheetsLinks("");
+            setGoogleSheetsError(null);
             setStep("key");
           }}
           onUseLink={(url) => {
@@ -212,6 +226,8 @@ export function AppsConnect() {
             setLinkNeedsKey(false);
             setLinkKey("");
             setCredentials({});
+            setGoogleSheetsLinks("");
+            setGoogleSheetsError(null);
             setStep("key");
           }}
           onRunYourOwn={() => navigate(advancedTabHref("run-your-own"))}
@@ -224,9 +240,28 @@ export function AppsConnect() {
           entry={entry}
           values={credentials}
           onChange={setCredentials}
+          googleSheetsLinks={googleSheetsLinks}
+          googleSheetsError={googleSheetsError}
+          onGoogleSheetsLinksChange={(next) => {
+            setGoogleSheetsLinks(next);
+            setGoogleSheetsError(null);
+          }}
           submitting={connectMutation.isPending}
           onBack={() => setStep("gallery")}
-          onConnect={() => connectMutation.mutate()}
+          onConnect={() => {
+            if (isGoogleSheetsEntry(entry)) {
+              const parsed = parseGoogleSheetIds(googleSheetsLinks);
+              if (parsed.invalidCount > 0) {
+                setGoogleSheetsError("Use Google Sheets links like docs.google.com/spreadsheets.");
+                return;
+              }
+              if (parsed.ids.length === 0) {
+                setGoogleSheetsError("Paste at least one Google Sheets link.");
+                return;
+              }
+            }
+            connectMutation.mutate();
+          }}
         />
       )}
 
@@ -296,10 +331,12 @@ export function AppsConnect() {
 function StepHeader({
   subtitle,
   step,
+  labels,
   onCancel,
 }: {
   subtitle: string;
   step: Step;
+  labels: string[];
   onCancel: () => void;
 }) {
   const activeIndex = step === "success" ? 3 : STEP_INDEX[step];
@@ -317,14 +354,14 @@ function StepHeader({
       {step !== "gallery" && (
         <div className="mt-4">
           <div className="flex gap-2">
-            {STEP_LABELS.map((label, i) => (
+            {labels.map((label, i) => (
               <div
                 key={label}
                 className={cn("h-1 w-20 rounded-full", i <= activeIndex ? "bg-foreground" : "bg-border")}
               />
             ))}
           </div>
-          <div className="mt-2 text-xs text-muted-foreground">{STEP_LABELS.join("   ·   ")}</div>
+          <div className="mt-2 text-xs text-muted-foreground">{labels.join("   ·   ")}</div>
         </div>
       )}
     </div>
@@ -393,22 +430,25 @@ function GalleryStep({
         {filtered.map((app) => {
           const copy = appCopyFor(app.key, app.tagline);
           const oauth = app.authKind === "oauth";
+          const unavailable = app.availability?.available === false;
           return (
             <button
               key={app.key}
               type="button"
-              disabled={oauth}
+              disabled={oauth || unavailable}
               onClick={() => onPick(app)}
               className={cn(
                 "flex flex-col rounded-xl border border-border bg-card p-4 text-left transition-colors",
-                oauth ? "cursor-not-allowed opacity-60" : "hover:border-foreground/30 hover:bg-accent/40",
+                oauth || unavailable ? "cursor-not-allowed opacity-60" : "hover:border-foreground/30 hover:bg-accent/40",
               )}
             >
               <AppLogo name={app.name} logoUrl={app.logoUrl} size={36} />
               <div className="mt-3 text-[15px] font-bold text-foreground">{app.name}</div>
               <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">{copy.tagline}</div>
               <div className="mt-3 text-xs font-semibold text-foreground">
-                {oauth ? (
+                {unavailable ? (
+                  <span className="text-muted-foreground">Not available on this instance</span>
+                ) : oauth ? (
                   <span className="text-muted-foreground">Sign-in coming soon</span>
                 ) : (
                   <span>Connect →</span>
@@ -442,12 +482,13 @@ function GalleryStep({
                 type="button"
                 size="sm"
                 variant="outline"
+                disabled={matchedEntry.availability?.available === false}
                 onClick={() => {
                   setLinkError(null);
                   onPick(matchedEntry);
                 }}
               >
-                Use {matchedEntry.name}
+                {matchedEntry.availability?.available === false ? "Not available" : `Use ${matchedEntry.name}`}
               </Button>
             </div>
           )}
@@ -690,6 +731,9 @@ function KeyStep({
   entry,
   values,
   onChange,
+  googleSheetsLinks,
+  googleSheetsError,
+  onGoogleSheetsLinksChange,
   submitting,
   onBack,
   onConnect,
@@ -697,6 +741,9 @@ function KeyStep({
   entry: AppGalleryEntry;
   values: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
+  googleSheetsLinks: string;
+  googleSheetsError: string | null;
+  onGoogleSheetsLinksChange: (next: string) => void;
   submitting: boolean;
   onBack: () => void;
   onConnect: () => void;
@@ -706,6 +753,73 @@ function KeyStep({
   const allFilled = fields.every(
     (f) => f.required === false || (values[f.configPath]?.trim().length ?? 0) > 0,
   );
+  const robotEmail = entry.availability?.robotEmail ?? null;
+  const unavailable = entry.availability?.available === false;
+
+  if (isGoogleSheetsEntry(entry)) {
+    const parsed = parseGoogleSheetIds(googleSheetsLinks);
+    const canConnect = !unavailable && Boolean(robotEmail) && googleSheetsLinks.trim().length > 0;
+    return (
+      <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-8">
+        <div className="flex items-center gap-3">
+          <AppLogo name={entry.name} logoUrl={entry.logoUrl} size={48} />
+          <div>
+            <h2 className="text-xl font-bold tracking-tight">Connect Google Sheets</h2>
+            <p className="text-sm text-muted-foreground">{copy.short}</p>
+          </div>
+        </div>
+
+        <div className="mt-8 space-y-6">
+          {robotEmail ? (
+            <div>
+              <label className="text-sm font-medium text-foreground">Share your spreadsheet with this email</label>
+              <div className="mt-2 flex min-w-0 gap-2">
+                <Input readOnly value={robotEmail} className="h-11 font-mono text-sm" />
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void navigator.clipboard?.writeText(robotEmail)}
+                >
+                  <Copy className="mr-2 h-4 w-4" />
+                  Copy
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-lg bg-muted/50 p-4 text-sm text-muted-foreground">
+              Google Sheets is not available on this instance yet.
+            </div>
+          )}
+
+          <div>
+            <label className="text-sm font-medium text-foreground">Paste your spreadsheet links</label>
+            <Textarea
+              value={googleSheetsLinks}
+              onChange={(e) => onGoogleSheetsLinksChange(e.target.value)}
+              placeholder="https://docs.google.com/spreadsheets/d/..."
+              className="mt-2 min-h-28"
+            />
+            <div className="mt-2 text-xs text-muted-foreground">
+              {parsed.ids.length > 0
+                ? `${parsed.ids.length} ${parsed.ids.length === 1 ? "sheet" : "sheets"} ready to connect.`
+                : "Paste one link per line."}
+            </div>
+            {googleSheetsError && <div className="mt-2 text-xs text-destructive">{googleSheetsError}</div>}
+          </div>
+        </div>
+
+        <div className="mt-8 flex items-center justify-between">
+          <Button variant="ghost" onClick={onBack} disabled={submitting}>
+            Back
+          </Button>
+          <Button onClick={onConnect} disabled={submitting || !canConnect}>
+            {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {submitting ? "Checking…" : "Connect"}
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-8">

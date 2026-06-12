@@ -177,6 +177,7 @@ export const connectToolAppSchema = z.object({
   link: z.string().trim().url().max(2000).optional(),
   name: z.string().trim().min(1).max(160).optional(),
   credentialValues: z.record(z.string().trim().min(1).max(200), z.string().min(1)).optional(),
+  configValues: z.record(z.string().trim().min(1).max(200), z.unknown()).optional(),
   applicationId: z.string().uuid().optional(),
 }).refine(
   (value) => Boolean(value.galleryKey) !== Boolean(value.link),

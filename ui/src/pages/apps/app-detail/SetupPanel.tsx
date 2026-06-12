@@ -1,20 +1,26 @@
 import { useState } from "react";
 import type { ToolCatalogEntry, ToolConnection } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import type { AppDetailSectionProps } from "./types";
+import { googleSheetsConfigWithAllowlist, parseGoogleSheetIds } from "../google-sheets";
 
 export function SetupPanel({
   connection,
   galleryEntry,
   onToggleApp,
   appToggleDisabled,
+  onUpdateConfig,
+  configUpdateDisabled,
 }: Pick<
   AppDetailSectionProps,
   "connection" | "galleryEntry"
 > & {
   onToggleApp: () => void;
   appToggleDisabled: boolean;
+  onUpdateConfig: (config: Record<string, unknown>) => void;
+  configUpdateDisabled: boolean;
 }) {
   const description = galleryEntry?.description ?? galleryEntry?.tagline ?? null;
   return (
@@ -22,8 +28,101 @@ export function SetupPanel({
       {description && (
         <p className="max-w-2xl text-sm leading-6 text-muted-foreground">{description}</p>
       )}
+      {galleryEntry?.key === "google-sheets" && (
+        <GoogleSheetsAllowlistSection
+          connection={connection}
+          disabled={configUpdateDisabled}
+          onUpdateConfig={onUpdateConfig}
+        />
+      )}
       <AppLifecycleSection connection={connection} disabled={appToggleDisabled} onToggle={onToggleApp} />
     </div>
+  );
+}
+
+function currentSpreadsheetIds(connection: ToolConnection): string[] {
+  const raw = connection.config?.allowedSpreadsheetIds;
+  return Array.isArray(raw) ? raw.map((value) => String(value).trim()).filter(Boolean) : [];
+}
+
+function GoogleSheetsAllowlistSection({
+  connection,
+  disabled,
+  onUpdateConfig,
+}: {
+  connection: ToolConnection;
+  disabled: boolean;
+  onUpdateConfig: (config: Record<string, unknown>) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const ids = currentSpreadsheetIds(connection);
+  const saveIds = (nextIds: string[]) =>
+    onUpdateConfig(googleSheetsConfigWithAllowlist(connection.config, nextIds));
+
+  return (
+    <section className="rounded-xl border border-border bg-card px-5 py-4">
+      <div>
+        <h2 className="text-sm font-bold text-foreground">Shared spreadsheets</h2>
+        <p className="mt-0.5 text-sm text-muted-foreground">
+          Agents can only use the sheets listed here.
+        </p>
+      </div>
+
+      <div className="mt-4 space-y-2">
+        {ids.length === 0 ? (
+          <div className="text-sm text-muted-foreground">No sheets are connected yet.</div>
+        ) : (
+          ids.map((id) => (
+            <div key={id} className="flex items-center gap-3 border-t border-border py-2 first:border-t-0">
+              <div className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">{id}</div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={disabled || ids.length <= 1}
+                onClick={() => saveIds(ids.filter((current) => current !== id))}
+              >
+                Remove
+              </Button>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+        <Input
+          value={draft}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            setError(null);
+          }}
+          placeholder="https://docs.google.com/spreadsheets/d/..."
+          className="h-10"
+        />
+        <Button
+          type="button"
+          variant="outline"
+          disabled={disabled}
+          onClick={() => {
+            const parsed = parseGoogleSheetIds(draft);
+            if (parsed.ids.length === 0) {
+              setError("Paste a Google Sheets link.");
+              return;
+            }
+            if (parsed.invalidCount > 0) {
+              setError("Use Google Sheets links like docs.google.com/spreadsheets.");
+              return;
+            }
+            saveIds(Array.from(new Set([...ids, ...parsed.ids])));
+            setDraft("");
+          }}
+        >
+          Add sheet
+        </Button>
+      </div>
+      {error && <div className="mt-2 text-xs text-destructive">{error}</div>}
+    </section>
   );
 }
 

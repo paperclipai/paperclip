@@ -105,6 +105,7 @@ export interface UpdateToolConnectionInput {
   name?: string;
   status?: ToolConnection["status"];
   config?: Record<string, unknown>;
+  transportConfig?: Record<string, unknown>;
   credentialRefs?: ToolConnection["credentialRefs"];
   enabled?: boolean;
 }
@@ -176,6 +177,7 @@ export const toolsApi = {
     link?: string;
     name?: string;
     credentialValues?: Record<string, string>;
+    configValues?: Record<string, unknown>;
     applicationId?: string;
   }) =>
     api.post<ConnectToolAppResult>(`/companies/${companyId}/tools/apps/connect`, input),

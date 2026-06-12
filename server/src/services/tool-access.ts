@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { and, asc, desc, eq, gte, inArray, lt, max, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -117,7 +118,13 @@ export type McpToolDescriptor = {
   annotations?: Record<string, unknown>;
 };
 
-const APPROVED_STDIO_TEMPLATES: Record<string, { name: string; tools: McpToolDescriptor[] }> = {
+const APPROVED_STDIO_TEMPLATES: Record<string, {
+  name: string;
+  command?: string | null;
+  args?: string[];
+  envKeys?: string[];
+  tools: McpToolDescriptor[];
+}> = {
   "paperclip.echo-calculator-time": {
     name: "Paperclip Echo / Calculator / Time fixture",
     tools: [
@@ -170,6 +177,27 @@ const APPROVED_STDIO_TEMPLATES: Record<string, { name: string; tools: McpToolDes
       { name: "set_value", description: "Write a synthetic KV value.", annotations: { readOnlyHint: false } },
     ],
   },
+  "paperclip.google-sheets": {
+    name: "Google Sheets",
+    command: "paperclip-google-sheets-mcp-server",
+    args: [],
+    envKeys: [
+      "GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON",
+      "GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON_PATH",
+      "GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS",
+    ],
+    tools: [
+      { name: "list_spreadsheets", description: "List connected spreadsheets.", annotations: { readOnlyHint: true } },
+      { name: "get_spreadsheet_info", description: "Get spreadsheet and tab details.", annotations: { readOnlyHint: true } },
+      { name: "read_values", description: "Read values from a sheet range.", annotations: { readOnlyHint: true } },
+      { name: "search_rows", description: "Search rows in a sheet range.", annotations: { readOnlyHint: true } },
+      { name: "append_rows", description: "Add rows to a sheet.", annotations: { readOnlyHint: false } },
+      { name: "update_values", description: "Update values in a sheet range.", annotations: { readOnlyHint: false } },
+      { name: "add_sheet_tab", description: "Add a tab to a spreadsheet.", annotations: { readOnlyHint: false } },
+      { name: "clear_values", description: "Clear values from a sheet range.", annotations: { destructiveHint: true } },
+      { name: "delete_rows", description: "Delete rows from a sheet.", annotations: { destructiveHint: true } },
+    ],
+  },
 };
 
 type ToolExampleDefinition = {
@@ -205,6 +233,37 @@ const TOOL_EXAMPLES: ToolExampleDefinition[] = [
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
   return {};
+}
+
+export function googleSheetsRobotEmailFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): { available: true; robotEmail: string } | { available: false; reason: string } {
+  const inlineOrPath = env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON?.trim();
+  const explicitPath = env.GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON_PATH?.trim();
+  if (!inlineOrPath && !explicitPath) {
+    return { available: false, reason: "Google Sheets is not available on this instance yet." };
+  }
+
+  try {
+    const raw = explicitPath
+      ? readFileSync(explicitPath, "utf8")
+      : inlineOrPath!.startsWith("{")
+        ? inlineOrPath!
+        : readFileSync(inlineOrPath!, "utf8");
+    const parsed = JSON.parse(raw) as { client_email?: unknown };
+    if (typeof parsed.client_email === "string" && parsed.client_email.trim()) {
+      return { available: true, robotEmail: parsed.client_email.trim() };
+    }
+  } catch {
+    return { available: false, reason: "Google Sheets is not available on this instance yet." };
+  }
+  return { available: false, reason: "Google Sheets is not available on this instance yet." };
+}
+
+function googleSheetsAllowedSpreadsheetIds(configValues: Record<string, unknown> | undefined): string[] {
+  const raw = configValues?.allowedSpreadsheetIds;
+  const values = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(/[\n,]/g) : [];
+  return Array.from(new Set(values.map((value) => String(value).trim()).filter(Boolean)));
 }
 
 // Detects a Postgres foreign_key_violation (SQLSTATE 23503) raised by the
@@ -421,9 +480,9 @@ function builtInStdioTemplate(templateId: string): ToolStdioCommandTemplate | nu
     description: null,
     status: "active",
     source: "built_in",
-    command: null,
-    args: [],
-    envKeys: [],
+    command: template.command ?? null,
+    args: template.args ?? [],
+    envKeys: template.envKeys ?? [],
     tools: template.tools.map((tool) => ({
       name: tool.name,
       title: tool.title ?? null,
@@ -2706,9 +2765,24 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const baseConfig = transport === "remote_http"
       ? { url: transportTemplate.url }
       : { templateId: transportTemplate.templateKey };
-    const config = galleryEntry
+    const config: Record<string, unknown> = galleryEntry
       ? { ...baseConfig, sourceTemplateKey: galleryEntry.key, quarantineNewEntries: true }
       : { ...baseConfig, quarantineNewEntries: true };
+    if (galleryEntry?.key === "google-sheets") {
+      const availability = googleSheetsRobotEmailFromEnv();
+      if (!availability.available) {
+        throw unprocessable(availability.reason, { code: "google_sheets_unavailable" });
+      }
+      const allowedSpreadsheetIds = googleSheetsAllowedSpreadsheetIds(input.configValues);
+      if (allowedSpreadsheetIds.length === 0) {
+        throw badRequest("Paste at least one Google Sheets link.");
+      }
+      config.allowedSpreadsheetIds = allowedSpreadsheetIds;
+      config.robotEmail = availability.robotEmail;
+      config.env = {
+        GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS: allowedSpreadsheetIds.join(","),
+      };
+    }
     if (transport === "remote_http") remoteEndpoint(config);
     if (transport === "local_stdio") await stdioTemplateId(companyId, config);
     assertLocalStdioCanBeEnabled(transport, false);
@@ -3802,7 +3876,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           status: input.status ?? existing.status,
           enabled: input.enabled ?? existing.enabled,
           config,
-          transportConfig: input.transportConfig ?? existing.transportConfig,
+          transportConfig: input.transportConfig ?? config,
           credentialRefs: input.credentialRefs ?? existing.credentialRefs,
           credentialSecretRefs: input.credentialSecretRefs ?? existing.credentialSecretRefs,
           updatedAt: new Date(),

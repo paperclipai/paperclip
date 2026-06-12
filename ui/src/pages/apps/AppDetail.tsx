@@ -161,6 +161,24 @@ export function AppDetail() {
       }),
   });
 
+  const updateConfig = useMutation({
+    mutationFn: (config: Record<string, unknown>) => toolsApi.updateConnection(connectionId, {
+      config,
+      transportConfig: config,
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Couldn't save that",
+        body: error instanceof Error ? error.message : "Please try again.",
+        tone: "error",
+      }),
+  });
+
   const removeApp = useMutation({
     mutationFn: () => toolsApi.archiveConnection(connectionId),
     onSuccess: () => {
@@ -311,6 +329,8 @@ export function AppDetail() {
           galleryEntry={logoEntry}
           appToggleDisabled={toggleEnabled.isPending || removeApp.isPending}
           onToggleApp={() => toggleEnabled.mutate()}
+          configUpdateDisabled={updateConfig.isPending}
+          onUpdateConfig={(config) => updateConfig.mutate(config)}
         />
       )}
       {activeTab === "review" && (

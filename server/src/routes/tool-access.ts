@@ -33,7 +33,7 @@ import {
 import { validate } from "../middleware/validate.js";
 import { getActorInfo, assertBoard, assertCompanyAccess } from "./authz.js";
 import { forbidden } from "../errors.js";
-import { accessService, logActivity, toolAccessPolicyService, toolAccessService } from "../services/index.js";
+import { accessService, googleSheetsRobotEmailFromEnv, logActivity, toolAccessPolicyService, toolAccessService } from "../services/index.js";
 
 export function toolAccessRoutes(
   db: Db,
@@ -88,7 +88,19 @@ export function toolAccessRoutes(
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json({ apps: TOOL_APP_GALLERY });
+    const googleSheetsAvailability = googleSheetsRobotEmailFromEnv();
+    res.json({
+      apps: TOOL_APP_GALLERY.map((entry) =>
+        entry.key === "google-sheets"
+          ? {
+              ...entry,
+              availability: googleSheetsAvailability.available
+                ? { available: true, robotEmail: googleSheetsAvailability.robotEmail }
+                : { available: false, reason: googleSheetsAvailability.reason },
+            }
+          : entry,
+      ),
+    });
   });
 
   router.post("/companies/:companyId/tools/apps/connect", validate(connectToolAppSchema), async (req, res) => {

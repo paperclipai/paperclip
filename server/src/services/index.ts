@@ -32,7 +32,7 @@ export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
-export { toolAccessService } from "./tool-access.js";
+export { googleSheetsRobotEmailFromEnv, toolAccessService } from "./tool-access.js";
 export { toolAccessPolicyService } from "./tool-access-policy.js";
 export { routineService } from "./routines.js";
 export { costService } from "./costs.js";

@@ -142,6 +142,15 @@ function catalogEntry(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function setInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    "value",
+  )?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 describe("AppDetail", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
@@ -284,6 +293,12 @@ describe("AppDetail", () => {
     await renderAppDetail();
 
     expect(container.textContent).toContain("1 new action to review");
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "Review")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
     expect(container.textContent).toContain("Delete repo");
     expect(container.textContent).not.toContain("Nothing is waiting for your OK right now.");
   });
@@ -297,6 +312,64 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("Agents can use this app");
     expect(container.textContent).not.toContain("Read repo");
     expect(container.textContent).not.toContain("Action permissions");
+  });
+
+  it("lets Google Sheets connections add spreadsheet links from setup", async () => {
+    mockParams.tab = "setup";
+    getConnectionMock.mockResolvedValue(connection({
+      name: "Google Sheets",
+      transport: "local_stdio",
+      config: {
+        templateId: "paperclip.google-sheets",
+        sourceTemplateKey: "google-sheets",
+        allowedSpreadsheetIds: ["sheet_existing"],
+        env: { GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS: "sheet_existing" },
+      },
+    }));
+    listGalleryMock.mockResolvedValue({
+      apps: [
+        {
+          key: "google-sheets",
+          name: "Google Sheets",
+          logoUrl: "https://example.com/sheets.png",
+          tagline: "Read and update selected spreadsheets.",
+          description: "Share each sheet with the robot email, then paste the sheet links here.",
+          authKind: "none",
+          transportTemplate: { transport: "local_stdio", templateKey: "paperclip.google-sheets" },
+          credentialFields: [],
+          recommendedDefaults: {},
+          urlPatterns: ["https://docs.google.com/spreadsheets/*"],
+          availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" },
+        },
+      ],
+    });
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("Shared spreadsheets");
+    expect(container.textContent).toContain("sheet_existing");
+    const input = container.querySelector<HTMLInputElement>(
+      'input[placeholder="https://docs.google.com/spreadsheets/d/..."]',
+    );
+    expect(input).toBeTruthy();
+    await act(async () => setInputValue(input!, "https://docs.google.com/spreadsheets/d/sheet_new/edit"));
+    await flushReact();
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "Add sheet")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(updateConnectionMock).toHaveBeenCalledWith("conn-1", {
+      config: expect.objectContaining({
+        allowedSpreadsheetIds: ["sheet_existing", "sheet_new"],
+        env: expect.objectContaining({ GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS: "sheet_existing,sheet_new" }),
+      }),
+      transportConfig: expect.objectContaining({
+        allowedSpreadsheetIds: ["sheet_existing", "sheet_new"],
+      }),
+    });
   });
 
   it("renders unified action permission dropdowns in the permissions tab", async () => {
