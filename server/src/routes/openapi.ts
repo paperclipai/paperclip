@@ -129,9 +129,14 @@ import {
   workspaceFileListQuerySchema,
   workspaceFileResourceQuerySchema,
   // Tool access
+  connectToolAppSchema,
   createToolApplicationSchema,
   updateToolApplicationSchema,
   createToolConnectionSchema,
+  createToolStdioCommandTemplateSchema,
+  disableToolStdioCommandTemplateSchema,
+  finishToolAppSchema,
+  reconnectToolAppSchema,
   updateToolConnectionSchema,
   createToolPolicySchema,
   createToolProfileBindingForProfileSchema,
@@ -598,6 +603,11 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/issues/{id}/interactions/{interactionId}/accept",
   "POST /api/issues/{id}/interactions/{interactionId}/reject",
   "POST /api/issues/{id}/interactions/{interactionId}/respond",
+  "GET /api/companies/{companyId}/tools/gallery",
+  "POST /api/companies/{companyId}/tools/apps/connect",
+  "POST /api/companies/{companyId}/tools/apps/{connectionId}/finish",
+  "GET /api/companies/{companyId}/tools/apps/attention",
+  "GET /api/companies/{companyId}/tools/action-requests",
   "GET /api/companies/{companyId}/tools/examples",
   "POST /api/companies/{companyId}/tools/examples/{id}/install",
   "POST /api/companies/{companyId}/tools/examples/{id}/smoke",
@@ -611,8 +621,12 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "PATCH /api/tool-connections/{connectionId}",
   "DELETE /api/tool-connections/{connectionId}",
   "POST /api/tool-connections/{connectionId}/health-check",
+  "POST /api/tool-connections/{connectionId}/reconnect",
   "POST /api/tool-connections/{connectionId}/catalog/refresh",
   "GET /api/tool-connections/{connectionId}/catalog",
+  "GET /api/tool-connections/{connectionId}/activity",
+  "POST /api/tools/oauth/{connectionId}/start",
+  "GET /api/tools/oauth/callback",
   "GET /api/companies/{companyId}/tools/profiles",
   "POST /api/companies/{companyId}/tools/profiles",
   "GET /api/companies/{companyId}/tools/profiles/effective/agents/{agentId}",
@@ -639,9 +653,12 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/tools/action-requests/{actionRequestId}/trust-rule",
   "POST /api/companies/{companyId}/tools/trust-rules/{policyId}/revoke",
   "GET /api/companies/{companyId}/tools/stdio-templates",
+  "POST /api/companies/{companyId}/tools/stdio-templates",
+  "POST /api/companies/{companyId}/tools/stdio-templates/{templateId}/disable",
   "POST /api/companies/{companyId}/tools/mcp/import-json",
   "POST /api/companies/{companyId}/tools/policy/test",
   "POST /api/tool-gateway/action-requests/{id}/approve",
+  "POST /api/tool-gateway/action-requests/{id}/decline",
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
@@ -4508,6 +4525,45 @@ for (const route of [
 
 registerCurrentRoute({
   method: "get",
+  path: "/api/companies/{companyId}/tools/gallery",
+  tags: ["tool-access"],
+  summary: "List tool app gallery entries",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/apps/connect",
+  tags: ["tool-access"],
+  summary: "Create a draft app connection from gallery input",
+  body: connectToolAppSchema,
+  responses: { 200: r.ok(), 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/apps/{connectionId}/finish",
+  tags: ["tool-access"],
+  summary: "Finish a gallery app connection and profile setup",
+  body: finishToolAppSchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/tools/apps/attention",
+  tags: ["tool-access"],
+  summary: "List tool apps needing attention",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/tools/action-requests",
+  tags: ["tool-access"],
+  summary: "List pending tool action requests",
+});
+
+registerCurrentRoute({
+  method: "get",
   path: "/api/companies/{companyId}/tools/examples",
   tags: ["tool-access"],
   summary: "List installable tool examples",
@@ -4607,6 +4663,15 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "post",
+  path: "/api/tool-connections/{connectionId}/reconnect",
+  tags: ["tool-access"],
+  summary: "Reconnect a tool app with replacement credentials",
+  body: reconnectToolAppSchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "post",
   path: "/api/tool-connections/{connectionId}/catalog/refresh",
   tags: ["tool-access"],
   summary: "Refresh a tool connection catalog",
@@ -4617,6 +4682,27 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}/catalog",
   tags: ["tool-access"],
   summary: "List a tool connection catalog",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/activity",
+  tags: ["tool-access"],
+  summary: "List tool connection activity",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tools/oauth/{connectionId}/start",
+  tags: ["tool-access"],
+  summary: "Start OAuth sign-in for a tool connection",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tools/oauth/callback",
+  tags: ["tool-access"],
+  summary: "Handle a tool app OAuth callback",
 });
 
 registerCurrentRoute({
@@ -4824,6 +4910,24 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "post",
+  path: "/api/companies/{companyId}/tools/stdio-templates",
+  tags: ["tool-access"],
+  summary: "Create an approved stdio MCP template",
+  body: createToolStdioCommandTemplateSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/stdio-templates/{templateId}/disable",
+  tags: ["tool-access"],
+  summary: "Disable an approved stdio MCP template",
+  body: disableToolStdioCommandTemplateSchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "post",
   path: "/api/companies/{companyId}/tools/mcp/import-json",
   tags: ["tool-access"],
   summary: "Preview MCP JSON import",
@@ -4892,6 +4996,15 @@ registerCurrentRoute({
   path: "/api/tool-gateway/action-requests/{id}/approve",
   tags: ["tool-gateway"],
   summary: "Approve a deferred tool gateway action request",
+  query: toolGatewayCompanyQuerySchema,
+  body: z.object({ companyId: z.string().optional() }),
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-gateway/action-requests/{id}/decline",
+  tags: ["tool-gateway"],
+  summary: "Decline a deferred tool gateway action request",
   query: toolGatewayCompanyQuerySchema,
   body: z.object({ companyId: z.string().optional() }),
 });
