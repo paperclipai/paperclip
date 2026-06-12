@@ -76,6 +76,7 @@ import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallbac
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
+import { ghFetch, gitHubApiBase } from "./github-fetch.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
@@ -100,6 +101,26 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
 const DELETED_ISSUE_COMMENT_BODY = "";
+const REPO_BACKED_TERMINAL_GATE_EXEMPTION_KIND = "repo_backed_terminal_state_gate";
+const REPO_BACKED_TERMINAL_GATE_CODE = "repo_backed_terminal_state_gate_failed";
+const TERMINAL_GATE_NON_CODE_DELIVERABLES = new Set([
+  "decision",
+  "audit",
+  "diagnostic",
+  "qa",
+  "ops",
+  "governance",
+]);
+type TerminalGateDeliverable = "code" | "decision" | "audit" | "diagnostic" | "qa" | "ops" | "governance";
+type TerminalGateDocumentEvidence = {
+  key: string;
+  revisionNumber: number;
+};
+type TerminalGateSignals = {
+  deliverable: TerminalGateDeliverable | null;
+  subjectRepo: RepoCoordinates | null;
+  terminalEvidence: TerminalGateDocumentEvidence | null;
+};
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -129,6 +150,296 @@ function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+type RepoCoordinates = {
+  host: string;
+  owner: string;
+  repo: string;
+};
+
+function normalizeRepoHost(host: string) {
+  const normalized = host.trim().toLowerCase();
+  if (normalized === "github.com" || normalized.startsWith("github.com-")) {
+    return "github.com";
+  }
+  return normalized;
+}
+
+function parseRepoCoordinates(rawUrl: string | null | undefined): RepoCoordinates | null {
+  const trimmed = rawUrl?.trim();
+  if (!trimmed) return null;
+  try {
+    const sshMatch = trimmed.match(/^git@([^:]+):([^/]+)\/(.+?)(?:\.git)?$/i);
+    if (sshMatch) {
+      return {
+        host: normalizeRepoHost(sshMatch[1]!),
+        owner: sshMatch[2]!,
+        repo: sshMatch[3]!.replace(/\.git$/i, ""),
+      };
+    }
+
+    const parsed = new URL(trimmed);
+    const parts = parsed.pathname.replace(/\/+$/, "").split("/").filter(Boolean);
+    if (parts.length < 2) return null;
+    return {
+      host: normalizeRepoHost(parsed.hostname),
+      owner: parts[0]!,
+      repo: parts[1]!.replace(/\.git$/i, ""),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseSubjectRepoCoordinates(rawValue: string | null | undefined): RepoCoordinates | null {
+  const trimmed = rawValue?.trim();
+  if (!trimmed) return null;
+  const simple = trimmed.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
+  if (simple) {
+    return {
+      host: "github.com",
+      owner: simple[1]!,
+      repo: simple[2]!,
+    };
+  }
+  const withHost = trimmed.match(/^github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/i);
+  if (withHost) {
+    return {
+      host: "github.com",
+      owner: withHost[1]!,
+      repo: withHost[2]!,
+    };
+  }
+  return parseRepoCoordinates(trimmed);
+}
+
+function repoCoordinatesEqual(expected: RepoCoordinates | null, actual: RepoCoordinates | null) {
+  if (!expected || !actual) return false;
+  return expected.host === actual.host && expected.owner === actual.owner && expected.repo === actual.repo;
+}
+
+function repoLabel(repo: RepoCoordinates) {
+  return `${repo.owner}/${repo.repo}`;
+}
+
+function extractMatchingPullRequestNumbers(text: string | null | undefined, repo: RepoCoordinates): number[] {
+  if (!text) return [];
+  const escapedHost = repo.host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedOwner = repo.owner.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedRepo = repo.repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(
+    `https?://${escapedHost}/${escapedOwner}/${escapedRepo}/pull/(\\d+)`,
+    "gi",
+  );
+  const matches = new Set<number>();
+  for (const match of text.matchAll(pattern)) {
+    const value = Number.parseInt(match[1] ?? "", 10);
+    if (Number.isFinite(value) && value > 0) matches.add(value);
+  }
+  return Array.from(matches);
+}
+
+function parseTerminalGateDeliverable(value: string | null | undefined): TerminalGateDeliverable | null {
+  const normalized = value?.trim().toLowerCase();
+  switch (normalized) {
+    case "code":
+    case "decision":
+    case "audit":
+    case "diagnostic":
+    case "qa":
+    case "ops":
+    case "governance":
+      return normalized;
+    default:
+      return null;
+  }
+}
+
+function parseTerminalGateDocumentEvidence(value: string | null | undefined): TerminalGateDocumentEvidence | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/^document:([a-z0-9][a-z0-9_-]{0,63})#rev:(\d+)$/i);
+  if (!match) return null;
+  const revisionNumber = Number.parseInt(match[2] ?? "", 10);
+  if (!Number.isFinite(revisionNumber) || revisionNumber <= 0) return null;
+  return {
+    key: match[1]!,
+    revisionNumber,
+  };
+}
+
+function extractTerminalGateSignalsFromText(text: string | null | undefined): Partial<TerminalGateSignals> {
+  const signals: Partial<TerminalGateSignals> = {};
+  if (!text) return signals;
+  const deliverableMatch = text.match(/^\s*deliverable\s*:\s*([^\n\r]+)\s*$/im);
+  const subjectRepoMatch = text.match(/^\s*subjectRepo\s*:\s*([^\n\r]+)\s*$/im);
+  const terminalEvidenceMatch = text.match(/^\s*terminalEvidence\s*:\s*([^\n\r]+)\s*$/im);
+  const deliverable = parseTerminalGateDeliverable(deliverableMatch?.[1] ?? null);
+  const subjectRepo = parseSubjectRepoCoordinates(subjectRepoMatch?.[1] ?? null);
+  const terminalEvidence = parseTerminalGateDocumentEvidence(terminalEvidenceMatch?.[1] ?? null);
+  if (deliverable) signals.deliverable = deliverable;
+  if (subjectRepo) signals.subjectRepo = subjectRepo;
+  if (terminalEvidence) signals.terminalEvidence = terminalEvidence;
+  return signals;
+}
+
+function mergeTerminalGateSignals(
+  description: string | null | undefined,
+  latestAgentComment: string | null | undefined,
+): TerminalGateSignals {
+  const descriptionSignals = extractTerminalGateSignalsFromText(description);
+  const latestCommentSignals = extractTerminalGateSignalsFromText(latestAgentComment);
+  return {
+    deliverable: latestCommentSignals.deliverable ?? descriptionSignals.deliverable ?? null,
+    subjectRepo: latestCommentSignals.subjectRepo ?? descriptionSignals.subjectRepo ?? null,
+    terminalEvidence: latestCommentSignals.terminalEvidence ?? descriptionSignals.terminalEvidence ?? null,
+  };
+}
+
+function readTerminalStateExemption(value: unknown) {
+  if (!value || typeof value !== "object") return null;
+  const exemption = (value as Record<string, unknown>).terminalStateExemption;
+  if (!exemption || typeof exemption !== "object") return null;
+  const record = exemption as Record<string, unknown>;
+  const kind = typeof record.kind === "string" ? record.kind.trim() : "";
+  const reason = typeof record.reason === "string" ? record.reason.trim() : "";
+  const grantedByUserId = typeof record.grantedByUserId === "string" ? record.grantedByUserId.trim() : "";
+  const grantedByAgentId = typeof record.grantedByAgentId === "string" ? record.grantedByAgentId.trim() : "";
+  if (kind !== REPO_BACKED_TERMINAL_GATE_EXEMPTION_KIND || !reason) return null;
+  if (!grantedByUserId && !grantedByAgentId) return null;
+  return {
+    kind,
+    reason,
+    grantedByUserId: grantedByUserId || null,
+    grantedByAgentId: grantedByAgentId || null,
+    createdAt: typeof record.createdAt === "string" ? record.createdAt : null,
+  };
+}
+
+async function resolveIssueRepoBinding(input: {
+  dbOrTx: any;
+  companyId: string;
+  projectId: string | null;
+  projectWorkspaceId: string | null;
+  executionWorkspaceId: string | null;
+}) {
+  if (input.executionWorkspaceId) {
+    const executionWorkspace = await input.dbOrTx
+      .select({ repoUrl: executionWorkspaces.repoUrl })
+      .from(executionWorkspaces)
+      .where(
+        and(
+          eq(executionWorkspaces.id, input.executionWorkspaceId),
+          eq(executionWorkspaces.companyId, input.companyId),
+        ),
+      )
+      .then((rows: Array<{ repoUrl: string | null }>) => rows[0] ?? null);
+    const executionRepo = parseRepoCoordinates(executionWorkspace?.repoUrl ?? null);
+    if (executionRepo) return executionRepo;
+  }
+
+  if (input.projectWorkspaceId) {
+    const workspace = await input.dbOrTx
+      .select({ repoUrl: projectWorkspaces.repoUrl })
+      .from(projectWorkspaces)
+      .where(
+        and(
+          eq(projectWorkspaces.id, input.projectWorkspaceId),
+          eq(projectWorkspaces.companyId, input.companyId),
+        ),
+      )
+      .then((rows: Array<{ repoUrl: string | null }>) => rows[0] ?? null);
+    const workspaceRepo = parseRepoCoordinates(workspace?.repoUrl ?? null);
+    if (workspaceRepo) return workspaceRepo;
+  }
+
+  if (!input.projectId) return null;
+  const primaryWorkspace = await input.dbOrTx
+    .select({ repoUrl: projectWorkspaces.repoUrl })
+    .from(projectWorkspaces)
+    .where(
+      and(
+        eq(projectWorkspaces.companyId, input.companyId),
+        eq(projectWorkspaces.projectId, input.projectId),
+        eq(projectWorkspaces.isPrimary, true),
+      ),
+    )
+    .then((rows: Array<{ repoUrl: string | null }>) => rows[0] ?? null);
+  return parseRepoCoordinates(primaryWorkspace?.repoUrl ?? null);
+}
+
+async function verifyMergedPullRequestForRepo(input: {
+  repo: RepoCoordinates;
+  pullNumber: number;
+}) {
+  const headers: Record<string, string> = {
+    accept: "application/vnd.github+json",
+  };
+  const token =
+    process.env.GITHUB_TOKEN?.trim()
+    || process.env.GITHUB_TOKEN_PERSONAL?.trim()
+    || process.env.GH_TOKEN?.trim()
+    || "";
+  if (token) headers.authorization = `Bearer ${token}`;
+  const response = await ghFetch(
+    `${gitHubApiBase(input.repo.host)}/repos/${input.repo.owner}/${input.repo.repo}/pulls/${input.pullNumber}`,
+    { headers },
+  );
+  if (!response.ok) {
+    throw new Error(`GitHub returned ${response.status} while verifying pull #${input.pullNumber}.`);
+  }
+  const payload = await response.json() as { merged?: boolean };
+  return payload.merged === true;
+}
+
+async function recordRepoBackedTerminalGateComment(input: {
+  dbHandle: Db;
+  issueId: string;
+  companyId: string;
+  body: string;
+}) {
+  await input.dbHandle.insert(issueComments).values({
+    companyId: input.companyId,
+    issueId: input.issueId,
+    authorAgentId: null,
+    authorUserId: null,
+    authorType: "system",
+    body: input.body,
+    presentation: {
+      kind: "system_notice",
+      tone: "warning",
+      title: "Repo-backed terminal-state gate",
+      detailsDefaultOpen: false,
+    },
+  });
+  await input.dbHandle
+    .update(issues)
+    .set({ updatedAt: new Date() })
+    .where(eq(issues.id, input.issueId));
+}
+
+async function issueDocumentRevisionExists(input: {
+  dbOrTx: any;
+  companyId: string;
+  issueId: string;
+  key: string;
+  revisionNumber: number;
+}) {
+  const row = await input.dbOrTx
+    .select({ documentId: issueDocuments.documentId })
+    .from(issueDocuments)
+    .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+    .innerJoin(documentRevisions, eq(documentRevisions.documentId, documents.id))
+    .where(and(
+      eq(issueDocuments.companyId, input.companyId),
+      eq(issueDocuments.issueId, input.issueId),
+      eq(issueDocuments.key, input.key),
+      eq(documentRevisions.companyId, input.companyId),
+      eq(documentRevisions.revisionNumber, input.revisionNumber),
+    ))
+    .then((rows: Array<{ documentId: string }>) => rows[0] ?? null);
+  return Boolean(row);
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
@@ -681,7 +992,12 @@ async function listIssueDependencyReadinessMap(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
   issueIds: string[],
+  options?: { includeChildBlockers?: boolean },
 ) {
+  // EVF patch #6 (non-terminal children block parent checkout) is on by default.
+  // Callers under v529 tree-control (active pause-hold) pass false so children
+  // defer to tree-control and don't block an authorised parent checkout.
+  const includeChildBlockers = options?.includeChildBlockers ?? true;
   const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
   const readinessMap = new Map<string, IssueDependencyReadiness>();
   for (const issueId of uniqueIssueIds) {
@@ -689,28 +1005,47 @@ async function listIssueDependencyReadinessMap(
   }
   if (uniqueIssueIds.length === 0) return readinessMap;
 
-  const blockerRows = await dbOrTx
-    .select({
-      issueId: issueRelations.relatedIssueId,
-      blockerIssueId: issueRelations.issueId,
-      blockerStatus: issues.status,
-      blockerExecutionWorkspaceId: issues.executionWorkspaceId,
-    })
-    .from(issueRelations)
-    .innerJoin(issues, eq(issueRelations.issueId, issues.id))
-    .where(
-      and(
-        eq(issueRelations.companyId, companyId),
-        eq(issueRelations.type, "blocks"),
-        inArray(issueRelations.relatedIssueId, uniqueIssueIds),
+  const [blockerRows, childRows] = await Promise.all([
+    dbOrTx
+      .select({
+        issueId: issueRelations.relatedIssueId,
+        blockerIssueId: issueRelations.issueId,
+        blockerStatus: issues.status,
+        blockerExecutionWorkspaceId: issues.executionWorkspaceId,
+      })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.type, "blocks"),
+          inArray(issueRelations.relatedIssueId, uniqueIssueIds),
+        ),
       ),
-    );
+    dbOrTx
+      .select({
+        issueId: issues.parentId,
+        blockerIssueId: issues.id,
+        blockerStatus: issues.status,
+        // Children gate on terminal-status only (EVF patch #6); never the
+        // workspace-finalize barrier. Null workspace id => finalize branch skips them.
+        blockerExecutionWorkspaceId: sql<string | null>`null`,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          inArray(issues.parentId, uniqueIssueIds),
+        ),
+      ),
+  ]);
 
-  // Collect executionWorkspaceIds of "done" blockers — these are the only ones
-  // subject to the workspace-finalize barrier. Blockers that aren't done already
-  // mark the dependent as not-ready and don't need a finalize check.
+  // Collect executionWorkspaceIds of "done" blockers/children -- only these are
+  // subject to the workspace-finalize barrier. Dependencies that aren't done
+  // already mark the dependent as not-ready and need no finalize check.
+  const effectiveChildRows = includeChildBlockers ? childRows : [];
   const doneBlockerWorkspaceIds = new Set<string>();
-  for (const row of blockerRows) {
+  for (const row of [...blockerRows, ...effectiveChildRows]) {
     if (row.blockerStatus === "done" && row.blockerExecutionWorkspaceId) {
       doneBlockerWorkspaceIds.add(row.blockerExecutionWorkspaceId);
     }
@@ -721,26 +1056,29 @@ async function listIssueDependencyReadinessMap(
     [...doneBlockerWorkspaceIds],
   );
 
-  for (const row of blockerRows) {
+  for (const row of [...blockerRows, ...effectiveChildRows]) {
+    if (!row.issueId) continue;
     const current = readinessMap.get(row.issueId) ?? createIssueDependencyReadiness(row.issueId);
-    current.blockerIssueIds.push(row.blockerIssueId);
-    // Only done blockers resolve dependents; cancelled blockers stay unresolved
-    // until an operator removes or replaces the blocker relationship explicitly.
-    if (row.blockerStatus !== "done") {
+    if (!current.blockerIssueIds.includes(row.blockerIssueId)) {
+      current.blockerIssueIds.push(row.blockerIssueId);
+    }
+    // Only done blockers/children resolve dependents; cancelled ones stay
+    // unresolved until an operator removes or replaces the relationship.
+    if (
+      row.blockerStatus !== "done" &&
+      !current.unresolvedBlockerIssueIds.includes(row.blockerIssueId)
+    ) {
       current.unresolvedBlockerIssueIds.push(row.blockerIssueId);
-      current.unresolvedBlockerCount += 1;
+      current.unresolvedBlockerCount = current.unresolvedBlockerIssueIds.length;
       current.allBlockersDone = false;
       current.isDependencyReady = false;
     } else if (
       row.blockerExecutionWorkspaceId &&
       unfinalizedWorkspaceIds.has(row.blockerExecutionWorkspaceId)
     ) {
-      // Workspace-finalize barrier: the blocker's most recent run on its
-      // execution workspace hasn't recorded a successful workspace_finalize.
-      // Treat the dependent as not-ready until sync-back lands (or the run
-      // finalizes); a subsequent finalize wake will re-evaluate readiness.
-      // `allBlockersDone` is cleared too so that callers using it as a
-      // proxy for "this dependent can proceed" still see the gate.
+      // Workspace-finalize barrier: the dependency's most recent run on its
+      // execution workspace has no successful workspace_finalize yet. Hold the
+      // dependent not-ready until sync-back lands; a finalize wake re-evaluates.
       current.unresolvedBlockerIssueIds.push(row.blockerIssueId);
       current.unresolvedBlockerCount += 1;
       current.pendingFinalizeBlockerIssueIds.push(row.blockerIssueId);
@@ -5171,6 +5509,10 @@ export function issueService(db: Db) {
         issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
       const nextExecutionWorkspaceId =
         issueData.executionWorkspaceId !== undefined ? issueData.executionWorkspaceId : existing.executionWorkspaceId;
+      const nextExecutionState =
+        issueData.executionState !== undefined ? issueData.executionState : existing.executionState;
+      const nextDescription =
+        issueData.description !== undefined ? issueData.description : existing.description;
       const nextExecutionWorkspacePreference =
         issueData.executionWorkspacePreference !== undefined
           ? issueData.executionWorkspacePreference
@@ -5201,6 +5543,118 @@ export function issueService(db: Db) {
       if (nextExecutionWorkspaceId) {
         if (!validatedExecutionWorkspace) {
           await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
+        }
+      }
+
+      const nextStatus = issueData.status ?? existing.status;
+      const requiresRepoBackedTerminalGate =
+        !actorUserId && (nextStatus === "done" || (nextStatus === "in_review" && Boolean(nextAssigneeUserId)));
+      if (requiresRepoBackedTerminalGate) {
+        const explicitExemption = readTerminalStateExemption(nextExecutionState);
+        if (!explicitExemption) {
+          const repoBinding = await resolveIssueRepoBinding({
+            dbOrTx,
+            companyId: existing.companyId,
+            projectId: nextProjectId,
+            projectWorkspaceId: nextProjectWorkspaceId,
+            executionWorkspaceId: nextExecutionWorkspaceId,
+          });
+          if (repoBinding) {
+            const latestAgentComment = await dbOrTx
+              .select({ body: issueComments.body })
+              .from(issueComments)
+              .where(and(
+                eq(issueComments.issueId, existing.id),
+                sql`${issueComments.authorAgentId} is not null`,
+              ))
+              .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+              .limit(1)
+              .then((rows: Array<{ body: string }>) => rows[0]?.body ?? null);
+            const gateSignals = mergeTerminalGateSignals(nextDescription, latestAgentComment);
+            const verificationRepo = gateSignals.subjectRepo ?? repoBinding;
+            if (gateSignals.deliverable && TERMINAL_GATE_NON_CODE_DELIVERABLES.has(gateSignals.deliverable)) {
+              const evidence = gateSignals.terminalEvidence;
+              const evidenceExists = evidence
+                ? await issueDocumentRevisionExists({
+                    dbOrTx,
+                    companyId: existing.companyId,
+                    issueId: existing.id,
+                    key: evidence.key,
+                    revisionNumber: evidence.revisionNumber,
+                  })
+                : false;
+              if (!evidenceExists) {
+                const reason = evidence
+                  ? `Paperclip refused a terminal transition for repo-backed ${gateSignals.deliverable} issue ${existing.identifier ?? existing.id} because terminalEvidence document:${evidence.key}#rev:${evidence.revisionNumber} does not resolve to an issue document revision.`
+                  : `Paperclip refused a terminal transition for repo-backed ${gateSignals.deliverable} issue ${existing.identifier ?? existing.id} because structured terminalEvidence is required.`;
+                await recordRepoBackedTerminalGateComment({
+                  dbHandle: db,
+                  issueId: existing.id,
+                  companyId: existing.companyId,
+                  body: reason,
+                });
+                throw unprocessable(
+                  "Repo-backed non-code terminal transitions require document-backed terminalEvidence.",
+                  {
+                    code: REPO_BACKED_TERMINAL_GATE_CODE,
+                    repo: repoLabel(verificationRepo),
+                    missing: "terminal_evidence",
+                  },
+                );
+              }
+            } else {
+              const commentBodies = await dbOrTx
+                .select({ body: issueComments.body })
+                .from(issueComments)
+                .where(eq(issueComments.issueId, existing.id));
+              const pullNumbers = new Set<number>();
+              for (const pullNumber of extractMatchingPullRequestNumbers(nextDescription, verificationRepo)) {
+                pullNumbers.add(pullNumber);
+              }
+              for (const row of commentBodies) {
+                for (const pullNumber of extractMatchingPullRequestNumbers(row.body, verificationRepo)) {
+                  pullNumbers.add(pullNumber);
+                }
+              }
+
+              let verifiedMergedPull = false;
+              const verificationFailures: string[] = [];
+              for (const pullNumber of pullNumbers) {
+                try {
+                  if (await verifyMergedPullRequestForRepo({ repo: verificationRepo, pullNumber })) {
+                    verifiedMergedPull = true;
+                    break;
+                  }
+                } catch (error) {
+                  verificationFailures.push(error instanceof Error ? error.message : String(error));
+                }
+              }
+              const verificationFailure = verificationFailures.length > 0 ? verificationFailures.join("; ") : null;
+
+              if (!verifiedMergedPull) {
+                const targetRepoLabel = repoLabel(verificationRepo);
+                const reason = verificationFailure
+                  ? `Paperclip could not verify a merged PR for repo-backed issue close on ${targetRepoLabel}: ${verificationFailure}`
+                  : pullNumbers.size === 0
+                    ? `Paperclip refused a terminal transition for repo-backed issue ${existing.identifier ?? existing.id} because the issue thread does not reference any PR URL for ${targetRepoLabel}.`
+                    : `Paperclip refused a terminal transition for repo-backed issue ${existing.identifier ?? existing.id} because none of the referenced PRs for ${targetRepoLabel} are verified merged.`;
+                await recordRepoBackedTerminalGateComment({
+                  dbHandle: db,
+                  issueId: existing.id,
+                  companyId: existing.companyId,
+                  body: reason,
+                });
+                throw unprocessable(
+                  "Repo-backed issues may only move to a terminal state after a verified merged PR or explicit exemption.",
+                  {
+                    code: REPO_BACKED_TERMINAL_GATE_CODE,
+                    repo: targetRepoLabel,
+                    missing: verificationFailure ? "merged_pr_verification_failed" : "merged_pr",
+                  },
+                );
+              }
+            }
+          }
         }
       }
 
@@ -5504,7 +5958,11 @@ export function issueService(db: Db) {
       await clearExecutionRunIfTerminal(id);
       await clearCheckoutRunIfTerminal(id);
 
-      const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
+      const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id], {
+        // EVF patch #6 defers to v529 tree-control: when an active pause-hold gate
+        // governs this checkout, non-terminal children do not block it.
+        includeChildBlockers: !activePauseHold,
+      });
       const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
       if (unresolvedBlockerIssueIds.length > 0) {
         throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });

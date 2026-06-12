@@ -109,6 +109,16 @@ vi.mock("../services/index.js", () => ({
   environmentService: () => mockEnvironmentService,
   executionWorkspaceService: () => mockExecutionWorkspaceService,
   feedbackService: () => mockFeedbackService,
+  filterIssueContinuationSummaryDocument: (issue: { identifier?: string | null; id: string; title: string; status: string; priority: string }, summary: {
+    body: string;
+  } | null) => {
+    if (!summary) return null;
+    const expectedIssueLine = `${issue.identifier ?? issue.id} — ${issue.title}`;
+    if (summary.body.includes(`- Issue: ${expectedIssueLine}`) === false) return null;
+    if (summary.body.includes(`- Status: ${issue.status}`) === false) return null;
+    if (summary.body.includes(`- Priority: ${issue.priority}`) === false) return null;
+    return summary;
+  },
   goalService: () => mockGoalService,
   heartbeatService: () => mockHeartbeatService,
   instanceSettingsService: () => mockInstanceSettingsService,
@@ -299,7 +309,15 @@ describe.sequential("issue goal context routes", () => {
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue({
       key: "continuation-summary",
       title: "Continuation Summary",
-      body: "# Handoff",
+      body: [
+        "# Continuation Summary",
+        "",
+        "- Issue: PAP-581 — Legacy onboarding task",
+        "- Status: todo",
+        "- Priority: medium",
+        "",
+        "# Handoff",
+      ].join("\n"),
       latestRevisionId: "revision-1",
       latestRevisionNumber: 1,
       updatedAt: new Date("2026-04-19T12:00:00.000Z"),
@@ -316,8 +334,32 @@ describe.sequential("issue goal context routes", () => {
     );
     expect(res.body.continuationSummary).toEqual(expect.objectContaining({
       key: "continuation-summary",
-      body: "# Handoff",
+      body: expect.stringContaining("# Handoff"),
     }));
+  });
+
+  it("suppresses stale continuation summaries in GET /issues/:id/heartbeat-context", async () => {
+    mockDocumentsService.getIssueDocumentByKey.mockResolvedValue({
+      key: "continuation-summary",
+      title: "Continuation Summary",
+      body: [
+        "# Continuation Summary",
+        "",
+        "- Issue: PAP-1111 — Legacy issue title",
+        "- Status: done",
+        "- Priority: medium",
+      ].join("\n"),
+      latestRevisionId: "revision-1",
+      latestRevisionNumber: 1,
+      updatedAt: new Date("2026-04-19T12:00:00.000Z"),
+    });
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.continuationSummary).toBeNull();
   });
 
   it("surfaces blocker summaries on GET /issues/:id/heartbeat-context", async () => {

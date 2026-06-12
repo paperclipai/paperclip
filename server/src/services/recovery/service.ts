@@ -1,3 +1,4 @@
+import path from "node:path";
 import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -23,6 +24,8 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  projectWorkspaces,
+  routines,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -62,6 +65,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { readManagedCheckoutFreshnessPause } from "../workspace-runtime.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
@@ -71,6 +75,8 @@ export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
+const MANAGED_CHECKOUT_RESCUE_ALERT_ORIGIN_KIND = "plugin:managed_checkout_rescue_alert";
+const BOARD_USER_ID = "local-board";
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
@@ -178,6 +184,7 @@ function didAutomaticRecoveryFail(
 
 const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   "adapter_failed",
+  "claude_session_limit",
   "codex_transient_upstream",
   "claude_transient_upstream",
   "timeout",
@@ -188,6 +195,7 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "agent_not_found",
   "budget_blocked",
   "budget_exhausted",
+  "execution_workspace_freshness_failed",
   "issue_paused",
   "issue_dependencies_blocked",
 ]);
@@ -2033,9 +2041,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function resolveStrandedIssueRecoveryOwnerAgentId(issue: typeof issues.$inferSelect) {
+    const sourceAssigneeAgentId = await resolveRecoverySourceAssigneeAgentId(issue);
     const candidateIds: string[] = [];
-    if (issue.assigneeAgentId) {
-      const assignee = await getAgent(issue.assigneeAgentId);
+    if (issue.originKind === "routine_execution" && sourceAssigneeAgentId) {
+      candidateIds.push(sourceAssigneeAgentId);
+    }
+    if (sourceAssigneeAgentId) {
+      const assignee = await getAgent(sourceAssigneeAgentId);
       if (assignee?.reportsTo) candidateIds.push(assignee.reportsTo);
     }
     if (issue.createdByAgentId) {
@@ -2050,7 +2062,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(and(eq(agents.companyId, issue.companyId), inArray(agents.role, ["cto", "ceo"])))
       .orderBy(sql`case when ${agents.role} = 'cto' then 0 else 1 end`, asc(agents.createdAt));
     candidateIds.push(...roleCandidates.map((agent) => agent.id));
-    if (issue.assigneeAgentId) candidateIds.push(issue.assigneeAgentId);
+    if (sourceAssigneeAgentId) candidateIds.push(sourceAssigneeAgentId);
 
     const seen = new Set<string>();
     for (const agentId of candidateIds) {
@@ -2066,6 +2078,142 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     return null;
+  }
+
+  async function resolveRecoverySourceAssigneeAgentId(issue: typeof issues.$inferSelect) {
+    if (issue.originKind === "routine_execution" && issue.originId) {
+      const routine = await db
+        .select({ assigneeAgentId: routines.assigneeAgentId })
+        .from(routines)
+        .where(and(eq(routines.companyId, issue.companyId), eq(routines.id, issue.originId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (routine?.assigneeAgentId) return routine.assigneeAgentId;
+    }
+    return issue.assigneeAgentId;
+  }
+
+  async function findManagedCheckoutDispatchPause(issue: typeof issues.$inferSelect) {
+    if (!issue.projectWorkspaceId) return null;
+    const projectWorkspace = await db
+      .select({
+        id: projectWorkspaces.id,
+        cwd: projectWorkspaces.cwd,
+        isPrimary: projectWorkspaces.isPrimary,
+        repoUrl: projectWorkspaces.repoUrl,
+      })
+      .from(projectWorkspaces)
+      .where(
+        and(
+          eq(projectWorkspaces.companyId, issue.companyId),
+          eq(projectWorkspaces.id, issue.projectWorkspaceId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!projectWorkspace?.cwd || !projectWorkspace.isPrimary) return null;
+    const pause = await readManagedCheckoutFreshnessPause({ cwd: projectWorkspace.cwd });
+    if (!pause) return null;
+    return {
+      projectWorkspaceId: projectWorkspace.id,
+      cwd: projectWorkspace.cwd,
+      repoUrl: projectWorkspace.repoUrl,
+      pause,
+    };
+  }
+
+  function managedCheckoutRescueAlertOriginId(input: { projectWorkspaceId: string; cwd: string }) {
+    return `managed_checkout_rescue_alert:${input.projectWorkspaceId}:${input.cwd}`;
+  }
+
+  async function findOpenManagedCheckoutRescueAlert(companyId: string, originId: string) {
+    return db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, MANAGED_CHECKOUT_RESCUE_ALERT_ORIGIN_KIND),
+          eq(issues.originId, originId),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  function buildManagedCheckoutRescueAlertDescription(input: {
+    issue: typeof issues.$inferSelect;
+    prefix: string;
+    pauseInfo: NonNullable<Awaited<ReturnType<typeof findManagedCheckoutDispatchPause>>>;
+  }) {
+    const repoLabel = input.pauseInfo.repoUrl?.trim() || path.basename(input.pauseInfo.cwd);
+    const sourceIssue = issueUiLink(
+      { identifier: input.issue.identifier, id: input.issue.id },
+      input.prefix,
+    );
+    return [
+      "Paperclip rate-limited automatic managed-checkout rescue for a repo-backed primary workspace.",
+      "",
+      "## Evidence",
+      "",
+      `- Source issue: ${sourceIssue}`,
+      `- Workspace repo: \`${repoLabel}\``,
+      `- Workspace path: \`${input.pauseInfo.cwd}\``,
+      `- Rescue attempts in last 24h: \`${input.pauseInfo.pause.recentRescueCount}\``,
+      `- Latest rescue at: \`${input.pauseInfo.pause.latestRescueAt ?? "unknown"}\``,
+      `- Rate-limit resets after: \`${input.pauseInfo.pause.rescueRateLimitResetsAt ?? "unknown"}\``,
+      `- Current dirty entries: \`${input.pauseInfo.pause.dirtyEntryCount}\``,
+      `- Current untracked entries: \`${input.pauseInfo.pause.untrackedEntryCount}\``,
+      "",
+      "## Meaning",
+      "",
+      "- Automatic rescue is paused for this checkout because it hit the per-checkout 24h cap.",
+      "- New assigned todo dispatches on this primary checkout will remain paused until the checkout is cleaned or the rescue window expires.",
+      "",
+      "## Required Action",
+      "",
+      "- Inspect the checkout for persistent dirt that survives reset/clean.",
+      "- Decide whether the remaining checkout state should be preserved manually, deleted, or excluded from freshness checks.",
+      "- Close this FYI issue once the checkout no longer re-enters rescue pressure.",
+    ].join("\n");
+  }
+
+  async function ensureManagedCheckoutRescueAlert(input: {
+    issue: typeof issues.$inferSelect;
+    pauseInfo: NonNullable<Awaited<ReturnType<typeof findManagedCheckoutDispatchPause>>>;
+  }) {
+    if (!input.pauseInfo.pause.rescueRateLimitReached) {
+      return { created: false as const, issueId: null };
+    }
+    const originId = managedCheckoutRescueAlertOriginId({
+      projectWorkspaceId: input.pauseInfo.projectWorkspaceId,
+      cwd: input.pauseInfo.cwd,
+    });
+    const existing = await findOpenManagedCheckoutRescueAlert(input.issue.companyId, originId);
+    if (existing) return { created: false as const, issueId: existing.id };
+
+    const prefix = await getCompanyIssuePrefix(input.issue.companyId);
+    const repoLabel = input.pauseInfo.repoUrl?.trim() || path.basename(input.pauseInfo.cwd);
+    const created = await issuesSvc.create(input.issue.companyId, {
+      title: `[DAN-FYI] Managed checkout rescue rate cap hit — ${repoLabel}`,
+      description: buildManagedCheckoutRescueAlertDescription({
+        issue: input.issue,
+        prefix,
+        pauseInfo: input.pauseInfo,
+      }),
+      status: "todo",
+      priority: "high",
+      projectId: input.issue.projectId,
+      goalId: input.issue.goalId,
+      assigneeAgentId: null,
+      assigneeUserId: BOARD_USER_ID,
+      originKind: MANAGED_CHECKOUT_RESCUE_ALERT_ORIGIN_KIND,
+      originId,
+      originFingerprint: originId,
+    });
+    return { created: true as const, issueId: created.id };
   }
 
   function buildStrandedIssueRecoveryDescription(input: {
@@ -2280,6 +2428,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
+    const sourceAssigneeAgentId = await resolveRecoverySourceAssigneeAgentId(input.issue);
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
     const now = new Date();
     const action = await recoveryActionsSvc.upsertSourceScoped({
@@ -2288,8 +2437,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       kind: strandedRecoveryActionKind(recoveryCause),
       ownerType: ownerAgentId ? "agent" : "board",
       ownerAgentId,
-      previousOwnerAgentId: input.issue.assigneeAgentId,
-      returnOwnerAgentId: input.issue.assigneeAgentId,
+      previousOwnerAgentId: sourceAssigneeAgentId,
+      returnOwnerAgentId: sourceAssigneeAgentId,
       cause: recoveryCause,
       fingerprint: strandedRecoveryActionFingerprint({
         issue: input.issue,
@@ -2492,6 +2641,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
+    const sourceAssigneeAgentId = await resolveRecoverySourceAssigneeAgentId(input.issue);
     const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
       issue: input.issue,
       previousStatus: input.previousStatus,
@@ -2503,13 +2653,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
-      assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
+      assigneeAgentId: recoveryAction.ownerAgentId ?? sourceAssigneeAgentId ?? input.issue.assigneeAgentId,
     });
     if (!updated) return null;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
     const recoveryOwner = recoveryAction.ownerAgentId ? await getAgent(recoveryAction.ownerAgentId) : null;
-    const sourceAssignee = input.issue.assigneeAgentId ? await getAgent(input.issue.assigneeAgentId) : null;
+    const sourceAssignee = sourceAssigneeAgentId ? await getAgent(sourceAssigneeAgentId) : null;
     let notice: SuccessfulRunHandoffNotice | null = null;
     if (input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON && input.successfulRunHandoffEvidence) {
       notice = buildSuccessfulRunHandoffExhaustedNotice({
@@ -2714,6 +2864,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (issue.status === "todo") {
+        const managedCheckoutPause = await findManagedCheckoutDispatchPause(issue);
+        if (managedCheckoutPause) {
+          const alert = await ensureManagedCheckoutRescueAlert({
+            issue,
+            pauseInfo: managedCheckoutPause,
+          });
+          if (alert.created) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
         if (!latestRun) {
           if (await hasQueuedIssueWake(issue.companyId, issue.id)) {
             result.skipped += 1;

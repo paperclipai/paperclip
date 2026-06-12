@@ -129,6 +129,24 @@ function truncateInline(value: string | null | undefined, max = 260) {
   return compact.length <= max ? compact : `${compact.slice(0, max - 3)}...`;
 }
 
+function normalizeForStandingRecordMatch(value: string | null | undefined) {
+  return (value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function isStandingRecordIssue(issue: Pick<IssueRow, "title" | "description">) {
+  const title = normalizeForStandingRecordMatch(issue.title);
+  const description = normalizeForStandingRecordMatch(issue.description);
+  if (!title && !description) return false;
+  if (title.includes("standing record")) return true;
+  const mentionsStandingRecord = description.includes("standing record") ||
+    description.includes("standing-record semantics");
+  if (!mentionsStandingRecord) return false;
+  return description.includes("intentionally long-lived") ||
+    description.includes("remains `in_progress`") ||
+    description.includes("remains in_progress") ||
+    description.includes("long_active_duration productivity-review children");
+}
+
 function readPositiveInteger(value: number, fallback: number) {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
@@ -484,6 +502,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       assigneeRunCommentCountLastSixHours >= thresholds.highChurnSixHours;
     const trigger = choosePrimaryTrigger({ noComment, longActive, highChurn });
     if (!trigger) return null;
+    if (trigger === "long_active_duration" && isStandingRecordIssue(sourceIssue)) return null;
 
     const triggerReasons: string[] = [];
     if (noComment) triggerReasons.push(`${noCommentStreak} consecutive completed issue-linked runs had no run-created issue comment`);
