@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import pc from "picocolors";
@@ -169,20 +169,39 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function commandExists(command: string): boolean {
+  const checkCmd =
+    process.platform === "win32"
+      ? `where "${command}"`
+      : `command -v "${command}"`;
+  try {
+    execSync(checkCmd, { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function openUrl(url: string): boolean {
   const platform = process.platform;
   try {
     if (platform === "darwin") {
+      if (!commandExists("open")) return false;
       const child = spawn("open", [url], { detached: true, stdio: "ignore" });
+      child.on("error", () => {});
       child.unref();
       return true;
     }
     if (platform === "win32") {
+      if (!commandExists("cmd")) return false;
       const child = spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" });
+      child.on("error", () => {});
       child.unref();
       return true;
     }
+    if (!commandExists("xdg-open")) return false;
     const child = spawn("xdg-open", [url], { detached: true, stdio: "ignore" });
+    child.on("error", () => {});
     child.unref();
     return true;
   } catch {
@@ -220,8 +239,16 @@ export async function loginBoardCli(params: {
   }
 
   const opened = openUrl(approvalUrl);
-  if (params.print !== false && opened) {
-    console.error(pc.dim("Opened the approval page in your browser."));
+  if (params.print !== false) {
+    if (opened) {
+      console.error(pc.dim("Opened the approval page in your browser."));
+    } else {
+      console.error(
+        pc.dim(
+          "Failed opening a web browser. Please enter the URL in your browser manually.",
+        ),
+      );
+    }
   }
 
   const expiresAtMs = Date.parse(challenge.expiresAt);
