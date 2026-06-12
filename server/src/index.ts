@@ -88,6 +88,7 @@ type EmbeddedPostgresCtor = new (opts: {
 const RECOVERY_QUEUE_RESUME_MAX_AGENTS = 4;
 const RECOVERY_QUEUE_RESUME_MAX_RUNS_PER_AGENT = 1;
 const RECOVERY_STRANDED_ISSUE_MAX_RECOVERIES = 4;
+const RECOVERY_STRANDED_ISSUE_MAX_ACTIVE_RUNS_PER_COMPANY = 8;
 
 export interface StartedServer {
   server: ReturnType<typeof createServer>;
@@ -782,6 +783,7 @@ export async function startServer(): Promise<StartedServer> {
       }
       const reconciled = await heartbeat.reconcileStrandedAssignedIssues({
         maxRecoveries: RECOVERY_STRANDED_ISSUE_MAX_RECOVERIES,
+        maxActiveRunsPerCompany: RECOVERY_STRANDED_ISSUE_MAX_ACTIVE_RUNS_PER_COMPANY,
       });
       if (
         promotion.promoted > 0 ||
@@ -861,6 +863,7 @@ export async function startServer(): Promise<StartedServer> {
           }
           const reconciled = await heartbeat.reconcileStrandedAssignedIssues({
             maxRecoveries: RECOVERY_STRANDED_ISSUE_MAX_RECOVERIES,
+            maxActiveRunsPerCompany: RECOVERY_STRANDED_ISSUE_MAX_ACTIVE_RUNS_PER_COMPANY,
           });
           if (
             promotion.promoted > 0 ||

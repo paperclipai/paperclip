@@ -7573,7 +7573,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { agentsScanned: agentIds.length, agentsStarted, runsStarted };
   }
 
-  async function reconcileStrandedAssignedIssues(opts?: { maxRecoveries?: number }) {
+  async function reconcileStrandedAssignedIssues(opts?: {
+    maxRecoveries?: number;
+    maxActiveRunsPerCompany?: number;
+  }) {
     return recovery.reconcileStrandedAssignedIssues(opts);
   }
 
