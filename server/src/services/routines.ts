@@ -88,9 +88,31 @@ function routineWebhookSecretConfigPath(secretId: string) {
   return `webhookSecret:${secretId}`;
 }
 
+// Intl.DateTimeFormat construction is ~1ms of ICU work per call. Cache formatters by timezone
+// so the per-minute-step cost is ~1µs (formatToParts on an existing instance) rather than ~1ms.
+const ZONED_MINUTE_FORMATTER_CACHE = new Map<string, Intl.DateTimeFormat>();
+
+function getOrCreateZonedMinuteFormatter(timeZone: string): Intl.DateTimeFormat {
+  let formatter = ZONED_MINUTE_FORMATTER_CACHE.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hour12: false,
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      weekday: "short",
+    });
+    ZONED_MINUTE_FORMATTER_CACHE.set(timeZone, formatter);
+  }
+  return formatter;
+}
+
 function assertTimeZone(timeZone: string) {
   try {
-    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+    getOrCreateZonedMinuteFormatter(timeZone).format(new Date());
   } catch {
     throw unprocessable(`Invalid timezone: ${timeZone}`);
   }
@@ -103,16 +125,7 @@ function floorToMinute(date: Date) {
 }
 
 function getZonedMinuteParts(date: Date, timeZone: string) {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hour12: false,
-    year: "numeric",
-    month: "numeric",
-    day: "numeric",
-    hour: "numeric",
-    minute: "numeric",
-    weekday: "short",
-  });
+  const formatter = getOrCreateZonedMinuteFormatter(timeZone);
   const parts = formatter.formatToParts(date);
   const map = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   const weekday = WEEKDAY_INDEX[map.weekday ?? ""];
@@ -141,7 +154,7 @@ function matchesCronMinute(expression: string, timeZone: string, date: Date) {
   );
 }
 
-function nextCronTickInTimeZone(expression: string, timeZone: string, after: Date) {
+export function nextCronTickInTimeZone(expression: string, timeZone: string, after: Date) {
   const trimmed = expression.trim();
   assertTimeZone(timeZone);
   const error = validateCron(trimmed);
