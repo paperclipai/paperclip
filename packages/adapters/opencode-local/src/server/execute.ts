@@ -44,7 +44,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolvePaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
+import { detectOpenCodeQuotaExhaustion, isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
@@ -656,11 +656,38 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `OpenCode exited with code ${synthesizedExitCode ?? -1}`;
       const modelId = model || null;
 
+      // Terminal quota-exhaustion block (ALL-510 proxy signal). When the run
+      // failed because the LLM proxy returned a non-transient credit/quota block
+      // (HTTP 402 / `quota_exhausted` / `blocked: true`, or MiniMax code 2056),
+      // surface a `quota_exhausted` error family so the runner parks the issue as
+      // `blocked` without spinning the backoff/fallback chain (ALL-512). This is
+      // distinct from a transient 429, which stays retriable.
+      const quota =
+        (synthesizedExitCode ?? 0) !== 0
+          ? detectOpenCodeQuotaExhaustion(attempt.proc.stdout, attempt.proc.stderr)
+          : null;
+      const quotaErrorMessage = quota
+        ? `LLM provider quota exhausted${quota.provider ? ` (${quota.provider})` : ""}${
+            quota.code ? ` [${quota.code}]` : ""
+          }: ${quota.message || fallbackErrorMessage}`
+        : null;
+
       return {
         exitCode: synthesizedExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
-        errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
+        errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : quotaErrorMessage ?? fallbackErrorMessage,
+        errorCode: quota ? "opencode_quota_exhausted" : null,
+        errorFamily: quota ? "quota_exhausted" : null,
+        errorMeta: quota
+          ? {
+              quotaExhausted: {
+                provider: quota.provider,
+                code: quota.code,
+                message: quota.message,
+              },
+            }
+          : undefined,
         usage: {
           inputTokens: attempt.parsed.usage.inputTokens,
           outputTokens: attempt.parsed.usage.outputTokens,
@@ -677,6 +704,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
+          ...(quota
+            ? {
+                errorFamily: "quota_exhausted" as const,
+                quotaExhausted: {
+                  provider: quota.provider,
+                  code: quota.code,
+                  message: quota.message,
+                },
+              }
+            : {}),
         },
         summary: attempt.parsed.summary,
         clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),

@@ -64,7 +64,16 @@ export interface AdapterRuntimeServiceReport {
   healthStatus?: "unknown" | "healthy" | "unhealthy";
 }
 
-export type AdapterExecutionErrorFamily = "transient_upstream";
+// Adapter-reported error families that drive runner-side recovery decisions.
+//   * `transient_upstream` — a retriable upstream blip (429/5xx); the runner
+//     schedules a bounded backoff retry.
+//   * `quota_exhausted` — a terminal, non-transient provider credit/quota
+//     exhaustion surfaced by the LLM proxy (HTTP 402 / `quota_exhausted` /
+//     `blocked: true`, including MiniMax code 2056 on an HTTP 200 body). The
+//     runner must stop without backoff, park the issue as `blocked`, and not
+//     re-spin the LLM until the plan resets. See ALL-510 (proxy detection) and
+//     ALL-512 (adapter/runner consumption).
+export type AdapterExecutionErrorFamily = "transient_upstream" | "quota_exhausted";
 
 export interface AdapterExecutionResult {
   exitCode: number | null;

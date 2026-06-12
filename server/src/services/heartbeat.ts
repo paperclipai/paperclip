@@ -254,6 +254,11 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
+// Terminal provider quota/credit exhaustion surfaced by the LLM proxy (ALL-510)
+// and reported by adapters via `errorFamily = "quota_exhausted"` (ALL-512). Parks
+// the issue as `blocked` with a manual-repair recovery action and no auto re-spin.
+const QUOTA_EXHAUSTED_ERROR_FAMILY = "quota_exhausted";
+const QUOTA_EXHAUSTED_RECOVERY_CAUSE = "quota_exhausted";
 // Keep this in sync with local adapters that require a git workspace before launch.
 const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
   "acpx_local",
@@ -937,6 +942,31 @@ function isWorkspaceValidationFailedRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
 ) {
   return run?.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE;
+}
+
+// A run whose adapter reported terminal provider quota/credit exhaustion (ALL-512).
+// The family rides on `resultJson.errorFamily` (set by the adapter) and, for the
+// opencode adapter, the `opencode_quota_exhausted` error code.
+function isQuotaExhaustedRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson"> | null | undefined,
+) {
+  if (!run) return false;
+  if (readHeartbeatRunErrorFamily(run) === QUOTA_EXHAUSTED_ERROR_FAMILY) return true;
+  return run.errorCode === "opencode_quota_exhausted";
+}
+
+// Extract the structured provider/code/message the adapter attached so the
+// blocked-recovery comment can name exactly which provider ran out of quota.
+function readQuotaExhaustionFromRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson"> | null | undefined,
+): { provider: string | null; code: string | null; message: string | null } {
+  const resultJson = parseObject(run?.resultJson);
+  const quota = parseObject(resultJson.quotaExhausted);
+  return {
+    provider: readNonEmptyString(quota.provider),
+    code: readNonEmptyString(quota.code),
+    message: readNonEmptyString(quota.message),
+  };
 }
 
 async function hasGitMetadata(cwd: string | null | undefined) {
@@ -9544,6 +9574,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
   }
 
+  function buildQuotaExhaustedRecoveryComment(input: {
+    latestRun: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson"> | null | undefined;
+  }) {
+    const quota = readQuotaExhaustionFromRun(input.latestRun);
+    const provider = quota.provider ?? "the LLM provider";
+    const codeSuffix = quota.code ? ` (code \`${quota.code}\`)` : "";
+    const detail = quota.message ? ` Provider message: ${quota.message}` : "";
+    return (
+      `Paperclip stopped because **${provider}** reported a terminal quota/credit exhaustion${codeSuffix}. ` +
+      "The LLM proxy surfaced this as a non-transient block (HTTP 402 / `quota_exhausted`), so retrying would only burn the same exhausted target. " +
+      `Moving it to \`blocked\` with a manual-repair recovery action — top up or reroute the provider quota before resuming.${detail}`
+    );
+  }
+
   async function releaseIssueExecutionAndPromote(run: typeof heartbeatRuns.$inferSelect) {
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
@@ -9675,6 +9719,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           previousStatus: issue.status,
           comment: buildWorkspaceValidationRecoveryComment({ latestRun: run }),
           recoveryCause: WORKSPACE_VALIDATION_RECOVERY_CAUSE,
+        };
+      }
+
+      // Quota-exhaustion block (ALL-512): if the finalizing run hit a terminal
+      // provider quota/credit block, park the issue as `blocked` with a
+      // manual-repair recovery action. This intentionally short-circuits the
+      // auto-recovery re-queue below so a follow-up heartbeat does not re-spin
+      // the LLM against the exhausted target until the quota is repaired.
+      if (
+        isQuotaExhaustedRun(run) &&
+        (issue.status === "todo" || issue.status === "in_progress") &&
+        !issue.assigneeUserId &&
+        issue.assigneeAgentId === run.agentId
+      ) {
+        return {
+          kind: "blocked" as const,
+          issue,
+          previousStatus: issue.status,
+          comment: buildQuotaExhaustedRecoveryComment({ latestRun: run }),
+          recoveryCause: QUOTA_EXHAUSTED_RECOVERY_CAUSE,
         };
       }
 
@@ -10060,7 +10124,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         recoveryCause:
           promotionResult.recoveryCause === WORKSPACE_VALIDATION_RECOVERY_CAUSE
             ? WORKSPACE_VALIDATION_RECOVERY_CAUSE
-            : undefined,
+            : promotionResult.recoveryCause === QUOTA_EXHAUSTED_RECOVERY_CAUSE
+              ? QUOTA_EXHAUSTED_RECOVERY_CAUSE
+              : undefined,
       });
       return;
     }

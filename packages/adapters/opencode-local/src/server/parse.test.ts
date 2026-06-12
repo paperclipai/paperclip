@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
+import {
+  parseOpenCodeJsonl,
+  isOpenCodeUnknownSessionError,
+  detectOpenCodeQuotaExhaustion,
+} from "./parse.js";
 
 describe("parseOpenCodeJsonl", () => {
   it("parses assistant text, usage, cost, and errors", () => {
@@ -73,5 +77,50 @@ describe("parseOpenCodeJsonl", () => {
     expect(isOpenCodeUnknownSessionError("Session not found: s_123", "")).toBe(true);
     expect(isOpenCodeUnknownSessionError("", "unknown session id")).toBe(true);
     expect(isOpenCodeUnknownSessionError("all good", "")).toBe(false);
+  });
+});
+
+describe("detectOpenCodeQuotaExhaustion", () => {
+  it("lifts provider/code/message from the proxy's structured 402 body", () => {
+    const errorEvent = JSON.stringify({
+      type: "error",
+      error: {
+        message:
+          'Provider error 402: {"error":{"type":"quota_exhausted","provider":"openrouter","code":"402","message":"Insufficient credits"},"blocked":true}',
+      },
+    });
+    const quota = detectOpenCodeQuotaExhaustion(errorEvent, "");
+    expect(quota).toEqual({ provider: "openrouter", code: "402", message: "Insufficient credits" });
+  });
+
+  it("detects a bare structured quota_exhausted body on stderr", () => {
+    const body =
+      '{"error":{"type":"quota_exhausted","provider":"minimax","code":"2056","message":"Token Plan usage limit reached"},"blocked":true}';
+    const quota = detectOpenCodeQuotaExhaustion("", body);
+    expect(quota).toEqual({
+      provider: "minimax",
+      code: "2056",
+      message: "Token Plan usage limit reached",
+    });
+  });
+
+  it("detects MiniMax code 2056 even without the structured wrapper", () => {
+    const quota = detectOpenCodeQuotaExhaustion('{"status_code":2056,"message":"limit reached"}', "");
+    expect(quota).not.toBeNull();
+    expect(quota?.code).toBe("2056");
+  });
+
+  it("detects a 402 payment-required credit exhaustion", () => {
+    const quota = detectOpenCodeQuotaExhaustion("HTTP 402 Payment Required: credit exhausted", "");
+    expect(quota).not.toBeNull();
+    expect(quota?.code).toBe("402");
+  });
+
+  it("does not flag a transient 429 rate limit as quota exhaustion", () => {
+    expect(detectOpenCodeQuotaExhaustion("HTTP 429 Too Many Requests; please retry", "")).toBeNull();
+  });
+
+  it("returns null for a clean run", () => {
+    expect(detectOpenCodeQuotaExhaustion("all good, finished the task", "")).toBeNull();
   });
 });

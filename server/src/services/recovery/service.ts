@@ -119,6 +119,9 @@ type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeed
 type StrandedRecoveryCause =
   | "stranded_assigned_issue"
   | "workspace_validation_failed"
+  // Terminal provider quota/credit exhaustion (ALL-512). Behaves like
+  // `workspace_validation_failed`: manual-repair recovery action, no auto re-spin.
+  | "quota_exhausted"
   | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
 
 type SuccessfulRunHandoffRecoveryEvidence = {
@@ -2306,11 +2309,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ? "Choose and record a valid issue disposition without copying transcript content."
         : recoveryCause === "workspace_validation_failed"
           ? "Repair the source issue workspace link, project workspace cwd, or git checkout before resuming adapter execution."
+        : recoveryCause === "quota_exhausted"
+          ? "Top up or reroute the exhausted LLM provider quota/credit before resuming adapter execution."
         : "Restore a live execution path, fix the runtime/adapter failure, or record an intentional manual resolution.",
-      wakePolicy: recoveryCause === "workspace_validation_failed"
+      wakePolicy: recoveryCause === "workspace_validation_failed" || recoveryCause === "quota_exhausted"
         ? {
           type: "manual_repair_required",
-          reason: "workspace_validation_failed",
+          reason: recoveryCause,
           ownerAgentId,
         }
         : ownerAgentId
@@ -2337,7 +2342,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     latestRun: LatestIssueRun;
     recoveryCause: StrandedRecoveryCause;
   }) {
-    if (input.recoveryCause === "workspace_validation_failed") return;
+    if (input.recoveryCause === "workspace_validation_failed" || input.recoveryCause === "quota_exhausted") return;
     if (!input.action.ownerAgentId) return;
     await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",
@@ -2543,7 +2548,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     const shouldPostEscalationComment =
       recoveryAction.attemptCount === 1 ||
-      input.recoveryCause === "workspace_validation_failed";
+      input.recoveryCause === "workspace_validation_failed" ||
+      input.recoveryCause === "quota_exhausted";
     if (shouldPostEscalationComment) {
       const escalationCommentMarker = `Recovery action: \`${recoveryAction.id}\``;
 
@@ -2597,6 +2603,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           ? "recovery.reconcile_successful_run_handoff_missing_state"
           : input.recoveryCause === "workspace_validation_failed"
             ? "recovery.reconcile_workspace_validation_failed"
+          : input.recoveryCause === "quota_exhausted"
+            ? "recovery.reconcile_quota_exhausted"
           : "recovery.reconcile_stranded_assigned_issue",
         recoveryCause: input.recoveryCause ?? "stranded_assigned_issue",
         latestRunId: input.latestRun?.id ?? null,

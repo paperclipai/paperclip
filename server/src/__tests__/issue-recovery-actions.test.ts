@@ -324,6 +324,52 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("parks a quota-exhausted run as blocked with a manual-repair action and no auto re-spin", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const latestRun = {
+      id: randomUUID(),
+      agentId: coderId,
+      status: "failed",
+      error: "LLM provider quota exhausted (minimax) [2056]",
+      errorCode: "opencode_quota_exhausted",
+      contextSnapshot: { retryReason: "issue_continuation_needed" },
+      livenessState: "needs_followup",
+    } as const;
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun,
+      comment: "minimax reported a terminal quota/credit exhaustion (code `2056`).",
+      recoveryCause: "quota_exhausted",
+    });
+
+    const actionRows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(actionRows).toHaveLength(1);
+    expect(actionRows[0]).toMatchObject({
+      companyId,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      cause: "quota_exhausted",
+    });
+    expect(actionRows[0]?.wakePolicy).toMatchObject({
+      type: "manual_repair_required",
+      reason: "quota_exhausted",
+    });
+
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(updatedIssue).toMatchObject({ status: "blocked" });
+
+    // Quota exhaustion is terminal: no recovery wake is enqueued, so a follow-up
+    // heartbeat does not re-spin the LLM against the exhausted target (ALL-512).
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
   it("reuses the same source-scoped action when latest run IDs change while the cause stays the same", async () => {
     const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
     const enqueueWakeup = vi.fn(async () => null);
