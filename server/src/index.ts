@@ -85,6 +85,9 @@ type EmbeddedPostgresCtor = new (opts: {
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
 
+const RECOVERY_QUEUE_RESUME_MAX_AGENTS = 4;
+const RECOVERY_QUEUE_RESUME_MAX_RUNS_PER_AGENT = 1;
+const RECOVERY_STRANDED_ISSUE_MAX_RECOVERIES = 4;
 
 export interface StartedServer {
   server: ReturnType<typeof createServer>;
@@ -770,8 +773,16 @@ export async function startServer(): Promise<StartedServer> {
       }
 
       const promotion = await heartbeat.promoteDueScheduledRetries();
-      await heartbeat.resumeQueuedRuns();
-      const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+      const resumed = await heartbeat.resumeQueuedRuns({
+        maxAgents: RECOVERY_QUEUE_RESUME_MAX_AGENTS,
+        maxRunsPerAgent: RECOVERY_QUEUE_RESUME_MAX_RUNS_PER_AGENT,
+      });
+      if (resumed.runsStarted > 0) {
+        logger.warn({ ...resumed }, "startup heartbeat recovery resumed queued runs with bounded concurrency");
+      }
+      const reconciled = await heartbeat.reconcileStrandedAssignedIssues({
+        maxRecoveries: RECOVERY_STRANDED_ISSUE_MAX_RECOVERIES,
+      });
       if (
         promotion.promoted > 0 ||
         reconciled.assignmentDispatched > 0 ||
@@ -841,8 +852,16 @@ export async function startServer(): Promise<StartedServer> {
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
         .then(() => heartbeat.promoteDueScheduledRetries())
         .then(async (promotion) => {
-          await heartbeat.resumeQueuedRuns();
-          const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+          const resumed = await heartbeat.resumeQueuedRuns({
+            maxAgents: RECOVERY_QUEUE_RESUME_MAX_AGENTS,
+            maxRunsPerAgent: RECOVERY_QUEUE_RESUME_MAX_RUNS_PER_AGENT,
+          });
+          if (resumed.runsStarted > 0) {
+            logger.warn({ ...resumed }, "periodic heartbeat recovery resumed queued runs with bounded concurrency");
+          }
+          const reconciled = await heartbeat.reconcileStrandedAssignedIssues({
+            maxRecoveries: RECOVERY_STRANDED_ISSUE_MAX_RECOVERIES,
+          });
           if (
             promotion.promoted > 0 ||
             reconciled.assignmentDispatched > 0 ||

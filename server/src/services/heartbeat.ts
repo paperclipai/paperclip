@@ -7541,7 +7541,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { reaped: reaped.length, runIds: reaped };
   }
 
-  async function resumeQueuedRuns() {
+  async function resumeQueuedRuns(opts?: { maxAgents?: number; maxRunsPerAgent?: number }) {
+    const maxAgents = opts?.maxAgents === undefined
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0, Math.floor(opts.maxAgents));
+    const maxRunsPerAgent = opts?.maxRunsPerAgent === undefined
+      ? undefined
+      : Math.max(0, Math.floor(opts.maxRunsPerAgent));
+    if (maxAgents <= 0 || maxRunsPerAgent === 0) return { agentsScanned: 0, agentsStarted: 0, runsStarted: 0 };
+
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns)
@@ -7551,14 +7559,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eq(companies.status, "active"),
       ));
 
-    const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
+    const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))].slice(0, maxAgents);
+    let agentsStarted = 0;
+    let runsStarted = 0;
     for (const agentId of agentIds) {
-      await startNextQueuedRunForAgent(agentId);
+      const started = await startNextQueuedRunForAgent(agentId, { maxStarts: maxRunsPerAgent });
+      if (started.length > 0) {
+        agentsStarted += 1;
+        runsStarted += started.length;
+      }
     }
+
+    return { agentsScanned: agentIds.length, agentsStarted, runsStarted };
   }
 
-  async function reconcileStrandedAssignedIssues() {
-    return recovery.reconcileStrandedAssignedIssues();
+  async function reconcileStrandedAssignedIssues(opts?: { maxRecoveries?: number }) {
+    return recovery.reconcileStrandedAssignedIssues(opts);
   }
 
   async function sweepStaleIssueLocks() {
@@ -7663,7 +7679,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
-  async function startNextQueuedRunForAgent(agentId: string) {
+  async function startNextQueuedRunForAgent(agentId: string, opts?: { maxStarts?: number }) {
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
@@ -7676,7 +7692,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+      const requestedSlots = opts?.maxStarts === undefined
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, Math.floor(opts.maxStarts));
+      const availableSlots = Math.min(Math.max(0, policy.maxConcurrentRuns - runningCount), requestedSlots);
       if (availableSlots <= 0) return [];
 
       const queuedRuns = await db

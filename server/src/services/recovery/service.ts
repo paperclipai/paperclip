@@ -2643,7 +2643,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
-  async function reconcileStrandedAssignedIssues() {
+  async function reconcileStrandedAssignedIssues(opts?: { maxRecoveries?: number }) {
     const candidates = await db
       .select()
       .from(issues)
@@ -2668,8 +2668,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       skipped: 0,
       issueIds: [] as string[],
     };
+    const maxRecoveries = opts?.maxRecoveries === undefined
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0, Math.floor(opts.maxRecoveries));
 
     for (const issue of candidates) {
+      if (result.issueIds.length >= maxRecoveries) {
+        result.skipped += 1;
+        continue;
+      }
+
       const agentId = issue.assigneeAgentId;
       if (!agentId) {
         result.skipped += 1;
@@ -2955,10 +2963,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
     }
 
-    const orphanBlockerRecovery = await reconcileUnassignedBlockingIssues();
-    result.orphanBlockersAssigned = orphanBlockerRecovery.assigned;
-    result.skipped += orphanBlockerRecovery.skipped;
-    result.issueIds.push(...orphanBlockerRecovery.issueIds);
+    if (result.issueIds.length < maxRecoveries) {
+      const orphanBlockerRecovery = await reconcileUnassignedBlockingIssues();
+      result.orphanBlockersAssigned = orphanBlockerRecovery.assigned;
+      result.skipped += orphanBlockerRecovery.skipped;
+      result.issueIds.push(...orphanBlockerRecovery.issueIds);
+    }
 
     return result;
   }

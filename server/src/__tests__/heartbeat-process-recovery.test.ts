@@ -944,6 +944,58 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
 
+  it("bounds queued run resumption across agents during recovery sweeps", async () => {
+    const pendingExecutions: Array<() => void> = [];
+    mockAdapterExecute.mockImplementation(async () => {
+      await new Promise<void>((resolve) => pendingExecutions.push(resolve));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Recovered queued work.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const fixtures = [];
+    for (let i = 0; i < 10; i += 1) {
+      fixtures.push(await seedQueuedIssueRunFixture());
+    }
+    const heartbeat = heartbeatService(db);
+
+    const resumed = await heartbeat.resumeQueuedRuns({ maxAgents: 4, maxRunsPerAgent: 1 });
+
+    expect(resumed).toEqual({ agentsScanned: 4, agentsStarted: 4, runsStarted: 4 });
+    await waitForValue(async () => (mockAdapterExecute.mock.calls.length === 4 ? true : null));
+    const rows = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.id, fixtures.map((fixture) => fixture.runId)));
+    expect(rows.filter((row) => row.status === "running")).toHaveLength(4);
+    expect(rows.filter((row) => row.status === "queued")).toHaveLength(6);
+
+    for (const resolve of pendingExecutions) resolve();
+    await waitForHeartbeatIdle(db);
+  });
+
+  it("bounds stranded issue recovery enqueueing during recovery sweeps", async () => {
+    for (let i = 0; i < 10; i += 1) {
+      await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "failed",
+        runErrorCode: "process_lost",
+      });
+    }
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues({ maxRecoveries: 4 });
+
+    expect(result.continuationRequeued).toBe(4);
+    expect(result.issueIds).toHaveLength(4);
+    expect(result.skipped).toBe(6);
+  });
+
   it("keeps a local run active when the recorded pid is still alive", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
