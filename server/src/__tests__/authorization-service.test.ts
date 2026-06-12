@@ -361,7 +361,7 @@ describeEmbeddedPostgres("authorization service", () => {
       },
     });
 
-    expect(insideDecision).toMatchObject({ allowed: true });
+    expect(insideDecision).toMatchObject({ allowed: true, reason: "allow_low_trust_boundary" });
     expect(outsideDecision).toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
   });
 

@@ -1097,6 +1097,11 @@ export function authorizationService(db: Db) {
         input.action === "agent:read" ||
         input.action === "agent:wake" ||
         input.action === "company_scope:read" ||
+        // issue:comment ends in an allow either way; returning here keeps
+        // allow_low_trust_boundary as the audit reason instead of the
+        // standard allow_company_agent. issue:mutate must NOT early-return —
+        // its assignee/ownership checks below still apply inside the boundary.
+        input.action === "issue:comment" ||
         input.action === "issue:read" ||
         input.action === "project:read" ||
         input.action === "runtime:manage" ||
