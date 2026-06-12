@@ -942,6 +942,22 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     if (host.includes(":") && !host.startsWith("[") && !host.endsWith("]")) return `[${host}]`;
     return host;
   };
+  const isLoopbackHost = (rawHost: string): boolean => {
+    const host = rawHost.trim().toLowerCase();
+    return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+  };
+  const resolveAgentApiUrl = (runtimeHost: string, runtimePort: string): string => {
+    const loopbackUrl = `http://${runtimeHost}:${runtimePort}`;
+    const explicitApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL ?? process.env.PAPERCLIP_API_URL;
+    if (!explicitApiUrl) return loopbackUrl;
+    if (!isLoopbackHost(runtimeHost)) return explicitApiUrl;
+    try {
+      const explicitHost = new URL(explicitApiUrl).hostname;
+      return isLoopbackHost(explicitHost) ? explicitApiUrl : loopbackUrl;
+    } catch {
+      return explicitApiUrl;
+    }
+  };
   const vars: Record<string, string> = {
     PAPERCLIP_AGENT_ID: agent.id,
     PAPERCLIP_COMPANY_ID: agent.companyId,
@@ -950,10 +966,7 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
   );
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
-  const apiUrl =
-    process.env.PAPERCLIP_RUNTIME_API_URL ??
-    process.env.PAPERCLIP_API_URL ??
-    `http://${runtimeHost}:${runtimePort}`;
+  const apiUrl = resolveAgentApiUrl(runtimeHost, runtimePort);
   vars.PAPERCLIP_API_URL = apiUrl;
   return vars;
 }
