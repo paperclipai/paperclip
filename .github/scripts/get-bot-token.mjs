@@ -11,7 +11,10 @@
 import { createSign } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-const APP_ID = '3718661';
+// Upstream's commitperclip app by default; forks point this at their own
+// GitHub App (Blockcast: allyblockcast) via env since the upstream app's
+// private key is not distributable.
+const APP_ID = process.env.COMMITPERCLIP_APP_ID || '3718661';
 const OWNER_PATTERN = /^[a-zA-Z0-9_.-]+$/;
 const REPO_PATTERN = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 
