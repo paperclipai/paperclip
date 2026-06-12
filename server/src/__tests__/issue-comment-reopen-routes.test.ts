@@ -10,6 +10,7 @@ const mockIssueService = vi.hoisted(() => ({
   getDependencyReadiness: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
   findMentionedAgents: vi.fn(),
+  findThreadParticipantAgentIds: vi.fn(async () => []),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
 }));
@@ -522,8 +523,20 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
-  it("rejects non-assignee agent POST comments on closed issues", async () => {
+  it("rejects unauthorized (non-participant) agent POST comments on closed issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    // WKP-118: commenting is gated by issue:comment, not issue:mutate. An agent
+    // that is not the assignee, manager, parent assignee, or thread participant
+    // fails the issue:comment boundary decision and is rejected.
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
+      const allowed = input.action !== "issue:comment" && input.action !== "tasks:manage_active_checkouts";
+      return {
+        allowed,
+        action: input.action,
+        reason: allowed ? "allow_explicit_grant" : "deny_missing_grant",
+        explanation: allowed ? "Allowed by test grant." : "Outside comment authorization boundary.",
+      };
+    });
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
       issueId: "11111111-1111-4111-8111-111111111111",
@@ -546,7 +559,7 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ body: "hello" });
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
@@ -1493,8 +1506,11 @@ describe.sequential("issue comment reopen routes", () => {
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "restart someone else's work", resume: true });
 
+    // Commenting itself is now decoupled from issue:mutate (WKP-118), but the
+    // explicit resume/follow-up intent is still gated to the assignee, so a
+    // non-assignee resume request is rejected by the resume-intent guard.
     expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(res.body.error).toBe("Agent cannot request follow-up for another agent's issue");
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
