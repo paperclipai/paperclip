@@ -165,6 +165,18 @@ function parseClickUpCreateChatMessageResponse(rawText: string) {
   };
 }
 
+function buildClickUpChatMessageAppUrl(
+  workspaceId: string,
+  channelId: string,
+  messageId: string,
+) {
+  const trimmedWorkspaceId = workspaceId.trim();
+  const trimmedChannelId = channelId.trim();
+  const trimmedMessageId = messageId.trim();
+  if (!trimmedWorkspaceId || !trimmedChannelId || !trimmedMessageId) return null;
+  return `https://app.clickup.com/${encodeURIComponent(trimmedWorkspaceId)}/chat/r/${encodeURIComponent(trimmedChannelId)}/t/${encodeURIComponent(trimmedMessageId)}`;
+}
+
 function parseClickUpCreateChatChannelResponse(rawText: string) {
   const payload = JSON.parse(rawText) as Record<string, unknown>;
   const data = payload.data && typeof payload.data === "object"
@@ -841,7 +853,9 @@ export async function sendAwaitingHumanNotification(
     overrides,
   );
   if (result.status === "sent" && approvalRoute && result.externalId) {
-    const threadLink = result.messageLink ?? readString(input.notification.link);
+    const threadLink = buildClickUpChatMessageAppUrl(config.workspaceId, config.channelId, result.externalId)
+      ?? result.messageLink
+      ?? readString(input.notification.link);
     await maybeSendClickUpReviewerDirectMessages({
       config,
       title: input.notification.title,
@@ -889,7 +903,9 @@ export async function sendClickUpTransportTestMessage(
     overrides,
   );
   if (result.status === "sent" && result.externalId && reviewerTargets.length) {
-    const threadLink = result.messageLink ?? readString(notification.link);
+    const threadLink = buildClickUpChatMessageAppUrl(config.workspaceId, config.channelId, result.externalId)
+      ?? result.messageLink
+      ?? readString(notification.link);
     await maybeSendClickUpReviewerDirectMessages({
       config,
       title: notification.title,

@@ -557,6 +557,9 @@ describe("sendAwaitingHumanNotification review context", () => {
       expect.anything(),
     );
     expect(String(fetchMock.mock.calls[4]?.[1]?.body)).toContain("Hi Primary Lead,");
+    expect(String(fetchMock.mock.calls[4]?.[1]?.body)).toContain(
+      "Original approval thread: https://app.clickup.com/workspace-1/chat/r/channel-9/t/message-review",
+    );
     expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 
@@ -665,6 +668,9 @@ describe("sendAwaitingHumanNotification review context", () => {
     expect(body.content).toContain("Approval stage: final check");
     expect(body.content).toContain("Reviewer: a direct message will be sent to Secondary Lead.");
     expect(body.content).toContain("Next step: the final reviewer handles the approval after the primary review clears.");
+    expect(String(fetchMock.mock.calls[4]?.[1]?.body)).toContain(
+      "Original approval thread: https://app.clickup.com/workspace-1/chat/r/channel-9/t/message-final",
+    );
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.clickup.com/api/v2/team/workspace-1/user/primary-user-id",
       expect.anything(),
@@ -895,7 +901,13 @@ describe("sendClickUpTransportTestMessage reviewer notifications", () => {
       expect.anything(),
     );
     expect(String(fetchMock.mock.calls[4]?.[1]?.body)).toContain("Hi Primary Lead,");
+    expect(String(fetchMock.mock.calls[4]?.[1]?.body)).toContain(
+      "Original approval thread: https://app.clickup.com/workspace-1/chat/r/channel-9/t/message-reviewers",
+    );
     expect(String(fetchMock.mock.calls[6]?.[1]?.body)).toContain("Hi Secondary Lead,");
+    expect(String(fetchMock.mock.calls[6]?.[1]?.body)).toContain(
+      "Original approval thread: https://app.clickup.com/workspace-1/chat/r/channel-9/t/message-reviewers",
+    );
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/chat/channels/direct_message")).length).toBe(2);
     expect(fetchMock).toHaveBeenCalledTimes(7);
   });
