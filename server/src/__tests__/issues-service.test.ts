@@ -136,6 +136,15 @@ async function ensureIssueRelationsTable(db: ReturnType<typeof createDb>) {
       "updated_at" timestamptz NOT NULL DEFAULT now()
     );
   `));
+  await db.execute(sql.raw(`
+    ALTER TABLE "issue_relations"
+      DROP CONSTRAINT IF EXISTS "issue_relations_type_check";
+  `));
+  await db.execute(sql.raw(`
+    ALTER TABLE "issue_relations"
+      ADD CONSTRAINT "issue_relations_type_check"
+      CHECK ("type" IN ('blocks', 'duplicate_of'));
+  `));
 }
 
 if (!embeddedPostgresSupport.supported) {
@@ -2968,6 +2977,419 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
 
     expect(blockerRelations.blocks.map((relation) => relation.id)).toEqual([blockedId]);
     expect(blockedRelations.blockedBy.map((relation) => relation.id)).toEqual([blockerId]);
+  });
+
+  it("resolves a duplicate issue through a relation-only duplicate_of edge", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const duplicateIssueId = randomUUID();
+    const canonicalIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: duplicateIssueId,
+        companyId,
+        title: "Duplicate marker source",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: canonicalIssueId,
+        companyId,
+        title: "Canonical marker target",
+        status: "blocked",
+        priority: "high",
+      },
+    ]);
+
+    const duplicateBefore = await db
+      .select({
+        status: issues.status,
+        hiddenAt: issues.hiddenAt,
+        title: issues.title,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+      })
+      .from(issues)
+      .where(eq(issues.id, duplicateIssueId))
+      .then((rows) => rows[0]);
+    const canonicalBefore = await db
+      .select({
+        status: issues.status,
+        hiddenAt: issues.hiddenAt,
+        title: issues.title,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+      })
+      .from(issues)
+      .where(eq(issues.id, canonicalIssueId))
+      .then((rows) => rows[0]);
+
+    const result = await svc.resolveDuplicateIssue({
+      companyId,
+      duplicateIssueId,
+      canonicalIssueId,
+      reasonCode: "routine_execution_duplicate_cleanup",
+      source: "manual_admin",
+      idempotencyKey: "duplicate-relation-only-test",
+    });
+
+    expect(result).toMatchObject({
+      status: "applied",
+      duplicateIssueId,
+      canonicalIssueId,
+      previousDuplicateStatus: "todo",
+      newDuplicateStatus: "todo",
+      changedFields: ["issue_relations"],
+    });
+    expect(result.relationId).toEqual(expect.any(String));
+    expect(result.auditEventId).toEqual(expect.any(String));
+
+    const relationRows = await db
+      .select()
+      .from(issueRelations)
+      .where(eq(issueRelations.issueId, duplicateIssueId));
+    expect(relationRows).toHaveLength(1);
+    expect(relationRows[0]).toMatchObject({
+      companyId,
+      issueId: duplicateIssueId,
+      relatedIssueId: canonicalIssueId,
+      type: "duplicate_of",
+    });
+
+    const duplicateAfter = await db
+      .select({
+        status: issues.status,
+        hiddenAt: issues.hiddenAt,
+        title: issues.title,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+      })
+      .from(issues)
+      .where(eq(issues.id, duplicateIssueId))
+      .then((rows) => rows[0]);
+    const canonicalAfter = await db
+      .select({
+        status: issues.status,
+        hiddenAt: issues.hiddenAt,
+        title: issues.title,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+      })
+      .from(issues)
+      .where(eq(issues.id, canonicalIssueId))
+      .then((rows) => rows[0]);
+    expect(duplicateAfter).toEqual(duplicateBefore);
+    expect(canonicalAfter).toEqual(canonicalBefore);
+
+    const audit = await db
+      .select({ action: activityLog.action, details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.id, result.auditEventId!))
+      .then((rows) => rows[0]);
+    expect(audit.action).toBe("issue.duplicate_resolved");
+    expect(Object.keys(audit.details as Record<string, unknown>).sort()).toEqual([
+      "canonicalIssueId",
+      "canonicalMutated",
+      "changedFields",
+      "duplicateIssueId",
+      "idempotencyKey",
+      "newDuplicateStatus",
+      "previousDuplicateStatus",
+      "reasonCode",
+      "relationId",
+      "source",
+      "sourceBatch",
+    ]);
+    expect(audit.details).toMatchObject({
+      duplicateIssueId,
+      canonicalIssueId,
+      relationId: result.relationId,
+      canonicalMutated: false,
+      changedFields: ["issue_relations"],
+    });
+  });
+
+  it("keeps duplicate resolution idempotent for the same canonical and rejects a different canonical", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const duplicateIssueId = randomUUID();
+    const canonicalIssueId = randomUUID();
+    const otherCanonicalIssueId = randomUUID();
+    await db.insert(issues).values([
+      { id: duplicateIssueId, companyId, title: "Duplicate", status: "todo", priority: "medium" },
+      { id: canonicalIssueId, companyId, title: "Canonical", status: "todo", priority: "medium" },
+      { id: otherCanonicalIssueId, companyId, title: "Other canonical", status: "todo", priority: "medium" },
+    ]);
+
+    const input = {
+      companyId,
+      duplicateIssueId,
+      canonicalIssueId,
+      reasonCode: "routine_execution_duplicate_cleanup" as const,
+      source: "manual_admin" as const,
+      idempotencyKey: "same-canonical",
+    };
+    const first = await svc.resolveDuplicateIssue(input);
+    const second = await svc.resolveDuplicateIssue(input);
+
+    expect(second).toMatchObject({
+      status: "already_applied",
+      relationId: first.relationId,
+      auditEventId: null,
+    });
+
+    await expect(
+      svc.resolveDuplicateIssue({
+        ...input,
+        canonicalIssueId: otherCanonicalIssueId,
+        idempotencyKey: "different-canonical",
+      }),
+    ).rejects.toThrow(/different canonical/i);
+
+    const relationRows = await db
+      .select()
+      .from(issueRelations)
+      .where(eq(issueRelations.issueId, duplicateIssueId));
+    expect(relationRows).toHaveLength(1);
+  });
+
+  it("allows many duplicate issues to point to one canonical issue", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const canonicalIssueId = randomUUID();
+    const duplicateIssueIds = [randomUUID(), randomUUID()];
+    await db.insert(issues).values([
+      { id: canonicalIssueId, companyId, title: "Canonical", status: "todo", priority: "medium" },
+      ...duplicateIssueIds.map((id, index) => ({
+        id,
+        companyId,
+        title: `Duplicate ${index}`,
+        status: "todo",
+        priority: "medium",
+      })),
+    ]);
+
+    for (const [index, duplicateIssueId] of duplicateIssueIds.entries()) {
+      await svc.resolveDuplicateIssue({
+        companyId,
+        duplicateIssueId,
+        canonicalIssueId,
+        reasonCode: "routine_execution_duplicate_cleanup",
+        source: "manual_admin",
+        idempotencyKey: `many-to-one-${index}`,
+      });
+    }
+
+    const relationRows = await db
+      .select()
+      .from(issueRelations)
+      .where(eq(issueRelations.relatedIssueId, canonicalIssueId));
+    expect(relationRows.map((row) => row.issueId).sort()).toEqual([...duplicateIssueIds].sort());
+    expect(relationRows.every((row) => row.type === "duplicate_of")).toBe(true);
+  });
+
+  it("rejects self, cross-company, canonical-duplicate, and duplicate cycle requests", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    const issueA = randomUUID();
+    const issueB = randomUUID();
+    const issueC = randomUUID();
+    const otherCompanyIssue = randomUUID();
+    await db.insert(issues).values([
+      { id: issueA, companyId, title: "Issue A", status: "todo", priority: "medium" },
+      { id: issueB, companyId, title: "Issue B", status: "todo", priority: "medium" },
+      { id: issueC, companyId, title: "Issue C", status: "todo", priority: "medium" },
+      { id: otherCompanyIssue, companyId: otherCompanyId, title: "Other issue", status: "todo", priority: "medium" },
+    ]);
+
+    const base = {
+      companyId,
+      reasonCode: "routine_execution_duplicate_cleanup" as const,
+      source: "manual_admin" as const,
+    };
+
+    await expect(
+      svc.resolveDuplicateIssue({
+        ...base,
+        duplicateIssueId: issueA,
+        canonicalIssueId: issueA,
+        idempotencyKey: "self",
+      }),
+    ).rejects.toThrow(/itself/i);
+
+    await expect(
+      svc.resolveDuplicateIssue({
+        ...base,
+        duplicateIssueId: issueA,
+        canonicalIssueId: otherCompanyIssue,
+        idempotencyKey: "cross-company",
+      }),
+    ).rejects.toThrow(/same company/i);
+
+    await svc.resolveDuplicateIssue({
+      ...base,
+      duplicateIssueId: issueB,
+      canonicalIssueId: issueA,
+      idempotencyKey: "canonical-is-duplicate-setup",
+    });
+    await expect(
+      svc.resolveDuplicateIssue({
+        ...base,
+        duplicateIssueId: issueC,
+        canonicalIssueId: issueB,
+        idempotencyKey: "canonical-is-duplicate",
+      }),
+    ).rejects.toThrow(/canonical issue is already marked as a duplicate/i);
+
+    await expect(
+      svc.resolveDuplicateIssue({
+        ...base,
+        duplicateIssueId: issueA,
+        canonicalIssueId: issueB,
+        idempotencyKey: "cycle",
+      }),
+    ).rejects.toThrow(/cycles/i);
+  });
+
+  it("rolls back only the duplicate relation and metadata-only audit state", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const duplicateIssueId = randomUUID();
+    const canonicalIssueId = randomUUID();
+    await db.insert(issues).values([
+      { id: duplicateIssueId, companyId, title: "Duplicate", status: "todo", priority: "medium" },
+      { id: canonicalIssueId, companyId, title: "Canonical", status: "todo", priority: "medium" },
+    ]);
+
+    const resolved = await svc.resolveDuplicateIssue({
+      companyId,
+      duplicateIssueId,
+      canonicalIssueId,
+      reasonCode: "routine_execution_duplicate_cleanup",
+      source: "manual_admin",
+      idempotencyKey: "rollback-setup",
+    });
+
+    const rolledBack = await svc.rollbackDuplicateResolution({
+      companyId,
+      duplicateIssueId,
+      canonicalIssueId,
+      relationId: resolved.relationId!,
+      reasonCode: "routine_execution_duplicate_cleanup_rollback",
+      source: "manual_admin",
+      idempotencyKey: "rollback",
+      rollbackCorrelationId: randomUUID(),
+      expectedPreviousStatus: "todo",
+    });
+
+    expect(rolledBack).toMatchObject({
+      status: "rolled_back",
+      duplicateIssueId,
+      canonicalIssueId,
+      relationId: resolved.relationId,
+      restoredFields: ["issue_relations"],
+    });
+    expect(rolledBack.auditEventId).toEqual(expect.any(String));
+
+    const remainingRelations = await db
+      .select()
+      .from(issueRelations)
+      .where(eq(issueRelations.issueId, duplicateIssueId));
+    expect(remainingRelations).toEqual([]);
+
+    const rollbackAudit = await db
+      .select({ action: activityLog.action, details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.id, rolledBack.auditEventId!))
+      .then((rows) => rows[0]);
+    expect(rollbackAudit.action).toBe("issue.duplicate_resolution_rolled_back");
+    expect(Object.keys(rollbackAudit.details as Record<string, unknown>).sort()).toEqual([
+      "canonicalIssueId",
+      "canonicalMutated",
+      "duplicateIssueId",
+      "idempotencyKey",
+      "reasonCode",
+      "relationId",
+      "restoredFields",
+      "rollbackCorrelationId",
+      "source",
+      "sourceBatch",
+    ]);
+    expect(rollbackAudit.details).toMatchObject({
+      duplicateIssueId,
+      canonicalIssueId,
+      relationId: resolved.relationId,
+      restoredFields: ["issue_relations"],
+      canonicalMutated: false,
+    });
+  });
+
+  it("does not treat duplicate_of relations as blocker summaries", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const duplicateIssueId = randomUUID();
+    const canonicalIssueId = randomUUID();
+    await db.insert(issues).values([
+      { id: duplicateIssueId, companyId, title: "Duplicate", status: "todo", priority: "medium" },
+      { id: canonicalIssueId, companyId, title: "Canonical", status: "todo", priority: "medium" },
+    ]);
+
+    await svc.resolveDuplicateIssue({
+      companyId,
+      duplicateIssueId,
+      canonicalIssueId,
+      reasonCode: "routine_execution_duplicate_cleanup",
+      source: "manual_admin",
+      idempotencyKey: "blocker-summary-isolation",
+    });
+
+    await expect(svc.getRelationSummaries(duplicateIssueId)).resolves.toEqual({ blockedBy: [], blocks: [] });
+    await expect(svc.getRelationSummaries(canonicalIssueId)).resolves.toEqual({ blockedBy: [], blocks: [] });
   });
 
   it("adds terminal blockers to immediate blocked-by summaries", async () => {

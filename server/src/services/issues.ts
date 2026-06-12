@@ -375,6 +375,59 @@ type IssueRelationSummaryMap = {
   blockedBy: IssueRelationIssueSummary[];
   blocks: IssueRelationIssueSummary[];
 };
+type DuplicateResolutionReasonCode = "routine_execution_duplicate_cleanup";
+type DuplicateRollbackReasonCode = "routine_execution_duplicate_cleanup_rollback";
+type DuplicateResolutionActor = {
+  agentId?: string | null;
+  userId?: string | null;
+  runId?: string | null;
+  actorType?: "agent" | "user" | "system" | "board";
+  actorId?: string | null;
+};
+type ResolveDuplicateIssueInput = {
+  companyId: string;
+  duplicateIssueId: string;
+  canonicalIssueId: string;
+  actor?: DuplicateResolutionActor;
+  reasonCode: DuplicateResolutionReasonCode;
+  source: "phase_0_4_batch_a_pilot" | "manual_admin";
+  sourceBatch?: string | null;
+  idempotencyKey: string;
+  dryRun?: boolean;
+};
+type RollbackDuplicateIssueInput = {
+  companyId: string;
+  duplicateIssueId: string;
+  canonicalIssueId: string;
+  relationId: string;
+  actor?: DuplicateResolutionActor;
+  reasonCode: DuplicateRollbackReasonCode;
+  source: "phase_0_4_batch_a_pilot_rollback" | "manual_admin";
+  sourceBatch?: string | null;
+  idempotencyKey: string;
+  rollbackCorrelationId: string;
+  expectedPreviousStatus: string;
+  expectedResolutionAuditEventId?: string | null;
+  dryRun?: boolean;
+};
+type DuplicateResolutionResult = {
+  status: "applied" | "already_applied" | "dry_run";
+  duplicateIssueId: string;
+  canonicalIssueId: string;
+  relationId: string | null;
+  auditEventId: string | null;
+  previousDuplicateStatus: string;
+  newDuplicateStatus: string;
+  changedFields: string[];
+};
+type DuplicateRollbackResult = {
+  status: "rolled_back" | "already_rolled_back" | "dry_run";
+  duplicateIssueId: string;
+  canonicalIssueId: string;
+  relationId: string;
+  auditEventId: string | null;
+  restoredFields: string[];
+};
 export type IssueDependencyReadiness = {
   issueId: string;
   blockerIssueIds: string[];
@@ -3940,9 +3993,358 @@ export function issueService(db: Db) {
     });
   }
 
+  function validateDuplicateResolutionInput(input: ResolveDuplicateIssueInput) {
+    if (!input.companyId || !input.duplicateIssueId || !input.canonicalIssueId) {
+      throw unprocessable("Duplicate resolution requires company, duplicate issue, and canonical issue ids");
+    }
+    if (input.duplicateIssueId === input.canonicalIssueId) {
+      throw unprocessable("Issue cannot be marked as a duplicate of itself");
+    }
+    if (input.reasonCode !== "routine_execution_duplicate_cleanup") {
+      throw unprocessable("Unsupported duplicate resolution reason");
+    }
+    if (!input.idempotencyKey?.trim()) {
+      throw unprocessable("Duplicate resolution requires an idempotency key");
+    }
+  }
+
+  function validateDuplicateRollbackInput(input: RollbackDuplicateIssueInput) {
+    if (!input.companyId || !input.duplicateIssueId || !input.canonicalIssueId || !input.relationId) {
+      throw unprocessable("Duplicate rollback requires company, issue, canonical, and relation ids");
+    }
+    if (input.duplicateIssueId === input.canonicalIssueId) {
+      throw unprocessable("Issue cannot be marked as a duplicate of itself");
+    }
+    if (input.reasonCode !== "routine_execution_duplicate_cleanup_rollback") {
+      throw unprocessable("Unsupported duplicate rollback reason");
+    }
+    if (!input.idempotencyKey?.trim()) {
+      throw unprocessable("Duplicate rollback requires an idempotency key");
+    }
+    if (!input.rollbackCorrelationId?.trim()) {
+      throw unprocessable("Duplicate rollback requires a rollback correlation id");
+    }
+  }
+
+  function duplicateActivityActor(actor: DuplicateResolutionActor | undefined) {
+    const actorType: "agent" | "user" | "system" | "board" =
+      actor?.actorType ?? (actor?.agentId ? "agent" : actor?.userId ? "user" : "system");
+    return {
+      actorType,
+      actorId: actor?.actorId ?? actor?.agentId ?? actor?.userId ?? "system",
+      agentId: actor?.agentId ?? null,
+      runId: actor?.runId ?? null,
+    };
+  }
+
+  async function assertNoDuplicateRelationCycle(
+    companyId: string,
+    duplicateIssueId: string,
+    canonicalIssueId: string,
+    dbOrTx: DbReader = db,
+  ) {
+    const rows = await dbOrTx
+      .select({
+        duplicateIssueId: issueRelations.issueId,
+        canonicalIssueId: issueRelations.relatedIssueId,
+      })
+      .from(issueRelations)
+      .where(and(eq(issueRelations.companyId, companyId), eq(issueRelations.type, "duplicate_of")));
+
+    const canonicalByDuplicate = new Map(rows.map((row) => [row.duplicateIssueId, row.canonicalIssueId]));
+    canonicalByDuplicate.set(duplicateIssueId, canonicalIssueId);
+
+    const visited = new Set<string>();
+    let current: string | undefined = canonicalIssueId;
+    while (current) {
+      if (current === duplicateIssueId) {
+        throw unprocessable("Duplicate relations cannot contain cycles");
+      }
+      if (visited.has(current)) return;
+      visited.add(current);
+      current = canonicalByDuplicate.get(current);
+    }
+  }
+
   return {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
+
+    resolveDuplicateIssue: async (
+      input: ResolveDuplicateIssueInput,
+      dbOrTx: any = db,
+    ): Promise<DuplicateResolutionResult> => {
+      validateDuplicateResolutionInput(input);
+
+      const runResolve = async (tx: any): Promise<DuplicateResolutionResult> => {
+        const lockedIssueIds = [input.duplicateIssueId, input.canonicalIssueId].sort();
+        await tx.execute(
+          sql`SELECT ${issues.id} FROM ${issues}
+              WHERE ${and(eq(issues.companyId, input.companyId), inArray(issues.id, lockedIssueIds))}
+              ORDER BY ${issues.id}
+              FOR UPDATE`,
+        );
+
+        const issueRows = await tx
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            status: issues.status,
+          })
+          .from(issues)
+          .where(and(eq(issues.companyId, input.companyId), inArray(issues.id, lockedIssueIds)));
+        const duplicateIssue = issueRows.find((row: typeof issueRows[number]) => row.id === input.duplicateIssueId);
+        const canonicalIssue = issueRows.find((row: typeof issueRows[number]) => row.id === input.canonicalIssueId);
+        if (!duplicateIssue || !canonicalIssue) {
+          throw unprocessable("Duplicate and canonical issues must belong to the same company");
+        }
+
+        const existingDuplicateRelations = await tx
+          .select({
+            id: issueRelations.id,
+            relatedIssueId: issueRelations.relatedIssueId,
+          })
+          .from(issueRelations)
+          .where(
+            and(
+              eq(issueRelations.companyId, input.companyId),
+              eq(issueRelations.issueId, input.duplicateIssueId),
+              eq(issueRelations.type, "duplicate_of"),
+            ),
+          );
+
+        const matchingRelation = existingDuplicateRelations.find(
+          (row: typeof existingDuplicateRelations[number]) => row.relatedIssueId === input.canonicalIssueId,
+        );
+        if (matchingRelation) {
+          return {
+            status: "already_applied",
+            duplicateIssueId: input.duplicateIssueId,
+            canonicalIssueId: input.canonicalIssueId,
+            relationId: matchingRelation.id,
+            auditEventId: null,
+            previousDuplicateStatus: duplicateIssue.status,
+            newDuplicateStatus: duplicateIssue.status,
+            changedFields: ["issue_relations"],
+          };
+        }
+        if (existingDuplicateRelations.length > 0) {
+          throw conflict("Issue is already marked as a duplicate of a different canonical issue");
+        }
+
+        await assertNoDuplicateRelationCycle(input.companyId, input.duplicateIssueId, input.canonicalIssueId, tx);
+
+        const canonicalDuplicateRelation = await tx
+          .select({ id: issueRelations.id })
+          .from(issueRelations)
+          .where(
+            and(
+              eq(issueRelations.companyId, input.companyId),
+              eq(issueRelations.issueId, input.canonicalIssueId),
+              eq(issueRelations.type, "duplicate_of"),
+            ),
+          )
+          .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+        if (canonicalDuplicateRelation) {
+          throw conflict("Canonical issue is already marked as a duplicate");
+        }
+
+        if (input.dryRun) {
+          return {
+            status: "dry_run",
+            duplicateIssueId: input.duplicateIssueId,
+            canonicalIssueId: input.canonicalIssueId,
+            relationId: null,
+            auditEventId: null,
+            previousDuplicateStatus: duplicateIssue.status,
+            newDuplicateStatus: duplicateIssue.status,
+            changedFields: ["issue_relations"],
+          };
+        }
+
+        const [relation] = await tx
+          .insert(issueRelations)
+          .values({
+            companyId: input.companyId,
+            issueId: input.duplicateIssueId,
+            relatedIssueId: input.canonicalIssueId,
+            type: "duplicate_of",
+            createdByAgentId: input.actor?.agentId ?? null,
+            createdByUserId: input.actor?.userId ?? null,
+          })
+          .returning({ id: issueRelations.id });
+
+        const actor = duplicateActivityActor(input.actor);
+        const [auditEvent] = await tx
+          .insert(activityLog)
+          .values({
+            companyId: input.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.duplicate_resolved",
+            entityType: "issue",
+            entityId: input.duplicateIssueId,
+            details: {
+              duplicateIssueId: input.duplicateIssueId,
+              canonicalIssueId: input.canonicalIssueId,
+              relationId: relation.id,
+              reasonCode: input.reasonCode,
+              source: input.source,
+              sourceBatch: input.sourceBatch ?? null,
+              idempotencyKey: input.idempotencyKey,
+              previousDuplicateStatus: duplicateIssue.status,
+              newDuplicateStatus: duplicateIssue.status,
+              changedFields: ["issue_relations"],
+              canonicalMutated: false,
+            },
+          })
+          .returning({ id: activityLog.id });
+
+        return {
+          status: "applied",
+          duplicateIssueId: input.duplicateIssueId,
+          canonicalIssueId: input.canonicalIssueId,
+          relationId: relation.id,
+          auditEventId: auditEvent.id,
+          previousDuplicateStatus: duplicateIssue.status,
+          newDuplicateStatus: duplicateIssue.status,
+          changedFields: ["issue_relations"],
+        };
+      };
+
+      return dbOrTx === db ? db.transaction(runResolve) : runResolve(dbOrTx);
+    },
+
+    rollbackDuplicateResolution: async (
+      input: RollbackDuplicateIssueInput,
+      dbOrTx: any = db,
+    ): Promise<DuplicateRollbackResult> => {
+      validateDuplicateRollbackInput(input);
+
+      const runRollback = async (tx: any): Promise<DuplicateRollbackResult> => {
+        const lockedIssueIds = [input.duplicateIssueId, input.canonicalIssueId].sort();
+        await tx.execute(
+          sql`SELECT ${issues.id} FROM ${issues}
+              WHERE ${and(eq(issues.companyId, input.companyId), inArray(issues.id, lockedIssueIds))}
+              ORDER BY ${issues.id}
+              FOR UPDATE`,
+        );
+        const issueRows = await tx
+          .select({ id: issues.id, companyId: issues.companyId, status: issues.status })
+          .from(issues)
+          .where(and(eq(issues.companyId, input.companyId), inArray(issues.id, lockedIssueIds)));
+        const duplicateIssue = issueRows.find((row: typeof issueRows[number]) => row.id === input.duplicateIssueId);
+        const canonicalIssue = issueRows.find((row: typeof issueRows[number]) => row.id === input.canonicalIssueId);
+        if (!duplicateIssue || !canonicalIssue) {
+          throw unprocessable("Duplicate and canonical issues must belong to the same company");
+        }
+        if (duplicateIssue.status !== input.expectedPreviousStatus) {
+          throw conflict("Duplicate issue status does not match rollback manifest");
+        }
+
+        const relation = await tx
+          .select({
+            id: issueRelations.id,
+            companyId: issueRelations.companyId,
+            issueId: issueRelations.issueId,
+            relatedIssueId: issueRelations.relatedIssueId,
+            type: issueRelations.type,
+          })
+          .from(issueRelations)
+          .where(eq(issueRelations.id, input.relationId))
+          .then((rows: Array<typeof issueRelations.$inferSelect>) => rows[0] ?? null);
+
+        if (!relation) {
+          const rollbackEvent = await tx
+            .select({ id: activityLog.id })
+            .from(activityLog)
+            .where(
+              and(
+                eq(activityLog.companyId, input.companyId),
+                eq(activityLog.action, "issue.duplicate_resolution_rolled_back"),
+                eq(activityLog.entityType, "issue"),
+                eq(activityLog.entityId, input.duplicateIssueId),
+                sql`${activityLog.details}->>'relationId' = ${input.relationId}`,
+                sql`${activityLog.details}->>'rollbackCorrelationId' = ${input.rollbackCorrelationId}`,
+              ),
+            )
+            .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+          if (!rollbackEvent) {
+            throw conflict("Duplicate relation is missing without matching rollback audit");
+          }
+          return {
+            status: "already_rolled_back",
+            duplicateIssueId: input.duplicateIssueId,
+            canonicalIssueId: input.canonicalIssueId,
+            relationId: input.relationId,
+            auditEventId: rollbackEvent.id,
+            restoredFields: ["issue_relations"],
+          };
+        }
+
+        if (
+          relation.companyId !== input.companyId ||
+          relation.issueId !== input.duplicateIssueId ||
+          relation.relatedIssueId !== input.canonicalIssueId ||
+          relation.type !== "duplicate_of"
+        ) {
+          throw conflict("Duplicate relation does not match rollback manifest");
+        }
+
+        if (input.dryRun) {
+          return {
+            status: "dry_run",
+            duplicateIssueId: input.duplicateIssueId,
+            canonicalIssueId: input.canonicalIssueId,
+            relationId: input.relationId,
+            auditEventId: null,
+            restoredFields: ["issue_relations"],
+          };
+        }
+
+        await tx.delete(issueRelations).where(eq(issueRelations.id, input.relationId));
+
+        const actor = duplicateActivityActor(input.actor);
+        const [auditEvent] = await tx
+          .insert(activityLog)
+          .values({
+            companyId: input.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.duplicate_resolution_rolled_back",
+            entityType: "issue",
+            entityId: input.duplicateIssueId,
+            details: {
+              duplicateIssueId: input.duplicateIssueId,
+              canonicalIssueId: input.canonicalIssueId,
+              relationId: input.relationId,
+              rollbackCorrelationId: input.rollbackCorrelationId,
+              reasonCode: input.reasonCode,
+              source: input.source,
+              sourceBatch: input.sourceBatch ?? null,
+              idempotencyKey: input.idempotencyKey,
+              restoredFields: ["issue_relations"],
+              canonicalMutated: false,
+            },
+          })
+          .returning({ id: activityLog.id });
+
+        return {
+          status: "rolled_back",
+          duplicateIssueId: input.duplicateIssueId,
+          canonicalIssueId: input.canonicalIssueId,
+          relationId: input.relationId,
+          auditEventId: auditEvent.id,
+          restoredFields: ["issue_relations"],
+        };
+      };
+
+      return dbOrTx === db ? db.transaction(runRollback) : runRollback(dbOrTx);
+    },
 
     list: async (companyId: string, filters?: IssueFilters) => {
       if (filters?.attention === "blocked") {
