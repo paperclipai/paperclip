@@ -28,7 +28,7 @@ import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
 import { forbidden, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
-import { isPidAlive, isProcessGroupAlive, terminateLocalService } from "../local-service-supervisor.js";
+import { hasActiveChildProcesses, isPidAlive, isProcessGroupAlive, terminateLocalService } from "../local-service-supervisor.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { logActivity } from "../activity-log.js";
@@ -1833,11 +1833,77 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       evaluationIssueIds: [] as string[],
     };
 
+    // Pre-fetch agent adapter types for local-adapter child-CPU checks.
+    const localRunAgentIds = [
+      ...new Set(
+        candidates
+          .filter(
+            (r) => typeof r.processPid === "number" && r.processPid > 0,
+          )
+          .map((r) => r.agentId),
+      ),
+    ];
+    const agentAdapterMap = new Map<string, string>();
+    if (localRunAgentIds.length > 0) {
+      const agentRows = await db
+        .select({ id: agents.id, adapterType: agents.adapterType })
+        .from(agents)
+        .where(inArray(agents.id, localRunAgentIds));
+      for (const row of agentRows) {
+        agentAdapterMap.set(row.id, row.adapterType);
+      }
+    }
+
     for (const run of candidates) {
       if (await latestActiveOutputQuietUntilDecision(run.companyId, run.id, now)) {
         result.snoozed += 1;
         continue;
       }
+
+      // For local adapters with known process PIDs, check if child
+      // processes are doing CPU work (e.g., MCP servers performing
+      // long-running PDF extraction).  When they are, bump lastOutputAt
+      // so the run does not look silent, and skip evaluation.
+      //
+      // Suppression is capped at 2× the suspicion threshold: if the run
+      // started more than 2× SUSPICION_THRESHOLD ago and we're still
+      // suppressing, fall through to normal evaluation so a permanently
+      // CPU-looping child cannot hide the parent forever.
+      const longestSuppressionAgeMs =
+        2 * ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS;
+      const silenceStartedAt =
+        run.lastOutputAt ??
+        run.processStartedAt ??
+        run.startedAt ??
+        run.createdAt;
+      const silenceAgeMs = silenceStartedAt
+        ? Math.max(0, now.getTime() - silenceStartedAt.getTime())
+        : 0;
+      if (
+        typeof run.processPid === "number" &&
+        run.processPid > 0 &&
+        SESSIONED_LOCAL_ADAPTERS.has(
+          agentAdapterMap.get(run.agentId) ?? "",
+        ) &&
+        silenceAgeMs < longestSuppressionAgeMs
+      ) {
+        try {
+          if (await hasActiveChildProcesses(run.processPid, { minCpuPercent: 0 })) {
+            await db
+              .update(heartbeatRuns)
+              .set({
+                lastOutputAt: now,
+                updatedAt: now,
+              })
+              .where(eq(heartbeatRuns.id, run.id));
+            result.skipped += 1;
+            continue;
+          }
+        } catch {
+          // Non-critical path — fall through on any error.
+        }
+      }
+
       const outcome = await createOrUpdateStaleRunEvaluation({ run, now });
       if (outcome.kind === "created") result.created += 1;
       else if (outcome.kind === "existing") result.existing += 1;
