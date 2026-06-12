@@ -135,7 +135,10 @@ export function detectClaudeLoginRequired(input: {
   stderr: string;
 }): { requiresLogin: boolean; loginUrl: string | null } {
   const resultText = asString(input.parsed?.result, "").trim();
-  const messages = [resultText, ...extractClaudeErrorMessages(input.parsed ?? {}), input.stdout, input.stderr]
+  const errorMessages = extractClaudeErrorMessages(input.parsed ?? {});
+  // Only scan stderr + parsed error messages for login detection.
+  // Never scan full stdout as it contains the entire transcript including assistant responses.
+  const messages = [resultText, ...errorMessages, input.stderr]
     .join("\n")
     .split(/\r?\n/)
     .map((line) => line.trim())

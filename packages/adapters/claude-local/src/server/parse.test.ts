@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
   isClaudePoisonedPreviousMessageIdError,
@@ -253,5 +254,60 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+});
+
+describe("detectClaudeLoginRequired", () => {
+  it("does not detect login required when 'unauthorized' appears in successful stdout content", () => {
+    // Regression test for AEO-199: paper abstracts and other content in stdout
+    // should never trigger false-positive auth failures on successful runs.
+    const result = detectClaudeLoginRequired({
+      parsed: {
+        subtype: "success",
+        is_error: false,
+        result: "Here is the analysis...",
+      },
+      stdout: 'type: "assistant"\nmessage: "canary tokens to detect unauthorized use..."',
+      stderr: "",
+    });
+    expect(result.requiresLogin).toBe(false);
+  });
+
+  it("detects login required when 'unauthorized' appears in stderr", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: null,
+      stdout: "",
+      stderr: "Error: unauthorized",
+    });
+    expect(result.requiresLogin).toBe(true);
+  });
+
+  it("detects login required when error messages contain login-related text", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: {
+        subtype: "error",
+        is_error: true,
+        result: "Please log in with `claude login` first.",
+        errors: [],
+      },
+      stdout: "",
+      stderr: "",
+    });
+    expect(result.requiresLogin).toBe(true);
+  });
+
+  it("does not detect login required when 'login' is just part of normal content", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: {
+        subtype: "success",
+        is_error: false,
+        result: "The user needs to login to the website.",
+        errors: [],
+      },
+      stdout: "",
+      stderr: "",
+    });
+    // "login" appears in result but with no regex match (needs "required" or similar phrase)
+    expect(result.requiresLogin).toBe(false);
   });
 });
