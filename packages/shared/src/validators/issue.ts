@@ -393,6 +393,7 @@ const createIssueBaseSchema = z.object({
   executionWorkspaceId: z.string().uuid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+  prUrl: z.string().url().max(2048).optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
 });
 
