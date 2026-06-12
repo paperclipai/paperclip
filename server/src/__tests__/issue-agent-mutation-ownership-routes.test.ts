@@ -313,28 +313,27 @@ describe("agent issue mutation checkout ownership", () => {
     vi.clearAllMocks();
     mockAccessService.canUser.mockReset();
     mockAccessService.decide.mockReset();
-    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
-      allowed:
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => {
+      const allowed =
         input.action === "tasks:assign" ||
         input.action === "issue:read" ||
         input.action === "issue:mutate" ||
-        input.action === "company_scope:read",
-      action: input.action,
-      reason:
-        input.action === "tasks:assign" ||
-          input.action === "issue:read" ||
-          input.action === "issue:mutate" ||
-          input.action === "company_scope:read"
-          ? "allow_explicit_grant"
-          : "deny_missing_grant",
-      explanation:
-        input.action === "tasks:assign" ||
-          input.action === "issue:read" ||
-          input.action === "issue:mutate" ||
-          input.action === "company_scope:read"
-          ? "Allowed by test default."
-          : "Missing permission.",
-    }));
+        input.action === "company_scope:read";
+      if (input.action === "issue:mutate") {
+        return {
+          allowed: true,
+          action: input.action,
+          reason: "allow_company_agent",
+          explanation: "Allowed by test default company-agent visibility.",
+        };
+      }
+      return {
+        allowed,
+        action: input.action,
+        reason: allowed ? "allow_explicit_grant" : "deny_missing_grant",
+        explanation: allowed ? "Allowed by test default." : "Missing permission.",
+      };
+    });
     mockAccessService.hasPermission.mockReset();
     mockAgentService.getById.mockReset();
     mockAgentService.list.mockReset();
@@ -971,6 +970,66 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status).toBe(200);
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("allows an agent with an issue:mutate explicit grant to mutate another agent's non-in-progress issue", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => {
+      if (input.action === "issue:mutate") {
+        return {
+          allowed: true,
+          action: input.action,
+          reason: "allow_explicit_grant",
+          explanation: "Allowed by issue:mutate grant.",
+        };
+      }
+      return {
+        allowed: true,
+        action: input.action,
+        reason: "allow_test_default",
+        explanation: "Allowed by test default.",
+      };
+    });
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+
+    const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ title: "Granted update" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("blocks an agent with only an issue:mutate explicit grant from mutating another agent's in-progress checkout", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => {
+      if (input.action === "issue:mutate") {
+        return {
+          allowed: true,
+          action: input.action,
+          reason: "allow_explicit_grant",
+          explanation: "Allowed by issue:mutate grant.",
+        };
+      }
+      if (input.action === "tasks:manage_active_checkouts") {
+        return {
+          allowed: false,
+          action: input.action,
+          reason: "deny_missing_grant",
+          explanation: "Missing permission.",
+        };
+      }
+      return {
+        allowed: true,
+        action: input.action,
+        reason: "allow_test_default",
+        explanation: "Allowed by test default.",
+      };
+    });
+
+    const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ title: "Blocked grant update" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue is checked out by another agent");
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it.each([
