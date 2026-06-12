@@ -323,7 +323,15 @@ export function createPluginArtifactReplication(opts: {
     if (!provider) return { applied: false, generation: null };
 
     const maxRow = await readMaxRow();
-    if (!maxRow) return { applied: false, generation: null };
+    if (!maxRow) {
+      // No snapshots published yet — there is nothing to sync to, so this
+      // replica is already current. Without marking synced here, a fresh
+      // cluster with PAPERCLIP_PLUGINS_MUST_SYNC=true would serve 503 from
+      // /api/health/ready indefinitely (no traffic → no install → no
+      // snapshot → no synced → no traffic).
+      synced = true;
+      return { applied: false, generation: null };
+    }
 
     const localGeneration = await readLocalGeneration();
     if (localGeneration >= maxRow.generation) {

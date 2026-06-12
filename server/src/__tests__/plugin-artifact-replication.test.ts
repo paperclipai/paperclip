@@ -308,6 +308,13 @@ describeEmbedded("plugin artifact replication", () => {
     expect(service.isSynced()).toBe(false);
   });
 
+  it("reports synced on an empty ledger (fresh cluster; MUST_SYNC must not deadlock)", async () => {
+    const svc = makeService(dbA, dirA, "replica-fresh");
+    const result = await svc.reconcile();
+    expect(result).toEqual({ applied: false, generation: null });
+    expect(svc.isSynced()).toBe(true);
+  });
+
   it("disabled (provider null): every method no-ops", async () => {
     const service = createPluginArtifactReplication({
       db: dbA,
