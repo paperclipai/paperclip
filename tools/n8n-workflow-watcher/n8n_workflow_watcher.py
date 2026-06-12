@@ -166,3 +166,41 @@ def count_active(conn):
     return conn.execute(
         "SELECT COUNT(*) FROM workflow_entity WHERE active = 1"
     ).fetchone()[0]
+
+
+def log(level, msg):
+    line = f"{datetime.now().isoformat(timespec='seconds')} [{level}] {msg}"
+    print(line, file=sys.stderr if level == "ERROR" else sys.stdout)
+    try:
+        os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+        with open(LOG_PATH, "a") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        pass
+
+
+def send_mail(subject, text_body, html_body, attachments):
+    payload = {
+        "from": FROM_ADDR,
+        "to": TO_ADDR,
+        "subject": subject,
+        "text": text_body,
+        "attachments": attachments or [],
+    }
+    if html_body:
+        payload["html"] = html_body
+    req = urllib.request.Request(
+        WEBHOOK_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "X-Mailhub-Secret": MAILHUB_SECRET},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        log("ERROR", f"mailhub HTTP {e.code}")
+        return e.code
+    except Exception as e:  # noqa: BLE001
+        log("ERROR", f"mailhub send failed: {e}")
+        return 0

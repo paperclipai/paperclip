@@ -1,6 +1,8 @@
+import json
 import os
 import sqlite3
 import unittest
+from unittest import mock
 import n8n_workflow_watcher as w
 
 
@@ -173,6 +175,29 @@ class DbQuery(unittest.TestCase):
         rows = w._dedup_latest(w.fetch_active_workflow_latest(conn))
         findings = w.find_failed_workflows(rows)
         self.assertEqual([f["id"] for f in findings], ["wf1"])
+
+
+class SendMail(unittest.TestCase):
+    def test_posts_payload_and_returns_status(self):
+        fake_resp = mock.MagicMock()
+        fake_resp.status = 200
+        fake_resp.__enter__.return_value = fake_resp
+        with mock.patch.object(w.urllib.request, "urlopen", return_value=fake_resp) as uo:
+            status = w.send_mail("Subj", "text body", "<p>html</p>", [])
+        self.assertEqual(status, 200)
+        req = uo.call_args.args[0]
+        self.assertEqual(req.full_url, w.WEBHOOK_URL)
+        self.assertEqual(req.get_header("X-mailhub-secret"), w.MAILHUB_SECRET)
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(payload["to"], w.TO_ADDR)
+        self.assertEqual(payload["from"], w.FROM_ADDR)
+        self.assertEqual(payload["subject"], "Subj")
+        self.assertEqual(payload["html"], "<p>html</p>")
+
+    def test_http_error_returns_code(self):
+        err = w.urllib.error.HTTPError(w.WEBHOOK_URL, 500, "boom", {}, None)
+        with mock.patch.object(w.urllib.request, "urlopen", side_effect=err):
+            self.assertEqual(w.send_mail("s", "t", "", []), 500)
 
 
 if __name__ == "__main__":
