@@ -563,6 +563,10 @@ function actorMatchesExecutionParticipant(
   participant: ParsedExecutionState["currentParticipant"] | null,
 ) {
   if (!participant) return false;
+  // Require the actor kind to match the participant kind before comparing ids. Without this
+  // an agent and a user that happen to share an id value would falsely satisfy participant
+  // gating on the auto-approval path.
+  if (participant.type !== actor.actorType) return false;
   return participant.type === "agent" ? participant.agentId === actor.actorId : participant.userId === actor.actorId;
 }
 
@@ -582,12 +586,13 @@ function isApprovalReviewComment(body: string) {
       return true;
     }
   }
-  // Require the `kind: review` and `decision: approved` lines to appear on consecutive
-  // lines so prose like "the previous sprint decision: approved" can't combine with an
-  // unrelated `kind: review` line elsewhere in the body to trigger auto-approval.
+  // Require the `kind: review` and `decision: approved` lines to appear on truly consecutive
+  // lines (no blank-line separation) so prose like "the previous sprint decision: approved"
+  // can't combine with an unrelated `kind: review` line elsewhere in the body to trigger
+  // auto-approval. Use `[ \t]*` between the lines so `\s*` does not silently swallow a newline.
   return (
-    /^\s*kind\s*:\s*review\s*\n\s*decision\s*:\s*approved\s*$/im.test(normalized)
-    || /^\s*decision\s*:\s*approved\s*\n\s*kind\s*:\s*review\s*$/im.test(normalized)
+    /^[ \t]*kind[ \t]*:[ \t]*review[ \t]*\n[ \t]*decision[ \t]*:[ \t]*approved[ \t]*$/im.test(normalized)
+    || /^[ \t]*decision[ \t]*:[ \t]*approved[ \t]*\n[ \t]*kind[ \t]*:[ \t]*review[ \t]*$/im.test(normalized)
   );
 }
 

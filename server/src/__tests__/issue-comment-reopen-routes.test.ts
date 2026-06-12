@@ -1834,6 +1834,127 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
+  it("does not auto-approve when actor kind disagrees with the participant kind", async () => {
+    // The reviewer participant is a USER, but the request actor is an AGENT whose id collides
+    // with that user's id. The auto-approval gate must dispatch on actor kind, not just id, so
+    // this comment must follow the normal non-approval insert path.
+    const sharedId = "33333333-3333-4333-8333-333333333333";
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [{ type: "user", userId: sharedId }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: null,
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "user", userId: sharedId },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    const reviewBody = "## Review: PAP-580 - APPROVED\n\nShipping.";
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-mismatched-kind",
+      issueId: issue.id,
+      companyId: issue.companyId,
+      body: reviewBody,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: sharedId,
+      authorUserId: null,
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: sharedId,
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "run-kind-mismatch",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: reviewBody });
+
+    expect(res.status).toBe(201);
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("does not auto-approve structured metadata separated by a blank line", async () => {
+    // Even though both `kind: review` and `decision: approved` appear, a blank line between
+    // them means they are not on truly consecutive lines, so the strict regex must reject it.
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [{ type: "agent", agentId: reviewerAgentId }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: reviewerAgentId,
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    const reviewBody = "kind: review\n\ndecision: approved";
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-blank-line-metadata",
+      issueId: issue.id,
+      companyId: issue.companyId,
+      body: reviewBody,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: reviewerAgentId,
+      authorUserId: null,
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: reviewerAgentId,
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "run-blank-line-metadata",
+      }),
+    )
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: reviewBody });
+
+    expect(res.status).toBe(201);
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("does not auto-approve reviewer comments without an approval marker", async () => {
     const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
     const policy = await normalizePolicy({
