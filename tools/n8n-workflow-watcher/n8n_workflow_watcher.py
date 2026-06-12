@@ -108,3 +108,19 @@ def render_heartbeat(active_count):
     html_body = (f"<h2>✅ n8n-Wächter</h2><p>Alle {active_count} aktiven "
                  "Workflows grün (jüngster Lauf erfolgreich). Wächter läuft.</p>")
     return subject, text, html_body
+
+
+def load_state(path=STATE_PATH):
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_state(state, path=STATE_PATH):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(state, fh, indent=2)
+    os.replace(tmp, path)

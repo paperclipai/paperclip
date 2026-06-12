@@ -1,3 +1,4 @@
+import os
 import unittest
 import n8n_workflow_watcher as w
 
@@ -89,6 +90,28 @@ class Rendering(unittest.TestCase):
         self.assertIn("23", subject)
         self.assertIn("23", text)
         self.assertIn("23", html_body)
+
+
+import tempfile
+
+
+class StateRoundTrip(unittest.TestCase):
+    def test_missing_file_returns_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(w.load_state(os.path.join(d, "nope.json")), {})
+
+    def test_save_then_load(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "sub", "state.json")
+            w.save_state({"last_heartbeat_date": "2026-06-15"}, path)
+            self.assertEqual(w.load_state(path), {"last_heartbeat_date": "2026-06-15"})
+
+    def test_corrupt_file_returns_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "broken.json")
+            with open(path, "w") as fh:
+                fh.write("{not json")
+            self.assertEqual(w.load_state(path), {})
 
 
 if __name__ == "__main__":
