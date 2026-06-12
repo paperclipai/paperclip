@@ -1898,16 +1898,14 @@ export function pluginLoader(
       // 6. Sync job declarations and register with scheduler
       // ------------------------------------------------------------------
       const jobDeclarations = manifest.jobs ?? [];
-      if (jobDeclarations.length > 0) {
-        await jobStore.syncJobDeclarations(pluginId, jobDeclarations);
-        await jobScheduler.registerPlugin(pluginId);
-        registered.jobs = jobDeclarations.length;
+      await jobStore.syncJobDeclarations(pluginId, jobDeclarations);
+      await jobScheduler.registerPlugin(pluginId);
+      registered.jobs = jobDeclarations.length;
 
-        log.info(
-          { pluginId, pluginKey, jobs: jobDeclarations.length },
-          "plugin-loader: job declarations synced and plugin registered with scheduler",
-        );
-      }
+      log.info(
+        { pluginId, pluginKey, jobs: jobDeclarations.length },
+        "plugin-loader: job declarations synced and plugin registered with scheduler",
+      );
 
       // ------------------------------------------------------------------
       // 6. Register event subscriptions
