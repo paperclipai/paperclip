@@ -4198,10 +4198,36 @@ async function runLinearMirrorReconcile(
   let missingPaperclip = 0;
   let missingLinear = 0;
   let rateLimited = false;
+  let workflowStates: Array<{ id: string; name: string; type: string }> | undefined;
+
+  if (syncStatuses) {
+    try {
+      workflowStates = await linear.getWorkflowStates(ctx.http.fetch.bind(ctx.http), token, teamId);
+    } catch (err) {
+      ctx.logger.warn(`Linear mirror reconcile workflow state fetch failed: ${err}`);
+      if (linear.isRateLimitError(err)) {
+        await ctx.state.set(cursorKey, offset);
+        return {
+          reconciled: 0,
+          errors: 1,
+          scanned: 0,
+          skippedOtherCompany: 0,
+          skippedOtherTeam: 0,
+          missingPaperclip: 0,
+          missingLinear: 0,
+          rateLimited: true,
+          complete: false,
+          nextOffset: offset,
+        };
+      }
+      throw err;
+    }
+  }
 
   while (entriesScanned < maxPerRun && !rateLimited) {
     const remaining = maxPerRun - entriesScanned;
     const pageOffset = offset;
+    let lastProcessedPageIndex = -1;
     const page = await ctx.state.list({
       scopeKind: "instance",
       namespace: "default",
@@ -4220,17 +4246,24 @@ async function runLinearMirrorReconcile(
       .map((entry) => entry.value)
       .filter(isIssueLink);
     scanned += links.length;
-    const currentCompanyLinks = targetCompanyId
-      ? links.filter((link) => {
-          if (link.paperclipCompanyId === targetCompanyId) return true;
-          skippedOtherCompany++;
-          return false;
-        })
-      : links;
+    const currentCompanyLinks: Array<{ link: sync.IssueLink; pageIndex: number }> = [];
+    for (let pageIndex = 0; pageIndex < page.entries.length; pageIndex++) {
+      const link = page.entries[pageIndex]?.value;
+      if (!isIssueLink(link)) {
+        lastProcessedPageIndex = pageIndex;
+        continue;
+      }
+      if (targetCompanyId && link.paperclipCompanyId !== targetCompanyId) {
+        skippedOtherCompany++;
+        lastProcessedPageIndex = pageIndex;
+        continue;
+      }
+      currentCompanyLinks.push({ link, pageIndex });
+    }
 
     for (let index = 0; index < currentCompanyLinks.length; index += LINEAR_ISSUE_SYNC_BATCH_SIZE) {
       const batch = currentCompanyLinks.slice(index, index + LINEAR_ISSUE_SYNC_BATCH_SIZE);
-      const linearIds = batch.map((link) => link.linearIssueId);
+      const linearIds = batch.map(({ link }) => link.linearIssueId);
       let linearIssues: linear.LinearIssue[];
       try {
         linearIssues = await linear.listIssuesByIds(ctx.http.fetch.bind(ctx.http), token, linearIds);
@@ -4239,17 +4272,19 @@ async function runLinearMirrorReconcile(
         errors += batch.length;
         if (linear.isRateLimitError(err)) {
           rateLimited = true;
-          offset = pageOffset;
+          offset = pageOffset + lastProcessedPageIndex + 1;
           break;
         }
+        lastProcessedPageIndex = Math.max(lastProcessedPageIndex, ...batch.map(({ pageIndex }) => pageIndex));
         continue;
       }
 
       const linearById = new Map(linearIssues.map((issue) => [issue.id, issue]));
-      for (const link of batch) {
+      for (const { link, pageIndex } of batch) {
         const linearIssue = linearById.get(link.linearIssueId);
         if (!linearIssue) {
           missingLinear++;
+          lastProcessedPageIndex = pageIndex;
           continue;
         }
         if (linearIssue.team?.id && linearIssue.team.id !== teamId) {
@@ -4257,12 +4292,14 @@ async function runLinearMirrorReconcile(
           ctx.logger.info(
             `Linear mirror reconcile skipped ${link.linearIdentifier}: Linear issue belongs to team ${linearIssue.team.key ?? linearIssue.team.id}, not configured team ${teamId}`,
           );
+          lastProcessedPageIndex = pageIndex;
           continue;
         }
 
         const paperclipIssue = await ctx.issues.get(link.paperclipIssueId, link.paperclipCompanyId);
         if (!paperclipIssue) {
           missingPaperclip++;
+          lastProcessedPageIndex = pageIndex;
           continue;
         }
 
@@ -4291,17 +4328,21 @@ async function runLinearMirrorReconcile(
             {
               ...(await paperclipLinkOptionsForCompany(ctx, link.paperclipCompanyId)),
               force: true,
+              currentLinearIssue: linearIssue,
+              workflowStates,
             },
           );
           reconciled++;
+          lastProcessedPageIndex = pageIndex;
         } catch (err) {
           ctx.logger.warn(`Linear mirror reconcile failed for ${link.linearIdentifier}: ${err}`);
           errors++;
           if (linear.isRateLimitError(err)) {
             rateLimited = true;
-            offset = pageOffset;
+            offset = pageOffset + lastProcessedPageIndex + 1;
             break;
           }
+          lastProcessedPageIndex = pageIndex;
         }
       }
       if (rateLimited) break;

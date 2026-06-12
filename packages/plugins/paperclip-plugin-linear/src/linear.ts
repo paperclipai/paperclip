@@ -212,7 +212,7 @@ export interface LinearIssue {
   priority: number;
   url: string;
   assignee: { name: string; email: string } | null;
-  labels: { nodes: Array<{ name: string; color: string }> };
+  labels: { nodes: Array<{ id?: string; name: string; color: string }> };
   project: { id: string; name: string; description: string | null; state: string } | null;
   createdAt: string;
   updatedAt: string;
@@ -329,7 +329,7 @@ export async function searchIssues(
           createdAt updatedAt
           state { name type }
           assignee { name email }
-          labels { nodes { name color } }
+          labels { nodes { id name color } }
           project { id name description state }
         }
       }
@@ -449,7 +449,7 @@ export async function getIssue(
         createdAt updatedAt
         state { name type }
         assignee { name email }
-        labels { nodes { name color } }
+        labels { nodes { id name color } }
           project { id name description state }
       }
     }
@@ -478,7 +478,7 @@ export async function getIssueByIdentifier(
             createdAt updatedAt
             state { name type }
             assignee { name email }
-            labels { nodes { name color } }
+            labels { nodes { id name color } }
           project { id name description state }
           }
         }
@@ -510,7 +510,7 @@ export async function listIssuesByIds(
           state { name type }
           team { id name key }
           assignee { name email }
-          labels { nodes { name color } }
+          labels { nodes { id name color } }
           project { id name description state }
         }
       }
@@ -548,7 +548,7 @@ export async function createIssue(
           createdAt updatedAt
           state { name type }
           assignee { name email }
-          labels { nodes { name color } }
+          labels { nodes { id name color } }
           project { id name description state }
         }
       }
@@ -775,7 +775,7 @@ export async function updateIssue(
           createdAt updatedAt
           state { name type }
           assignee { name email }
-          labels { nodes { name color } }
+          labels { nodes { id name color } }
           project { id name description state }
         }
       }
@@ -888,7 +888,7 @@ export async function listOpenIssues(
           createdAt updatedAt
           state { name type }
           assignee { name email }
-          labels { nodes { name color } }
+          labels { nodes { id name color } }
           project { id name description state }
         }
       }

@@ -418,6 +418,13 @@ function normalizeLinearLabelColor(value: string | null | undefined): string {
     : FALLBACK_LINEAR_LABEL_COLOR;
 }
 
+function stringSetsEqual(left: string[], right: string[]): boolean {
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  if (leftSet.size !== rightSet.size) return false;
+  return [...leftSet].every((value) => rightSet.has(value));
+}
+
 async function resolveLinearIssueLabelIdsForPaperclipLabels(
   ctx: PluginContext,
   companyId: string,
@@ -500,6 +507,8 @@ export interface SyncToLinearOptions {
   baseUrl: string | null;
   companyPrefix?: string | null;
   force?: boolean;
+  currentLinearIssue?: linear.LinearIssue | null;
+  workflowStates?: Array<{ id: string; name: string; type: string }>;
 }
 
 export async function syncToLinear(
@@ -525,7 +534,8 @@ export async function syncToLinear(
 
   // Status → Linear state
   if (changes.status) {
-    const states = await linear.getWorkflowStates(ctx.http.fetch.bind(ctx.http), token, teamId);
+    const states = paperclipLinkOptions?.workflowStates
+      ?? await linear.getWorkflowStates(ctx.http.fetch.bind(ctx.http), token, teamId);
     const targetState = linearStateForPaperclipStatus(changes.status, states);
     if (
       targetState
@@ -580,10 +590,13 @@ export async function syncToLinear(
     const targetPaperclipProjectId = typeof changes.projectId === "string"
       ? changes.projectId.trim()
       : "";
+    const currentLinearIssue = paperclipLinkOptions?.currentLinearIssue ?? null;
 
     if (!targetPaperclipProjectId) {
-      linearUpdate.projectId = null;
-      synced.push("project:none");
+      if (!currentLinearIssue || currentLinearIssue.project) {
+        linearUpdate.projectId = null;
+        synced.push("project:none");
+      }
     } else {
       const projectLink = await getProjectLink(ctx, targetPaperclipProjectId);
       if (!projectLink) {
@@ -594,6 +607,8 @@ export async function syncToLinear(
         ctx.logger.warn(
           `Skipping Linear project move for ${link.linearIdentifier}: target project belongs to another company`,
         );
+      } else if (currentLinearIssue?.project?.id === projectLink.linearProjectId) {
+        // Already in the right Linear project; avoid a no-op issueUpdate.
       } else {
         linearUpdate.projectId = projectLink.linearProjectId;
         synced.push(`project:${projectLink.linearProjectName ?? projectLink.linearProjectId}`);
@@ -610,8 +625,18 @@ export async function syncToLinear(
       token,
       teamId,
     );
-    linearUpdate.labelIds = linearLabelIds;
-    synced.push(`labels:${linearLabelIds.length}`);
+    const currentLinearIssue = paperclipLinkOptions?.currentLinearIssue;
+    const currentLabelIds = (currentLinearIssue?.labels?.nodes ?? [])
+      .map((label) => label.id)
+      .filter((labelId): labelId is string => typeof labelId === "string" && labelId.length > 0);
+    if (currentLinearIssue && currentLabelIds.length === 0 && linearLabelIds.length === 0) {
+      // Already unlabeled; avoid a no-op issueUpdate.
+    } else if (currentLinearIssue && currentLabelIds.length > 0 && stringSetsEqual(currentLabelIds, linearLabelIds)) {
+      // Already has exactly the desired Linear labels.
+    } else {
+      linearUpdate.labelIds = linearLabelIds;
+      synced.push(`labels:${linearLabelIds.length}`);
+    }
   }
 
   if (Object.keys(linearUpdate).length === 0) return;
