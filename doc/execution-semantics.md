@@ -466,19 +466,43 @@ Cheap model profiles are only for status-only operational recovery overhead. Pap
 
 Automatic retries that can continue source work must use the original/normal model lane. This includes failed source-work retries, process-loss retries, transient/scheduled retries, max-turn continuations, source-assignee continuations, assigned-todo dispatch recovery, and any run that can update repo files, issue documents, plans, work products, or attachments. When a cheap status-only recovery determines that actual work remains, it must hand back to a normal-model worker run before source work or persistent deliverable updates resume. Cheap recovery hints must be scrubbed from copied retry, resume, child, and downstream source-work contexts.
 
+### 9.4 Empty-heartbeat detection
+
+Timer heartbeats exist for roles whose work is genuinely scheduled and independent of wake events. They are not the right delivery mechanism for roles whose responsibilities are entirely event-driven — mentions, routines firing, board comments, blocker-resolution wakes, assignment wakes, or external webhooks. An event-driven role with `runtimeConfig.heartbeat.enabled=true` will keep firing scheduled wakes whose inbox poll is the only observable effect, burning model spend and noise without producing work.
+
+Configuration rule:
+
+> An agent whose responsibilities are entirely event-driven MUST have `runtimeConfig.heartbeat.enabled=false`. Timer heartbeats are reserved for roles whose work is genuinely scheduled and independent of wake events.
+
+This is consistent with the hire-time default already documented in [`server/src/routes/llms.ts:49`](../server/src/routes/llms.ts) (`Timer heartbeats are opt-in for new hires. Leave runtimeConfig.heartbeat.enabled false unless the role truly needs scheduled work or the user explicitly asked for it.`) and the new-hire UI tooltip for `heartbeatInterval` ([`ui/src/components/agent-config-primitives.tsx`](../ui/src/components/agent-config-primitives.tsx) — "Run this agent automatically on a timer. Useful for periodic tasks like checking for new work."). Both surfaces frame timer heartbeats as opt-in. §9.4 codifies the runtime consequence when that default is set incorrectly.
+
+Detection rule:
+
+- Paperclip tracks, per agent with `heartbeat.enabled=true`, the productive output of each scheduled wake. A wake is "empty" when it produces no observable productive work: no comment, no issue status change, no issue created, no document or plan revision, no work product, no attachment, and no run output beyond the inbox poll itself. Assignment-wake runs, mention-wake runs, blocker-resolution-wake runs, and routine-firing runs are excluded from the streak — only the agent's own scheduled timer wakes count.
+- After `N` consecutive empty scheduled wakes (`N` configurable per company, default conservative), Paperclip takes one of two actions:
+  - **Auto-downgrade** the agent's `runtimeConfig.heartbeat.enabled` to `false` and post a notice comment on the agent surface explaining the downgrade, the streak length, and how to re-enable. The agent's event-driven wake paths (mentions, routines, assignments, blocker resolution) keep working unchanged.
+  - **Operator review** by opening or updating an explicit recovery action against the role, asking a permitted operator to confirm whether the role still warrants scheduled work. The visible comment is evidence, not the recovery path by itself.
+
+Which action Paperclip picks is a per-company policy choice. Auto-downgrade is the lower-friction default for self-managed companies; operator review is appropriate when the agent's heartbeat schedule reflects an explicit governance decision that a system should not silently revert.
+
+This is distinct from productivity review. Productivity review asks whether an *assigned source issue* shows unusual progression patterns — no-comment terminal-run streaks, long active duration, high churn — and acts on the issue. Empty-heartbeat detection asks whether the *agent's scheduled wake schedule itself* is producing any work at all, and acts on the agent's `runtimeConfig`. One does not substitute for the other: a productive agent can still have an oversized heartbeat budget, and a misconfigured event-driven agent can still be doing productive work on every assignment wake.
+
+Empty-heartbeat detection runs on the periodic reconciliation loop as a distinct pass after productivity review (§10, step 6).
+
 ## 10. Startup and Periodic Reconciliation
 
 Startup recovery and periodic recovery are different from normal wakeup delivery.
 
-On startup and on the periodic recovery loop, Paperclip now does five things in sequence:
+On startup and on the periodic recovery loop, Paperclip now does six things in sequence:
 
 1. reap orphaned `running` runs
 2. resume persisted `queued` runs
 3. reconcile stranded assigned work
 4. scan silent active runs, revalidate their source issues, and either fold source-resolved watchdogs or create/update explicit watchdog recovery actions
 5. reconcile productivity reviews
+6. scan empty-heartbeat streaks per §9.4 and either auto-downgrade `heartbeat.enabled` or open an operator review action
 
-The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output. The productivity-review pass is later and separate; it reviews unusual progression patterns on assigned source issues, not stale run handles after a source issue already has a valid disposition.
+The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output. The productivity-review pass is later and separate; it reviews unusual progression patterns on assigned source issues, not stale run handles after a source issue already has a valid disposition. The empty-heartbeat pass is separate again; it acts on the agent's wake configuration when a role's scheduled timer is producing no observable work at all.
 
 ## 11. Silent Active-Run Watchdog
 
