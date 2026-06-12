@@ -217,6 +217,10 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+// 전역(인스턴스 단위) 동시 실행 상한. 에이전트별 maxConcurrentRuns 위에 한 번 더 씌우는 글로벌 천장.
+const GLOBAL_HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 6;
+const GLOBAL_HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
+const GLOBAL_HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -1369,6 +1373,35 @@ function normalizeMaxConcurrentRuns(value: unknown) {
   const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT));
   if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
   return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_MIN, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
+}
+
+function readGlobalHeartbeatMaxConcurrentRuns() {
+  const configured =
+    process.env.PAPERCLIP_GLOBAL_MAX_CONCURRENT_RUNS ??
+    process.env.PAPERCLIP_HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS;
+  // 주의: env 값은 항상 문자열이다. asNumber 는 number 타입만 받으므로 여기서 직접 파싱해야 한다.
+  // (이 파싱을 빼면 PAPERCLIP_GLOBAL_MAX_CONCURRENT_RUNS 설정이 조용히 무시되고 기본값이 적용된다.)
+  if (configured == null || configured.trim() === "") {
+    return GLOBAL_HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
+  }
+  const parsed = Math.floor(Number(configured));
+  if (!Number.isFinite(parsed)) return GLOBAL_HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
+  return Math.max(
+    GLOBAL_HEARTBEAT_MAX_CONCURRENT_RUNS_MIN,
+    Math.min(GLOBAL_HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed),
+  );
+}
+
+// 모든 큐 디스패치(개별 wake / 재시도 / 큐 재개)를 단일 직렬 게이트로 묶어 전역 상한 enforcement race를 차단한다.
+// 프로세스 단위 모듈 스코프 락이므로 단일 노드 프로세스 안에서 전역 running 카운트 차감을 직렬화한다.
+let queuedRunDispatchLock: Promise<unknown> = Promise.resolve();
+async function withQueuedRunDispatchLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = queuedRunDispatchLock.then(fn);
+  queuedRunDispatchLock = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
 }
 
 interface WakeupOptions {
@@ -6741,6 +6774,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function countRunningRunsGlobal() {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "running"));
+    return Number(count ?? 0);
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -7530,7 +7571,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       await finalizeAgentStatus(run.agentId, "failed");
-      await startNextQueuedRunForAgent(run.agentId);
+      await pumpQueuedRuns(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }
@@ -7542,19 +7583,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function resumeQueuedRuns() {
-    const queuedRuns = await db
-      .select({ agentId: heartbeatRuns.agentId })
-      .from(heartbeatRuns)
-      .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
-      .where(and(
-        eq(heartbeatRuns.status, "queued"),
-        eq(companies.status, "active"),
-      ));
-
-    const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
-    for (const agentId of agentIds) {
-      await startNextQueuedRunForAgent(agentId);
-    }
+    // 큐에 남아 있는 모든 run 을 전역 디스패치 게이트를 통해 한 번에 드레인한다.
+    // 게이트가 전역 상한 - 현재 running 만큼만 슬롯을 내주므로 부팅 시 폭주가 발생하지 않는다.
+    await pumpQueuedRuns();
   }
 
   async function reconcileStrandedAssignedIssues() {
@@ -7663,7 +7694,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
-  async function startNextQueuedRunForAgent(agentId: string) {
+  async function startNextQueuedRunForAgent(
+    agentId: string,
+    options: { globalAvailableSlots?: number } = {},
+  ) {
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
@@ -7676,7 +7710,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+      const perAgentAvailableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+      // globalAvailableSlots가 주어지면(=pumpQueuedRuns가 전역 락 안에서 이미 슬롯을 예약한 경우) 그 값을 신뢰하고,
+      // 아니면 여기서 전역 running 카운트를 읽어 천장을 계산한다. 어떤 경로든 전역 상한을 절대 넘기지 않는다.
+      const globalAvailableSlots =
+        options.globalAvailableSlots != null
+          ? Math.max(0, options.globalAvailableSlots)
+          : Math.max(0, readGlobalHeartbeatMaxConcurrentRuns() - (await countRunningRunsGlobal()));
+      const availableSlots = Math.max(0, Math.min(perAgentAvailableSlots, globalAvailableSlots));
       if (availableSlots <= 0) return [];
 
       const queuedRuns = await db
@@ -7738,6 +7779,51 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       }
       return claimedRuns;
+    });
+  }
+
+  // 모든 run 시작 경로의 단일 진입점. 전역 디스패치 락 안에서 전역 상한 - 현재 running 으로 남은 슬롯을
+  // 한 번 계산하고, 에이전트별로 startNextQueuedRunForAgent 를 호출하며 슬롯을 직렬 차감한다.
+  // 이렇게 하면 여러 에이전트가 동시에 깨어나도 순간적으로도 전역 running 이 상한을 넘지 못한다.
+  async function pumpQueuedRuns(preferredAgentId: string | null = null) {
+    return withQueuedRunDispatchLock(async () => {
+      const globalMaxConcurrentRuns = readGlobalHeartbeatMaxConcurrentRuns();
+      let remainingSlots = Math.max(0, globalMaxConcurrentRuns - (await countRunningRunsGlobal()));
+      if (remainingSlots <= 0) return [] as Array<typeof heartbeatRuns.$inferSelect>;
+
+      const queuedRuns = await db
+        .select({ agentId: heartbeatRuns.agentId, createdAt: heartbeatRuns.createdAt })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.status, "queued"))
+        .orderBy(asc(heartbeatRuns.createdAt));
+
+      const orderedAgentIds: string[] = [];
+      const seen = new Set<string>();
+      if (preferredAgentId) {
+        for (const run of queuedRuns) {
+          if (run.agentId === preferredAgentId) {
+            orderedAgentIds.push(preferredAgentId);
+            seen.add(preferredAgentId);
+            break;
+          }
+        }
+      }
+      for (const run of queuedRuns) {
+        if (seen.has(run.agentId)) continue;
+        orderedAgentIds.push(run.agentId);
+        seen.add(run.agentId);
+      }
+
+      const startedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
+      for (const queuedAgentId of orderedAgentIds) {
+        if (remainingSlots <= 0) break;
+        const claimedRuns = await startNextQueuedRunForAgent(queuedAgentId, {
+          globalAvailableSlots: remainingSlots,
+        });
+        startedRuns.push(...claimedRuns);
+        remainingSlots -= claimedRuns.length;
+      }
+      return startedRuns;
     });
   }
 
@@ -9509,7 +9595,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           });
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
-          await startNextQueuedRunForAgent(run.agentId);
+          await pumpQueuedRuns(run.agentId);
         }
   }
 
@@ -10093,7 +10179,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     });
 
-    await startNextQueuedRunForAgent(promotedRun.agentId);
+    await pumpQueuedRuns(promotedRun.agentId);
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
@@ -10774,7 +10860,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
       if (outcome.kind === "coalesced") {
-        await startNextQueuedRunForAgent(agent.id);
+        await pumpQueuedRuns(agent.id);
         return outcome.run;
       }
 
@@ -10791,7 +10877,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
-      await startNextQueuedRunForAgent(agent.id);
+      await pumpQueuedRuns(agent.id);
       return newRun;
     }
 
@@ -10911,7 +10997,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     });
 
-    await startNextQueuedRunForAgent(agent.id);
+    await pumpQueuedRuns(agent.id);
 
     return newRun;
   }
@@ -11082,7 +11168,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     await finalizeAgentStatus(run.agentId, "cancelled");
-    await startNextQueuedRunForAgent(run.agentId);
+    await pumpQueuedRuns(run.agentId);
     return cancelled;
   }
 
