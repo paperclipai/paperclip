@@ -1,5 +1,7 @@
 import type { AgentEnvConfig } from "./secrets.js";
 import type { RoutineVariable } from "./routine.js";
+import type { IssueCommentAuthorType } from "../constants.js";
+import type { IssueCommentMetadata, IssueCommentPresentation } from "./issue.js";
 
 export interface CompanyPortabilityInclude {
   company: boolean;
@@ -34,6 +36,7 @@ export interface CompanyPortabilityCompanyManifestEntry {
   description: string | null;
   brandColor: string | null;
   logoPath: string | null;
+  attachmentMaxBytes: number | null;
   requireBoardApprovalForNewAgents: boolean;
   feedbackDataSharingEnabled: boolean;
   feedbackDataSharingConsentAt: string | null;
@@ -55,6 +58,7 @@ export interface CompanyPortabilityProjectManifestEntry {
   leadAgentSlug: string | null;
   targetDate: string | null;
   color: string | null;
+  icon: string | null;
   status: string | null;
   env: AgentEnvConfig | null;
   executionWorkspacePolicy: Record<string, unknown> | null;
@@ -93,6 +97,16 @@ export interface CompanyPortabilityIssueRoutineManifestEntry {
   triggers: CompanyPortabilityIssueRoutineTriggerManifestEntry[];
 }
 
+export interface CompanyPortabilityIssueCommentManifestEntry {
+  body: string;
+  authorType: IssueCommentAuthorType;
+  authorAgentSlug: string | null;
+  authorUserId: string | null;
+  presentation: IssueCommentPresentation | null;
+  metadata: IssueCommentMetadata | null;
+  createdAt: string | null;
+}
+
 export interface CompanyPortabilityIssueManifestEntry {
   slug: string;
   identifier: string | null;
@@ -111,6 +125,7 @@ export interface CompanyPortabilityIssueManifestEntry {
   billingCode: string | null;
   executionWorkspaceSettings: Record<string, unknown> | null;
   assigneeAdapterOverrides: Record<string, unknown> | null;
+  comments: CompanyPortabilityIssueCommentManifestEntry[];
   metadata: Record<string, unknown> | null;
 }
 
@@ -124,6 +139,8 @@ export interface CompanyPortabilityAgentManifestEntry {
   icon: string | null;
   capabilities: string | null;
   reportsToSlug: string | null;
+  reportsToExistingAgentId: string | null;
+  reportsToExistingAgentSlug: string | null;
   adapterType: string;
   adapterConfig: Record<string, unknown>;
   runtimeConfig: Record<string, unknown>;
@@ -280,6 +297,7 @@ export interface CompanyPortabilityAdapterOverride {
 
 export interface CompanyPortabilityImportRequest extends CompanyPortabilityPreviewRequest {
   adapterOverrides?: Record<string, CompanyPortabilityAdapterOverride>;
+  secretValues?: Record<string, string>;
 }
 
 export interface CompanyPortabilityImportResult {

@@ -1,12 +1,13 @@
 import { useState, useEffect, useMemo } from "react";
-import { useNavigate } from "@/lib/router";
+import { useLocation, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
-import { useDialog } from "../context/DialogContext";
+import { useDialogActions } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import {
   CommandDialog,
@@ -27,19 +28,42 @@ import {
   DollarSign,
   History,
   SquarePen,
+  FileCode2,
   Plus,
+  Search,
 } from "lucide-react";
 import { Identity } from "./Identity";
 import { agentUrl, projectUrl } from "../lib/utils";
+
+const SEARCH_ALL_VALUE = "__paperclip-search-all__";
+
+export function buildFullSearchPath(query: string) {
+  const trimmed = query.trim();
+  return trimmed.length === 0 ? "/search" : `/search?q=${encodeURIComponent(trimmed)}`;
+}
+
+const ISSUE_DETAIL_PATH_RE = /\/issues\/[^/?#]+(?:$|\?|#|\/)/;
+
+function isOnIssueDetail(pathname: string): boolean {
+  return ISSUE_DETAIL_PATH_RE.test(pathname);
+}
 
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const navigate = useNavigate();
+  const location = useLocation();
   const { selectedCompanyId } = useCompany();
-  const { openNewIssue, openNewAgent } = useDialog();
+  const { openNewIssue, openNewAgent } = useDialogActions();
   const { isMobile, setSidebarOpen } = useSidebar();
   const searchQuery = query.trim();
+  const onIssueDetail = isOnIssueDetail(location.pathname);
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
+  });
+  const fileViewerEnabled = experimentalSettings?.enableExperimentalFileViewer === true;
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -90,6 +114,10 @@ export function CommandPalette() {
     navigate(path);
   }
 
+  function goFullSearch() {
+    go(buildFullSearchPath(searchQuery));
+  }
+
   const agentName = (id: string | null) => {
     if (!id) return null;
     return agents.find((a) => a.id === id)?.name ?? null;
@@ -100,18 +128,59 @@ export function CommandPalette() {
     [issues, searchedIssues, searchQuery],
   );
 
+  const showSearchAll = searchQuery.length > 0;
+  const showEmptyHint = showSearchAll && visibleIssues.length === 0;
+
   return (
     <CommandDialog open={open} onOpenChange={(v) => {
         setOpen(v);
         if (v && isMobile) setSidebarOpen(false);
       }}>
       <CommandInput
-        placeholder="Search issues, agents, projects..."
+        placeholder="Search tasks, agents, projects..."
         value={query}
         onValueChange={setQuery}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && showEmptyHint) {
+            event.preventDefault();
+            goFullSearch();
+          }
+        }}
       />
       <CommandList>
-        <CommandEmpty>No results found.</CommandEmpty>
+        <CommandEmpty>
+          {showSearchAll ? (
+            <span>
+              No quick task matches. Press{" "}
+              <kbd className="rounded border border-border bg-muted px-1 py-0.5 text-[10px]">↵</kbd>{" "}
+              to <span className="font-medium">search all</span> or keep typing to refine.
+            </span>
+          ) : (
+            "No results found."
+          )}
+        </CommandEmpty>
+
+        {showSearchAll ? (
+          <CommandGroup heading="Search">
+            <CommandItem
+              value={`${SEARCH_ALL_VALUE} ${searchQuery}`}
+              onSelect={goFullSearch}
+              className="bg-accent/40 border border-accent data-[selected=true]:bg-accent/60"
+              data-testid="command-search-all"
+            >
+              <Search className="mr-2 h-4 w-4" />
+              <span className="flex-1 truncate">
+                Search all for <span className="font-semibold">&ldquo;{searchQuery}&rdquo;</span>
+              </span>
+              <span className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground">
+                <span>open full search</span>
+                <kbd className="rounded border border-border bg-background px-1 py-0.5 text-[10px]">↵</kbd>
+              </span>
+            </CommandItem>
+          </CommandGroup>
+        ) : null}
+
+        {showSearchAll ? <CommandSeparator /> : null}
 
         <CommandGroup heading="Actions">
           <CommandItem
@@ -121,9 +190,21 @@ export function CommandPalette() {
             }}
           >
             <SquarePen className="mr-2 h-4 w-4" />
-            Create new issue
+            Create new task
             <span className="ml-auto text-xs text-muted-foreground">C</span>
           </CommandItem>
+          {onIssueDetail && fileViewerEnabled && (
+            <CommandItem
+              onSelect={() => {
+                setOpen(false);
+                window.dispatchEvent(new CustomEvent("paperclip:open-file-viewer"));
+              }}
+            >
+              <FileCode2 className="mr-2 h-4 w-4" />
+              Open file in this issue...
+              <span className="ml-auto text-xs text-muted-foreground">g f</span>
+            </CommandItem>
+          )}
           <CommandItem
             onSelect={() => {
               setOpen(false);
@@ -152,7 +233,7 @@ export function CommandPalette() {
           </CommandItem>
           <CommandItem onSelect={() => go("/issues")}>
             <CircleDot className="mr-2 h-4 w-4" />
-            Issues
+            Tasks
           </CommandItem>
           <CommandItem onSelect={() => go("/projects")}>
             <Hexagon className="mr-2 h-4 w-4" />
@@ -179,7 +260,7 @@ export function CommandPalette() {
         {visibleIssues.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Issues">
+            <CommandGroup heading="Tasks">
               {visibleIssues.slice(0, 10).map((issue) => (
                 <CommandItem
                   key={issue.id}

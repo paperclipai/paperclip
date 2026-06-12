@@ -11,23 +11,32 @@
  * - Retrieving UI slot contributions for frontend rendering
  * - Discovering and executing plugin-contributed agent tools
  *
- * All routes require board-level authentication, and sensitive instance-wide
+ * Most routes require board-level authentication, and sensitive instance-wide
  * mutations such as install/upgrade require instance-admin privileges.
+ * Plugin tool discovery and execution routes allow both board and agent access.
  *
  * @module server/routes/plugins
  * @see doc/plugins/PLUGIN_SPEC.md for the full plugin specification
  */
 
-import { existsSync } from "node:fs";
+import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
-import type { Request } from "express";
+import type { Request, Response } from "express";
 import { and, desc, eq, gte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companies, pluginLogs, pluginWebhookDeliveries } from "@paperclipai/db";
+import {
+  agents,
+  companies,
+  heartbeatRuns,
+  pluginLogs,
+  pluginWebhookDeliveries,
+  projects,
+} from "@paperclipai/db";
 import type {
+  PluginApiRouteDeclaration,
   PluginStatus,
   PaperclipPluginManifestV1,
   PluginBridgeErrorCode,
@@ -41,15 +50,36 @@ import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import { getPluginUiContributionMetadata, pluginLoader } from "../services/plugin-loader.js";
 import { logActivity } from "../services/activity-log.js";
 import { publishGlobalLiveEvent } from "../services/live-events.js";
+import { issueService } from "../services/issues.js";
 import type { PluginJobScheduler } from "../services/plugin-job-scheduler.js";
 import type { PluginJobStore } from "../services/plugin-job-store.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import type { PluginStreamBus } from "../services/plugin-stream-bus.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
-import type { ToolRunContext } from "@paperclipai/plugin-sdk";
+import type { PluginPerformActionActorContext, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
-import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
+import {
+  assertAuthenticated,
+  assertBoard,
+  assertBoardOrAgent,
+  assertBoardOrgAccess,
+  assertCompanyAccess,
+  assertInstanceAdmin,
+  getActorInfo,
+} from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
+import {
+  findLocalFolderDeclaration,
+  getStoredLocalFolders,
+  inspectPluginLocalFolder,
+  requireLocalFolderDeclaration,
+  setStoredLocalFolder,
+} from "../services/plugin-local-folders.js";
+import {
+  extractSecretRefPathsFromConfig,
+  PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
+} from "../services/plugin-secrets-handler.js";
+import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
 type PluginUiSlotDeclaration = NonNullable<NonNullable<PaperclipPluginManifestV1["ui"]>["slots"]>[number];
@@ -86,13 +116,14 @@ interface PluginInstallRequest {
   isLocalPath?: boolean;
 }
 
-interface AvailablePluginExample {
+interface AvailableBundledPlugin {
   packageName: string;
   pluginKey: string;
   displayName: string;
   description: string;
   localPath: string;
-  tag: "example";
+  tag: "example" | "first-party";
+  experimental: boolean;
 }
 
 /** Response body for GET /api/plugins/:pluginId/health */
@@ -112,42 +143,174 @@ interface PluginHealthCheckResult {
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+const PLUGIN_API_BODY_LIMIT_BYTES = 1_000_000;
+const PLUGIN_SCOPED_API_RESPONSE_HEADER_ALLOWLIST = new Set([
+  "cache-control",
+  "etag",
+  "last-modified",
+  "x-request-id",
+]);
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../..");
+const EXPERIMENTAL_BUNDLED_PLUGIN_PACKAGE_NAMES = new Set([
+  "@paperclipai/plugin-llm-wiki",
+  "@paperclipai/plugin-modal",
+  "@paperclipai/plugin-workspace-diff",
+]);
+let bundledPluginsCache: Promise<AvailableBundledPlugin[]> | null = null;
 
-const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
-  {
-    packageName: "@paperclipai/plugin-hello-world-example",
-    pluginKey: "paperclip.hello-world-example",
-    displayName: "Hello World Widget (Example)",
-    description: "Reference UI plugin that adds a simple Hello World widget to the Paperclip dashboard.",
-    localPath: "packages/plugins/examples/plugin-hello-world-example",
-    tag: "example",
-  },
-  {
-    packageName: "@paperclipai/plugin-file-browser-example",
-    pluginKey: "paperclip-file-browser-example",
-    displayName: "File Browser (Example)",
-    description: "Example plugin that adds a Files link in project navigation plus a project detail file browser.",
-    localPath: "packages/plugins/examples/plugin-file-browser-example",
-    tag: "example",
-  },
-  {
-    packageName: "@paperclipai/plugin-kitchen-sink-example",
-    pluginKey: "paperclip-kitchen-sink-example",
-    displayName: "Kitchen Sink (Example)",
-    description: "Reference plugin that demonstrates the current Paperclip plugin API surface, bridge flows, UI extension surfaces, jobs, webhooks, tools, streams, and trusted local workspace/process demos.",
-    localPath: "packages/plugins/examples/plugin-kitchen-sink-example",
-    tag: "example",
-  },
-];
+function titleCasePluginName(packageName: string): string {
+  const localName = packageName.split("/").pop() ?? packageName;
+  return localName
+    .replace(/^paperclip-plugin-/, "")
+    .replace(/^plugin-/, "")
+    .split("-")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
 
-function listBundledPluginExamples(): AvailablePluginExample[] {
-  return BUNDLED_PLUGIN_EXAMPLES.flatMap((plugin) => {
-    const absoluteLocalPath = path.resolve(REPO_ROOT, plugin.localPath);
-    if (!existsSync(absoluteLocalPath)) return [];
-    return [{ ...plugin, localPath: absoluteLocalPath }];
+async function fileExists(filePath: string): Promise<boolean> {
+  return access(filePath).then(() => true, () => false);
+}
+
+async function readJsonFile(filePath: string): Promise<Record<string, unknown> | null> {
+  try {
+    return JSON.parse(await readFile(filePath, "utf8")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+async function findPackageJsonFiles(root: string, maxDepth = 4): Promise<string[]> {
+  if (!(await fileExists(root))) return [];
+
+  const packageJsonFiles: string[] = [];
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    if (depth > maxDepth) return;
+
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.name === "node_modules" || entry.name === "dist") continue;
+      const entryPath = path.join(dir, entry.name);
+
+      if (entry.isFile() && entry.name === "package.json") {
+        packageJsonFiles.push(entryPath);
+      } else if (entry.isDirectory()) {
+        await walk(entryPath, depth + 1);
+      }
+    }
+  };
+
+  await walk(root, 0);
+  return packageJsonFiles;
+}
+
+function manifestSourcePath(packageRoot: string, pkgJson: Record<string, unknown>): string | null {
+  const paperclipPlugin = pkgJson.paperclipPlugin;
+  if (
+    !paperclipPlugin
+    || typeof paperclipPlugin !== "object"
+    || Array.isArray(paperclipPlugin)
+  ) {
+    return null;
+  }
+
+  const manifestPath = (paperclipPlugin as Record<string, unknown>).manifest;
+  if (typeof manifestPath !== "string") return null;
+
+  const sourcePath = manifestPath
+    .replace(/^\.\/dist\//, "./src/")
+    .replace(/\.js$/, ".ts");
+  return path.resolve(packageRoot, sourcePath);
+}
+
+function firstStringLiteral(source: string, key: string): string | null {
+  const match = source.match(
+    new RegExp(`${key}:\\s*(?:"([^"]*)"|'([^']*)'|\`([^\`]*)\`)`, "s"),
+  );
+  return match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
+}
+
+async function bundledPluginMetadata(
+  packageRoot: string,
+  pkgJson: Record<string, unknown>,
+): Promise<{ pluginKey?: string; displayName?: string; description?: string }> {
+  const sourcePath = manifestSourcePath(packageRoot, pkgJson);
+  if (!sourcePath || !(await fileExists(sourcePath))) return {};
+
+  try {
+    const source = await readFile(sourcePath, "utf8");
+    const pluginId = source
+      .match(/(?:export\s+)?const\s+PLUGIN_ID\s*=\s*(?:"([^"]*)"|'([^']*)'|`([^`]*)`)/)
+      ?.slice(1)
+      .find(Boolean)
+      ?? firstStringLiteral(source, "id")
+      ?? null;
+    return {
+      pluginKey: pluginId ?? undefined,
+      displayName: firstStringLiteral(source, "displayName") ?? undefined,
+      description: firstStringLiteral(source, "description") ?? undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function isExperimentalBundledPlugin(packageRoot: string, packageName: string): boolean {
+  return (
+    EXPERIMENTAL_BUNDLED_PLUGIN_PACKAGE_NAMES.has(packageName)
+    || packageRoot.includes(`${path.sep}sandbox-providers${path.sep}`)
+    || packageName.includes("sandbox")
+  );
+}
+
+async function discoverBundledPlugins(): Promise<AvailableBundledPlugin[]> {
+  const pluginRoot = path.resolve(REPO_ROOT, "packages/plugins");
+  const bundledPlugins: AvailableBundledPlugin[] = [];
+  for (const packageJsonPath of await findPackageJsonFiles(pluginRoot)) {
+    const packageRoot = path.dirname(packageJsonPath);
+    const pkgJson = await readJsonFile(packageJsonPath);
+    const paperclipPlugin = pkgJson?.paperclipPlugin;
+    if (
+      !pkgJson
+      || !paperclipPlugin
+      || typeof paperclipPlugin !== "object"
+      || Array.isArray(paperclipPlugin)
+    ) {
+      continue;
+    }
+
+    const packageName = pkgJson.name;
+    if (typeof packageName !== "string" || packageName.length === 0) continue;
+
+    const metadata = await bundledPluginMetadata(packageRoot, pkgJson);
+    const tag = packageRoot.includes(`${path.sep}examples${path.sep}`) ? "example" : "first-party";
+    bundledPlugins.push({
+      packageName,
+      pluginKey: metadata.pluginKey ?? packageName,
+      displayName: metadata.displayName ?? titleCasePluginName(packageName),
+      description: metadata.description
+        ?? `Bundled Paperclip plugin from ${path.relative(REPO_ROOT, packageRoot)}.`,
+      localPath: packageRoot,
+      tag,
+      experimental: isExperimentalBundledPlugin(packageRoot, packageName),
+    });
+  }
+
+  return bundledPlugins.sort((left, right) => {
+    if (left.tag !== right.tag) return left.tag === "first-party" ? -1 : 1;
+    return left.displayName.localeCompare(right.displayName);
   });
+}
+
+async function listBundledPlugins(): Promise<AvailableBundledPlugin[]> {
+  bundledPluginsCache ??= discoverBundledPlugins().catch((error: unknown) => {
+    bundledPluginsCache = null;
+    throw error;
+  });
+  return bundledPluginsCache;
 }
 
 /**
@@ -155,9 +318,9 @@ function listBundledPluginExamples(): AvailablePluginExample[] {
  *
  * Lookup order:
  * - UUID-like IDs: getById first, then getByKey.
- * - Scoped package keys (e.g. "@scope/name"): getByKey only, never getById.
- * - Other non-UUID IDs: try getById first (test/memory registries may allow this),
- *   then fallback to getByKey. Any UUID parse error from getById is ignored.
+ * - All non-UUID values: getByKey only, never getById. The persisted plugin
+ *   ID column is a PostgreSQL UUID, so probing it with keys such as
+ *   "acme.plugin" raises a database cast error before a key lookup can happen.
  *
  * @param registry - The plugin registry service instance
  * @param pluginId - Either a database UUID or plugin key (manifest id)
@@ -168,27 +331,13 @@ async function resolvePlugin(
   pluginId: string,
 ) {
   const isUuid = UUID_REGEX.test(pluginId);
-  const isScopedPackageKey = pluginId.startsWith("@") || pluginId.includes("/");
 
-  // Scoped package IDs are valid plugin keys but invalid UUIDs.
-  // Skip getById() entirely to avoid Postgres uuid parse errors.
-  if (isScopedPackageKey && !isUuid) {
+  if (!isUuid) {
     return registry.getByKey(pluginId);
   }
 
-  try {
-    const byId = await registry.getById(pluginId);
-    if (byId) return byId;
-  } catch (error) {
-    const maybeCode =
-      typeof error === "object" && error !== null && "code" in error
-        ? (error as { code?: unknown }).code
-        : undefined;
-    // Ignore invalid UUID cast errors and continue with key lookup.
-    if (maybeCode !== "22P02") {
-      throw error;
-    }
-  }
+  const byId = await registry.getById(pluginId);
+  if (byId) return byId;
 
   return registry.getByKey(pluginId);
 }
@@ -244,6 +393,30 @@ export interface PluginRouteBridgeDeps {
   workerManager: PluginWorkerManager;
   /** Optional stream bus for SSE push from worker to UI. */
   streamBus?: PluginStreamBus;
+}
+
+interface PluginScopedApiRequest {
+  routeKey: string;
+  method: string;
+  path: string;
+  params: Record<string, string>;
+  query: Record<string, string | string[]>;
+  body: unknown;
+  actor: {
+    actorType: "user" | "agent";
+    actorId: string;
+    agentId?: string | null;
+    userId?: string | null;
+    runId?: string | null;
+  };
+  companyId: string;
+  headers: Record<string, string>;
+}
+
+interface PluginScopedApiResponse {
+  status?: number;
+  headers?: Record<string, string>;
+  body?: unknown;
 }
 
 /** Request body for POST /api/plugins/tools/execute */
@@ -314,6 +487,146 @@ export function pluginRoutes(
     loader,
     workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
   });
+  const issuesSvc = issueService(db);
+
+  function matchScopedApiRoute(route: PluginApiRouteDeclaration, method: string, requestPath: string) {
+    if (route.method !== method) return null;
+    const normalize = (value: string) => value.replace(/\/+$/, "") || "/";
+    const routeSegments = normalize(route.path).split("/").filter(Boolean);
+    const requestSegments = normalize(requestPath).split("/").filter(Boolean);
+    if (routeSegments.length !== requestSegments.length) return null;
+    const params: Record<string, string> = {};
+    for (let i = 0; i < routeSegments.length; i += 1) {
+      const routeSegment = routeSegments[i]!;
+      const requestSegment = requestSegments[i]!;
+      if (routeSegment.startsWith(":")) {
+        params[routeSegment.slice(1)] = decodeURIComponent(requestSegment);
+        continue;
+      }
+      if (routeSegment !== requestSegment) return null;
+    }
+    return params;
+  }
+
+  function sanitizePluginRequestHeaders(req: Request): Record<string, string> {
+    const safeHeaderNames = new Set([
+      "accept",
+      "content-type",
+      "user-agent",
+      "x-paperclip-run-id",
+      "x-request-id",
+    ]);
+    const headers: Record<string, string> = {};
+    for (const [name, value] of Object.entries(req.headers)) {
+      const lower = name.toLowerCase();
+      if (!safeHeaderNames.has(lower)) continue;
+      if (Array.isArray(value)) {
+        headers[lower] = value.join(", ");
+      } else if (typeof value === "string") {
+        headers[lower] = value;
+      }
+    }
+    return headers;
+  }
+
+  function applyPluginScopedApiResponseHeaders(
+    res: Response,
+    headers: Record<string, string> | undefined,
+  ): void {
+    for (const [name, value] of Object.entries(headers ?? {})) {
+      const lower = name.toLowerCase();
+      if (!PLUGIN_SCOPED_API_RESPONSE_HEADER_ALLOWLIST.has(lower)) continue;
+      res.setHeader(lower, value);
+    }
+  }
+
+  function normalizeQuery(query: Request["query"]): Record<string, string | string[]> {
+    const normalized: Record<string, string | string[]> = {};
+    for (const [key, value] of Object.entries(query)) {
+      if (typeof value === "string") {
+        normalized[key] = value;
+      } else if (Array.isArray(value)) {
+        normalized[key] = value.map((entry) => String(entry));
+      }
+    }
+    return normalized;
+  }
+
+  async function resolveScopedApiCompanyId(
+    route: PluginApiRouteDeclaration,
+    params: Record<string, string>,
+    req: Request,
+  ) {
+    const resolution = route.companyResolution;
+    if (!resolution) {
+      if (req.actor.type === "agent" && req.actor.companyId) return req.actor.companyId;
+      return null;
+    }
+
+    if (resolution.from === "body") {
+      const body = req.body as Record<string, unknown> | undefined;
+      const companyId = body?.[resolution.key ?? ""];
+      return typeof companyId === "string" ? companyId : null;
+    }
+
+    if (resolution.from === "query") {
+      const value = req.query[resolution.key ?? ""];
+      return typeof value === "string" ? value : null;
+    }
+
+    const issueId = params[resolution.param ?? ""];
+    if (!issueId) return null;
+    const issue = await issuesSvc.getById(issueId);
+    return issue?.companyId ?? null;
+  }
+
+  function assertScopedApiAuth(req: Request, route: PluginApiRouteDeclaration) {
+    if (route.auth === "board") {
+      assertBoard(req);
+      return;
+    }
+    if (route.auth === "agent") {
+      assertAuthenticated(req);
+      if (req.actor.type !== "agent") throw forbidden("Agent access required");
+      return;
+    }
+    if (route.auth === "webhook") {
+      throw unprocessable("Webhook-scoped plugin API routes require a signature verifier and are not enabled");
+    }
+    assertAuthenticated(req);
+    if (req.actor.type !== "board" && req.actor.type !== "agent") {
+      throw forbidden("Board or agent access required");
+    }
+  }
+
+  async function enforceScopedApiCheckout(
+    req: Request,
+    route: PluginApiRouteDeclaration,
+    params: Record<string, string>,
+    companyId: string,
+  ) {
+    const policy = route.checkoutPolicy ?? "none";
+    if (policy === "none" || req.actor.type !== "agent") return;
+    const issueId = params.issueId;
+    if (!issueId) {
+      throw unprocessable("Checkout-protected plugin API routes require an issueId route parameter");
+    }
+    const issue = await issuesSvc.getById(issueId);
+    if (!issue || issue.companyId !== companyId) {
+      throw notFound("Issue not found");
+    }
+    if (policy === "required-for-agent-in-progress") {
+      if (issue.status !== "in_progress" || issue.assigneeAgentId !== req.actor.agentId) return;
+    }
+    const runId = req.actor.runId?.trim();
+    if (!runId) {
+      throw unauthorized("Agent run id required");
+    }
+    if (!req.actor.agentId) {
+      throw forbidden("Agent authentication required");
+    }
+    await issuesSvc.assertCheckoutOwner(issueId, req.actor.agentId, runId);
+  }
 
   async function resolvePluginAuditCompanyIds(req: Request): Promise<string[]> {
     if (typeof (db as { select?: unknown }).select === "function") {
@@ -358,6 +671,89 @@ export function pluginRoutes(
       })));
   }
 
+  function assertPluginBridgeScope(req: Request, companyId: unknown): string | undefined {
+    if (companyId === undefined || companyId === null) {
+      assertInstanceAdmin(req);
+      return undefined;
+    }
+    if (typeof companyId !== "string" || companyId.trim().length === 0) {
+      throw badRequest('"companyId" must be a non-empty string when provided');
+    }
+    assertCompanyAccess(req, companyId);
+    return companyId;
+  }
+
+  function performActionActorContext(req: Request, companyId: string | undefined): PluginPerformActionActorContext {
+    const scopedCompanyId = companyId ?? null;
+    if (req.actor.type === "agent") {
+      return {
+        type: "agent",
+        userId: null,
+        agentId: req.actor.agentId ?? null,
+        runId: req.actor.runId ?? null,
+        companyId: scopedCompanyId,
+      };
+    }
+    if (req.actor.type === "board") {
+      return {
+        type: "user",
+        userId: req.actor.userId ?? null,
+        agentId: null,
+        runId: req.actor.runId ?? null,
+        companyId: scopedCompanyId,
+      };
+    }
+    return {
+      type: "system",
+      userId: null,
+      agentId: null,
+      runId: req.actor.runId ?? null,
+      companyId: scopedCompanyId,
+    };
+  }
+
+  function actionParamsWithAuthorizedCompanyScope(
+    params: Record<string, unknown> | undefined,
+    companyId: string | undefined,
+  ): Record<string, unknown> {
+    const base = params ?? {};
+    return companyId === undefined ? base : { ...base, companyId };
+  }
+
+  async function validateToolRunContextScope(runContext: ToolRunContext): Promise<string | null> {
+    const [agent] = await db
+      .select({ companyId: agents.companyId })
+      .from(agents)
+      .where(eq(agents.id, runContext.agentId))
+      .limit(1);
+    if (!agent || agent.companyId !== runContext.companyId) {
+      return '"runContext.agentId" does not belong to "runContext.companyId"';
+    }
+
+    const [run] = await db
+      .select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runContext.runId))
+      .limit(1);
+    if (!run || run.companyId !== runContext.companyId) {
+      return '"runContext.runId" does not belong to "runContext.companyId"';
+    }
+    if (run.agentId !== runContext.agentId) {
+      return '"runContext.runId" does not belong to "runContext.agentId"';
+    }
+
+    const [project] = await db
+      .select({ companyId: projects.companyId })
+      .from(projects)
+      .where(eq(projects.id, runContext.projectId))
+      .limit(1);
+    if (!project || project.companyId !== runContext.companyId) {
+      return '"runContext.projectId" does not belong to "runContext.companyId"';
+    }
+
+    return null;
+  }
+
   /**
    * GET /api/plugins
    *
@@ -392,12 +788,12 @@ export function pluginRoutes(
   /**
    * GET /api/plugins/examples
    *
-   * Return first-party example plugins bundled in this repo, if present.
+   * Return plugin packages bundled in this repo, if present.
    * These can be installed through the normal local-path install flow.
    */
   router.get("/plugins/examples", async (req, res) => {
     assertBoardOrgAccess(req);
-    res.json(listBundledPluginExamples());
+    res.json(await listBundledPlugins());
   });
 
   // IMPORTANT: Static routes must come before parameterized routes
@@ -484,7 +880,7 @@ export function pluginRoutes(
    * Errors: 501 if tool dispatcher is not configured
    */
   router.get("/plugins/tools", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertBoardOrAgent(req);
 
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
@@ -518,7 +914,7 @@ export function pluginRoutes(
    * - 502 if the plugin worker is unavailable or the RPC call fails
    */
   router.post("/plugins/tools/execute", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertBoardOrAgent(req);
 
     if (!toolDeps) {
       res.status(501).json({ error: "Plugin tool dispatch is not enabled" });
@@ -552,6 +948,11 @@ export function pluginRoutes(
     }
 
     assertCompanyAccess(req, runContext.companyId);
+    const scopeError = await validateToolRunContextScope(runContext);
+    if (scopeError) {
+      res.status(403).json({ error: scopeError });
+      return;
+    }
 
     // Verify the tool exists
     const registeredTool = toolDeps.toolDispatcher.getTool(tool);
@@ -731,6 +1132,12 @@ export function pluginRoutes(
             message: err.message,
             details: err.data,
           };
+        case PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED:
+          return {
+            code: "INVOCATION_SCOPE_DENIED",
+            message: err.message,
+            details: err.data,
+          };
         case PLUGIN_RPC_ERROR_CODES.TIMEOUT:
           return {
             code: "TIMEOUT",
@@ -766,6 +1173,34 @@ export function pluginRoutes(
       code: "UNKNOWN",
       message,
     };
+  }
+
+  function attachPluginBridgeErrorContext(
+    req: Request,
+    res: Response,
+    err: unknown,
+    bridgeError: PluginBridgeErrorResponse,
+    metadata: Record<string, unknown>,
+  ): void {
+    const rootError = err instanceof Error ? err : new Error(String(err));
+    (res as any).__errorContext = {
+      error: {
+        message: bridgeError.message,
+        stack: rootError.stack,
+        name: rootError.name,
+        details: {
+          ...metadata,
+          bridgeCode: bridgeError.code,
+          bridgeDetails: bridgeError.details,
+        },
+      },
+      method: req.method,
+      url: req.originalUrl,
+      reqBody: req.body,
+      reqParams: req.params,
+      reqQuery: req.query,
+    };
+    (res as any).err = rootError;
   }
 
   /**
@@ -819,6 +1254,11 @@ export function pluginRoutes(
         code: "WORKER_UNAVAILABLE",
         message: `Plugin is not ready (current status: ${plugin.status})`,
       };
+      attachPluginBridgeErrorContext(req, res, new Error(bridgeError.message), bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "getData",
+      });
       res.status(502).json(bridgeError);
       return;
     }
@@ -830,9 +1270,7 @@ export function pluginRoutes(
       return;
     }
 
-    if (body.companyId) {
-      assertCompanyAccess(req, body.companyId);
-    }
+    const companyId = assertPluginBridgeScope(req, body.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -840,6 +1278,7 @@ export function pluginRoutes(
         "getData",
         {
           key: body.key,
+          ...(companyId ? { companyId } : {}),
           params: body.params ?? {},
           renderEnvironment: body.renderEnvironment ?? null,
         },
@@ -847,6 +1286,12 @@ export function pluginRoutes(
       res.json({ data: result });
     } catch (err) {
       const bridgeError = mapRpcErrorToBridgeError(err);
+      attachPluginBridgeErrorContext(req, res, err, bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "getData",
+        dataKey: body.key,
+      });
       res.status(502).json(bridgeError);
     }
   });
@@ -880,7 +1325,7 @@ export function pluginRoutes(
    * @see PLUGIN_SPEC.md §19.7 — Error Propagation Through The Bridge
    */
   router.post("/plugins/:pluginId/bridge/action", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAuthenticated(req);
 
     if (!bridgeDeps) {
       res.status(501).json({ error: "Plugin bridge is not enabled" });
@@ -902,6 +1347,11 @@ export function pluginRoutes(
         code: "WORKER_UNAVAILABLE",
         message: `Plugin is not ready (current status: ${plugin.status})`,
       };
+      attachPluginBridgeErrorContext(req, res, new Error(bridgeError.message), bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "performAction",
+      });
       res.status(502).json(bridgeError);
       return;
     }
@@ -913,9 +1363,7 @@ export function pluginRoutes(
       return;
     }
 
-    if (body.companyId) {
-      assertCompanyAccess(req, body.companyId);
-    }
+    const companyId = assertPluginBridgeScope(req, body.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -923,13 +1371,20 @@ export function pluginRoutes(
         "performAction",
         {
           key: body.key,
-          params: body.params ?? {},
+          params: actionParamsWithAuthorizedCompanyScope(body.params, companyId),
+          actorContext: performActionActorContext(req, companyId),
           renderEnvironment: body.renderEnvironment ?? null,
         },
       );
       res.json({ data: result });
     } catch (err) {
       const bridgeError = mapRpcErrorToBridgeError(err);
+      attachPluginBridgeErrorContext(req, res, err, bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "performAction",
+        actionKey: body.key,
+      });
       res.status(502).json(bridgeError);
     }
   });
@@ -986,6 +1441,12 @@ export function pluginRoutes(
         code: "WORKER_UNAVAILABLE",
         message: `Plugin is not ready (current status: ${plugin.status})`,
       };
+      attachPluginBridgeErrorContext(req, res, new Error(bridgeError.message), bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "getData",
+        dataKey: key,
+      });
       res.status(502).json(bridgeError);
       return;
     }
@@ -996,9 +1457,7 @@ export function pluginRoutes(
       renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
     } | undefined;
 
-    if (body?.companyId) {
-      assertCompanyAccess(req, body.companyId);
-    }
+    const companyId = assertPluginBridgeScope(req, body?.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1006,6 +1465,7 @@ export function pluginRoutes(
         "getData",
         {
           key,
+          ...(companyId ? { companyId } : {}),
           params: body?.params ?? {},
           renderEnvironment: body?.renderEnvironment ?? null,
         },
@@ -1013,6 +1473,12 @@ export function pluginRoutes(
       res.json({ data: result });
     } catch (err) {
       const bridgeError = mapRpcErrorToBridgeError(err);
+      attachPluginBridgeErrorContext(req, res, err, bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "getData",
+        dataKey: key,
+      });
       res.status(502).json(bridgeError);
     }
   });
@@ -1043,7 +1509,7 @@ export function pluginRoutes(
    * @see PLUGIN_SPEC.md §19.7 — Error Propagation Through The Bridge
    */
   router.post("/plugins/:pluginId/actions/:key", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertAuthenticated(req);
 
     if (!bridgeDeps) {
       res.status(501).json({ error: "Plugin bridge is not enabled" });
@@ -1065,6 +1531,12 @@ export function pluginRoutes(
         code: "WORKER_UNAVAILABLE",
         message: `Plugin is not ready (current status: ${plugin.status})`,
       };
+      attachPluginBridgeErrorContext(req, res, new Error(bridgeError.message), bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "performAction",
+        actionKey: key,
+      });
       res.status(502).json(bridgeError);
       return;
     }
@@ -1075,9 +1547,7 @@ export function pluginRoutes(
       renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
     } | undefined;
 
-    if (body?.companyId) {
-      assertCompanyAccess(req, body.companyId);
-    }
+    const companyId = assertPluginBridgeScope(req, body?.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1085,13 +1555,20 @@ export function pluginRoutes(
         "performAction",
         {
           key,
-          params: body?.params ?? {},
+          params: actionParamsWithAuthorizedCompanyScope(body?.params, companyId),
+          actorContext: performActionActorContext(req, companyId),
           renderEnvironment: body?.renderEnvironment ?? null,
         },
       );
       res.json({ data: result });
     } catch (err) {
       const bridgeError = mapRpcErrorToBridgeError(err);
+      attachPluginBridgeErrorContext(req, res, err, bridgeError, {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        bridgeMethod: "performAction",
+        actionKey: key,
+      });
       res.status(502).json(bridgeError);
     }
   });
@@ -1187,6 +1664,116 @@ export function pluginRoutes(
 
     req.on("close", safeUnsubscribe);
     res.on("error", safeUnsubscribe);
+  });
+
+  router.use("/plugins/:pluginId/api", async (req, res) => {
+    if (!bridgeDeps) {
+      res.status(501).json({ error: "Plugin scoped API routes are not enabled" });
+      return;
+    }
+
+    const { pluginId } = req.params;
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+    if (plugin.status !== "ready") {
+      res.status(503).json({ error: `Plugin is not ready (current status: ${plugin.status})` });
+      return;
+    }
+    const isWorkerRunning = typeof bridgeDeps.workerManager.isRunning === "function"
+      ? bridgeDeps.workerManager.isRunning(plugin.id)
+      : true;
+    if (!isWorkerRunning) {
+      res.status(503).json({ error: "Plugin worker is not running" });
+      return;
+    }
+    if (!plugin.manifestJson.capabilities.includes("api.routes.register")) {
+      res.status(404).json({ error: "Plugin does not expose scoped API routes" });
+      return;
+    }
+
+    const requestPath = req.path || "/";
+    const routes = plugin.manifestJson.apiRoutes ?? [];
+    const match = routes
+      .map((route) => ({ route, params: matchScopedApiRoute(route, req.method, requestPath) }))
+      .find((candidate) => candidate.params !== null);
+    if (!match || !match.params) {
+      res.status(404).json({ error: "Plugin API route not found" });
+      return;
+    }
+
+    try {
+      assertScopedApiAuth(req, match.route);
+      const companyId = await resolveScopedApiCompanyId(match.route, match.params, req);
+      if (!companyId) {
+        res.status(400).json({ error: "Unable to resolve company for plugin API route" });
+        return;
+      }
+      assertCompanyAccess(req, companyId);
+      await enforceScopedApiCheckout(req, match.route, match.params, companyId);
+      if (req.method !== "GET" && req.headers["content-type"] && !req.is("application/json")) {
+        res.status(415).json({ error: "Plugin API routes accept JSON requests only" });
+        return;
+      }
+      const requestBody = req.body ?? null;
+      const bodySize = Buffer.byteLength(JSON.stringify(requestBody));
+      if (bodySize > PLUGIN_API_BODY_LIMIT_BYTES) {
+        res.status(413).json({ error: "Plugin API request body is too large" });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      const input: PluginScopedApiRequest = {
+        routeKey: match.route.routeKey,
+        method: req.method,
+        path: requestPath,
+        params: match.params,
+        query: normalizeQuery(req.query),
+        body: requestBody,
+        actor: {
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+          runId: actor.runId,
+        },
+        companyId,
+        headers: sanitizePluginRequestHeaders(req),
+      };
+
+      const result = await bridgeDeps.workerManager.call(
+        plugin.id,
+        "handleApiRequest",
+        input,
+      ) as PluginScopedApiResponse;
+      const status = Number.isInteger(result.status) && Number(result.status) >= 200 && Number(result.status) <= 599
+        ? Number(result.status)
+        : 200;
+      applyPluginScopedApiResponseHeaders(res, result.headers);
+      if (status === 204) {
+        res.status(status).end();
+      } else {
+        res.status(status).json(result.body ?? null);
+      }
+    } catch (err) {
+      const status = typeof (err as { status?: unknown }).status === "number"
+        ? (err as { status: number }).status
+        : err instanceof JsonRpcCallError && (
+          err.code === PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED ||
+          err.code === PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED
+        )
+          ? 403
+          : err instanceof JsonRpcCallError && err.code === PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED
+            ? 501
+            : err instanceof JsonRpcCallError
+              ? 502
+              : 500;
+      res.status(status).json({
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   });
 
   /**
@@ -1587,6 +2174,12 @@ export function pluginRoutes(
     }
 
     try {
+      const secretRefsByPath = extractSecretRefPathsFromConfig(body.configJson, schema);
+      if (secretRefsByPath.size > 0) {
+        res.status(422).json({ error: PLUGIN_SECRET_REFS_DISABLED_MESSAGE });
+        return;
+      }
+
       const result = await registry.upsertConfig(plugin.id, {
         configJson: body.configJson,
       });
@@ -1843,7 +2436,7 @@ export function pluginRoutes(
    * - 400 if job not found, not active, already running, or worker unavailable
    */
   router.post("/plugins/:pluginId/jobs/:jobId/trigger", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertInstanceAdmin(req);
     if (!jobDeps) {
       res.status(501).json({ error: "Job scheduling is not enabled" });
       return;
@@ -2030,6 +2623,152 @@ export function pluginRoutes(
         error: errorMessage,
       });
     }
+  });
+
+  // ===========================================================================
+  // Company-scoped trusted local folders
+  // ===========================================================================
+
+  router.get("/plugins/:pluginId/companies/:companyId/local-folders", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { pluginId, companyId } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const settings = await registry.getCompanySettings(plugin.id, companyId);
+    const storedFolders = getStoredLocalFolders(settings?.settingsJson);
+    const declarations = plugin.manifestJson.localFolders ?? [];
+    const folderKeys = declarations.map((declaration) => declaration.folderKey);
+
+    const statuses = await Promise.all(folderKeys.map((folderKey) =>
+      inspectPluginLocalFolder({
+        folderKey,
+        declaration: findLocalFolderDeclaration(declarations, folderKey),
+        storedConfig: storedFolders[folderKey] ?? null,
+      })));
+
+    res.json({
+      pluginId: plugin.id,
+      companyId,
+      declarations,
+      folders: statuses,
+    });
+  });
+
+  router.get("/plugins/:pluginId/companies/:companyId/local-folders/:folderKey/status", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { pluginId, companyId, folderKey } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const settings = await registry.getCompanySettings(plugin.id, companyId);
+    const storedFolders = getStoredLocalFolders(settings?.settingsJson);
+    const declarations = plugin.manifestJson.localFolders ?? [];
+    const declaration = requireLocalFolderDeclaration(declarations, folderKey);
+    const status = await inspectPluginLocalFolder({
+      folderKey,
+      declaration,
+      storedConfig: storedFolders[folderKey] ?? null,
+    });
+    res.json(status);
+  });
+
+  router.post("/plugins/:pluginId/companies/:companyId/local-folders/:folderKey/validate", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { pluginId, companyId, folderKey } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const body = req.body as {
+      path?: unknown;
+      access?: "read" | "readWrite";
+      requiredDirectories?: string[];
+      requiredFiles?: string[];
+    } | undefined;
+    if (typeof body?.path !== "string" || body.path.trim().length === 0) {
+      res.status(400).json({ error: '"path" is required and must be a non-empty string' });
+      return;
+    }
+
+    const declaration = requireLocalFolderDeclaration(plugin.manifestJson.localFolders ?? [], folderKey);
+    const status = await inspectPluginLocalFolder({
+      folderKey,
+      declaration,
+      overrideConfig: {
+        path: body.path,
+      },
+    });
+    res.json(status);
+  });
+
+  router.put("/plugins/:pluginId/companies/:companyId/local-folders/:folderKey", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { pluginId, companyId, folderKey } = req.params;
+    assertCompanyAccess(req, companyId);
+
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const body = req.body as {
+      path?: unknown;
+      access?: "read" | "readWrite";
+      requiredDirectories?: string[];
+      requiredFiles?: string[];
+    } | undefined;
+    if (typeof body?.path !== "string" || body.path.trim().length === 0) {
+      res.status(400).json({ error: '"path" is required and must be a non-empty string' });
+      return;
+    }
+
+    const existing = await registry.getCompanySettings(plugin.id, companyId);
+    const declaration = requireLocalFolderDeclaration(plugin.manifestJson.localFolders ?? [], folderKey);
+    const status = await inspectPluginLocalFolder({
+      folderKey,
+      declaration,
+      storedConfig: getStoredLocalFolders(existing?.settingsJson)[folderKey] ?? null,
+      overrideConfig: {
+        path: body.path,
+      },
+    });
+
+    const nextSettings = setStoredLocalFolder(existing?.settingsJson, folderKey, {
+      path: body.path,
+      access: status.access,
+      requiredDirectories: status.requiredDirectories,
+      requiredFiles: status.requiredFiles,
+    });
+    await registry.upsertCompanySettings(plugin.id, companyId, {
+      enabled: existing?.enabled ?? true,
+      settingsJson: nextSettings,
+      lastError: status.healthy ? null : status.problems.map((item: { message: string }) => item.message).join("; "),
+    });
+    await logPluginMutationActivity(req, "plugin.local_folder.configured", plugin.id, {
+      pluginId: plugin.id,
+      pluginKey: plugin.pluginKey,
+      companyId,
+      folderKey,
+      healthy: status.healthy,
+    });
+
+    res.json(status);
   });
 
   // ===========================================================================

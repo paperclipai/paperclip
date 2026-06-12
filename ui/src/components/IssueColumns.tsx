@@ -28,19 +28,19 @@ const issueColumnLabels: Record<InboxIssueColumn, string> = {
   assignee: "Assignee",
   project: "Project",
   workspace: "Workspace",
-  parent: "Parent issue",
+  parent: "Parent task",
   labels: "Tags",
   updated: "Last updated",
 };
 
 const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
-  status: "Issue state chip on the left edge.",
+  status: "Task state chip on the left edge.",
   id: "Ticket identifier like PAP-1009.",
   assignee: "Assigned agent or board user.",
   project: "Linked project pill with its color.",
-  workspace: "Execution or project workspace used for the issue.",
-  parent: "Parent issue identifier and title.",
-  labels: "Issue labels and tags.",
+  workspace: "Execution or project workspace used for the task.",
+  parent: "Parent task identifier and title.",
+  labels: "Task labels and tags.",
   updated: "Latest visible activity time.",
 };
 
@@ -94,7 +94,7 @@ export function IssueColumnPicker({
         <DropdownMenuLabel className="px-2 pb-1 pt-1.5">
           <div className="space-y-1">
             <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-              Desktop issue rows
+              Desktop task rows
             </div>
             <div className="text-sm font-medium text-foreground">
               {title}
@@ -139,18 +139,25 @@ export function InboxIssueMetaLeading({
   showStatus = true,
   showIdentifier = true,
   statusSlot,
+  checklistStepNumber = null,
 }: {
   issue: Issue;
   isLive: boolean;
   showStatus?: boolean;
   showIdentifier?: boolean;
   statusSlot?: ReactNode;
+  checklistStepNumber?: number | string | null;
 }) {
   return (
     <>
       {showStatus ? (
         <span className="hidden shrink-0 sm:inline-flex">
-          {statusSlot ?? <StatusIcon status={issue.status} />}
+          {statusSlot ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />}
+        </span>
+      ) : null}
+      {checklistStepNumber !== null ? (
+        <span className="shrink-0 font-mono text-xs text-muted-foreground" aria-hidden="true">
+          {checklistStepNumber}.
         </span>
       ) : null}
       {showIdentifier ? (
@@ -362,7 +369,7 @@ export function InboxIssueTrailingColumns({
               {parentIdentifier ? (
                 <span className="font-mono">{parentIdentifier}</span>
               ) : (
-                <span className="italic">Sub-issue</span>
+                <span className="italic">Sub-task</span>
               )}
             </span>
           );

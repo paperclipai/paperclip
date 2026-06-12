@@ -61,16 +61,16 @@ vi.mock("@/plugins/slots", () => ({
 
 describe("CommentThread", () => {
   let container: HTMLDivElement;
-  let writeTextMock: ReturnType<typeof vi.fn>;
-  let execCommandMock: ReturnType<typeof vi.fn>;
+  let writeTextMock: ReturnType<typeof vi.fn<(text: string) => Promise<void>>>;
+  let execCommandMock: ReturnType<typeof vi.fn<typeof document.execCommand>>;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-11T12:00:00.000Z"));
-    writeTextMock = vi.fn(async () => {});
-    execCommandMock = vi.fn(() => true);
+    writeTextMock = vi.fn<(text: string) => Promise<void>>(async () => {});
+    execCommandMock = vi.fn<typeof document.execCommand>(() => true);
     Object.assign(navigator, {
       clipboard: {
         writeText: writeTextMock,
@@ -172,6 +172,49 @@ describe("CommentThread", () => {
     expect(container.textContent).toContain("Workspace is closed.");
     expect(container.querySelector('textarea[aria-label="Comment editor"]')).toBeNull();
     expect(container.textContent).not.toContain("Comment");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows follow-up badges on explicit follow-up comments and timeline rows", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <CommentThread
+            comments={[{
+              id: "comment-1",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "local-board",
+              body: "Please continue validation.",
+              authorType: "user",
+              presentation: null,
+              metadata: null,
+              followUpRequested: true,
+              createdAt: new Date("2026-03-11T10:00:00.000Z"),
+              updatedAt: new Date("2026-03-11T10:00:00.000Z"),
+            }]}
+            timelineEvents={[{
+              id: "event-1",
+              actorType: "agent",
+              actorId: "agent-1",
+              createdAt: new Date("2026-03-11T10:00:00.000Z"),
+              commentId: "comment-1",
+              followUpRequested: true,
+            }]}
+            onAdd={async () => {}}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Follow-up");
+    expect(container.textContent).toContain("requested follow-up");
 
     act(() => {
       root.unmount();
@@ -309,6 +352,9 @@ describe("CommentThread", () => {
               authorAgentId: null,
               authorUserId: "user-1",
               body: "Hello from the comment body",
+              authorType: "user",
+              presentation: null,
+              metadata: null,
               createdAt: new Date("2026-03-11T11:00:00.000Z"),
               updatedAt: new Date("2026-03-11T11:00:00.000Z"),
             }]}

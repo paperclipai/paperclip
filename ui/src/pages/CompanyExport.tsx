@@ -41,8 +41,8 @@ import {
   collectAllPaths,
   parseFrontmatter,
   FRONTMATTER_FIELD_LABELS,
-  PackageFileTree,
-} from "../components/PackageFileTree";
+  FileTree,
+} from "../components/FileTree";
 
 /**
  * Extract the set of agent/project/task slugs that are "checked" based on
@@ -727,7 +727,7 @@ export function CompanyExport() {
 
   const downloadMutation = useMutation({
     mutationFn: () =>
-      companiesApi.exportPackage(selectedCompanyId!, {
+      companiesApi.exportBundle(selectedCompanyId!, {
         include: { company: true, agents: true, projects: true, issues: true },
         selectedFiles: Array.from(checkedFiles).sort(),
         sidebarOrder,
@@ -933,7 +933,7 @@ export function CompanyExport() {
       {/* Sticky top action bar */}
       <div className="sticky top-0 z-10 border-b border-border bg-background px-5 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-4 text-sm">
+          <div className="flex flex-wrap items-center gap-4 text-sm">
             <span className="font-medium">
               {selectedCompany?.name ?? "Company"} export
             </span>
@@ -969,8 +969,8 @@ export function CompanyExport() {
       )}
 
       {/* Two-column layout */}
-      <div className="grid h-[calc(100vh-12rem)] gap-0 xl:grid-cols-[19rem_minmax(0,1fr)]">
-        <aside className="flex flex-col border-r border-border overflow-hidden">
+      <div className="grid gap-4 xl:h-[calc(100vh-12rem)] xl:grid-cols-[19rem_minmax(0,1fr)] xl:gap-0">
+        <aside className="flex max-h-[24rem] flex-col overflow-hidden border-b border-border xl:max-h-none xl:border-b-0 xl:border-r">
           <div className="border-b border-border px-4 py-3 shrink-0">
             <h2 className="text-base font-semibold">Package files</h2>
           </div>
@@ -988,7 +988,7 @@ export function CompanyExport() {
             </div>
           </div>
           <div className="flex-1 overflow-y-auto">
-            <PackageFileTree
+            <FileTree
               nodes={displayTree}
               selectedFile={selectedFile}
               expandedDirs={expandedDirs}
@@ -996,6 +996,7 @@ export function CompanyExport() {
               onToggleDir={handleToggleDir}
               onSelectFile={selectFile}
               onToggleCheck={handleToggleCheck}
+              wrapLabels={false}
             />
             {totalTaskChildren > visibleTaskChildren && !treeSearch && (
               <div className="px-4 py-2">
@@ -1004,13 +1005,13 @@ export function CompanyExport() {
                   onClick={() => setTaskLimit((prev) => prev + TASKS_PAGE_SIZE)}
                   className="w-full rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent/30 hover:text-foreground transition-colors"
                 >
-                  Show more issues ({visibleTaskChildren} of {totalTaskChildren})
+                  Show more tasks ({visibleTaskChildren} of {totalTaskChildren})
                 </button>
               </div>
             )}
           </div>
         </aside>
-        <div className="min-w-0 overflow-y-auto pl-6">
+        <div className="min-w-0 overflow-y-auto xl:pl-6">
           <ExportPreviewPane selectedFile={selectedFile} content={previewContent} allFiles={effectiveFiles} onSkillClick={handleSkillClick} />
         </div>
       </div>

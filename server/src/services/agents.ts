@@ -16,7 +16,13 @@ import {
   issues,
   issueComments,
 } from "@paperclipai/db";
-import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
+import {
+  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  getAgentWorkEligibility,
+  isUuidLike,
+  normalizeAgentUrlKey,
+  type AgentEligibilityAgent,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
@@ -38,6 +44,7 @@ const CONFIG_REVISION_FIELDS = [
   "adapterType",
   "adapterConfig",
   "runtimeConfig",
+  "defaultEnvironmentId",
   "budgetMonthlyCents",
   "metadata",
 ] as const;
@@ -98,6 +105,7 @@ function buildConfigSnapshot(
     adapterType: row.adapterType,
     adapterConfig,
     runtimeConfig,
+    defaultEnvironmentId: row.defaultEnvironmentId,
     budgetMonthlyCents: row.budgetMonthlyCents,
     metadata,
   };
@@ -112,6 +120,25 @@ function containsRedactedMarker(value: unknown): boolean {
 
 function hasConfigPatchFields(data: Partial<typeof agents.$inferInsert>) {
   return CONFIG_REVISION_FIELDS.some((field) => Object.prototype.hasOwnProperty.call(data, field));
+}
+
+function parseFiniteNumberLike(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return null;
+  const parsed = Number(value.trim());
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeRuntimeConfigForNewAgent(runtimeConfig: unknown): Record<string, unknown> {
+  const normalizedRuntimeConfig = isPlainRecord(runtimeConfig) ? { ...runtimeConfig } : {};
+  const heartbeat = isPlainRecord(normalizedRuntimeConfig.heartbeat)
+    ? { ...normalizedRuntimeConfig.heartbeat }
+    : {};
+  if (parseFiniteNumberLike(heartbeat.maxConcurrentRuns) == null) {
+    heartbeat.maxConcurrentRuns = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
+  }
+  normalizedRuntimeConfig.heartbeat = heartbeat;
+  return normalizedRuntimeConfig;
 }
 
 function diffConfigSnapshot(
@@ -150,6 +177,10 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
     adapterType: snapshot.adapterType,
     adapterConfig: isPlainRecord(snapshot.adapterConfig) ? snapshot.adapterConfig : {},
     runtimeConfig: isPlainRecord(snapshot.runtimeConfig) ? snapshot.runtimeConfig : {},
+    defaultEnvironmentId:
+      typeof snapshot.defaultEnvironmentId === "string" || snapshot.defaultEnvironmentId === null
+        ? snapshot.defaultEnvironmentId
+        : null,
     budgetMonthlyCents: Math.max(0, Math.floor(snapshot.budgetMonthlyCents)),
     metadata: isPlainRecord(snapshot.metadata) || snapshot.metadata === null ? snapshot.metadata : null,
   };
@@ -203,11 +234,43 @@ export function agentService(db: Db) {
     };
   }
 
-  function normalizeAgentRow(row: typeof agents.$inferSelect) {
+  function normalizeAgentBaseRow(row: typeof agents.$inferSelect) {
     return withUrlKey({
       ...row,
       permissions: normalizeAgentPermissions(row.permissions, row.role),
     });
+  }
+
+  function toEligibilityAgent(row: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "status" | "reportsTo">): AgentEligibilityAgent {
+    return {
+      id: row.id,
+      companyId: row.companyId,
+      name: row.name,
+      status: row.status,
+      reportsTo: row.reportsTo,
+    };
+  }
+
+  function normalizeAgentRows(rows: (typeof agents.$inferSelect)[], allCompanyRows = rows) {
+    const eligibilityAgents = allCompanyRows.map(toEligibilityAgent);
+    return rows.map((row) => {
+      const base = normalizeAgentBaseRow(row);
+      return {
+        ...base,
+        orgChainHealth: getAgentWorkEligibility({
+          agent: toEligibilityAgent(row),
+          agents: eligibilityAgents,
+        }).orgChainHealth,
+      };
+    });
+  }
+
+  function normalizeAgentRow(row: typeof agents.$inferSelect, allCompanyRows?: (typeof agents.$inferSelect)[]) {
+    return normalizeAgentRows([row], allCompanyRows)[0]!;
+  }
+
+  async function listCompanyAgentRows(companyId: string) {
+    return db.select().from(agents).where(eq(agents.companyId, companyId));
   }
 
   async function getMonthlySpendByAgentIds(companyId: string, agentIds: string[]) {
@@ -249,8 +312,17 @@ export function agentService(db: Db) {
       .where(eq(agents.id, id))
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
-    const [hydrated] = await hydrateAgentSpend([row]);
-    return normalizeAgentRow(hydrated);
+    const [companyRows, hydrated] = await Promise.all([
+      listCompanyAgentRows(row.companyId),
+      hydrateAgentSpend([row]).then((rows) => rows[0]!),
+    ]);
+    return normalizeAgentRow(hydrated, companyRows);
+  }
+
+  async function requireGetById(id: string) {
+    const agent = await getById(id);
+    if (!agent) throw notFound("Agent not found");
+    return agent;
   }
 
   async function ensureManager(companyId: string, managerId: string) {
@@ -349,7 +421,7 @@ export function agentService(db: Db) {
       .where(eq(agents.id, id))
       .returning()
       .then((rows) => rows[0] ?? null);
-    const normalizedUpdated = updated ? normalizeAgentRow(updated) : null;
+    const normalizedUpdated = updated ? await getById(updated.id) : null;
 
     if (normalizedUpdated && shouldRecordRevision && beforeConfig) {
       const afterConfig = buildConfigSnapshot(normalizedUpdated);
@@ -378,9 +450,12 @@ export function agentService(db: Db) {
       if (!options?.includeTerminated) {
         conditions.push(ne(agents.status, "terminated"));
       }
-      const rows = await db.select().from(agents).where(and(...conditions));
+      const [rows, allCompanyRows] = await Promise.all([
+        db.select().from(agents).where(and(...conditions)),
+        listCompanyAgentRows(companyId),
+      ]);
       const hydrated = await hydrateAgentSpend(rows);
-      return hydrated.map(normalizeAgentRow);
+      return normalizeAgentRows(hydrated, allCompanyRows);
     },
 
     getById,
@@ -398,13 +473,14 @@ export function agentService(db: Db) {
 
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
+      const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
       const created = await db
         .insert(agents)
-        .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions })
+        .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions, runtimeConfig })
         .returning()
         .then((rows) => rows[0]);
 
-      return normalizeAgentRow(created);
+      return requireGetById(created.id);
     },
 
     update: updateAgent,
@@ -425,7 +501,7 @@ export function agentService(db: Db) {
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
-      return updated ? normalizeAgentRow(updated) : null;
+      return updated ? getById(updated.id) : null;
     },
 
     resume: async (id: string) => {
@@ -447,7 +523,36 @@ export function agentService(db: Db) {
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
-      return updated ? normalizeAgentRow(updated) : null;
+      return updated ? getById(updated.id) : null;
+    },
+
+    clearError: async (id: string) => {
+      const existing = await getById(id);
+      if (!existing) return null;
+      if (existing.status === "terminated") throw conflict("Cannot clear error on terminated agent");
+      if (existing.status === "pending_approval") {
+        throw conflict("Pending approval agents cannot have errors cleared");
+      }
+      if (existing.status !== "error") {
+        throw conflict("Only agents in error status can have their error cleared");
+      }
+
+      const updated = await db
+        .update(agents)
+        .set({
+          status: "idle",
+          pauseReason: null,
+          pausedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(agents.id, id), eq(agents.status, "error")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (!updated) {
+        throw conflict("Only agents in error status can have their error cleared");
+      }
+      return getById(updated.id);
     },
 
     terminate: async (id: string) => {
@@ -506,35 +611,36 @@ export function agentService(db: Db) {
     },
 
     activatePendingApproval: async (id: string) => {
-      const existing = await getById(id);
-      if (!existing) return null;
-      if (existing.status !== "pending_approval") return existing;
-
       const updated = await db
         .update(agents)
         .set({ status: "idle", updatedAt: new Date() })
-        .where(eq(agents.id, id))
+        .where(and(eq(agents.id, id), eq(agents.status, "pending_approval")))
         .returning()
         .then((rows) => rows[0] ?? null);
 
-      return updated ? normalizeAgentRow(updated) : null;
+      if (updated) {
+        return { agent: await requireGetById(updated.id), activated: true };
+      }
+
+      const existing = await getById(id);
+      return existing ? { agent: existing, activated: false } : null;
     },
 
-    updatePermissions: async (id: string, permissions: { canCreateAgents: boolean }) => {
+    updatePermissions: async (id: string, permissions: Record<string, unknown> & { canCreateAgents: boolean }) => {
       const existing = await getById(id);
       if (!existing) return null;
 
       const updated = await db
         .update(agents)
         .set({
-          permissions: normalizeAgentPermissions(permissions, existing.role),
+          permissions: normalizeAgentPermissions({ ...existing.permissions, ...permissions }, existing.role),
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
 
-      return updated ? normalizeAgentRow(updated) : null;
+      return updated ? getById(updated.id) : null;
     },
 
     listConfigRevisions: async (id: string) =>
@@ -643,14 +749,12 @@ export function agentService(db: Db) {
     },
 
     orgForCompany: async (companyId: string) => {
-      const rows = await db
-        .select()
-        .from(agents)
-        .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
-      const normalizedRows = rows.map(normalizeAgentRow);
+      const allCompanyRows = await listCompanyAgentRows(companyId);
+      const rows = allCompanyRows.filter((row) => row.status !== "terminated");
+      const normalizedRows = normalizeAgentRows(rows, allCompanyRows);
       const byManager = new Map<string | null, typeof normalizedRows>();
       for (const row of normalizedRows) {
-        const key = row.reportsTo ?? null;
+        const key = row.reportsTo && rows.some((candidate) => candidate.id === row.reportsTo) ? row.reportsTo : null;
         const group = byManager.get(key) ?? [];
         group.push(row);
         byManager.set(key, group);
@@ -708,8 +812,7 @@ export function agentService(db: Db) {
       }
 
       const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
-      const matches = rows
-        .map(normalizeAgentRow)
+      const matches = normalizeAgentRows(rows, rows)
         .filter((agent) => agent.urlKey === urlKey && agent.status !== "terminated");
       if (matches.length === 1) {
         return { agent: matches[0] ?? null, ambiguous: false } as const;

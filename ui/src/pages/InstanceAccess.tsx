@@ -21,7 +21,8 @@ export function InstanceAccess() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Instance Settings", href: "/instance/settings/general" },
+      { label: "Settings", href: "/company/settings" },
+      { label: "Instance settings", href: "/company/settings/instance/general" },
       { label: "Access" },
     ]);
   }, [setBreadcrumbs]);
@@ -51,7 +52,11 @@ export function InstanceAccess() {
   useEffect(() => {
     if (!userAccessQuery.data) return;
     setSelectedCompanyIds(
-      new Set(userAccessQuery.data.companyAccess.map((membership) => membership.companyId)),
+      new Set(
+        userAccessQuery.data.companyAccess
+          .filter((membership) => membership.status === "active")
+          .map((membership) => membership.companyId),
+      ),
     );
   }, [userAccessQuery.data]);
 

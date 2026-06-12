@@ -6,7 +6,9 @@
  * - Installing external adapters from npm packages or local paths
  * - Unregistering external adapters
  *
- * All routes require board-level authentication (assertBoard middleware).
+ * Read-only routes require board org access. Mutating adapter management
+ * routes require instance-admin access because they can install, reload, or
+ * toggle server-side adapter code for the whole Paperclip instance.
  *
  * @module server/routes/adapters
  */
@@ -23,11 +25,11 @@ import {
   findActiveServerAdapter,
   listEnabledServerAdapters,
   registerServerAdapter,
+  resolveExternalAdapterRegistration,
   unregisterServerAdapter,
   isOverridePaused,
   setOverridePaused,
 } from "../adapters/registry.js";
-import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
 import {
   listAdapterPlugins,
   addAdapterPlugin,
@@ -41,7 +43,7 @@ import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 import type { ServerAdapterModule, AdapterConfigSchema } from "../adapters/types.js";
 import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
-import { assertBoardOrgAccess } from "./authz.js";
+import { assertBoardOrgAccess, assertInstanceAdmin } from "./authz.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 
 const execFileAsync = promisify(execFile);
@@ -64,6 +66,7 @@ interface AdapterCapabilities {
   supportsSkills: boolean;
   supportsLocalAgentJwt: boolean;
   requiresMaterializedRuntimeSkills: boolean;
+  supportsModelProfiles: boolean;
 }
 
 interface AdapterInfo {
@@ -117,6 +120,7 @@ function buildAdapterCapabilities(adapter: ServerAdapterModule): AdapterCapabili
     supportsSkills: Boolean(adapter.listSkills || adapter.syncSkills),
     supportsLocalAgentJwt: adapter.supportsLocalAgentJwt ?? false,
     requiresMaterializedRuntimeSkills: adapter.requiresMaterializedRuntimeSkills ?? false,
+    supportsModelProfiles: Boolean(adapter.modelProfiles?.length || adapter.listModelProfiles),
   };
 }
 
@@ -166,15 +170,17 @@ async function normalizeLocalPath(rawPath: string): Promise<string> {
 }
 
 /**
- * Register an adapter module into the server registry, filling in
- * sessionManagement from the host.
+ * Register an external adapter module into the server registry via the
+ * hot-install path, resolving `sessionManagement` identically to how the
+ * init-time IIFE does. Module-provided `sessionManagement` is honored first,
+ * with fallback to the host registry by type for builtin-type overrides.
+ *
+ * Keeps the hot-install and init-time paths at parity so an adapter installed
+ * via `POST /api/adapters/install` has the same shape in the registry as the
+ * same adapter loaded on the next server restart.
  */
 function registerWithSessionManagement(adapter: ServerAdapterModule): void {
-  const wrapped: ServerAdapterModule = {
-    ...adapter,
-    sessionManagement: getAdapterSessionManagement(adapter.type) ?? undefined,
-  };
-  registerServerAdapter(wrapped);
+  registerServerAdapter(resolveExternalAdapterRegistration(adapter));
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +198,9 @@ export function adapterRoutes() {
    * its model count, and load status.
    */
   router.get("/adapters", async (_req, res) => {
+    // Adapter inventory is needed by ordinary board members when creating or
+    // editing company agents. Mutating adapter management routes below remain
+    // instance-admin only because they affect the whole server runtime.
     assertBoardOrgAccess(_req);
 
     const registeredAdapters = listServerAdapters();
@@ -218,7 +227,7 @@ export function adapterRoutes() {
    * - version?: string — target version for npm packages
    */
   router.post("/adapters/install", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertInstanceAdmin(req);
 
     const { packageName, isLocalPath = false, version } = req.body as AdapterInstallRequest;
 
@@ -287,17 +296,16 @@ export function adapterRoutes() {
       // Load and register the adapter (use canonicalName for path resolution)
       const adapterModule = await loadExternalAdapterPackage(canonicalName, moduleLocalPath);
 
-      // Check if this type conflicts with a built-in adapter
-      if (BUILTIN_ADAPTER_TYPES.has(adapterModule.type)) {
-        res.status(409).json({
-          error: `Adapter type "${adapterModule.type}" is a built-in adapter and cannot be overwritten.`,
-        });
-        return;
-      }
+      // External adapters may intentionally override built-in adapter types.
+      // registerServerAdapter preserves the built-in as a fallback so pausing or
+      // removing the override restores the original implementation.
 
-      // Check if already registered (indicates a reinstall/update)
+      // Check if already registered (indicates a reinstall/update).
+      // For built-in types the registry always returns the built-in, so we
+      // additionally require an existing external plugin record to
+      // distinguish a true reinstall from a first-time override.
       const existing = findServerAdapter(adapterModule.type);
-      const isReinstall = existing !== null;
+      const isReinstall = existing !== null && !!getAdapterPluginByType(adapterModule.type);
       if (existing) {
         unregisterServerAdapter(adapterModule.type);
         logger.info({ type: adapterModule.type }, "Unregistered existing adapter for replacement");
@@ -341,6 +349,21 @@ export function adapterRoutes() {
     }
   });
 
+  router.get("/adapters/:type", async (req, res) => {
+    assertBoardOrgAccess(req);
+
+    const adapterType = req.params.type;
+    const adapter = findServerAdapter(adapterType);
+    if (!adapter) {
+      res.status(404).json({ error: `Adapter "${adapterType}" is not registered.` });
+      return;
+    }
+
+    const externalRecord = getAdapterPluginByType(adapterType);
+    const disabledSet = new Set(getDisabledAdapterTypes());
+    res.json(buildAdapterInfo(adapter, externalRecord, disabledSet));
+  });
+
   /**
    * PATCH /api/adapters/:type
    *
@@ -350,7 +373,7 @@ export function adapterRoutes() {
    * Request body: { "disabled": boolean }
    */
   router.patch("/adapters/:type", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertInstanceAdmin(req);
 
     const adapterType = req.params.type;
     const { disabled } = req.body as { disabled?: boolean };
@@ -385,7 +408,7 @@ export function adapterRoutes() {
    * keep the adapter they started with.
    */
   router.patch("/adapters/:type/override", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertInstanceAdmin(req);
 
     const adapterType = req.params.type;
     const { paused } = req.body as { paused?: boolean };
@@ -413,7 +436,7 @@ export function adapterRoutes() {
    * Unregister an external adapter. Built-in adapters cannot be removed.
    */
   router.delete("/adapters/:type", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertInstanceAdmin(req);
 
     const adapterType = req.params.type;
 
@@ -422,8 +445,9 @@ export function adapterRoutes() {
       return;
     }
 
-    // Prevent removal of built-in adapters
-    if (BUILTIN_ADAPTER_TYPES.has(adapterType)) {
+    // Prevent removal of built-in adapters, unless this built-in type is
+    // currently backed by an external adapter plugin override.
+    if (BUILTIN_ADAPTER_TYPES.has(adapterType) && !getAdapterPluginByType(adapterType)) {
       res.status(403).json({
         error: `Cannot remove built-in adapter "${adapterType}".`,
       });
@@ -488,7 +512,7 @@ export function adapterRoutes() {
    * Cannot be used on built-in adapter types.
    */
   router.post("/adapters/:type/reload", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertInstanceAdmin(req);
 
     const type = req.params.type;
 
@@ -540,7 +564,7 @@ export function adapterRoutes() {
   // This is a convenience shortcut for remove + install with the same
   // package name, but without the risk of losing the store record.
   router.post("/adapters/:type/reinstall", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertInstanceAdmin(req);
 
     const type = req.params.type;
 
@@ -613,6 +637,8 @@ export function adapterRoutes() {
   const CONFIG_SCHEMA_TTL_MS = 30_000;
 
   router.get("/adapters/:type/config-schema", async (req, res) => {
+    // Config schemas are read-only form metadata used when org members create
+    // or edit agents; they do not install or execute new adapter code.
     assertBoardOrgAccess(req);
     const { type } = req.params;
 
@@ -651,6 +677,8 @@ export function adapterRoutes() {
   // The adapter package must export a "./ui-parser" entry in package.json
   // pointing to a self-contained ESM module with zero runtime dependencies.
   router.get("/adapters/:type/ui-parser.js", (req, res) => {
+    // UI parsers are read-only assets for displaying existing run output.
+    // Runtime-changing adapter management routes above require instance admin.
     assertBoardOrgAccess(req);
     const { type } = req.params;
     const source = getOrExtractUiParserSource(type);

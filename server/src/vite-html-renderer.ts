@@ -63,7 +63,7 @@ export function createCachedViteHtmlRenderer(opts: {
 
   function onWatchEvent(filePath: string): void {
     const resolvedPath = path.resolve(filePath);
-    if (resolvedPath === templatePath || resolvedPath.startsWith(`${uiRoot}${path.sep}`)) {
+    if (resolvedPath === templatePath) {
       invalidate();
     }
   }

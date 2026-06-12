@@ -7,12 +7,13 @@ import {
 } from "@paperclipai/adapter-cursor-local/server";
 import {
   sessionCodec as geminiSessionCodec,
-  isGeminiUnknownSessionError,
+  isGeminiSessionUnrecoverableError,
 } from "@paperclipai/adapter-gemini-local/server";
 import {
   sessionCodec as opencodeSessionCodec,
   isOpenCodeUnknownSessionError,
 } from "@paperclipai/adapter-opencode-local/server";
+import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-acpx-local/server";
 
 describe("adapter session codecs", () => {
   it("normalizes claude session params with cwd", () => {
@@ -107,6 +108,50 @@ describe("adapter session codecs", () => {
     });
     expect(geminiSessionCodec.getDisplayId?.(serialized ?? null)).toBe("gemini-session-1");
   });
+
+  it("preserves acpx session params required for compatibility checks", () => {
+    const parsed = acpxSessionCodec.deserialize({
+      sessionKey: "paperclip:company:agent:task:fingerprint",
+      runtimeSessionName: "runtime-session-1",
+      acpxRecordId: "record-1",
+      acpSessionId: "acp-session-1",
+      agentSessionId: "agent-session-1",
+      agent: "claude",
+      cwd: "/tmp/acpx",
+      mode: "persistent",
+      stateDir: "/tmp/acpx-state",
+      configFingerprint: "fingerprint",
+      workspaceId: "workspace-1",
+      repoUrl: "https://example.com/repo.git",
+      repoRef: "main",
+      remoteExecution: {
+        environmentId: "environment-1",
+        leaseId: "lease-1",
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      sessionKey: "paperclip:company:agent:task:fingerprint",
+      runtimeSessionName: "runtime-session-1",
+      acpxRecordId: "record-1",
+      acpSessionId: "acp-session-1",
+      agentSessionId: "agent-session-1",
+      agent: "claude",
+      cwd: "/tmp/acpx",
+      mode: "persistent",
+      stateDir: "/tmp/acpx-state",
+      configFingerprint: "fingerprint",
+      workspaceId: "workspace-1",
+      repoUrl: "https://example.com/repo.git",
+      repoRef: "main",
+      remoteExecution: {
+        environmentId: "environment-1",
+        leaseId: "lease-1",
+      },
+    });
+    expect(acpxSessionCodec.serialize(parsed)).toEqual(parsed);
+    expect(acpxSessionCodec.getDisplayId?.(parsed)).toBe("runtime-session-1");
+  });
 });
 
 describe("codex resume recovery detection", () => {
@@ -175,19 +220,19 @@ describe("cursor resume recovery detection", () => {
 describe("gemini resume recovery detection", () => {
   it("detects unknown session errors from gemini output", () => {
     expect(
-      isGeminiUnknownSessionError(
+      isGeminiSessionUnrecoverableError(
         "",
         "unknown session id abc",
       ),
     ).toBe(true);
     expect(
-      isGeminiUnknownSessionError(
+      isGeminiSessionUnrecoverableError(
         "",
         "checkpoint latest not found",
       ),
     ).toBe(true);
     expect(
-      isGeminiUnknownSessionError(
+      isGeminiSessionUnrecoverableError(
         "{\"type\":\"result\",\"subtype\":\"success\"}",
         "",
       ),

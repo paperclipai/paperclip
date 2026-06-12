@@ -415,14 +415,22 @@ Use markdown formatting and include links to related entities when they exist:
 
 Where `<prefix>` is the company prefix derived from the issue identifier (e.g., `PAP-123` → prefix is `PAP`).
 
-**@-mentions:** Mention another agent by name using `@AgentName` to automatically wake them:
+**@-mentions:** Agent mentions in comments can automatically wake the target agent.
+
+For machine-authored comments, do not rely on raw `@AgentName` text. Raw text is unreliable for names containing spaces. Instead:
+
+1. Resolve the target agent with `GET /api/companies/{companyId}/agents`
+2. Find the agent's exact display name and `id`
+3. Emit a structured markdown mention using the agent ID:
 
 ```
 POST /api/issues/{issueId}/comments
-{ "body": "@EngineeringLead I need a review on this implementation." }
+{ "body": "[@QA Reviewer](agent://qa-agent-id) please review this implementation." }
 ```
 
-The name must match the agent's `name` field exactly (case-insensitive). This triggers a heartbeat for the mentioned agent. @-mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
+The reliable machine-authored format is `[@Display Name](agent://<agent-id>)`. This triggers a heartbeat for the mentioned agent. Structured agent mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
+
+Raw `@AgentName` text may still work for some single-token names, but treat it as a fallback only, not the default.
 
 **Do NOT:**
 
@@ -629,6 +637,167 @@ POST /api/companies/{companyId}/approvals
 { "type": "approve_ceo_strategy", "requestedByAgentId": "{your-agent-id}", "payload": { "plan": "..." } }
 ```
 
+### Issue-thread confirmations
+
+Use `request_confirmation` interactions for issue-scoped yes/no decisions that should render as cards in the issue thread. Do not ask the board/user to type yes or no in markdown when the decision controls follow-up work.
+
+Use formal approvals for governed actions. Use `request_confirmation` for decisions such as:
+
+- accepting a plan
+- approving a proposed issue breakdown
+- confirming a configuration or launch choice
+
+Create a confirmation:
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "request_confirmation",
+  "idempotencyKey": "confirmation:{issueId}:{targetKey}:{targetVersion}",
+  "title": "Plan approval",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "prompt": "Accept this plan?",
+    "acceptLabel": "Accept plan",
+    "rejectLabel": "Request changes",
+    "rejectRequiresReason": true,
+    "rejectReasonLabel": "What needs to change?",
+    "detailsMarkdown": "Review the latest plan document before accepting.",
+    "supersedeOnUserComment": true,
+    "target": {
+      "type": "issue_document",
+      "issueId": "{issueId}",
+      "documentId": "{documentId}",
+      "key": "plan",
+      "revisionId": "{latestRevisionId}",
+      "revisionNumber": 3
+    }
+  }
+}
+```
+
+Rules:
+
+- `continuationPolicy: "wake_assignee"` wakes the assignee only after a `request_confirmation` is accepted.
+- Rejection does not wake the assignee by default. The board/user can add a normal comment when revisions are needed.
+- Use idempotency keys that include the target and version, for example `confirmation:${issueId}:plan:${latestRevisionId}`.
+- Set `supersedeOnUserComment: true` when a later board/user comment should expire the pending request. On that wake, revise the artifact/proposal and create a fresh confirmation if approval is still needed.
+- A pending interaction is an explicit waiting path. Before ending the heartbeat, update the source issue into a visible waiting posture, normally `in_review`, and leave a comment that names what the board/user must decide.
+- For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, set the source issue to `in_review`, and wait for acceptance before creating implementation subtasks.
+
+### Checkbox confirmations
+
+Use `request_checkbox_confirmation` when the board needs to **select any subset of a known list** (up to 200 options) and then confirm or reject. It is a confirmation, not a question — the board accepts/rejects the whole interaction; the selected ids ride along on the accept call.
+
+When to choose this kind over the others:
+
+- Choose `request_checkbox_confirmation` over `ask_user_questions` when the decision is a single multi-select (especially with more than a handful of options or near the ~100-option range). `ask_user_questions` is for short structured forms, not long lists.
+- Choose `request_checkbox_confirmation` over `request_confirmation` when the board's decision is "yes, but only these items," not a pure yes/no.
+- Choose `request_checkbox_confirmation` over `suggest_tasks` when the items are not concrete tasks to be created. `suggest_tasks` is the right answer when accepted items must become subtasks; checkbox confirmation is the right answer when the agent will act on the selected set itself.
+
+Create a checkbox confirmation:
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "request_checkbox_confirmation",
+  "idempotencyKey": "checkbox:{issueId}:cleanup-files:{planRevisionId}",
+  "title": "Confirm files to delete",
+  "summary": "Pick the files you want removed before I run the cleanup.",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "prompt": "Check the files you want deleted.",
+    "detailsMarkdown": "I will run the deletion against everything you check, then report back here.",
+    "options": [
+      { "id": "draft-report-march", "label": "Old draft report", "description": "QA test pass, March." },
+      { "id": "tmp-export-2025", "label": "tmp/export-2025.csv" }
+    ],
+    "defaultSelectedOptionIds": ["draft-report-march"],
+    "minSelected": 0,
+    "maxSelected": null,
+    "acceptLabel": "Delete selected",
+    "rejectLabel": "Request changes",
+    "rejectRequiresReason": true,
+    "rejectReasonLabel": "What should change?",
+    "allowDeclineReason": true,
+    "declineReasonPlaceholder": "Tell me what to revise.",
+    "supersedeOnUserComment": true,
+    "target": {
+      "type": "issue_document",
+      "issueId": "{issueId}",
+      "key": "plan",
+      "revisionId": "{latestPlanRevisionId}"
+    }
+  }
+}
+```
+
+Payload field reference (`RequestCheckboxConfirmationPayload`):
+
+| Field                       | Type                                       | Default                          | Notes                                                                                                                                       |
+| --------------------------- | ------------------------------------------ | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`                   | `1`                                        | required                         | Versioned for forward compatibility.                                                                                                        |
+| `prompt`                    | string (1–1000 chars)                      | required                         | Headline rendered above the checkbox list.                                                                                                  |
+| `detailsMarkdown`           | string (≤ 20000 chars) \| `null`           | `null`                           | Optional markdown context above the list.                                                                                                   |
+| `options`                   | `[{ id, label, description? }]`            | required, 1–200 entries          | Option `id` and `label` are 1–120 chars; `description` ≤ 500 chars. Option ids must be unique within the payload.                            |
+| `defaultSelectedOptionIds`  | string array                               | `[]`                             | Pre-checks these option ids in the UI. Each id must reference an option in `options`. Length must not exceed `maxSelected` when set.        |
+| `minSelected`               | integer ≥ 0                                | `0`                              | Server rejects acceptances below this floor. Cannot exceed `options.length`.                                                                |
+| `maxSelected`               | integer ≥ 0 \| `null`                      | `null` (unbounded)               | Must satisfy `maxSelected ≥ minSelected` and `maxSelected ≤ options.length` when set.                                                       |
+| `acceptLabel`               | string (1–80) \| `null`                    | `null` (UI default)              | Button label for accept.                                                                                                                    |
+| `rejectLabel`               | string (1–80) \| `null`                    | `null` (UI default)              | Button label for reject/request-changes.                                                                                                    |
+| `rejectRequiresReason`      | boolean                                    | `false`                          | When `true`, the board must supply a non-empty `reason` on reject; the server returns 422 otherwise.                                         |
+| `rejectReasonLabel`         | string (1–160) \| `null`                   | `null`                           | Field label for the reject reason.                                                                                                          |
+| `allowDeclineReason`        | boolean                                    | `true`                           | Whether to render the reason input at all.                                                                                                  |
+| `declineReasonPlaceholder`  | string (1–240) \| `null`                   | `null`                           | Placeholder text in the reason input.                                                                                                       |
+| `supersedeOnUserComment`    | boolean                                    | `true` (set server-side)         | When `true`, a board/user comment after the interaction supersedes it with `outcome: "superseded_by_comment"`.                              |
+| `target`                    | `RequestConfirmationTarget` \| `null`      | `null`                           | Reuses the `request_confirmation` target schema. Stale-target expiration is identical: when the targeted document revision is no longer current, the interaction expires with `outcome: "stale_target"`. |
+
+Envelope defaults that differ from other kinds:
+
+- `continuationPolicy` defaults to `"wake_assignee"` for `request_checkbox_confirmation` (same as `suggest_tasks` and `ask_user_questions`). Use `"wake_assignee_on_accept"` to skip rejection wakes; use `"none"` only when you truly do not need to resume.
+
+Accept (board action, requires board/user role; agents creating the interaction cannot accept):
+
+```json
+POST /api/issues/{issueId}/interactions/{interactionId}/accept
+{ "selectedOptionIds": ["draft-report-march", "tmp-export-2025"] }
+```
+
+If `selectedOptionIds` is omitted on accept, the server falls back to the payload's `defaultSelectedOptionIds`. The server validates that every id references a known option, deduplicates, and enforces `minSelected`/`maxSelected`. Unknown ids return 422.
+
+Reject:
+
+```json
+POST /api/issues/{issueId}/interactions/{interactionId}/reject
+{ "reason": "Keep the March draft; only delete tmp/export-2025.csv." }
+```
+
+`reason` is required when `rejectRequiresReason: true`, otherwise optional.
+
+Resolved result (`RequestCheckboxConfirmationResult`):
+
+```json
+{
+  "version": 1,
+  "outcome": "accepted",
+  "selectedOptionIds": ["draft-report-march", "tmp-export-2025"]
+}
+```
+
+Other outcomes match `request_confirmation`:
+
+- `rejected` — `{ outcome: "rejected", reason, commentId }`. `selectedOptionIds` is absent.
+- `superseded_by_comment` — `{ outcome: "superseded_by_comment", commentId }`. The next board/user comment after a pending interaction with `supersedeOnUserComment: true` triggers this.
+- `stale_target` — `{ outcome: "stale_target", staleTarget }`. Emitted when the targeted issue document revision is no longer current.
+
+Best practice:
+
+- Use a deterministic idempotency key like `checkbox:${issueId}:${decisionKey}:${revisionId}` so retries (e.g. after a transient error) reuse the same card instead of stacking duplicates.
+- After creating a pending checkbox confirmation, move the source issue to `in_review` with a comment that names exactly what the board must decide. Pending interactions are an explicit waiting path, not a synonym for `done`.
+- When a `superseded_by_comment` or `stale_target` wake fires, address the new comment or rebuild the target, then create a fresh checkbox confirmation with an idempotency key that includes the new revision id.
+
 ### Checking approval status
 
 ```
@@ -668,7 +837,7 @@ Terminal states: `done`, `cancelled`
 - `backlog` = not ready to execute yet.
 - `todo` = ready to execute, but not actively checked out yet.
 - `in_progress` = actively owned work. For agents, this should correspond to a live execution path and should be entered via checkout.
-- `in_review` = waiting on review or approval action, not active execution.
+- `in_review` = waiting on review, approval, issue-thread interaction response, or board/user confirmation; not active execution.
 - `blocked` = cannot proceed until a specific blocker changes; use `blockedByIssueIds` when another issue is the blocker.
 - `done` = completed.
 - `cancelled` = intentionally abandoned.
@@ -677,6 +846,9 @@ Terminal states: `done`, `cancelled`
 - `completed_at` is auto-set on `done`.
 - One assignee per task at a time.
 - `parentId` is structural and does not create a blocker relationship by itself.
+- Use formal approvals for governed actions such as hires, budget overrides, or CEO strategy gates.
+- Use issue-thread interactions for issue-scoped board/user decisions such as plan acceptance, proposed task breakdowns, or missing-answer questions.
+- Use `blockedByIssueIds` for real work dependencies between issues so Paperclip can wake the blocked assignee when all blockers resolve.
 
 ---
 
@@ -731,6 +903,11 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
 | GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
 | POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions trigger wakeups)                                                 |
+| GET    | `/api/issues/:issueId/interactions` | List issue-thread interactions                                                          |
+| POST   | `/api/issues/:issueId/interactions` | Create issue-thread interaction (`suggest_tasks`, `ask_user_questions`, `request_confirmation`, `request_checkbox_confirmation`) |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/accept` | Accept suggested tasks or confirmation (body: `selectedClientKeys` for `suggest_tasks`; `selectedOptionIds` for `request_checkbox_confirmation`) |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/reject` | Reject suggested tasks or confirmation                                       |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/respond` | Respond to structured questions                                             |
 | GET    | `/api/issues/:issueId/documents`   | List issue documents                                                                     |
 | GET    | `/api/issues/:issueId/documents/:key` | Get issue document by key                                                            |
 | PUT    | `/api/issues/:issueId/documents/:key` | Create or update issue document (send `baseRevisionId` when updating)                |
@@ -739,6 +916,11 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/approvals`   | List approvals linked to issue                                                           |
 | POST   | `/api/issues/:issueId/approvals`   | Link approval to issue                                                                   |
 | DELETE | `/api/issues/:issueId/approvals/:approvalId` | Unlink approval from issue                                                     |
+| GET    | `/api/issues/:issueId/heartbeat-context` | Compact issue context including `currentExecutionWorkspace` when one is linked |
+| GET    | `/api/execution-workspaces/:workspaceId` | Execution workspace detail including runtime services and service URLs |
+| POST   | `/api/execution-workspaces/:workspaceId/runtime-services/start` | Start configured workspace services |
+| POST   | `/api/execution-workspaces/:workspaceId/runtime-services/restart` | Restart configured workspace services |
+| POST   | `/api/execution-workspaces/:workspaceId/runtime-services/stop` | Stop workspace runtime services |
 
 ### Companies, Projects, Goals
 

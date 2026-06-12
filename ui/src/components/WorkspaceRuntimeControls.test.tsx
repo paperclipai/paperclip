@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildWorkspaceRuntimeControlItems,
   buildWorkspaceRuntimeControlSections,
+  WorkspaceRuntimeQuickControls,
   WorkspaceRuntimeControls,
 } from "./WorkspaceRuntimeControls";
 
@@ -75,6 +76,150 @@ describe("buildWorkspaceRuntimeControlSections", () => {
       statusLabel: "run once",
       workspaceCommandId: "db-migrate",
     });
+  });
+
+  it("keeps stopped stale runtime services from masking updated inherited commands", () => {
+    const sections = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [
+          { id: "web", name: "web", kind: "service", command: "pnpm dev:once --tailscale-auth" },
+        ],
+      },
+      runtimeServices: [
+        createRuntimeService({
+          id: "service-web",
+          serviceName: "web",
+          status: "stopped",
+          command: "pnpm dev",
+        }),
+      ],
+      canStartServices: true,
+      canRunJobs: true,
+    });
+
+    expect(sections.services).toEqual([
+      expect.objectContaining({
+        title: "web",
+        statusLabel: "stopped",
+        command: "pnpm dev:once --tailscale-auth",
+        runtimeServiceId: null,
+      }),
+    ]);
+    expect(sections.otherServices).toEqual([]);
+  });
+
+  it("surfaces running stale runtime services separately from updated commands", () => {
+    const sections = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [
+          { id: "web", name: "web", kind: "service", command: "pnpm dev:once --tailscale-auth" },
+        ],
+      },
+      runtimeServices: [
+        createRuntimeService({
+          id: "service-web",
+          serviceName: "web",
+          status: "running",
+          command: "pnpm dev",
+        }),
+      ],
+      canStartServices: true,
+      canRunJobs: true,
+    });
+
+    expect(sections.services).toEqual([
+      expect.objectContaining({
+        title: "web",
+        statusLabel: "stopped",
+        command: "pnpm dev:once --tailscale-auth",
+        runtimeServiceId: null,
+      }),
+    ]);
+    expect(sections.otherServices).toEqual([
+      expect.objectContaining({
+        title: "web",
+        statusLabel: "running",
+        command: "pnpm dev",
+        runtimeServiceId: "service-web",
+        disabledReason: "This runtime service no longer matches a configured workspace command.",
+      }),
+    ]);
+  });
+
+  it("surfaces running stale runtime services separately from updated commands", () => {
+    const sections = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [
+          { id: "web", name: "web", kind: "service", command: "pnpm dev:once --tailscale-auth" },
+        ],
+      },
+      runtimeServices: [
+        createRuntimeService({
+          id: "service-web",
+          serviceName: "web",
+          status: "running",
+          command: "pnpm dev",
+        }),
+      ],
+      canStartServices: true,
+      canRunJobs: true,
+    });
+
+    expect(sections.services).toEqual([
+      expect.objectContaining({
+        title: "web",
+        statusLabel: "stopped",
+        command: "pnpm dev:once --tailscale-auth",
+        runtimeServiceId: null,
+      }),
+    ]);
+    expect(sections.otherServices).toEqual([
+      expect.objectContaining({
+        title: "web",
+        statusLabel: "running",
+        command: "pnpm dev",
+        runtimeServiceId: "service-web",
+        disabledReason: "This runtime service no longer matches a configured workspace command.",
+      }),
+    ]);
+  });
+
+  it("surfaces running stale runtime services separately from updated commands", () => {
+    const sections = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [
+          { id: "web", name: "web", kind: "service", command: "pnpm dev:once --tailscale-auth" },
+        ],
+      },
+      runtimeServices: [
+        createRuntimeService({
+          id: "service-web",
+          serviceName: "web",
+          status: "running",
+          command: "pnpm dev",
+        }),
+      ],
+      canStartServices: true,
+      canRunJobs: true,
+    });
+
+    expect(sections.services).toEqual([
+      expect.objectContaining({
+        title: "web",
+        statusLabel: "stopped",
+        command: "pnpm dev:once --tailscale-auth",
+        runtimeServiceId: null,
+      }),
+    ]);
+    expect(sections.otherServices).toEqual([
+      expect.objectContaining({
+        title: "web",
+        statusLabel: "running",
+        command: "pnpm dev",
+        runtimeServiceId: "service-web",
+        disabledReason: "This runtime service no longer matches a configured workspace command.",
+      }),
+    ]);
   });
 });
 
@@ -145,6 +290,41 @@ describe("WorkspaceRuntimeControls", () => {
     expect(buttons).toEqual(["Stop", "Restart", "Run"]);
     expect(container.textContent).toContain("Services");
     expect(container.textContent).toContain("Jobs");
+
+    act(() => root.unmount());
+  });
+
+  it("lets quick action buttons inherit the shared button shape tokens", () => {
+    const sections = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [
+          { id: "web", name: "web", kind: "service", command: "pnpm dev" },
+        ],
+      },
+      runtimeServices: [
+        createRuntimeService({ id: "service-web", serviceName: "web", status: "running" }),
+      ],
+      canStartServices: true,
+    });
+
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <WorkspaceRuntimeQuickControls
+          sections={sections}
+          onAction={vi.fn()}
+        />,
+      );
+    });
+
+    const buttons = Array.from(container.querySelectorAll("button"));
+    expect(buttons).toHaveLength(2);
+    for (const button of buttons) {
+      expect(button.className).toContain("rounded-md");
+      expect(button.className).not.toContain("rounded-none");
+      expect(button.className).not.toContain("rounded-xl");
+      expect(button.className).not.toContain("shadow-none");
+    }
 
     act(() => root.unmount());
   });
@@ -233,6 +413,42 @@ describe("WorkspaceRuntimeControls", () => {
     });
 
     expect(container.textContent).not.toContain("unknown");
+
+    act(() => root.unmount());
+  });
+
+  it("can render square plain surfaces for embedded configuration pages", () => {
+    const sections = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [
+          { id: "web", name: "web", kind: "service", command: "pnpm dev" },
+        ],
+      },
+      runtimeServices: [],
+      canStartServices: true,
+    });
+
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <WorkspaceRuntimeControls
+          sections={sections}
+          square
+          onAction={vi.fn()}
+        />,
+      );
+    });
+
+    const summaryPanel = container.querySelector(".border.border-border\\/70");
+    const servicePanel = Array.from(container.querySelectorAll(".border.border-border\\/80"))
+      .find((element) => element.textContent?.includes("web"));
+    const startButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Start");
+
+    expect(summaryPanel?.className).toContain("rounded-none");
+    expect(summaryPanel?.className).not.toContain("bg-background/60");
+    expect(servicePanel?.className).toContain("rounded-none");
+    expect(startButton?.className).toContain("rounded-none");
 
     act(() => root.unmount());
   });

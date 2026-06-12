@@ -7,19 +7,33 @@ type RoutineTemplateInput = string | null | undefined | Array<string | null | un
  * Built-in variable names that are automatically available in routine templates
  * without needing to be defined in the routine's variables list.
  */
-export const BUILTIN_ROUTINE_VARIABLE_NAMES = new Set(["date"]);
+export const BUILTIN_ROUTINE_VARIABLE_NAMES = new Set(["date", "timestamp"]);
 
 export function isBuiltinRoutineVariable(name: string): boolean {
   return BUILTIN_ROUTINE_VARIABLE_NAMES.has(name);
 }
 
+const HUMAN_TIMESTAMP_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  hour12: true,
+  timeZone: "UTC",
+  timeZoneName: "short",
+});
+
 /**
  * Returns current values for all built-in routine variables.
  * `date` expands to the current date in YYYY-MM-DD format (UTC).
+ * `timestamp` expands to a human-readable date and time (e.g. "April 28, 2026 at 12:17 PM UTC").
  */
 export function getBuiltinRoutineVariableValues(): Record<string, string> {
+  const now = new Date();
   return {
-    date: new Date().toISOString().slice(0, 10),
+    date: now.toISOString().slice(0, 10),
+    timestamp: HUMAN_TIMESTAMP_FORMATTER.format(now),
   };
 }
 
