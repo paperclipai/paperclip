@@ -2887,6 +2887,113 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Latest cause: `adapter_failed`");
   });
 
+  it("counts adapter_failed continuation retries across intervening non-continuation rows", async () => {
+    // Regression for ZDA-3163: a GM-driven manual reassignment (issue_assigned)
+    // or other non-continuation wake row used to reset the consecutive counter
+    // so the transient cap never tripped, even with three adapter_failed runs.
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "adapter_failed",
+      runError: "ssh: connection reset",
+    });
+
+    const earlierContinuation = new Date("2026-03-18T23:55:00.000Z");
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "failed",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+        source: "issue.continuation_recovery",
+      },
+      errorCode: "adapter_failed",
+      error: "ssh: connection reset",
+      startedAt: earlierContinuation,
+      finishedAt: earlierContinuation,
+      createdAt: earlierContinuation,
+      updatedAt: earlierContinuation,
+    });
+
+    // Intervening GM-style manual reassign row — fresh assignment wake, not a
+    // continuation retry. The cap must look past this and keep counting.
+    const interveningReassign = new Date("2026-03-18T23:52:00.000Z");
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "failed",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+        source: "gm.reassign",
+      },
+      errorCode: "adapter_failed",
+      error: "ssh: connection reset",
+      startedAt: interveningReassign,
+      finishedAt: interveningReassign,
+      createdAt: interveningReassign,
+      updatedAt: interveningReassign,
+    });
+
+    const oldestContinuation = new Date("2026-03-18T23:50:00.000Z");
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "failed",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+        source: "issue.continuation_recovery",
+      },
+      errorCode: "adapter_failed",
+      error: "ssh: connection reset",
+      startedAt: oldestContinuation,
+      finishedAt: oldestContinuation,
+      createdAt: oldestContinuation,
+      updatedAt: oldestContinuation,
+    });
+
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+      retryReason: "issue_continuation_needed",
+    });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("3× attempts");
+    expect(comments[0]?.body).toContain("Latest cause: `adapter_failed`");
+  });
+
   it("does not count mixed-cause continuation failures toward the transient cap", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",

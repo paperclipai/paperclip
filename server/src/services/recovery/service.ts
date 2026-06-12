@@ -521,6 +521,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         and(
           eq(heartbeatRuns.companyId, companyId),
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          sql`${heartbeatRuns.contextSnapshot} ->> 'retryReason' = 'issue_continuation_needed'`,
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
@@ -529,9 +530,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     let consecutive = 0;
     let latestFinishedAt: Date | null = null;
     for (const row of rows) {
-      const ctx = parseObject(row.contextSnapshot);
-      const retryReason = readNonEmptyString(ctx.retryReason);
-      if (retryReason !== "issue_continuation_needed") break;
       if (
         !UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
           row.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
