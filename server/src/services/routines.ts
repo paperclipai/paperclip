@@ -102,7 +102,7 @@ function floorToMinute(date: Date) {
   return copy;
 }
 
-function getZonedMinuteParts(date: Date, timeZone: string) {
+export function getZonedMinuteParts(date: Date, timeZone: string) {
   const formatter = new Intl.DateTimeFormat("en-US", {
     timeZone,
     hour12: false,
@@ -123,7 +123,9 @@ function getZonedMinuteParts(date: Date, timeZone: string) {
     year: Number(map.year),
     month: Number(map.month),
     day: Number(map.day),
-    hour: Number(map.hour),
+    // Some ICU versions resolve `hour12: false` to the h24 cycle, formatting
+    // midnight as "24" instead of "0"; normalize so midnight crons match.
+    hour: Number(map.hour) % 24,
     minute: Number(map.minute),
     weekday,
   };
@@ -141,7 +143,7 @@ function matchesCronMinute(expression: string, timeZone: string, date: Date) {
   );
 }
 
-function nextCronTickInTimeZone(expression: string, timeZone: string, after: Date) {
+export function nextCronTickInTimeZone(expression: string, timeZone: string, after: Date) {
   const trimmed = expression.trim();
   assertTimeZone(timeZone);
   const error = validateCron(trimmed);
