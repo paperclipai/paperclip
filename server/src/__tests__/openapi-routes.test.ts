@@ -25,6 +25,7 @@ const apiPrefixes: Record<string, string> = {
   "dashboard.ts": "/api",
   "environments.ts": "/api",
   "execution-workspaces.ts": "/api",
+  "git-ops.ts": "/api",
   "goals.ts": "/api",
   "health.ts": "/api/health",
   "inbox-dismissals.ts": "/api",

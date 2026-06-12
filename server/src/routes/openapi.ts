@@ -58,6 +58,9 @@ import {
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
+  // Git-ops
+  gitPushRequestSchema,
+  openPullRequestSchema,
   // Cost / budget
   createCostEventSchema,
   createFinanceEventSchema,
@@ -2085,6 +2088,30 @@ registry.registerPath({
     body: jsonBody(agentDecideApprovalSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/git/push",
+  tags: ["issues"],
+  summary: "Push the issue's worktree branch to the configured fork (assigned agent only)",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(gitPushRequestSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/git/pr",
+  tags: ["issues"],
+  summary: "Open or return the pull request for the issue branch (assigned agent only)",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(openPullRequestSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registry.registerPath({
