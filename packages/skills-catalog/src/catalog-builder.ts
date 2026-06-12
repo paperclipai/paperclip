@@ -531,7 +531,11 @@ async function fetchGitHubTree(
   try {
     const response = await fetch(url, { headers: { accept: "application/vnd.github+json" } });
     if (!response.ok) {
-      errors.push(`${prefix} failed to fetch GitHub tree: HTTP ${response.status}.`);
+      if (response.status === 403) {
+        console.warn(`⚠ ${prefix} failed to fetch GitHub tree: HTTP 403 (skipping — token may lack access).`);
+      } else {
+        errors.push(`${prefix} failed to fetch GitHub tree: HTTP ${response.status}.`);
+      }
       return [];
     }
     const body = await response.json() as { tree?: GitHubTreeEntry[]; truncated?: boolean };
@@ -568,7 +572,11 @@ async function fetchReferencedFileBytes(
   try {
     const response = await fetch(url);
     if (!response.ok) {
-      errors.push(`${prefix}/${normalizedPath} failed to fetch pinned GitHub file: HTTP ${response.status}.`);
+      if (response.status === 403) {
+        console.warn(`⚠ ${prefix}/${normalizedPath} failed to fetch pinned GitHub file: HTTP 403 (skipping — token may lack access).`);
+      } else {
+        errors.push(`${prefix}/${normalizedPath} failed to fetch pinned GitHub file: HTTP ${response.status}.`);
+      }
       return null;
     }
     return Buffer.from(await response.arrayBuffer());
