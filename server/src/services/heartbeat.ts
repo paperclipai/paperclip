@@ -6686,7 +6686,57 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      cancelRunOnReassignment: asBoolean(heartbeat.cancelRunOnReassignment, false),
     };
+  }
+
+  async function cancelRunForReassignedIssue(issueId: string, previousAgentId: string) {
+    const agent = await getAgent(previousAgentId);
+    if (!agent) return null;
+
+    const policy = parseHeartbeatPolicy(agent);
+    if (!policy.cancelRunOnReassignment) return null;
+
+    // First check the issue's executionRunId
+    const [issueRow] = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .limit(1);
+
+    let runId: string | null = issueRow?.executionRunId ?? null;
+
+    if (runId) {
+      // Verify the run is actually running and belongs to this agent
+      const [candidateRun] = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, agentId: heartbeatRuns.agentId })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .limit(1);
+      if (!candidateRun || candidateRun.status !== "running" || candidateRun.agentId !== previousAgentId) {
+        runId = null;
+      }
+    }
+
+    if (!runId) {
+      // Fall back to searching heartbeatRuns by agentId + issueId + running status
+      const [fallbackRun] = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, previousAgentId),
+            eq(heartbeatRuns.status, "running"),
+            eq(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId'`, issueId),
+          ),
+        )
+        .limit(1);
+      runId = fallbackRun?.id ?? null;
+    }
+
+    if (!runId) return null;
+
+    return cancelRunInternal(runId, "Cancelled because the issue was reassigned", { errorCode: "issue_reassigned" });
   }
 
   function parseMaxTurnContinuationPolicy(agent: typeof agents.$inferSelect): MaxTurnContinuationPolicy {
@@ -11523,6 +11573,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     cancelRun: (runId: string, reason?: string, options?: CancelRunOptions) => cancelRunInternal(runId, reason, options),
+
+    cancelRunForReassignedIssue,
 
     cancelActiveForAgent: (agentId: string, reason?: string) => cancelActiveForAgentInternal(agentId, reason),
 

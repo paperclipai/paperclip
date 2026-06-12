@@ -12,6 +12,7 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   buildIssueGraphLivenessAutoRecoveryPreview: vi.fn(),
   reconcileIssueGraphLiveness: vi.fn(),
+  cancelRunForReassignedIssue: vi.fn(async () => null),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 

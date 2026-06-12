@@ -26,7 +26,9 @@ const mockBudgetService = vi.hoisted(() => ({}));
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
-const mockHeartbeatService = vi.hoisted(() => ({}));
+const mockHeartbeatService = vi.hoisted(() => ({
+  cancelRunForReassignedIssue: vi.fn(async () => null),
+}));
 const mockIssueApprovalService = vi.hoisted(() => ({
   linkManyForApproval: vi.fn(),
 }));
