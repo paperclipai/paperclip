@@ -210,6 +210,11 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       config: { template: "base" },
       runId: run!.id,
       workspaceMode: "shared_workspace",
+      // Pins the HEARTBEAT-path lease call forwarding the AGENT's adapter type
+      // (per-run adapter / mixed-harness envs). environment-runtime.ts has two
+      // drivers calling environmentAcquireLease; regressions here previously
+      // shipped by editing only the non-heartbeat one.
+      adapterType: "codex_local",
     });
     await vi.waitFor(() => {
       expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentReleaseLease", {
@@ -427,6 +432,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       config: { template: "new" },
       runId: run!.id,
       workspaceMode: "shared_workspace",
+      adapterType: "codex_local",
     });
   }, 15_000);
 });

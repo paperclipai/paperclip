@@ -19,7 +19,7 @@ import { authApi } from "../api/auth";
 import { projectsApi } from "../api/projects";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
-import { cn, projectRouteRef } from "../lib/utils";
+import { cn, projectRouteRef, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { resourceMembershipState, useResourceMembershipMutation, useResourceMemberships } from "../hooks/useResourceMemberships";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
@@ -32,6 +32,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import {
   getProjectSortModeStorageKey,
@@ -59,6 +60,7 @@ type ProjectItemProps = {
   isMobile: boolean;
   project: Project;
   projectSidebarSlots: ProjectSidebarSlot[];
+  rail: boolean;
   setSidebarOpen: (open: boolean) => void;
   onLeaveProject: (project: Project) => void;
   leaving?: boolean;
@@ -113,6 +115,7 @@ function ProjectItem({
   isMobile,
   project,
   projectSidebarSlots,
+  rail,
   setSidebarOpen,
   onLeaveProject,
   leaving = false,
@@ -120,31 +123,50 @@ function ProjectItem({
 }: ProjectItemProps) {
   const routeRef = projectRouteRef(project);
 
+  const link = (
+    <NavLink
+      to={`/projects/${routeRef}/issues`}
+      state={SIDEBAR_SCROLL_RESET_STATE}
+      onClick={(e) => {
+        if (isDragging) {
+          e.preventDefault();
+          return;
+        }
+        if (isMobile) setSidebarOpen(false);
+      }}
+      className={cn(
+        "flex min-w-0 flex-1 items-center gap-2.5 px-3 py-1.5 pr-8 pointer-coarse:py-1 text-[13px] font-medium transition-colors",
+        activeProjectRef === routeRef || activeProjectRef === project.id
+          ? "bg-accent text-foreground"
+          : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+      )}
+    >
+      <ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="xs" />
+      <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "flex-1 truncate"}>{project.name}</span>
+      {!rail && project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
+    </NavLink>
+  );
+
   return (
     <div className="flex flex-col gap-0.5">
       <div className="group/project relative flex items-center">
-        <NavLink
-          to={`/projects/${routeRef}/issues`}
-          state={SIDEBAR_SCROLL_RESET_STATE}
-          onClick={(e) => {
-            if (isDragging) {
-              e.preventDefault();
-              return;
-            }
-            if (isMobile) setSidebarOpen(false);
-          }}
-          className={cn(
-            "flex min-w-0 flex-1 items-center gap-2.5 px-3 py-1.5 pr-8 pointer-coarse:py-1 text-[13px] font-medium transition-colors",
-            activeProjectRef === routeRef || activeProjectRef === project.id
-              ? "bg-accent text-foreground"
-              : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
-          )}
-        >
-          <ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="xs" />
-          <span className="flex-1 truncate">{project.name}</span>
-          {project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
-        </NavLink>
+        {rail ? (
+          // Anchor the tooltip to a wrapper, not the NavLink: Radix `asChild`
+          // (Slot) drops React Router's function className, which would strip
+          // `flex` off the <a> and let the in-flow label stack under the icon,
+          // growing the row. Keeping the <a> out of Slot preserves a 1:1 row
+          // height with the expanded state so the icon never moves (PAP-10676).
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="min-w-0 flex-1">{link}</div>
+            </TooltipTrigger>
+            <TooltipContent side="right">{project.name}</TooltipContent>
+          </Tooltip>
+        ) : (
+          link
+        )}
 
+        {!rail && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -174,8 +196,9 @@ function ProjectItem({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        )}
       </div>
-      {projectSidebarSlots.length > 0 && (
+      {!rail && projectSidebarSlots.length > 0 && (
         <div className="ml-5 flex flex-col gap-0.5">
           {projectSidebarSlots.map((slot) => (
             <PluginSlotMount
@@ -229,7 +252,8 @@ export function SidebarProjects() {
   const [open, setOpen] = useState(true);
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { openNewProject } = useDialogActions();
-  const { isMobile, setSidebarOpen } = useSidebar();
+  const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
+  const rail = collapsed && !peeking;
   const fineReorderPointer = useFineReorderPointer();
   const location = useLocation();
 
@@ -373,6 +397,7 @@ export function SidebarProjects() {
       isMobile={isMobile}
       project={project}
       projectSidebarSlots={projectSidebarSlots}
+      rail={rail}
       setSidebarOpen={setSidebarOpen}
       onLeaveProject={leaveProject}
       leaving={projectLeaving(project)}
@@ -420,6 +445,7 @@ export function SidebarProjects() {
                   isMobile={isMobile}
                   project={project}
                   projectSidebarSlots={projectSidebarSlots}
+                  rail={rail}
                   setSidebarOpen={setSidebarOpen}
                   onLeaveProject={leaveProject}
                   leaving={projectLeaving(project)}

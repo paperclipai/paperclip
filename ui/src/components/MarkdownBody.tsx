@@ -11,8 +11,10 @@ import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chi
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
+import { parseWorkspaceFileHref, remarkWorkspaceFileRefs, WORKSPACE_FILE_HREF_PREFIX } from "../lib/remark-workspace-file-refs";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
+import { WorkspaceFileLink } from "./WorkspaceFileLink";
 
 interface MarkdownBodyProps {
   children: string;
@@ -30,6 +32,8 @@ interface MarkdownBodyProps {
   resolveImageSrc?: (src: string) => string | null;
   /** Called when a user clicks an inline image */
   onImageClick?: (src: string) => void;
+  /** Link inline-code workspace file paths to the issue file viewer. */
+  linkWorkspaceFileRefs?: boolean;
 }
 
 let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = null;
@@ -160,6 +164,7 @@ function extractMermaidSource(children: ReactNode): string | null {
 }
 
 function safeMarkdownUrlTransform(url: string): string {
+  if (url.startsWith(WORKSPACE_FILE_HREF_PREFIX)) return url;
   return parseMentionChipHref(url) ? url : defaultUrlTransform(url);
 }
 
@@ -569,6 +574,7 @@ export function MarkdownBody({
   resolveWikiLinkHref,
   resolveImageSrc,
   onImageClick,
+  linkWorkspaceFileRefs = false,
 }: MarkdownBodyProps) {
   const { theme } = useTheme();
   // Read company prefixes non-throwingly: MarkdownBody renders in surfaces that
@@ -581,6 +587,9 @@ export function MarkdownBody({
   const remarkPlugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm];
   if (enableWikiLinks) {
     remarkPlugins.push(createRemarkWikiLinks({ wikiLinkRoot, resolveWikiLinkHref }));
+  }
+  if (linkWorkspaceFileRefs) {
+    remarkPlugins.push(remarkWorkspaceFileRefs);
   }
   if (linkIssueReferences) {
     remarkPlugins.push([remarkLinkIssueReferences, { knownPrefixes }]);
@@ -634,6 +643,17 @@ export function MarkdownBody({
       </code>
     ),
     a: ({ node: _node, href, style: linkStyle, children: linkChildren, ...anchorProps }) => {
+      const workspaceFileRef = parseWorkspaceFileHref(href);
+      if (workspaceFileRef) {
+        return (
+          <WorkspaceFileLink
+            workspaceFileRef={workspaceFileRef}
+            label={linkChildren}
+            className={typeof anchorProps.className === "string" ? anchorProps.className : undefined}
+          />
+        );
+      }
+
       const dataProps = anchorProps as Record<string, unknown>;
       const isWikiLink = dataProps["data-paperclip-wiki-link"] === "true";
       if (isWikiLink && href && !/^[a-z][a-z\d+.-]*:/i.test(href) && !href.startsWith("//")) {

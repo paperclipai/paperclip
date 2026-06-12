@@ -18,8 +18,12 @@ import {
   resolveNextSessionState,
   resolveWorkspaceAfterLowTrustPreflight,
   resolveRuntimeSessionParamsForWorkspace,
+  shouldDeferFollowupWakeForSameIssue,
   stripHostWorkspaceProvisionForLowTrustSandbox,
   stripWorkspaceRuntimeFromExecutionRunConfig,
+  shouldResetTaskSessionForModelChange,
+  stripConfiguredModelFromSessionParams,
+  normalizeSessionParams,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
@@ -879,6 +883,159 @@ describe("shouldResetTaskSessionForWake", () => {
   });
 });
 
+describe("shouldDeferFollowupWakeForSameIssue", () => {
+  it("defers a same-agent follow-up for mention-style comment wakes while a run is active", () => {
+    expect(
+      shouldDeferFollowupWakeForSameIssue({
+        activeRunStatus: "running",
+        isSameExecutionAgent: true,
+        wakeCommentId: "comment-1",
+        forceFreshSession: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("defers a same-agent follow-up when a fresh session is explicitly requested", () => {
+    expect(
+      shouldDeferFollowupWakeForSameIssue({
+        activeRunStatus: "running",
+        isSameExecutionAgent: true,
+        wakeCommentId: null,
+        forceFreshSession: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not defer when the existing run is only queued", () => {
+    expect(
+      shouldDeferFollowupWakeForSameIssue({
+        activeRunStatus: "queued",
+        isSameExecutionAgent: true,
+        wakeCommentId: null,
+        forceFreshSession: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not defer normal same-agent wakes without a comment or fresh-session request", () => {
+    expect(
+      shouldDeferFollowupWakeForSameIssue({
+        activeRunStatus: "running",
+        isSameExecutionAgent: true,
+        wakeCommentId: null,
+        forceFreshSession: false,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldResetTaskSessionForModelChange", () => {
+  it("resets when configured model differs from persisted session model", () => {
+    expect(
+      shouldResetTaskSessionForModelChange({
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: {
+          sessionId: "thread-1",
+          __paperclipConfiguredModel: "opencode/mimo-v2-pro-free",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("does not reset when models match", () => {
+    expect(
+      shouldResetTaskSessionForModelChange({
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: {
+          sessionId: "thread-1",
+          __paperclipConfiguredModel: "gpt-5.4-mini",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("does not reset when persisted session model is missing", () => {
+    expect(
+      shouldResetTaskSessionForModelChange({
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: {
+          sessionId: "thread-1",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("does not reset when configured model is missing", () => {
+    expect(
+      shouldResetTaskSessionForModelChange({
+        configuredModel: null,
+        taskSessionParams: {
+          sessionId: "thread-1",
+          __paperclipConfiguredModel: "gpt-5.4-mini",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("does not reset when task session params are missing", () => {
+    expect(
+      shouldResetTaskSessionForModelChange({
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: null,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("stripConfiguredModelFromSessionParams", () => {
+  it("removes the internal model key from persisted session params", () => {
+    expect(
+      stripConfiguredModelFromSessionParams({
+        sessionId: "thread-1",
+        __paperclipConfiguredModel: "gpt-5.4-mini",
+      }),
+    ).toEqual({ sessionId: "thread-1" });
+  });
+
+  it("returns null when session params are missing", () => {
+    expect(stripConfiguredModelFromSessionParams(null)).toBeNull();
+    expect(stripConfiguredModelFromSessionParams(undefined)).toBeNull();
+  });
+
+  it("returns a copy without mutating the input", () => {
+    const input = { sessionId: "thread-1", __paperclipConfiguredModel: "gpt-5.4-mini" };
+    const result = stripConfiguredModelFromSessionParams(input);
+    expect(result).not.toBe(input);
+    expect(input.__paperclipConfiguredModel).toBe("gpt-5.4-mini");
+  });
+
+  it("returns an empty object when only the internal model key is present (caller must normalize)", () => {
+    const stripped = stripConfiguredModelFromSessionParams({
+      __paperclipConfiguredModel: "gpt-5.4-mini",
+    });
+    expect(stripped).toEqual({});
+    // Callers that forward params to adapters must normalize {} back to null so
+    // the pre-PR null contract is preserved (adapters distinguishing {} from null).
+    expect(normalizeSessionParams(stripped)).toBeNull();
+  });
+});
+
+describe("normalizeSessionParams", () => {
+  it("collapses an empty object to null", () => {
+    expect(normalizeSessionParams({})).toBeNull();
+  });
+
+  it("returns null for null or undefined inputs", () => {
+    expect(normalizeSessionParams(null)).toBeNull();
+    expect(normalizeSessionParams(undefined)).toBeNull();
+  });
+
+  it("preserves a non-empty object", () => {
+    const params = { sessionId: "thread-1" };
+    expect(normalizeSessionParams(params)).toBe(params);
+  });
+});
+
 describe("deriveTaskKeyWithHeartbeatFallback", () => {
   it("returns explicit taskKey when present", () => {
     expect(deriveTaskKeyWithHeartbeatFallback({ taskKey: "issue-123" }, null)).toBe("issue-123");
@@ -930,6 +1087,21 @@ describe("comment wake batching", () => {
     expect(merged.commentId).toBe("comment-2");
     expect(merged.wakeCommentId).toBe("comment-2");
     expect(merged.paperclipWake).toBeUndefined();
+  });
+
+  it("keeps forceFreshSession sticky once any coalesced wake requests it", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      {
+        issueId: "issue-1",
+        forceFreshSession: true,
+      },
+      {
+        issueId: "issue-1",
+        forceFreshSession: false,
+      },
+    );
+
+    expect(merged.forceFreshSession).toBe(true);
   });
 });
 

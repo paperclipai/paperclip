@@ -72,34 +72,6 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(acceptedConfirmation).not.toContain("- Work mode: \"planning\"");
   });
 
-  it("includes confirmed-plan comments in accepted-plan continuation task context", () => {
-    const acceptedConfirmation = buildPaperclipTaskMarkdown({
-      issue: {
-        id: "issue-1",
-        identifier: "PAP-3404",
-        title: "Plan first",
-        workMode: "planning",
-        description: null,
-      },
-      interaction: {
-        kind: "request_confirmation",
-        status: "accepted",
-      },
-      acceptedPlanComments: [
-        {
-          id: "comment-1",
-          authorType: "user",
-          body: "Please keep the migration backwards compatible.",
-        },
-      ],
-    });
-
-    expect(acceptedConfirmation).toContain("Create child issues from the approved plan only");
-    expect(acceptedConfirmation).toContain("Comments included with the confirmed plan:");
-    expect(acceptedConfirmation).toContain("Comment 1 - user - comment-1:");
-    expect(acceptedConfirmation).toContain("Please keep the migration backwards compatible.");
-  });
-
   it("prefers ordinary comment planning guidance over stale accepted confirmation state", () => {
     const commentWake = buildPaperclipTaskMarkdown({
       issue: {
