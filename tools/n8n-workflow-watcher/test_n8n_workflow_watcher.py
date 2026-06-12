@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import unittest
 import n8n_workflow_watcher as w
 
@@ -112,6 +113,66 @@ class StateRoundTrip(unittest.TestCase):
             with open(path, "w") as fh:
                 fh.write("{not json")
             self.assertEqual(w.load_state(path), {})
+
+
+class DbQuery(unittest.TestCase):
+    def _make_db(self):
+        conn = sqlite3.connect(":memory:")
+        conn.executescript(
+            """
+            CREATE TABLE workflow_entity (id TEXT PRIMARY KEY, name TEXT, active INTEGER);
+            CREATE TABLE execution_entity (
+                id INTEGER PRIMARY KEY, workflowId TEXT, status TEXT, mode TEXT,
+                startedAt TEXT, stoppedAt TEXT, deletedAt TEXT
+            );
+            """
+        )
+        conn.execute("INSERT INTO workflow_entity VALUES ('wf1','Digest',1)")
+        conn.execute("INSERT INTO workflow_entity VALUES ('wf2','Clara',1)")
+        conn.execute("INSERT INTO workflow_entity VALUES ('wf3','Inactive',0)")
+        # wf1: latest is error
+        conn.execute("INSERT INTO execution_entity VALUES "
+                     "(10,'wf1','success','trigger',datetime('now','-3 hours'),"
+                     "datetime('now','-3 hours'),NULL)")
+        conn.execute("INSERT INTO execution_entity VALUES "
+                     "(11,'wf1','error','trigger',datetime('now','-1 hours'),"
+                     "datetime('now','-1 hours'),NULL)")
+        # wf2: many old errors, latest success
+        conn.execute("INSERT INTO execution_entity VALUES "
+                     "(20,'wf2','error','trigger',datetime('now','-5 hours'),"
+                     "datetime('now','-5 hours'),NULL)")
+        conn.execute("INSERT INTO execution_entity VALUES "
+                     "(21,'wf2','success','trigger',datetime('now','-2 hours'),"
+                     "datetime('now','-2 hours'),NULL)")
+        # wf3 inactive: should never appear
+        conn.execute("INSERT INTO execution_entity VALUES "
+                     "(30,'wf3','error','trigger',datetime('now','-1 hours'),"
+                     "datetime('now','-1 hours'),NULL)")
+        # out-of-window error for wf1 must not override
+        conn.execute("INSERT INTO execution_entity VALUES "
+                     "(40,'wf1','crashed','trigger',datetime('now','-30 days'),"
+                     "datetime('now','-30 days'),NULL)")
+        conn.commit()
+        return conn
+
+    def test_returns_latest_per_active_workflow(self):
+        conn = self._make_db()
+        rows = w._dedup_latest(w.fetch_active_workflow_latest(conn))
+        by_id = {r[0]: r for r in rows}
+        self.assertEqual(set(by_id), {"wf1", "wf2"})           # wf3 inactive excluded
+        self.assertEqual(by_id["wf1"][3], "error")             # latest in-window status
+        self.assertEqual(by_id["wf1"][4], 11)                  # exec_id 11, not the 30d-old 40
+        self.assertEqual(by_id["wf2"][3], "success")
+
+    def test_count_active(self):
+        conn = self._make_db()
+        self.assertEqual(w.count_active(conn), 2)
+
+    def test_end_to_end_detection(self):
+        conn = self._make_db()
+        rows = w._dedup_latest(w.fetch_active_workflow_latest(conn))
+        findings = w.find_failed_workflows(rows)
+        self.assertEqual([f["id"] for f in findings], ["wf1"])
 
 
 if __name__ == "__main__":

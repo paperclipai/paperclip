@@ -124,3 +124,45 @@ def save_state(state, path=STATE_PATH):
     with open(tmp, "w") as fh:
         json.dump(state, fh, indent=2)
     os.replace(tmp, path)
+
+
+_LATEST_QUERY = """
+SELECT w.id, w.name, e.mode, e.status, e.id, e.startedAt
+FROM workflow_entity w
+JOIN (
+    SELECT workflowId, MAX(startedAt) AS ms
+    FROM execution_entity
+    WHERE stoppedAt > datetime('now', ?) AND deletedAt IS NULL
+    GROUP BY workflowId
+) m ON m.workflowId = w.id
+JOIN execution_entity e
+    ON e.workflowId = w.id AND e.startedAt = m.ms
+WHERE w.active = 1
+"""
+
+
+def open_db_ro(path=N8N_DB):
+    return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
+
+
+def fetch_active_workflow_latest(conn, window_days=WINDOW_DAYS):
+    cur = conn.execute(_LATEST_QUERY, (f"-{window_days} days",))
+    return cur.fetchall()
+
+
+def _dedup_latest(rows):
+    """Falls zwei Executions denselben startedAt haben: pro Workflow die mit der
+    größten exec_id behalten. Spalten-Layout bleibt (wf_id,name,mode,status,exec_id,started)."""
+    by_wf = {}
+    for r in rows:
+        wf_id, exec_id = r[0], r[4]
+        prev = by_wf.get(wf_id)
+        if prev is None or exec_id > prev[4]:
+            by_wf[wf_id] = r
+    return list(by_wf.values())
+
+
+def count_active(conn):
+    return conn.execute(
+        "SELECT COUNT(*) FROM workflow_entity WHERE active = 1"
+    ).fetchone()[0]
