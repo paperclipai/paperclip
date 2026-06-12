@@ -53,6 +53,26 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     await tempDb?.cleanup();
   });
 
+  async function createCompany(companyId = randomUUID()) {
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    return companyId;
+  }
+
+  async function writeSkillTree(skillDir: string, name: string) {
+    await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
+    await fs.mkdir(path.join(skillDir, "scripts"), { recursive: true });
+    await fs.mkdir(path.join(skillDir, "assets"), { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), `---\nname: ${name}\n---\n\n# ${name}\n`, "utf8");
+    await fs.writeFile(path.join(skillDir, "references", "how-to-guide-template.md"), "# Guide Template\n", "utf8");
+    await fs.writeFile(path.join(skillDir, "scripts", "bootstrap.sh"), "echo ok\n", "utf8");
+    await fs.writeFile(path.join(skillDir, "assets", "logo.svg"), "<svg />\n", "utf8");
+  }
+
   it("lists skills without exposing markdown content", async () => {
     const companyId = randomUUID();
     const skillId = randomUUID();
@@ -99,6 +119,86 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       sourceBadge: "local",
       editable: true,
     });
+  });
+
+  it("indexes nested files when importing a direct local skill directory", async () => {
+    const companyId = await createCompany();
+    const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-direct-skill-"));
+    cleanupDirs.add(skillDir);
+    await writeSkillTree(skillDir, "Diataxis");
+
+    const result = await svc.importFromSource(companyId, skillDir);
+    const imported = result.imported[0]!;
+    const inventoryPaths = imported.fileInventory.map((entry) => entry.path);
+
+    expect(inventoryPaths).toEqual([
+      "assets/logo.svg",
+      "references/how-to-guide-template.md",
+      "scripts/bootstrap.sh",
+      "SKILL.md",
+    ]);
+    expect(imported.fileInventory).toEqual(expect.arrayContaining([
+      { path: "references/how-to-guide-template.md", kind: "reference" },
+      { path: "scripts/bootstrap.sh", kind: "script" },
+      { path: "assets/logo.svg", kind: "asset" },
+      { path: "SKILL.md", kind: "skill" },
+    ]));
+
+    const reference = await svc.readFile(companyId, imported.id, "references/how-to-guide-template.md");
+    expect(reference).toMatchObject({
+      path: "references/how-to-guide-template.md",
+      content: "# Guide Template\n",
+    });
+  });
+
+  it("keeps parent-directory local imports scoped to the requested skill", async () => {
+    const companyId = await createCompany();
+    const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-parent-skills-"));
+    cleanupDirs.add(rootDir);
+    await writeSkillTree(path.join(rootDir, "diataxis"), "Diataxis");
+    await writeSkillTree(path.join(rootDir, "other-skill"), "Other Skill");
+
+    const result = await svc.importFromSource(companyId, `npx skills add ${rootDir} --skill diataxis`);
+    const imported = result.imported[0]!;
+
+    expect(result.imported).toHaveLength(1);
+    expect(imported.slug).toBe("diataxis");
+    expect(imported.fileInventory).toEqual([
+      { path: "assets/logo.svg", kind: "asset" },
+      { path: "references/how-to-guide-template.md", kind: "reference" },
+      { path: "scripts/bootstrap.sh", kind: "script" },
+      { path: "SKILL.md", kind: "skill" },
+    ]);
+  });
+
+  it("does not include nested skill trees in a root skill inventory", async () => {
+    const companyId = await createCompany();
+    const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-root-with-nested-skill-"));
+    cleanupDirs.add(rootDir);
+    await fs.mkdir(path.join(rootDir, "references"), { recursive: true });
+    await fs.mkdir(path.join(rootDir, "skills", "nested", "references"), { recursive: true });
+    await fs.writeFile(path.join(rootDir, "SKILL.md"), "---\nname: Root Skill\n---\n\n# Root\n", "utf8");
+    await fs.writeFile(path.join(rootDir, "references", "root.md"), "# Root Reference\n", "utf8");
+    await fs.writeFile(
+      path.join(rootDir, "skills", "nested", "SKILL.md"),
+      "---\nname: Nested Skill\n---\n\n# Nested\n",
+      "utf8",
+    );
+    await fs.writeFile(path.join(rootDir, "skills", "nested", "references", "nested.md"), "# Nested Reference\n", "utf8");
+
+    const result = await svc.importFromSource(companyId, rootDir);
+    const rootSkill = result.imported.find((skill) => skill.slug === "root-skill");
+    const nestedSkill = result.imported.find((skill) => skill.slug === "nested-skill");
+
+    expect(result.imported).toHaveLength(2);
+    expect(rootSkill?.fileInventory).toEqual([
+      { path: "references/root.md", kind: "reference" },
+      { path: "SKILL.md", kind: "skill" },
+    ]);
+    expect(nestedSkill?.fileInventory).toEqual([
+      { path: "references/nested.md", kind: "reference" },
+      { path: "SKILL.md", kind: "skill" },
+    ]);
   });
 
   it("rejects skill inventory refresh for a missing company", async () => {
