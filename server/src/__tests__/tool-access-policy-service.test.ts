@@ -238,6 +238,73 @@ describeEmbeddedPostgres("tool access policy service", () => {
     });
   });
 
+  it("denies calls through draft and archived profiles", async () => {
+    const company = await createCompany(db);
+    const draftAgent = await createAgent(db, company.id);
+    const archivedAgent = await createAgent(db, company.id);
+    const { connection, catalogEntry } = await createTool(db, company.id);
+    const [draftProfile, archivedProfile] = await db.insert(toolProfiles).values([
+      {
+        companyId: company.id,
+        profileKey: `draft-profile-${randomUUID()}`,
+        name: "Draft write tools",
+        status: "draft",
+        defaultAction: "allow",
+      },
+      {
+        companyId: company.id,
+        profileKey: `archived-profile-${randomUUID()}`,
+        name: "Archived write tools",
+        status: "archived",
+        defaultAction: "allow",
+      },
+    ]).returning();
+    await db.insert(toolProfileBindings).values([
+      {
+        companyId: company.id,
+        profileId: draftProfile!.id,
+        targetType: "agent",
+        targetId: draftAgent.id,
+      },
+      {
+        companyId: company.id,
+        profileId: archivedProfile!.id,
+        targetType: "agent",
+        targetId: archivedAgent.id,
+      },
+    ]);
+    await db.insert(toolProfileEntries).values([
+      {
+        companyId: company.id,
+        profileId: draftProfile!.id,
+        selectorType: "tool_name",
+        effect: "include",
+        toolName: "send_email",
+      },
+      {
+        companyId: company.id,
+        profileId: archivedProfile!.id,
+        selectorType: "tool_name",
+        effect: "include",
+        toolName: "send_email",
+      },
+    ]);
+
+    for (const agent of [draftAgent, archivedAgent]) {
+      const result = await toolAccessPolicyService(db).decide({
+        companyId: company.id,
+        actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
+        request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
+      });
+      expect(result).toMatchObject({
+        allowed: false,
+        decision: "deny",
+        reasonCode: "deny_default",
+        effectiveProfileIds: [],
+      });
+    }
+  });
+
   it("denies calls through disabled applications before explicit grants and allows them after reactivation", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);

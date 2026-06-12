@@ -37,8 +37,10 @@ import type {
   CreateToolProfileBindingForProfile,
   CreateToolProfileEntryForProfile,
   CreateToolProfileWithEntries,
+  DeleteToolProfile,
   DeploymentExposure,
   DeploymentMode,
+  DuplicateToolProfile,
   ImportMcpJson,
   McpConnectionCredentialRef,
   McpJsonImportPreview,
@@ -66,6 +68,10 @@ import type {
   ToolProfileBinding,
   ToolProfileEffectiveSummary,
   ToolProfileEntry,
+  ToolProfileNewToolReviewItem,
+  ToolProfileNewToolsReview,
+  ToolProfileNewToolsReviewResult,
+  ToolProfileSummary,
   ToolProfileWithDetails,
   ToolPolicyDecision,
   ToolPolicy,
@@ -76,6 +82,7 @@ import type {
   ToolRunDecisionLookup,
   ToolRuntimeSlot,
   ToolStdioCommandTemplate,
+  ReviewToolProfileNewTools,
   UpdateToolApplication,
   UpdateToolConnection,
   UpdateToolProfileEntry,
@@ -351,6 +358,7 @@ function toCatalogEntry(row: typeof toolCatalogEntries.$inferSelect): ToolCatalo
     isWrite: row.isWrite,
     isDestructive: row.isDestructive,
     status: row.status,
+    addedAt: row.firstSeenAt,
     version: row.version,
     versionHash: row.versionHash,
     schemaHash: row.schemaHash,
@@ -587,6 +595,7 @@ function toProfile(row: typeof toolProfiles.$inferSelect): ToolProfile {
     description: row.description,
     status: row.status,
     defaultAction: row.defaultAction,
+    newToolsReviewedAt: row.newToolsReviewedAt,
     metadata: row.metadata ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -656,6 +665,138 @@ function profileEntryMatchesCatalog(
   if (entry.selectorType === "tool_name") return entry.toolName === catalogEntry.toolName;
   if (entry.selectorType === "risk_level") return entry.riskLevel === catalogEntry.riskLevel;
   return false;
+}
+
+function summarizeProfile(input: {
+  profile: typeof toolProfiles.$inferSelect;
+  entries: Array<typeof toolProfileEntries.$inferSelect>;
+  bindings: Array<typeof toolProfileBindings.$inferSelect>;
+  catalog: Array<typeof toolCatalogEntries.$inferSelect>;
+  agentIds: string[];
+}): ToolProfileSummary {
+  const includes = input.entries.filter((entry) => entry.effect === "include");
+  const excludes = input.entries.filter((entry) => entry.effect === "exclude");
+  const allowedCatalogIds = new Set<string>();
+  const allowedApplicationIds = new Set<string>();
+  const excludedCatalogIds = new Set<string>();
+
+  for (const catalogEntry of input.catalog) {
+    const excluded = excludes.some((entry) => profileEntryMatchesCatalog(entry, catalogEntry));
+    if (excluded) excludedCatalogIds.add(catalogEntry.id);
+    if (excluded) continue;
+    const included = includes.some((entry) => profileEntryMatchesCatalog(entry, catalogEntry));
+    if (input.profile.defaultAction === "allow" || included) {
+      allowedCatalogIds.add(catalogEntry.id);
+      if (catalogEntry.applicationId) allowedApplicationIds.add(catalogEntry.applicationId);
+    }
+  }
+
+  const isCompanyDefault = input.bindings.some(
+    (binding) => binding.targetType === "company" && binding.targetId === input.profile.companyId,
+  );
+  const appliesToAgents = new Set<string>();
+  if (isCompanyDefault) {
+    for (const agentId of input.agentIds) appliesToAgents.add(agentId);
+  } else {
+    const companyAgentIds = new Set(input.agentIds);
+    for (const binding of input.bindings) {
+      if (binding.targetType === "agent" && companyAgentIds.has(binding.targetId)) {
+        appliesToAgents.add(binding.targetId);
+      }
+    }
+  }
+
+  return {
+    accessMode: input.profile.defaultAction === "allow" ? "all_except" : "selected",
+    allowedToolCount: allowedCatalogIds.size,
+    allowedApplicationCount: allowedApplicationIds.size,
+    excludedToolCount: excludedCatalogIds.size,
+    totalToolCount: input.catalog.length,
+    assignmentCount: input.bindings.length,
+    appliesToAgentCount: appliesToAgents.size,
+    isCompanyDefault,
+  };
+}
+
+function profileCoversCatalogScope(input: {
+  entry: typeof toolProfileEntries.$inferSelect;
+  catalogEntry: typeof toolCatalogEntries.$inferSelect;
+  catalogById: Map<string, typeof toolCatalogEntries.$inferSelect>;
+}): boolean {
+  if (input.entry.effect !== "include") return false;
+  if (input.entry.selectorType === "application") return input.entry.applicationId === input.catalogEntry.applicationId;
+  if (input.entry.selectorType === "connection") return input.entry.connectionId === input.catalogEntry.connectionId;
+  if (input.entry.selectorType !== "catalog_entry" || !input.entry.catalogEntryId) return false;
+  const scopedEntry = input.catalogById.get(input.entry.catalogEntryId);
+  if (!scopedEntry) return false;
+  if (scopedEntry.connectionId === input.catalogEntry.connectionId) return true;
+  return Boolean(scopedEntry.applicationId && scopedEntry.applicationId === input.catalogEntry.applicationId);
+}
+
+function pendingNewToolsForProfile(input: {
+  profile: typeof toolProfiles.$inferSelect;
+  entries: Array<typeof toolProfileEntries.$inferSelect>;
+  catalog: Array<typeof toolCatalogEntries.$inferSelect>;
+  applicationsById?: Map<string, typeof toolApplications.$inferSelect>;
+  connectionsById?: Map<string, typeof toolConnections.$inferSelect>;
+}): ToolProfileNewToolReviewItem[] {
+  if (input.profile.status !== "active" || input.profile.defaultAction !== "deny") return [];
+  const watermark = input.profile.newToolsReviewedAt ?? input.profile.createdAt;
+  const catalogById = new Map(input.catalog.map((entry) => [entry.id, entry]));
+  const scopedIncludes = input.entries.filter((entry) =>
+    entry.effect === "include"
+    && (entry.selectorType === "application" || entry.selectorType === "connection" || entry.selectorType === "catalog_entry")
+  );
+  if (scopedIncludes.length === 0) return [];
+
+  return input.catalog
+    .filter((catalogEntry) => catalogEntry.status === "active" || catalogEntry.status === "quarantined")
+    .filter((catalogEntry) => catalogEntry.firstSeenAt > watermark)
+    .filter((catalogEntry) => scopedIncludes.some((entry) =>
+      profileCoversCatalogScope({ entry, catalogEntry, catalogById })
+    ))
+    .filter((catalogEntry) => !input.entries.some((entry) => profileEntryMatchesCatalog(entry, catalogEntry)))
+    .map((catalogEntry) => ({
+      catalogEntryId: catalogEntry.id,
+      applicationId: catalogEntry.applicationId,
+      applicationName: catalogEntry.applicationId
+        ? input.applicationsById?.get(catalogEntry.applicationId)?.name ?? null
+        : null,
+      connectionId: catalogEntry.connectionId,
+      connectionName: input.connectionsById?.get(catalogEntry.connectionId)?.name ?? null,
+      toolName: catalogEntry.toolName,
+      title: catalogEntry.title,
+      description: catalogEntry.description,
+      capability: catalogEntry.riskLevel,
+      riskLevel: catalogEntry.riskLevel,
+      addedAt: catalogEntry.firstSeenAt,
+      firstSeenAt: catalogEntry.firstSeenAt,
+    }));
+}
+
+function buildProfileDetails(input: {
+  profile: typeof toolProfiles.$inferSelect;
+  entries: Array<typeof toolProfileEntries.$inferSelect>;
+  bindings: Array<typeof toolProfileBindings.$inferSelect>;
+  catalog: Array<typeof toolCatalogEntries.$inferSelect>;
+  agentIds: string[];
+  applicationsById?: Map<string, typeof toolApplications.$inferSelect>;
+  connectionsById?: Map<string, typeof toolConnections.$inferSelect>;
+}): ToolProfileWithDetails {
+  const pendingNewTools = pendingNewToolsForProfile({
+    profile: input.profile,
+    entries: input.entries,
+    catalog: input.catalog,
+    applicationsById: input.applicationsById,
+    connectionsById: input.connectionsById,
+  });
+  return {
+    ...toProfile(input.profile),
+    newToolsPendingCount: pendingNewTools.length,
+    entries: input.entries.map(toProfileEntry),
+    bindings: input.bindings.map(toProfileBinding),
+    summary: summarizeProfile(input),
+  };
 }
 
 function stableHash(value: unknown): string {
@@ -1295,7 +1436,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
 
   async function profileDetails(profileId: string, companyId?: string): Promise<ToolProfileWithDetails> {
     const profile = await getProfileRow(profileId, companyId);
-    const [entries, bindings] = await Promise.all([
+    const [entries, bindings, catalog, companyAgents, applications, connections] = await Promise.all([
       db
         .select()
         .from(toolProfileEntries)
@@ -1306,11 +1447,130 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         .from(toolProfileBindings)
         .where(and(eq(toolProfileBindings.companyId, profile.companyId), eq(toolProfileBindings.profileId, profile.id)))
         .orderBy(asc(toolProfileBindings.priority), asc(toolProfileBindings.createdAt)),
+      db
+        .select()
+        .from(toolCatalogEntries)
+        .where(and(eq(toolCatalogEntries.companyId, profile.companyId), eq(toolCatalogEntries.status, "active"))),
+      db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(eq(agents.companyId, profile.companyId)),
+      db
+        .select()
+        .from(toolApplications)
+        .where(eq(toolApplications.companyId, profile.companyId)),
+      db
+        .select()
+        .from(toolConnections)
+        .where(eq(toolConnections.companyId, profile.companyId)),
     ]);
+    return buildProfileDetails({
+      profile,
+      entries,
+      bindings,
+      catalog,
+      agentIds: companyAgents.map((agent) => agent.id),
+      applicationsById: new Map(applications.map((application) => [application.id, application])),
+      connectionsById: new Map(connections.map((connection) => [connection.id, connection])),
+    });
+  }
+
+  async function listProfileNewTools(profileId: string, companyId?: string): Promise<ToolProfileNewToolsReview> {
+    const profile = await getProfileRow(profileId, companyId);
+    const [entries, catalog, applications, connections] = await Promise.all([
+      db
+        .select()
+        .from(toolProfileEntries)
+        .where(and(eq(toolProfileEntries.companyId, profile.companyId), eq(toolProfileEntries.profileId, profile.id)))
+        .orderBy(asc(toolProfileEntries.createdAt)),
+      db
+        .select()
+        .from(toolCatalogEntries)
+        .where(and(eq(toolCatalogEntries.companyId, profile.companyId), eq(toolCatalogEntries.status, "active")))
+        .orderBy(asc(toolCatalogEntries.toolName)),
+      db
+        .select()
+        .from(toolApplications)
+        .where(eq(toolApplications.companyId, profile.companyId)),
+      db
+        .select()
+        .from(toolConnections)
+        .where(eq(toolConnections.companyId, profile.companyId)),
+    ]);
+    const tools = pendingNewToolsForProfile({
+      profile,
+      entries,
+      catalog,
+      applicationsById: new Map(applications.map((application) => [application.id, application])),
+      connectionsById: new Map(connections.map((connection) => [connection.id, connection])),
+    });
     return {
-      ...toProfile(profile),
-      entries: entries.map(toProfileEntry),
-      bindings: bindings.map(toProfileBinding),
+      profileId: profile.id,
+      reviewedAt: profile.newToolsReviewedAt,
+      pendingCount: tools.length,
+      tools,
+    };
+  }
+
+  async function reviewProfileNewTools(
+    profileId: string,
+    input: ReviewToolProfileNewTools,
+    actor?: ActorInfo,
+  ): Promise<ToolProfileNewToolsReviewResult> {
+    const profile = await getProfileRow(profileId);
+    const review = await listProfileNewTools(profile.id, profile.companyId);
+    if (review.tools.length === 0) throw badRequest("No new tools are pending review for this profile");
+
+    const decisionIds = input.decisions.map((decision) => decision.catalogEntryId);
+    if (new Set(decisionIds).size !== decisionIds.length) {
+      throw badRequest("New-tools review decisions must not contain duplicate catalogEntryId values");
+    }
+    const pendingIds = new Set(review.tools.map((tool) => tool.catalogEntryId));
+    if (decisionIds.length !== pendingIds.size || decisionIds.some((id) => !pendingIds.has(id))) {
+      throw badRequest("New-tools review decisions must cover every currently pending tool exactly once");
+    }
+
+    const toolById = new Map(review.tools.map((tool) => [tool.catalogEntryId, tool]));
+    const allowTools = input.decisions
+      .filter((decision) => decision.decision === "allow")
+      .map((decision) => toolById.get(decision.catalogEntryId))
+      .filter(Boolean) as ToolProfileNewToolReviewItem[];
+    const nowAt = now();
+    let createdEntries: ToolProfileEntry[] = [];
+    if (allowTools.length > 0) {
+      const rows = await db.insert(toolProfileEntries).values(allowTools.map((tool) => ({
+        companyId: profile.companyId,
+        profileId: profile.id,
+        selectorType: "catalog_entry" as const,
+        effect: "include" as const,
+        applicationId: tool.applicationId,
+        connectionId: tool.connectionId,
+        catalogEntryId: tool.catalogEntryId,
+      }))).returning();
+      createdEntries = rows.map(toProfileEntry);
+    }
+
+    await db
+      .update(toolCatalogEntries)
+      .set({
+        reviewedAt: nowAt,
+        reviewedByAgentId: actor?.actorType === "agent" ? actor.actorId ?? null : null,
+        reviewedByUserId: actor?.actorType === "user" ? actor.actorId ?? null : null,
+        updatedAt: nowAt,
+      })
+      .where(and(eq(toolCatalogEntries.companyId, profile.companyId), inArray(toolCatalogEntries.id, decisionIds)));
+    await db
+      .update(toolProfiles)
+      .set({ newToolsReviewedAt: nowAt, updatedAt: nowAt })
+      .where(eq(toolProfiles.id, profile.id));
+
+    return {
+      profile: await profileDetails(profile.id, profile.companyId),
+      reviewedAt: nowAt,
+      allowedCount: allowTools.length,
+      keptBlockedCount: input.decisions.length - allowTools.length,
+      entriesCreated: createdEntries,
+      reviewedCatalogEntryIds: decisionIds,
     };
   }
 
@@ -1670,7 +1930,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
 
   async function listAppsNeedingAttention(companyId: string): Promise<ToolAppsAttentionResponse> {
     const generatedAt = now();
-    const [connections, quarantinedEntries, pendingActionRequests, invocations] = await Promise.all([
+    const [connections, quarantinedEntries, pendingActionRequests, invocations, profiles, profileEntries, activeCatalog] = await Promise.all([
       db
         .select()
         .from(toolConnections)
@@ -1687,6 +1947,18 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         .select()
         .from(toolInvocations)
         .where(eq(toolInvocations.companyId, companyId)),
+      db
+        .select()
+        .from(toolProfiles)
+        .where(eq(toolProfiles.companyId, companyId)),
+      db
+        .select()
+        .from(toolProfileEntries)
+        .where(eq(toolProfileEntries.companyId, companyId)),
+      db
+        .select()
+        .from(toolCatalogEntries)
+        .where(and(eq(toolCatalogEntries.companyId, companyId), eq(toolCatalogEntries.status, "active"))),
     ]);
     const quarantinedCountByConnection = new Map<string, number>();
     for (const entry of quarantinedEntries) {
@@ -1699,14 +1971,41 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       if (!connectionId) continue;
       pendingActionRequestCountByConnection.set(connectionId, (pendingActionRequestCountByConnection.get(connectionId) ?? 0) + 1);
     }
+    const entriesByProfile = new Map<string, Array<typeof toolProfileEntries.$inferSelect>>();
+    for (const entry of profileEntries) {
+      const list = entriesByProfile.get(entry.profileId) ?? [];
+      list.push(entry);
+      entriesByProfile.set(entry.profileId, list);
+    }
+    const connectionsById = new Map(connections.map((connection) => [connection.id, connection]));
+    const pendingProfilesByConnection = new Map<string, Map<string, { profileId: string; profileName: string; pendingCount: number }>>();
+    for (const profile of profiles) {
+      const tools = pendingNewToolsForProfile({
+        profile,
+        entries: entriesByProfile.get(profile.id) ?? [],
+        catalog: activeCatalog,
+        connectionsById,
+      });
+      for (const tool of tools) {
+        const profileCounts = pendingProfilesByConnection.get(tool.connectionId) ?? new Map();
+        const existing = profileCounts.get(profile.id) ?? { profileId: profile.id, profileName: profile.name, pendingCount: 0 };
+        existing.pendingCount += 1;
+        profileCounts.set(profile.id, existing);
+        pendingProfilesByConnection.set(tool.connectionId, profileCounts);
+      }
+    }
     const apps = connections.flatMap((connection) => {
       const healthNeedsAttention = isAttentionHealthStatus(connection.healthStatus);
       const quarantinedCatalogEntryCount = quarantinedCountByConnection.get(connection.id) ?? 0;
       const pendingActionRequestCount = pendingActionRequestCountByConnection.get(connection.id) ?? 0;
+      const newToolsPendingProfiles = [...(pendingProfilesByConnection.get(connection.id)?.values() ?? [])]
+        .sort((a, b) => b.pendingCount - a.pendingCount || a.profileName.localeCompare(b.profileName));
+      const newToolsPendingReviewCount = newToolsPendingProfiles.reduce((sum, profile) => sum + profile.pendingCount, 0);
       const reasons = [
         ...(healthNeedsAttention ? ["health" as const] : []),
         ...(quarantinedCatalogEntryCount > 0 ? ["quarantined_catalog_entries" as const] : []),
         ...(pendingActionRequestCount > 0 ? ["pending_action_requests" as const] : []),
+        ...(newToolsPendingReviewCount > 0 ? ["profile_new_tools" as const] : []),
       ];
       return reasons.length > 0
         ? [{
@@ -1714,6 +2013,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             healthNeedsAttention,
             quarantinedCatalogEntryCount,
             pendingActionRequestCount,
+            newToolsPendingReviewCount,
+            newToolsPendingProfiles,
             reasons,
           }]
         : [];
@@ -1726,6 +2027,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         health: apps.filter((app) => app.healthNeedsAttention).length,
         quarantinedCatalogEntries: apps.reduce((sum, app) => sum + app.quarantinedCatalogEntryCount, 0),
         pendingActionRequests: apps.reduce((sum, app) => sum + app.pendingActionRequestCount, 0),
+        newToolsPendingReview: apps.reduce((sum, app) => sum + app.newToolsPendingReviewCount, 0),
+        newToolsPendingProfiles: apps.reduce((sum, app) => sum + app.newToolsPendingProfiles.length, 0),
       },
     };
   }
@@ -2823,6 +3126,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         description: details.description,
         status: details.status,
         defaultAction: details.defaultAction,
+        newToolsReviewedAt: details.newToolsReviewedAt,
         metadata: details.metadata,
         createdAt: details.createdAt,
         updatedAt: details.updatedAt,
@@ -3727,7 +4031,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         .orderBy(desc(toolProfiles.updatedAt));
       if (profiles.length === 0) return [];
       const profileIds = profiles.map((profile) => profile.id);
-      const [entries, bindings] = await Promise.all([
+      const [entries, bindings, catalog, companyAgents, applications, connections] = await Promise.all([
         db
           .select()
           .from(toolProfileEntries)
@@ -3738,23 +4042,46 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           .from(toolProfileBindings)
           .where(and(eq(toolProfileBindings.companyId, companyId), inArray(toolProfileBindings.profileId, profileIds)))
           .orderBy(asc(toolProfileBindings.priority), asc(toolProfileBindings.createdAt)),
+        db
+          .select()
+          .from(toolCatalogEntries)
+          .where(and(eq(toolCatalogEntries.companyId, companyId), eq(toolCatalogEntries.status, "active"))),
+        db
+          .select({ id: agents.id })
+          .from(agents)
+          .where(eq(agents.companyId, companyId)),
+        db
+          .select()
+          .from(toolApplications)
+          .where(eq(toolApplications.companyId, companyId)),
+        db
+          .select()
+          .from(toolConnections)
+          .where(eq(toolConnections.companyId, companyId)),
       ]);
-      const entriesByProfile = new Map<string, ToolProfileEntry[]>();
-      const bindingsByProfile = new Map<string, ToolProfileBinding[]>();
+      const entriesByProfile = new Map<string, Array<typeof toolProfileEntries.$inferSelect>>();
+      const bindingsByProfile = new Map<string, Array<typeof toolProfileBindings.$inferSelect>>();
       for (const entry of entries) {
         const list = entriesByProfile.get(entry.profileId) ?? [];
-        list.push(toProfileEntry(entry));
+        list.push(entry);
         entriesByProfile.set(entry.profileId, list);
       }
       for (const binding of bindings) {
         const list = bindingsByProfile.get(binding.profileId) ?? [];
-        list.push(toProfileBinding(binding));
+        list.push(binding);
         bindingsByProfile.set(binding.profileId, list);
       }
-      return profiles.map((profile) => ({
-        ...toProfile(profile),
+      const agentIds = companyAgents.map((agent) => agent.id);
+      const applicationsById = new Map(applications.map((application) => [application.id, application]));
+      const connectionsById = new Map(connections.map((connection) => [connection.id, connection]));
+      return profiles.map((profile) => buildProfileDetails({
+        profile,
         entries: entriesByProfile.get(profile.id) ?? [],
         bindings: bindingsByProfile.get(profile.id) ?? [],
+        catalog,
+        agentIds,
+        applicationsById,
+        connectionsById,
       }));
     },
 
@@ -3776,6 +4103,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     },
 
     getProfile: profileDetails,
+
+    listProfileNewTools,
+
+    reviewProfileNewTools,
 
     updateProfile: async (profileId: string, input: UpdateToolProfileWithEntries): Promise<ToolProfileWithDetails> => {
       const existing = await getProfileRow(profileId);
@@ -3800,6 +4131,123 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         await replaceProfileEntries(existing.companyId, profileId, input.entries);
       }
       return profileDetails(profileId, existing.companyId);
+    },
+
+    duplicateProfile: async (profileId: string, input: DuplicateToolProfile): Promise<ToolProfileWithDetails> => {
+      const existing = await getProfileRow(profileId);
+      const [entries, bindings] = await Promise.all([
+        db
+          .select()
+          .from(toolProfileEntries)
+          .where(and(eq(toolProfileEntries.companyId, existing.companyId), eq(toolProfileEntries.profileId, existing.id)))
+          .orderBy(asc(toolProfileEntries.createdAt)),
+        db
+          .select()
+          .from(toolProfileBindings)
+          .where(and(eq(toolProfileBindings.companyId, existing.companyId), eq(toolProfileBindings.profileId, existing.id)))
+          .orderBy(asc(toolProfileBindings.priority), asc(toolProfileBindings.createdAt)),
+      ]);
+      const [created] = await db.insert(toolProfiles).values({
+        companyId: existing.companyId,
+        profileKey: normalizeKey(`${input.name}-${randomUUID().slice(0, 8)}`),
+        name: input.name,
+        description: existing.description,
+        status: "active",
+        defaultAction: existing.defaultAction,
+        newToolsReviewedAt: existing.newToolsReviewedAt,
+        metadata: existing.metadata ?? {},
+      }).returning();
+      if (entries.length > 0) {
+        await db.insert(toolProfileEntries).values(entries.map((entry) => ({
+          companyId: entry.companyId,
+          profileId: created.id,
+          selectorType: entry.selectorType,
+          effect: entry.effect,
+          applicationId: entry.applicationId,
+          connectionId: entry.connectionId,
+          catalogEntryId: entry.catalogEntryId,
+          toolName: entry.toolName,
+          riskLevel: entry.riskLevel,
+          conditions: entry.conditions,
+        })));
+      }
+      if (input.includeAssignments && bindings.length > 0) {
+        await db.insert(toolProfileBindings).values(bindings.map((binding) => ({
+          companyId: binding.companyId,
+          profileId: created.id,
+          targetType: binding.targetType,
+          targetId: binding.targetId,
+          priority: binding.priority,
+          metadata: binding.metadata ?? {},
+          createdByAgentId: binding.createdByAgentId,
+          createdByUserId: binding.createdByUserId,
+        })));
+      }
+      return profileDetails(created.id, existing.companyId);
+    },
+
+    deleteProfile: async (
+      profileId: string,
+      input: DeleteToolProfile,
+    ): Promise<{
+      profile: ToolProfile;
+      summary: ToolProfileSummary;
+      reassignedToProfileId: string | null;
+      reassignedBindingCount: number;
+    }> => {
+      const existing = await getProfileRow(profileId);
+      if (input.force && input.reassignToProfileId) {
+        throw badRequest("Use either force or reassignToProfileId when deleting a tool profile, not both");
+      }
+      const details = await profileDetails(existing.id, existing.companyId);
+      if (details.summary.isCompanyDefault && !input.force && !input.reassignToProfileId) {
+        throw unprocessable(
+          "Cannot delete the company default tool profile. Reassign the default profile or pass force=true to delete it.",
+          { summary: details.summary },
+        );
+      }
+
+      let reassignedBindingCount = 0;
+      if (input.reassignToProfileId) {
+        if (input.reassignToProfileId === existing.id) {
+          throw badRequest("reassignToProfileId must reference a different tool profile");
+        }
+        const target = await getProfileRow(input.reassignToProfileId, existing.companyId);
+        if (target.status !== "active") {
+          throw unprocessable("Tool profile assignments can only be reassigned to an active profile");
+        }
+        const targetBindings = await db
+          .select()
+          .from(toolProfileBindings)
+          .where(and(eq(toolProfileBindings.companyId, existing.companyId), eq(toolProfileBindings.profileId, target.id)));
+        const targetKeys = new Set(
+          targetBindings.map((binding) => `${binding.targetType}:${binding.targetId}`),
+        );
+        const copiedBindings = details.bindings.filter((binding) => !targetKeys.has(`${binding.targetType}:${binding.targetId}`));
+        if (copiedBindings.length > 0) {
+          await db.insert(toolProfileBindings).values(copiedBindings.map((binding) => ({
+            companyId: binding.companyId,
+            profileId: target.id,
+            targetType: binding.targetType,
+            targetId: binding.targetId,
+            priority: binding.priority,
+            metadata: binding.metadata ?? {},
+            createdByAgentId: binding.createdByAgentId,
+            createdByUserId: binding.createdByUserId,
+          })));
+          reassignedBindingCount = copiedBindings.length;
+          await db.update(toolProfiles).set({ updatedAt: new Date() }).where(eq(toolProfiles.id, target.id));
+        }
+      }
+
+      const [deleted] = await db.delete(toolProfiles).where(eq(toolProfiles.id, existing.id)).returning();
+      if (!deleted) throw notFound("Tool profile not found");
+      return {
+        profile: toProfile(deleted),
+        summary: details.summary,
+        reassignedToProfileId: input.reassignToProfileId ?? null,
+        reassignedBindingCount,
+      };
     },
 
     addProfileEntry: async (
@@ -3941,7 +4389,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         };
       }
       const activeProfileIds = activeProfiles.map((profile) => profile.id);
-      const [entries, catalog] = await Promise.all([
+      const [entries, catalog, companyAgents] = await Promise.all([
         db
           .select()
           .from(toolProfileEntries)
@@ -3952,6 +4400,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           .from(toolCatalogEntries)
           .where(and(eq(toolCatalogEntries.companyId, companyId), eq(toolCatalogEntries.status, "active")))
           .orderBy(asc(toolCatalogEntries.toolName)),
+        db
+          .select({ id: agents.id })
+          .from(agents)
+          .where(eq(agents.companyId, companyId)),
       ]);
       const entriesByProfile = new Map<string, Array<typeof toolProfileEntries.$inferSelect>>();
       for (const entry of entries) {
@@ -3977,10 +4429,13 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           if (!matchingExclude) allowedToolNames.add(entry.toolName!);
         }
       }
-      const details: ToolProfileWithDetails[] = activeProfiles.map((profile) => ({
-        ...toProfile(profile),
-        entries: (entriesByProfile.get(profile.id) ?? []).map(toProfileEntry),
-        bindings: bindings.filter((binding) => binding.profileId === profile.id).map(toProfileBinding),
+      const agentIds = companyAgents.map((agent) => agent.id);
+      const details: ToolProfileWithDetails[] = activeProfiles.map((profile) => buildProfileDetails({
+        profile,
+        entries: entriesByProfile.get(profile.id) ?? [],
+        bindings: bindings.filter((binding) => binding.profileId === profile.id),
+        catalog,
+        agentIds,
       }));
       const allowedTools = catalog
         .filter((entry) => allowedCatalogIds.has(entry.id))

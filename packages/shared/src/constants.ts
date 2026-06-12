@@ -786,7 +786,7 @@ export type ToolCatalogEntryStatus = (typeof TOOL_CATALOG_ENTRY_STATUSES)[number
 export const TOOL_RISK_LEVELS = ["low", "medium", "high", "critical", "read", "write", "destructive"] as const;
 export type ToolRiskLevel = (typeof TOOL_RISK_LEVELS)[number];
 
-export const TOOL_PROFILE_STATUSES = ["active", "disabled", "archived"] as const;
+export const TOOL_PROFILE_STATUSES = ["draft", "active", "disabled", "archived"] as const;
 export type ToolProfileStatus = (typeof TOOL_PROFILE_STATUSES)[number];
 
 export const TOOL_PROFILE_DEFAULT_ACTIONS = ["deny", "allow"] as const;
@@ -889,6 +889,9 @@ export const TOOL_ACCESS_ACTIVITY_ACTIONS = [
   "tool_connection.catalog_refreshed",
   "tool_profile.created",
   "tool_profile.updated",
+  "tool_profile.duplicated",
+  "tool_profile.deleted",
+  "tool_profile.new_tools_reviewed",
   "tool_profile.bound",
   "tool_profile.unbound",
   "tool_policy.created",

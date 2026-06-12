@@ -272,6 +272,13 @@ export const createToolProfileWithEntriesSchema = createToolProfileSchema.extend
 
 export type CreateToolProfileWithEntries = z.infer<typeof createToolProfileWithEntriesSchema>;
 
+export const duplicateToolProfileSchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  includeAssignments: z.boolean().default(false),
+});
+
+export type DuplicateToolProfile = z.infer<typeof duplicateToolProfileSchema>;
+
 export const updateToolProfileWithEntriesSchema = createToolProfileSchema.partial().extend({
   entries: z.array(createToolProfileEntryForProfileSchema).max(250).optional(),
 }).refine(
@@ -280,6 +287,22 @@ export const updateToolProfileWithEntriesSchema = createToolProfileSchema.partia
 );
 
 export type UpdateToolProfileWithEntries = z.infer<typeof updateToolProfileWithEntriesSchema>;
+
+export const reviewToolProfileNewToolsSchema = z.object({
+  decisions: z.array(z.object({
+    catalogEntryId: z.string().uuid(),
+    decision: z.enum(["allow", "keep_blocked"]),
+  })).min(1).max(250),
+});
+
+export type ReviewToolProfileNewTools = z.infer<typeof reviewToolProfileNewToolsSchema>;
+
+export const deleteToolProfileSchema = z.object({
+  force: z.boolean().default(false),
+  reassignToProfileId: z.string().uuid().optional(),
+}).default({});
+
+export type DeleteToolProfile = z.infer<typeof deleteToolProfileSchema>;
 
 export const createToolProfileBindingSchema = z.object({
   profileId: z.string().uuid(),

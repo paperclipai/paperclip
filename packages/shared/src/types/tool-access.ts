@@ -139,6 +139,7 @@ export interface ToolCatalogEntry {
   isWrite: boolean;
   isDestructive: boolean;
   status: ToolCatalogEntryStatus;
+  addedAt: Date;
   version: string | null;
   versionHash?: string | null;
   schemaHash: string | null;
@@ -161,6 +162,8 @@ export interface ToolProfile {
   description: string | null;
   status: ToolProfileStatus;
   defaultAction: ToolProfileDefaultAction;
+  newToolsReviewedAt: Date | null;
+  newToolsPendingCount?: number;
   metadata: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
@@ -196,9 +199,54 @@ export interface ToolProfileBinding {
   updatedAt: Date;
 }
 
+export interface ToolProfileSummary {
+  accessMode: "selected" | "all_except";
+  allowedToolCount: number;
+  allowedApplicationCount: number;
+  excludedToolCount: number;
+  totalToolCount: number;
+  assignmentCount: number;
+  appliesToAgentCount: number;
+  isCompanyDefault: boolean;
+}
+
 export interface ToolProfileWithDetails extends ToolProfile {
   entries: ToolProfileEntry[];
   bindings: ToolProfileBinding[];
+  summary: ToolProfileSummary;
+}
+
+export type ToolProfileNewToolReviewDecision = "allow" | "keep_blocked";
+
+export interface ToolProfileNewToolReviewItem {
+  catalogEntryId: string;
+  applicationId: string | null;
+  applicationName: string | null;
+  connectionId: string;
+  connectionName: string | null;
+  toolName: string;
+  title: string | null;
+  description: string | null;
+  capability: ToolRiskLevel;
+  riskLevel: ToolRiskLevel;
+  addedAt: Date;
+  firstSeenAt: Date;
+}
+
+export interface ToolProfileNewToolsReview {
+  profileId: string;
+  reviewedAt: Date | null;
+  pendingCount: number;
+  tools: ToolProfileNewToolReviewItem[];
+}
+
+export interface ToolProfileNewToolsReviewResult {
+  profile: ToolProfileWithDetails;
+  reviewedAt: Date;
+  allowedCount: number;
+  keptBlockedCount: number;
+  entriesCreated: ToolProfileEntry[];
+  reviewedCatalogEntryIds: string[];
 }
 
 export interface ToolProfileEffectiveSummary {
@@ -371,13 +419,22 @@ export interface ToolCatalogRefreshResult {
 export type ToolAppAttentionReason =
   | "health"
   | "quarantined_catalog_entries"
-  | "pending_action_requests";
+  | "pending_action_requests"
+  | "profile_new_tools";
+
+export interface ToolAppAttentionProfileNewTools {
+  profileId: string;
+  profileName: string;
+  pendingCount: number;
+}
 
 export interface ToolAppAttentionItem {
   connection: ToolConnection;
   healthNeedsAttention: boolean;
   quarantinedCatalogEntryCount: number;
   pendingActionRequestCount: number;
+  newToolsPendingReviewCount: number;
+  newToolsPendingProfiles: ToolAppAttentionProfileNewTools[];
   reasons: ToolAppAttentionReason[];
 }
 
@@ -389,6 +446,8 @@ export interface ToolAppsAttentionResponse {
     health: number;
     quarantinedCatalogEntries: number;
     pendingActionRequests: number;
+    newToolsPendingReview: number;
+    newToolsPendingProfiles: number;
   };
 }
 

@@ -13,9 +13,12 @@ import {
   createToolProfileBindingForProfileSchema,
   createToolProfileEntryForProfileSchema,
   createToolProfileWithEntriesSchema,
+  deleteToolProfileSchema,
   disableToolStdioCommandTemplateSchema,
+  duplicateToolProfileSchema,
   finishToolAppSchema,
   reconnectToolAppSchema,
+  reviewToolProfileNewToolsSchema,
   createToolTrustRuleFromActionRequestSchema,
   importMcpJsonSchema,
   revokeToolTrustRuleSchema,
@@ -486,6 +489,13 @@ export function toolAccessRoutes(
     res.json({ profiles: await svc.listProfiles(companyId) });
   });
 
+  router.get("/tool-profiles/:profileId/new-tools", async (req, res) => {
+    assertBoard(req);
+    const existing = await svc.getProfile(req.params.profileId as string);
+    assertCompanyAccess(req, existing.companyId);
+    res.json(await svc.listProfileNewTools(existing.id, existing.companyId));
+  });
+
   router.post("/companies/:companyId/tools/profiles", validate(createToolProfileWithEntriesSchema), async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
@@ -533,6 +543,75 @@ export function toolAccessRoutes(
     } catch (error) {
       svc.ensureNoDuplicateNameError(error);
     }
+  });
+
+  router.post("/tool-profiles/:profileId/duplicate", validate(duplicateToolProfileSchema), async (req, res) => {
+    assertBoard(req);
+    const existing = await svc.getProfile(req.params.profileId as string);
+    assertCompanyAccess(req, existing.companyId);
+    try {
+      const profile = await svc.duplicateProfile(existing.id, req.body);
+      await logActivity(db, {
+        companyId: profile.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "tool_profile.duplicated",
+        entityType: "tool_profile",
+        entityId: profile.id,
+        details: {
+          sourceProfileId: existing.id,
+          name: profile.name,
+          entryCount: profile.entries.length,
+          assignmentCount: profile.summary.assignmentCount,
+        },
+      });
+      res.status(201).json(profile);
+    } catch (error) {
+      svc.ensureNoDuplicateNameError(error);
+    }
+  });
+
+  router.delete("/tool-profiles/:profileId", validate(deleteToolProfileSchema), async (req, res) => {
+    assertBoard(req);
+    const existing = await svc.getProfile(req.params.profileId as string);
+    assertCompanyAccess(req, existing.companyId);
+    const result = await svc.deleteProfile(existing.id, req.body);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "tool_profile.deleted",
+      entityType: "tool_profile",
+      entityId: existing.id,
+      details: {
+        name: existing.name,
+        summary: result.summary,
+        reassignedToProfileId: result.reassignedToProfileId,
+        reassignedBindingCount: result.reassignedBindingCount,
+      },
+    });
+    res.json(result);
+  });
+
+  router.post("/tool-profiles/:profileId/new-tools/review", validate(reviewToolProfileNewToolsSchema), async (req, res) => {
+    assertBoard(req);
+    const existing = await svc.getProfile(req.params.profileId as string);
+    assertCompanyAccess(req, existing.companyId);
+    const result = await svc.reviewProfileNewTools(existing.id, req.body, getActorInfo(req));
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "tool_profile.new_tools_reviewed",
+      entityType: "tool_profile",
+      entityId: existing.id,
+      details: {
+        allowedCount: result.allowedCount,
+        keptBlockedCount: result.keptBlockedCount,
+        reviewedCatalogEntryIds: result.reviewedCatalogEntryIds,
+      },
+    });
+    res.json(result);
   });
 
   router.post("/tool-profiles/:profileId/entries", validate(createToolProfileEntryForProfileSchema), async (req, res) => {

@@ -190,6 +190,7 @@ export const toolProfiles = pgTable(
     description: text("description"),
     status: text("status").$type<ToolProfileStatus>().notNull().default("active"),
     defaultAction: text("default_action").$type<ToolProfileDefaultAction>().notNull().default("deny"),
+    newToolsReviewedAt: timestamp("new_tools_reviewed_at", { withTimezone: true }),
     metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

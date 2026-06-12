@@ -137,6 +137,9 @@ import {
   createToolProfileBindingForProfileSchema,
   createToolProfileEntryForProfileSchema,
   createToolProfileWithEntriesSchema,
+  deleteToolProfileSchema,
+  duplicateToolProfileSchema,
+  reviewToolProfileNewToolsSchema,
   updateToolPolicySchema,
   updateToolProfileEntrySchema,
   updateToolProfileWithEntriesSchema,
@@ -613,7 +616,11 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/companies/{companyId}/tools/profiles",
   "POST /api/companies/{companyId}/tools/profiles",
   "GET /api/companies/{companyId}/tools/profiles/effective/agents/{agentId}",
+  "GET /api/tool-profiles/{profileId}/new-tools",
   "PATCH /api/tool-profiles/{profileId}",
+  "POST /api/tool-profiles/{profileId}/duplicate",
+  "DELETE /api/tool-profiles/{profileId}",
+  "POST /api/tool-profiles/{profileId}/new-tools/review",
   "POST /api/tool-profiles/{profileId}/entries",
   "PATCH /api/tool-profile-entries/{entryId}",
   "DELETE /api/tool-profile-entries/{entryId}",
@@ -4636,11 +4643,45 @@ registerCurrentRoute({
 });
 
 registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-profiles/{profileId}/new-tools",
+  tags: ["tool-access"],
+  summary: "List new catalog tools pending profile review",
+});
+
+registerCurrentRoute({
   method: "patch",
   path: "/api/tool-profiles/{profileId}",
   tags: ["tool-access"],
   summary: "Update a tool access profile",
   body: updateToolProfileWithEntriesSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-profiles/{profileId}/duplicate",
+  tags: ["tool-access"],
+  summary: "Duplicate a tool access profile",
+  body: duplicateToolProfileSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/tool-profiles/{profileId}",
+  tags: ["tool-access"],
+  summary: "Delete a tool access profile",
+  body: deleteToolProfileSchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-profiles/{profileId}/new-tools/review",
+  tags: ["tool-access"],
+  summary: "Review new catalog tools for a profile",
+  body: reviewToolProfileNewToolsSchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 422: r.unprocessable },
 });
 
 registerCurrentRoute({

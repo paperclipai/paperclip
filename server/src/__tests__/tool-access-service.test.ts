@@ -457,6 +457,208 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  it("summarizes profile index counts and restores archived profiles through update", async () => {
+    const company = await createCompany(db);
+    const [agentOne, agentTwo] = await db.insert(agents).values([
+      {
+        companyId: company.id,
+        name: `Profile Agent ${randomUUID()}`,
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+      },
+      {
+        companyId: company.id,
+        name: `Profile Agent ${randomUUID()}`,
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+      },
+    ]).returning();
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `summary-app-${randomUUID()}`,
+      name: "Summary app",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      name: "Summary connection",
+      transport: "remote_http",
+      status: "active",
+      enabled: true,
+      config: { url: "https://fixture.example/mcp" },
+    }).returning();
+    const [readEntry, writeEntry] = await db.insert(toolCatalogEntries).values([
+      {
+        companyId: company.id,
+        applicationId: application!.id,
+        connectionId: connection!.id,
+        name: "read_notes",
+        toolName: "read_notes",
+        riskLevel: "read",
+        status: "active",
+        versionHash: randomUUID(),
+        schemaHash: randomUUID(),
+      },
+      {
+        companyId: company.id,
+        applicationId: application!.id,
+        connectionId: connection!.id,
+        name: "send_email",
+        toolName: "send_email",
+        riskLevel: "write",
+        status: "active",
+        versionHash: randomUUID(),
+        schemaHash: randomUUID(),
+      },
+    ]).returning();
+
+    const service = toolAccessService(db);
+    const profile = await service.createProfile(company.id, {
+      profileKey: `profile-${randomUUID()}`,
+      name: "All except write tools",
+      defaultAction: "allow",
+      entries: [{ selectorType: "tool_name", effect: "exclude", toolName: "send_email" }],
+    });
+    await service.bindProfile(profile.id, { targetType: "company", targetId: company.id }, { actorType: "user", actorId: "board" });
+
+    const [listed] = await service.listProfiles(company.id);
+    expect(listed).toMatchObject({
+      id: profile.id,
+      status: "active",
+      summary: {
+        accessMode: "all_except",
+        allowedToolCount: 1,
+        allowedApplicationCount: 1,
+        excludedToolCount: 1,
+        totalToolCount: 2,
+        assignmentCount: 1,
+        appliesToAgentCount: 2,
+        isCompanyDefault: true,
+      },
+    });
+    await expect(service.getEffectiveProfilesForAgent(company.id, agentOne!.id)).resolves.toMatchObject({
+      allowedTools: [expect.objectContaining({ id: readEntry!.id, toolName: "read_notes" })],
+      allowedToolNames: ["read_notes"],
+    });
+
+    const archived = await service.updateProfile(profile.id, { status: "archived" });
+    expect(archived.status).toBe("archived");
+    await expect(service.getEffectiveProfilesForAgent(company.id, agentTwo!.id)).resolves.toMatchObject({
+      profiles: [],
+      allowedTools: [],
+      allowedToolNames: [],
+    });
+
+    const restored = await service.updateProfile(profile.id, { status: "active" });
+    expect(restored.status).toBe("active");
+    await expect(service.getEffectiveProfilesForAgent(company.id, agentTwo!.id)).resolves.toMatchObject({
+      allowedTools: [expect.objectContaining({ id: readEntry!.id })],
+      allowedToolNames: ["read_notes"],
+    });
+    expect(writeEntry).toBeDefined();
+  });
+
+  it("duplicates profiles with entries and optional assignments", async () => {
+    const company = await createCompany(db);
+    const [agent] = await db.insert(agents).values({
+      companyId: company.id,
+      name: `Duplicate Agent ${randomUUID()}`,
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+    }).returning();
+    const service = toolAccessService(db);
+    const profile = await service.createProfile(company.id, {
+      profileKey: `profile-${randomUUID()}`,
+      name: "Email tools source",
+      defaultAction: "allow",
+      entries: [{ selectorType: "tool_name", effect: "exclude", toolName: "delete_email" }],
+    });
+    await service.bindProfile(profile.id, { targetType: "agent", targetId: agent!.id, priority: 25 }, { actorType: "user", actorId: "board" });
+
+    const unassignedCopy = await service.duplicateProfile(profile.id, {
+      name: "Email tools unassigned copy",
+      includeAssignments: false,
+    });
+    expect(unassignedCopy).toMatchObject({
+      name: "Email tools unassigned copy",
+      status: "active",
+      defaultAction: "allow",
+      entries: [expect.objectContaining({ selectorType: "tool_name", effect: "exclude", toolName: "delete_email" })],
+      bindings: [],
+      summary: expect.objectContaining({ assignmentCount: 0 }),
+    });
+
+    const assignedCopy = await service.duplicateProfile(profile.id, {
+      name: "Email tools assigned copy",
+      includeAssignments: true,
+    });
+    expect(assignedCopy).toMatchObject({
+      name: "Email tools assigned copy",
+      status: "active",
+      bindings: [expect.objectContaining({ targetType: "agent", targetId: agent!.id, priority: 25 })],
+      summary: expect.objectContaining({ assignmentCount: 1, appliesToAgentCount: 1 }),
+    });
+  });
+
+  it("deletes profiles with cascades and guards company defaults", async () => {
+    const company = await createCompany(db);
+    const [agent] = await db.insert(agents).values({
+      companyId: company.id,
+      name: `Delete Agent ${randomUUID()}`,
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+    }).returning();
+    const service = toolAccessService(db);
+    const profile = await service.createProfile(company.id, {
+      profileKey: `profile-${randomUUID()}`,
+      name: "Delete source",
+      entries: [{ selectorType: "tool_name", effect: "include", toolName: "send_email" }],
+    });
+    await service.bindProfile(profile.id, { targetType: "agent", targetId: agent!.id }, { actorType: "user", actorId: "board" });
+
+    const deleted = await service.deleteProfile(profile.id, { force: false });
+    expect(deleted).toMatchObject({
+      profile: expect.objectContaining({ id: profile.id }),
+      summary: expect.objectContaining({ assignmentCount: 1, appliesToAgentCount: 1 }),
+      reassignedToProfileId: null,
+    });
+    await expect(service.getProfile(profile.id)).rejects.toMatchObject({ status: 404 });
+    await expect(db.select().from(toolProfileEntries).where(eq(toolProfileEntries.profileId, profile.id))).resolves.toEqual([]);
+    await expect(db.select().from(toolProfileBindings).where(eq(toolProfileBindings.profileId, profile.id))).resolves.toEqual([]);
+
+    const defaultProfile = await service.createProfile(company.id, {
+      profileKey: `default-profile-${randomUUID()}`,
+      name: "Company default delete guard",
+      defaultAction: "allow",
+    });
+    await service.bindProfile(defaultProfile.id, { targetType: "company", targetId: company.id }, { actorType: "user", actorId: "board" });
+    await expect(service.deleteProfile(defaultProfile.id, { force: false })).rejects.toMatchObject({
+      status: 422,
+      details: {
+        summary: expect.objectContaining({
+          isCompanyDefault: true,
+          assignmentCount: 1,
+          appliesToAgentCount: 1,
+        }),
+      },
+    });
+
+    await expect(service.deleteProfile(defaultProfile.id, { force: true })).resolves.toMatchObject({
+      profile: expect.objectContaining({ id: defaultProfile.id }),
+      summary: expect.objectContaining({ isCompanyDefault: true }),
+    });
+  });
+
   it("installs the safe example fixture idempotently and smokes allow, deny, and audit paths", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);
@@ -977,6 +1179,327 @@ describeEmbeddedPostgres("tool access service", () => {
         reasons: ["health", "quarantined_catalog_entries", "pending_action_requests"],
       }),
     ]);
+  });
+
+  it("tracks new profile tools, reviews mixed allow/block decisions, and clears pending counts", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      name: `Review app ${randomUUID()}`,
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: `Review connection ${randomUUID()}`,
+      transport: "remote_http",
+      status: "active",
+      enabled: true,
+      config: { url: "https://review.example/mcp" },
+      transportConfig: { url: "https://review.example/mcp" },
+      healthStatus: "ok",
+    }).returning();
+    const oldSeenAt = new Date("2026-01-01T00:00:00.000Z");
+    const profileCreatedAt = new Date("2026-01-02T00:00:00.000Z");
+    const newSeenAt = new Date("2026-01-03T00:00:00.000Z");
+    const [oldEntry] = await db.insert(toolCatalogEntries).values({
+      companyId: company.id,
+      applicationId: application.id,
+      connectionId: connection.id,
+      name: "read_email",
+      toolName: "read_email",
+      title: "Read email",
+      description: "Read mailbox messages.",
+      riskLevel: "read",
+      isReadOnly: true,
+      status: "active",
+      versionHash: "old-v1",
+      schemaHash: "old-s1",
+      firstSeenAt: oldSeenAt,
+      lastSeenAt: oldSeenAt,
+    }).returning();
+    const [sendEntry, deleteEntry] = await db.insert(toolCatalogEntries).values([
+      {
+        companyId: company.id,
+        applicationId: application.id,
+        connectionId: connection.id,
+        name: "send_email",
+        toolName: "send_email",
+        title: "Send email",
+        description: "Send outbound messages.",
+        riskLevel: "write" as const,
+        isReadOnly: false,
+        isWrite: true,
+        status: "active" as const,
+        versionHash: "send-v1",
+        schemaHash: "send-s1",
+        firstSeenAt: newSeenAt,
+        lastSeenAt: newSeenAt,
+      },
+      {
+        companyId: company.id,
+        applicationId: application.id,
+        connectionId: connection.id,
+        name: "delete_email",
+        toolName: "delete_email",
+        title: "Delete email",
+        description: "Delete mailbox messages.",
+        riskLevel: "destructive" as const,
+        isReadOnly: false,
+        isDestructive: true,
+        status: "active" as const,
+        versionHash: "delete-v1",
+        schemaHash: "delete-s1",
+        firstSeenAt: newSeenAt,
+        lastSeenAt: newSeenAt,
+      },
+    ]).returning();
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `review-${randomUUID()}`,
+      name: "Read-only starter",
+      status: "active",
+      defaultAction: "deny",
+      createdAt: profileCreatedAt,
+      updatedAt: profileCreatedAt,
+    }).returning();
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id,
+      profileId: profile.id,
+      selectorType: "catalog_entry",
+      effect: "include",
+      applicationId: application.id,
+      connectionId: connection.id,
+      catalogEntryId: oldEntry.id,
+    });
+
+    const listRes = await request(app).get(`/api/companies/${company.id}/tools/profiles`);
+    expect(listRes.status).toBe(200);
+    expect(listRes.body.profiles).toContainEqual(expect.objectContaining({
+      id: profile.id,
+      newToolsPendingCount: 2,
+    }));
+
+    const detailRes = await request(app).get(`/api/tool-profiles/${profile.id}/new-tools`);
+    expect(detailRes.status).toBe(200);
+    expect(detailRes.body).toMatchObject({
+      profileId: profile.id,
+      pendingCount: 2,
+      tools: expect.arrayContaining([
+        expect.objectContaining({
+          catalogEntryId: sendEntry.id,
+          toolName: "send_email",
+          applicationName: application.name,
+          connectionName: connection.name,
+          capability: "write",
+          addedAt: newSeenAt.toISOString(),
+        }),
+        expect.objectContaining({
+          catalogEntryId: deleteEntry.id,
+          capability: "destructive",
+        }),
+      ]),
+    });
+
+    const reviewRes = await request(app)
+      .post(`/api/tool-profiles/${profile.id}/new-tools/review`)
+      .send({
+        decisions: [
+          { catalogEntryId: sendEntry.id, decision: "allow" },
+          { catalogEntryId: deleteEntry.id, decision: "keep_blocked" },
+        ],
+      });
+
+    expect(reviewRes.status).toBe(200);
+    expect(reviewRes.body).toMatchObject({
+      allowedCount: 1,
+      keptBlockedCount: 1,
+      profile: expect.objectContaining({ id: profile.id, newToolsPendingCount: 0 }),
+      entriesCreated: [expect.objectContaining({ catalogEntryId: sendEntry.id, effect: "include" })],
+      reviewedCatalogEntryIds: expect.arrayContaining([sendEntry.id, deleteEntry.id]),
+    });
+    const profileEntries = await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.profileId, profile.id));
+    expect(profileEntries.some((entry) => entry.catalogEntryId === sendEntry.id && entry.effect === "include")).toBe(true);
+    expect(profileEntries.some((entry) => entry.catalogEntryId === deleteEntry.id)).toBe(false);
+    const [reviewedProfile] = await db.select().from(toolProfiles).where(eq(toolProfiles.id, profile.id));
+    expect(reviewedProfile.newToolsReviewedAt).toBeInstanceOf(Date);
+
+    const afterReviewRes = await request(app).get(`/api/companies/${company.id}/tools/profiles`);
+    expect(afterReviewRes.body.profiles).toContainEqual(expect.objectContaining({
+      id: profile.id,
+      newToolsPendingCount: 0,
+    }));
+  });
+
+  it("returns addedAt for auto-allowed effective profile tools without pending review state", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const [agent] = await db.insert(agents).values({
+      companyId: company.id,
+      name: "Tool User",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+    }).returning();
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      name: "Auto app",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: "Auto connection",
+      transport: "remote_http",
+      status: "active",
+      enabled: true,
+      config: { url: "https://auto.example/mcp" },
+      transportConfig: { url: "https://auto.example/mcp" },
+      healthStatus: "ok",
+    }).returning();
+    const addedAt = new Date("2026-02-03T00:00:00.000Z");
+    const [catalogEntry] = await db.insert(toolCatalogEntries).values({
+      companyId: company.id,
+      applicationId: application.id,
+      connectionId: connection.id,
+      name: "auto_allowed",
+      toolName: "auto_allowed",
+      riskLevel: "write",
+      isWrite: true,
+      status: "active",
+      versionHash: "auto-v1",
+      schemaHash: "auto-s1",
+      firstSeenAt: addedAt,
+      lastSeenAt: addedAt,
+    }).returning();
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `auto-${randomUUID()}`,
+      name: "Auto allow",
+      status: "active",
+      defaultAction: "allow",
+    }).returning();
+    await db.insert(toolProfileBindings).values({
+      companyId: company.id,
+      profileId: profile.id,
+      targetType: "company",
+      targetId: company.id,
+    });
+
+    const effective = await service.getEffectiveProfilesForAgent(company.id, agent.id);
+
+    expect(effective.allowedTools).toContainEqual(expect.objectContaining({
+      id: catalogEntry.id,
+      addedAt,
+      firstSeenAt: addedAt,
+    }));
+    const profiles = await service.listProfiles(company.id);
+    expect(profiles.find((item) => item.id === profile.id)?.newToolsPendingCount).toBe(0);
+  });
+
+  it("surfaces and clears profile new-tools attention feed items", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      name: "Attention review app",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: "Attention review connection",
+      transport: "remote_http",
+      status: "active",
+      enabled: true,
+      config: { url: "https://attention-review.example/mcp" },
+      transportConfig: { url: "https://attention-review.example/mcp" },
+      healthStatus: "ok",
+    }).returning();
+    const [oldEntry] = await db.insert(toolCatalogEntries).values({
+      companyId: company.id,
+      applicationId: application.id,
+      connectionId: connection.id,
+      name: "read_records",
+      toolName: "read_records",
+      riskLevel: "read",
+      isReadOnly: true,
+      status: "active",
+      versionHash: "read-v1",
+      schemaHash: "read-s1",
+      firstSeenAt: new Date("2026-03-01T00:00:00.000Z"),
+      lastSeenAt: new Date("2026-03-01T00:00:00.000Z"),
+    }).returning();
+    const [newEntry] = await db.insert(toolCatalogEntries).values({
+      companyId: company.id,
+      applicationId: application.id,
+      connectionId: connection.id,
+      name: "write_records",
+      toolName: "write_records",
+      riskLevel: "write",
+      isWrite: true,
+      status: "active",
+      versionHash: "write-v1",
+      schemaHash: "write-s1",
+      firstSeenAt: new Date("2026-03-03T00:00:00.000Z"),
+      lastSeenAt: new Date("2026-03-03T00:00:00.000Z"),
+    }).returning();
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `attention-review-${randomUUID()}`,
+      name: "Read-only starter",
+      status: "active",
+      defaultAction: "deny",
+      createdAt: new Date("2026-03-02T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-02T00:00:00.000Z"),
+    }).returning();
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id,
+      profileId: profile.id,
+      selectorType: "catalog_entry",
+      effect: "include",
+      applicationId: application.id,
+      connectionId: connection.id,
+      catalogEntryId: oldEntry.id,
+    });
+
+    const attentionRes = await request(app).get(`/api/companies/${company.id}/tools/apps/attention`);
+    expect(attentionRes.status).toBe(200);
+    expect(attentionRes.body.totals).toMatchObject({
+      connections: 1,
+      newToolsPendingReview: 1,
+      newToolsPendingProfiles: 1,
+    });
+    expect(attentionRes.body.apps).toEqual([
+      expect.objectContaining({
+        connection: expect.objectContaining({ id: connection.id }),
+        newToolsPendingReviewCount: 1,
+        newToolsPendingProfiles: [expect.objectContaining({
+          profileId: profile.id,
+          profileName: "Read-only starter",
+          pendingCount: 1,
+        })],
+        reasons: ["profile_new_tools"],
+      }),
+    ]);
+
+    const reviewRes = await request(app)
+      .post(`/api/tool-profiles/${profile.id}/new-tools/review`)
+      .send({ decisions: [{ catalogEntryId: newEntry.id, decision: "keep_blocked" }] });
+    expect(reviewRes.status).toBe(200);
+
+    const clearedRes = await request(app).get(`/api/companies/${company.id}/tools/apps/attention`);
+    expect(clearedRes.body.totals).toMatchObject({
+      connections: 0,
+      newToolsPendingReview: 0,
+      newToolsPendingProfiles: 0,
+    });
+    expect(clearedRes.body.apps).toEqual([]);
   });
 
   it("rolls back app connect drafts when health check fails", async () => {
