@@ -5604,6 +5604,19 @@ export function issueService(db: Db) {
         return null;
       };
 
+      const canAdoptUnownedCheckout = (candidate: {
+        status: string;
+        assigneeAgentId: string | null;
+        checkoutRunId: string | null;
+        executionRunId: string | null;
+      }) => (
+        actorRunId
+        && candidate.status === "in_progress"
+        && candidate.assigneeAgentId === actorAgentId
+        && candidate.checkoutRunId == null
+        && (candidate.executionRunId == null || candidate.executionRunId === actorRunId)
+      );
+
       const resolveOwnership = async (
         candidate: {
           id: string;
@@ -5616,17 +5629,11 @@ export function issueService(db: Db) {
         const sameRunOwnership = resolveSameRunOwnership(candidate);
         if (sameRunOwnership) return { ownership: sameRunOwnership, latest: null };
 
-        if (
-          actorRunId &&
-          candidate.status === "in_progress" &&
-          candidate.assigneeAgentId === actorAgentId &&
-          candidate.checkoutRunId == null &&
-          (candidate.executionRunId == null || candidate.executionRunId === actorRunId)
-        ) {
+        if (canAdoptUnownedCheckout(candidate)) {
           const adopted = await adoptUnownedCheckoutRun({
             issueId: id,
             actorAgentId,
-            actorRunId,
+            actorRunId: actorRunId!,
           });
 
           if (adopted) {
@@ -5668,6 +5675,25 @@ export function issueService(db: Db) {
           if (staleAdoption.latest) {
             const latestOwnership = resolveSameRunOwnership(staleAdoption.latest);
             if (latestOwnership) return { ownership: latestOwnership, latest: staleAdoption.latest };
+
+            if (canAdoptUnownedCheckout(staleAdoption.latest)) {
+              const adopted = await adoptUnownedCheckoutRun({
+                issueId: id,
+                actorAgentId,
+                actorRunId: actorRunId!,
+              });
+
+              if (adopted) {
+                return {
+                  ownership: {
+                    ...adopted,
+                    adoptedFromRunId: null as string | null,
+                  },
+                  latest: null,
+                };
+              }
+            }
+
             return { ownership: null, latest: staleAdoption.latest };
           }
         }

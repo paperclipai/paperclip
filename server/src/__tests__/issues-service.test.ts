@@ -41,6 +41,16 @@ import { buildAgentMentionHref, buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("issue list limit helpers", () => {
   it("clamps untrusted issue-list limits to the server maximum", () => {
     expect(clampIssueListLimit(0)).toBe(1);
@@ -4900,6 +4910,62 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
     expect(row).toEqual({
       checkoutRunId: null,
       executionRunId: null,
+    });
+  });
+
+  it("adopts unowned checkout after a concurrent stale-checkout clear wins the lock race", async () => {
+    const seeded = await seedOwnershipIssue({ checkoutStatus: "failed" });
+    await db
+      .update(issues)
+      .set({
+        executionRunId: seeded.actorRunId,
+        executionLockedAt: new Date(),
+      })
+      .where(eq(issues.id, seeded.issueId));
+
+    const rowLocked = deferred<void>();
+    const clearCanCommit = deferred<void>();
+
+    const concurrentClear = db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select ${issues.id} from ${issues} where ${issues.id} = ${seeded.issueId} for update`,
+      );
+      rowLocked.resolve();
+      await clearCanCommit.promise;
+      await tx
+        .update(issues)
+        .set({
+          checkoutRunId: null,
+          executionRunId: seeded.actorRunId,
+          executionLockedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, seeded.issueId));
+    });
+
+    await rowLocked.promise;
+
+    const ownershipPromise = svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    clearCanCommit.resolve();
+    await concurrentClear;
+
+    const ownership = await ownershipPromise;
+    expect(ownership.checkoutRunId).toBe(seeded.actorRunId);
+    expect(ownership.executionRunId).toBe(seeded.actorRunId);
+    expect(ownership.adoptedFromRunId).toBeNull();
+
+    const row = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, seeded.issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      checkoutRunId: seeded.actorRunId,
+      executionRunId: seeded.actorRunId,
     });
   });
 
