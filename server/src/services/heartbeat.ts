@@ -10535,15 +10535,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             shouldQueueFollowupForRunningIssueWake({ contextSnapshot: enrichedContextSnapshot, wakeCommentId }) &&
             activeExecutionRun.status === "running" &&
             isSameExecutionAgent;
+          const availableActiveExecutionRun = filterZombieCoalesceTarget(
+            activeExecutionRun,
+            runningProcesses,
+          );
 
           if (
             isSameExecutionAgent
             && !shouldDeferFollowupWake
             && !shouldQueueFollowupForRunningWake
-            && !isZombieRun(activeExecutionRun, runningProcesses)
+            && availableActiveExecutionRun
           ) {
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
-              activeExecutionRun.contextSnapshot,
+              availableActiveExecutionRun.contextSnapshot,
               enrichedContextSnapshot,
             );
             const mergedRun = await tx
@@ -10552,9 +10556,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 contextSnapshot: mergedContextSnapshot,
                 updatedAt: new Date(),
               })
-              .where(eq(heartbeatRuns.id, activeExecutionRun.id))
+              .where(eq(heartbeatRuns.id, availableActiveExecutionRun.id))
               .returning()
-              .then((rows) => rows[0] ?? activeExecutionRun);
+              .then((rows) => rows[0] ?? availableActiveExecutionRun);
 
             await tx.insert(agentWakeupRequests).values({
               companyId: agent.companyId,
@@ -10575,67 +10579,69 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             return { kind: "coalesced" as const, run: mergedRun };
           }
 
-          const deferredPayload = {
-            ...(payload ?? {}),
-            issueId,
-            [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot,
-          };
-
-          const existingDeferred = await tx
-            .select()
-            .from(agentWakeupRequests)
-            .where(
-              and(
-                eq(agentWakeupRequests.companyId, agent.companyId),
-                eq(agentWakeupRequests.agentId, agentId),
-                eq(agentWakeupRequests.status, "deferred_issue_execution"),
-                sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
-              ),
-            )
-            .orderBy(asc(agentWakeupRequests.requestedAt))
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-
-          if (existingDeferred) {
-            const existingDeferredPayload = parseObject(existingDeferred.payload);
-            const existingDeferredContext = parseObject(existingDeferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
-            const mergedDeferredContext = mergeCoalescedContextSnapshot(
-              existingDeferredContext,
-              enrichedContextSnapshot,
-            );
-            const mergedDeferredPayload = {
-              ...existingDeferredPayload,
+          if (availableActiveExecutionRun) {
+            const deferredPayload = {
               ...(payload ?? {}),
               issueId,
-              [DEFERRED_WAKE_CONTEXT_KEY]: mergedDeferredContext,
+              [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot,
             };
 
-            await tx
-              .update(agentWakeupRequests)
-              .set({
-                payload: mergedDeferredPayload,
-                coalescedCount: (existingDeferred.coalescedCount ?? 0) + 1,
-                updatedAt: new Date(),
-              })
-              .where(eq(agentWakeupRequests.id, existingDeferred.id));
+            const existingDeferred = await tx
+              .select()
+              .from(agentWakeupRequests)
+              .where(
+                and(
+                  eq(agentWakeupRequests.companyId, agent.companyId),
+                  eq(agentWakeupRequests.agentId, agentId),
+                  eq(agentWakeupRequests.status, "deferred_issue_execution"),
+                  sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+                ),
+              )
+              .orderBy(asc(agentWakeupRequests.requestedAt))
+              .limit(1)
+              .then((rows) => rows[0] ?? null);
+
+            if (existingDeferred) {
+              const existingDeferredPayload = parseObject(existingDeferred.payload);
+              const existingDeferredContext = parseObject(existingDeferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
+              const mergedDeferredContext = mergeCoalescedContextSnapshot(
+                existingDeferredContext,
+                enrichedContextSnapshot,
+              );
+              const mergedDeferredPayload = {
+                ...existingDeferredPayload,
+                ...(payload ?? {}),
+                issueId,
+                [DEFERRED_WAKE_CONTEXT_KEY]: mergedDeferredContext,
+              };
+
+              await tx
+                .update(agentWakeupRequests)
+                .set({
+                  payload: mergedDeferredPayload,
+                  coalescedCount: (existingDeferred.coalescedCount ?? 0) + 1,
+                  updatedAt: new Date(),
+                })
+                .where(eq(agentWakeupRequests.id, existingDeferred.id));
+
+              return { kind: "deferred" as const };
+            }
+
+            await tx.insert(agentWakeupRequests).values({
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: "issue_execution_deferred",
+              payload: deferredPayload,
+              status: "deferred_issue_execution",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+            });
 
             return { kind: "deferred" as const };
           }
-
-          await tx.insert(agentWakeupRequests).values({
-            companyId: agent.companyId,
-            agentId,
-            source,
-            triggerDetail,
-            reason: "issue_execution_deferred",
-            payload: deferredPayload,
-            status: "deferred_issue_execution",
-            requestedByActorType: opts.requestedByActorType ?? null,
-            requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
-          });
-
-          return { kind: "deferred" as const };
         }
 
         const wakeupRequest = await tx
