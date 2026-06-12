@@ -79,6 +79,7 @@ export {
   ISSUE_RECOVERY_ACTION_OUTCOMES,
   pluginOperationIssueOriginKind,
   isPluginOperationIssueOriginKind,
+  isIssueProductivityReviewOriginKind,
   ISSUE_RELATION_TYPES,
   ISSUE_TREE_CONTROL_MODES,
   ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES,
