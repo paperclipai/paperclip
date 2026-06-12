@@ -21,4 +21,11 @@ describe("text translation", () => {
     createTranslator(dict, { root: document.body }).start();
     expect(document.body.textContent).toBe("Custom user title");
   });
+
+  it("treats an empty-string value as untranslated (does not blank the text)", () => {
+    const partial = { text: { "Pending label": "" } };
+    document.body.innerHTML = `<span>Pending label</span>`;
+    createTranslator(partial, { root: document.body }).start();
+    expect(document.body.textContent).toBe("Pending label");
+  });
 });

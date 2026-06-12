@@ -38,7 +38,8 @@ export function createTranslator(dict: Dictionary, options: TranslatorOptions = 
     const key = raw.trim();
     if (!key) return;
     const value = text[key];
-    if (value === undefined || value === key) return;
+    // Empty string = harvested-but-not-yet-translated → leave English (fallback).
+    if (value === undefined || value === "" || value === key) return;
     if (inSkippedSubtree(node)) return;
     const lead = raw.slice(0, raw.indexOf(key));
     const trail = raw.slice(raw.indexOf(key) + key.length);
@@ -54,7 +55,8 @@ export function createTranslator(dict: Dictionary, options: TranslatorOptions = 
       if (current == null) continue;
       const key = current.trim();
       const value = attr[key];
-      if (value === undefined || value === key) continue;
+      // Empty string = harvested-but-not-yet-translated → leave English (fallback).
+      if (value === undefined || value === "" || value === key) continue;
       el.setAttribute(name, value);
     }
   }
