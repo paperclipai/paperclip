@@ -1982,6 +1982,38 @@ describe("realizeExecutionWorkspace", () => {
     expect(worktreeOp!.metadata!.baseRef).toBe("origin/master");
   }, 10_000);
 
+  it("degrades to project_primary when baseCwd is not a git repo (interval heartbeat with no project)", async () => {
+    const nonGitDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-non-git-"));
+
+    const result = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: nonGitDir,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+      },
+      config: {
+        workspaceStrategy: { type: "git_worktree" },
+      },
+      issue: null,
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(result.strategy).toBe("project_primary");
+    expect(result.cwd).toBe(nonGitDir);
+    expect(result.branchName).toBeNull();
+    expect(result.created).toBe(false);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("not");
+    expect(result.warnings[0]).toContain("project_primary");
+  });
+
   it("removes a created git worktree and branch during cleanup", async () => {
     const repoRoot = await createTempRepo();
 
