@@ -1,7 +1,8 @@
 import { createContext, useContext, useMemo, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
+import { buildPipelineMentionHref, buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
 import { companySkillsApi } from "../api/companySkills";
+import { pipelinesApi, type PipelineStage } from "../api/pipelines";
 import { routinesApi } from "../api/routines";
 import { useCompany } from "./CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -28,7 +29,19 @@ export interface RoutineCommandOption {
   aliases: string[];
 }
 
-export type SlashCommandOption = SkillCommandOption | RoutineCommandOption;
+export interface PipelineCommandOption {
+  id: string;
+  kind: "pipeline";
+  pipelineId: string;
+  stageKey: string | null;
+  name: string;
+  key: string;
+  stageName: string | null;
+  href: string;
+  aliases: string[];
+}
+
+export type SlashCommandOption = SkillCommandOption | RoutineCommandOption | PipelineCommandOption;
 
 interface EditorAutocompleteContextValue {
   slashCommands: SlashCommandOption[];
@@ -52,6 +65,13 @@ export function EditorAutocompleteProvider({ children }: { children: ReactNode }
       ? queryKeys.routines.list(selectedCompanyId)
       : ["routines", "__none__", "__all-projects__"],
     queryFn: () => routinesApi.list(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
+  const { data: pipelines = [] } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.pipelines.list(selectedCompanyId)
+      : ["pipelines", "__none__"],
+    queryFn: () => pipelinesApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
 
@@ -80,8 +100,47 @@ export function EditorAutocompleteProvider({ children }: { children: ReactNode }
           href: buildRoutineMentionHref(routine.id),
           aliases: [`routine:${routine.title}`, routine.title, routine.id],
         })),
+      ...pipelines
+        .filter((pipeline) => !pipeline.archivedAt)
+        .sort((left, right) => left.name.localeCompare(right.name))
+        .flatMap((pipeline) => {
+          const base: PipelineCommandOption = {
+            id: `pipeline:${pipeline.id}`,
+            kind: "pipeline",
+            pipelineId: pipeline.id,
+            stageKey: null,
+            name: pipeline.name,
+            key: pipeline.key,
+            stageName: null,
+            href: buildPipelineMentionHref(pipeline.id),
+            aliases: [`pipeline:${pipeline.name}`, `pipeline:${pipeline.key}`, pipeline.name, pipeline.key, pipeline.id],
+          };
+          const stages = Array.isArray((pipeline as { stages?: PipelineStage[] }).stages)
+            ? (pipeline as { stages?: PipelineStage[] }).stages ?? []
+            : [];
+          return [
+            base,
+            ...stages.map((stage) => ({
+              id: `pipeline:${pipeline.id}:${stage.key}`,
+              kind: "pipeline" as const,
+              pipelineId: pipeline.id,
+              stageKey: stage.key,
+              name: pipeline.name,
+              key: pipeline.key,
+              stageName: stage.name,
+              href: buildPipelineMentionHref(pipeline.id, stage.key),
+              aliases: [
+                `pipeline:${pipeline.name} ${stage.name}`,
+                `pipeline:${pipeline.key} ${stage.key}`,
+                `${pipeline.name} ${stage.name}`,
+                `${pipeline.key} ${stage.key}`,
+                pipeline.id,
+              ],
+            })),
+          ];
+        }),
     ],
-  }), [companySkills, routines]);
+  }), [companySkills, pipelines, routines]);
 
   return (
     <EditorAutocompleteContext.Provider value={value}>

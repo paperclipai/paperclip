@@ -4,6 +4,7 @@ import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
+  agents,
   issueComments,
   issues,
   pipelineAutomationExecutions,
@@ -14,11 +15,15 @@ import {
   pipelineStages,
   pipelineTransitions,
   pipelines,
+  routineRevisions,
   routines,
 } from "@paperclipai/db";
+import { syncRoutineVariablesWithTemplate, type RoutineVariable, type RoutineRevisionSnapshotV1 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { routineService } from "./routines.js";
 import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
+import { logActivity } from "./activity-log.js";
+import { assertAssignableAgent } from "./agent-assignability.js";
 
 const DEFAULT_LEASE_MS = 15 * 60 * 1000;
 const MAX_LEASE_MS = 24 * 60 * 60 * 1000;
@@ -30,14 +35,20 @@ export const PIPELINE_CASE_EVENTS_MAX_LIMIT = 100;
 export const PIPELINE_CONTEXT_PACK_EVENT_LIMIT = 20;
 
 const DEFAULT_STAGES = [
-  { key: "intake", name: "Intake", kind: "open", position: 100 },
+  { key: "intake", name: "Intake", kind: "working", position: 100 },
   { key: "in_progress", name: "In progress", kind: "working", position: 200 },
   {
     key: "review",
     name: "Review",
     kind: "review",
     position: 300,
-    config: { approveToStageKey: "done", rejectToStageKey: "cancelled", requireRejectReason: true, reviewerKind: "human" },
+    config: {
+      approveToStageKey: "done",
+      rejectToStageKey: "cancelled",
+      requireRejectReason: true,
+      requireApproval: true,
+      approver: { kind: "any_human" },
+    },
   },
   { key: "done", name: "Done", kind: "done", position: 900 },
   { key: "cancelled", name: "Cancelled", kind: "cancelled", position: 1000 },
@@ -49,6 +60,7 @@ export type PipelineActor =
   | { type: "system" };
 
 export type PipelineStageKind = "open" | "working" | "review" | "done" | "cancelled";
+type CanonicalPipelineStageKind = Exclude<PipelineStageKind, "open">;
 
 export type PipelineStageConfig = Record<string, unknown> & {
   autonomy?: "manual" | "suggest" | "auto";
@@ -57,7 +69,29 @@ export type PipelineStageConfig = Record<string, unknown> & {
   rejectToStageKey?: string;
   requestChangesToStageKey?: string;
   requireRejectReason?: boolean;
+  requireChildrenTerminal?: boolean;
+  requireNoUnresolvedDrift?: boolean;
+  disabled?: boolean;
+  requireApproval?: boolean;
+  approver?: {
+    kind?: "any_human" | "user" | "agent";
+    id?: string;
+  };
   reviewerKind?: "human" | "any";
+  variables?: Array<{
+    name?: unknown;
+    key?: unknown;
+    label?: unknown;
+    type?: unknown;
+    defaultValue?: unknown;
+    options?: unknown;
+    required?: unknown;
+    showInAddForm?: unknown;
+  }>;
+  automation?: {
+    assigneeAgentId?: string | null;
+    instructionsBody?: string | null;
+  };
   onEnter?: {
     type?: "run_routine";
     routineId?: string;
@@ -78,6 +112,39 @@ function nowDate() {
   return new Date();
 }
 
+function normalizeStageKind(kind: PipelineStageKind | string): CanonicalPipelineStageKind {
+  if (kind === "open") return "working";
+  if (kind === "working" || kind === "review" || kind === "done" || kind === "cancelled") return kind;
+  throw unprocessable("Pipeline stage kind must be working, review, done, or cancelled", { code: "validation" });
+}
+
+function withDefaultWorkingChildrenGateConfig(
+  stage: { kind: PipelineStageKind | string; config?: PipelineStageConfig | null },
+  nextStageKey?: string | null,
+): PipelineStageConfig {
+  const kind = normalizeStageKind(stage.kind);
+  const config = normalizeStageConfig(kind, stage.config);
+  if (kind !== "working") return config;
+  return {
+    ...config,
+    requireChildrenTerminal: config.requireChildrenTerminal ?? true,
+    ...(config.autoAdvanceOnChildrenTerminal === undefined && nextStageKey
+      ? { autoAdvanceOnChildrenTerminal: nextStageKey }
+      : {}),
+  };
+}
+
+function routineActorPatch(actor: PipelineActor) {
+  if (actor.type === "agent") {
+    assertActorProvenance(actor);
+    return { agentId: actor.agentId, userId: null, runId: actor.runId };
+  }
+  if (actor.type === "user") {
+    return { agentId: null, userId: actor.userId, runId: null };
+  }
+  return { agentId: null, userId: null, runId: null };
+}
+
 function eventActorPatch(actor: PipelineActor) {
   if (actor.type === "agent") {
     assertActorProvenance(actor);
@@ -87,6 +154,23 @@ function eventActorPatch(actor: PipelineActor) {
     return { actorType: "user", actorUserId: actor.userId };
   }
   return { actorType: "system" };
+}
+
+function eventActorPayload(actor: PipelineActor) {
+  if (actor.type === "agent") return { type: "agent", agentId: actor.agentId, runId: actor.runId };
+  if (actor.type === "user") return { type: "user", userId: actor.userId };
+  return { type: "system" };
+}
+
+function activityActorPatch(actor: PipelineActor) {
+  if (actor.type === "agent") {
+    assertActorProvenance(actor);
+    return { actorType: "agent" as const, actorId: actor.agentId, agentId: actor.agentId, runId: actor.runId };
+  }
+  if (actor.type === "user") {
+    return { actorType: "user" as const, actorId: actor.userId, agentId: null, runId: null };
+  }
+  return { actorType: "system" as const, actorId: "pipeline-automation", agentId: null, runId: null };
 }
 
 function assertActorProvenance(actor: PipelineActor) {
@@ -150,8 +234,87 @@ function stageConfig(stage: typeof pipelineStages.$inferSelect): PipelineStageCo
   return (stage.config ?? {}) as PipelineStageConfig;
 }
 
+function readStageAutomationRequest(config?: PipelineStageConfig | null) {
+  const automation = config?.automation;
+  if (!automation || typeof automation !== "object" || Array.isArray(automation)) return null;
+  const assigneeAgentId =
+    typeof automation.assigneeAgentId === "string" && automation.assigneeAgentId.trim()
+      ? automation.assigneeAgentId.trim()
+      : null;
+  const instructionsBody =
+    typeof automation.instructionsBody === "string" ? automation.instructionsBody : "";
+  return { assigneeAgentId, instructionsBody };
+}
+
+function persistedStageConfig(config?: PipelineStageConfig | null): PipelineStageConfig {
+  const {
+    automation: _automation,
+    assigneeAgentId: _assigneeAgentId,
+    ...rest
+  } = { ...(config ?? {}) } as PipelineStageConfig & { assigneeAgentId?: unknown };
+  return rest as PipelineStageConfig;
+}
+
+function sanitizePipelineRoutineVariables(raw: PipelineStageConfig["variables"]): RoutineVariable[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((variable) => {
+    if (!variable || typeof variable !== "object" || Array.isArray(variable)) return [];
+    const name = typeof variable.name === "string" && variable.name.trim()
+      ? variable.name.trim()
+      : typeof variable.key === "string" && variable.key.trim()
+        ? variable.key.trim()
+        : null;
+    if (!name || !/^[A-Za-z][A-Za-z0-9_]*$/.test(name)) return [];
+    const type = variable.type === "textarea" || variable.type === "number" || variable.type === "boolean" || variable.type === "select"
+      ? variable.type
+      : "text";
+    const defaultValue =
+      typeof variable.defaultValue === "string" ||
+      typeof variable.defaultValue === "number" ||
+      typeof variable.defaultValue === "boolean"
+        ? variable.defaultValue
+        : null;
+    return [{
+      name,
+      label: typeof variable.label === "string" && variable.label.trim() ? variable.label.trim() : null,
+      type,
+      defaultValue,
+      required: variable.required === true,
+      options: Array.isArray(variable.options)
+        ? variable.options.filter((option): option is string => typeof option === "string")
+        : [],
+    }];
+  });
+}
+
 function normalizeStageConfig(kind: PipelineStageKind | string, config?: PipelineStageConfig | null): PipelineStageConfig {
-  const next = { ...(config ?? {}) };
+  const { reviewerKind, ...rest } = persistedStageConfig(config);
+  const next = rest as PipelineStageConfig;
+
+  if (next.disabled !== undefined && typeof next.disabled !== "boolean") {
+    throw unprocessable("Stage disabled must be boolean", { code: "validation" });
+  }
+
+  if (next.requireApproval !== undefined && typeof next.requireApproval !== "boolean") {
+    throw unprocessable("Stage requireApproval must be boolean", { code: "validation" });
+  }
+  if (next.requireChildrenTerminal !== undefined && typeof next.requireChildrenTerminal !== "boolean") {
+    throw unprocessable("Stage requireChildrenTerminal must be boolean", { code: "validation" });
+  }
+  if (next.requireNoUnresolvedDrift !== undefined && typeof next.requireNoUnresolvedDrift !== "boolean") {
+    throw unprocessable("Stage requireNoUnresolvedDrift must be boolean", { code: "validation" });
+  }
+
+  if (reviewerKind !== undefined && reviewerKind !== "human" && reviewerKind !== "any") {
+    throw unprocessable("Review stage reviewerKind must be human or any", { code: "validation" });
+  }
+
+  const legacyRequiresApproval = reviewerKind === "human" ? true : reviewerKind === "any" ? false : undefined;
+  const requireApproval = legacyRequiresApproval ?? next.requireApproval ?? false;
+  const approver = normalizeStageApprover(next.approver, requireApproval);
+  next.requireApproval = requireApproval;
+  next.approver = approver;
+
   if (kind !== "review") return next;
 
   if (typeof next.approveToStageKey !== "string" || next.approveToStageKey.trim().length === 0) {
@@ -169,22 +332,76 @@ function normalizeStageConfig(kind: PipelineStageKind | string, config?: Pipelin
   if (next.requireRejectReason !== undefined && typeof next.requireRejectReason !== "boolean") {
     throw unprocessable("Review stage requireRejectReason must be boolean", { code: "validation" });
   }
-  if (next.reviewerKind !== undefined && next.reviewerKind !== "human" && next.reviewerKind !== "any") {
-    throw unprocessable("Review stage reviewerKind must be human or any", { code: "validation" });
-  }
-
   return {
     ...next,
     approveToStageKey: next.approveToStageKey.trim(),
     rejectToStageKey: next.rejectToStageKey.trim(),
     ...(next.requestChangesToStageKey !== undefined ? { requestChangesToStageKey: next.requestChangesToStageKey.trim() } : {}),
     requireRejectReason: next.requireRejectReason ?? true,
-    reviewerKind: next.reviewerKind ?? "human",
+    requireApproval,
+    approver,
   };
 }
 
 function reviewConfigForStage(stage: typeof pipelineStages.$inferSelect) {
   return normalizeStageConfig(stage.kind, stageConfig(stage));
+}
+
+function normalizeStageApprover(
+  approver: PipelineStageConfig["approver"] | undefined,
+  requireApproval: boolean,
+): NonNullable<PipelineStageConfig["approver"]> {
+  if (approver !== undefined && (typeof approver !== "object" || approver === null || Array.isArray(approver))) {
+    throw unprocessable("Stage approver must be an object", { code: "validation" });
+  }
+  const kind = approver?.kind ?? "any_human";
+  if (kind !== "any_human" && kind !== "user" && kind !== "agent") {
+    throw unprocessable("Stage approver kind must be any_human, user, or agent", { code: "validation" });
+  }
+  const id = typeof approver?.id === "string" ? approver.id.trim() : approver?.id;
+  if ((kind === "user" || kind === "agent") && (typeof id !== "string" || id.length === 0)) {
+    throw unprocessable("Specific stage approvers require an id", { code: "validation" });
+  }
+  if (kind === "any_human") {
+    return { kind };
+  }
+  if (!requireApproval) {
+    return { kind, id: id as string };
+  }
+  return { kind, id: id as string };
+}
+
+function assertStageEnabled(stage: typeof pipelineStages.$inferSelect, action: string) {
+  const config = normalizeStageConfig(stage.kind, stageConfig(stage));
+  if (config.disabled !== true) return;
+  throw unprocessable("Pipeline stage is disabled", {
+    code: "stage_disabled",
+    action,
+    stageId: stage.id,
+    stageKey: stage.key,
+  });
+}
+
+function assertActorCanApproveStageExit(stage: typeof pipelineStages.$inferSelect, actor: PipelineActor) {
+  const config = normalizeStageConfig(stage.kind, stageConfig(stage));
+  if (config.requireApproval !== true) return;
+  const approver = config.approver ?? { kind: "any_human" };
+  if (approver.kind === "any_human") {
+    if (actor.type === "user") return;
+    throw new HttpError(403, "Stage approval requires a human approver", { code: "approval_required" });
+  }
+  if (approver.kind === "user") {
+    if (actor.type === "user" && actor.userId === approver.id) return;
+    throw new HttpError(403, "Stage approval requires the configured user approver", {
+      code: "approval_required",
+      approver,
+    });
+  }
+  if (actor.type === "agent" && actor.agentId === approver.id) return;
+  throw new HttpError(403, "Stage approval requires the configured agent approver", {
+    code: "approval_required",
+    approver,
+  });
 }
 
 function assertReviewTargetsInSet(
@@ -222,6 +439,73 @@ function stageAutomation(stage: typeof pipelineStages.$inferSelect) {
   };
 }
 
+function stageAutomationRoutineIdFromConfig(config?: PipelineStageConfig | null) {
+  const onEnter = config?.onEnter;
+  return onEnter?.type === "run_routine" && typeof onEnter.routineId === "string"
+    ? onEnter.routineId
+    : null;
+}
+
+function routineRevisionSnapshotRoutine(routine: typeof routines.$inferSelect): RoutineRevisionSnapshotV1["routine"] {
+  return {
+    id: routine.id,
+    companyId: routine.companyId,
+    projectId: routine.projectId,
+    goalId: routine.goalId,
+    parentIssueId: routine.parentIssueId,
+    title: routine.title,
+    description: routine.description,
+    assigneeAgentId: routine.assigneeAgentId,
+    priority: routine.priority as RoutineRevisionSnapshotV1["routine"]["priority"],
+    status: routine.status as RoutineRevisionSnapshotV1["routine"]["status"],
+    concurrencyPolicy: routine.concurrencyPolicy as RoutineRevisionSnapshotV1["routine"]["concurrencyPolicy"],
+    catchUpPolicy: routine.catchUpPolicy as RoutineRevisionSnapshotV1["routine"]["catchUpPolicy"],
+    originKind: routine.originKind,
+    originId: routine.originId,
+    variables: routine.variables ?? [],
+    env: routine.env ?? null,
+  };
+}
+
+function addFormVariablesForStage(stage: typeof pipelineStages.$inferSelect) {
+  const variables = stageConfig(stage).variables;
+  if (!Array.isArray(variables)) return [];
+  return variables.filter((variable) =>
+    typeof variable.key === "string" &&
+    variable.key.trim().length > 0 &&
+    typeof variable.label === "string" &&
+    variable.label.trim().length > 0 &&
+    variable.showInAddForm === true
+  );
+}
+
+function isMissingRequiredField(value: unknown) {
+  return value == null || (typeof value === "string" && value.trim().length === 0);
+}
+
+function validateAddFormFieldsForStage(stage: typeof pipelineStages.$inferSelect, fields: Record<string, unknown>) {
+  for (const variable of addFormVariablesForStage(stage)) {
+    const key = variable.key as string;
+    if (variable.required === true && isMissingRequiredField(fields[key])) {
+      throw unprocessable(`${variable.label} is required`, {
+        code: "required_field",
+        fieldKey: key,
+        label: variable.label,
+      });
+    }
+    if (variable.type === "select" && !isMissingRequiredField(fields[key]) && Array.isArray(variable.options)) {
+      const options = variable.options.filter((option): option is string => typeof option === "string");
+      if (!options.includes(String(fields[key]))) {
+        throw unprocessable(`${variable.label} must use one of the available choices`, {
+          code: "invalid_select_value",
+          fieldKey: key,
+          label: variable.label,
+        });
+      }
+    }
+  }
+}
+
 function buildCaseDeepLink(input: { pipelineId: string; caseId: string }) {
   return `/PAP/pipelines/${input.pipelineId}/cases/${input.caseId}`;
 }
@@ -257,6 +541,69 @@ function buildPipelineCaseContextPack(input: {
   };
 }
 
+function primitivePipelineVariableValue(value: unknown): string | number | boolean {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+  if (value == null) return "";
+  return JSON.stringify(value);
+}
+
+function buildPipelineCaseVariables(input: {
+  pipeline: typeof pipelines.$inferSelect;
+  case: typeof pipelineCases.$inferSelect;
+  stage: typeof pipelineStages.$inferSelect;
+}) {
+  const fields = input.case.fields && typeof input.case.fields === "object" && !Array.isArray(input.case.fields)
+    ? input.case.fields
+    : {};
+  const variables: Record<string, string | number | boolean> = {
+    pipeline_id: input.pipeline.id,
+    pipeline_key: input.pipeline.key,
+    pipeline_name: input.pipeline.name,
+    stage_id: input.stage.id,
+    stage_key: input.stage.key,
+    stage_name: input.stage.name,
+    case_id: input.case.id,
+    case_key: input.case.caseKey,
+    case_title: input.case.title,
+    case_version: input.case.version,
+  };
+  for (const [key, value] of Object.entries(fields)) {
+    variables[key] = primitivePipelineVariableValue(value);
+  }
+  return variables;
+}
+
+function buildPipelineStageEntryPreamble(input: {
+  pipeline: typeof pipelines.$inferSelect;
+  case: typeof pipelineCases.$inferSelect;
+  stage: typeof pipelineStages.$inferSelect;
+  triggeringEventId?: string | null;
+}) {
+  const contextPack = buildPipelineCaseContextPack(input);
+  return [
+    "## Pipeline Automation Preamble",
+    "",
+    `You are running as part of pipeline "${input.pipeline.name}" (${input.pipeline.key}), stage "${input.stage.name}" (${input.stage.key}), for case "${input.case.title}" (${input.case.caseKey}).`,
+    "",
+    "Use the pipeline case API with your agent token:",
+    "",
+    `- Read this case: GET /api/cases/${input.case.id}`,
+    `- Read a compact work context: GET /api/cases/${input.case.id}/context-pack`,
+    "- Create child cases: POST /api/pipelines/{pipelineId}/cases with parentCaseId, fields, blockedByCaseIds, and a stable requestKey.",
+    "- Link related work: POST /api/cases/{caseId}/issue-links with the work issue id.",
+    `- Finish by transitioning this case when the stage instructions are complete: POST /api/cases/${input.case.id}/transition with expectedVersion from the latest case read.`,
+    "",
+    "Create all intended child cases before moving the parent forward. Use deterministic requestKey values so retries converge instead of duplicating children.",
+    "",
+    "Pipeline variables available to the routine include {{case_id}}, {{case_key}}, {{case_title}}, {{case_version}}, {{pipeline_id}}, {{pipeline_key}}, {{stage_key}}, and each case field by its field key.",
+    input.triggeringEventId ? `Triggering event: ${input.triggeringEventId}` : null,
+    "",
+    "```json",
+    JSON.stringify(contextPack, null, 2),
+    "```",
+  ].filter((line): line is string => line !== null).join("\n");
+}
+
 function buildPipelineCaseContextMarkdown(input: {
   pipeline: typeof pipelines.$inferSelect;
   case: typeof pipelineCases.$inferSelect;
@@ -265,12 +612,12 @@ function buildPipelineCaseContextMarkdown(input: {
 }) {
   const contextPack = buildPipelineCaseContextPack(input);
   return [
-    "## Pipeline Case Context",
+    "## Pipeline Item Context",
     "",
-    `Case: ${input.case.title}`,
+    `Item: ${input.case.title}`,
     `Pipeline: ${input.pipeline.name} (${input.pipeline.key})`,
     `Stage: ${input.stage.name} (${input.stage.key}, ${input.stage.kind})`,
-    `Case link: ${contextPack.case.deepLink}`,
+    `Item link: ${contextPack.case.deepLink}`,
     input.triggeringEventId ? `Triggering event: ${input.triggeringEventId}` : null,
     "",
     "```json",
@@ -350,6 +697,16 @@ async function getCaseWithStageOrThrow(db: PipelineDb, companyId: string, caseId
     .then((rows) => rows[0] ?? null);
   if (!row) throw notFound("Pipeline case not found");
   return row;
+}
+
+async function getCaseWithStageForUpdateOrThrow(db: PipelineDb, companyId: string, caseId: string) {
+  const locked = await db.execute(sql<{ id: string }>`
+    select id from pipeline_cases
+    where company_id = ${companyId} and id = ${caseId}
+    for update
+  `);
+  if (Array.from(locked).length === 0) throw notFound("Pipeline case not found");
+  return getCaseWithStageOrThrow(db, companyId, caseId);
 }
 
 async function expireLeaseIfNeeded(db: PipelineDb, row: typeof pipelineCases.$inferSelect, actor: PipelineActor) {
@@ -438,7 +795,8 @@ async function assertValidParentCase(
     throw conflict("Pipeline case parent cycle detected", { code: "parent_cycle" });
   }
 
-  let current = await getCaseOrThrow(db, input.companyId, input.parentCaseId);
+  const parent = await getCaseOrThrow(db, input.companyId, input.parentCaseId);
+  let current = parent;
   let depth = 1;
   while (current.parentCaseId) {
     if (input.caseId && current.parentCaseId === input.caseId) {
@@ -453,7 +811,7 @@ async function assertValidParentCase(
   if (depth >= 32) {
     throw unprocessable("Pipeline case parent depth exceeds 32", { code: "parent_depth_exceeded" });
   }
-  return input.parentCaseId;
+  return parent;
 }
 
 async function adjustParentCounts(
@@ -504,6 +862,142 @@ async function hasCaseEvent(db: PipelineDb, caseId: string, type: string) {
     .limit(1)
     .then((rows) => rows[0] ?? null);
   return Boolean(row);
+}
+
+function expectedChildrenFromFields(fields: Record<string, unknown> | null | undefined) {
+  const value = fields?.expectedChildren;
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) return value;
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) return Number(value.trim());
+  return null;
+}
+
+async function listUnresolvedDriftEvents(db: PipelineDb, input: { companyId: string; caseId: string }) {
+  const latestAck = await db
+    .select({ createdAt: pipelineCaseEvents.createdAt })
+    .from(pipelineCaseEvents)
+    .where(and(
+      eq(pipelineCaseEvents.companyId, input.companyId),
+      eq(pipelineCaseEvents.caseId, input.caseId),
+      eq(pipelineCaseEvents.type, "drift_acknowledged"),
+    ))
+    .orderBy(desc(pipelineCaseEvents.createdAt), desc(pipelineCaseEvents.id))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+
+  return db
+    .select()
+    .from(pipelineCaseEvents)
+    .where(and(
+      eq(pipelineCaseEvents.companyId, input.companyId),
+      eq(pipelineCaseEvents.caseId, input.caseId),
+      eq(pipelineCaseEvents.type, "upstream_drift"),
+      latestAck ? sql`${pipelineCaseEvents.createdAt} > ${latestAck.createdAt.toISOString()}` : undefined,
+    ))
+    .orderBy(desc(pipelineCaseEvents.createdAt), desc(pipelineCaseEvents.id));
+}
+
+async function assertStageTransitionGates(
+  db: PipelineDb,
+  current: typeof pipelineCases.$inferSelect,
+  fromStage: typeof pipelineStages.$inferSelect,
+) {
+  const config = normalizeStageConfig(fromStage.kind, stageConfig(fromStage));
+  if (config.requireChildrenTerminal === true) {
+    const expectedChildren = expectedChildrenFromFields(current.fields);
+    if (expectedChildren !== null && expectedChildren !== current.childCount) {
+      throw conflict("Pipeline expected child count does not match created child cases", {
+        code: "expected_children_mismatch",
+        expectedChildren,
+        childCount: current.childCount,
+      });
+    }
+    if (current.childCount !== current.terminalChildCount) {
+      const openChild = await db
+        .select({
+          id: pipelineCases.id,
+          caseKey: pipelineCases.caseKey,
+          title: pipelineCases.title,
+          terminalKind: pipelineCases.terminalKind,
+        })
+        .from(pipelineCases)
+        .where(and(
+          eq(pipelineCases.companyId, current.companyId),
+          eq(pipelineCases.parentCaseId, current.id),
+          isNull(pipelineCases.terminalKind),
+        ))
+        .orderBy(asc(pipelineCases.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      throw conflict(
+        openChild
+          ? `Pipeline child case "${openChild.title}" is still open`
+          : "Pipeline child cases are not all terminal",
+        {
+          code: "children_not_terminal",
+          childCount: current.childCount,
+          terminalChildCount: current.terminalChildCount,
+          child: openChild,
+        },
+      );
+    }
+  }
+
+  if (config.requireNoUnresolvedDrift === true) {
+    const unresolvedDrift = await listUnresolvedDriftEvents(db, {
+      companyId: current.companyId,
+      caseId: current.id,
+    });
+    if (unresolvedDrift.length > 0) {
+      const first = unresolvedDrift[0]!;
+      const payload = first.payload as Record<string, unknown>;
+      const upstream = typeof payload.upstreamCaseKey === "string"
+        ? payload.upstreamCaseKey
+        : typeof payload.upstreamCaseId === "string"
+          ? payload.upstreamCaseId
+          : "upstream case";
+      throw conflict(`Pipeline upstream change from "${upstream}" is not acknowledged`, {
+        code: "unresolved_drift",
+        driftEventId: first.id,
+        upstreamCaseId: typeof payload.upstreamCaseId === "string" ? payload.upstreamCaseId : null,
+        upstreamCaseKey: typeof payload.upstreamCaseKey === "string" ? payload.upstreamCaseKey : null,
+      });
+    }
+  }
+}
+
+async function assertLatestReviewApprovalStillCurrent(
+  db: PipelineDb,
+  current: typeof pipelineCases.$inferSelect,
+  fromStage: typeof pipelineStages.$inferSelect,
+  toStage: typeof pipelineStages.$inferSelect,
+) {
+  if (fromStage.kind === "review" || toStage.kind !== "done") return;
+  const latestApproval = await db
+    .select()
+    .from(pipelineCaseEvents)
+    .where(and(
+      eq(pipelineCaseEvents.companyId, current.companyId),
+      eq(pipelineCaseEvents.caseId, current.id),
+      eq(pipelineCaseEvents.type, "review_decided"),
+      sql`${pipelineCaseEvents.payload}->>'decision' = 'approve'`,
+    ))
+    .orderBy(desc(pipelineCaseEvents.createdAt), desc(pipelineCaseEvents.id))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!latestApproval) return;
+  const payload = latestApproval.payload as Record<string, unknown>;
+  const approvedVersion = typeof payload.approvedTransitionVersion === "number"
+    ? payload.approvedTransitionVersion
+    : typeof payload.approvedCaseVersion === "number"
+      ? payload.approvedCaseVersion
+      : null;
+  if (approvedVersion === null || approvedVersion === current.version) return;
+  throw conflict("Pipeline case changed since review approval; send it back through review before publishing", {
+    code: "review_outdated",
+    reviewEventId: latestApproval.id,
+    approvedVersion,
+    currentVersion: current.version,
+  });
 }
 
 async function postSystemCommentOnLinkedIssues(
@@ -598,26 +1092,39 @@ async function notifyDependentWorkIssuesOfUpstreamContentChange(
     version: number;
   },
 ) {
-  const rows = await db
-    .selectDistinctOn([issues.id], { issueId: issues.id })
+  const dependents = await db
+    .select({ dependentCase: pipelineCases })
     .from(pipelineCaseBlockers)
     .innerJoin(pipelineCases, eq(pipelineCaseBlockers.caseId, pipelineCases.id))
-    .innerJoin(pipelineCaseIssueLinks, eq(pipelineCaseIssueLinks.caseId, pipelineCases.id))
-    .innerJoin(issues, eq(pipelineCaseIssueLinks.issueId, issues.id))
     .where(and(
       eq(pipelineCaseBlockers.companyId, input.companyId),
       eq(pipelineCaseBlockers.blockedByCaseId, input.upstreamCase.id),
       eq(pipelineCases.companyId, input.companyId),
       isNull(pipelineCases.terminalKind),
+    ));
+
+  if (dependents.length === 0) return;
+
+  const dependentCaseIds = dependents.map((row) => row.dependentCase.id);
+  const linkRows = await db
+    .select({ caseId: pipelineCaseIssueLinks.caseId, issueId: issues.id })
+    .from(pipelineCaseIssueLinks)
+    .innerJoin(issues, eq(pipelineCaseIssueLinks.issueId, issues.id))
+    .where(and(
       eq(pipelineCaseIssueLinks.companyId, input.companyId),
+      inArray(pipelineCaseIssueLinks.caseId, dependentCaseIds),
       eq(pipelineCaseIssueLinks.role, "work"),
       eq(issues.companyId, input.companyId),
       ne(issues.status, "done"),
       ne(issues.status, "cancelled"),
       isNull(issues.hiddenAt),
     ));
-
-  if (rows.length === 0) return;
+  const issueIdsByCase = new Map<string, string[]>();
+  for (const row of linkRows) {
+    const list = issueIdsByCase.get(row.caseId) ?? [];
+    list.push(row.issueId);
+    issueIdsByCase.set(row.caseId, list);
+  }
 
   const upstreamLink = buildCaseDeepLink({
     pipelineId: input.upstreamCase.pipelineId,
@@ -625,14 +1132,36 @@ async function notifyDependentWorkIssuesOfUpstreamContentChange(
   });
   const body = `Upstream case [${input.upstreamCase.caseKey}](${upstreamLink}) changed (v${input.previousVersion}→v${input.version}).`;
 
-  for (const row of rows) {
-    await db.insert(issueComments).values({
+  const notifiedIssueIds = new Set<string>();
+  for (const { dependentCase } of dependents) {
+    const issueIds = issueIdsByCase.get(dependentCase.id) ?? [];
+    for (const issueId of issueIds) {
+      if (notifiedIssueIds.has(issueId)) continue;
+      notifiedIssueIds.add(issueId);
+      await db.insert(issueComments).values({
+        companyId: input.companyId,
+        issueId,
+        authorType: "system",
+        body,
+      });
+      await db.update(issues).set({ updatedAt: nowDate() }).where(eq(issues.id, issueId));
+    }
+    // The drift event intentionally does not bump the dependent case's
+    // updatedAt: "unresolved drift" is derived as event.createdAt > case.updatedAt.
+    await writeCaseEvent(db, {
       companyId: input.companyId,
-      issueId: row.issueId,
-      authorType: "system",
-      body,
+      caseId: dependentCase.id,
+      type: "upstream_drift",
+      actor: { type: "system" },
+      payload: {
+        upstreamCaseId: input.upstreamCase.id,
+        upstreamCaseKey: input.upstreamCase.caseKey,
+        upstreamPipelineId: input.upstreamCase.pipelineId,
+        previousVersion: input.previousVersion,
+        version: input.version,
+        notifiedIssueIds: issueIds,
+      },
     });
-    await db.update(issues).set({ updatedAt: nowDate() }).where(eq(issues.id, row.issueId));
   }
 }
 
@@ -767,6 +1296,224 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
     await assertRoutineInCompany(companyId, onEnter.routineId);
   }
 
+  async function appendPipelineAutomationRoutineRevision(
+    dbOrTx: PipelineDb,
+    routine: typeof routines.$inferSelect,
+    actor: PipelineActor,
+    changeSummary: string,
+  ) {
+    const actorPatch = routineActorPatch(actor);
+    const revisionNumber = routine.latestRevisionId ? routine.latestRevisionNumber + 1 : 1;
+    const [revision] = await dbOrTx
+      .insert(routineRevisions)
+      .values({
+        companyId: routine.companyId,
+        routineId: routine.id,
+        revisionNumber,
+        title: routine.title,
+        description: routine.description,
+        snapshot: {
+          version: 1,
+          routine: routineRevisionSnapshotRoutine(routine),
+          triggers: [],
+        },
+        changeSummary,
+        createdByAgentId: actorPatch.agentId,
+        createdByUserId: actorPatch.userId,
+        createdByRunId: actorPatch.runId,
+      })
+      .returning();
+    const [updated] = await dbOrTx
+      .update(routines)
+      .set({
+        latestRevisionId: revision!.id,
+        latestRevisionNumber: revisionNumber,
+        updatedAt: nowDate(),
+      })
+      .where(eq(routines.id, routine.id))
+      .returning();
+    return updated ?? routine;
+  }
+
+  async function syncPipelineStageAutomation(
+    dbOrTx: PipelineDb,
+    input: {
+      companyId: string;
+      pipelineId: string;
+      stage: typeof pipelineStages.$inferSelect;
+      config: PipelineStageConfig;
+      assigneeAgentId: string | null;
+      instructionsBody: string;
+      actor: PipelineActor;
+    },
+  ): Promise<PipelineStageConfig> {
+    const previousRoutineId = stageAutomationRoutineIdFromConfig(input.config);
+    if (!input.assigneeAgentId) {
+      const { onEnter: _onEnter, ...rest } = input.config;
+      return rest as PipelineStageConfig;
+    }
+
+    await assertAssignableAgent(dbOrTx as Db, input.companyId, input.assigneeAgentId, { kind: "routine" });
+    const actorPatch = routineActorPatch(input.actor);
+    const variables = syncRoutineVariablesWithTemplate(
+      [input.stage.name, input.instructionsBody],
+      sanitizePipelineRoutineVariables(input.config.variables),
+    );
+    const title = `${input.stage.name} automation`;
+    const description = input.instructionsBody.trim();
+
+    const previousRoutine = previousRoutineId
+      ? await dbOrTx
+          .select()
+          .from(routines)
+          .where(and(eq(routines.id, previousRoutineId), eq(routines.companyId, input.companyId)))
+          .then((rows) => rows[0] ?? null)
+      : null;
+    const canReusePrevious =
+      previousRoutine &&
+      (previousRoutine.originKind === "pipeline_automation" || previousRoutine.originKind === "manual");
+
+    if (canReusePrevious) {
+      const now = nowDate();
+      const [routine] = await dbOrTx
+        .update(routines)
+        .set({
+          title,
+          description,
+          assigneeAgentId: input.assigneeAgentId,
+          status: "active",
+          originKind: "pipeline_automation",
+          originId: input.pipelineId,
+          variables,
+          updatedByAgentId: actorPatch.agentId,
+          updatedByUserId: actorPatch.userId,
+          updatedAt: now,
+        })
+        .where(and(eq(routines.id, previousRoutine.id), eq(routines.companyId, input.companyId)))
+        .returning();
+      const revised = await appendPipelineAutomationRoutineRevision(
+        dbOrTx,
+        routine ?? previousRoutine,
+        input.actor,
+        "Updated pipeline automation",
+      );
+      return {
+        ...input.config,
+        onEnter: { type: "run_routine" as const, routineId: revised.id },
+      };
+    }
+
+    const now = nowDate();
+    const [created] = await dbOrTx
+      .insert(routines)
+      .values({
+        companyId: input.companyId,
+        title,
+        description,
+        assigneeAgentId: input.assigneeAgentId,
+        status: "active",
+        priority: "medium",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        originKind: "pipeline_automation",
+        originId: input.pipelineId,
+        variables,
+        createdByAgentId: actorPatch.agentId,
+        createdByUserId: actorPatch.userId,
+        updatedByAgentId: actorPatch.agentId,
+        updatedByUserId: actorPatch.userId,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+    const revised = await appendPipelineAutomationRoutineRevision(
+      dbOrTx,
+      created!,
+      input.actor,
+      "Created pipeline automation",
+    );
+    return {
+      ...input.config,
+      onEnter: { type: "run_routine" as const, routineId: revised.id },
+    };
+  }
+
+  async function stampPipelineAutomationRoutine(
+    dbOrTx: PipelineDb,
+    input: { companyId: string; pipelineId: string; routineId: string; actor: PipelineActor },
+  ) {
+    const updated = await dbOrTx
+      .update(routines)
+      .set({ originKind: "pipeline_automation", originId: input.pipelineId, updatedAt: nowDate() })
+      .where(and(
+        eq(routines.id, input.routineId),
+        eq(routines.companyId, input.companyId),
+        eq(routines.originKind, "manual"),
+      ))
+      .returning({ id: routines.id });
+    if (updated.length === 0) return;
+    const actorPatch = activityActorPatch(input.actor);
+    await logActivity(dbOrTx as Db, {
+      companyId: input.companyId,
+      ...actorPatch,
+      action: "routine.origin_stamped",
+      entityType: "routine",
+      entityId: input.routineId,
+      details: {
+        originKind: "pipeline_automation",
+        originId: input.pipelineId,
+      },
+    });
+  }
+
+  async function routineStillReferencedByAnyPipeline(
+    dbOrTx: PipelineDb,
+    input: { companyId: string; routineId: string; exceptStageId?: string | null },
+  ) {
+    const referencing = await dbOrTx
+      .select({ id: pipelineStages.id })
+      .from(pipelineStages)
+      .innerJoin(pipelines, eq(pipelineStages.pipelineId, pipelines.id))
+      .where(and(
+        eq(pipelines.companyId, input.companyId),
+        sql`${pipelineStages.config}->'onEnter'->>'type' = 'run_routine'`,
+        sql`${pipelineStages.config}->'onEnter'->>'routineId' = ${input.routineId}`,
+        input.exceptStageId ? ne(pipelineStages.id, input.exceptStageId) : undefined,
+      ))
+      .limit(1);
+    return referencing.length > 0;
+  }
+
+  async function clearPipelineAutomationRoutineIfUnreferenced(
+    dbOrTx: PipelineDb,
+    input: { companyId: string; pipelineId: string; routineId: string; exceptStageId?: string | null; actor: PipelineActor },
+  ) {
+    const stillReferenced = await routineStillReferencedByAnyPipeline(dbOrTx, input);
+    if (stillReferenced) return;
+    const updated = await dbOrTx
+      .update(routines)
+      .set({ originKind: "manual", originId: null, updatedAt: nowDate() })
+      .where(and(
+        eq(routines.id, input.routineId),
+        eq(routines.companyId, input.companyId),
+        eq(routines.originKind, "pipeline_automation"),
+      ))
+      .returning({ id: routines.id, originId: routines.originId });
+    if (updated.length === 0) return;
+    const actorPatch = activityActorPatch(input.actor);
+    await logActivity(dbOrTx as Db, {
+      companyId: input.companyId,
+      ...actorPatch,
+      action: "routine.origin_cleared",
+      entityType: "routine",
+      entityId: input.routineId,
+      details: {
+        previousOriginKind: "pipeline_automation",
+        previousOriginId: updated[0]?.originId ?? null,
+      },
+    });
+  }
+
   async function validateStageTargets(companyId: string, pipelineId: string, kind: PipelineStageKind | string, config: PipelineStageConfig) {
     if (kind !== "review") return;
     const rows = await db
@@ -813,6 +1560,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
     try {
       const routine = await assertRoutineInCompany(execution.companyId, execution.routineId);
       const contextPack = buildPipelineCaseContextPack(detail);
+      const variables = buildPipelineCaseVariables(detail);
       const run = await routinesSvc.runPipelineStageEntryRoutine(execution.routineId, {
         source: "api",
         assigneeAgentId: routine.assigneeAgentId,
@@ -823,7 +1571,13 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
           stage: contextPack.stage,
           triggeringEventId: execution.triggeringEventId,
           contextPack,
+          variables,
         },
+        variables,
+        descriptionPreamble: buildPipelineStageEntryPreamble({
+          ...detail,
+          triggeringEventId: execution.triggeringEventId,
+        }),
         descriptionAppendix: buildPipelineCaseContextMarkdown({
           ...detail,
           triggeringEventId: execution.triggeringEventId,
@@ -884,6 +1638,20 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
     }
   }
 
+  async function executeAutomationLedgers(
+    ledgers: Array<typeof pipelineAutomationExecutions.$inferSelect>,
+    actor: PipelineActor = { type: "system" },
+  ) {
+    const results = new Map<string, PipelineAutomationExecutionResult>();
+    const seen = new Set<string>();
+    for (const ledger of ledgers) {
+      if (seen.has(ledger.id)) continue;
+      seen.add(ledger.id);
+      results.set(ledger.id, await executeAutomationLedger(ledger.id, actor));
+    }
+    return results;
+  }
+
   async function patchCaseContentInTransaction(
     tx: PipelineDb,
     input: {
@@ -915,15 +1683,16 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
     const summaryChanged = input.summary !== undefined && input.summary !== current.summary;
     const fieldsChanged = input.fields !== undefined && !isDeepStrictEqual(input.fields, current.fields);
     const parentCaseChanged = input.parentCaseId !== undefined && input.parentCaseId !== current.parentCaseId;
-    const contentChanged = titleChanged || summaryChanged || fieldsChanged;
-    if (!contentChanged && !parentCaseChanged) {
+    const materialChanged = fieldsChanged;
+    const visibleMetadataChanged = titleChanged || summaryChanged;
+    if (!materialChanged && !visibleMetadataChanged && !parentCaseChanged) {
       return { case: current, event: null };
     }
 
     const patch: Partial<typeof pipelineCases.$inferInsert> = {
-      version: current.version + 1,
       updatedAt: nowDate(),
     };
+    if (materialChanged) patch.version = current.version + 1;
     if (titleChanged) patch.title = input.title;
     if (summaryChanged) patch.summary = input.summary;
     if (fieldsChanged) patch.fields = input.fields;
@@ -948,6 +1717,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
         previousVersion: current.version,
         version: updated.version,
         parentCaseChanged,
+        materialChanged,
       },
     });
     if (parentCaseChanged) {
@@ -966,7 +1736,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
         await handleChildrenTerminal(tx, input.companyId, input.parentCaseId);
       }
     }
-    if (contentChanged) {
+    if (materialChanged) {
       await notifyDependentWorkIssuesOfUpstreamContentChange(tx, {
         companyId: input.companyId,
         upstreamCase: updated,
@@ -990,31 +1760,35 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       transitionClass?: "manual" | "suggested" | "auto";
       suggestionId?: string;
       reason?: string | null;
+      force?: boolean;
+      automationLedgers?: Array<typeof pipelineAutomationExecutions.$inferSelect>;
+      autoAdvanceVisitedStageIds?: Set<string>;
     },
   ) {
-    if (input.transitionClass === "auto") {
+    if (input.transitionClass === "auto" && input.actor.type !== "system") {
       throw unprocessable("Pipeline auto autonomy is not enabled", { code: "autonomy_not_enabled" });
     }
-    const { case: existing, stage: fromStage, pipeline } = await getCaseWithStageOrThrow(tx, input.companyId, input.caseId);
+    const { case: existing, stage: fromStage, pipeline } = await getCaseWithStageForUpdateOrThrow(tx, input.companyId, input.caseId);
     if (pipeline.archivedAt) throw unprocessable("Pipeline is archived", { code: "pipeline_archived" });
     const current = await assertLeaseAvailable(tx, existing, input.actor, input.leaseToken);
     if (current.version !== input.expectedVersion) {
       throw conflict("Pipeline case version conflict", conflictDetailsForCase(current, fromStage));
     }
-    if (fromStage.kind === "review" && input.actor.type === "agent") {
-      const config = stageConfig(fromStage);
-      if (config.reviewerKind !== "any") {
-        throw new HttpError(403, "Human review is required", { code: "review_required" });
-      }
-    }
 
     const toStage = input.toStageId
       ? await getStageOrThrow(tx, current.pipelineId, input.toStageId)
       : await getStageByKeyOrThrow(tx, current.pipelineId, input.toStageKey ?? "");
+    assertStageEnabled(toStage, "transition");
+    if (fromStage.id !== toStage.id) {
+      assertActorCanApproveStageExit(fromStage, input.actor);
+      await assertStageTransitionGates(tx, current, fromStage);
+      await assertLatestReviewApprovalStillCurrent(tx, current, fromStage, toStage);
+    }
     const toConfig = stageConfig(toStage);
     if (toConfig.autonomy === "auto") {
       throw unprocessable("Pipeline auto autonomy is not enabled", { code: "autonomy_not_enabled" });
     }
+    let forcedTransition = false;
     if (pipeline.enforceTransitions && fromStage.id !== toStage.id) {
       const allowed = await tx
         .select({ id: pipelineTransitions.id })
@@ -1029,7 +1803,11 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
         .limit(1)
         .then((rows) => rows[0] ?? null);
       if (!allowed) {
-        throw conflict("Pipeline transition is not allowed", { code: "transition_not_allowed" });
+        const reason = input.reason?.trim() ?? "";
+        if (input.force !== true || reason.length === 0) {
+          throw unprocessable("Pipeline transition is not allowed", { code: "transition_not_allowed" });
+        }
+        forcedTransition = true;
       }
     }
     await assertNoOpenBlockers(tx, current, toStage);
@@ -1072,12 +1850,29 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
         transitionClass: input.transitionClass ?? "manual",
       },
     });
+    if (forcedTransition) {
+      await writeCaseEvent(tx, {
+        companyId: input.companyId,
+        caseId: current.id,
+        type: "transition_forced",
+        actor: input.actor,
+        fromStageId: fromStage.id,
+        toStageId: toStage.id,
+        payload: {
+          fromStageId: fromStage.id,
+          toStageId: toStage.id,
+          reason: input.reason!.trim(),
+          actor: eventActorPayload(input.actor),
+        },
+      });
+    }
     const ledger = await enqueueStageAutomationLedger(tx, {
       companyId: input.companyId,
       caseId: current.id,
       stage: toStage,
       eventId: event.id,
     });
+    if (ledger) input.automationLedgers?.push(ledger);
     const wasTerminal = isTerminalKind(current.terminalKind);
     const isTerminal = isTerminalKind(updated.terminalKind);
     if (current.parentCaseId && wasTerminal !== isTerminal) {
@@ -1090,12 +1885,69 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       await handleBlockersResolved(tx, input.companyId, current.id);
     }
     if (!wasTerminal && isTerminal) {
-      await handleChildrenTerminal(tx, input.companyId, current.parentCaseId);
+      await handleChildrenTerminal(tx, input.companyId, current.parentCaseId, input.automationLedgers);
+    }
+    if (!isTerminal) {
+      await maybeAutoAdvanceOnStageEntry(tx, {
+        companyId: input.companyId,
+        caseRow: updated,
+        stage: toStage,
+        automationLedgers: input.automationLedgers,
+        visitedStageIds: input.autoAdvanceVisitedStageIds,
+      });
     }
     return { case: updated, event, automationLedger: ledger };
   }
 
-  async function handleChildrenTerminal(tx: PipelineDb, companyId: string, parentCaseId: string | null | undefined) {
+  // A case can enter an auto-advance stage after its children are already
+  // terminal (e.g. children triaged during review, then the case moves to
+  // producing). handleChildrenTerminal only fires when a child transitions,
+  // so without this entry-time check the case would strand forever.
+  async function maybeAutoAdvanceOnStageEntry(
+    tx: PipelineDb,
+    input: {
+      companyId: string;
+      caseRow: typeof pipelineCases.$inferSelect;
+      stage: typeof pipelineStages.$inferSelect;
+      automationLedgers?: Array<typeof pipelineAutomationExecutions.$inferSelect>;
+      visitedStageIds?: Set<string>;
+    },
+  ) {
+    const toStageKey = stageConfig(input.stage).autoAdvanceOnChildrenTerminal;
+    if (typeof toStageKey !== "string" || !toStageKey) return;
+    const visited = input.visitedStageIds ?? new Set<string>();
+    if (visited.has(input.stage.id)) return;
+    const rollup = await computeCaseRollup(tx, input.companyId, input.caseRow.id);
+    if (!rollup.complete || rollup.total === 0) return;
+    const toStage = await getStageByKeyOrThrow(tx, input.caseRow.pipelineId, toStageKey);
+    if (toStage.id === input.stage.id) return;
+    visited.add(input.stage.id);
+    try {
+      assertStageEnabled(toStage, "auto_advance");
+      await transitionCaseInTransaction(tx, {
+        companyId: input.companyId,
+        caseId: input.caseRow.id,
+        toStageKey,
+        expectedVersion: input.caseRow.version,
+        actor: { type: "system" },
+        transitionClass: "auto",
+        reason: "children_terminal",
+        automationLedgers: input.automationLedgers,
+        autoAdvanceVisitedStageIds: visited,
+      });
+    } catch (error) {
+      // Best-effort: an unsatisfied gate (drift, approval) on the chained
+      // advance must not roll back the transition that entered this stage.
+      if (!(error instanceof HttpError)) throw error;
+    }
+  }
+
+  async function handleChildrenTerminal(
+    tx: PipelineDb,
+    companyId: string,
+    parentCaseId: string | null | undefined,
+    automationLedgers?: Array<typeof pipelineAutomationExecutions.$inferSelect>,
+  ) {
     const ancestors = await getAncestorCases(tx, companyId, parentCaseId);
     for (const ancestor of ancestors) {
       const rollup = await computeCaseRollup(tx, companyId, ancestor.case.id);
@@ -1121,6 +1973,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
         continue;
       }
       const toStage = await getStageByKeyOrThrow(tx, ancestor.case.pipelineId, toStageKey);
+      assertStageEnabled(toStage, "auto_advance");
       if (toStage.id === ancestor.stage.id) continue;
       await transitionCaseInTransaction(tx, {
         companyId,
@@ -1128,7 +1981,9 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
         toStageKey,
         expectedVersion: ancestor.case.version,
         actor: { type: "system" },
+        transitionClass: "auto",
         reason: "children_terminal",
+        automationLedgers,
       });
     }
   }
@@ -1145,16 +2000,20 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       actor: PipelineActor;
     }) {
       return db.transaction(async (tx) => {
-        const stageInputs = input.stages?.length
+        const stageInputsBase = input.stages?.length
           ? input.stages.map((stage, index) => ({
             ...stage,
+            kind: normalizeStageKind(stage.kind),
             position: stage.position ?? (index + 1) * 100,
-            config: normalizeStageConfig(stage.kind, stage.config),
           }))
           : DEFAULT_STAGES.map((stage) => ({
             ...stage,
-            config: normalizeStageConfig(stage.kind, "config" in stage ? stage.config : {}),
+            kind: normalizeStageKind(stage.kind),
           }));
+        const stageInputs = stageInputsBase.map((stage) => ({
+          ...stage,
+          config: normalizeStageConfig(stage.kind, "config" in stage ? stage.config : {}),
+        }));
         const stageKeys = new Set(stageInputs.map((stage) => stage.key));
         for (const stage of stageInputs) {
           assertReviewTargetsInSet(stage.kind, stage.config, stageKeys);
@@ -1184,6 +2043,17 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
             config: stage.config ?? {},
           })))
           .returning();
+        for (const stage of insertedStages) {
+          const routineId = stageAutomationRoutineIdFromConfig((stage.config ?? {}) as PipelineStageConfig);
+          if (routineId) {
+            await stampPipelineAutomationRoutine(tx, {
+              companyId: input.companyId,
+              pipelineId: pipeline!.id,
+              routineId,
+              actor: input.actor,
+            });
+          }
+        }
 
         if (!insertedStages.some((stage) => stage.kind === "done") || !insertedStages.some((stage) => stage.kind === "cancelled")) {
           throw unprocessable("Pipeline must include at least one done stage and one cancelled stage", { code: "validation" });
@@ -1224,23 +2094,55 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       kind: PipelineStageKind;
       position: number;
       config?: PipelineStageConfig;
+      actor?: PipelineActor;
     }) {
       await getPipelineOrThrow(db, input.companyId, input.pipelineId);
       const config = normalizeStageConfig(input.kind, input.config);
+      const kind = normalizeStageKind(input.kind);
       await validateStageTargets(input.companyId, input.pipelineId, input.kind, config);
       await validateStageAutomationConfig(input.companyId, config);
-      const [stage] = await db
-        .insert(pipelineStages)
-        .values({
-          pipelineId: input.pipelineId,
-          key: input.key,
-          name: input.name,
-          kind: input.kind,
-          position: input.position,
-          config,
-        })
-        .returning();
-      return stage!;
+      return db.transaction(async (tx) => {
+        const [nextStage] = await tx
+          .select({ key: pipelineStages.key })
+          .from(pipelineStages)
+          .where(and(eq(pipelineStages.pipelineId, input.pipelineId), sql`${pipelineStages.position} >= ${input.position}`))
+          .orderBy(asc(pipelineStages.position), asc(pipelineStages.createdAt))
+          .limit(1);
+        const nextConfig = input.kind === "open"
+          ? config
+          : withDefaultWorkingChildrenGateConfig({ kind, config }, nextStage?.key ?? null);
+        await tx
+          .update(pipelineStages)
+          .set({
+            position: sql`${pipelineStages.position} + 100` as unknown as number,
+            updatedAt: nowDate(),
+          })
+          .where(and(
+            eq(pipelineStages.pipelineId, input.pipelineId),
+            sql`${pipelineStages.position} >= ${input.position}`,
+          ));
+        const [stage] = await tx
+          .insert(pipelineStages)
+          .values({
+            pipelineId: input.pipelineId,
+            key: input.key,
+            name: input.name,
+            kind,
+            position: input.position,
+            config: nextConfig,
+          })
+          .returning();
+        const routineId = stageAutomationRoutineIdFromConfig(nextConfig);
+        if (routineId) {
+          await stampPipelineAutomationRoutine(tx, {
+            companyId: input.companyId,
+            pipelineId: input.pipelineId,
+            routineId,
+            actor: input.actor ?? { type: "system" },
+          });
+        }
+        return stage!;
+      });
     },
 
     async updateStage(input: {
@@ -1254,25 +2156,61 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
         position?: number;
         config?: PipelineStageConfig;
       };
+      actor?: PipelineActor;
     }) {
       await getPipelineOrThrow(db, input.companyId, input.pipelineId);
       const existing = await getStageOrThrow(db, input.pipelineId, input.stageId);
-      const kind = input.patch.kind ?? existing.kind;
+      const kind = normalizeStageKind(input.patch.kind ?? existing.kind);
+      const previousRoutineId = stageAutomationRoutineIdFromConfig(stageConfig(existing));
+      const automationRequest = input.patch.config !== undefined
+        ? readStageAutomationRequest(input.patch.config)
+        : null;
       const config = normalizeStageConfig(kind, input.patch.config !== undefined ? input.patch.config : stageConfig(existing));
       await validateStageTargets(input.companyId, input.pipelineId, kind, config);
       await validateStageAutomationConfig(input.companyId, config);
-      const [updated] = await db
-        .update(pipelineStages)
-        .set({
-          ...input.patch,
-          kind,
-          config,
-          updatedAt: nowDate(),
-        })
-        .where(and(eq(pipelineStages.id, input.stageId), eq(pipelineStages.pipelineId, input.pipelineId)))
-        .returning();
-      if (!updated) throw notFound("Pipeline stage not found");
-      return updated;
+      return db.transaction(async (tx) => {
+        const nextConfig = automationRequest
+          ? await syncPipelineStageAutomation(tx, {
+              companyId: input.companyId,
+              pipelineId: input.pipelineId,
+              stage: { ...existing, name: input.patch.name ?? existing.name, kind },
+              config,
+              assigneeAgentId: automationRequest.assigneeAgentId,
+              instructionsBody: automationRequest.instructionsBody,
+              actor: input.actor ?? { type: "system" },
+            })
+          : config;
+        const nextRoutineId = stageAutomationRoutineIdFromConfig(nextConfig);
+        const [updated] = await tx
+          .update(pipelineStages)
+          .set({
+            ...input.patch,
+            kind,
+            config: nextConfig,
+            updatedAt: nowDate(),
+          })
+          .where(and(eq(pipelineStages.id, input.stageId), eq(pipelineStages.pipelineId, input.pipelineId)))
+          .returning();
+        if (!updated) throw notFound("Pipeline stage not found");
+        if (nextRoutineId) {
+          await stampPipelineAutomationRoutine(tx, {
+            companyId: input.companyId,
+            pipelineId: input.pipelineId,
+            routineId: nextRoutineId,
+            actor: input.actor ?? { type: "system" },
+          });
+        }
+        if (previousRoutineId && previousRoutineId !== nextRoutineId) {
+          await clearPipelineAutomationRoutineIfUnreferenced(tx, {
+            companyId: input.companyId,
+            pipelineId: input.pipelineId,
+            routineId: previousRoutineId,
+            exceptStageId: input.stageId,
+            actor: input.actor ?? { type: "system" },
+          });
+        }
+        return updated;
+      });
     },
 
     async deleteStage(input: {
@@ -1326,6 +2264,16 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
         }
         await tx.delete(pipelineTransitions).where(or(eq(pipelineTransitions.fromStageId, stage.id), eq(pipelineTransitions.toStageId, stage.id)));
         await tx.delete(pipelineStages).where(eq(pipelineStages.id, stage.id));
+        const routineId = stageAutomationRoutineIdFromConfig(stageConfig(stage));
+        if (routineId) {
+          await clearPipelineAutomationRoutineIfUnreferenced(tx, {
+            companyId: input.companyId,
+            pipelineId: input.pipelineId,
+            routineId,
+            exceptStageId: stage.id,
+            actor: input.actor ?? { type: "system" },
+          });
+        }
         return { deleted: true };
       });
     },
@@ -1355,6 +2303,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       fields?: Record<string, unknown>;
       stageKey?: string | null;
       parentCaseId?: string | null;
+      requestKey?: string | null;
       blockedByCaseIds?: string[];
       blockedByCaseKeys?: string[];
       actor: PipelineActor;
@@ -1367,7 +2316,24 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       return db.transaction(async (tx) => {
         const pipeline = await getPipelineOrThrow(tx, input.companyId, input.pipelineId);
         if (pipeline.archivedAt) throw unprocessable("Pipeline is archived", { code: "pipeline_archived" });
-        await assertValidParentCase(tx, { companyId: input.companyId, parentCaseId: input.parentCaseId ?? null });
+        const requestKey = input.requestKey?.trim() || null;
+        const parentCase = await assertValidParentCase(tx, { companyId: input.companyId, parentCaseId: input.parentCaseId ?? null });
+        if (requestKey && !input.parentCaseId) {
+          throw unprocessable("requestKey requires parentCaseId", { code: "validation" });
+        }
+        if (requestKey && parentCase) {
+          const existingByRequestKey = await tx
+            .select()
+            .from(pipelineCases)
+            .where(and(
+              eq(pipelineCases.companyId, input.companyId),
+              eq(pipelineCases.parentCaseId, parentCase.id),
+              eq(pipelineCases.requestKey, requestKey),
+            ))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (existingByRequestKey) return { case: existingByRequestKey, created: false };
+        }
         const blockedByCaseKeyMap = await resolveBlockerCaseKeys(tx, {
           companyId: input.companyId,
           pipelineId: input.pipelineId,
@@ -1391,6 +2357,8 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
             .limit(1)
             .then((rows) => rows[0] ?? null);
         if (!stage) throw unprocessable("Pipeline has no stages", { code: "validation" });
+        assertStageEnabled(stage, "ingest");
+        validateAddFormFieldsForStage(stage, input.fields ?? {});
 
         const [inserted] = await tx
           .insert(pipelineCases)
@@ -1403,17 +2371,31 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
             summary: input.summary ?? null,
             fields: input.fields ?? {},
             parentCaseId: input.parentCaseId ?? null,
+            parentCaseVersion: parentCase?.version ?? null,
+            requestKey,
             terminalKind: terminalKindForStage(stage.kind),
             terminalAt: isTerminalKind(stage.kind) ? nowDate() : null,
             createdByUserId: input.actor.type === "user" ? input.actor.userId : null,
             createdByAgentId: input.actor.type === "agent" ? input.actor.agentId : null,
             originRunId: input.actor.type === "agent" ? input.actor.runId : null,
           })
-          .onConflictDoNothing({ target: [pipelineCases.pipelineId, pipelineCases.caseKey] })
+          .onConflictDoNothing()
           .returning();
 
         if (!inserted) {
-          const existing = await tx
+          const existingByRequestKey = requestKey && parentCase
+            ? await tx
+              .select()
+              .from(pipelineCases)
+              .where(and(
+                eq(pipelineCases.companyId, input.companyId),
+                eq(pipelineCases.parentCaseId, parentCase.id),
+                eq(pipelineCases.requestKey, requestKey),
+              ))
+              .limit(1)
+              .then((rows) => rows[0] ?? null)
+            : null;
+          const existing = existingByRequestKey ?? await tx
             .select()
             .from(pipelineCases)
             .where(and(eq(pipelineCases.pipelineId, input.pipelineId), eq(pipelineCases.caseKey, caseKey)))
@@ -1429,7 +2411,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
           type: "ingested",
           actor: input.actor,
           toStageId: stage.id,
-          payload: { caseKey },
+          payload: { caseKey, requestKey, parentCaseVersion: inserted.parentCaseVersion },
         });
         await adjustParentCounts(tx, {
           parentCaseId: inserted.parentCaseId,
@@ -1467,6 +2449,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
         fields?: Record<string, unknown>;
         stageKey?: string | null;
         parentCaseId?: string | null;
+        requestKey?: string | null;
         blockedByCaseIds?: string[];
         blockedByCaseKeys?: string[];
       }>;
@@ -1610,6 +2593,40 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       });
     },
 
+    async acknowledgeDrift(input: {
+      companyId: string;
+      caseId: string;
+      expectedVersion?: number;
+      actor: PipelineActor;
+    }) {
+      return db.transaction(async (tx) => {
+        const { case: current, stage } = await getCaseWithStageForUpdateOrThrow(tx, input.companyId, input.caseId);
+        if (input.expectedVersion !== undefined && current.version !== input.expectedVersion) {
+          throw conflict("Pipeline case version conflict", conflictDetailsForCase(current, stage));
+        }
+        const unresolvedDrift = await listUnresolvedDriftEvents(tx, {
+          companyId: input.companyId,
+          caseId: input.caseId,
+        });
+        if (unresolvedDrift.length === 0) {
+          return { case: current, event: null, acknowledged: false };
+        }
+        const event = await writeCaseEvent(tx, {
+          companyId: input.companyId,
+          caseId: input.caseId,
+          type: "drift_acknowledged",
+          actor: input.actor,
+          payload: {
+            driftEventIds: unresolvedDrift.map((row) => row.id),
+            acknowledgedUpstreamCaseIds: [...new Set(unresolvedDrift
+              .map((row) => (row.payload as Record<string, unknown>).upstreamCaseId)
+              .filter((value): value is string => typeof value === "string"))],
+          },
+        });
+        return { case: current, event, acknowledged: true };
+      });
+    },
+
     async claimCase(input: {
       companyId: string;
       caseId: string;
@@ -1695,12 +2712,16 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       transitionClass?: "manual" | "suggested" | "auto";
       suggestionId?: string;
       reason?: string | null;
+      force?: boolean;
     }) {
-      const result = await db.transaction((tx) => transitionCaseInTransaction(tx, input));
+      const automationLedgers: Array<typeof pipelineAutomationExecutions.$inferSelect> = [];
+      const result = await db.transaction((tx) => transitionCaseInTransaction(tx, { ...input, automationLedgers }));
+      const automationExecutions = await executeAutomationLedgers(automationLedgers, { type: "system" });
       if (result.automationLedger) {
         return {
           ...result,
-          automationExecution: await executeAutomationLedger(result.automationLedger.id, { type: "system" }),
+          automationExecution: automationExecutions.get(result.automationLedger.id) ?? { status: "none" },
+          automationExecutions: [...automationExecutions.values()],
         };
       }
       return { ...result, automationExecution: { status: "none" } satisfies PipelineAutomationExecutionResult };
@@ -1800,6 +2821,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
           return { case: updated!, event };
         }
 
+        const automationLedgers: Array<typeof pipelineAutomationExecutions.$inferSelect> = [];
         const transition = await transitionCaseInTransaction(tx, {
           companyId: input.companyId,
           caseId: input.caseId,
@@ -1810,6 +2832,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
           transitionClass: "suggested",
           suggestionId: input.suggestionId,
           reason: input.reason,
+          automationLedgers,
         });
         await writeCaseEvent(tx, {
           companyId: input.companyId,
@@ -1818,8 +2841,18 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
           actor: input.actor,
           payload: { suggestionId: input.suggestionId, decision: "accept", reason: input.reason ?? null },
         });
-        return transition;
+        return { ...transition, automationLedgers };
       });
+      if ("automationLedgers" in result) {
+        const automationExecutions = await executeAutomationLedgers(result.automationLedgers, { type: "system" });
+        if (result.automationLedger) {
+          return {
+            ...result,
+            automationExecution: automationExecutions.get(result.automationLedger.id) ?? { status: "none" },
+            automationExecutions: [...automationExecutions.values()],
+          };
+        }
+      }
       if ("automationLedger" in result && result.automationLedger) {
         return {
           ...result,
@@ -1844,15 +2877,14 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       leaseToken?: string | null;
       actor: PipelineActor;
     }) {
+      const automationLedgers: Array<typeof pipelineAutomationExecutions.$inferSelect> = [];
       const result = await db.transaction(async (tx) => {
         const detail = await getCaseWithStageOrThrow(tx, input.companyId, input.caseId);
         if (detail.stage.kind !== "review") {
           throw unprocessable("Pipeline case is not in a review stage", { code: "validation" });
         }
         const config = reviewConfigForStage(detail.stage);
-        if (input.actor.type === "agent" && config.reviewerKind !== "any") {
-          throw new HttpError(403, "Human review is required", { code: "review_required" });
-        }
+        assertActorCanApproveStageExit(detail.stage, input.actor);
         if (input.decision !== "approve" && config.requireRejectReason !== false && !input.reason?.trim()) {
           throw unprocessable("Review decision reason is required", { code: "validation" });
         }
@@ -1883,6 +2915,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
           leaseToken: input.leaseToken,
           reason: input.reason,
           actor: input.actor,
+          automationLedgers,
         });
         const reviewEvent = await writeCaseEvent(tx, {
           companyId: input.companyId,
@@ -1897,14 +2930,18 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
             suggestionId,
             updateEventId: updateEvent?.id ?? null,
             transitionEventId: transitioned.event.id,
+            approvedCaseVersion: input.decision === "approve" ? expectedVersion : null,
+            approvedTransitionVersion: input.decision === "approve" ? transitioned.case.version : null,
           },
         });
         return { ...transitioned, updateEvent, reviewEvent };
       });
+      const automationExecutions = await executeAutomationLedgers(automationLedgers, { type: "system" });
       if (result.automationLedger) {
         return {
           ...result,
-          automationExecution: await executeAutomationLedger(result.automationLedger.id, { type: "system" }),
+          automationExecution: automationExecutions.get(result.automationLedger.id) ?? { status: "none" },
+          automationExecutions: [...automationExecutions.values()],
         };
       }
       return { ...result, automationExecution: { status: "none" } satisfies PipelineAutomationExecutionResult };
@@ -1992,16 +3029,99 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       );
       const offset = Math.max(0, Math.floor(options?.offset ?? 0));
       const order = options?.order ?? "asc";
-      await getCaseWithStageOrThrow(db, companyId, caseId);
+      const detail = await getCaseWithStageOrThrow(db, companyId, caseId);
+      const fromStage = alias(pipelineStages, "from_stage");
+      const toStage = alias(pipelineStages, "to_stage");
+      const actorAgent = alias(agents, "actor_agent");
       const rows = await db
-        .select()
+        .select({
+          event: pipelineCaseEvents,
+          fromStage: { id: fromStage.id, key: fromStage.key, name: fromStage.name, kind: fromStage.kind },
+          toStage: { id: toStage.id, key: toStage.key, name: toStage.name, kind: toStage.kind },
+          actorAgent: { id: actorAgent.id, name: actorAgent.name },
+        })
         .from(pipelineCaseEvents)
+        .leftJoin(fromStage, eq(pipelineCaseEvents.fromStageId, fromStage.id))
+        .leftJoin(toStage, eq(pipelineCaseEvents.toStageId, toStage.id))
+        .leftJoin(actorAgent, eq(pipelineCaseEvents.actorAgentId, actorAgent.id))
         .where(and(eq(pipelineCaseEvents.companyId, companyId), eq(pipelineCaseEvents.caseId, caseId)))
         .orderBy(order === "desc" ? desc(pipelineCaseEvents.createdAt) : asc(pipelineCaseEvents.createdAt))
         .limit(limit + 1)
         .offset(offset);
       const hasMore = rows.length > limit;
-      const items = hasMore ? rows.slice(0, limit) : rows;
+      const pageRows = hasMore ? rows.slice(0, limit) : rows;
+      const payloadString = (value: unknown, key: string) => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+        const raw = (value as Record<string, unknown>)[key];
+        return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
+      };
+      const automationEvents = pageRows.filter((row) =>
+        row.event.type === "automation_executed" || row.event.type === "automation_failed"
+      );
+      const routineIds = [...new Set(automationEvents
+        .map((row) => payloadString(row.event.payload, "routineId"))
+        .filter((id): id is string => Boolean(id)))];
+      const issueIds = [...new Set(automationEvents
+        .map((row) => payloadString(row.event.payload, "issueId"))
+        .filter((id): id is string => Boolean(id)))];
+      const [routineRows, issueRowsForEvents, pipelineStageRows] = await Promise.all([
+        routineIds.length > 0
+          ? db
+            .select({ id: routines.id, title: routines.title })
+            .from(routines)
+            .where(and(eq(routines.companyId, companyId), inArray(routines.id, routineIds)))
+          : Promise.resolve([]),
+        issueIds.length > 0
+          ? db
+            .select({ id: issues.id, identifier: issues.identifier, title: issues.title, status: issues.status })
+            .from(issues)
+            .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds)))
+          : Promise.resolve([]),
+        automationEvents.length > 0
+          ? db
+            .select()
+            .from(pipelineStages)
+            .where(eq(pipelineStages.pipelineId, detail.case.pipelineId))
+          : Promise.resolve([]),
+      ]);
+      const routinesById = new Map(routineRows.map((routine) => [routine.id, routine]));
+      const issuesById = new Map(issueRowsForEvents.map((issue) => [issue.id, issue]));
+      const stagesByAutomationId = new Map<string, typeof pipelineStages.$inferSelect>();
+      const stagesByRoutineId = new Map<string, typeof pipelineStages.$inferSelect>();
+      for (const stage of pipelineStageRows) {
+        const automation = stageAutomation(stage);
+        if (!automation) continue;
+        stagesByAutomationId.set(automation.id, stage);
+        stagesByRoutineId.set(automation.routineId, stage);
+      }
+      const items = pageRows.map((row) => {
+        const routineId = payloadString(row.event.payload, "routineId");
+        const issueId = payloadString(row.event.payload, "issueId");
+        const automationId = payloadString(row.event.payload, "automationId");
+        const automationStage = (
+          (automationId ? stagesByAutomationId.get(automationId) : undefined) ??
+          (routineId ? stagesByRoutineId.get(routineId) : undefined) ??
+          detail.stage
+        );
+        const routine = routineId ? routinesById.get(routineId) ?? null : null;
+        const issue = issueId ? issuesById.get(issueId) ?? null : null;
+        return {
+          ...row.event,
+          fromStage: row.fromStage?.id ? row.fromStage : null,
+          toStage: row.toStage?.id ? row.toStage : null,
+          actorAgent: row.actorAgent?.id ? row.actorAgent : null,
+          automation: row.event.type === "automation_executed" || row.event.type === "automation_failed"
+            ? {
+              routine: routine ? { id: routine.id, title: routine.title } : null,
+              issue: issue ? { id: issue.id, identifier: issue.identifier, title: issue.title, status: issue.status } : null,
+              routineRunId: payloadString(row.event.payload, "routineRunId"),
+              stage: automationStage
+                ? { id: automationStage.id, key: automationStage.key, name: automationStage.name, kind: automationStage.kind }
+                : null,
+            }
+            : undefined,
+        };
+      });
       return {
         items,
         pagination: {

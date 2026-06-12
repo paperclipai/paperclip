@@ -4866,6 +4866,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 routineDefinition.catchUpPolicy && ROUTINE_CATCH_UP_POLICIES.includes(routineDefinition.catchUpPolicy as any)
                   ? routineDefinition.catchUpPolicy as typeof ROUTINE_CATCH_UP_POLICIES[number]
                   : "skip_missed",
+              originKind: "manual",
+              originId: null,
               variables: routineDefinition.variables ?? [],
             }, {
               agentId: null,

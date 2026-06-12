@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
@@ -47,6 +51,15 @@ describeEmbeddedPostgres("pipeline schema", () => {
     await tempDb?.cleanup();
   });
 
+  async function applyMigrationFile(relativePath: string) {
+    const root = path.dirname(fileURLToPath(import.meta.url));
+    const body = fs.readFileSync(path.join(root, relativePath), "utf8");
+    for (const statement of body.split("--> statement-breakpoint")) {
+      const trimmed = statement.trim();
+      if (trimmed) await db.execute(sql.raw(trimmed));
+    }
+  }
+
   it("persists one row per pipeline table and enforces unique keys and required checks", async () => {
     const [company] = await db.insert(companies).values({ name: "Pipeline Co", issuePrefix: "PIP" }).returning();
     const [agent] = await db.insert(agents).values({
@@ -87,7 +100,7 @@ describeEmbeddedPostgres("pipeline schema", () => {
       pipelineId: pipeline.id,
       key: "intake",
       name: "Intake",
-      kind: "open",
+      kind: "working",
       position: 0,
     }).returning();
     const [reviewStage] = await db.insert(pipelineStages).values({
@@ -102,7 +115,7 @@ describeEmbeddedPostgres("pipeline schema", () => {
         pipelineId: pipeline.id,
         key: "intake",
         name: "Duplicate Intake",
-        kind: "open",
+        kind: "working",
         position: 2,
       }),
     );
@@ -259,6 +272,35 @@ describeEmbeddedPostgres("pipeline schema", () => {
         triggeringEventId: event.id,
         routineId: routine.id,
         status: "failed",
+      }),
+    );
+  });
+
+  it("keeps the open-to-working stage migration idempotent", async () => {
+    await applyMigrationFile("migrations/0106_pipeline_stage_working_primitives.sql");
+    await applyMigrationFile("migrations/0106_pipeline_stage_working_primitives.sql");
+
+    const [company] = await db.insert(companies).values({ name: "Migration Co", issuePrefix: "MIG" }).returning();
+    const [pipeline] = await db.insert(pipelines).values({
+      companyId: company!.id,
+      key: "migration",
+      name: "Migration",
+    }).returning();
+
+    await db.insert(pipelineStages).values({
+      pipelineId: pipeline!.id,
+      key: "working",
+      name: "Working",
+      kind: "working",
+      position: 100,
+    });
+    await expectConstraintError(
+      () => db.insert(pipelineStages).values({
+        pipelineId: pipeline!.id,
+        key: "open",
+        name: "Open",
+        kind: "open",
+        position: 200,
       }),
     );
   });

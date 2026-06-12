@@ -708,6 +708,48 @@
       "when": 1781059200000,
       "tag": "0100_pipeline_case_issue_unlinked_event",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1781098769536,
+      "tag": "0101_special_bloodstorm",
+      "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1781145600000,
+      "tag": "0102_pipeline_upstream_drift_event",
+      "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1781145700000,
+      "tag": "0103_pipeline_transition_forced_event",
+      "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1781220000000,
+      "tag": "0104_pipeline_case_agent_fanout",
+      "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "7",
+      "when": 1781222100000,
+      "tag": "0105_pipeline_drift_acknowledged_event",
+      "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1781281200000,
+      "tag": "0106_pipeline_stage_working_primitives",
+      "breakpoints": true
     }
   ]
 }

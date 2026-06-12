@@ -89,8 +89,14 @@ export const queryKeys = {
     workProducts: (issueId: string) => ["issues", "work-products", issueId] as const,
   },
   routines: {
-    list: (companyId: string, filters?: { projectId?: string | null }) =>
-      ["routines", companyId, filters?.projectId ?? "__all-projects__"] as const,
+    list: (companyId: string, filters?: { projectId?: string | null; originKind?: string | null; excludeOriginKinds?: string[] }) =>
+      [
+        "routines",
+        companyId,
+        filters?.projectId ?? "__all-projects__",
+        filters?.originKind ?? "__all-origins__",
+        filters?.excludeOriginKinds?.join(",") ?? "__exclude-none__",
+      ] as const,
     detail: (id: string) => ["routines", "detail", id] as const,
     runs: (id: string) => ["routines", "runs", id] as const,
     revisions: (id: string) => ["routines", "revisions", id] as const,
@@ -111,6 +117,25 @@ export const queryKeys = {
   projects: {
     list: (companyId: string) => ["projects", companyId] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
+  },
+  pipelines: {
+    list: (companyId: string) => ["pipelines", companyId] as const,
+    detail: (pipelineId: string) => ["pipelines", "detail", pipelineId] as const,
+    cases: (pipelineId: string) => ["pipelines", "cases", pipelineId] as const,
+    caseDetail: (caseId: string) => ["pipelines", "item", caseId] as const,
+    caseChildren: (caseId: string) =>
+      ["pipelines", "item", caseId, "children"] as const,
+    caseEvents: (caseId: string) => ["pipelines", "item", caseId, "events"] as const,
+    caseIssueLinks: (caseId: string) => ["pipelines", "item", caseId, "issue-links"] as const,
+    intakeForm: (pipelineId: string) => ["pipelines", "intake-form", pipelineId] as const,
+    health: (pipelineId: string) => ["pipelines", "health", pipelineId] as const,
+    document: (pipelineId: string, key: string) => ["pipelines", "document", pipelineId, key] as const,
+    documentRevisions: (pipelineId: string, key: string) =>
+      ["pipelines", "document-revisions", pipelineId, key] as const,
+    attention: (companyId: string) => ["pipelines", "attention", companyId] as const,
+    reviewCases: (companyId: string) => ["pipelines", "review-cases", companyId] as const,
+    learnings: (companyId: string, offset: number) =>
+      ["pipelines", "learnings", companyId, offset] as const,
   },
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,

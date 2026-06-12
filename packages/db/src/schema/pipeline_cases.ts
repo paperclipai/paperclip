@@ -46,6 +46,8 @@ export const pipelineCases = pgTable(
     fields: jsonb("fields").$type<Record<string, unknown>>().notNull().default({}),
     workspaceRef: jsonb("workspace_ref").$type<PipelineCaseWorkspaceRef>(),
     parentCaseId: uuid("parent_case_id").references((): AnyPgColumn => pipelineCases.id, { onDelete: "set null" }),
+    parentCaseVersion: integer("parent_case_version"),
+    requestKey: text("request_key"),
     version: integer("version").notNull().default(1),
     pendingSuggestion: jsonb("pending_suggestion").$type<PipelineCasePendingSuggestion>(),
     leaseOwnerType: text("lease_owner_type"),
@@ -65,6 +67,7 @@ export const pipelineCases = pgTable(
   },
   (table) => ({
     pipelineCaseKeyUq: uniqueIndex("pipeline_cases_pipeline_case_key_uq").on(table.pipelineId, table.caseKey),
+    parentRequestKeyUq: uniqueIndex("pipeline_cases_parent_request_key_uq").on(table.parentCaseId, table.requestKey),
     companyIdx: index("pipeline_cases_company_idx").on(table.companyId),
     pipelineStageIdx: index("pipeline_cases_pipeline_stage_idx").on(table.pipelineId, table.stageId),
     parentIdx: index("pipeline_cases_parent_idx").on(table.parentCaseId),

@@ -293,6 +293,11 @@ function collectProvidedRoutineVariables(
   return provided;
 }
 
+interface RoutineVariableResolution {
+  resolvedVariables: Record<string, string | number | boolean>;
+  unresolvedVariables: string[];
+}
+
 function resolveRoutineVariableValues(
   variables: RoutineVariable[],
   input: {
@@ -300,13 +305,22 @@ function resolveRoutineVariableValues(
     payload?: Record<string, unknown> | null;
     variables?: Record<string, unknown> | null;
     automaticVariables?: Record<string, string | number | boolean>;
+    caseFields?: Record<string, unknown> | null;
+    allowUnresolvedVariables?: boolean;
   },
-) {
-  if (variables.length === 0) return {} as Record<string, string | number | boolean>;
+): RoutineVariableResolution {
+  if (variables.length === 0) {
+    return {
+      resolvedVariables: {},
+      unresolvedVariables: [],
+    };
+  }
   const provided = collectProvidedRoutineVariables(input.source, input.payload, input.variables);
   const automaticVariables = input.automaticVariables ?? {};
-  const resolved: Record<string, string | number | boolean> = {};
-  const missing: string[] = [];
+  const caseFields = input.caseFields ?? {};
+  const resolvedVariables: Record<string, string | number | boolean> = {};
+  const unresolvedVariables: string[] = [];
+  const strict = !input.allowUnresolvedVariables;
 
   for (const variable of variables) {
     // Workspace-derived automatic values are authoritative for variables that
@@ -315,25 +329,53 @@ function resolveRoutineVariableValues(
       ? automaticVariables[variable.name]
       : provided[variable.name] !== undefined
         ? provided[variable.name]
-        : variable.defaultValue;
+        : caseFields[variable.name] !== undefined
+          ? caseFields[variable.name]
+          : variable.defaultValue;
     const normalized = normalizeRoutineVariableValue(variable, candidate);
     if (normalized == null || (typeof normalized === "string" && normalized.trim().length === 0)) {
-      if (variable.required) missing.push(variable.name);
+      if (strict && variable.required) {
+        unresolvedVariables.push(variable.name);
+        continue;
+      }
+      if (!strict) {
+        unresolvedVariables.push(variable.name);
+        const fallback = variable.defaultValue ?? "";
+        if (fallback != null && fallback !== "") {
+          const normalizedFallback = normalizeRoutineVariableValue(variable, fallback);
+          if (
+            normalizedFallback != null &&
+            !(
+              typeof normalizedFallback === "string" &&
+              normalizedFallback.trim().length === 0
+            )
+          ) {
+            resolvedVariables[variable.name] = normalizedFallback;
+          } else if (typeof normalizedFallback === "string") {
+            resolvedVariables[variable.name] = "";
+          }
+        } else {
+          resolvedVariables[variable.name] = "";
+        }
+      }
       continue;
     }
-    resolved[variable.name] = normalized;
+    resolvedVariables[variable.name] = normalized;
   }
 
-  if (missing.length > 0) {
-    throw unprocessable(`Missing routine variables: ${missing.join(", ")}`);
+  if (unresolvedVariables.length > 0 && strict) {
+    throw unprocessable(`Missing routine variables: ${unresolvedVariables.join(", ")}`);
   }
 
-  return resolved;
+  return {
+    resolvedVariables,
+    unresolvedVariables: strict ? [] : unresolvedVariables,
+  };
 }
 
 function mergeRoutineRunPayload(
   payload: Record<string, unknown> | null | undefined,
-  variables: Record<string, string | number | boolean>,
+  variables: Record<string, unknown>,
 ) {
   if (Object.keys(variables).length === 0) return payload ?? null;
   if (!payload) return { variables };
@@ -414,6 +456,8 @@ function routineRevisionSnapshotRoutine(routine: RoutineRow): RoutineRevisionSna
     status: routine.status as RoutineRevisionSnapshotV1["routine"]["status"],
     concurrencyPolicy: routine.concurrencyPolicy as RoutineRevisionSnapshotV1["routine"]["concurrencyPolicy"],
     catchUpPolicy: routine.catchUpPolicy as RoutineRevisionSnapshotV1["routine"]["catchUpPolicy"],
+    originKind: routine.originKind,
+    originId: routine.originId,
     variables: routine.variables ?? [],
     env: routine.env ?? null,
   };
@@ -1145,12 +1189,14 @@ export function routineService(
     source: "schedule" | "manual" | "api" | "webhook";
     payload?: Record<string, unknown> | null;
     variables?: Record<string, unknown> | null;
+    caseFields?: Record<string, unknown> | null;
     projectId?: string | null;
     assigneeAgentId?: string | null;
     idempotencyKey?: string | null;
     executionWorkspaceId?: string | null;
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
+    descriptionPreamble?: string | null;
     descriptionAppendix?: string | null;
     actor?: Actor;
   }) {
@@ -1180,17 +1226,45 @@ export function routineService(
         automaticVariables[WORKSPACE_BRANCH_ROUTINE_VARIABLE] = branchName;
       }
     }
-    const resolvedVariables = resolveRoutineVariableValues(input.routine.variables ?? [], {
-      ...input,
+    const automationInputs = input.source === "api" || input.caseFields != null;
+    const variableResolution = resolveRoutineVariableValues(input.routine.variables ?? [], {
+      source: input.source,
+      payload: input.payload,
+      variables: input.variables,
       automaticVariables,
+      caseFields: input.caseFields,
+      allowUnresolvedVariables: automationInputs,
     });
-    const allVariables = { ...getBuiltinRoutineVariableValues(), ...automaticVariables, ...resolvedVariables };
+    const resolvedVariables = variableResolution.resolvedVariables;
+    const templateVariableNames = extractRoutineVariableNames([
+      input.routine.title,
+      input.routine.description,
+    ]);
+    const interpolationWarnings = automationInputs
+      ? variableResolution.unresolvedVariables.filter((name) => templateVariableNames.includes(name))
+      : [];
+    const allVariables = {
+      ...getBuiltinRoutineVariableValues(),
+      ...automaticVariables,
+      ...resolvedVariables,
+    };
     const title = interpolateRoutineTemplate(input.routine.title, allVariables) ?? input.routine.title;
     const baseDescription = interpolateRoutineTemplate(input.routine.description, allVariables);
-    const description = [baseDescription, input.descriptionAppendix]
+    const description = [input.descriptionPreamble, baseDescription, input.descriptionAppendix]
       .filter((part): part is string => Boolean(part && part.trim()))
       .join("\n\n");
-    const triggerPayload = mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables });
+    const providedVariables = collectProvidedRoutineVariables(input.source, input.payload, input.variables);
+    let triggerPayload = mergeRoutineRunPayload(input.payload, {
+      ...(automationInputs ? providedVariables : {}),
+      ...automaticVariables,
+      ...resolvedVariables,
+    });
+    if (interpolationWarnings.length > 0) {
+      triggerPayload = {
+        ...(triggerPayload ?? {}),
+        interpolationWarnings,
+      };
+    }
     const managedRoutineBinding = await getManagedRoutineBinding(input.routine);
     const managedIssueTemplate = readManagedRoutineIssueTemplate(managedRoutineBinding?.defaultsJson);
     const issueOriginKind = managedIssueTemplate?.surfaceVisibility === "plugin_operation" && managedRoutineBinding
@@ -1437,10 +1511,14 @@ export function routineService(
 
     list: async (
       companyId: string,
-      filters?: { projectId?: string | null },
+      filters?: { projectId?: string | null; originKind?: string | null; excludeOriginKinds?: string[] | null },
     ): Promise<RoutineListItem[]> => {
       const conditions = [eq(routines.companyId, companyId)];
       if (filters?.projectId) conditions.push(eq(routines.projectId, filters.projectId));
+      if (filters?.originKind) conditions.push(eq(routines.originKind, filters.originKind));
+      if (filters?.excludeOriginKinds?.length && !filters.originKind) {
+        conditions.push(not(inArray(routines.originKind, filters.excludeOriginKinds)));
+      }
 
       const rows = await db
         .select()
@@ -1605,6 +1683,8 @@ export function routineService(
             status,
             concurrencyPolicy: input.concurrencyPolicy,
             catchUpPolicy: input.catchUpPolicy,
+            originKind: input.originKind ?? "manual",
+            originId: input.originId ?? null,
             variables,
             env,
             createdByAgentId: actor.agentId ?? null,
@@ -1705,6 +1785,8 @@ export function routineService(
           status: nextStatus,
           concurrencyPolicy: patch.concurrencyPolicy ?? locked.concurrencyPolicy,
           catchUpPolicy: patch.catchUpPolicy ?? locked.catchUpPolicy,
+          originKind: patch.originKind ?? locked.originKind,
+          originId: patch.originId === undefined ? locked.originId : patch.originId,
           variables: nextVariables,
           env: nextEnv,
           updatedByAgentId: actor.agentId ?? null,
@@ -1754,6 +1836,8 @@ export function routineService(
             status: candidate.status,
             concurrencyPolicy: candidate.concurrencyPolicy,
             catchUpPolicy: candidate.catchUpPolicy,
+            originKind: candidate.originKind,
+            originId: candidate.originId,
             variables: candidate.variables,
             env: candidate.env,
             updatedByAgentId: actor.agentId ?? null,
@@ -2193,6 +2277,7 @@ export function routineService(
         source: input.source,
         payload: input.payload as Record<string, unknown> | null | undefined,
         variables: input.variables as Record<string, unknown> | null | undefined,
+        caseFields: input.caseFields as Record<string, unknown> | null | undefined,
         projectId: input.projectId ?? null,
         assigneeAgentId: input.assigneeAgentId ?? null,
         idempotencyKey: input.idempotencyKey,
@@ -2204,7 +2289,11 @@ export function routineService(
       });
     },
 
-    runPipelineStageEntryRoutine: async (id: string, input: RunRoutine & { descriptionAppendix?: string | null }, actor?: Actor) => {
+    runPipelineStageEntryRoutine: async (
+      id: string,
+      input: RunRoutine & { descriptionPreamble?: string | null; descriptionAppendix?: string | null },
+      actor?: Actor,
+    ) => {
       const routine = await getRoutineById(id);
       if (!routine) throw notFound("Routine not found");
       if (routine.status === "archived") throw conflict("Routine is archived");
@@ -2224,6 +2313,7 @@ export function routineService(
         executionWorkspacePreference: input.executionWorkspacePreference ?? null,
         executionWorkspaceSettings:
           (input.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null,
+        descriptionPreamble: input.descriptionPreamble ?? null,
         descriptionAppendix: input.descriptionAppendix ?? null,
         actor,
       });

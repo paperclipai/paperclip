@@ -89,6 +89,9 @@ export const NavLink = React.forwardRef<HTMLAnchorElement, React.ComponentProps<
   },
 );
 
+export const useSearchParams = RouterDom.useSearchParams;
+export const useLocation = RouterDom.useLocation;
+
 export function Navigate({ to, ...props }: React.ComponentProps<typeof RouterDom.Navigate>) {
   const companyPrefix = useActiveCompanyPrefix();
   return <RouterDom.Navigate to={resolveTo(to, companyPrefix)} {...props} />;

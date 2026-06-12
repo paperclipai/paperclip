@@ -15,6 +15,14 @@ describe("routine variable helpers", () => {
     ).toEqual(["repo", "priority"]);
   });
 
+  it("extracts escaped underscore placeholder names emitted by markdown editors", () => {
+    expect(
+      extractRoutineVariableNames("Greet {{customer\\_name}} on {{event\\_date}}"),
+    ).toEqual(["customer_name", "event_date"]);
+    expect(extractRoutineVariableNames("Use {{a\\_b\\_c}}")).toEqual(["a_b_c"]);
+    expect(extractRoutineVariableNames("Ignore {{ \\_bad}} but keep {{good\\_name}}")).toEqual(["good_name"]);
+  });
+
   it("deduplicates placeholder names across the routine title and description", () => {
     expect(
       extractRoutineVariableNames([
@@ -35,6 +43,14 @@ describe("routine variable helpers", () => {
     ]);
   });
 
+  it("syncs escaped underscore placeholders to unescaped variable names", () => {
+    expect(
+      syncRoutineVariablesWithTemplate("Review {{customer\\_name}} for {{customer\\_name}}", []),
+    ).toEqual([
+      { name: "customer_name", label: null, type: "text", defaultValue: null, required: true, options: [] },
+    ]);
+  });
+
   it("interpolates provided variable values into the routine template", () => {
     expect(
       interpolateRoutineTemplate("Review {{repo}} for {{priority}}", {
@@ -42,6 +58,15 @@ describe("routine variable helpers", () => {
         priority: "high",
       }),
     ).toBe("Review paperclip for high");
+  });
+
+  it("interpolates escaped underscore placeholders with unescaped variable values", () => {
+    expect(
+      interpolateRoutineTemplate("Greet {{customer\\_name}} on {{event\\_date}}", {
+        customer_name: "Ada",
+        event_date: "Friday",
+      }),
+    ).toBe("Greet Ada on Friday");
   });
 
   it("identifies built-in variable names", () => {

@@ -11,6 +11,8 @@ import {
   Boxes,
   Repeat,
   GitBranch,
+  ListChecks,
+  BookOpenText,
   Package,
   Settings,
   FolderOpen,
@@ -166,6 +168,9 @@ export function Sidebar() {
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
+          <SidebarNavItem to="/review-queue" label="Review queue" icon={ListChecks} />
+          <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
+          <SidebarNavItem to="/learnings" label="Learnings" icon={BookOpenText} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
           <SidebarNavItem to="/artifacts" label="Artifacts" icon={Package} />
           {showWorkspacesLink ? (

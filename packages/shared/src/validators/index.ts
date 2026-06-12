@@ -420,12 +420,14 @@ export {
   routineRevisionSnapshotV1Schema,
   routineRevisionSnapshotSchema,
   runRoutineSchema,
+  runRoutineIntakeFormSchema,
   rotateRoutineTriggerSecretSchema,
   type CreateRoutine,
   type UpdateRoutine,
   type CreateRoutineTrigger,
   type UpdateRoutineTrigger,
   type RunRoutine,
+  type RunRoutineIntakeForm,
   type RotateRoutineTriggerSecret,
 } from "./routine.js";
 
@@ -445,6 +447,19 @@ export {
   createAssetImageMetadataSchema,
   type CreateAssetImageMetadata,
 } from "./asset.js";
+
+export {
+  pipelineStageApproverSchema,
+  pipelineStageConfigSchema,
+  pipelineStageKindSchema,
+  pipelineStageOnEnterSchema,
+  pipelineStageVariableSchema,
+  type PipelineStageApprover,
+  type PipelineStageConfig,
+  type PipelineStageKind,
+  type PipelineStageOnEnter,
+  type PipelineStageVariable,
+} from "./pipeline.js";
 
 export {
   createCompanyInviteSchema,

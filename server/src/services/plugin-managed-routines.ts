@@ -370,6 +370,8 @@ export function pluginManagedRoutineService(
       status: declaration.status ?? (refs.assigneeAgentId ? "active" : "paused"),
       concurrencyPolicy: declaration.concurrencyPolicy ?? "coalesce_if_active",
       catchUpPolicy: declaration.catchUpPolicy ?? "skip_missed",
+      originKind: "manual",
+      originId: null,
       variables: declaration.variables ?? [],
     }, { agentId: null, userId: null });
     await upsertBinding(companyId, declaration, created.id);

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-06-04T19:57:14.020Z",
+  "generatedAt": "2026-06-11T21:21:19.887Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -72,6 +72,40 @@
         }
       ],
       "contentHash": "sha256:88dc13560371fb364963782cb4f6eeb4090fcde92ee3774479428ed6b90e11c1"
+    },
+    {
+      "id": "paperclipai:bundled:paperclip-operations:pipeline-case-operations",
+      "key": "paperclipai/bundled/paperclip-operations/pipeline-case-operations",
+      "kind": "bundled",
+      "category": "paperclip-operations",
+      "slug": "pipeline-case-operations",
+      "name": "pipeline-case-operations",
+      "description": "Read, update, fan out, link, and finish Paperclip pipeline cases from a routine execution issue using the case API safely.",
+      "path": "catalog/bundled/paperclip-operations/pipeline-case-operations",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer",
+        "operations"
+      ],
+      "requires": [],
+      "tags": [
+        "paperclip",
+        "pipelines",
+        "routines",
+        "workflow"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 3574,
+          "sha256": "95dd9f911e8b3a6f0139ec9c80b7be42069d29f061454dfe714fe01e11f459cf"
+        }
+      ],
+      "contentHash": "sha256:bc9c6c3294a3b0dac41b28746fc12c9d787bd87abdf5fe63eebab16074baf3be"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:task-planning",

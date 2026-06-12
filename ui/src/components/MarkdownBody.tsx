@@ -668,6 +668,10 @@ export function MarkdownBody({
               ? `/skills/${parsed.skillId}`
               : parsed.kind === "routine"
                 ? `/routines/${parsed.routineId}`
+                : parsed.kind === "pipeline"
+                  ? parsed.stageKey
+                    ? `/pipelines/${parsed.pipelineId}/settings`
+                    : `/pipelines/${parsed.pipelineId}`
                 : parsed.kind === "user"
                   ? "/company/settings/access"
                   : `/agents/${parsed.agentId}`;

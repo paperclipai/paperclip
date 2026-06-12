@@ -1,43 +1,191 @@
-# Pipelines Tutorial: Release to Content
+# Pipelines Tutorial: Release to Published Content
 
-This walkthrough uses only the Paperclip CLI to run the release-to-content casework flow:
+This walkthrough is the CLI/API version of the 12-step release-to-content worked example. It uses three linked pipelines:
 
-- one release case fans out into 10 content suggestion cases
-- a review inbox approves 7, rejects 2 with reasons, and edits then approves 1
-- approved cases fire a drafting routine on stage entry
-- a human accepts an agent transition suggestion
-- a blocker prevents premature publishing until the upstream case is done
-- the release rollup reports a complete done/cancelled split
-- event history shows provenance for the case
+- `release-coverage`: one release case answers "is this release covered?"
+- `feature-content`: one feature case per approved feature rolls up content coverage.
+- `content-production`: one content-piece case moves through drafting, assets, assembly, final review, publishing, and a terminal result.
+
+The walkthrough intentionally labels conventions separately from primitives. Those conventions are future primitive candidates: if they hurt, we want to see exactly where.
 
 ## Prerequisites
 
-Run this against a dev Paperclip instance with a board token or an agent token that can manage pipelines and routines.
+Run this against a dev Paperclip instance with a board token or an agent token that can manage pipelines, routines, and issues.
 
 ```sh
 export PAPERCLIP_API_URL=http://localhost:3100
 export PAPERCLIP_COMPANY_ID=<company-id>
 export PAPERCLIP_API_KEY=<token>
 
-# Optional: assign the drafting routine to an existing agent.
+# Optional: assign routine-created drafting issues to a specific agent.
 export DRAFTING_AGENT_ID=<agent-id>
+
+export RUN_KEY="$(date +%Y%m%d%H%M%S)"
+export RELEASE_PIPELINE="release-coverage-$RUN_KEY"
+export FEATURE_PIPELINE="feature-content-$RUN_KEY"
+export CONTENT_PIPELINE="content-production-$RUN_KEY"
 ```
 
-Use a unique suffix so the tutorial can be rerun without pipeline key collisions:
+## Step 1: Setup The Three Pipelines
+
+Create Release Coverage. It is thin on purpose: the release case stays in `intake` until its feature children are terminal, then `autoAdvanceOnChildrenTerminal` moves it to `covered`.
 
 ```sh
-export RUN_KEY="$(date +%Y%m%d%H%M%S)"
-export RELEASES_PIPELINE="releases-$RUN_KEY"
-export CONTENT_PIPELINE="content-$RUN_KEY"
+cat > /tmp/release-stages.json <<'JSON'
+[
+  {
+    "key": "intake",
+    "name": "Intake",
+    "kind": "open",
+    "position": 100,
+    "config": { "autoAdvanceOnChildrenTerminal": "covered" }
+  },
+  { "key": "covered", "name": "Covered", "kind": "done", "position": 900 },
+  { "key": "cancelled", "name": "Cancelled", "kind": "cancelled", "position": 1000 }
+]
+JSON
+
+paperclipai pipelines create \
+  -C "$PAPERCLIP_COMPANY_ID" \
+  --key "$RELEASE_PIPELINE" \
+  --name "Release Coverage $RUN_KEY" \
+  --stages-file /tmp/release-stages.json
 ```
 
-## Create The Drafting Routine
+Create Feature Content. The review stage lets the human approve features into production or drop them from this release.
+
+```sh
+cat > /tmp/feature-stages.json <<'JSON'
+[
+  { "key": "suggesting", "name": "Suggesting", "kind": "open", "position": 100 },
+  {
+    "key": "suggestion_review",
+    "name": "Suggestion Review",
+    "kind": "review",
+    "position": 200,
+    "config": {
+      "approveToStageKey": "producing",
+      "rejectToStageKey": "cancelled",
+      "requestChangesToStageKey": "suggesting",
+      "requireRejectReason": true,
+      "reviewerKind": "human"
+    }
+  },
+  {
+    "key": "producing",
+    "name": "Producing",
+    "kind": "working",
+    "position": 300,
+    "config": { "autoAdvanceOnChildrenTerminal": "covered" }
+  },
+  { "key": "covered", "name": "Covered", "kind": "done", "position": 900 },
+  { "key": "cancelled", "name": "Cancelled", "kind": "cancelled", "position": 1000 }
+]
+JSON
+
+paperclipai pipelines create \
+  -C "$PAPERCLIP_COMPANY_ID" \
+  --key "$FEATURE_PIPELINE" \
+  --name "Feature Content $RUN_KEY" \
+  --stages-file /tmp/feature-stages.json
+```
+
+Create Content Production. `Assets` and `Assembly` are `working` stages, not review stages. `Final Review` is the review stage and has all three exits: approve, request changes, and drop.
+
+```sh
+cat > /tmp/content-stages.json <<'JSON'
+[
+  {
+    "key": "drafting",
+    "name": "Drafting",
+    "kind": "working",
+    "position": 100,
+    "config": { "autonomy": "suggest" }
+  },
+  {
+    "key": "assets",
+    "name": "Assets",
+    "kind": "working",
+    "position": 200
+  },
+  {
+    "key": "assembly",
+    "name": "Assembly",
+    "kind": "working",
+    "position": 300,
+    "config": { "autoAdvanceOnChildrenTerminal": "final_review" }
+  },
+  {
+    "key": "final_review",
+    "name": "Final Review",
+    "kind": "review",
+    "position": 400,
+    "config": {
+      "approveToStageKey": "publishing",
+      "rejectToStageKey": "dropped",
+      "requestChangesToStageKey": "drafting",
+      "requireRejectReason": true,
+      "reviewerKind": "human"
+    }
+  },
+  { "key": "publishing", "name": "Publishing", "kind": "working", "position": 500 },
+  { "key": "published", "name": "Published", "kind": "done", "position": 900 },
+  { "key": "dropped", "name": "Dropped", "kind": "cancelled", "position": 1000 }
+]
+JSON
+
+paperclipai pipelines create \
+  -C "$PAPERCLIP_COMPANY_ID" \
+  --key "$CONTENT_PIPELINE" \
+  --name "Content Production $RUN_KEY" \
+  --stages-file /tmp/content-stages.json
+```
+
+Show `enforceTransitions` on one pipeline. The release case can only auto-cover or cancel.
+
+```sh
+cat > /tmp/release-transitions.json <<'JSON'
+{
+  "enforceTransitions": true,
+  "transitions": [
+    { "fromStageKey": "intake", "toStageKey": "covered", "label": "all features terminal" },
+    { "fromStageKey": "intake", "toStageKey": "cancelled", "label": "cancel release coverage" }
+  ]
+}
+JSON
+
+paperclipai pipelines set-transitions \
+  -C "$PAPERCLIP_COMPANY_ID" \
+  "$RELEASE_PIPELINE" \
+  --file /tmp/release-transitions.json
+```
+
+Add guidance and a drafting routine. The guidance document carries the rubric.
+
+```sh
+cat > /tmp/content-guidance.md <<'MD'
+# Content Production guidance
+
+Final Review has three exits:
+
+- approve to Publishing when the pinned revisions are ready to ship
+- request changes back to Drafting when the same work issue should continue
+- drop to Dropped when the content should not ship
+
+Convention: asset cases store `briefedFromVersion` in `fields` so assembly review can compare a pinned brief against the current upstream case `version`.
+MD
+
+paperclipai pipelines guidance put \
+  -C "$PAPERCLIP_COMPANY_ID" \
+  "$CONTENT_PIPELINE" \
+  --file /tmp/content-guidance.md
+```
 
 ```sh
 cat > /tmp/drafting-routine.json <<JSON
 {
-  "title": "Draft approved content",
-  "description": "Use the embedded Pipeline Case Context to draft the approved content case, then transition the case when the draft is ready.",
+  "title": "Draft content production case",
+  "description": "Template convention: draft the content case from the Pipeline Case Context, keep typed work references in case fields, and suggest Drafting -> Assets when ready.",
   "priority": "medium",
   "status": "active",
   "concurrencyPolicy": "always_enqueue",
@@ -46,317 +194,443 @@ cat > /tmp/drafting-routine.json <<JSON
 }
 JSON
 
-export DRAFTING_ROUTINE_PAYLOAD="$(jq -c . /tmp/drafting-routine.json)"
 export DRAFTING_ROUTINE_ID="$(
   paperclipai routine create \
     -C "$PAPERCLIP_COMPANY_ID" \
-    --payload-json "$DRAFTING_ROUTINE_PAYLOAD" \
+    --payload-json "$(jq -c . /tmp/drafting-routine.json)" \
+    --pipeline "$CONTENT_PIPELINE" \
     --json | jq -r '.id'
 )"
-```
-
-## Create Pipelines
-
-```sh
-cat > /tmp/releases-stages.json <<'JSON'
-[
-  { "key": "released", "name": "Released", "kind": "open", "position": 100 },
-  { "key": "complete", "name": "Complete", "kind": "done", "position": 900 },
-  { "key": "cancelled", "name": "Cancelled", "kind": "cancelled", "position": 1000 }
-]
-JSON
-
-paperclipai pipelines create \
-  -C "$PAPERCLIP_COMPANY_ID" \
-  --key "$RELEASES_PIPELINE" \
-  --name "Releases $RUN_KEY" \
-  --stages-file /tmp/releases-stages.json
-```
-
-```sh
-cat > /tmp/content-stages.json <<'JSON'
-[
-  {
-    "key": "review",
-    "name": "Human review",
-    "kind": "review",
-    "position": 100,
-    "config": {
-      "approveToStageKey": "drafting",
-      "rejectToStageKey": "cancelled",
-      "requireRejectReason": true,
-      "reviewerKind": "human"
-    }
-  },
-  { "key": "drafting", "name": "Drafting", "kind": "working", "position": 200 },
-  { "key": "ready", "name": "Ready to publish", "kind": "working", "position": 300 },
-  { "key": "published", "name": "Published", "kind": "done", "position": 900 },
-  { "key": "cancelled", "name": "Cancelled", "kind": "cancelled", "position": 1000 }
-]
-JSON
-
-paperclipai pipelines create \
-  -C "$PAPERCLIP_COMPANY_ID" \
-  --key "$CONTENT_PIPELINE" \
-  --name "Content $RUN_KEY" \
-  --stages-file /tmp/content-stages.json
-```
-
-Configure transitions, guidance, and the drafting automation:
-
-```sh
-cat > /tmp/content-transitions.json <<'JSON'
-{
-  "transitions": [
-    { "fromStageKey": "review", "toStageKey": "drafting", "label": "approve" },
-    { "fromStageKey": "review", "toStageKey": "cancelled", "label": "reject" },
-    { "fromStageKey": "drafting", "toStageKey": "ready", "label": "draft ready" },
-    { "fromStageKey": "drafting", "toStageKey": "published", "label": "publish directly" },
-    { "fromStageKey": "drafting", "toStageKey": "cancelled", "label": "cancel" },
-    { "fromStageKey": "ready", "toStageKey": "published", "label": "publish" }
-  ]
-}
-JSON
-
-paperclipai pipelines set-transitions \
-  -C "$PAPERCLIP_COMPANY_ID" \
-  "$CONTENT_PIPELINE" \
-  --file /tmp/content-transitions.json
-
-cat > /tmp/content-guidance.md <<'MD'
-# Content pipeline guidance
-
-Approve content suggestions that can teach users what changed and reject suggestions
-that are too narrow, duplicative, or disconnected from the release.
-MD
-
-paperclipai pipelines guidance put \
-  -C "$PAPERCLIP_COMPANY_ID" \
-  "$CONTENT_PIPELINE" \
-  --file /tmp/content-guidance.md
 
 paperclipai pipelines set-automation \
   -C "$PAPERCLIP_COMPANY_ID" \
   "$CONTENT_PIPELINE" \
   --stage drafting \
-  --routine "$DRAFTING_ROUTINE_ID"
+  --routine "$DRAFTING_ROUTINE_ID" \
+  --note "Template-versioned with the routine prompt."
 ```
 
-## Ingest The Release And Suggestions
+Routines marked with `--pipeline` are treated as pipeline automation helpers. They are still configurable from `/routines`, but the default routines view groups them under "Pipeline automation" so they do not crowd out hand-managed recurring work during setup.
+
+**Convention:** v1 "templates" version with the routine prompt plus the batch file below, not with the pipeline. The pipeline `guidance` document carries the durable rubric. This is the accepted divergence from the long-term template-on-pipeline shape.
+
+## Step 2: Trigger, Intake, And Gate
+
+A real system would start with a release-cut routine. Today, the routine fires on a timer or API trigger and creates an intake issue. On that issue, the agent writes a proposal document and asks the board for a checkbox confirmation.
+
+The accepted checkbox selection is represented here by the batch files. That batch file plus the routine prompt is the v1 template convention.
+
+Create the release root:
 
 ```sh
 export RELEASE_CASE_ID="$(
   paperclipai pipelines ingest \
     -C "$PAPERCLIP_COMPANY_ID" \
-    "$RELEASES_PIPELINE" \
+    "$RELEASE_PIPELINE" \
     --case-key "release-$RUN_KEY" \
-    --title "Release $RUN_KEY: Pipeline primitive" \
-    --summary "A release case that fans out into content suggestions." \
-    --fields-json '{"release":"v0.pipeline-tutorial"}' \
+    --stage intake \
+    --title "Release $RUN_KEY: Pipeline primitives" \
+    --summary "Rollup root for release content coverage." \
+    --fields-json '{"release":"v0.pipeline-tutorial","templateVersionConvention":"routine-prompt"}' \
     --json | jq -r '.case.id'
 )"
 ```
 
-Create the 10 parented suggestion cases. This batch file is included verbatim; only `$RELEASE_CASE_ID` is substituted by the shell.
+Create two feature cases parented to the release. One is approved, one is dropped.
 
 ```sh
 jq -n --arg parent "$RELEASE_CASE_ID" '{
   items: [
-    { caseKey: "suggestion-01", title: "Launch blog post", summary: "Explain the release end to end.", fields: { channel: "blog" }, parentCaseId: $parent, stageKey: "review" },
-    { caseKey: "suggestion-02", title: "Product changelog", summary: "Concise changelog entry.", fields: { channel: "docs" }, parentCaseId: $parent, stageKey: "review" },
-    { caseKey: "suggestion-03", title: "Launch tweet", summary: "Short tweet after the blog is ready.", fields: { channel: "x" }, parentCaseId: $parent, stageKey: "review" },
-    { caseKey: "suggestion-04", title: "Customer email", summary: "Email announcement.", fields: { channel: "email" }, parentCaseId: $parent, stageKey: "review" },
-    { caseKey: "suggestion-05", title: "LinkedIn post", summary: "Professional network announcement.", fields: { channel: "linkedin" }, parentCaseId: $parent, stageKey: "review" },
-    { caseKey: "suggestion-06", title: "Discord update", summary: "Community update.", fields: { channel: "discord" }, parentCaseId: $parent, stageKey: "review" },
-    { caseKey: "suggestion-07", title: "Release notes", summary: "Detailed release notes.", fields: { channel: "release_notes" }, parentCaseId: $parent, stageKey: "review" },
-    { caseKey: "suggestion-08", title: "Overly niche post", summary: "Reject: too niche.", fields: { channel: "blog" }, parentCaseId: $parent, stageKey: "review" },
-    { caseKey: "suggestion-09", title: "Duplicate tweet", summary: "Reject: duplicate.", fields: { channel: "x" }, parentCaseId: $parent, stageKey: "review" },
-    { caseKey: "suggestion-10", title: "Short-form video", summary: "Needs edit before approval.", fields: { channel: "video" }, parentCaseId: $parent, stageKey: "review" }
+    {
+      caseKey: "feature-pipelines-ui",
+      title: "Feature: Pipelines UI",
+      summary: "Worth a content package.",
+      parentCaseId: $parent,
+      stageKey: "suggestion_review",
+      fields: { releaseTag: "v0.pipeline-tutorial", source: "release-notes" }
+    },
+    {
+      caseKey: "feature-routine-webhooks",
+      title: "Feature: Routine webhooks",
+      summary: "Rejected by the gate for this release.",
+      parentCaseId: $parent,
+      stageKey: "suggestion_review",
+      fields: { releaseTag: "v0.pipeline-tutorial", source: "release-notes" }
+    }
   ]
-}' > /tmp/content-suggestions.json
+}' > /tmp/feature-cases.json
+
+paperclipai pipelines ingest-batch \
+  -C "$PAPERCLIP_COMPANY_ID" \
+  "$FEATURE_PIPELINE" \
+  --file /tmp/feature-cases.json \
+  --json | tee /tmp/feature-cases-result.json
+```
+
+```sh
+feature_case_id() {
+  jq -r --arg key "$1" '.[] | select(.case.caseKey == $key) | .case.id' /tmp/feature-cases-result.json
+}
+
+export FEATURE_MAIN="$(feature_case_id feature-pipelines-ui)"
+export FEATURE_DROP="$(feature_case_id feature-routine-webhooks)"
+
+jq -n --arg main "$FEATURE_MAIN" --arg drop "$FEATURE_DROP" '{
+  items: [
+    { caseId: $main, decision: "approve", expectedVersion: 1 },
+    { caseId: $drop, decision: "reject", reason: "Fold webhooks into the broader launch post.", expectedVersion: 1 }
+  ]
+}' > /tmp/feature-review.json
+
+paperclipai pipelines review-bulk \
+  -C "$PAPERCLIP_COMPANY_ID" \
+  --file /tmp/feature-review.json
+```
+
+Create content cases under the approved feature. `launch-tweet` declares `blockedByCaseKeys: ["blog-post"]`; the CLI resolves that key to the blog case in the same batch.
+
+```sh
+jq -n --arg parent "$FEATURE_MAIN" '{
+  items: [
+    {
+      caseKey: "blog-post",
+      title: "Launch blog post",
+      summary: "Draft the release narrative.",
+      parentCaseId: $parent,
+      stageKey: "drafting",
+      fields: {
+        contentType: "blog",
+        typedWorkRefs: { draftPath: "workspaces/release/blog.md" },
+        briefedFromVersion: null
+      }
+    },
+    {
+      caseKey: "changelog-entry",
+      title: "Product changelog",
+      summary: "Compact changelog entry.",
+      parentCaseId: $parent,
+      stageKey: "drafting",
+      fields: {
+        contentType: "changelog",
+        typedWorkRefs: { draftPath: "workspaces/release/changelog.md" },
+        briefedFromVersion: null
+      }
+    },
+    {
+      caseKey: "launch-tweet",
+      title: "Launch tweet",
+      summary: "Tweet after the blog is approved.",
+      parentCaseId: $parent,
+      stageKey: "drafting",
+      blockedByCaseKeys: ["blog-post"],
+      fields: {
+        contentType: "social",
+        typedWorkRefs: { draftPath: "workspaces/release/tweet.md" },
+        briefedFromVersion: 1
+      }
+    }
+  ]
+}' > /tmp/content-cases.json
 
 paperclipai pipelines ingest-batch \
   -C "$PAPERCLIP_COMPANY_ID" \
   "$CONTENT_PIPELINE" \
-  --file /tmp/content-suggestions.json \
-  --json | tee /tmp/content-suggestions-result.json
+  --file /tmp/content-cases.json \
+  --json | tee /tmp/content-cases-result.json
 ```
 
-## Review The Inbox
+**Convention:** `typedWorkRefs` and `briefedFromVersion` are ordinary case `fields`, not new primitives. They document how this case type points at work and how downstream asset briefs pin an upstream version.
+
+## Step 3: Readiness Suggestion
+
+The drafting agent should not silently move the case. It suggests `Drafting -> Assets` with a rationale, and the human accepts it.
 
 ```sh
-paperclipai pipelines review-inbox \
-  -C "$PAPERCLIP_COMPANY_ID" \
-  --pipeline "$CONTENT_PIPELINE"
-```
-
-Approve seven and reject two in bulk:
-
-```sh
-case_id() {
-  jq -r --arg key "$1" '.[] | select(.case.caseKey == $key) | .case.id' /tmp/content-suggestions-result.json
+content_case_id() {
+  jq -r --arg key "$1" '.[] | select(.case.caseKey == $key) | .case.id' /tmp/content-cases-result.json
 }
 
-export CASE_01="$(case_id suggestion-01)"
-export CASE_02="$(case_id suggestion-02)"
-export CASE_03="$(case_id suggestion-03)"
-export CASE_04="$(case_id suggestion-04)"
-export CASE_05="$(case_id suggestion-05)"
-export CASE_06="$(case_id suggestion-06)"
-export CASE_07="$(case_id suggestion-07)"
-export CASE_08="$(case_id suggestion-08)"
-export CASE_09="$(case_id suggestion-09)"
-export CASE_10="$(case_id suggestion-10)"
+export BLOG_CASE="$(content_case_id blog-post)"
+export CHANGELOG_CASE="$(content_case_id changelog-entry)"
+export TWEET_CASE="$(content_case_id launch-tweet)"
 
-jq -n \
-  --arg c1 "$CASE_01" --arg c2 "$CASE_02" --arg c3 "$CASE_03" --arg c4 "$CASE_04" --arg c5 "$CASE_05" \
-  --arg c6 "$CASE_06" --arg c7 "$CASE_07" --arg c8 "$CASE_08" --arg c9 "$CASE_09" '{
-  items: [
-    { caseId: $c1, decision: "approve", expectedVersion: 1 },
-    { caseId: $c2, decision: "approve", expectedVersion: 1 },
-    { caseId: $c3, decision: "approve", expectedVersion: 1 },
-    { caseId: $c4, decision: "approve", expectedVersion: 1 },
-    { caseId: $c5, decision: "approve", expectedVersion: 1 },
-    { caseId: $c6, decision: "approve", expectedVersion: 1 },
-    { caseId: $c7, decision: "approve", expectedVersion: 1 },
-    { caseId: $c8, decision: "reject", reason: "Too niche for this launch.", expectedVersion: 1 },
-    { caseId: $c9, decision: "reject", reason: "Duplicates the launch tweet.", expectedVersion: 1 }
-  ]
-}' > /tmp/review-decisions.json
-
-paperclipai pipelines review-bulk \
-  -C "$PAPERCLIP_COMPANY_ID" \
-  --file /tmp/review-decisions.json
-```
-
-Edit and approve the tenth item:
-
-```sh
-paperclipai pipelines case review \
-  -C "$PAPERCLIP_COMPANY_ID" \
-  "$CASE_10" \
-  --approve \
-  --expected-version 1 \
-  --title "Edited short-form video" \
-  --fields-json '{"channel":"video","edited":true}'
-```
-
-Approved cases enter `drafting`, which fires the configured routine and links automation issues. Inspect one:
-
-```sh
-paperclipai pipelines case get \
-  -C "$PAPERCLIP_COMPANY_ID" \
-  "$CASE_01"
-```
-
-## Accept An Agent Suggestion
-
-```sh
 export SUGGESTION_ID="$(
   paperclipai pipelines case suggest \
     -C "$PAPERCLIP_COMPANY_ID" \
-    "$CASE_01" \
-    --to ready \
-    --rationale "Draft is complete enough to publish." \
+    "$BLOG_CASE" \
+    --to assets \
+    --rationale "Draft is stable enough to brief asset work." \
     --confidence 0.9 \
     --json | jq -r '.suggestion.id'
 )"
 
 paperclipai pipelines case resolve-suggestion \
   -C "$PAPERCLIP_COMPANY_ID" \
-  "$CASE_01" \
+  "$BLOG_CASE" \
   --suggestion "$SUGGESTION_ID" \
   --accept \
+  --expected-version 1
+```
+
+## Step 4: Parallel Editing And Drift
+
+The draft can still change while dependent work exists. A material update to the upstream case posts a drift comment on dependent linked work issues.
+
+```sh
+export TWEET_WORK_ISSUE="$(
+  paperclipai issue create \
+    -C "$PAPERCLIP_COMPANY_ID" \
+    --title "Work issue for launch tweet $RUN_KEY" \
+    --description "Receives drift comments from the upstream blog case." \
+    --status todo \
+    --priority low \
+    --json | jq -r '.id'
+)"
+
+curl -sS -X POST \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data "$(jq -cn --arg issueId "$TWEET_WORK_ISSUE" '{ issueId: $issueId, role: "work" }')" \
+  "$PAPERCLIP_API_URL/api/cases/$TWEET_CASE/issue-links" >/dev/null
+
+paperclipai pipelines case edit \
+  -C "$PAPERCLIP_COMPANY_ID" \
+  "$BLOG_CASE" \
+  --expected-version 2 \
+  --summary "Draft changed while dependent tweet work was already briefed." \
+  --fields-json '{"contentType":"blog","typedWorkRefs":{"draftPath":"workspaces/release/blog.md"},"briefedFromVersion":null,"materialChange":"new-positioning"}'
+```
+
+If a worker tries to patch with the stale version, the API returns `409` with `code=version_conflict`, the current version, and the current stage. Recovery is to re-read the case and retry against the current version.
+
+```sh
+paperclipai pipelines case edit \
+  -C "$PAPERCLIP_COMPANY_ID" \
+  "$BLOG_CASE" \
+  --expected-version 2 \
+  --title "Stale edit"
+
+# Recovery:
+paperclipai pipelines case get -C "$PAPERCLIP_COMPANY_ID" "$BLOG_CASE" --json
+```
+
+## Step 5: Assets
+
+The Assets automation creates asset cases under the feature. In v1 the tutorial uses an explicit batch file; in the product, this is the stage-template convention.
+
+```sh
+export BLOG_VERSION="$(paperclipai pipelines case get -C "$PAPERCLIP_COMPANY_ID" "$BLOG_CASE" --json | jq -r '.case.version')"
+
+jq -n --arg parent "$FEATURE_MAIN" --argjson briefVersion "$BLOG_VERSION" '{
+  items: [
+    {
+      caseKey: "blog-hero-image",
+      title: "Hero image",
+      parentCaseId: $parent,
+      stageKey: "assets",
+      fields: { assetType: "image", briefedFromVersion: $briefVersion }
+    },
+    {
+      caseKey: "blog-social-card",
+      title: "Social card",
+      parentCaseId: $parent,
+      stageKey: "assets",
+      fields: { assetType: "image", briefedFromVersion: $briefVersion }
+    }
+  ]
+}' > /tmp/asset-cases.json
+
+paperclipai pipelines ingest-batch \
+  -C "$PAPERCLIP_COMPANY_ID" \
+  "$CONTENT_PIPELINE" \
+  --file /tmp/asset-cases.json \
+  --json | tee /tmp/asset-cases-result.json
+```
+
+```sh
+asset_case_id() {
+  jq -r --arg key "$1" '.[] | select(.case.caseKey == $key) | .case.id' /tmp/asset-cases-result.json
+}
+
+export HERO_CASE="$(asset_case_id blog-hero-image)"
+export CARD_CASE="$(asset_case_id blog-social-card)"
+
+paperclipai pipelines case transition -C "$PAPERCLIP_COMPANY_ID" "$HERO_CASE" --to published --expected-version 1 --reason "Hero image done."
+paperclipai pipelines case transition -C "$PAPERCLIP_COMPANY_ID" "$CARD_CASE" --to dropped --expected-version 1 --reason "Social card not needed."
+```
+
+When both asset cases are terminal, move the blog case to `assembly`.
+
+```sh
+export BLOG_ASSETS_VERSION="$(paperclipai pipelines case get -C "$PAPERCLIP_COMPANY_ID" "$BLOG_CASE" --json | jq -r '.case.version')"
+
+paperclipai pipelines case transition \
+  -C "$PAPERCLIP_COMPANY_ID" \
+  "$BLOG_CASE" \
+  --to assembly \
+  --expected-version "$BLOG_ASSETS_VERSION" \
+  --reason "Assets complete; assemble the package."
+```
+
+## Step 6: Assembly And Auto-Advance To Final Review
+
+Assembly is also a `working` stage. This is the `autoAdvanceOnChildrenTerminal` gate: create a package child case, complete it, and the blog case auto-advances into `final_review`.
+
+```sh
+jq -n --arg parent "$BLOG_CASE" '{
+  items: [
+    {
+      caseKey: "blog-assembly-package",
+      title: "Assembled blog package",
+      parentCaseId: $parent,
+      stageKey: "assembly",
+      fields: { packageType: "blog", assembledFrom: ["blog-hero-image", "blog-social-card"] }
+    }
+  ]
+}' > /tmp/assembly-cases.json
+
+paperclipai pipelines ingest-batch \
+  -C "$PAPERCLIP_COMPANY_ID" \
+  "$CONTENT_PIPELINE" \
+  --file /tmp/assembly-cases.json \
+  --json | tee /tmp/assembly-cases-result.json
+
+export ASSEMBLY_CASE="$(jq -r '.[0].case.id' /tmp/assembly-cases-result.json)"
+paperclipai pipelines case transition -C "$PAPERCLIP_COMPANY_ID" "$ASSEMBLY_CASE" --to published --expected-version 1 --reason "Assembly complete."
+```
+
+## Step 7: Blocker Guard
+
+The tweet is blocked by the blog case through `blockedByCaseKeys`. This transition fails with `409 code=blocked` until the blog reaches a `done` terminal stage.
+
+```sh
+paperclipai pipelines case transition \
+  -C "$PAPERCLIP_COMPANY_ID" \
+  "$TWEET_CASE" \
+  --to assets \
+  --expected-version 1 \
+  --reason "Try before upstream blog is published."
+```
+
+## Step 8: Final Review Approve
+
+Approve the blog in Final Review, then publish it.
+
+```sh
+export BLOG_REVIEW_VERSION="$(paperclipai pipelines case get -C "$PAPERCLIP_COMPANY_ID" "$BLOG_CASE" --json | jq -r '.case.version')"
+
+paperclipai pipelines case review \
+  -C "$PAPERCLIP_COMPANY_ID" \
+  "$BLOG_CASE" \
+  --approve \
+  --expected-version "$BLOG_REVIEW_VERSION"
+
+paperclipai pipelines case transition \
+  -C "$PAPERCLIP_COMPANY_ID" \
+  "$BLOG_CASE" \
+  --to published \
+  --expected-version "$((BLOG_REVIEW_VERSION + 1))" \
+  --reason "Approved package published."
+```
+
+## Step 9: Final Review Request Changes
+
+The changelog demonstrates the edit loop: Final Review requests changes, the same case re-enters `drafting`, the same work references continue, and the case comes back to Final Review for approval.
+
+```sh
+paperclipai pipelines case transition -C "$PAPERCLIP_COMPANY_ID" "$CHANGELOG_CASE" --to final_review --expected-version 1 --reason "Draft ready for final review."
+
+paperclipai pipelines case review \
+  -C "$PAPERCLIP_COMPANY_ID" \
+  "$CHANGELOG_CASE" \
+  --request-changes \
+  --reason "Tighten the framing before publishing." \
   --expected-version 2
 
-paperclipai pipelines case transition \
+paperclipai pipelines case edit \
   -C "$PAPERCLIP_COMPANY_ID" \
-  "$CASE_01" \
-  --to published \
+  "$CHANGELOG_CASE" \
   --expected-version 3 \
-  --reason "Suggestion accepted and content published."
+  --summary "Revised changelog entry after requested changes." \
+  --fields-json '{"contentType":"changelog","typedWorkRefs":{"draftPath":"workspaces/release/changelog.md"},"changeRequestAddressed":true}'
+
+paperclipai pipelines case transition -C "$PAPERCLIP_COMPANY_ID" "$CHANGELOG_CASE" --to final_review --expected-version 4 --reason "Revised draft ready."
+paperclipai pipelines case review -C "$PAPERCLIP_COMPANY_ID" "$CHANGELOG_CASE" --approve --expected-version 5
+paperclipai pipelines case transition -C "$PAPERCLIP_COMPANY_ID" "$CHANGELOG_CASE" --to published --expected-version 6 --reason "Published after request-changes loop."
 ```
 
-## Demonstrate Blockers And The 409 Guard
+## Step 10: Final Review Drop
 
-The tweet waits for the blog post:
+Now that the blog blocker is done, the tweet can reach Final Review. The reviewer drops it, which is terminal and still counts toward rollup completion.
 
 ```sh
-paperclipai pipelines case block \
-  -C "$PAPERCLIP_COMPANY_ID" \
-  "$CASE_03" \
-  --by "$CASE_02"
+paperclipai pipelines case transition -C "$PAPERCLIP_COMPANY_ID" "$TWEET_CASE" --to final_review --expected-version 1 --reason "Blog blocker is now done."
 
-# This fails with code=blocked and prints a recovery hint.
-paperclipai pipelines case transition \
+paperclipai pipelines case review \
   -C "$PAPERCLIP_COMPANY_ID" \
-  "$CASE_03" \
-  --to published \
-  --expected-version 2 \
-  --reason "Try before blog is published."
+  "$TWEET_CASE" \
+  --reject \
+  --reason "Drop this tweet; blog already covers the announcement." \
+  --expected-version 2
 ```
 
-Resolve the blocker and publish the tweet:
+## Step 11: Rollup
+
+At this point:
+
+- content cases are `published` or `dropped`
+- the approved feature case auto-advanced to `covered`
+- the dropped feature case is terminal
+- the release case auto-advanced to `covered`
+
+Inspect the release rollup:
 
 ```sh
-paperclipai pipelines case transition \
-  -C "$PAPERCLIP_COMPANY_ID" \
-  "$CASE_02" \
-  --to published \
-  --expected-version 2 \
-  --reason "Blog published; unblocks tweet."
-
-paperclipai pipelines case transition \
-  -C "$PAPERCLIP_COMPANY_ID" \
-  "$CASE_03" \
-  --to published \
-  --expected-version 2 \
-  --reason "Blocker resolved."
-```
-
-## Complete The Rollup
-
-Cancel one approved case, publish the rest, then inspect the release rollup:
-
-```sh
-paperclipai pipelines case transition -C "$PAPERCLIP_COMPANY_ID" "$CASE_04" --to cancelled --expected-version 2 --reason "Cancelled after review."
-paperclipai pipelines case transition -C "$PAPERCLIP_COMPANY_ID" "$CASE_05" --to published --expected-version 2 --reason "Published."
-paperclipai pipelines case transition -C "$PAPERCLIP_COMPANY_ID" "$CASE_06" --to published --expected-version 2 --reason "Published."
-paperclipai pipelines case transition -C "$PAPERCLIP_COMPANY_ID" "$CASE_07" --to published --expected-version 2 --reason "Published."
-paperclipai pipelines case transition -C "$PAPERCLIP_COMPANY_ID" "$CASE_10" --to published --expected-version 3 --reason "Edited and published."
-
 paperclipai pipelines case rollup \
   -C "$PAPERCLIP_COMPANY_ID" \
   "$RELEASE_CASE_ID" \
   --json
 ```
 
-Expected rollup:
+Expected shape:
 
 ```json
 {
-  "total": 10,
-  "done": 7,
+  "total": 8,
+  "done": 5,
   "cancelled": 3,
   "open": 0,
   "complete": true
 }
 ```
 
-## Dump Provenance
+## Step 12: Reflection Feed
+
+Reflection can pull provenance from case events:
 
 ```sh
 paperclipai pipelines case events \
   -C "$PAPERCLIP_COMPANY_ID" \
-  "$CASE_01" \
+  "$CHANGELOG_CASE" \
   --json
 ```
 
-Every event includes an actor field. Human actions record a user actor, agent actions require a run id, and system actions record `system`. For this case, look for `ingested`, `review_decided`, `transition_suggested`, `suggestion_resolved`, and `transitioned`.
+Look for `review_decided` events where `payload.decision` is `request_changes`, `approve`, or `reject`. Rejection and change-request reasons are the feed for improving skills, routine prompts, and pipeline guidance.
+
+For rollup provenance:
+
+```sh
+paperclipai pipelines case events \
+  -C "$PAPERCLIP_COMPANY_ID" \
+  "$RELEASE_CASE_ID" \
+  --json
+```
+
+Look for `children_terminal` followed by the auto `transitioned` event.
 
 ## Scripted Smoke
 
-The same flow is available as a smoke script:
+Run the same flow end to end:
 
 ```sh
 PAPERCLIP_API_URL=http://localhost:3100 \
@@ -365,4 +639,14 @@ PAPERCLIP_API_KEY=<token> \
 pnpm smoke:pipelines-tutorial
 ```
 
-The smoke assigns the drafting routine to `DRAFTING_AGENT_ID` when set. If it is not set, it uses `PAPERCLIP_AGENT_ID` when present, otherwise the first non-terminated company agent returned by the CLI, so the routine automation can create linked drafting issues.
+The smoke asserts:
+
+- the three pipelines are created with the expected stages
+- feature review approves one feature and rejects one
+- batch ingest wires `blockedByCaseKeys`
+- readiness uses `suggest-transition` plus acceptance
+- upstream drift posts a system comment to a linked work issue
+- stale edits fail with `409 code=version_conflict`
+- the Assembly child-terminal gate auto-advances the parent into Final Review
+- Final Review approve, request-changes, and drop outcomes all work
+- the release rollup is complete with the expected done/cancelled split
