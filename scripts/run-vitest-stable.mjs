@@ -34,6 +34,7 @@ const additionalSerializedServerTests = new Set([
   "server/src/__tests__/health-dev-server-token.test.ts",
   "server/src/__tests__/health.test.ts",
   "server/src/__tests__/heartbeat-dependency-scheduling.test.ts",
+  "server/src/__tests__/heartbeat-executor-claims.test.ts",
   "server/src/__tests__/heartbeat-issue-liveness-escalation.test.ts",
   "server/src/__tests__/heartbeat-process-recovery.test.ts",
   "server/src/__tests__/invite-accept-existing-member.test.ts",
