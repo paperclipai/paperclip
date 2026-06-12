@@ -1,7 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, approvals, companies, createDb, issueApprovals, issues, planDetails } from "@paperclipai/db";
+import {
+  activityLog,
+  agents,
+  approvals,
+  budgetPolicies,
+  companies,
+  createDb,
+  issueApprovals,
+  issues,
+  planDetails,
+} from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -34,6 +44,8 @@ describeEmbeddedPostgres("planService gate-profile (soft)", () => {
   afterEach(async () => {
     await db.delete(issueApprovals);
     await db.delete(approvals);
+    await db.delete(budgetPolicies);
+    await db.delete(activityLog);
     await db.delete(planDetails);
     await db.delete(issues);
     await db.delete(agents);
@@ -67,10 +79,17 @@ describeEmbeddedPostgres("planService gate-profile (soft)", () => {
     return { companyId, ids };
   }
 
-  async function createDevTeamPlan(companyId: string, gateProfile: "none" | "dev_team", titles: string[]) {
+  async function createDevTeamPlan(
+    companyId: string,
+    gateProfile: "none" | "dev_team",
+    titles: string[],
+    caps: { budgetCapCents?: number | null; budgetCapTokens?: number | null } = {},
+  ) {
     return plans.createPlan(companyId, {
       title: "Gated plan",
       gateProfile,
+      budgetCapCents: caps.budgetCapCents ?? null,
+      budgetCapTokens: caps.budgetCapTokens ?? null,
       tiers: [
         {
           id: "tier-1",
@@ -81,6 +100,12 @@ describeEmbeddedPostgres("planService gate-profile (soft)", () => {
         },
       ],
     });
+  }
+
+  async function issueBudgetPolicies(companyId: string, issueId: string) {
+    return (await db.select().from(budgetPolicies).where(eq(budgetPolicies.companyId, companyId))).filter(
+      (p) => p.scopeType === "issue" && p.scopeId === issueId,
+    );
   }
 
   it("dev_team activation creates one plan gate plus code+wiring per leaf, routed to designated agents", async () => {
@@ -169,5 +194,48 @@ describeEmbeddedPostgres("planService gate-profile (soft)", () => {
     await plans.deletePlanSubtree(issue.id);
     expect(await db.select().from(approvals).where(eq(approvals.companyId, companyId))).toHaveLength(0);
     expect(await db.select().from(issueApprovals).where(eq(issueApprovals.companyId, companyId))).toHaveLength(0);
+  });
+
+  it("E6: dev_team activation installs a hard-stop cents budget on the plan root from the cap", async () => {
+    const { companyId } = await seedCompany({ withGateAgents: true }, "EBA");
+    const { issue } = await createDevTeamPlan(companyId, "dev_team", ["Task"], { budgetCapCents: 5000 });
+    await plans.activate(issue.id, { agentId: null, userId: "tester" });
+
+    const policies = await issueBudgetPolicies(companyId, issue.id);
+    expect(policies).toHaveLength(1);
+    const policy = policies[0]!;
+    expect(policy.metric).toBe("billed_cents");
+    expect(policy.windowKind).toBe("lifetime");
+    expect(policy.amount).toBe(5000);
+    expect(policy.hardStopEnabled).toBe(true);
+    expect(policy.isActive).toBe(true);
+  });
+
+  it("E6: a token cap installs a total_tokens hard-stop policy", async () => {
+    const { companyId } = await seedCompany({ withGateAgents: true }, "EBB");
+    const { issue } = await createDevTeamPlan(companyId, "dev_team", ["Task"], { budgetCapTokens: 2_000_000 });
+    await plans.activate(issue.id, { agentId: null, userId: "tester" });
+
+    const policies = await issueBudgetPolicies(companyId, issue.id);
+    expect(policies).toHaveLength(1);
+    expect(policies[0]!.metric).toBe("total_tokens");
+    expect(policies[0]!.amount).toBe(2_000_000);
+    expect(policies[0]!.hardStopEnabled).toBe(true);
+  });
+
+  it("E6: dev_team activation with no caps installs no budget policy", async () => {
+    const { companyId } = await seedCompany({ withGateAgents: true }, "EBC");
+    const { issue } = await createDevTeamPlan(companyId, "dev_team", ["Task"]);
+    await plans.activate(issue.id, { agentId: null, userId: "tester" });
+
+    expect(await issueBudgetPolicies(companyId, issue.id)).toHaveLength(0);
+  });
+
+  it("E6: a 'none'-profile plan does not get a budget policy even with a cap", async () => {
+    const { companyId } = await seedCompany({ withGateAgents: true }, "EBD");
+    const { issue } = await createDevTeamPlan(companyId, "none", ["Task"], { budgetCapCents: 5000 });
+    await plans.activate(issue.id, { agentId: null, userId: "tester" });
+
+    expect(await issueBudgetPolicies(companyId, issue.id)).toHaveLength(0);
   });
 });

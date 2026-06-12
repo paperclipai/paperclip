@@ -4,6 +4,7 @@ import { approvals, issueApprovals, issues, planDetails } from "@paperclipai/db"
 import type { PlanGateProfile } from "@paperclipai/shared";
 import { issueService } from "./issues.js";
 import { agentService } from "./agents.js";
+import { budgetService } from "./budgets.js";
 import {
   GATE_DESIGNATED_URL_KEY,
   buildGateApprovalsForActivation,
@@ -113,6 +114,49 @@ export function planService(db: Db) {
       createdApprovalIds.push(approval.id);
     }
     return createdApprovalIds;
+  }
+
+  // E6 run hygiene: install an issue-scoped, lifetime, hard-stop budget policy
+  // on the plan-root issue from the plan's caps. Budget enforcement aggregates
+  // over the issue subtree, so one root policy bounds total burn across every
+  // child the dev_team plan spawns — the runaway guard for unattended runs.
+  // Best-effort: a failure here logs a warning but never blocks activation
+  // (same soft-phase philosophy as the gate-role fallback above).
+  async function createActivationBudgetPolicies(
+    companyId: string,
+    planRootIssueId: string,
+    caps: { budgetCapCents: number | null; budgetCapTokens: number | null },
+    actor: { agentId: string | null; userId: string | null },
+  ): Promise<void> {
+    const budgets = budgetService(db);
+    const policies: Array<{ metric: "billed_cents" | "total_tokens"; amount: number }> = [];
+    if (caps.budgetCapCents && caps.budgetCapCents > 0) {
+      policies.push({ metric: "billed_cents", amount: caps.budgetCapCents });
+    }
+    if (caps.budgetCapTokens && caps.budgetCapTokens > 0) {
+      policies.push({ metric: "total_tokens", amount: caps.budgetCapTokens });
+    }
+    for (const policy of policies) {
+      try {
+        await budgets.upsertPolicy(
+          companyId,
+          {
+            scopeType: "issue",
+            scopeId: planRootIssueId,
+            metric: policy.metric,
+            windowKind: "lifetime",
+            amount: policy.amount,
+            hardStopEnabled: true,
+          },
+          actor.userId,
+        );
+      } catch (error) {
+        logger.warn(
+          { companyId, planRootIssueId, metric: policy.metric, error: String(error) },
+          "dev_team plan budget policy not installed — runaway guard missing for this plan",
+        );
+      }
+    }
   }
 
   return {
@@ -230,6 +274,12 @@ export function planService(db: Db) {
           details.companyId,
           issueId,
           createdChildren.map((c) => c.id),
+          actor,
+        );
+        await createActivationBudgetPolicies(
+          details.companyId,
+          issueId,
+          { budgetCapCents: details.budgetCapCents, budgetCapTokens: details.budgetCapTokens },
           actor,
         );
       }
