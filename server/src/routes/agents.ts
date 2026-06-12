@@ -690,11 +690,13 @@ export function agentRoutes(
     // are never exposed. Mutations and environment probes still gate on
     // agents:create via assertCanCreateAgentsForCompany / assertCanUpdateAgent.
     //
-    // For AGENT actors we keep the previous, stricter gate: an agent must
-    // either have an explicit `agents:create` grant or the legacy
-    // `canCreateAgents` permission on its own record. Agents are
-    // non-human principals — they should not be able to introspect peer
-    // agents' configurations just by virtue of being in the same company.
+    // For AGENT actors the read is gated on the dedicated `agent_config:read`
+    // grant — decoupled from agent-creation authority (WKP-103). An explicit
+    // `agents:create` grant or the legacy `canCreateAgents` record permission
+    // still satisfy the gate for backwards compatibility, so existing
+    // agent-creators keep their access. Agents are non-human principals — they
+    // should not be able to introspect peer agents' configurations just by
+    // virtue of being in the same company.
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "agent") {
       if (!req.actor.agentId) throw forbidden("Agent authentication required");
@@ -702,14 +704,11 @@ export function agentRoutes(
       if (!actorAgent || actorAgent.companyId !== companyId) {
         throw forbidden("Agent key cannot access another company");
       }
-      const allowedByGrant = await access.hasPermission(
-        companyId,
-        "agent",
-        actorAgent.id,
-        "agents:create",
-      );
+      const allowedByGrant =
+        (await access.hasPermission(companyId, "agent", actorAgent.id, "agent_config:read")) ||
+        (await access.hasPermission(companyId, "agent", actorAgent.id, "agents:create"));
       if (!allowedByGrant && !canCreateAgents(actorAgent)) {
-        throw forbidden("Missing permission: can create agents");
+        throw forbidden("Missing permission: agent_config:read");
       }
       return actorAgent;
     }
@@ -731,10 +730,10 @@ export function agentRoutes(
 
   async function actorCanReadConfigurationsForCompany(req: Request, companyId: string) {
     // Mirrors assertCanReadConfigurations but returns a boolean instead of
-    // throwing. Board actors only need company access; agent actors must
-    // still pass the agents:create gate (explicit grant or canCreateAgents
-    // on their own record) so peer agents cannot snoop each others'
-    // configurations.
+    // throwing. Board actors only need company access; agent actors must hold
+    // the dedicated agent_config:read grant (or, for backwards compatibility,
+    // an agents:create grant / canCreateAgents on their own record) so peer
+    // agents cannot snoop each others' configurations.
     try {
       assertCompanyAccess(req, companyId);
     } catch {
@@ -744,12 +743,9 @@ export function agentRoutes(
     if (!req.actor.agentId) return false;
     const actorAgent = await svc.getById(req.actor.agentId);
     if (!actorAgent || actorAgent.companyId !== companyId) return false;
-    const allowedByGrant = await access.hasPermission(
-      companyId,
-      "agent",
-      actorAgent.id,
-      "agents:create",
-    );
+    const allowedByGrant =
+      (await access.hasPermission(companyId, "agent", actorAgent.id, "agent_config:read")) ||
+      (await access.hasPermission(companyId, "agent", actorAgent.id, "agents:create"));
     return allowedByGrant || canCreateAgents(actorAgent);
   }
 
@@ -2455,7 +2451,8 @@ export function agentRoutes(
       await assertBoardCanManageAgentsForCompany(req, existing.companyId);
     }
 
-    const agent = await svc.updatePermissions(id, req.body);
+    const { canReadAgentConfig, ...permissionPatch } = req.body;
+    const agent = await svc.updatePermissions(id, permissionPatch);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -2472,6 +2469,16 @@ export function agentRoutes(
       effectiveCanAssignTasks,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
     );
+    if (typeof canReadAgentConfig === "boolean") {
+      await access.setPrincipalPermission(
+        agent.companyId,
+        "agent",
+        agent.id,
+        "agent_config:read",
+        canReadAgentConfig,
+        req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+      );
+    }
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -2486,6 +2493,7 @@ export function agentRoutes(
       details: {
         canCreateAgents: agent.permissions?.canCreateAgents ?? false,
         canAssignTasks: effectiveCanAssignTasks,
+        ...(typeof canReadAgentConfig === "boolean" ? { canReadAgentConfig } : {}),
         trustPreset: agent.permissions?.trustPreset ?? "standard",
       },
     });

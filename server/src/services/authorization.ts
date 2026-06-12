@@ -106,7 +106,8 @@ function companyIdForResource(resource: AuthorizationResource) {
 }
 
 function permissionForAction(action: AuthorizationAction): PermissionKey | null {
-  if (action === "agent_config:read" || action === "agent_config:update") return "agents:create";
+  if (action === "agent_config:read") return "agent_config:read";
+  if (action === "agent_config:update") return "agents:create";
   if (
     action === "agent:read" ||
     action === "agent:wake" ||
@@ -884,6 +885,32 @@ export function authorizationService(db: Db) {
       return broadDecision;
     }
 
+    async function decideWithAgentConfigReadGrants(
+      principalType: PrincipalType,
+      principalId: string,
+    ): Promise<AuthorizationDecision> {
+      const readDecision = await decidePrincipalGrant({
+        companyId,
+        principalType,
+        principalId,
+        action: input.action,
+        permissionKey: "agent_config:read",
+        scope: input.scope,
+      });
+      if (readDecision.allowed || readDecision.reason === "deny_missing_membership") return readDecision;
+
+      const createDecision = await decidePrincipalGrant({
+        companyId,
+        principalType,
+        principalId,
+        action: input.action,
+        permissionKey: "agents:create",
+        scope: input.scope,
+      });
+      if (createDecision.allowed) return createDecision;
+      return readDecision;
+    }
+
     async function denyForAssignmentPolicyIfNeeded(
       policyEffect: AssignmentPolicyEffect,
     ): Promise<AuthorizationDecision | null> {
@@ -1040,6 +1067,9 @@ export function authorizationService(db: Db) {
         if (policyEffect.kind === "restricted") return denyRestrictedAssignmentPolicy(policyEffect);
         return grantDecision;
       }
+      if (input.action === "agent_config:read") {
+        return decideWithAgentConfigReadGrants("user", input.actor.userId);
+      }
       return decidePrincipalGrant({
         companyId,
         principalType: "user",
@@ -1184,15 +1214,20 @@ export function authorizationService(db: Db) {
     }
 
     if (permissionKey) {
-      const grantDecision = await decidePrincipalGrant({
-        companyId,
-        principalType: "agent",
-        principalId: actorAgentId,
-        action: input.action,
-        permissionKey,
-        scope: input.scope,
-      });
-      if (grantDecision.allowed) return grantDecision;
+      if (input.action === "agent_config:read") {
+        const grantDecision = await decideWithAgentConfigReadGrants("agent", actorAgentId);
+        if (grantDecision.allowed) return grantDecision;
+      } else {
+        const grantDecision = await decidePrincipalGrant({
+          companyId,
+          principalType: "agent",
+          principalId: actorAgentId,
+          action: input.action,
+          permissionKey,
+          scope: input.scope,
+        });
+        if (grantDecision.allowed) return grantDecision;
+      }
     }
 
     if (
