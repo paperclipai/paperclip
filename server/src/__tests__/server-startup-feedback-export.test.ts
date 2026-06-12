@@ -144,6 +144,8 @@ vi.mock("../services/index.js", () => ({
   })),
   feedbackService: feedbackServiceFactoryMock,
   bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
+  startClaimHeartbeats: vi.fn(),
+  stopClaimHeartbeats: vi.fn(async () => undefined),
   heartbeatService: vi.fn(() => ({
     reapOrphanedRuns: vi.fn(async () => undefined),
     promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),

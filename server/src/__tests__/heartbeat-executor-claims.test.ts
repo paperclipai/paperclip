@@ -14,7 +14,11 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import type { EmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { heartbeatService } from "../services/heartbeat.ts";
+import {
+  activeRunExecutions,
+  heartbeatService,
+  runClaimHeartbeatPass,
+} from "../services/heartbeat.ts";
 
 /**
  * Multi-replica executor claim tests: two heartbeat-service instances with
@@ -401,22 +405,99 @@ describeEmbedded("heartbeat executor batch claims", () => {
       expect(run?.errorCode).toBe("process_lost");
     });
 
-    it("keeps reaping own/unclaimed stale running runs (legacy behavior)", async () => {
+    it("keeps reaping unclaimed runs and own claims whose heartbeat went stale", async () => {
       const { companyId, agentId } = await seedCompanyAndAgent();
       const unclaimed = await seedRunningRun({ companyId, agentId, claimedBy: null });
-      const ownClaim = await seedRunningRun({
+      const ownStale = await seedRunningRun({
         companyId,
         agentId,
         claimedBy: "replica-a",
-        // Own claims are NOT shielded by the executor heartbeat: in-memory
-        // tracking is the liveness signal for the local replica.
-        executorHeartbeatAt: new Date(),
+        // Own claims with a STALE beat are dead: the owning process stamps
+        // the claim heartbeat every 15s while a run executes locally, so a
+        // 120s-old beat means this process is no longer driving the run.
+        executorHeartbeatAt: new Date(Date.now() - 120_000),
       });
 
       const result = await replicaA.reapOrphanedRuns();
-      expect(result.runIds).toEqual(expect.arrayContaining([unclaimed, ownClaim]));
+      expect(result.runIds).toEqual(expect.arrayContaining([unclaimed, ownStale]));
       expect((await getRunRow(unclaimed))?.status).toBe("failed");
-      expect((await getRunRow(ownClaim))?.status).toBe("failed");
+      expect((await getRunRow(ownStale))?.status).toBe("failed");
+    });
+
+    it("a locally-executing run with a live process-level heartbeat survives a foreign reaper pass at >90s wall-clock", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const { runId } = await seedQueuedRun({ companyId, agentId });
+      const claimed = await replicaA.claimRunsForExecution(1);
+      expect(claimed).toEqual([runId]);
+
+      // Simulate a long-lived run: the claim and last row write happened far
+      // beyond EXECUTOR_HEARTBEAT_STALE_MS ago, but the owning process keeps
+      // re-stamping the claim heartbeat.
+      const old = new Date(Date.now() - 10 * 60_000);
+      await dbA
+        .update(heartbeatRuns)
+        .set({ claimedAt: old, startedAt: old, updatedAt: old, executorHeartbeatAt: new Date() })
+        .where(eq(heartbeatRuns.id, runId));
+
+      const result = await replicaB.reapOrphanedRuns({ staleThresholdMs: 1_000 });
+      expect(result.runIds).not.toContain(runId);
+      expect((await getRunRow(runId))?.status).toBe("running");
+    });
+
+    it("the process-wide claim-heartbeat pass refreshes executor_heartbeat_at for ids in the shared execution set regardless of which service instance claimed them", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const { runId } = await seedQueuedRun({ companyId, agentId });
+      const claimed = await replicaA.claimRunsForExecution(1);
+      expect(claimed).toEqual([runId]);
+
+      const stale = new Date(Date.now() - 60_000);
+      await dbA
+        .update(heartbeatRuns)
+        .set({ executorHeartbeatAt: stale, updatedAt: stale })
+        .where(eq(heartbeatRuns.id, runId));
+
+      // The pass is module-level and reads the module-scoped execution set:
+      // replica A's service instance claimed the run, but the pass runs over
+      // a different pool (dbB) with only the replica id — exactly how the
+      // always-on per-process loop sees claims made by route-constructed
+      // service instances.
+      activeRunExecutions.add(runId);
+      try {
+        await runClaimHeartbeatPass(dbB, "replica-a");
+      } finally {
+        activeRunExecutions.delete(runId);
+      }
+
+      const run = await getRunRow(runId);
+      expect(run!.executorHeartbeatAt!.getTime()).toBeGreaterThan(stale.getTime());
+      expect(run!.updatedAt!.getTime()).toBeGreaterThan(stale.getTime());
+
+      // Foreign replica id: the pass must not touch claims it does not own.
+      const after = run!.executorHeartbeatAt!;
+      activeRunExecutions.add(runId);
+      try {
+        await runClaimHeartbeatPass(dbB, "replica-b");
+      } finally {
+        activeRunExecutions.delete(runId);
+      }
+      expect((await getRunRow(runId))!.executorHeartbeatAt!.getTime()).toBe(after.getTime());
+    });
+
+    it("own-branch freshness: a just-claimed run not yet in activeRunExecutions survives an acquisition reap (threshold 0)", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const { runId } = await seedQueuedRun({ companyId, agentId });
+      const claimed = await replicaA.claimRunsForExecution(1);
+      expect(claimed).toEqual([runId]);
+
+      // Deliberately NOT executing the run: this is the window between the
+      // claim UPDATE and activeRunExecutions.add (or a claim made by another
+      // service instance in this process). The fresh claim beat must shield
+      // it from the leadership-acquisition reap (threshold 0).
+      const result = await replicaA.reapOrphanedRuns({ staleThresholdMs: 0 });
+      expect(result.runIds).not.toContain(runId);
+      const run = await getRunRow(runId);
+      expect(run?.status).toBe("running");
+      expect(run?.claimedBy).toBe("replica-a");
     });
   });
 });
