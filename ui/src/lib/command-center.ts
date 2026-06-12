@@ -27,6 +27,20 @@ export interface CommandCenterSquadRole {
   internal: boolean;
 }
 
+export interface CommandCenterHandoffStep {
+  label: string;
+  detail: string;
+  tone: CommandCenterGateTone;
+}
+
+export type CommandCenterWorkstreamKind = "real_work_now" | "automation_supervision" | "administrative_mirror";
+
+export interface CommandCenterWorkstream {
+  kind: CommandCenterWorkstreamKind;
+  label: string;
+  detail: string;
+}
+
 export interface CommandCenterIssueTrace {
   id: string;
   identifier: string;
@@ -40,9 +54,11 @@ export interface CommandCenterIssueTrace {
   squadRole: CommandCenterSquadRole | null;
   agentId: string | null;
   gate: CommandCenterGate;
+  handoffTrail: CommandCenterHandoffStep[];
   branchOrWorkspace: string | null;
   updatedAt: Date | string;
   liveRun: CommandCenterLiveRun | null;
+  workstream: CommandCenterWorkstream;
 }
 
 export interface CommandCenterProjectGroup {
@@ -56,6 +72,9 @@ export interface CommandCenterProjectGroup {
 export interface CommandCenterTrace {
   groups: CommandCenterProjectGroup[];
   totalActiveIssues: number;
+  realWorkNowCount: number;
+  automationSupervisionCount: number;
+  administrativeMirrorCount: number;
   reviewGateCount: number;
   guardrailCount: number;
 }
@@ -68,51 +87,69 @@ export interface BuildCommandCenterTraceInput {
 
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled", "backlog"]);
 const STALE_GATE_THRESHOLD_MS = 72 * 60 * 60 * 1000;
+const SUPERVISION_ORIGIN_KINDS = new Set([
+  "routine_execution",
+  "stale_active_run_evaluation",
+  "harness_liveness_escalation",
+  "issue_productivity_review",
+  "stranded_issue_recovery",
+]);
+const ADMINISTRATIVE_MIRROR_ORIGIN_KINDS = new Set([
+  "stale_active_run_evaluation",
+  "harness_liveness_escalation",
+  "issue_productivity_review",
+  "stranded_issue_recovery",
+]);
+const ADMINISTRATIVE_MIRROR_TITLE_PATTERNS = [
+  /\b(active run|run)\s+(watchdog|evaluation|liveness)\b/i,
+  /\b(issue graph|harness)\s+liveness\b/i,
+  /\b(productivity review|stranded issue|missing disposition|auto[- ]?recovery)\b/i,
+];
 
 export const AI_OPS_SQUAD_ROLES: Record<string, CommandCenterSquadRole> = {
   maestro: {
     label: "Maestro",
-    scope: "Orchestration, Paperclip, Obsidian, prioritization, and handoff.",
+    scope: "Orquestração, Paperclip, Obsidian, priorização e passagem de bastão.",
     internal: true,
   },
   dedalo: {
     label: "Dédalo",
-    scope: "DelegAI resident execution and app implementation.",
+    scope: "Execução residente da DelegAI e implementação de apps.",
     internal: true,
   },
   polux: {
     label: "Pólux",
-    scope: "Continuous JurisX execution.",
+    scope: "Execução contínua do JurisX.",
     internal: true,
   },
   atena: {
     label: "Atena",
-    scope: "Continuous LucrosX execution.",
+    scope: "Execução contínua do LucrosX.",
     internal: true,
   },
   apolo: {
     label: "Apolo",
-    scope: "Frontend and UI craft.",
+    scope: "Frontend e acabamento de UI.",
     internal: true,
   },
   ariadne: {
     label: "Ariadne",
-    scope: "Product, UX, copy, and acceptance criteria.",
+    scope: "Produto, UX, copy e critérios de aceite.",
     internal: true,
   },
   arquimedes: {
     label: "Arquimedes",
-    scope: "Architecture, technical review, and Paperclip consistency.",
+    scope: "Arquitetura, revisão técnica e consistência do Paperclip.",
     internal: true,
   },
   sentinela: {
     label: "Sentinela",
-    scope: "AppSec, risk, and guardrail validation.",
+    scope: "AppSec, risco e validação de guardrails.",
     internal: true,
   },
   guardiao: {
-    label: "External gate",
-    scope: "External gate for infra, production, real secrets/DBs, DNS, firewall, and broad permissions.",
+    label: "Portão externo",
+    scope: "Portão externo para infra, produção, secrets/DBs reais, DNS, firewall e permissões amplas.",
     internal: false,
   },
 };
@@ -149,52 +186,147 @@ function issueDisplayId(issue: Issue): string {
   return issue.identifier ?? issue.id.slice(0, 8);
 }
 
+export function formatCommandCenterStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    backlog: "backlog",
+    todo: "a fazer",
+    in_progress: "em execução",
+    in_review: "em revisão",
+    blocked: "bloqueada",
+    done: "concluída",
+    cancelled: "cancelada",
+  };
+  return labels[status] ?? status.replace(/_/g, " ");
+}
+
+function isAdministrativeMirrorIssue(issue: Issue): boolean {
+  const originKind = issue.originKind ?? null;
+  if (originKind && ADMINISTRATIVE_MIRROR_ORIGIN_KINDS.has(originKind)) return true;
+  return ADMINISTRATIVE_MIRROR_TITLE_PATTERNS.some((pattern) => pattern.test(issue.title));
+}
+
+function deriveCommandCenterWorkstream(issue: Issue, hasLiveRun = false): CommandCenterWorkstream {
+  if (hasLiveRun || issue.executionRunId || issue.checkoutRunId || issue.status === "in_progress") {
+    return {
+      kind: "real_work_now",
+      label: "Trabalho real agora",
+      detail: "Execução ativa ligada a run, checkout ou trabalho em progresso.",
+    };
+  }
+
+  if (isAdministrativeMirrorIssue(issue)) {
+    return {
+      kind: "administrative_mirror",
+      label: "Espelho administrativo",
+      detail: "Item de supervisão/recuperação; não tratar como entrega em execução.",
+    };
+  }
+
+  if (issue.originKind && SUPERVISION_ORIGIN_KINDS.has(issue.originKind)) {
+    return {
+      kind: "automation_supervision",
+      label: "Automação/supervisão",
+      detail: "Item criado por rotina ou monitoramento, separado do trabalho manual principal.",
+    };
+  }
+
+  return {
+    kind: "real_work_now",
+    label: "Trabalho real agora",
+    detail: "Trabalho de produto/engenharia visível no cockpit.",
+  };
+}
+
 export function deriveCommandCenterGate(issue: Issue): CommandCenterGate {
+  if (isAdministrativeMirrorIssue(issue)) {
+    return {
+      label: "Espelho administrativo",
+      nextAction: "Acompanhar como supervisão; não confundir com execução real do produto.",
+      tone: "queued",
+    };
+  }
+
   if (issue.status === "blocked") {
     return {
-      label: "External guardrail",
-      nextAction: "Resolve blocker before allowing more autonomous execution.",
+      label: "Guardrail externo",
+      nextAction: "Resolver bloqueio antes de permitir mais execução autônoma.",
       tone: "guardrail",
     };
   }
 
   if (issue.status === "in_review") {
     return {
-      label: "JP approval gate",
-      nextAction: "Review output and approve, request changes, or close the issue.",
+      label: "Portão de aprovação JP",
+      nextAction: "Revisar a entrega e aprovar, pedir ajustes ou fechar a issue.",
       tone: "approval",
     };
   }
 
   if (issue.executionRunId || issue.checkoutRunId || issue.status === "in_progress") {
     return {
-      label: "Agent execution",
-      nextAction: "Monitor the active run and capture branch or workspace evidence before review.",
+      label: "Execução do agente",
+      nextAction: "Monitorar a run ativa e registrar evidência de branch/workspace antes da revisão.",
       tone: "running",
     };
   }
 
   if (isStaleQueuedIssue(issue)) {
     return {
-      label: "Stale — needs attention",
-      nextAction: "No activity in over 72 hours. Review assignment and priority.",
+      label: "Parado — precisa de atenção",
+      nextAction: "Sem atividade há mais de 72 horas. Revisar responsável e prioridade.",
       tone: "stale",
     };
   }
 
   if (!issue.assigneeAgentId && !issue.assigneeUserId) {
     return {
-      label: "Ownership needed",
-      nextAction: "Assign an owner before execution starts.",
+      label: "Precisa de responsável",
+      nextAction: "Atribuir um responsável antes de iniciar a execução.",
       tone: "queued",
     };
   }
 
   return {
-    label: "Ready for execution",
-    nextAction: "Start or schedule agent work when JP approves the next move.",
+    label: "Pronto para execução",
+    nextAction: "Iniciar ou agendar trabalho do agente quando JP aprovar o próximo movimento.",
     tone: "queued",
   };
+}
+
+function buildCommandCenterHandoffTrail(
+  issue: Issue,
+  agent: Pick<Agent, "name"> | null,
+  gate: CommandCenterGate,
+): CommandCenterHandoffStep[] {
+  const responsible = agent?.name ?? (issue.assigneeUserId ? "Operador do board" : "Sem responsável");
+  const trail: CommandCenterHandoffStep[] = [
+    {
+      label: "Entrada",
+      detail: issue.identifier ? `${issue.identifier} recebido com status ${formatCommandCenterStatusLabel(issue.status)}` : `Issue recebida com status ${formatCommandCenterStatusLabel(issue.status)}`,
+      tone: "queued",
+    },
+    {
+      label: "Responsável",
+      detail: responsible,
+      tone: issue.assigneeAgentId || issue.assigneeUserId ? "running" : "queued",
+    },
+  ];
+
+  if (issue.executionRunId || issue.checkoutRunId || issue.status === "in_progress") {
+    trail.push({
+      label: "Execução",
+      detail: issue.executionRunId ?? issue.checkoutRunId ?? "Trabalho ativo",
+      tone: "running",
+    });
+  }
+
+  trail.push({
+    label: gate.label,
+    detail: gate.nextAction,
+    tone: gate.tone,
+  });
+
+  return trail;
 }
 
 export function buildCommandCenterTrace(input: BuildCommandCenterTraceInput): CommandCenterTrace {
@@ -213,7 +345,7 @@ export function buildCommandCenterTrace(input: BuildCommandCenterTraceInput): Co
     if (!group) {
       group = {
         projectId: project?.id ?? null,
-        projectName: project?.name ?? "Unscoped work",
+        projectName: project?.name ?? "Trabalho sem projeto",
         projectStatus: project?.status ?? null,
         activeIssueCount: 0,
         issues: [],
@@ -226,6 +358,8 @@ export function buildCommandCenterTrace(input: BuildCommandCenterTraceInput): Co
       ?? issue.executionWorkspaceId
       ?? issue.projectWorkspaceId
       ?? null;
+    const gate = deriveCommandCenterGate(issue);
+    const workstream = deriveCommandCenterWorkstream(issue);
     group.issues.push({
       id: issue.id,
       identifier: issueDisplayId(issue),
@@ -235,13 +369,15 @@ export function buildCommandCenterTrace(input: BuildCommandCenterTraceInput): Co
       title: issue.title,
       status: issue.status,
       priority: issue.priority,
-      responsible: agent?.name ?? (issue.assigneeUserId ? "Board operator" : "Unassigned"),
+      responsible: agent?.name ?? (issue.assigneeUserId ? "Operador do board" : "Sem responsável"),
       squadRole: resolveCommandCenterSquadRole(agent),
       agentId: agent?.id ?? null,
-      gate: deriveCommandCenterGate(issue),
+      gate,
+      handoffTrail: buildCommandCenterHandoffTrail(issue, agent, gate),
       branchOrWorkspace,
       updatedAt: issue.updatedAt,
       liveRun: null,
+      workstream,
     });
     group.activeIssueCount += 1;
   }
@@ -252,9 +388,14 @@ export function buildCommandCenterTrace(input: BuildCommandCenterTraceInput): Co
     return a.projectName.localeCompare(b.projectName);
   });
 
+  const workstreams = activeIssues.map((issue) => deriveCommandCenterWorkstream(issue));
+
   return {
     groups: sortedGroups,
     totalActiveIssues: activeIssues.length,
+    realWorkNowCount: workstreams.filter((workstream) => workstream.kind === "real_work_now").length,
+    automationSupervisionCount: workstreams.filter((workstream) => workstream.kind === "automation_supervision").length,
+    administrativeMirrorCount: workstreams.filter((workstream) => workstream.kind === "administrative_mirror").length,
     reviewGateCount: activeIssues.filter((issue) => issue.status === "in_review").length,
     guardrailCount: activeIssues.filter((issue) => issue.status === "blocked").length,
   };
@@ -278,6 +419,11 @@ function buildLiveRunEntry(run: LiveRunForIssue, now: Date): CommandCenterLiveRu
   };
 }
 
+function formatLiveRunDetail(liveRun: CommandCenterLiveRun): string {
+  const next = liveRun.nextAction ? ` · ${liveRun.nextAction}` : "";
+  return `${liveRun.agentName} (${liveRun.adapterType}) · ${liveRun.status}/${liveRun.livenessState}${next}`;
+}
+
 export function enrichCommandCenterWithLiveRuns(
   trace: CommandCenterTrace,
   liveRuns: readonly LiveRunForIssue[],
@@ -294,15 +440,51 @@ export function enrichCommandCenterWithLiveRuns(
 
   if (activeByIssue.size === 0) return trace;
 
+  let realWorkNowCount = trace.realWorkNowCount;
+  let automationSupervisionCount = trace.automationSupervisionCount;
+  let administrativeMirrorCount = trace.administrativeMirrorCount;
+
+  const groups = trace.groups.map((group) => ({
+    ...group,
+    issues: group.issues.map((issueTrace) => {
+      const run = activeByIssue.get(issueTrace.id);
+      if (!run) return issueTrace;
+      const liveRun = buildLiveRunEntry(run, now);
+      if (issueTrace.workstream.kind !== "real_work_now") {
+        realWorkNowCount += 1;
+        if (issueTrace.workstream.kind === "automation_supervision") automationSupervisionCount -= 1;
+        if (issueTrace.workstream.kind === "administrative_mirror") administrativeMirrorCount -= 1;
+      }
+      return {
+        ...issueTrace,
+        liveRun,
+        workstream: {
+          kind: "real_work_now" as const,
+          label: "Trabalho real agora",
+          detail: "Execução real ativa no heartbeat, mesmo que a issue pareça fila/supervisão.",
+        },
+        gate: {
+          label: "Trabalho real agora",
+          nextAction: liveRun.nextAction ?? "Acompanhar a run ativa pelo heartbeat e colher evidência da entrega.",
+          tone: "running" as const,
+        },
+        handoffTrail: [
+          ...issueTrace.handoffTrail,
+          {
+            label: "Execução real",
+            detail: formatLiveRunDetail(liveRun),
+            tone: "running" as const,
+          },
+        ],
+      };
+    }),
+  }));
+
   return {
     ...trace,
-    groups: trace.groups.map((group) => ({
-      ...group,
-      issues: group.issues.map((issueTrace) => {
-        const run = activeByIssue.get(issueTrace.id);
-        if (!run) return issueTrace;
-        return { ...issueTrace, liveRun: buildLiveRunEntry(run, now) };
-      }),
-    })),
+    groups,
+    realWorkNowCount,
+    automationSupervisionCount,
+    administrativeMirrorCount,
   };
 }

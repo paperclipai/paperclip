@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Agent, Issue, Project } from "@paperclipai/shared";
 import type { LiveRunForIssue } from "../api/heartbeats";
-import { buildCommandCenterTrace, deriveCommandCenterGate, enrichCommandCenterWithLiveRuns, resolveCommandCenterSquadRole } from "./command-center";
+import { buildCommandCenterTrace, deriveCommandCenterGate, enrichCommandCenterWithLiveRuns, formatCommandCenterStatusLabel, resolveCommandCenterSquadRole } from "./command-center";
 
 function project(overrides: Partial<Project>): Project {
   return {
@@ -107,8 +107,8 @@ describe("deriveCommandCenterGate", () => {
     vi.setSystemTime(new Date("2026-05-05T00:00:00Z"));
 
     expect(deriveCommandCenterGate(issue({ status: "todo", updatedAt: new Date("2026-05-01T23:59:59Z") }))).toEqual({
-      label: "Stale — needs attention",
-      nextAction: "No activity in over 72 hours. Review assignment and priority.",
+      label: "Parado — precisa de atenção",
+      nextAction: "Sem atividade há mais de 72 horas. Revisar responsável e prioridade.",
       tone: "stale",
     });
   });
@@ -117,39 +117,46 @@ describe("deriveCommandCenterGate", () => {
     vi.setSystemTime(new Date("2026-05-05T00:00:00Z"));
 
     expect(deriveCommandCenterGate(issue({ status: "todo", updatedAt: new Date("2026-05-02T00:00:01Z") }))).toEqual({
-      label: "Ownership needed",
-      nextAction: "Assign an owner before execution starts.",
+      label: "Precisa de responsável",
+      nextAction: "Atribuir um responsável antes de iniciar a execução.",
       tone: "queued",
     });
   });
 
   it("flags review work as a JP approval gate", () => {
     expect(deriveCommandCenterGate(issue({ status: "in_review" }))).toEqual({
-      label: "JP approval gate",
-      nextAction: "Review output and approve, request changes, or close the issue.",
+      label: "Portão de aprovação JP",
+      nextAction: "Revisar a entrega e aprovar, pedir ajustes ou fechar a issue.",
       tone: "approval",
     });
   });
 
   it("keeps blocked work at an external guardrail", () => {
     expect(deriveCommandCenterGate(issue({ status: "blocked" }))).toEqual({
-      label: "External guardrail",
-      nextAction: "Resolve blocker before allowing more autonomous execution.",
+      label: "Guardrail externo",
+      nextAction: "Resolver bloqueio antes de permitir mais execução autônoma.",
       tone: "guardrail",
     });
   });
 });
 
 describe("buildCommandCenterTrace", () => {
+  it("formats Command Center status labels for operator-facing PT-BR badges", () => {
+    expect(formatCommandCenterStatusLabel("todo")).toBe("a fazer");
+    expect(formatCommandCenterStatusLabel("in_progress")).toBe("em execução");
+    expect(formatCommandCenterStatusLabel("in_review")).toBe("em revisão");
+    expect(formatCommandCenterStatusLabel("unknown_status")).toBe("unknown status");
+  });
+
   it("maps fixed AI Ops squad roles from assigned agents without schema changes", () => {
     expect(resolveCommandCenterSquadRole(agent({ name: "Dédalo" }))).toEqual({
       label: "Dédalo",
-      scope: "DelegAI resident execution and app implementation.",
+      scope: "Execução residente da DelegAI e implementação de apps.",
       internal: true,
     });
     expect(resolveCommandCenterSquadRole(agent({ name: "Guardião" }))).toEqual({
-      label: "External gate",
-      scope: "External gate for infra, production, real secrets/DBs, DNS, firewall, and broad permissions.",
+      label: "Portão externo",
+      scope: "Portão externo para infra, produção, secrets/DBs reais, DNS, firewall e permissões amplas.",
       internal: false,
     });
     expect(resolveCommandCenterSquadRole(agent({ name: "External Vendor" }))).toBeNull();
@@ -190,14 +197,28 @@ describe("buildCommandCenterTrace", () => {
       responsible: "Dédalo",
       squadRole: {
         label: "Dédalo",
-        scope: "DelegAI resident execution and app implementation.",
+        scope: "Execução residente da DelegAI e implementação de apps.",
         internal: true,
       },
       branchOrWorkspace: "branch:paperclip-command-center-visual-traceability",
+      handoffTrail: [
+        { label: "Entrada", detail: "JPP-32 recebido com status em execução", tone: "queued" },
+        { label: "Responsável", detail: "Dédalo", tone: "running" },
+        { label: "Execução", detail: "run-1", tone: "running" },
+        {
+          label: "Execução do agente",
+          detail: "Monitorar a run ativa e registrar evidência de branch/workspace antes da revisão.",
+          tone: "running",
+        },
+      ],
       gate: {
-        label: "Agent execution",
-        nextAction: "Monitor the active run and capture branch or workspace evidence before review.",
+        label: "Execução do agente",
+        nextAction: "Monitorar a run ativa e registrar evidência de branch/workspace antes da revisão.",
         tone: "running",
+      },
+      workstream: {
+        kind: "real_work_now",
+        label: "Trabalho real agora",
       },
     });
   });
@@ -210,10 +231,10 @@ describe("buildCommandCenterTrace", () => {
     });
 
     expect(trace.groups).toHaveLength(1);
-    expect(trace.groups[0]?.projectName).toBe("Unscoped work");
-    expect(trace.groups[0]?.issues[0]?.projectDisplayLabel).toBe("Unscoped work · OPS-7");
-    expect(trace.groups[0]?.issues[0]?.responsible).toBe("Unassigned");
-    expect(trace.groups[0]?.issues[0]?.gate.nextAction).toBe("Assign an owner before execution starts.");
+    expect(trace.groups[0]?.projectName).toBe("Trabalho sem projeto");
+    expect(trace.groups[0]?.issues[0]?.projectDisplayLabel).toBe("Trabalho sem projeto · OPS-7");
+    expect(trace.groups[0]?.issues[0]?.responsible).toBe("Sem responsável");
+    expect(trace.groups[0]?.issues[0]?.gate.nextAction).toBe("Atribuir um responsável antes de iniciar a execução.");
   });
 
   it("does not surface PR or CI metadata without a real data contract", () => {
@@ -231,6 +252,43 @@ describe("buildCommandCenterTrace", () => {
 
     expect(trace.groups[0]?.issues[0]?.branchOrWorkspace).toBe("workspace-1");
     expect("prOrCi" in (trace.groups[0]?.issues[0] ?? {})).toBe(false);
+  });
+  it("classifies administrative mirrors without presenting them as real execution", () => {
+    const trace = buildCommandCenterTrace({
+      projects: [],
+      agents: [],
+      issues: [
+        issue({
+          id: "admin-1",
+          title: "Issue graph liveness auto-recovery",
+          originKind: "harness_liveness_escalation",
+          status: "todo",
+          updatedAt: new Date(),
+        }),
+        issue({
+          id: "routine-1",
+          title: "Nightly sync routine",
+          originKind: "routine_execution",
+          status: "todo",
+          updatedAt: new Date(),
+        }),
+      ],
+    });
+
+    expect(trace.realWorkNowCount).toBe(0);
+    expect(trace.automationSupervisionCount).toBe(1);
+    expect(trace.administrativeMirrorCount).toBe(1);
+    expect(trace.groups[0]?.issues[0]).toMatchObject({
+      gate: {
+        label: "Espelho administrativo",
+        nextAction: "Acompanhar como supervisão; não confundir com execução real do produto.",
+        tone: "queued",
+      },
+      workstream: {
+        kind: "administrative_mirror",
+        label: "Espelho administrativo",
+      },
+    });
   });
 });
 
