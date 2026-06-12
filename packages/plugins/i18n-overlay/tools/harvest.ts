@@ -26,7 +26,7 @@ export function extractStrings(code: string): Extracted {
   const attr = new Set<string>();
   traverse(ast, {
     JSXText(path: NodePath<JSXText>) {
-      const v = path.node.value.trim();
+      const v = path.node.value.replace(/\s+/g, " ").trim();
       if (v) text.add(v);
     },
     JSXAttribute(path: NodePath<JSXAttribute>) {
@@ -60,7 +60,12 @@ function collectTsx(dir: string): string[] {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
       out.push(...collectTsx(full));
-    } else if (entry.isFile() && entry.name.endsWith(".tsx")) {
+    } else if (
+      entry.isFile() &&
+      entry.name.endsWith(".tsx") &&
+      !entry.name.includes(".test.") &&
+      !entry.name.includes(".stories.")
+    ) {
       out.push(full);
     }
   }

@@ -16,6 +16,13 @@ describe("harvest", () => {
     expect(out.text).not.toContain("dynamic");
   });
 
+  it("collapses internal whitespace in multi-line JSX text", () => {
+    const multi = readFileSync(fileURLToPath(new URL("./fixtures/MultiLine.tsx", import.meta.url)), "utf8");
+    const out = extractStrings(multi);
+    expect(out.text).toContain("Save changes");
+    expect(out.text).not.toContain("Save\n      changes");
+  });
+
   it("merges without clobbering existing translations and seeds new keys empty", () => {
     const existing = { $meta: { language: "de", version: 1 }, text: { "Save changes": "Änderungen speichern" }, attr: {} };
     const merged = mergeInto(existing, { text: ["Save changes", "New label"], attr: ["Search issues…"] });
