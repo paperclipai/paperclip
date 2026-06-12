@@ -1014,6 +1014,115 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("does not implicitly reopen done issues via POST comments when the comment runId matches the issue's checkout run", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("done"),
+      checkoutRunId: "run-same-as-actor",
+      executionRunId: null,
+    });
+
+    const res = await request(await installActor(createApp(), {
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+      runId: "run-same-as-actor",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Done — final note from the run that owns the issue" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+  });
+
+  it("does not implicitly reopen done issues via POST comments when the comment runId matches the issue's execution run", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("done"),
+      checkoutRunId: null,
+      executionRunId: "run-same-as-actor",
+    });
+
+    const res = await request(await installActor(createApp(), {
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+      runId: "run-same-as-actor",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Done — note from the still-active execution run" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+  });
+
+  it("still implicitly reopens done issues via POST comments when the comment runId differs from the issue's owning run", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("done"),
+      checkoutRunId: "run-owning",
+      executionRunId: "run-owning",
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp(), {
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+      runId: "run-different",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Real human follow-up — please reopen" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "todo" },
+    );
+  });
+
+  it("does not implicitly reopen done issues via the PATCH comment path when actor runId matches the issue's checkout run", async () => {
+    const issue = {
+      ...makeIssue("done"),
+      checkoutRunId: "run-same-as-actor",
+      executionRunId: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp(), {
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+      runId: "run-same-as-actor",
+    }))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "Done — final note from the run that owns the issue" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+  });
+
   it("moves assigned blocked issues back to todo via the PATCH comment path", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
