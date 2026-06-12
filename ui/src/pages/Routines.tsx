@@ -5,6 +5,7 @@ import { ArrowUpDown, Check, ChevronDown, ChevronRight, Layers, Plus, Repeat } f
 import { routinesApi } from "../api/routines";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
+import { goalsApi } from "../api/goals";
 import { issuesApi } from "../api/issues";
 import { heartbeatsApi } from "../api/heartbeats";
 import { accessApi } from "../api/access";
@@ -25,7 +26,7 @@ import { PageTabBar } from "../components/PageTabBar";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../components/InlineEntitySelector";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "../components/MarkdownEditor";
-import { RoutineListRow, nextRoutineStatus } from "../components/RoutineList";
+import { RoutineListRow, nextRoutineStatus, type RoutineListHealthBadge } from "../components/RoutineList";
 import {
   RoutineRunVariablesDialog,
   type RoutineRunDialogSubmitData,
@@ -34,7 +35,7 @@ import { RoutineVariablesEditor, RoutineVariablesHint } from "../components/Rout
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
@@ -44,7 +45,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
-import type { RoutineListItem, RoutineVariable } from "@paperclipai/shared";
+import type { Goal, RoutineListItem, RoutineVariable } from "@paperclipai/shared";
 
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
@@ -57,6 +58,12 @@ const catchUpPolicyDescriptions: Record<string, string> = {
   skip_missed: "Ignore windows that were missed while the scheduler or routine was paused.",
   enqueue_missed_with_cap: "Catch up missed schedule windows in capped batches after recovery.",
 };
+const routineStatusFilters: Array<{ value: RoutineStatusFilter; label: string }> = [
+  { value: "active", label: "Active" },
+  { value: "paused", label: "Paused" },
+  { value: "archived", label: "Archived" },
+];
+const staleInReviewLastRunMs = 48 * 60 * 60 * 1000;
 
 function autoResizeTextarea(element: HTMLTextAreaElement | null) {
   if (!element) return;
@@ -68,6 +75,7 @@ type RoutinesTab = "routines" | "runs";
 type RoutineGroupBy = "none" | "project" | "assignee";
 type RoutineSortField = "updated" | "created" | "title" | "lastRun";
 type RoutineSortDir = "asc" | "desc";
+type RoutineStatusFilter = "active" | "paused" | "archived";
 
 type RoutineViewState = {
   sortField: RoutineSortField;
@@ -83,9 +91,9 @@ type RoutineGroup = {
 };
 
 const defaultRoutineViewState: RoutineViewState = {
-  sortField: "title",
-  sortDir: "asc",
-  groupBy: "project",
+  sortField: "updated",
+  sortDir: "desc",
+  groupBy: "none",
   collapsedGroups: [],
 };
 
@@ -129,6 +137,115 @@ function buildRoutineMutationPayload(input: {
     projectId: input.projectId || null,
     assigneeAgentId: input.assigneeAgentId || null,
   };
+}
+
+function isRoutineStatusFilter(value: string | null): value is RoutineStatusFilter {
+  return value === "active" || value === "paused" || value === "archived";
+}
+
+function getRoutineStatusFilter(searchParams: URLSearchParams): RoutineStatusFilter {
+  const status = searchParams.get("status");
+  return isRoutineStatusFilter(status) ? status : "active";
+}
+
+export function countRoutinesByStatus(routines: RoutineListItem[]) {
+  return routines.reduce(
+    (counts, routine) => {
+      if (routine.status === "archived") counts.archived += 1;
+      else if (routine.status === "paused") counts.paused += 1;
+      else counts.active += 1;
+      return counts;
+    },
+    { active: 0, paused: 0, archived: 0 },
+  );
+}
+
+export function filterRoutinesByStatus(routines: RoutineListItem[], filter: RoutineStatusFilter): RoutineListItem[] {
+  return routines.filter((routine) => {
+    if (filter === "archived") return routine.status === "archived";
+    if (filter === "paused") return routine.status === "paused";
+    return routine.status !== "archived" && routine.status !== "paused";
+  });
+}
+
+function normalizeDuplicateText(value: string | null | undefined) {
+  return (value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function scheduleTriggerKey(trigger: RoutineListItem["triggers"][number]) {
+  if (trigger.kind !== "schedule" || !trigger.cronExpression) return null;
+  return `${trigger.cronExpression.trim()}|${trigger.timezone?.trim() || "local"}`;
+}
+
+function triggerIdentity(trigger: RoutineListItem["triggers"][number]) {
+  if (trigger.kind === "schedule") return `schedule:${scheduleTriggerKey(trigger) ?? "__missing"}`;
+  return `${trigger.kind}:${normalizeDuplicateText(trigger.label) || trigger.id}`;
+}
+
+export function findDuplicateTitleScheduleRoutineIds(routines: RoutineListItem[]): Set<string> {
+  const idsByKey = new Map<string, Set<string>>();
+  for (const routine of routines) {
+    const titleKey = normalizeDuplicateText(routine.title);
+    if (!titleKey) continue;
+    for (const trigger of routine.triggers) {
+      const key = scheduleTriggerKey(trigger);
+      if (!key) continue;
+      const routineIds = idsByKey.get(`${titleKey}|${key}`) ?? new Set<string>();
+      routineIds.add(routine.id);
+      idsByKey.set(`${titleKey}|${key}`, routineIds);
+    }
+  }
+
+  const duplicates = new Set<string>();
+  for (const routineIds of idsByKey.values()) {
+    if (routineIds.size < 2) continue;
+    for (const id of routineIds) duplicates.add(id);
+  }
+  return duplicates;
+}
+
+export function deriveRoutineHealthBadges(
+  routine: RoutineListItem,
+  duplicateTitleScheduleRoutineIds: Set<string>,
+  now: number = Date.now(),
+): RoutineListHealthBadge[] {
+  const badges: RoutineListHealthBadge[] = [];
+  if (routine.triggers.length === 0) {
+    badges.push({ key: "no-triggers", label: "No triggers", tone: "warning" });
+  }
+  if (routine.triggers.some((trigger) => !trigger.enabled)) {
+    badges.push({ key: "disabled-triggers", label: "Disabled triggers", tone: "warning" });
+  }
+
+  const seenTriggerKeys = new Set<string>();
+  const hasDuplicateTrigger = routine.triggers.some((trigger) => {
+    const key = triggerIdentity(trigger);
+    if (seenTriggerKeys.has(key)) return true;
+    seenTriggerKeys.add(key);
+    return false;
+  });
+  if (hasDuplicateTrigger) {
+    badges.push({ key: "duplicate-triggers", label: "Duplicate triggers", tone: "warning" });
+  }
+  if (duplicateTitleScheduleRoutineIds.has(routine.id)) {
+    badges.push({ key: "duplicate-title-schedule", label: "Duplicate title/schedule", tone: "warning" });
+  }
+
+  const linkedIssue = routine.lastRun?.linkedIssue ?? null;
+  if (linkedIssue?.status === "in_review") {
+    const updatedAt = new Date(linkedIssue.updatedAt).getTime();
+    if (Number.isFinite(updatedAt) && now - updatedAt > staleInReviewLastRunMs) {
+      badges.push({ key: "stale-in-review", label: "Stale review", tone: "warning" });
+    }
+  }
+  if (linkedIssue?.status === "blocked" || linkedIssue?.status === "cancelled") {
+    badges.push({
+      key: `last-run-${linkedIssue.status}`,
+      label: `Last run ${linkedIssue.status}`,
+      tone: "danger",
+    });
+  }
+  return badges;
 }
 
 export function buildRoutineGroups(
@@ -195,8 +312,13 @@ export function sortRoutines(
   });
 }
 
-function buildRoutinesTabHref(tab: RoutinesTab) {
-  return tab === "runs" ? "/routines?tab=runs" : "/routines";
+export function buildRoutinesTabHref(tab: RoutinesTab, statusFilter: RoutineStatusFilter = "active") {
+  if (tab === "runs") {
+    const params = new URLSearchParams({ tab: "runs" });
+    if (statusFilter !== "active") params.set("status", statusFilter);
+    return `/routines?${params.toString()}`;
+  }
+  return statusFilter === "active" ? "/routines" : `/routines?status=${statusFilter}`;
 }
 
 export function Routines() {
@@ -216,6 +338,7 @@ export function Routines() {
   const [composerOpen, setComposerOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const activeTab: RoutinesTab = searchParams.get("tab") === "runs" ? "runs" : "routines";
+  const routineStatusFilter = getRoutineStatusFilter(searchParams);
   const [draft, setDraft] = useState<{
     title: string;
     description: string;
@@ -261,6 +384,11 @@ export function Routines() {
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
     queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const { data: goals } = useQuery({
+    queryKey: queryKeys.goals.list(selectedCompanyId!),
+    queryFn: () => goalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
   const { data: companyMembers } = useQuery({
@@ -416,14 +544,26 @@ export function Routines() {
     () => new Map((projects ?? []).map((project) => [project.id, project])),
     [projects],
   );
+  const goalById = useMemo(
+    () => new Map((goals ?? []).map((goal) => [goal.id, goal] satisfies [string, Goal])),
+    [goals],
+  );
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
-  const visibleRoutines = useMemo(
-    () => (routines ?? []).filter((routine) => routine.status !== "archived"),
+  const routineStatusCounts = useMemo(
+    () => countRoutinesByStatus(routines ?? []),
+    [routines],
+  );
+  const duplicateTitleScheduleRoutineIds = useMemo(
+    () => findDuplicateTitleScheduleRoutineIds(routines ?? []),
     [routines],
   );
   const sortedRoutines = useMemo(
-    () => sortRoutines(visibleRoutines, routineViewState.sortField, routineViewState.sortDir),
-    [routineViewState.sortDir, routineViewState.sortField, visibleRoutines],
+    () => sortRoutines(
+      filterRoutinesByStatus(routines ?? [], routineStatusFilter),
+      routineViewState.sortField,
+      routineViewState.sortDir,
+    ),
+    [routineStatusFilter, routineViewState.sortDir, routineViewState.sortField, routines],
   );
   const routineGroups = useMemo(
     () => buildRoutineGroups(sortedRoutines, routineViewState.groupBy, projectById, agentById),
@@ -452,7 +592,7 @@ export function Routines() {
   function handleTabChange(tab: string) {
     const nextTab = tab === "runs" ? "runs" : "routines";
     startTransition(() => {
-      navigate(buildRoutinesTabHref(nextTab));
+      navigate(buildRoutinesTabHref(nextTab, routineStatusFilter));
     });
   }
 
@@ -498,7 +638,7 @@ export function Routines() {
             Routines
           </h1>
           <p className="text-sm text-muted-foreground">
-            Recurring work definitions that materialize into auditable execution tasks.
+            Recurring work definitions that materialize into auditable execution issues.
           </p>
         </div>
         <Button onClick={() => setComposerOpen(true)}>
@@ -518,14 +658,41 @@ export function Routines() {
           ]}
         />
         <TabsContent value="routines" className="space-y-4">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm text-muted-foreground">
-              {visibleRoutines.length} routine{visibleRoutines.length === 1 ? "" : "s"}
-            </p>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              {routineStatusFilters.map((filter) => {
+                const count = routineStatusCounts[filter.value];
+                const selected = routineStatusFilter === filter.value;
+                return (
+                  <Button
+                    key={filter.value}
+                    variant={selected ? "secondary" : "ghost"}
+                    size="sm"
+                    className="h-8 gap-2 px-2.5 text-xs"
+                    aria-pressed={selected}
+                    onClick={() => {
+                      if (!selected) {
+                        startTransition(() => {
+                          navigate(buildRoutinesTabHref("routines", filter.value));
+                        });
+                      }
+                    }}
+                  >
+                    <span>{filter.label}</span>
+                    <span className="rounded-full bg-background/70 px-1.5 py-0.5 text-xs text-muted-foreground">
+                      {count}
+                    </span>
+                  </Button>
+                );
+              })}
+              <span className="text-sm text-muted-foreground">
+                {sortedRoutines.length} shown
+              </span>
+            </div>
             <div className="flex items-center gap-1">
               <Popover>
                 <PopoverTrigger asChild>
-                  <Button variant="ghost" size="sm" className="text-xs" title="Sort">
+                  <Button variant="ghost" size="sm" className="text-xs" title="Sort" aria-label="Sort routines">
                     <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
                     <span className="hidden sm:inline">Sort</span>
                   </Button>
@@ -566,7 +733,7 @@ export function Routines() {
               </Popover>
               <Popover>
                 <PopoverTrigger asChild>
-                  <Button variant="ghost" size="sm" className="text-xs" title="Group">
+                  <Button variant="ghost" size="sm" className="text-xs" title="Group" aria-label="Group routines">
                     <Layers className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
                     <span className="hidden sm:inline">Group</span>
                   </Button>
@@ -596,6 +763,11 @@ export function Routines() {
               </Popover>
             </div>
           </div>
+          {routineStatusFilter === "archived" ? (
+            <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+              Archived routines are retained so historical runs and linked issues stay auditable. Restore a routine to use it again; permanent purge is intentionally unavailable until Paperclip has a retention policy.
+            </p>
+          ) : null}
         </TabsContent>
         <TabsContent value="runs">
           <IssuesList
@@ -626,10 +798,10 @@ export function Routines() {
         >
           <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
             <div>
-              <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">New routine</p>
-              <p className="text-sm text-muted-foreground">
+              <DialogTitle className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">New routine</DialogTitle>
+              <DialogDescription className="text-sm text-muted-foreground">
                 Define the recurring work first. Default project and agent are optional for draft routines.
-              </p>
+              </DialogDescription>
             </div>
             <Button
               variant="ghost"
@@ -877,67 +1049,65 @@ export function Routines() {
 
       {activeTab === "routines" ? (
         <div>
-          {visibleRoutines.length === 0 ? (
+          {sortedRoutines.length === 0 ? (
             <div className="py-12">
               <EmptyState
                 icon={Repeat}
-                message="No active routines. Use Create routine to define the first recurring workflow."
+                message={
+                  (routines ?? []).length === 0
+                    ? "No routines yet. Use Create routine to define the first recurring workflow."
+                    : `No ${routineStatusFilter} routines. Use the filters above to inspect another state.`
+                }
               />
             </div>
           ) : (
-            <div className="flex flex-col gap-3">
-              {routineGroups.map((group) => {
-                const isOpen = !routineViewState.collapsedGroups.includes(group.key);
-                return (
-                  <Collapsible
-                    key={group.key}
-                    open={isOpen}
-                    onOpenChange={(open) => {
-                      updateRoutineView({
-                        collapsedGroups: open
-                          ? routineViewState.collapsedGroups.filter((item) => item !== group.key)
-                          : [...routineViewState.collapsedGroups, group.key],
-                      });
-                    }}
-                  >
-                    {group.label ? (
-                      <div
-                        className={`flex items-center gap-2 rounded-lg border border-border px-3 py-2${
-                          isOpen ? " mb-1" : ""
-                        }`}
-                      >
-                        <CollapsibleTrigger className="flex items-center gap-1.5">
-                          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]>&]:rotate-90" />
-                          <span className="text-sm font-semibold uppercase tracking-wide">
-                            {group.label}
-                          </span>
-                        </CollapsibleTrigger>
-                        <span className="text-xs text-muted-foreground">
-                          {group.items.length}
+            <div className="rounded-lg border border-border">
+              {routineGroups.map((group) => (
+                <Collapsible
+                  key={group.key}
+                  open={!routineViewState.collapsedGroups.includes(group.key)}
+                  onOpenChange={(open) => {
+                    updateRoutineView({
+                      collapsedGroups: open
+                        ? routineViewState.collapsedGroups.filter((item) => item !== group.key)
+                        : [...routineViewState.collapsedGroups, group.key],
+                    });
+                  }}
+                >
+                  {group.label ? (
+                    <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+                      <CollapsibleTrigger className="flex items-center gap-1.5">
+                        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]>&]:rotate-90" />
+                        <span className="text-sm font-semibold uppercase tracking-wide">
+                          {group.label}
                         </span>
-                      </div>
-                    ) : null}
-                    <CollapsibleContent>
-                      {group.items.map((routine) => (
-                        <RoutineListRow
-                          key={routine.id}
-                          routine={routine}
-                          projectById={projectById}
-                          agentById={agentById}
-                          runningRoutineId={runningRoutineId}
-                          statusMutationRoutineId={statusMutationRoutineId}
-                          href={`/routines/${routine.id}`}
-                          runNowButton
-                          divider={false}
-                          onRunNow={handleRunNow}
-                          onToggleEnabled={handleToggleEnabled}
-                          onToggleArchived={handleToggleArchived}
-                        />
-                      ))}
-                    </CollapsibleContent>
-                  </Collapsible>
-                );
-              })}
+                      </CollapsibleTrigger>
+                      <span className="text-xs text-muted-foreground">
+                        {group.items.length}
+                      </span>
+                    </div>
+                  ) : null}
+                  <CollapsibleContent>
+                    {group.items.map((routine) => (
+                      <RoutineListRow
+                        key={routine.id}
+                        routine={routine}
+                        projectById={projectById}
+                        goalById={goalById}
+                        agentById={agentById}
+                        healthBadges={deriveRoutineHealthBadges(routine, duplicateTitleScheduleRoutineIds)}
+                        runningRoutineId={runningRoutineId}
+                        statusMutationRoutineId={statusMutationRoutineId}
+                        href={`/routines/${routine.id}`}
+                        runNowButton
+                        onRunNow={handleRunNow}
+                        onToggleEnabled={handleToggleEnabled}
+                        onToggleArchived={handleToggleArchived}
+                      />
+                    ))}
+                  </CollapsibleContent>
+                </Collapsible>
+              ))}
             </div>
           )}
         </div>

@@ -6,7 +6,16 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, RoutineListItem } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Routines, buildRoutineGroups, sortRoutines } from "./Routines";
+import {
+  Routines,
+  buildRoutinesTabHref,
+  buildRoutineGroups,
+  countRoutinesByStatus,
+  deriveRoutineHealthBadges,
+  filterRoutinesByStatus,
+  findDuplicateTitleScheduleRoutineIds,
+  sortRoutines,
+} from "./Routines";
 
 let currentSearch = "";
 
@@ -173,6 +182,24 @@ vi.mock("../api/projects", () => ({
   },
 }));
 
+vi.mock("../api/goals", () => ({
+  goalsApi: {
+    list: vi.fn(async () => [
+      {
+        id: "goal-1",
+        companyId: "company-1",
+        title: "Company growth",
+        description: null,
+        level: "company",
+        status: "active",
+        parentId: null,
+        createdAt: new Date("2026-04-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      },
+    ]),
+  },
+}));
+
 vi.mock("../api/access", () => ({
   accessApi: {
     listUserDirectory: vi.fn(async () => ({
@@ -326,6 +353,30 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
   };
 }
 
+function createRun(overrides: Partial<NonNullable<RoutineListItem["lastRun"]>> = {}): NonNullable<RoutineListItem["lastRun"]> {
+  return {
+    id: "run-1",
+    companyId: "company-1",
+    routineId: "routine-1",
+    triggerId: null,
+    source: "manual",
+    status: "succeeded",
+    triggeredAt: new Date("2026-04-02T00:00:00.000Z"),
+    idempotencyKey: null,
+    triggerPayload: null,
+    dispatchFingerprint: null,
+    linkedIssueId: null,
+    coalescedIntoRunId: null,
+    failureReason: null,
+    completedAt: null,
+    createdAt: new Date("2026-04-02T00:00:00.000Z"),
+    updatedAt: new Date("2026-04-02T00:00:00.000Z"),
+    linkedIssue: null,
+    trigger: null,
+    ...overrides,
+  };
+}
+
 async function flush() {
   await Promise.resolve();
   await Promise.resolve();
@@ -426,6 +477,144 @@ describe("Routines page", () => {
     expect(routines.map((routine) => routine.id)).toEqual(["routine-1", "routine-2"]);
   });
 
+  it("counts and filters routines by active, paused, and archived state", () => {
+    const routines = [
+      createRoutine({ id: "routine-active", status: "active" }),
+      createRoutine({ id: "routine-paused", status: "paused" }),
+      createRoutine({ id: "routine-archived", status: "archived" }),
+    ];
+
+    expect(countRoutinesByStatus(routines)).toEqual({ active: 1, paused: 1, archived: 1 });
+    expect(filterRoutinesByStatus(routines, "active").map((routine) => routine.id)).toEqual(["routine-active"]);
+    expect(filterRoutinesByStatus(routines, "paused").map((routine) => routine.id)).toEqual(["routine-paused"]);
+    expect(filterRoutinesByStatus(routines, "archived").map((routine) => routine.id)).toEqual(["routine-archived"]);
+  });
+
+  it("preserves routine status filters when building tab navigation URLs", () => {
+    expect(buildRoutinesTabHref("routines", "active")).toBe("/routines");
+    expect(buildRoutinesTabHref("routines", "archived")).toBe("/routines?status=archived");
+    expect(buildRoutinesTabHref("runs", "active")).toBe("/routines?tab=runs");
+    expect(buildRoutinesTabHref("runs", "paused")).toBe("/routines?tab=runs&status=paused");
+    expect(buildRoutinesTabHref("runs", "archived")).toBe("/routines?tab=runs&status=archived");
+  });
+
+  it("derives routine health badges for trigger and stale last-run states", () => {
+    const routines = [
+      createRoutine({
+        id: "routine-1",
+        title: "Weekly cleanup",
+        triggers: [
+          {
+            id: "trigger-1",
+            kind: "schedule",
+            label: "Weekday morning",
+            enabled: true,
+            cronExpression: "0 9 * * 1-5",
+            timezone: "UTC",
+            nextRunAt: null,
+            lastFiredAt: null,
+            lastResult: null,
+          },
+          {
+            id: "trigger-2",
+            kind: "schedule",
+            label: "Weekday morning duplicate",
+            enabled: false,
+            cronExpression: "0 9 * * 1-5",
+            timezone: "UTC",
+            nextRunAt: null,
+            lastFiredAt: null,
+            lastResult: null,
+          },
+        ],
+        lastRun: createRun({
+          linkedIssueId: "issue-1",
+          linkedIssue: {
+            id: "issue-1",
+            identifier: "PAP-1",
+            title: "Review cleanup",
+            status: "in_review",
+            priority: "medium",
+            updatedAt: new Date("2026-04-10T00:00:00.000Z"),
+          },
+        }),
+      }),
+      createRoutine({
+        id: "routine-2",
+        title: "Weekly cleanup",
+        triggers: [
+          {
+            id: "trigger-3",
+            kind: "schedule",
+            label: "Weekday morning",
+            enabled: true,
+            cronExpression: "0 9 * * 1-5",
+            timezone: "UTC",
+            nextRunAt: null,
+            lastFiredAt: null,
+            lastResult: null,
+          },
+        ],
+      }),
+    ];
+
+    const duplicateIds = findDuplicateTitleScheduleRoutineIds(routines);
+    const badges = deriveRoutineHealthBadges(
+      routines[0]!,
+      duplicateIds,
+      new Date("2026-04-13T01:00:00.000Z").getTime(),
+    ).map((badge) => badge.key);
+
+    expect(badges).toEqual([
+      "disabled-triggers",
+      "duplicate-triggers",
+      "duplicate-title-schedule",
+      "stale-in-review",
+    ]);
+  });
+
+  it("derives no-trigger and cancelled or blocked last-run health badges", () => {
+    const blocked = deriveRoutineHealthBadges(
+      createRoutine({
+        id: "routine-blocked",
+        triggers: [],
+        lastRun: createRun({
+          linkedIssueId: "issue-1",
+          linkedIssue: {
+            id: "issue-1",
+            identifier: "PAP-1",
+            title: "Blocked run",
+            status: "blocked",
+            priority: "medium",
+            updatedAt: new Date("2026-04-10T00:00:00.000Z"),
+          },
+        }),
+      }),
+      new Set(),
+    ).map((badge) => badge.key);
+    const cancelled = deriveRoutineHealthBadges(
+      createRoutine({
+        id: "routine-cancelled",
+        triggers: [],
+        lastRun: createRun({
+          linkedIssueId: "issue-2",
+          linkedIssue: {
+            id: "issue-2",
+            identifier: "PAP-2",
+            title: "Cancelled run",
+            status: "cancelled",
+            priority: "medium",
+            updatedAt: new Date("2026-04-10T00:00:00.000Z"),
+          },
+        }),
+      }),
+      new Set(),
+    ).map((badge) => badge.key);
+
+    expect(blocked).toEqual(["no-triggers", "last-run-blocked"]);
+    expect(cancelled).toEqual(["no-triggers", "last-run-cancelled"]);
+  });
+
   it("renders the routines sort control before the group control", async () => {
     routinesListMock.mockResolvedValue([]);
     issuesListMock.mockResolvedValue([]);
@@ -465,11 +654,26 @@ describe("Routines page", () => {
     });
   });
 
-  it("defaults the routines list to project groups sorted by title", async () => {
+  it("defaults the routines list to ungrouped rows sorted by updated descending", async () => {
     routinesListMock.mockResolvedValue([
-      createRoutine({ id: "routine-1", title: "Weekly digest", projectId: "project-1" }),
-      createRoutine({ id: "routine-2", title: "Morning sync", projectId: "project-1" }),
-      createRoutine({ id: "routine-3", title: "Agent review", projectId: "project-2" }),
+      createRoutine({
+        id: "routine-1",
+        title: "Weekly digest",
+        projectId: "project-1",
+        updatedAt: new Date("2026-04-01T00:00:00.000Z"),
+      }),
+      createRoutine({
+        id: "routine-2",
+        title: "Morning sync",
+        projectId: "project-1",
+        updatedAt: new Date("2026-04-03T00:00:00.000Z"),
+      }),
+      createRoutine({
+        id: "routine-3",
+        title: "Agent review",
+        projectId: "project-2",
+        updatedAt: new Date("2026-04-02T00:00:00.000Z"),
+      }),
     ]);
     issuesListMock.mockResolvedValue([]);
 
@@ -489,24 +693,23 @@ describe("Routines page", () => {
       await flush();
     });
 
-    for (let attempts = 0; attempts < 5 && !container.textContent?.includes("Project Alpha"); attempts += 1) {
+    for (let attempts = 0; attempts < 5 && !container.textContent?.includes("Morning sync"); attempts += 1) {
       await act(async () => {
         await flush();
       });
     }
 
     const text = container.textContent ?? "";
-    expect(text.indexOf("Project Alpha")).toBeLessThan(text.indexOf("Project Beta"));
-    expect(text.indexOf("Morning sync")).toBeLessThan(text.indexOf("Weekly digest"));
-    expect(text.indexOf("Project Alpha")).toBeLessThan(text.indexOf("Morning sync"));
-    expect(text.indexOf("Weekly digest")).toBeLessThan(text.indexOf("Project Beta"));
+    expect(text).not.toContain("PROJECT ALPHA");
+    expect(text.indexOf("Morning sync")).toBeLessThan(text.indexOf("Agent review"));
+    expect(text.indexOf("Agent review")).toBeLessThan(text.indexOf("Weekly digest"));
 
     await act(async () => {
       root.unmount();
     });
   });
 
-  it("hides archived routines from the routines list", async () => {
+  it("shows only active routines by default with archived available in filters", async () => {
     routinesListMock.mockResolvedValue([
       createRoutine({ id: "routine-1", title: "Morning sync", status: "active" }),
       createRoutine({ id: "routine-2", title: "Archived cleanup", status: "archived" }),
@@ -536,7 +739,8 @@ describe("Routines page", () => {
     }
 
     const text = container.textContent ?? "";
-    expect(text).toContain("1 routine");
+    expect(text).toContain("1 shown");
+    expect(text).toContain("Archived");
     expect(text).toContain("Morning sync");
     expect(text).not.toContain("Archived cleanup");
 
@@ -545,7 +749,7 @@ describe("Routines page", () => {
     });
   });
 
-  it("shows an outlined row-level run now button on the routines table", async () => {
+  it("shows a row-level run now button on the routines table", async () => {
     routinesListMock.mockResolvedValue([createRoutine({ id: "routine-1", title: "Morning sync" })]);
     issuesListMock.mockResolvedValue([]);
 
@@ -566,19 +770,18 @@ describe("Routines page", () => {
     });
 
     let runNowButton = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Run now"),
+      button.textContent?.includes("Run now") && button.getAttribute("data-variant") === "ghost",
     );
     for (let attempts = 0; attempts < 5 && !runNowButton; attempts += 1) {
       await act(async () => {
         await flush();
       });
       runNowButton = Array.from(container.querySelectorAll("button")).find((button) =>
-        button.textContent?.includes("Run now"),
+        button.textContent?.includes("Run now") && button.getAttribute("data-variant") === "ghost",
       );
     }
 
     expect(runNowButton).toBeTruthy();
-    expect(runNowButton?.getAttribute("data-variant")).toBe("outline");
 
     await act(async () => {
       root.unmount();
