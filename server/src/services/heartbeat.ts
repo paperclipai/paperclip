@@ -10179,7 +10179,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const continuationAttempt = readContinuationAttempt(enrichedContextSnapshot.livenessContinuationAttempt);
 
     let projectId = readNonEmptyString(enrichedContextSnapshot.projectId);
-    if (!projectId && issueId) {
+    let resolvedIssueStatus: string | null = null;
+    if (issueId) {
       // Look up by either UUID or identifier (e.g. "ENV-13"), but always scope
       // by companyId so a row from another tenant can never be returned even
       // when identifiers collide across companies. Guard the UUID arm because
@@ -10191,12 +10192,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? or(eq(issues.id, issueId), eq(issues.identifier, issueId.toUpperCase()))
         : eq(issues.identifier, issueId.toUpperCase());
       const resolvedIssue = await db
-        .select({ id: issues.id, projectId: issues.projectId })
+        .select({ id: issues.id, projectId: issues.projectId, status: issues.status })
         .from(issues)
         .where(and(eq(issues.companyId, agent.companyId), idMatch))
         .then((rows) => rows[0] ?? null);
       if (resolvedIssue) {
-        projectId = resolvedIssue.projectId ?? null;
+        resolvedIssueStatus = resolvedIssue.status ?? null;
+        if (!projectId) projectId = resolvedIssue.projectId ?? null;
         // Canonicalize context to the UUID so downstream lookups always use UUID
         if (resolvedIssue.id !== issueId) {
           issueId = resolvedIssue.id;
@@ -10211,6 +10213,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // project workspace even when context.projectId wasn't set by the caller.
     if (projectId && !readNonEmptyString(enrichedContextSnapshot.projectId)) {
       enrichedContextSnapshot.projectId = projectId;
+    }
+
+    // Background wakes must not target finished work (#7841). Stale wakes for
+    // a done/cancelled issue — comment retries, recovery sweeps, re-queues
+    // after a governor-driven cancellation — make the system busy-loop on
+    // work that is already over, and combined with #7840 can pull a
+    // completed issue back into execution. Humans can still wake an agent
+    // about a closed issue explicitly (requestedByActorType === "user").
+    // Status comes from the canonicalization lookup above — no extra query.
+    if (
+      opts.requestedByActorType !== "user" &&
+      (resolvedIssueStatus === "done" || resolvedIssueStatus === "cancelled")
+    ) {
+      await writeSkippedRequest("issue.terminal_status", {
+        error: `Wake suppressed because issue status is ${resolvedIssueStatus}`,
+      });
+      return null;
     }
 
     const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
