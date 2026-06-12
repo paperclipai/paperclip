@@ -1028,11 +1028,11 @@ describeEmbeddedPostgres("workspace file resources", () => {
     });
 
     expect((await request(agentApp).get(`/api/issues/${graph.issueId}/file-resources/resolve`).query({ path: "README.md" })).status).toBe(403);
-    expect((await request(boardApp).get(`/api/issues/${graph.issueId}/file-resources/resolve`).query({ path: "README.md" })).status).toBe(403);
+    expect((await request(boardApp).get(`/api/issues/${graph.issueId}/file-resources/resolve`).query({ path: "README.md" })).status).toBe(404);
     expect((await request(agentApp).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ path: "README.md" })).status).toBe(403);
-    expect((await request(boardApp).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ path: "README.md" })).status).toBe(403);
+    expect((await request(boardApp).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ path: "README.md" })).status).toBe(404);
     expect((await request(agentApp).get(`/api/issues/${graph.issueId}/file-resources/list`)).status).toBe(403);
-    expect((await request(boardApp).get(`/api/issues/${graph.issueId}/file-resources/list`)).status).toBe(403);
+    expect((await request(boardApp).get(`/api/issues/${graph.issueId}/file-resources/list`)).status).toBe(404);
 
     const rows = await db.select().from(activityLog).where(eq(activityLog.entityId, graph.issueId));
     const listDenials = rows.filter((row) => row.action === "issue.file_resource_list_denied");
