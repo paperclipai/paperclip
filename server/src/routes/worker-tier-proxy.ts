@@ -75,7 +75,8 @@ export const WORKER_DEPENDENT_PLUGIN_ROUTES: ReadonlyArray<{
 ];
 
 /** Non-streaming proxied requests abort after this long. */
-const PROXY_REQUEST_TIMEOUT_MS = 30_000;
+const PROXY_REQUEST_TIMEOUT_MS = 120_000;
+const PROXY_STREAM_STARTUP_RETRY_BUDGET_MS = 30_000;
 const PROXY_GET_RETRY_INITIAL_MS = 250;
 const PROXY_GET_RETRY_MAX_MS = 2_000;
 
@@ -129,6 +130,13 @@ function hasRequestBody(req: Request): boolean {
   return req.method !== "GET" && req.method !== "HEAD";
 }
 
+function readPositiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) {
     return Promise.reject(signal.reason ?? new Error("aborted"));
@@ -150,9 +158,11 @@ async function fetchWithStartupRetry(
   targetUrl: string,
   init: RequestInit,
   retry: boolean,
+  retryBudgetMs?: number,
 ): Promise<Response> {
   let attempt = 0;
   let backoffMs = PROXY_GET_RETRY_INITIAL_MS;
+  const startedAtMs = Date.now();
   while (true) {
     try {
       return await fetch(targetUrl, init);
@@ -160,11 +170,16 @@ async function fetchWithStartupRetry(
       const signal = init.signal instanceof AbortSignal ? init.signal : null;
       if (!retry || signal?.aborted) throw err;
       attempt += 1;
+      const remainingBudgetMs = retryBudgetMs === undefined
+        ? Number.POSITIVE_INFINITY
+        : retryBudgetMs - (Date.now() - startedAtMs);
+      if (remainingBudgetMs <= 0) throw err;
+      const nextRetryMs = Math.min(backoffMs, remainingBudgetMs);
       logger.warn(
-        { err, targetUrl, method: init.method, attempt, nextRetryMs: backoffMs },
+        { err, targetUrl, method: init.method, attempt, nextRetryMs },
         "worker-tier proxy: worker tier fetch failed; retrying idempotent request",
       );
-      await sleep(backoffMs, signal ?? new AbortController().signal);
+      await sleep(nextRetryMs, signal ?? new AbortController().signal);
       backoffMs = Math.min(backoffMs * 2, PROXY_GET_RETRY_MAX_MS);
     }
   }
@@ -191,8 +206,9 @@ function createWorkerProxyHandler(
       controller.abort();
     });
 
-    // Non-streaming requests get a hard timeout; streaming (SSE) requests
-    // stay open until the client disconnects.
+    // Non-streaming requests get a hard timeout. Streaming (SSE) requests get
+    // only a bounded startup retry budget; after the worker responds, the
+    // stream itself stays open until the client disconnects.
     const timeout = streaming
       ? undefined
       : setTimeout(() => controller.abort(), PROXY_REQUEST_TIMEOUT_MS);
@@ -231,7 +247,13 @@ function createWorkerProxyHandler(
         }
       }
 
-      const retryStartupRace = req.method === "GET" && !streaming;
+      const retryStartupRace = req.method === "GET";
+      const retryBudgetMs = streaming
+        ? readPositiveIntegerEnv(
+          "PAPERCLIP_WORKER_PROXY_STREAM_STARTUP_RETRY_BUDGET_MS",
+          PROXY_STREAM_STARTUP_RETRY_BUDGET_MS,
+        )
+        : undefined;
       const upstream = await fetchWithStartupRetry(targetUrl, {
         method: req.method,
         headers,
@@ -239,7 +261,7 @@ function createWorkerProxyHandler(
         body: body as BodyInit | undefined,
         redirect: "manual",
         signal: controller.signal,
-      }, retryStartupRace);
+      }, retryStartupRace, retryBudgetMs);
 
       if (upstream.status >= 500) {
         // The worker tier reached us but failed the operation. Forward it

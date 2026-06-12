@@ -381,6 +381,64 @@ describe("registerWorkerTierProxyRoutes", () => {
     expect(res.text).toContain("data: 2");
   });
 
+  it("retries the SSE bridge route while the worker tier is briefly unreachable", async () => {
+    const port = await getFreePort();
+    const workersUrl = `http://127.0.0.1:${port}`;
+    const app = buildApp(workersUrl);
+    let hits = 0;
+
+    const delayedWorker = createServer((_req, res) => {
+      hits += 1;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end("event: ready\ndata: ok\n\n");
+    });
+    const listenTimer = setTimeout(() => {
+      delayedWorker.listen(port, "127.0.0.1");
+    }, 150);
+
+    try {
+      const res = await request(app)
+        .get("/api/plugins/ccrotate/bridge/stream/pool")
+        .timeout({ response: 5_000, deadline: 5_000 });
+
+      expect(res.status).toBe(200);
+      expect(res.headers["content-type"]).toMatch(/text\/event-stream/);
+      expect(res.text).toContain("event: ready");
+      expect(hits).toBe(1);
+    } finally {
+      clearTimeout(listenTimer);
+      await new Promise<void>((resolve) => {
+        if (!delayedWorker.listening) {
+          resolve();
+          return;
+        }
+        delayedWorker.close(() => resolve());
+      });
+    }
+  });
+
+  it("bounds SSE bridge startup retries when the worker tier stays unreachable", async () => {
+    const previousBudget = process.env.PAPERCLIP_WORKER_PROXY_STREAM_STARTUP_RETRY_BUDGET_MS;
+    process.env.PAPERCLIP_WORKER_PROXY_STREAM_STARTUP_RETRY_BUDGET_MS = "25";
+    const port = await getFreePort();
+    const app = buildApp(`http://127.0.0.1:${port}`);
+
+    try {
+      const res = await request(app)
+        .get("/api/plugins/ccrotate/bridge/stream/pool")
+        .timeout({ response: 2_000, deadline: 2_000 });
+
+      expect(res.status).toBe(502);
+      expect(res.body.error).toMatch(/worker tier unreachable/i);
+    } finally {
+      if (previousBudget === undefined) {
+        delete process.env.PAPERCLIP_WORKER_PROXY_STREAM_STARTUP_RETRY_BUDGET_MS;
+      } else {
+        process.env.PAPERCLIP_WORKER_PROXY_STREAM_STARTUP_RETRY_BUDGET_MS = previousBudget;
+      }
+    }
+  });
+
   it("covers exactly the worker-dependent plugin routes", () => {
     // Guard against accidental scope creep / drops in the allowlist.
     expect(WORKER_DEPENDENT_PLUGIN_ROUTES.map((r) => `${r.method} ${r.path}`))
