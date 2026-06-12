@@ -9,7 +9,7 @@ export function dashboardRoutes(db: Db) {
 
   router.get("/companies/:companyId/dashboard", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const summary = await svc.summary(companyId);
     res.json(summary);
   });

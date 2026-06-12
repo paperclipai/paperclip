@@ -109,7 +109,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
   router.post("/companies/:companyId/assets/images", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
 
     try {
       await runSingleFileUpload(assetUpload, req, res);
@@ -212,7 +212,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
   router.post("/companies/:companyId/logo", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
 
     try {
       await runSingleFileUpload(companyLogoUpload, req, res);
@@ -316,7 +316,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
       res.status(404).json({ error: "Asset not found" });
       return;
     }
-    assertCompanyAccess(req, asset.companyId);
+    await assertCompanyAccess(req, asset.companyId, db);
 
     const object = await storage.getObject(asset.companyId, asset.objectKey);
     const responseContentType = asset.contentType || object.contentType || "application/octet-stream";

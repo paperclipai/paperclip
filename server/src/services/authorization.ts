@@ -17,6 +17,11 @@ import {
   resolveCoreTrustPreset,
   type TrustPresetResolution,
 } from "./trust-preset-resolver.js";
+import {
+  crossCompanyGrantService,
+  crossCompanyGrantsEnabled,
+  scopeMatches,
+} from "./cross-company-grants.js";
 
 export type AuthorizationActor =
   {
@@ -81,8 +86,10 @@ export type AuthorizationDecision = {
     | "allow_company_member"
     | "allow_simple_company_member"
     | "allow_manager_chain"
+    | "allow_cross_company_grant"
     | "deny_unauthenticated"
     | "deny_company_boundary"
+    | "deny_budget_exceeded"
     | "deny_missing_membership"
     | "deny_missing_grant"
     | "deny_policy_restricted"
@@ -398,6 +405,8 @@ function deny(input: Omit<AuthorizationDecision, "allowed">): AuthorizationDecis
 }
 
 export function authorizationService(db: Db) {
+  const crossCompanyGrants = crossCompanyGrantService(db);
+
   async function isInstanceAdmin(userId: string | null | undefined): Promise<boolean> {
     if (!userId) return false;
     if (
@@ -1059,10 +1068,51 @@ export function authorizationService(db: Db) {
       });
     }
     if (input.actor.companyId !== companyId) {
-      return deny({
+      if (!crossCompanyGrantsEnabled()) {
+        return deny({
+          action: input.action,
+          reason: "deny_company_boundary",
+          explanation: "Agent key cannot access another company.",
+        });
+      }
+
+      const grant = await crossCompanyGrants.findActiveCrossCompanyGrant({
+        granteeAgentId: actorAgentId,
+        targetCompanyId: companyId,
+      });
+      if (!grant) {
+        return deny({
+          action: input.action,
+          reason: "deny_company_boundary",
+          explanation: "Agent key cannot access another company.",
+        });
+      }
+      if (!crossCompanyGrants.actionAllowedByGrant(grant, input.action)) {
+        return deny({
+          action: input.action,
+          reason: "deny_company_boundary",
+          explanation: "Agent key cannot access another company.",
+        });
+      }
+      if (!scopeMatches(grant.scope, input.resource)) {
+        return deny({
+          action: input.action,
+          reason: "deny_scope",
+          explanation: "Cross-company grant does not cover the requested scope.",
+        });
+      }
+      if (grant.budgetCapCents != null && grant.budgetSpentCents >= grant.budgetCapCents) {
+        return deny({
+          action: input.action,
+          reason: "deny_budget_exceeded",
+          explanation: "Cross-company grant budget cap has been reached.",
+        });
+      }
+
+      return allow({
         action: input.action,
-        reason: "deny_company_boundary",
-        explanation: "Agent key cannot access another company.",
+        reason: "allow_cross_company_grant",
+        explanation: `Cross-company grant ${grant.id} authorizes ${input.action} in ${companyId}.`,
       });
     }
 

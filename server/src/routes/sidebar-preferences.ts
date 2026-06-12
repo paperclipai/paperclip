@@ -32,7 +32,7 @@ export function sidebarPreferenceRoutes(db: Db) {
 
   router.get("/companies/:companyId/sidebar-preferences/me", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const userId = requireBoardUserId(req, res);
     if (!userId) return;
     res.json(await svc.getProjectOrder(companyId, userId));
@@ -43,7 +43,7 @@ export function sidebarPreferenceRoutes(db: Db) {
     validate(upsertSidebarOrderPreferenceSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(req, companyId, db);
       const userId = requireBoardUserId(req, res);
       if (!userId) return;
 

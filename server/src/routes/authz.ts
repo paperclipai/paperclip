@@ -1,5 +1,7 @@
 import type { Request } from "express";
+import type { Db } from "@paperclipai/db";
 import { forbidden, unauthorized } from "../errors.js";
+import { crossCompanyGrantService, crossCompanyGrantsEnabled } from "../services/cross-company-grants.js";
 
 export function assertAuthenticated(req: Request) {
   if (req.actor.type === "none") {
@@ -50,9 +52,18 @@ export function assertInstanceAdmin(req: Request) {
   throw forbidden("Instance admin access required");
 }
 
-export function assertCompanyAccess(req: Request, companyId: string) {
+export async function assertCompanyAccess(req: Request, companyId: string, db?: Db) {
   assertAuthenticated(req);
   if (req.actor.type === "agent" && req.actor.companyId !== companyId) {
+    if (db && crossCompanyGrantsEnabled() && req.actor.agentId) {
+      const grant = await crossCompanyGrantService(db).findActiveCrossCompanyGrant({
+        granteeAgentId: req.actor.agentId,
+        targetCompanyId: companyId,
+      });
+      if (grant) {
+        return;
+      }
+    }
     throw forbidden("Agent key cannot access another company");
   }
   if (req.actor.type === "board" && req.actor.source !== "local_implicit") {

@@ -133,7 +133,7 @@ export function boardChatRoutes(
 
     // The body-supplied companyId must belong to the authenticated actor —
     // it scopes issue reads/writes below and is exported to the subprocess.
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
 
     // Back-pressure: each request holds a subprocess + SSE stream for up to
     // 2 minutes; cap simultaneous spawns instead of forking without bound.

@@ -412,6 +412,13 @@ export {
   type ResubmitApproval,
   type AddApprovalComment,
 } from "./approval.js";
+export {
+  crossCompanyGrantScopeSchema,
+  requestCrossCompanyGrantSchema,
+  issueCrossCompanyGrantSchema,
+  type RequestCrossCompanyGrant,
+  type IssueCrossCompanyGrant,
+} from "./cross-company-grants.js";
 
 export {
   envBindingPlainSchema,
