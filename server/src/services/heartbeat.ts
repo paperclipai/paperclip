@@ -241,7 +241,10 @@ export {
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
 } from "./recovery/service.js";
-export const ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS = 60 * 1000;
+// (RUD-985) Reduced from 60s to 2s so the watchdog's `lastOutputAt` cursor
+// keeps up with the small stdout chunks streamed by local adapters
+// (opencode_local, etc.).
+export const ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS = 2 * 1000;
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
   2 * 60 * 1000,
   10 * 60 * 1000,
@@ -8748,18 +8751,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         !lastOutputFlushAt ||
         pendingOutputProgress.at.getTime() - lastOutputFlushAt.getTime() >= ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS;
       if (!shouldFlush) return;
-      await db
-        .update(heartbeatRuns)
-        .set({
-          lastOutputAt: pendingOutputProgress.at,
-          lastOutputSeq: pendingOutputProgress.seq,
-          lastOutputStream: pendingOutputProgress.stream,
-          lastOutputBytes: pendingOutputProgress.bytes,
-          updatedAt: new Date(),
-        })
-        .where(eq(heartbeatRuns.id, run.id));
-      lastOutputFlushAt = pendingOutputProgress.at;
-      outputProgressState.pending = null;
+      try {
+        await db
+          .update(heartbeatRuns)
+          .set({
+            lastOutputAt: pendingOutputProgress.at,
+            lastOutputSeq: pendingOutputProgress.seq,
+            lastOutputStream: pendingOutputProgress.stream,
+            lastOutputBytes: pendingOutputProgress.bytes,
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, run.id));
+        lastOutputFlushAt = pendingOutputProgress.at;
+        outputProgressState.pending = null;
+      } catch (flushErr) {
+        // (RUD-985) Swallow transient DB errors; leave the pending state so
+        // the next chunk or run-completion force flush can retry.
+        logger.warn(
+          { err: flushErr, runId: run.id, seq: pendingOutputProgress.seq },
+          "failed to flush active-run output progress; will retry on next chunk",
+        );
+      }
     };
     try {
       const startedAt = run.startedAt ?? new Date();
