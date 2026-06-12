@@ -11207,7 +11207,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   return {
-    list: async (companyId: string, agentId?: string, limit?: number) => {
+    list: async (companyId: string, agentId?: string, limit?: number, offset?: number) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const query = db
         .select(
@@ -11231,7 +11231,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         )
         .orderBy(desc(heartbeatRuns.createdAt));
 
-      const rows = limit ? await query.limit(limit) : await query;
+      // Offset pagination for the per-agent runs view: callers page through
+      // history with (limit, offset) instead of pulling every run on load.
+      const safeOffset = offset && offset > 0 ? offset : 0;
+      const pageQuery = safeOffset > 0
+        ? (limit ? query.limit(limit).offset(safeOffset) : query.offset(safeOffset))
+        : (limit ? query.limit(limit) : query);
+      const rows = await pageQuery;
       return rows.map((row) => {
         const {
           contextIssueId,

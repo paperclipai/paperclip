@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
   type AgentKey,
@@ -117,6 +117,19 @@ const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string 
 };
 
 const RUN_LOG_PAGE_BYTES = 256_000;
+
+// Per-agent runs list pagination. The list grows unbounded over an agent's
+// lifetime, so we fetch a bounded window and let the user load older pages on
+// demand instead of pulling every run on first paint (TON-2265).
+export const RUNS_PAGE_SIZE = 50;
+
+export function getNextRunsPageOffset(
+  loadedPageSize: number,
+  currentOffset: number,
+  pageSize: number = RUNS_PAGE_SIZE,
+): number | undefined {
+  return loadedPageSize >= pageSize ? currentOffset + pageSize : undefined;
+}
 
 const REDACTED_ENV_VALUE = "***REDACTED***";
 const SECRET_ENV_KEY_RE =
@@ -691,11 +704,25 @@ export function AgentDetail() {
     enabled: Boolean(resolvedAgentId) && needsDashboardData,
   });
 
-  const { data: heartbeats } = useQuery({
-    queryKey: queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined),
-    queryFn: () => heartbeatsApi.list(resolvedCompanyId!, agent?.id ?? undefined),
+  const {
+    data: heartbeatPages,
+    hasNextPage: hasMoreRuns,
+    fetchNextPage: fetchMoreRuns,
+    isFetchingNextPage: isLoadingMoreRuns,
+  } = useInfiniteQuery({
+    queryKey: [...queryKeys.heartbeats(resolvedCompanyId!, agent?.id ?? undefined), "infinite", RUNS_PAGE_SIZE],
+    queryFn: ({ pageParam }) =>
+      heartbeatsApi.list(resolvedCompanyId!, agent?.id ?? undefined, RUNS_PAGE_SIZE, pageParam),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, _allPages, lastPageParam) =>
+      getNextRunsPageOffset(lastPage.length, lastPageParam),
     enabled: !!resolvedCompanyId && !!agent?.id && shouldLoadHeartbeats,
   });
+
+  const heartbeats = useMemo(
+    () => heartbeatPages?.pages.flat() ?? [],
+    [heartbeatPages],
+  );
 
   const { data: allIssues } = useQuery({
     queryKey: [...queryKeys.issues.list(resolvedCompanyId!), "participant-agent", resolvedAgentId ?? "__none__"],
@@ -1166,6 +1193,9 @@ export function AgentDetail() {
           selectedRunId={urlRunId ?? null}
           adapterType={agent.adapterType}
           adapterConfig={agent.adapterConfig}
+          hasMoreRuns={hasMoreRuns}
+          isLoadingMoreRuns={isLoadingMoreRuns}
+          onLoadMoreRuns={() => { void fetchMoreRuns(); }}
         />
       )}
 
@@ -3027,6 +3057,28 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
   );
 }
 
+function LoadMoreRunsButton({
+  hasMoreRuns,
+  isLoadingMoreRuns,
+  onLoadMoreRuns,
+}: {
+  hasMoreRuns: boolean;
+  isLoadingMoreRuns: boolean;
+  onLoadMoreRuns: () => void;
+}) {
+  if (!hasMoreRuns) return null;
+  return (
+    <button
+      type="button"
+      onClick={onLoadMoreRuns}
+      disabled={isLoadingMoreRuns}
+      className="w-full px-3 py-2 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors disabled:opacity-50 border-t border-border"
+    >
+      {isLoadingMoreRuns ? "Loading…" : "Load older runs"}
+    </button>
+  );
+}
+
 function RunsTab({
   runs,
   companyId,
@@ -3035,6 +3087,9 @@ function RunsTab({
   selectedRunId,
   adapterType,
   adapterConfig,
+  hasMoreRuns,
+  isLoadingMoreRuns,
+  onLoadMoreRuns,
 }: {
   runs: HeartbeatRun[];
   companyId: string;
@@ -3043,21 +3098,40 @@ function RunsTab({
   selectedRunId: string | null;
   adapterType: string;
   adapterConfig: Record<string, unknown>;
+  hasMoreRuns: boolean;
+  isLoadingMoreRuns: boolean;
+  onLoadMoreRuns: () => void;
 }) {
   const { isMobile } = useSidebar();
 
-  if (runs.length === 0) {
-    return <p className="text-sm text-muted-foreground">No runs yet.</p>;
-  }
-
   // Sort by created descending
-  const sorted = [...runs].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  const sorted = useMemo(
+    () =>
+      [...runs].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      ),
+    [runs],
   );
 
   // On mobile, don't auto-select so the list shows first; on desktop, auto-select latest
   const effectiveRunId = isMobile ? selectedRunId : (selectedRunId ?? sorted[0]?.id ?? null);
-  const selectedRun = sorted.find((r) => r.id === effectiveRunId) ?? null;
+  const runInList = sorted.find((r) => r.id === effectiveRunId) ?? null;
+
+  // Deep links (and "load older runs") can target a run outside the currently
+  // loaded page window. Fetch it on demand so the detail pane renders without
+  // forcing the user to page all the way back to it. Shares the runDetail
+  // cache key with RunDetail, so it is fetched at most once.
+  const needsSelectedRunFetch = Boolean(effectiveRunId) && !runInList;
+  const { data: fetchedSelectedRun } = useQuery({
+    queryKey: queryKeys.runDetail(effectiveRunId ?? "__none__"),
+    queryFn: () => heartbeatsApi.get(effectiveRunId!),
+    enabled: needsSelectedRunFetch,
+  });
+  const selectedRun = runInList ?? (needsSelectedRunFetch ? fetchedSelectedRun ?? null : null);
+
+  if (runs.length === 0 && !selectedRun) {
+    return <p className="text-sm text-muted-foreground">No runs yet.</p>;
+  }
 
   // Mobile: show either run list OR run detail with back button
   if (isMobile) {
@@ -3080,6 +3154,11 @@ function RunsTab({
         {sorted.map((run) => (
           <RunListItem key={run.id} run={run} isSelected={false} agentId={agentRouteId} />
         ))}
+        <LoadMoreRunsButton
+          hasMoreRuns={hasMoreRuns}
+          isLoadingMoreRuns={isLoadingMoreRuns}
+          onLoadMoreRuns={onLoadMoreRuns}
+        />
       </div>
     );
   }
@@ -3096,6 +3175,11 @@ function RunsTab({
         {sorted.map((run) => (
           <RunListItem key={run.id} run={run} isSelected={run.id === effectiveRunId} agentId={agentRouteId} />
         ))}
+        <LoadMoreRunsButton
+          hasMoreRuns={hasMoreRuns}
+          isLoadingMoreRuns={isLoadingMoreRuns}
+          onLoadMoreRuns={onLoadMoreRuns}
+        />
         </div>
       </div>
 
