@@ -9844,6 +9844,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
 
+        // Do not re-queue system follow-up wakes (retry/cleanup/continuation)
+        // onto an already-terminal issue. The guarded human-reopen path above
+        // has already moved the issue back to `todo` when applicable, and
+        // genuine comment/mention deliveries (carrying wakeCommentIds) are still
+        // promoted so cross-agent handoffs land. Anything else here is a system
+        // follow-up that the pre-run terminal guard would stale-cancel anyway —
+        // suppressing it up front keeps a completed ticket from re-entering the
+        // run pipeline (the self-sustaining cancellation/retry loop in #7841).
+        if (
+          (issue.status === "done" || issue.status === "cancelled") &&
+          deferredCommentIds.length === 0
+        ) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: new Date(),
+              error: `Deferred wake suppressed because issue reached terminal status (${issue.status})`,
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
+
         const promotedReason = readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
         const promotedSource =
           (readNonEmptyString(deferred.source) as WakeupOptions["source"]) ?? "automation";
@@ -9917,11 +9941,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
+      // A run cancellation is a deliberate veto (control plane, budget governor,
+      // agent pause, human cancel), not a transient failure, so it must never
+      // queue an automatic recovery retry. Only genuine failures/timeouts are
+      // eligible for immediate recovery; otherwise a governor that cancels an
+      // over-budget run would have the cancellation feed itself another run.
       const issueNeedsImmediateRecovery =
         (issue.status === "todo" || issue.status === "in_progress") &&
         !issue.assigneeUserId &&
         issue.assigneeAgentId === run.agentId &&
-        (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled");
+        (run.status === "failed" || run.status === "timed_out");
 
       if (!issueNeedsImmediateRecovery) {
         return { kind: "released" as const };
