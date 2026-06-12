@@ -78,6 +78,7 @@ import {
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { ensureOpenCodeModelConfiguredAndAvailable } from "@paperclipai/adapter-opencode-local/server";
+import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
@@ -112,6 +113,7 @@ export function agentRoutes(
     codex_local: "instructionsFilePath",
     droid_local: "instructionsFilePath",
     gemini_local: "instructionsFilePath",
+    minimax_local: "instructionsFilePath",
     hermes_local: "instructionsFilePath",
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
@@ -747,6 +749,30 @@ export function agentRoutes(
       next.model = DEFAULT_GEMINI_LOCAL_MODEL;
       return ensureGatewayDeviceKey(adapterType, next);
     }
+    if (adapterType === "minimax_local") {
+      if (!asNonEmptyString(next.model) && !asNonEmptyString(next.primaryModel)) {
+        next.model = "MiniMax-M3";
+      }
+      if (!asNonEmptyString(next.primaryModel) && asNonEmptyString(next.model)) {
+        next.primaryModel = next.model;
+      }
+      if (!asNonEmptyString(next.baseUrl)) {
+        next.baseUrl = "https://api.minimax.io/v1";
+      }
+      if (parseNumberLike(next.temperature) == null) {
+        next.temperature = 0.2;
+      }
+      if (
+        parseNumberLike(next.maxTokens) == null &&
+        parseNumberLike(next.max_completion_tokens) == null
+      ) {
+        next.max_completion_tokens = 2048;
+      }
+      if (parseBooleanLike(next.stripThink) == null) {
+        next.stripThink = true;
+      }
+      return ensureGatewayDeviceKey(adapterType, next);
+    }
     // OpenCode requires explicit model selection — no default
     if (adapterType === "cursor" && !asNonEmptyString(next.model)) {
       next.model = DEFAULT_CURSOR_LOCAL_MODEL;
@@ -789,6 +815,26 @@ export function agentRoutes(
       throw unprocessable("adapterConfig.cwd must be an absolute path to resolve relative instructions path");
     }
     return path.resolve(cwd, trimmed);
+  }
+
+  function normalizeMiniMaxLocalAdapterConfigForAgent(
+    agentId: string,
+    adapterType: string | null | undefined,
+    adapterConfig: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (adapterType !== "minimax_local") return adapterConfig;
+    const cwd = asNonEmptyString(adapterConfig.cwd);
+    const workingDirectory = asNonEmptyString(adapterConfig.workingDirectory);
+    const current = cwd ?? workingDirectory;
+    const resolvedCwd =
+      !current || current.includes("<agent-id>")
+        ? resolveDefaultAgentWorkspaceDir(agentId)
+        : current;
+    return {
+      ...adapterConfig,
+      cwd: resolvedCwd,
+      workingDirectory: resolvedCwd,
+    };
   }
 
   async function materializeDefaultInstructionsBundleForNewAgent<T extends {
@@ -1873,7 +1919,22 @@ export function agentRoutes(
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     });
-    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
+    const normalizedCreatedAdapterConfig = normalizeMiniMaxLocalAdapterConfigForAgent(
+      createdAgent.id,
+      createdAgent.adapterType,
+      asRecord(createdAgent.adapterConfig) ?? {},
+    );
+    const createdAgentWithNormalizedAdapter =
+      JSON.stringify(normalizedCreatedAdapterConfig) === JSON.stringify(createdAgent.adapterConfig)
+        ? createdAgent
+        : await svc.update(createdAgent.id, { adapterConfig: normalizedCreatedAdapterConfig }) ?? {
+            ...createdAgent,
+            adapterConfig: normalizedCreatedAdapterConfig,
+          };
+    const agent = await materializeDefaultInstructionsBundleForNewAgent(
+      createdAgentWithNormalizedAdapter,
+      instructionsBundle,
+    );
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -2310,7 +2371,14 @@ export function agentRoutes(
         effectiveAdapterConfig,
         { strictMode: strictSecretsMode },
       );
-      patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
+      patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(
+        existing,
+        normalizeMiniMaxLocalAdapterConfigForAgent(
+          existing.id,
+          requestedAdapterType,
+          normalizedEffectiveAdapterConfig,
+        ),
+      );
     }
     if (touchesAdapterConfiguration && requestedAdapterType === "opencode_local") {
       const effectiveAdapterConfig = asRecord(patchData.adapterConfig) ?? {};

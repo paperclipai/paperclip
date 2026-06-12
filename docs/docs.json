@@ -98,6 +98,8 @@
               "adapters/overview",
               "adapters/claude-local",
               "adapters/codex-local",
+              "adapters/gemini-local",
+              "adapters/minimax-local",
               "adapters/process",
               "adapters/http",
               "adapters/external-adapters",

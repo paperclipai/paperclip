@@ -42,6 +42,10 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import {
+  DEFAULT_MINIMAX_LOCAL_MODEL,
+  DEFAULT_MINIMAX_SECRET_ID,
+} from "@paperclipai/adapter-minimax-local";
 import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import {
@@ -323,12 +327,28 @@ export function OnboardingWizard() {
           ? model || DEFAULT_CODEX_LOCAL_MODEL
           : adapterType === "gemini_local"
             ? model || DEFAULT_GEMINI_LOCAL_MODEL
+          : adapterType === "minimax_local"
+            ? model || DEFAULT_MINIMAX_LOCAL_MODEL
           : adapterType === "cursor"
           ? model || DEFAULT_CURSOR_LOCAL_MODEL
           : model,
       command,
       args,
       url,
+      cwd:
+        adapterType === "minimax_local"
+          ? "/paperclip/instances/default/workspaces/<agent-id>"
+          : defaultCreateValues.cwd,
+      envBindings:
+        adapterType === "minimax_local"
+          ? {
+              MINIMAX_API_KEY: {
+                type: "secret_ref",
+                secretId: DEFAULT_MINIMAX_SECRET_ID,
+                version: "latest",
+              },
+            }
+          : defaultCreateValues.envBindings,
       dangerouslySkipPermissions:
         adapterType === "claude_local" || adapterType === "opencode_local",
       dangerouslyBypassSandbox:
@@ -775,6 +795,10 @@ export function OnboardingWizard() {
                             if (nextType === "codex_local" && !model) {
                               setModel(DEFAULT_CODEX_LOCAL_MODEL);
                             }
+                            if (nextType === "minimax_local" && !model) {
+                              setModel(DEFAULT_MINIMAX_LOCAL_MODEL);
+                              return;
+                            }
                             if (nextType !== "codex_local") {
                               setModel("");
                             }
@@ -827,6 +851,10 @@ export function OnboardingWizard() {
                               setAdapterType(nextType);
                               if (nextType === "gemini_local" && !model) {
                                 setModel(DEFAULT_GEMINI_LOCAL_MODEL);
+                                return;
+                              }
+                              if (nextType === "minimax_local" && !model) {
+                                setModel(DEFAULT_MINIMAX_LOCAL_MODEL);
                                 return;
                               }
                               if (nextType === "cursor" && !model) {

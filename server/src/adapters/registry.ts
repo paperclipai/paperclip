@@ -36,6 +36,14 @@ import {
 } from "@paperclipai/adapter-gemini-local/server";
 import { agentConfigurationDoc as geminiAgentConfigurationDoc, models as geminiModels } from "@paperclipai/adapter-gemini-local";
 import {
+  execute as minimaxExecute,
+  testEnvironment as minimaxTestEnvironment,
+} from "@paperclipai/adapter-minimax-local/server";
+import {
+  agentConfigurationDoc as minimaxAgentConfigurationDoc,
+  models as minimaxModels,
+} from "@paperclipai/adapter-minimax-local";
+import {
   execute as openCodeExecute,
   listOpenCodeSkills,
   syncOpenCodeSkills,
@@ -187,6 +195,18 @@ const geminiLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: geminiAgentConfigurationDoc,
 };
 
+const minimaxLocalAdapter: ServerAdapterModule = {
+  type: "minimax_local",
+  execute: minimaxExecute,
+  testEnvironment: minimaxTestEnvironment,
+  models: minimaxModels,
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: minimaxAgentConfigurationDoc,
+};
+
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
   execute: openclawGatewayExecute,
@@ -317,6 +337,7 @@ function registerBuiltInAdapters() {
     piLocalAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
+    minimaxLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
     processAdapter,

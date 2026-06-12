@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
+import { models as minimaxFallbackModels } from "@paperclipai/adapter-minimax-local";
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
 import { listAdapterModels, refreshAdapterModels } from "../adapters/index.js";
@@ -107,6 +108,11 @@ describe("adapter model listing", () => {
     const models = await listAdapterModels("opencode_local");
 
     expect(models).toEqual(opencodeFallbackModels);
+  });
+
+  it("returns built-in minimax models", async () => {
+    const models = await listAdapterModels("minimax_local");
+    expect(models).toEqual(minimaxFallbackModels);
   });
 
   it("loads cursor models dynamically and caches them", async () => {

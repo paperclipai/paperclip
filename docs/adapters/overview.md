@@ -21,6 +21,7 @@ When a heartbeat fires, Paperclip:
 | [Claude Local](/adapters/claude-local) | `claude_local` | Runs Claude Code CLI locally |
 | [Codex Local](/adapters/codex-local) | `codex_local` | Runs OpenAI Codex CLI locally |
 | [Gemini Local](/adapters/gemini-local) | `gemini_local` | Runs Gemini CLI locally (experimental — adapter package exists, not yet in stable type enum) |
+| [MiniMax Local](/adapters/minimax-local) | `minimax_local` | Calls the MiniMax OpenAI-compatible API directly |
 | OpenCode Local | `opencode_local` | Runs OpenCode CLI locally (multi-provider `provider/model`) |
 | Cursor | `cursor` | Runs Cursor in background mode |
 | Pi Local | `pi_local` | Runs an embedded Pi agent locally |
@@ -78,6 +79,7 @@ my-adapter/
 
 ## Choosing an Adapter
 
+- **Need a direct MiniMax API heartbeat?** Use `minimax_local`
 - **Need a coding agent?** Use `claude_local`, `codex_local`, `opencode_local`, `hermes_local`, or install `droid_local` as an external plugin
 - **Need to run a script or command?** Use `process`
 - **Need to call an external service?** Use `http`
