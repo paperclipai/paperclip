@@ -5154,7 +5154,7 @@ export function issueService(db: Db) {
               await listIssueDependencyReadinessMap(dbOrTx, existing.companyId, [id])
             ).get(id)?.unresolvedBlockerIssueIds ?? [];
         if (unresolvedBlockerIssueIds.length > 0) {
-          throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+          throw unprocessable("Issue is blocked by unresolved blockers", { code: "unresolved_blockers", unresolvedBlockerIssueIds });
         }
       }
       const shouldValidateNextAssignee =
@@ -5479,7 +5479,7 @@ export function issueService(db: Db) {
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({ companyId: issues.companyId, status: issues.status })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
@@ -5493,6 +5493,7 @@ export function issueService(db: Db) {
         !(await isTreeHoldInteractionCheckoutAllowed(issueCompany.companyId, checkoutRunId, activePauseHold))
       ) {
         throw conflict("Issue checkout blocked by active subtree pause hold", {
+          code: "pause_hold",
           issueId: id,
           holdId: activePauseHold.holdId,
           rootIssueId: activePauseHold.rootIssueId,
@@ -5507,7 +5508,7 @@ export function issueService(db: Db) {
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
       const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
       if (unresolvedBlockerIssueIds.length > 0) {
-        throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+        throw unprocessable("Issue is blocked by unresolved blockers", { code: "unresolved_blockers", currentStatus: issueCompany.status, unresolvedBlockerIssueIds });
       }
 
       const sameRunAssigneeCondition = checkoutRunId
@@ -5666,6 +5667,8 @@ export function issueService(db: Db) {
       }
 
       throw conflict("Issue checkout conflict", {
+        code: "ownership_conflict",
+        currentStatus: current.status,
         issueId: current.id,
         status: current.status,
         assigneeAgentId: current.assigneeAgentId,
@@ -5808,6 +5811,7 @@ export function issueService(db: Db) {
       }
 
       throw conflict("Issue run ownership conflict", {
+        code: "ownership_conflict",
         issueId: latest.id,
         status: latest.status,
         assigneeAgentId: latest.assigneeAgentId,

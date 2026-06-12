@@ -1824,9 +1824,15 @@ export function issueRoutes(
   function requireAgentRunId(req: Request, res: Response) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
-    if (runId) return runId;
-    res.status(401).json({ error: "Agent run id required" });
-    return null;
+    if (!runId) {
+      res.status(401).json({ error: "Agent run id required" });
+      return null;
+    }
+    if (!isUuidLike(runId)) {
+      res.status(400).json({ error: "X-Paperclip-Run-Id must be a valid UUID" });
+      return null;
+    }
+    return runId;
   }
 
   async function hasActiveCheckoutManagementOverride(
@@ -2314,6 +2320,7 @@ export function issueRoutes(
     workspace: Pick<ExecutionWorkspace, "closedAt" | "id" | "mode" | "name" | "status">,
   ) {
     res.status(409).json({
+      code: "execution_workspace_closed",
       error: getClosedIsolatedExecutionWorkspaceMessage(workspace),
       executionWorkspace: workspace,
     });
@@ -2510,11 +2517,17 @@ export function issueRoutes(
     }
     const offset = parsedOffset ?? 0;
 
+    const participantAgentIdRaw = req.query.participantAgentId as string | undefined;
+    if (participantAgentIdRaw !== undefined && !isUuidLike(participantAgentIdRaw)) {
+      res.status(400).json({ error: "participantAgentId must be a valid UUID" });
+      return;
+    }
+
     const rawResult = await svc.list(companyId, {
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      participantAgentId: participantAgentIdRaw,
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
@@ -5854,11 +5867,13 @@ export function issueRoutes(
     if (issue.projectId) {
       const project = await projectsSvc.getById(issue.projectId);
       if (project?.pausedAt) {
+        const code = project.pauseReason === "budget" ? "project_budget_paused" : "project_paused";
         res.status(409).json({
           error:
             project.pauseReason === "budget"
               ? "Project is paused because its budget hard-stop was reached"
               : "Project is paused",
+          code,
         });
         return;
       }
@@ -6616,7 +6631,13 @@ export function issueRoutes(
     res.json(bundle);
   });
 
-  router.post("/issues/:id/comments", validate(addIssueCommentSchema), async (req, res) => {
+  router.post("/issues/:id/comments", (req, _res, next) => {
+    // Normalize `comment` → `body` before schema validation (backward-compat alias).
+    if (req.body && !req.body.body && req.body.comment) {
+      req.body = { ...req.body, body: req.body.comment };
+    }
+    next();
+  }, validate(addIssueCommentSchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
     if (!issue) {
