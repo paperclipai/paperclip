@@ -101,11 +101,18 @@ export function createPluginArtifactReplication(opts: {
   mustSync?: boolean;
   /** Override for OBJECT_DOWNLOAD_TIMEOUT_MS (tests). */
   downloadTimeoutMs?: number;
+  /**
+   * Test-only seam for the atomic-swap renames (mirrors downloadTimeoutMs
+   * pattern). Defaults to `fs.rename`. Injecting a throwing stub lets unit
+   * tests verify restoration behaviour without cross-platform filesystem tricks.
+   */
+  renameFn?: (oldPath: string, newPath: string) => Promise<void>;
   /** Hot-reload hook; called after a successful tree swap (errors logged, not thrown). */
   onApplySnapshot: () => Promise<void>;
 }): PluginArtifactReplication {
   const { db, provider, pluginsDir, replicaId, onApplySnapshot } = opts;
   const downloadTimeoutMs = opts.downloadTimeoutMs ?? OBJECT_DOWNLOAD_TIMEOUT_MS;
+  const renameFn = opts.renameFn ?? fs.rename;
 
   let synced = false;
   let started = false;
@@ -177,19 +184,30 @@ export function createPluginArtifactReplication(opts: {
    * Best-effort retention sweep after publishing generation `published`:
    * deletes rows AND objects older than the keep window. Never throws —
    * a failed GC only leaves harmless extra history.
+   *
+   * Row-first ordering: we delete the DB rows BEFORE the storage objects.
+   * A reconciler re-reading max() after row deletion will skip the pruned
+   * generation entirely rather than racing a missing object — a stale object
+   * is harmless; a referenced-but-missing object would cause a failed download.
    */
   async function gcOldGenerations(published: number): Promise<void> {
     if (!provider) return;
     try {
       const cutoff = published - (GC_KEEP_LAST_GENERATIONS - 1);
+      // Collect stale rows before deleting so we know which object keys to purge.
       const stale = await db
         .select()
         .from(pluginArtifactGenerations)
         .where(lt(pluginArtifactGenerations.generation, cutoff));
-      for (const row of stale) {
-        await provider.deleteObject({ objectKey: row.storageKey });
-      }
+      // Delete rows first — a reconciler that re-reads max() now skips the
+      // pruned generation rather than racing a missing object.
       await db.delete(pluginArtifactGenerations).where(lt(pluginArtifactGenerations.generation, cutoff));
+      // Delete objects after rows; orphaned objects are harmless.
+      for (const row of stale) {
+        await provider.deleteObject({ objectKey: row.storageKey }).catch((err) => {
+          logger.warn({ err, storageKey: row.storageKey, published }, "plugin artifact snapshot GC object delete failed (ignored)");
+        });
+      }
     } catch (err) {
       logger.warn({ err, published }, "plugin artifact snapshot GC failed (ignored)");
     }
@@ -210,6 +228,8 @@ export function createPluginArtifactReplication(opts: {
       // putObject happens BEFORE the insert on purpose — a lost race leaves
       // an orphaned object (harmless), whereas insert-before-upload would
       // advertise a generation whose object does not exist yet.
+      const orphanedKeys: string[] = [];
+      let wonGeneration: number | null = null;
       for (let attempt = 0; attempt < PUBLISH_CAS_MAX_ATTEMPTS; attempt += 1) {
         const maxRow = await readMaxRow();
         const generation = (maxRow?.generation ?? 0) + 1;
@@ -230,20 +250,39 @@ export function createPluginArtifactReplication(opts: {
             createdBy: replicaId,
           });
         } catch (err) {
-          if (isUniqueViolation(err)) continue; // lost the race — re-read max and retry
+          if (isUniqueViolation(err)) {
+            // Lost the race: record the orphaned object so we can clean it up
+            // after we eventually win a generation.
+            orphanedKeys.push(storageKey);
+            continue;
+          }
           throw err;
         }
 
-        // The local tree IS this generation now: record it and mark synced.
-        await writeLocalGeneration(generation);
-        synced = true;
-        await gcOldGenerations(generation);
-        return { generation };
+        wonGeneration = generation;
+        break;
       }
 
-      throw new Error(
-        `Failed to publish plugin snapshot after ${PUBLISH_CAS_MAX_ATTEMPTS} CAS attempts (generation contention)`,
-      );
+      if (wonGeneration === null) {
+        throw new Error(
+          `Failed to publish plugin snapshot after ${PUBLISH_CAS_MAX_ATTEMPTS} CAS attempts (generation contention)`,
+        );
+      }
+
+      // Best-effort cleanup of objects uploaded during lost CAS races.
+      // Awaited sequentially (same never-throw discipline as GC) so the caller
+      // observes a clean store state; a failed delete is harmless.
+      for (const orphanKey of orphanedKeys) {
+        await provider.deleteObject({ objectKey: orphanKey }).catch((err) => {
+          logger.warn({ err, objectKey: orphanKey }, "plugin artifact snapshot lost-race object cleanup failed (ignored)");
+        });
+      }
+
+      // The local tree IS this generation now: record it and mark synced.
+      await writeLocalGeneration(wonGeneration);
+      synced = true;
+      await gcOldGenerations(wonGeneration);
+      return { generation: wonGeneration };
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -317,13 +356,33 @@ export function createPluginArtifactReplication(opts: {
 
       // Atomic swap: live tree → .old-<ts> (tolerate a missing live tree),
       // extracted tree → live, then best-effort cleanup of the old tree.
+      // If rename(2) (extractDir→pluginsDir) fails AFTER rename(1) succeeded,
+      // attempt to restore the old tree so the replica is never left without
+      // a plugin directory.
       const oldDir = `${pluginsDir}.old-${Date.now()}`;
+      let rename1Done = false;
       try {
-        await fs.rename(pluginsDir, oldDir);
+        await renameFn(pluginsDir, oldDir);
+        rename1Done = true;
       } catch (err) {
         if ((err as { code?: string }).code !== "ENOENT") throw err;
       }
-      await fs.rename(extractDir, pluginsDir);
+      try {
+        await renameFn(extractDir, pluginsDir);
+      } catch (renameErr) {
+        if (rename1Done) {
+          // rename(1) moved the live tree away but rename(2) failed — restore.
+          try {
+            await renameFn(oldDir, pluginsDir);
+          } catch (restoreErr) {
+            logger.error(
+              { err: restoreErr, oldDir, pluginsDir, generation: maxRow.generation },
+              "plugin snapshot swap restoration failed — replica may be left without plugin directory",
+            );
+          }
+        }
+        throw renameErr;
+      }
       await fs.rm(oldDir, { recursive: true, force: true }).catch(() => {});
 
       await writeLocalGeneration(maxRow.generation);
