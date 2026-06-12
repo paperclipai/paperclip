@@ -715,6 +715,13 @@
       "when": 1781490000000,
       "tag": "0101_plugin_company_id_tenant_isolation",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1781490000001,
+      "tag": "0102_workspace_operations_issue_id",
+      "breakpoints": true
     }
   ]
 }
