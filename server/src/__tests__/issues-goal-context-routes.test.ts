@@ -81,6 +81,11 @@ const mockIssueReferenceService = vi.hoisted(() => ({
   syncIssue: vi.fn(async () => undefined),
 }));
 
+const mockIssueApprovalService = vi.hoisted(() => ({
+  listApprovalsForIssue: vi.fn(),
+  listIssuesForApproval: vi.fn(),
+}));
+
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 const mockRoutineService = vi.hoisted(() => ({
@@ -112,7 +117,7 @@ vi.mock("../services/index.js", () => ({
   goalService: () => mockGoalService,
   heartbeatService: () => mockHeartbeatService,
   instanceSettingsService: () => mockInstanceSettingsService,
-  issueApprovalService: () => ({}),
+  issueApprovalService: () => mockIssueApprovalService,
   issueRecoveryActionService: () => ({
     getActiveForIssue: vi.fn(async () => null),
     listActiveForIssues: vi.fn(async () => new Map()),
@@ -208,6 +213,8 @@ describe.sequential("issue goal context routes", () => {
     mockIssueService.listProductivityReviews.mockResolvedValue(new Map());
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
     mockIssueService.listAttachments.mockResolvedValue([]);
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([]);
     mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
@@ -387,5 +394,109 @@ describe.sequential("issue goal context routes", () => {
         }),
       ],
     }));
+  });
+
+  it("surfaces active linked approvals from GET /issues/:id/heartbeat-context", async () => {
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([
+      {
+        id: "approval-1",
+        companyId: "company-1",
+        type: "request_board_approval",
+        requestedByAgentId: "agent-1",
+        requestedByUserId: null,
+        status: "pending",
+        payload: {
+          title: "Approve plan",
+          summary: "Need approval before implementation.",
+          recommendedAction: "Approve revision 1.",
+          planRevisionId: "revision-1",
+        },
+        decisionNote: null,
+        decidedByUserId: null,
+        decidedAt: null,
+        createdAt: new Date("2026-06-07T12:00:00.000Z"),
+        updatedAt: new Date("2026-06-07T12:00:00.000Z"),
+      },
+      {
+        id: "approval-2",
+        companyId: "company-1",
+        type: "request_board_approval",
+        requestedByAgentId: "agent-1",
+        requestedByUserId: null,
+        status: "approved",
+        payload: {},
+        decisionNote: "Already done",
+        decidedByUserId: "user-1",
+        decidedAt: new Date("2026-06-07T12:30:00.000Z"),
+        createdAt: new Date("2026-06-07T12:00:00.000Z"),
+        updatedAt: new Date("2026-06-07T12:30:00.000Z"),
+      },
+    ]);
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      { id: "11111111-1111-4111-8111-111111111111" },
+      { id: "55555555-5555-4555-8555-555555555555" },
+    ]);
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.issue.activeLinkedApprovals).toEqual([
+      expect.objectContaining({
+        id: "approval-1",
+        status: "pending",
+        linkedIssueIds: [
+          "11111111-1111-4111-8111-111111111111",
+          "55555555-5555-4555-8555-555555555555",
+        ],
+        requester: { agentId: "agent-1", userId: null },
+        nextActor: { role: "board", agentId: null, userId: null },
+        decisionContext: expect.objectContaining({
+          planRevisionId: "revision-1",
+          title: "Approve plan",
+          recommendedAction: "Approve revision 1.",
+        }),
+      }),
+    ]);
+  });
+
+  it("surfaces active linked approvals from GET /issues/:id", async () => {
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([
+      {
+        id: "approval-3",
+        companyId: "company-1",
+        type: "request_board_approval",
+        requestedByAgentId: "agent-2",
+        requestedByUserId: null,
+        status: "revision_requested",
+        payload: { title: "Revise plan", planRevisionId: "revision-2" },
+        decisionNote: "Tighten rollback notes.",
+        decidedByUserId: "local-board",
+        decidedAt: new Date("2026-06-07T12:30:00.000Z"),
+        createdAt: new Date("2026-06-07T12:00:00.000Z"),
+        updatedAt: new Date("2026-06-07T12:30:00.000Z"),
+      },
+    ]);
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      { id: "11111111-1111-4111-8111-111111111111" },
+    ]);
+
+    const res = await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
+
+    expect(res.status).toBe(200);
+    expect(res.body.activeLinkedApprovals).toEqual([
+      expect.objectContaining({
+        id: "approval-3",
+        status: "revision_requested",
+        linkedIssueIds: ["11111111-1111-4111-8111-111111111111"],
+        nextActor: { role: "requester", agentId: "agent-2", userId: null },
+        decisionNote: "Tighten rollback notes.",
+        decisionContext: expect.objectContaining({
+          planRevisionId: "revision-2",
+          title: "Revise plan",
+        }),
+      }),
+    ]);
   });
 });

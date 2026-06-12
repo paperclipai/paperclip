@@ -544,6 +544,63 @@ function withRecoveryActionsOnRelationSummaries(
 
 const ACTIVE_REVIEW_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
 
+function compactApprovalPayloadContext(payload: unknown) {
+  const source = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
+  const planRevisionId =
+    readNonEmptyString(source.planRevisionId)
+    ?? readNonEmptyString(source.revisionId)
+    ?? readNonEmptyString(source.plan_revision_id)
+    ?? readNonEmptyString((source.plan as Record<string, unknown> | undefined)?.revisionId);
+  const title = readNonEmptyString(source.title);
+  const summary = readNonEmptyString(source.summary);
+  const recommendedAction = readNonEmptyString(source.recommendedAction);
+  return {
+    planRevisionId,
+    title,
+    summary,
+    recommendedAction,
+  };
+}
+
+async function activeLinkedApprovalSummaries(
+  issueApprovalsSvc: ReturnType<typeof issueApprovalService>,
+  issueId: string,
+) {
+  const approvals = await issueApprovalsSvc.listApprovalsForIssue(issueId);
+  const activeApprovals = approvals.filter((approval) => ACTIVE_REVIEW_APPROVAL_STATUSES.has(String(approval.status)));
+  return Promise.all(activeApprovals.map(async (approval) => {
+    const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
+    const nextActor = approval.status === "revision_requested"
+      ? {
+          role: "requester",
+          agentId: approval.requestedByAgentId,
+          userId: approval.requestedByUserId,
+        }
+      : {
+          role: "board",
+          agentId: null,
+          userId: null,
+        };
+    return {
+      id: approval.id,
+      status: approval.status,
+      type: approval.type,
+      linkedIssueIds: linkedIssues.map((issue) => issue.id),
+      requester: {
+        agentId: approval.requestedByAgentId,
+        userId: approval.requestedByUserId,
+      },
+      nextActor,
+      decisionNote: approval.decisionNote,
+      decisionContext: compactApprovalPayloadContext(approval.payload),
+      decidedByUserId: approval.decidedByUserId,
+      decidedAt: approval.decidedAt,
+      createdAt: approval.createdAt,
+      updatedAt: approval.updatedAt,
+    };
+  }));
+}
+
 const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "invalid_issue_disposition: Agent-authored updates that move an issue to in_review must include a real review path. " +
   "This request would leave the issue in_review without anyone or anything owning the next action. " +
@@ -2741,6 +2798,7 @@ export function issueRoutes(
       continuationSummary,
       currentExecutionWorkspace,
       activeRecoveryAction,
+      activeLinkedApprovals,
     ] =
       await Promise.all([
         resolveIssueProjectAndGoal(issue),
@@ -2755,6 +2813,7 @@ export function issueRoutes(
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
         currentExecutionWorkspacePromise,
         recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
+        activeLinkedApprovalSummaries(issueApprovalsSvc, issue.id),
       ]);
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
       recoveryActionsSvc,
@@ -2803,6 +2862,7 @@ export function issueRoutes(
         blocks: relationsWithRecoveryActions.blocks,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
+        activeLinkedApprovals,
         originKind: issue.originKind,
         originId: issue.originId,
         updatedAt: issue.updatedAt,
@@ -2877,6 +2937,7 @@ export function issueRoutes(
       successfulRunHandoffStates,
       scheduledRetry,
       activeRecoveryAction,
+      activeLinkedApprovals,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -2889,6 +2950,7 @@ export function issueRoutes(
       listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
       svc.getCurrentScheduledRetry(issue.id),
       recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
+      activeLinkedApprovalSummaries(issueApprovalsSvc, issue.id),
     ]);
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
       recoveryActionsSvc,
@@ -2921,6 +2983,7 @@ export function issueRoutes(
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
       scheduledRetry,
       activeRecoveryAction: revalidatedActiveRecoveryAction,
+      activeLinkedApprovals,
       blockedBy: relationsWithRecoveryActions.blockedBy,
       blocks: relationsWithRecoveryActions.blocks,
       relatedWork: referenceSummary,
