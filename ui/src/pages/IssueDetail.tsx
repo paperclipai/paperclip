@@ -133,6 +133,7 @@ import {
   Eye,
   EyeOff,
   Flag,
+  GitPullRequest,
   Hexagon,
   ListTree,
   MessageSquare,
@@ -3576,6 +3577,19 @@ export function IssueDetail() {
             onChange={(priority) => updateIssue.mutate({ priority })}
           />
           <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
+
+          {issue.prUrl && (
+            <a
+              href={issue.prUrl}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 shrink-0 hover:bg-emerald-500/20 cursor-pointer"
+              title={issue.prUrl}
+            >
+              <GitPullRequest className="h-3 w-3" />
+              PR
+            </a>
+          )}
 
           {hasLiveRuns && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 shrink-0">
