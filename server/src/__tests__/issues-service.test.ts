@@ -1227,6 +1227,51 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     ]);
 
     await expect(svc.countUnreadTouchedByUser(companyId, userId, "todo")).resolves.toBe(1);
+    await expect(svc.countUnreadTouchedByUser(companyId, userId, ["todo", "in_progress"])).resolves.toBe(1);
+  });
+
+  it("accepts array-form status filters in list and count", async () => {
+    const companyId = randomUUID();
+    const todoIssueId = randomUUID();
+    const inProgressIssueId = randomUUID();
+    const doneIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: todoIssueId,
+        companyId,
+        title: "Todo issue",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: inProgressIssueId,
+        companyId,
+        title: "In-progress issue",
+        status: "in_progress",
+        priority: "medium",
+      },
+      {
+        id: doneIssueId,
+        companyId,
+        title: "Done issue",
+        status: "done",
+        priority: "medium",
+      },
+    ]);
+
+    const resultIds = (await svc.list(companyId, { status: ["todo", "in_progress"] }))
+      .map((issue) => issue.id);
+
+    expect(resultIds).toEqual(expect.arrayContaining([todoIssueId, inProgressIssueId]));
+    expect(resultIds).not.toContain(doneIssueId);
+    await expect(svc.count(companyId, { status: ["todo", "in_progress"] })).resolves.toBe(2);
   });
 
   it("hides archived inbox issues until new external activity arrives", async () => {
