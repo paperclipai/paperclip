@@ -7,8 +7,9 @@ API = os.environ.get("PCP_API", "http://localhost:3100")
 CID = os.environ.get("PCP_CID", "9cebf3cf-efe8-4597-a400-f06488900a87")
 TOKEN = os.environ.get("PCP_TOKEN", "")
 
+# online-recherche vorerst entfernt: in keiner Quelle auffindbar (Phase-C-Backlog: neu schreiben)
 TIER1_BASELINE = ["paperclip", "para-memory-files", "paperclip-create-agent",
-                  "paperclip-create-plugin", "online-recherche",
+                  "paperclip-create-plugin",
                   "whitestag-brand", "whitestag-dsgvo"]
 TIER2_BASELINE = ["paperclip", "para-memory-files", "whitestag-dsgvo"]
 BRAND = ["whitestag-brand"]  # nur fuer output-/kundenseitige Tier-2-Rollen (⭐)
@@ -52,7 +53,7 @@ MATRIX = {
     "56f7167b-b594-4533-9243-411947306907": ("Mistika VR",
         TIER2_BASELINE + ["mistika-vr-pipeline", "vr-produktion-pipeline"]),
     "d80fe6b9-b2ac-4d58-8525-8bbbb1d0caf7": ("Online-Rechercheur",
-        TIER2_BASELINE + ["online-recherche"]),
+        list(TIER2_BASELINE)),  # online-recherche fehlt (Phase C); vorerst nur Baseline
     "6d595481-8cbb-49bf-8ffb-8685c071d557": ("Produktentwicklung",
         TIER2_BASELINE + ["whitestag-n8n-workflow", "vr-produktion-pipeline"]),
     "410a78b9-8472-4503-8232-0ff97bafa2f8": ("Social Media",
@@ -79,7 +80,8 @@ def api_post(path, body):
     data = json.dumps(body).encode()
     req = urllib.request.Request(API + path, data=data, method="POST",
         headers={"Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"})
-    return json.load(urllib.request.urlopen(req))
+    raw = urllib.request.urlopen(req).read().decode().strip()
+    return json.loads(raw) if raw else {}  # W1: leerer/204-Body toleriert
 
 
 def compute_diff(current, target):
@@ -164,6 +166,57 @@ def do_dry_run():
         for s in remove: print(f"    - {s}")
 
 
+TIER1_IDS = ["506c873e-3a40-4483-9a45-0eb0fa1554bb", "5b7cb8a7-945f-4861-b3a7-4ae84d242d1e",
+             "408f7e88-1ab6-4c9a-988b-68040fd28c13", "bbf38291-1129-43db-97de-c03c998b691e",
+             "d4bdef1a-84fb-4393-8491-0eeaebcb3270", "aa036cf5-0af7-4ed1-b04e-c7a54f71e553",
+             "5563514c-4254-48d5-9339-802172304119", "4920b0be-b197-45ae-a169-54b99082c4ea",
+             "790bcaf2-83d8-4e04-8c43-914a96db7bd8"]
+
+
+def do_apply():
+    refmap, installed = build_refmap_and_installed()
+    order = TIER1_IDS + [a for a in MATRIX if a not in TIER1_IDS]
+    for aid in order:
+        nm, target = MATRIX[aid]
+        refs = [resolve(s, refmap, installed) for s in target]
+        try:
+            api_post(f"/api/agents/{aid}/skills/sync", {"desiredSkills": refs})
+            print(f"OK  {nm}: {len(refs)} Skills gesynct")
+        except urllib.error.HTTPError as e:
+            print(f"ERR {nm}: HTTP {e.code} {e.read().decode()[:200]}")
+        except urllib.error.URLError as e:  # W1: Connection-Fehler crasht die Schleife nicht
+            print(f"ERR {nm}: {e.reason}")
+
+
+# Vom Server bei jedem lokalen Adapter erzwungenes Pflichtbuendel (origin=paperclip_required).
+# Diese Skills sind nicht entfernbar und gelten daher als erlaubte Extras.
+REQUIRED_BUNDLE = {"paperclip", "para-memory-files", "paperclip-create-agent",
+                   "paperclip-create-plugin", "paperclip-dev",
+                   "paperclip-converting-plans-to-tasks", "diagnose-why-work-stopped",
+                   "terminal-bench-loop", "newsletter-redaktion", "newsletter-scoring"}
+# Slugs, die nach Phase A NICHT mehr vorkommen duerfen.
+FORBIDDEN = {"comfyui-flux", "online-recherche"}
+
+
+def do_verify():
+    agents = {a["id"]: a for a in load_agents()}
+    ok = True
+    for aid, (nm, target) in MATRIX.items():
+        cur = {r.split("/")[-1] for r in current_skills(agents[aid])}
+        want = set(target)
+        missing = want - cur                      # Ziel-Skill fehlt
+        leaked = (cur - want) - REQUIRED_BUNDLE    # unerwartetes Extra (kein Pflichtbuendel)
+        forbidden = cur & FORBIDDEN
+        if missing or leaked or forbidden:
+            ok = False
+            print(f"ABWEICHUNG {nm}:")
+            if missing:   print(f"   fehlt:    {sorted(missing)}")
+            if leaked:    print(f"   zuviel:   {sorted(leaked)}")
+            if forbidden: print(f"   verboten: {sorted(forbidden)}")
+    print("VERIFY OK" if ok else "VERIFY FEHLGESCHLAGEN")
+    sys.exit(0 if ok else 1)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--print-matrix", action="store_true")
@@ -183,6 +236,10 @@ def main():
         do_validate(); return
     if args.dry_run:
         do_dry_run(); return
+    if args.apply:
+        do_apply(); return
+    if args.verify:
+        do_verify(); return
     print("Kein Modus gewaehlt. Siehe --help.", file=sys.stderr)
 
 
