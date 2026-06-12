@@ -118,7 +118,7 @@ export function companyAwaitingHumanSettingsRoutes(db: Db) {
     };
 
     const connectionTestMode = body.connectionTestMode ?? "channel";
-    const reviewerMentions = connectionTestMode === "reviewers"
+    const reviewerTargets = connectionTestMode === "reviewers"
       ? [
         {
           label: "Primary reviewer",
@@ -130,8 +130,8 @@ export function companyAwaitingHumanSettingsRoutes(db: Db) {
         },
       ]
       : [];
-    const hasReviewerMentionTarget = reviewerMentions.some((mention) => trimNullable(mention.userId));
-    if (connectionTestMode === "reviewers" && !hasReviewerMentionTarget) {
+    const hasReviewerTarget = reviewerTargets.some((mention) => trimNullable(mention.userId));
+    if (connectionTestMode === "reviewers" && !hasReviewerTarget) {
       const skippedResult = {
         status: "skipped" as const,
         channel: "clickup-chat" as const,
@@ -160,23 +160,23 @@ export function companyAwaitingHumanSettingsRoutes(db: Db) {
 
     const result = await sendClickUpTransportTestMessage({
       title: connectionTestMode === "reviewers"
-        ? `${company.name} ClickUp reviewer mention test`
+        ? `${company.name} ClickUp reviewer notification test`
         : `${company.name} ClickUp bridge connection test`,
       summary: connectionTestMode === "reviewers"
-        ? "Bizbox completed a reviewer mention test for ClickUp."
+        ? "Bizbox completed a reviewer notification test for ClickUp."
         : "Bizbox completed a bridge transport test for ClickUp.",
       body: connectionTestMode === "reviewers"
-        ? "The configured bridge successfully delivered a reviewer mention test payload to the target ClickUp channel."
+        ? "The configured bridge successfully delivered a reviewer notification test payload to the target ClickUp channel."
         : "The configured bridge successfully delivered a test payload to the target ClickUp channel.",
       link: new URL(`/${company.issuePrefix}/company/settings/awaiting-human`, process.env.BIZBOX_API_URL ?? "http://localhost:3100").toString(),
       cta: "No action is required.",
-      reviewerMentions,
+      reviewerTargets,
     }, runtimeOverrides);
     const publicResult = result.status === "sent"
       ? {
         ...result,
         detail: connectionTestMode === "reviewers"
-          ? `ClickUp reviewer mention test succeeded. Message delivered to configured channel${result.externalId ? ` (message ${result.externalId})` : ""}.`
+          ? `ClickUp reviewer notification test succeeded. Message delivered to configured channel${result.externalId ? ` (message ${result.externalId})` : ""}.`
           : `ClickUp bridge connection test succeeded. Message delivered to configured channel${result.externalId ? ` (message ${result.externalId})` : ""}.`,
       }
       : result;

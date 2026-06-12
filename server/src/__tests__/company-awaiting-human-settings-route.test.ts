@@ -187,7 +187,7 @@ describe("PATCH /api/companies/:companyId/awaiting-human-settings", () => {
       body: "The configured bridge successfully delivered a test payload to the target ClickUp channel.",
       link: "http://localhost:3100/CITAAAA/company/settings/awaiting-human",
       cta: "No action is required.",
-      reviewerMentions: [],
+      reviewerTargets: [],
     });
     expect(transportOverrides).toEqual({
       personalToken: "token-123",
@@ -201,7 +201,7 @@ describe("PATCH /api/companies/:companyId/awaiting-human-settings", () => {
     }));
   });
 
-  it("sends reviewer mention test message when requested", async () => {
+  it("sends reviewer notification test message when requested", async () => {
     mockCompanyService.getById.mockResolvedValueOnce({
       id: "company-1",
       name: "Bizbox",
@@ -229,16 +229,16 @@ describe("PATCH /api/companies/:companyId/awaiting-human-settings", () => {
     expect(res.body).toEqual({
       status: "sent",
       channel: "clickup-chat",
-      detail: "ClickUp reviewer mention test succeeded. Message delivered to configured channel (message message-2).",
+      detail: "ClickUp reviewer notification test succeeded. Message delivered to configured channel (message message-2).",
       externalId: "message-2",
     });
     expect(mockSendClickUpTransportTestMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: "Bizbox ClickUp reviewer mention test",
-        summary: "Bizbox completed a reviewer mention test for ClickUp.",
-        body: "The configured bridge successfully delivered a reviewer mention test payload to the target ClickUp channel.",
+        title: "Bizbox ClickUp reviewer notification test",
+        summary: "Bizbox completed a reviewer notification test for ClickUp.",
+        body: "The configured bridge successfully delivered a reviewer notification test payload to the target ClickUp channel.",
         cta: "No action is required.",
-        reviewerMentions: [
+        reviewerTargets: [
           { label: "Primary reviewer", userId: "primary-user-id" },
           { label: "Secondary reviewer", userId: "secondary-user-id" },
         ],
