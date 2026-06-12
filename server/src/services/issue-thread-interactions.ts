@@ -38,7 +38,8 @@ import {
   suggestTasksPayloadSchema,
   suggestTasksResultSchema,
 } from "@paperclipai/shared";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { resolveDecisionOwnerUserId } from "./decision-owner.js";
 import { issueService, listUnfinalizedExecutionWorkspaceIds } from "./issues.js";
 
 type InteractionActor = {
@@ -97,6 +98,7 @@ function isEquivalentCreateRequest(
   row: IssueThreadInteractionRow,
   input: CreateIssueThreadInteraction,
   actor: InteractionActor,
+  targetUserId: string | null,
 ) {
   return (
     row.kind === input.kind
@@ -106,10 +108,20 @@ function isEquivalentCreateRequest(
     && (row.sourceRunId ?? null) === (input.sourceRunId ?? null)
     && (row.title ?? null) === (input.title ?? null)
     && (row.summary ?? null) === (input.summary ?? null)
+    && ((row.targetUserId ?? null) === targetUserId || row.targetUserId == null)
     && (row.createdByAgentId ?? null) === (actor.agentId ?? null)
     && (row.createdByUserId ?? null) === (actor.userId ?? null)
     && isDeepStrictEqual(row.payload, input.payload)
   );
+}
+
+function assertInteractionResolutionOwner(
+  row: IssueThreadInteractionRow,
+  actor: InteractionActor,
+) {
+  if (!row.targetUserId) return;
+  if (row.targetUserId === actor.userId) return;
+  throw forbidden("Only the targeted board user can resolve this interaction");
 }
 
 function hydrateInteraction(
@@ -761,6 +773,13 @@ export function issueThreadInteractionService(db: Db) {
       actor: InteractionActor,
     ) => {
       const data = normalizeCreateInteractionInput(createIssueThreadInteractionSchema.parse(input));
+      const owner = await resolveDecisionOwnerUserId(db, {
+        companyId: issue.companyId,
+        explicitUserId: data.targetUserId ?? null,
+        sourceCommentId: data.sourceCommentId ?? null,
+        issueIds: [issue.id],
+        currentUserId: actor.userId ?? null,
+      });
 
       if (data.idempotencyKey) {
         const existing = await getIdempotentInteraction({
@@ -769,7 +788,7 @@ export function issueThreadInteractionService(db: Db) {
           idempotencyKey: data.idempotencyKey,
         });
         if (existing) {
-          if (!isEquivalentCreateRequest(existing, data, actor)) {
+          if (!isEquivalentCreateRequest(existing, data, actor, owner.userId)) {
             throw conflict("Interaction idempotency key already exists for a different request", {
               idempotencyKey: data.idempotencyKey,
             });
@@ -828,6 +847,7 @@ export function issueThreadInteractionService(db: Db) {
             sourceRunId: data.sourceRunId ?? null,
             title: data.title ?? null,
             summary: data.summary ?? null,
+            targetUserId: owner.userId,
             createdByAgentId: actor.agentId ?? null,
             createdByUserId: actor.userId ?? null,
             payload: data.payload,
@@ -843,7 +863,7 @@ export function issueThreadInteractionService(db: Db) {
           idempotencyKey: data.idempotencyKey,
         });
         if (!existing) throw error;
-        if (!isEquivalentCreateRequest(existing, data, actor)) {
+        if (!isEquivalentCreateRequest(existing, data, actor, owner.userId)) {
           throw conflict("Interaction idempotency key already exists for a different request", {
             idempotencyKey: data.idempotencyKey,
           });
@@ -863,6 +883,7 @@ export function issueThreadInteractionService(db: Db) {
     ): Promise<ResolvedInteractionResult> => {
       const data = acceptIssueThreadInteractionSchema.parse(input);
       const current = await getPendingInteractionForResolution({ issue, interactionId });
+      assertInteractionResolutionOwner(current, actor);
       switch (current.kind) {
         case "suggest_tasks":
           // Accepting suggest_tasks only creates follow-up issues; it does not
@@ -924,6 +945,7 @@ export function issueThreadInteractionService(db: Db) {
       if (current.status !== "pending") {
         throw conflict("Interaction has already been resolved");
       }
+      assertInteractionResolutionOwner(current, actor);
 
       const interaction = hydrateInteraction(current) as SuggestTasksInteraction;
       const { selectedTasks, skippedClientKeys } = resolveSelectedSuggestedTasks({
@@ -1057,6 +1079,7 @@ export function issueThreadInteractionService(db: Db) {
     ) => {
       const data = rejectIssueThreadInteractionSchema.parse(input);
       const current = await getPendingInteractionForResolution({ issue, interactionId });
+      assertInteractionResolutionOwner(current, actor);
       switch (current.kind) {
         case "suggest_tasks":
           return issueThreadInteractionService(db).rejectSuggestedTasks(issue, interactionId, data, actor, current);
@@ -1089,6 +1112,7 @@ export function issueThreadInteractionService(db: Db) {
       if (current.status !== "pending") {
         throw conflict("Interaction has already been resolved");
       }
+      assertInteractionResolutionOwner(current, actor);
 
       const [updated] = await db
         .update(issueThreadInteractions)
@@ -1360,6 +1384,7 @@ export function issueThreadInteractionService(db: Db) {
       if (current.status !== "pending") {
         throw conflict("Interaction has already been resolved");
       }
+      assertInteractionResolutionOwner(current, actor);
 
       const interaction = hydrateInteraction(current) as AskUserQuestionsInteraction;
       const normalizedAnswers = normalizeQuestionAnswers({

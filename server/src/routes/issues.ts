@@ -5947,6 +5947,7 @@ export function issueRoutes(
         interactionKind: interaction.kind,
         interactionStatus: interaction.status,
         continuationPolicy: interaction.continuationPolicy,
+        targetUserId: interaction.targetUserId ?? null,
       },
     });
 

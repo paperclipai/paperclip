@@ -32,6 +32,7 @@ export const backupRetentionPolicySchema = z.object({
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
   keyboardShortcuts: z.boolean().default(false),
+  defaultDecisionOwnerUserId: z.string().trim().min(1).max(160).nullable().default(null),
   feedbackDataSharingPreference: feedbackDataSharingPreferenceSchema.default(
     DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   ),

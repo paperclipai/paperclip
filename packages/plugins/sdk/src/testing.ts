@@ -1661,6 +1661,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           sourceRunId: interaction.sourceRunId ?? null,
           title: interaction.title ?? null,
           summary: interaction.summary ?? null,
+          targetUserId: interaction.targetUserId ?? null,
           createdByAgentId: options?.authorAgentId ?? null,
           createdByUserId: null,
           payload: interaction.payload,

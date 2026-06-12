@@ -236,6 +236,130 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(childrenAfterDuplicateAccept).toHaveLength(1);
   });
 
+  it("targets request confirmations to the root human requester and rejects non-owner resolution", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const rootIssueId = randomUUID();
+    const childIssueId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "User-scoped decision routing",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Backend",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: rootIssueId,
+      companyId,
+      goalId,
+      title: "Jonas requested the root work",
+      status: "in_progress",
+      priority: "medium",
+      createdByUserId: "jonas-user",
+    });
+    await db.insert(issues).values({
+      id: childIssueId,
+      companyId,
+      goalId,
+      parentId: rootIssueId,
+      title: "Agent-created child work",
+      status: "in_progress",
+      priority: "medium",
+      createdByAgentId: agentId,
+    });
+
+    const created = await interactionsSvc.create({
+      id: childIssueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Approve the implementation?",
+      },
+    }, {
+      agentId,
+    });
+
+    expect(created.targetUserId).toBe("jonas-user");
+
+    await expect(interactionsSvc.acceptInteraction({
+      id: childIssueId,
+      companyId,
+      projectId: null,
+      goalId,
+    }, created.id, {}, {
+      userId: "thomas-user",
+    })).rejects.toMatchObject({
+      status: 403,
+      message: "Only the targeted board user can resolve this interaction",
+    });
+
+    const accepted = await interactionsSvc.acceptInteraction({
+      id: childIssueId,
+      companyId,
+      projectId: null,
+      goalId,
+    }, created.id, {}, {
+      userId: "jonas-user",
+    });
+
+    expect(accepted.interaction.status).toBe("accepted");
+    expect(accepted.interaction.resolvedByUserId).toBe("jonas-user");
+  });
+
+  it("keeps legacy target-null request confirmations board-wide resolvable", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Legacy target-null confirmation");
+    const interactionId = randomUUID();
+
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "none",
+      payload: {
+        version: 1,
+        prompt: "Proceed with the current draft?",
+      },
+      createdByUserId: "jonas-user",
+      targetUserId: null,
+    });
+
+    const accepted = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      projectId: null,
+      goalId,
+    }, interactionId, {}, {
+      userId: "thomas-user",
+    });
+
+    expect(accepted.interaction.status).toBe("accepted");
+    expect(accepted.interaction.resolvedByUserId).toBe("thomas-user");
+  });
+
   it("accepts a selected subset of suggested tasks and records the skipped drafts", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();

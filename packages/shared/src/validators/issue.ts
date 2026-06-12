@@ -857,6 +857,7 @@ export const requestCheckboxConfirmationResultSchema = requestConfirmationResult
 export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("suggest_tasks"),
+    targetUserId: z.string().trim().min(1).max(160).nullable().optional(),
     idempotencyKey: z.string().trim().max(255).nullable().optional(),
     sourceCommentId: z.string().uuid().nullable().optional(),
     sourceRunId: z.string().uuid().nullable().optional(),
@@ -867,6 +868,7 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("ask_user_questions"),
+    targetUserId: z.string().trim().min(1).max(160).nullable().optional(),
     idempotencyKey: z.string().trim().max(255).nullable().optional(),
     sourceCommentId: z.string().uuid().nullable().optional(),
     sourceRunId: z.string().uuid().nullable().optional(),
@@ -877,6 +879,7 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("request_confirmation"),
+    targetUserId: z.string().trim().min(1).max(160).nullable().optional(),
     idempotencyKey: z.string().trim().max(255).nullable().optional(),
     sourceCommentId: z.string().uuid().nullable().optional(),
     sourceRunId: z.string().uuid().nullable().optional(),
@@ -887,6 +890,7 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("request_checkbox_confirmation"),
+    targetUserId: z.string().trim().min(1).max(160).nullable().optional(),
     idempotencyKey: z.string().trim().max(255).nullable().optional(),
     sourceCommentId: z.string().uuid().nullable().optional(),
     sourceRunId: z.string().uuid().nullable().optional(),

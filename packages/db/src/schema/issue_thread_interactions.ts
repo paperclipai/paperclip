@@ -24,6 +24,7 @@ export const issueThreadInteractions = pgTable(
     sourceRunId: uuid("source_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     title: text("title"),
     summary: text("summary"),
+    targetUserId: text("target_user_id"),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id),
     createdByUserId: text("created_by_user_id"),
     resolvedByAgentId: uuid("resolved_by_agent_id").references(() => agents.id),
@@ -44,6 +45,11 @@ export const issueThreadInteractions = pgTable(
     companyIssueStatusIdx: index("issue_thread_interactions_company_issue_status_idx").on(
       table.companyId,
       table.issueId,
+      table.status,
+    ),
+    companyTargetStatusIdx: index("issue_thread_interactions_company_target_status_idx").on(
+      table.companyId,
+      table.targetUserId,
       table.status,
     ),
     companyIssueIdempotencyUq: uniqueIndex("issue_thread_interactions_company_issue_idempotency_uq")

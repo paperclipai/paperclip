@@ -5,6 +5,7 @@ import { multilineTextSchema } from "./text.js";
 export const createApprovalSchema = z.object({
   type: z.enum(APPROVAL_TYPES),
   requestedByAgentId: z.string().uuid().optional().nullable(),
+  requestedByUserId: z.string().trim().min(1).max(160).optional().nullable(),
   payload: z.record(z.string(), z.unknown()),
   issueIds: z.array(z.string().uuid()).optional(),
 });

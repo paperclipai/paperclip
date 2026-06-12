@@ -59,6 +59,7 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
       keyboardShortcuts: false,
+      defaultDecisionOwnerUserId: null,
       feedbackDataSharingPreference: "prompt",
     });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
@@ -75,6 +76,7 @@ describe("instance settings routes", () => {
       general: {
         censorUsernameInLogs: true,
         keyboardShortcuts: true,
+        defaultDecisionOwnerUserId: null,
         feedbackDataSharingPreference: "allowed",
       },
     });
@@ -258,6 +260,7 @@ describe("instance settings routes", () => {
     expect(getRes.body).toEqual({
       censorUsernameInLogs: false,
       keyboardShortcuts: false,
+      defaultDecisionOwnerUserId: null,
       feedbackDataSharingPreference: "prompt",
     });
 
@@ -293,6 +296,7 @@ describe("instance settings routes", () => {
     expect(res.body).toEqual({
       censorUsernameInLogs: false,
       keyboardShortcuts: false,
+      defaultDecisionOwnerUserId: null,
       feedbackDataSharingPreference: "prompt",
     });
   });

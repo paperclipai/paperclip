@@ -31,6 +31,8 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
+const mockResolveDecisionOwnerUserId = vi.hoisted(() => vi.fn());
+const mockLoadIssueIdentifiers = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
@@ -40,6 +42,10 @@ function registerModuleMocks() {
     issueApprovalService: () => mockIssueApprovalService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
+  }));
+  vi.doMock("../services/decision-owner.js", () => ({
+    resolveDecisionOwnerUserId: mockResolveDecisionOwnerUserId,
+    loadIssueIdentifiers: mockLoadIssueIdentifiers,
   }));
 }
 
@@ -112,12 +118,19 @@ describe("approval routes idempotent retries", () => {
     mockSecretService.normalizeHireApprovalPayloadForPersistence.mockReset();
     mockLogActivity.mockReset();
     mockAccessService.decide.mockReset();
+    mockResolveDecisionOwnerUserId.mockReset();
+    mockLoadIssueIdentifiers.mockReset();
     mockAccessService.decide.mockResolvedValue({
       allowed: true,
       action: "company_scope:read",
       reason: "allow_test",
       explanation: "Allowed by test mock.",
     });
+    mockResolveDecisionOwnerUserId.mockResolvedValue({
+      userId: null,
+      source: "none",
+    });
+    mockLoadIssueIdentifiers.mockResolvedValue([]);
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
     mockLogActivity.mockResolvedValue(undefined);

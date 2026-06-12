@@ -78,6 +78,7 @@ import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { resolveDecisionOwnerUserId } from "../services/decision-owner.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import {
   DEFAULT_ACPX_LOCAL_AGENT,
@@ -2139,6 +2140,7 @@ export function agentRoutes(
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
+    let approvalOwnerResolutionSource: string | null = null;
     const actor = getActorInfo(req);
 
     if (requiresApproval) {
@@ -2155,10 +2157,16 @@ export function agentRoutes(
         redactEventPayload(
           ((normalizedHireInput.metadata ?? agent.metadata ?? {}) as Record<string, unknown>),
         ) ?? {};
+      const owner = await resolveDecisionOwnerUserId(db, {
+        companyId,
+        issueIds: sourceIssueIds,
+        currentUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+      approvalOwnerResolutionSource = owner.source;
       approval = await approvalsSvc.create(companyId, {
         type: "hire_agent",
         requestedByAgentId: actor.actorType === "agent" ? actor.actorId : null,
-        requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
+        requestedByUserId: owner.userId,
         status: "pending",
         payload: {
           name: normalizedHireInput.name,
@@ -2238,7 +2246,13 @@ export function agentRoutes(
         action: "approval.created",
         entityType: "approval",
         entityId: approval.id,
-        details: { type: approval.type, linkedAgentId: agent.id },
+        details: {
+          type: approval.type,
+          linkedAgentId: agent.id,
+          issueIds: sourceIssueIds,
+          requestedByUserId: approval.requestedByUserId,
+          decisionOwnerResolutionSource: approvalOwnerResolutionSource,
+        },
       });
     }
 

@@ -20,6 +20,7 @@ import {
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { loadIssueIdentifiers, resolveDecisionOwnerUserId } from "../services/decision-owner.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
   return {
@@ -103,10 +104,16 @@ export function approvalRoutes(
         : approvalInput.payload;
 
     const actor = getActorInfo(req);
+    const owner = await resolveDecisionOwnerUserId(db, {
+      companyId,
+      explicitUserId: approvalInput.requestedByUserId ?? null,
+      issueIds: uniqueIssueIds,
+      currentUserId: actor.actorType === "user" ? actor.actorId : null,
+    });
     const approval = await svc.create(companyId, {
       ...approvalInput,
       payload: normalizedPayload,
-      requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
+      requestedByUserId: owner.userId,
       requestedByAgentId:
         approvalInput.requestedByAgentId ?? (actor.actorType === "agent" ? actor.actorId : null),
       status: "pending",
@@ -122,6 +129,7 @@ export function approvalRoutes(
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
     }
+    const linkedIssues = await loadIssueIdentifiers(db, companyId, uniqueIssueIds);
 
     await logActivity(db, {
       companyId,
@@ -131,7 +139,15 @@ export function approvalRoutes(
       action: "approval.created",
       entityType: "approval",
       entityId: approval.id,
-      details: { type: approval.type, issueIds: uniqueIssueIds },
+      details: {
+        type: approval.type,
+        issueIds: uniqueIssueIds,
+        linkedIssues,
+        requestedByUserId: approval.requestedByUserId,
+        decisionOwnerResolutionSource: owner.source,
+        decisionOwnerSourceIssueId: owner.issueId ?? null,
+        decisionOwnerSourceCommentId: owner.commentId ?? null,
+      },
     });
 
     res.status(201).json(redactApprovalPayload(approval));

@@ -24,9 +24,10 @@ type ApprovalRecord = {
   status: string;
   payload: Record<string, unknown>;
   requestedByAgentId: string | null;
+  requestedByUserId: string | null;
 };
 
-function createApproval(status: string): ApprovalRecord {
+function createApproval(status: string, requestedByUserId: string | null = null): ApprovalRecord {
   return {
     id: "approval-1",
     companyId: "company-1",
@@ -34,6 +35,7 @@ function createApproval(status: string): ApprovalRecord {
     status,
     payload: { agentId: "agent-1" },
     requestedByAgentId: "requester-1",
+    requestedByUserId,
   };
 }
 
@@ -103,5 +105,41 @@ describe("approvalService resolution idempotency", () => {
     expect(result.applied).toBe(true);
     expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1");
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects approval resolution from a non-owner board user", async () => {
+    const dbStub = createDbStub([[createApproval("pending", "jonas-user")]], []);
+
+    const svc = approvalService(dbStub.db as any);
+    await expect(svc.approve("approval-1", "thomas-user", "ship it"))
+      .rejects.toMatchObject({
+        status: 403,
+        message: "Only the targeted board user can resolve this approval",
+      });
+    expect(mockAgentService.activatePendingApproval).not.toHaveBeenCalled();
+    expect(mockNotifyHireApproved).not.toHaveBeenCalled();
+  });
+
+  it("allows the targeted board user to resolve an owned approval", async () => {
+    const approved = createApproval("approved", "jonas-user");
+    const dbStub = createDbStub([[createApproval("pending", "jonas-user")]], [approved]);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.approve("approval-1", "jonas-user", "ship it");
+
+    expect(result.applied).toBe(true);
+    expect(result.approval.status).toBe("approved");
+    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1");
+  });
+
+  it("keeps legacy owner-null approvals board-wide resolvable", async () => {
+    const approved = createApproval("approved", null);
+    const dbStub = createDbStub([[createApproval("pending", null)]], [approved]);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.approve("approval-1", "thomas-user", "ship it");
+
+    expect(result.applied).toBe(true);
+    expect(result.approval.status).toBe("approved");
   });
 });

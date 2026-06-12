@@ -2036,6 +2036,7 @@ export function buildHostServices(
             interactionKind: interaction.kind,
             interactionStatus: interaction.status,
             continuationPolicy: interaction.continuationPolicy,
+            targetUserId: interaction.targetUserId ?? null,
           },
         });
         return interaction as any;

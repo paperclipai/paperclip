@@ -671,6 +671,7 @@ export interface IssueCommentPresentation {
 export interface IssueThreadInteractionActorFields {
   createdByAgentId?: string | null;
   createdByUserId?: string | null;
+  targetUserId?: string | null;
   resolvedByAgentId?: string | null;
   resolvedByUserId?: string | null;
 }

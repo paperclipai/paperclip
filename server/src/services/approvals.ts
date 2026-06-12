@@ -1,7 +1,7 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
-import { notFound, unprocessable } from "../errors.js";
+import { forbidden, notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
@@ -41,6 +41,9 @@ export function approvalService(db: Db) {
     decisionNote: string | null | undefined,
   ): Promise<ResolutionResult> {
     const existing = await getExistingApproval(id);
+    if (existing.requestedByUserId && existing.requestedByUserId !== decidedByUserId) {
+      throw forbidden("Only the targeted board user can resolve this approval");
+    }
     if (!canResolveStatuses.has(existing.status)) {
       if (existing.status === targetStatus) {
         return { approval: existing, applied: false };
@@ -189,6 +192,9 @@ export function approvalService(db: Db) {
 
     requestRevision: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
       const existing = await getExistingApproval(id);
+      if (existing.requestedByUserId && existing.requestedByUserId !== decidedByUserId) {
+        throw forbidden("Only the targeted board user can resolve this approval");
+      }
       if (existing.status !== "pending") {
         throw unprocessable("Only pending approvals can request revision");
       }

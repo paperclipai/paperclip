@@ -50,6 +50,7 @@ export const DEFAULT_BACKUP_RETENTION: BackupRetentionPolicy = {
 export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
   keyboardShortcuts: boolean;
+  defaultDecisionOwnerUserId: string | null;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
 }

@@ -26,6 +26,7 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
     return {
       censorUsernameInLogs: parsed.data.censorUsernameInLogs ?? false,
       keyboardShortcuts: parsed.data.keyboardShortcuts ?? false,
+      defaultDecisionOwnerUserId: parsed.data.defaultDecisionOwnerUserId ?? null,
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
@@ -34,6 +35,7 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
   return {
     censorUsernameInLogs: false,
     keyboardShortcuts: false,
+    defaultDecisionOwnerUserId: null,
     feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
     backupRetention: DEFAULT_BACKUP_RETENTION,
   };
