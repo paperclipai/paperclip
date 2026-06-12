@@ -1635,7 +1635,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           existingByPaperclip.companyId !== input.companyId
           || existingByPaperclip.linearIssueId !== input.linearIssueId
         )) {
-          throw new Error(`Paperclip issue already linked: ${input.issueId}`);
+          if (!input.replaceExisting) {
+            throw new Error(`Paperclip issue already linked: ${input.issueId}`);
+          }
+          linearIssueLinksByLinearIssueId.delete(
+            linkKey(existingByPaperclip.companyId, existingByPaperclip.linearIssueId),
+          );
         }
 
         linearIssueLinksByLinearIssueId.set(

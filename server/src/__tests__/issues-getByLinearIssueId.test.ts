@@ -242,4 +242,79 @@ describeEmbeddedPostgres("issueService.getByLinearIssueId (linear_issue_links lo
       linearIdentifier: "BLO-5432",
     })).rejects.toMatchObject({ status: 409 });
   });
+
+  it("linkLinearIssue replaces a stale same-Paperclip link only when requested", async () => {
+    const company = await seedCompany();
+    const [issue] = await db
+      .insert(issues)
+      .values({
+        companyId: company.id,
+        identifier: "BLO-72",
+        issueNumber: 72,
+        title: "Paperclip issue with stale Linear UUID",
+        originKind: "manual",
+      })
+      .returning();
+    const staleLinearIssueUuid = randomUUID();
+    const currentLinearIssueUuid = randomUUID();
+
+    await svc.linkLinearIssue(company.id, {
+      issueId: issue.id,
+      linearIssueId: staleLinearIssueUuid,
+      linearIdentifier: "BLO-2344",
+    });
+
+    await expect(svc.linkLinearIssue(company.id, {
+      issueId: issue.id,
+      linearIssueId: currentLinearIssueUuid,
+      linearIdentifier: "BLO-1005",
+    })).rejects.toMatchObject({ status: 409 });
+
+    await expect(svc.linkLinearIssue(company.id, {
+      issueId: issue.id,
+      linearIssueId: currentLinearIssueUuid,
+      linearIdentifier: "BLO-1005",
+      replaceExisting: true,
+    })).resolves.toBeUndefined();
+
+    await expect(svc.getByLinearIssueId(company.id, staleLinearIssueUuid)).resolves.toBeNull();
+    expect((await svc.getByLinearIssueId(company.id, currentLinearIssueUuid))?.id).toBe(issue.id);
+  });
+
+  it("linkLinearIssue does not replace a Linear link owned by another Paperclip issue", async () => {
+    const company = await seedCompany();
+    const [issueA, issueB] = await db
+      .insert(issues)
+      .values([
+        {
+          companyId: company.id,
+          identifier: "BLO-73",
+          issueNumber: 73,
+          title: "first issue",
+          originKind: "manual",
+        },
+        {
+          companyId: company.id,
+          identifier: "BLO-74",
+          issueNumber: 74,
+          title: "second issue",
+          originKind: "manual",
+        },
+      ])
+      .returning();
+    const linearIssueUuid = randomUUID();
+
+    await svc.linkLinearIssue(company.id, {
+      issueId: issueA.id,
+      linearIssueId: linearIssueUuid,
+      linearIdentifier: "BLO-5433",
+    });
+
+    await expect(svc.linkLinearIssue(company.id, {
+      issueId: issueB.id,
+      linearIssueId: linearIssueUuid,
+      linearIdentifier: "BLO-5433",
+      replaceExisting: true,
+    })).rejects.toMatchObject({ status: 409 });
+  });
 });

@@ -1470,6 +1470,7 @@ export interface PluginIssuesClient {
     companyId: string;
     linearIssueId: string;
     linearIdentifier: string;
+    replaceExisting?: boolean;
   }): Promise<void>;
   create(input: {
     companyId: string;

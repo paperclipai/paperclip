@@ -200,6 +200,55 @@ describe("link lookup", () => {
     });
   });
 
+  it("replaces a stale host link for the same Paperclip issue when requested", async () => {
+    const harness = createTestHarness({ manifest });
+    harness.seed({
+      issues: [
+        {
+          id: "pc-1",
+          companyId: "comp-1",
+          title: "Paperclip mirror with stale host link",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        } as never,
+      ],
+      linearIssueLinks: [
+        {
+          companyId: "comp-1",
+          paperclipIssueId: "pc-1",
+          linearIssueId: "lin-stale",
+        },
+      ],
+    });
+
+    await createLink(harness.ctx, {
+      paperclipIssueId: "pc-1",
+      paperclipCompanyId: "comp-1",
+      linearIssueId: "lin-current",
+      linearIdentifier: "BLO-1005",
+      linearUrl: "https://linear.app/blockc/issue/BLO-1005",
+      linearStateType: "unstarted",
+      syncDirection: "bidirectional",
+      replaceExisting: true,
+    });
+
+    await expect(harness.ctx.issues.getByLinearIssueId({
+      companyId: "comp-1",
+      linearIssueId: "lin-stale",
+    })).resolves.toBeNull();
+    await expect(harness.ctx.issues.getByLinearIssueId({
+      companyId: "comp-1",
+      linearIssueId: "lin-current",
+    })).resolves.toMatchObject({ id: "pc-1" });
+    await expect(getLinkByLinear(harness.ctx, "lin-current")).resolves.toMatchObject({
+      paperclipIssueId: "pc-1",
+      linearIssueId: "lin-current",
+      linearIdentifier: "BLO-1005",
+    });
+  });
+
   it("does not repair plugin link state when a host conflict points at another issue", async () => {
     const harness = createTestHarness({ manifest });
     harness.seed({
