@@ -143,6 +143,71 @@ import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
+import {
+  executeClaudeViaSdkServer,
+  isRemoteClaudeSdkConfig,
+  testClaudeSdkServerEnvironment,
+} from "./claude-sdk-server.js";
+import {
+  executeCodexViaAppServer,
+  isRemoteCodexConfig,
+  testCodexAppServerEnvironment,
+} from "./codex-app-server.js";
+
+const claudeAdapterConfigurationDoc = `${claudeAgentConfigurationDoc}
+
+Remote SDK bridge fields:
+- agentSdkServerUrl (string, optional): ws:// or wss:// Paperclip Claude SDK server endpoint. When set, Paperclip talks to the remote bridge over WebSocket instead of launching local \`claude\`.
+- agentSdkServerBearerToken (string, optional): bearer token sent as \`Authorization\` during the WebSocket handshake when remote auth is required.
+- agentSdkServerHeaders (object, optional): extra WebSocket handshake headers for remote auth.
+
+Remote mode notes:
+- This is a Paperclip bridge protocol for self-hosted Claude infrastructure, not an official Anthropic remote-control API.
+- The remote bridge is expected to run Claude locally on its own host and stream stdout/stderr back to Paperclip.
+`;
+
+const codexAdapterConfigurationDoc = `${codexAgentConfigurationDoc}
+
+Remote App Server fields:
+- appServerUrl (string, optional): ws:// or wss:// Codex App Server endpoint. When set, Paperclip talks to the remote App Server over WebSocket instead of launching local \`codex exec\`.
+- appServerBearerToken (string, optional): bearer token sent as \`Authorization\` during the WebSocket handshake when remote auth is required.
+- appServerHeaders (object, optional): extra WebSocket handshake headers for remote auth.
+
+Remote mode notes:
+- \`dangerouslyBypassApprovalsAndSandbox=true\` is currently required to avoid interactive approval deadlocks.
+- \`search\`, \`command\`, and \`extraArgs\` are not currently applied in remote App Server mode.
+`;
+
+async function executeCodexAdapter(ctx: Parameters<typeof codexExecute>[0]) {
+  // Keep remote App Server support under `codex_local` so existing agent records,
+  // UI labels, and downstream logic continue to treat this as "the Codex adapter"
+  // with an alternate transport, not a separate product surface.
+  if (isRemoteCodexConfig(ctx.config)) {
+    return executeCodexViaAppServer(ctx);
+  }
+  return codexExecute(ctx);
+}
+
+async function testCodexAdapterEnvironment(ctx: Parameters<typeof codexTestEnvironment>[0]) {
+  if (isRemoteCodexConfig(ctx.config)) {
+    return testCodexAppServerEnvironment(ctx);
+  }
+  return codexTestEnvironment(ctx);
+}
+
+async function executeClaudeAdapter(ctx: Parameters<typeof claudeExecute>[0]) {
+  if (isRemoteClaudeSdkConfig(ctx.config)) {
+    return executeClaudeViaSdkServer(ctx);
+  }
+  return claudeExecute(ctx);
+}
+
+async function testClaudeAdapterEnvironment(ctx: Parameters<typeof claudeTestEnvironment>[0]) {
+  if (isRemoteClaudeSdkConfig(ctx.config)) {
+    return testClaudeSdkServerEnvironment(ctx);
+  }
+  return claudeTestEnvironment(ctx);
+}
 
 function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
   const value = typeof config.command === "string" ? config.command.trim() : "";
@@ -248,8 +313,8 @@ async function listAcpxModels(): Promise<AdapterModel[]> {
 
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
-  execute: claudeExecute,
-  testEnvironment: claudeTestEnvironment,
+  execute: executeClaudeAdapter,
+  testEnvironment: testClaudeAdapterEnvironment,
   listSkills: listClaudeSkills,
   syncSkills: syncClaudeSkills,
   sessionCodec: claudeSessionCodec,
@@ -264,7 +329,7 @@ const claudeLocalAdapter: ServerAdapterModule = {
   requiresMaterializedRuntimeSkills: false,
   getRuntimeCommandSpec: (config) =>
     buildNpmRuntimeCommandSpec(config, "claude", "@anthropic-ai/claude-code"),
-  agentConfigurationDoc: claudeAgentConfigurationDoc,
+  agentConfigurationDoc: claudeAdapterConfigurationDoc,
   getQuotaWindows: claudeGetQuotaWindows,
 };
 
@@ -291,8 +356,8 @@ const acpxLocalAdapter: ServerAdapterModule = {
 
 const codexLocalAdapter: ServerAdapterModule = {
   type: "codex_local",
-  execute: codexExecute,
-  testEnvironment: codexTestEnvironment,
+  execute: executeCodexAdapter,
+  testEnvironment: testCodexAdapterEnvironment,
   listSkills: listCodexSkills,
   syncSkills: syncCodexSkills,
   sessionCodec: codexSessionCodec,
@@ -306,7 +371,7 @@ const codexLocalAdapter: ServerAdapterModule = {
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
   getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex"),
-  agentConfigurationDoc: codexAgentConfigurationDoc,
+  agentConfigurationDoc: codexAdapterConfigurationDoc,
   getQuotaWindows: codexGetQuotaWindows,
 };
 

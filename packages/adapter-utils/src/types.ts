@@ -470,6 +470,7 @@ export interface CreateConfigValues {
   adapterType: string;
   cwd: string;
   instructionsFilePath?: string;
+  appServerBearerToken?: string;
   promptTemplate: string;
   model: string;
   thinkingEffort: string;

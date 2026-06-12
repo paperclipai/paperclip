@@ -71,6 +71,9 @@ Adapter: codex_local
 
 Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
+- appServerUrl (string, optional): ws:// or wss:// Codex App Server endpoint. When set, Paperclip uses the remote App Server over WebSocket instead of launching local \`codex exec\`
+- appServerBearerToken (string, optional): bearer token sent as \`Authorization\` during the remote App Server WebSocket handshake
+- appServerHeaders (object, optional): extra WebSocket handshake headers for remote App Server auth
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to stdin prompt at runtime
 - model (string, optional): Codex model id
 - modelReasoningEffort (string, optional): reasoning effort override (minimal|low|medium|high|xhigh) passed via -c model_reasoning_effort=...
@@ -89,9 +92,13 @@ Operational fields:
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
-- Prompts are piped via stdin (Codex receives "-" prompt argument).
+- Local mode uses \`codex exec\`; prompts are piped via stdin (Codex receives "-" prompt argument).
 - If instructionsFilePath is configured, Paperclip prepends that file's contents to the stdin prompt on every run.
 - Codex exec automatically applies repo-scoped AGENTS.md instructions from the active workspace. Paperclip cannot suppress that discovery in exec mode, so repo AGENTS.md files may still apply even when you only configured an explicit instructionsFilePath.
+- Remote mode is enabled by \`appServerUrl\` and talks to Codex App Server over WebSocket while keeping the same \`codex_local\` adapter type.
+- If \`appServerBearerToken\` is set, Paperclip sends \`Authorization: Bearer <token>\` for the WebSocket handshake. Leave it unset to connect without bearer auth.
+- In remote mode, \`dangerouslyBypassApprovalsAndSandbox=true\` is currently required because Paperclip does not yet implement an interactive App Server approval loop.
+- In remote mode, \`search\`, \`command\`, and \`extraArgs\` are not currently applied.
 - Paperclip injects desired local skills into the effective CODEX_HOME/skills/ directory at execution time so Codex can discover "$paperclip" and related skills without polluting the project working directory. In managed-home mode (the default) this is ~/.paperclip/instances/<id>/companies/<companyId>/codex-home/skills/; when CODEX_HOME is explicitly overridden in adapter config, that override is used instead.
 - Unless explicitly overridden in adapter config, Paperclip runs Codex with a per-company managed CODEX_HOME under the active Paperclip instance and seeds auth/config from the shared Codex home (the CODEX_HOME env var, when set, or ~/.codex).
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).

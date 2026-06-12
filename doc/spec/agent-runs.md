@@ -240,19 +240,22 @@ For V1 rollout, adapter identity is explicit:
 
 ## 7.1 `claude-local`
 
-Runs local `claude` CLI directly.
+Runs either the local `claude` CLI directly or a Paperclip-defined remote Claude bridge, depending on config.
 
 ### Config
 
 ```json
 {
   "cwd": "/absolute/or/relative/path",
+  "instructionsFilePath": "/absolute/path/to/AGENTS.md",
   "promptTemplate": "You are agent {{agent.id}} ...",
   "model": "optional-model-id",
   "maxTurnsPerRun": 1000,
   "dangerouslySkipPermissions": true,
   "env": {"KEY": "VALUE"},
   "extraArgs": [],
+  "agentSdkServerUrl": "ws://127.0.0.1:4400",
+  "agentSdkServerBearerToken": "optional-bearer-token",
   "timeoutSec": 1800,
   "graceSec": 20
 }
@@ -260,9 +263,18 @@ Runs local `claude` CLI directly.
 
 ### Invocation
 
-- Base command: `claude --print <prompt> --output-format json`
-- Resume: add `--resume <sessionId>` when runtime state has session ID
-- Unsandboxed mode: add `--dangerously-skip-permissions` when enabled
+- Local CLI mode:
+  - Base command: `claude --print <prompt> --output-format json`
+  - Resume: add `--resume <sessionId>` when runtime state has session ID
+  - Unsandboxed mode: add `--dangerously-skip-permissions` when enabled
+- Remote bridge mode:
+  - Paperclip opens a WebSocket connection to `agentSdkServerUrl`
+  - The remote bridge starts `claude` locally on its own host
+  - Paperclip forwards:
+    - wake payload / task markdown / session handoff markdown in the prompt
+    - Paperclip API env in `config.env`
+    - resolved instructions contents when `instructionsFilePath` is configured
+    - resume session IDs when available
 
 ### Output parsing
 
@@ -275,21 +287,30 @@ Runs local `claude` CLI directly.
 4. Extract `total_cost_usd` when present.
 5. On non-zero exit: still attempt parse; if parse succeeds keep extracted state and mark run failed unless adapter explicitly reports success.
 
+### Remote notes
+
+- Remote `claude_local` is a Paperclip-owned bridge protocol, not an Anthropic-native remote control protocol.
+- The remote Claude process receives full Paperclip API env directly, so it can call back to the Paperclip API if the remote host can reach `PAPERCLIP_API_URL`.
+- `paperclipWorkspace.cwd` is treated as a Paperclip-side hint only in remote mode; the remote Claude process uses `adapterConfig.cwd` if set, otherwise the bridge host's own local cwd.
+
 ## 7.2 `codex-local`
 
-Runs local `codex` CLI directly.
+Runs either the local `codex` CLI directly or a remote Codex App Server, depending on config.
 
 ### Config
 
 ```json
 {
   "cwd": "/absolute/or/relative/path",
+  "instructionsFilePath": "/absolute/path/to/AGENTS.md",
   "promptTemplate": "You are agent {{agent.id}} ...",
   "model": "optional-model-id",
   "search": false,
   "dangerouslyBypassApprovalsAndSandbox": true,
   "env": {"KEY": "VALUE"},
   "extraArgs": [],
+  "appServerUrl": "ws://127.0.0.1:4100",
+  "appServerBearerToken": "optional-bearer-token",
   "timeoutSec": 1800,
   "graceSec": 20
 }
@@ -297,23 +318,42 @@ Runs local `codex` CLI directly.
 
 ### Invocation
 
-- Base command: `codex exec --json <prompt>`
-- Resume form: `codex exec --json resume <sessionId> <prompt>`
-- Unsandboxed mode: add `--dangerously-bypass-approvals-and-sandbox` when enabled
-- Optional search mode: add `--search`
+- Local CLI mode:
+  - Base command: `codex exec --json <prompt>`
+  - Resume form: `codex exec --json resume <sessionId> <prompt>`
+  - Unsandboxed mode: add `--dangerously-bypass-approvals-and-sandbox` when enabled
+  - Optional search mode: add `--search`
+- Remote App Server mode:
+  - Paperclip opens a WebSocket connection to `appServerUrl`
+  - Paperclip starts/resumes Codex threads and turns over JSON-RPC
+  - Paperclip forwards:
+    - wake payload / task markdown / session handoff markdown in the prompt
+    - resolved instructions contents in the prompt when `instructionsFilePath` is configured
+    - Paperclip env values as a prompt note
+    - resume thread IDs when available
 
 ### Output parsing
 
-Codex emits JSONL events. Parse line-by-line and extract:
+- Local CLI mode:
+  Codex emits JSONL events. Parse line-by-line and extract:
 
-1. `thread.started.thread_id` -> session ID
-2. `item.completed` where item type is `agent_message` -> output text
-3. `turn.completed.usage`:
-   - `input_tokens`
-   - `cached_input_tokens`
-   - `output_tokens`
+  1. `thread.started.thread_id` -> session ID
+  2. `item.completed` where item type is `agent_message` -> output text
+  3. `turn.completed.usage`:
+     - `input_tokens`
+     - `cached_input_tokens`
+     - `output_tokens`
+
+- Remote App Server mode:
+  Paperclip maps App Server notifications back into the same legacy Codex JSONL event shape so the rest of the runtime can parse remote and local Codex runs consistently.
 
 Codex JSONL currently may not include cost; store token usage and leave cost null/unknown unless available.
+
+### Remote notes
+
+- Remote `codex_local` talks directly to Codex App Server; Paperclip does not own the remote Codex process lifecycle the way it does for the Claude bridge.
+- Remote Codex now gets the same issue/task framing as remote Claude in the prompt, but its Paperclip env values are disclosed as prompt text rather than injected into the remote shell environment.
+- Remote Codex currently requires `dangerouslyBypassApprovalsAndSandbox=true` because Paperclip does not yet implement an interactive approval reviewer for App Server requests.
 
 ## 7.3 Common local adapter process handling
 
