@@ -3376,11 +3376,13 @@ export function issueRoutes(
     if (issue.projectId) {
       const project = await projectsSvc.getById(issue.projectId);
       if (project?.pausedAt) {
+        const code = project.pauseReason === "budget" ? "project_budget_paused" : "project_paused";
         res.status(409).json({
           error:
             project.pauseReason === "budget"
               ? "Project is paused because its budget hard-stop was reached"
               : "Project is paused",
+          code,
         });
         return;
       }
