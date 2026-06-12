@@ -3068,6 +3068,25 @@ export function accessRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCompanyPermission(req, companyId, "users:invite");
+      // GH #7786: users:invite alone must not allow granting a role above the
+      // actor's own — an admin could otherwise mint owner invites and escalate.
+      // Human invites default to "operator" when no role is requested, so guard
+      // the effective role. Non-board actors (agents) have no membership role;
+      // cap them at the legacy default ("operator") so they can still create
+      // ordinary invites but never privileged ones.
+      const requestedHumanRole =
+        req.body.allowedJoinTypes === "agent"
+          ? null
+          : normalizeHumanRole(req.body.humanRole ?? "operator", "operator");
+      if (requestedHumanRole) {
+        const actorRole = await resolveActorHumanRole(req, access, companyId);
+        const grantableRank = actorRole ? humanRoleRank[actorRole] : humanRoleRank.operator;
+        if (humanRoleRank[requestedHumanRole] > grantableRank) {
+          throw forbidden(
+            "You can only create invites for roles at or below your own company role",
+          );
+        }
+      }
       const { token, created, normalizedAgentMessage } =
         await createCompanyInviteForCompany({
           req,
