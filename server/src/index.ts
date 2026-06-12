@@ -43,6 +43,8 @@ import {
   bootstrapExecutionPolicyFromEnv,
   heartbeatService,
   instanceSettingsService,
+  startClaimHeartbeats,
+  stopClaimHeartbeats,
   reconcileCloudUpstreamRunsOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
@@ -1004,6 +1006,14 @@ export async function startServer(): Promise<StartedServer> {
   // heartbeating its claims so other replicas' reapers leave them alone.
   // PAPERCLIP_RUN_EXECUTOR=false opts a replica out (traffic-only replicas
   // may also skip executing).
+  // Always-on per-process claim heartbeat: re-stamps executor_heartbeat_at
+  // for EVERY run executing inside this process (per-agent immediate
+  // dispatch from routes and internal chains included), not just the
+  // executor loop's batch claims. Runs regardless of PAPERCLIP_RUN_EXECUTOR
+  // so traffic-only replicas' locally dispatched runs are never falsely
+  // reaped by a foreign leader.
+  startClaimHeartbeats(db as any, PROCESS_REPLICA_ID);
+
   let runExecutor: RunExecutor | null = null;
   if (process.env.PAPERCLIP_RUN_EXECUTOR !== "false") {
     runExecutor = createRunExecutor({
@@ -1129,6 +1139,14 @@ export async function startServer(): Promise<StartedServer> {
         } catch (err) {
           logger.warn({ err, signal }, "failed to drain run executor during shutdown");
         }
+      }
+
+      // Stop the process-wide claim heartbeat after the executor drain so
+      // in-flight runs stay heartbeaten while they finish.
+      try {
+        await stopClaimHeartbeats();
+      } catch (err) {
+        logger.warn({ err, signal }, "failed to stop claim heartbeats during shutdown");
       }
 
       // Resign scheduler leadership next so another replica can take over

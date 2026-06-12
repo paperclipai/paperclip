@@ -244,6 +244,97 @@ const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retr
  */
 export const EXECUTOR_HEARTBEAT_STALE_MS = 90_000;
 /**
+ * Cadence of the process-wide claim heartbeat (startClaimHeartbeats below).
+ * Matches the run-executor loop's default so EXECUTOR_HEARTBEAT_STALE_MS
+ * keeps meaning "3 missed beats + margin" for every locally executing run.
+ */
+export const CLAIM_HEARTBEAT_INTERVAL_MS = 15_000;
+
+/**
+ * Run ids currently executing inside THIS process, across ALL
+ * heartbeatService instances (route handlers construct their own instances;
+ * the scheduler runtime and the run-executor closure hold others).
+ * Module-scoped like `runningProcesses` so the orphan reaper and the
+ * process-wide claim heartbeat see every local execution regardless of which
+ * instance dispatched it.
+ */
+export const activeRunExecutions = new Set<string>();
+
+/**
+ * One pass of the process-wide claim heartbeat: re-stamp
+ * executor_heartbeat_at (+ updated_at, so the legacy own-claim staleness
+ * check stays fresh too) for every locally executing run still claimed by
+ * this replica. This gives runs dispatched through the per-agent immediate
+ * path (startNextQueuedRunForAgent / executeRun) the same liveness signal
+ * the run-executor loop gives its batch claims, so foreign reapers leave
+ * live local runs alone once they outlive EXECUTOR_HEARTBEAT_STALE_MS.
+ */
+export async function runClaimHeartbeatPass(db: Db, replicaId: string = PROCESS_REPLICA_ID): Promise<void> {
+  if (activeRunExecutions.size === 0) return;
+  const runIds = [...activeRunExecutions];
+  const now = new Date();
+  await db
+    .update(heartbeatRuns)
+    .set({ executorHeartbeatAt: now, updatedAt: now })
+    .where(
+      and(
+        inArray(heartbeatRuns.id, runIds),
+        eq(heartbeatRuns.claimedBy, replicaId),
+        eq(heartbeatRuns.status, "running"),
+      ),
+    );
+}
+
+let claimHeartbeatTimer: NodeJS.Timeout | null = null;
+let claimHeartbeatInFlight: Promise<void> | null = null;
+let claimHeartbeatStarted = false;
+
+/**
+ * Always-on per-process claim heartbeat. Started from index.ts REGARDLESS of
+ * PAPERCLIP_RUN_EXECUTOR: replicas that never batch-claim still execute runs
+ * locally via agent routes and internal dispatch chains, and those claims
+ * would otherwise be stamped exactly once at claim time and falsely reaped
+ * by a foreign leader after EXECUTOR_HEARTBEAT_STALE_MS. setTimeout chain
+ * (never setInterval) so passes cannot overlap; unref'd so it never holds
+ * the process open.
+ */
+export function startClaimHeartbeats(
+  db: Db,
+  replicaId: string = PROCESS_REPLICA_ID,
+  intervalMs: number = CLAIM_HEARTBEAT_INTERVAL_MS,
+): void {
+  if (claimHeartbeatStarted) return;
+  claimHeartbeatStarted = true;
+  const schedule = () => {
+    if (!claimHeartbeatStarted) return;
+    claimHeartbeatTimer = setTimeout(tick, intervalMs);
+    claimHeartbeatTimer.unref();
+  };
+  const tick = () => {
+    claimHeartbeatTimer = null;
+    claimHeartbeatInFlight = runClaimHeartbeatPass(db, replicaId)
+      .catch((err) => {
+        // Missed beats are tolerated up to EXECUTOR_HEARTBEAT_STALE_MS.
+        logger.warn({ err, replicaId }, "process-wide claim heartbeat pass failed");
+      })
+      .finally(() => {
+        claimHeartbeatInFlight = null;
+        schedule();
+      });
+  };
+  schedule();
+}
+
+/** Shutdown counterpart of startClaimHeartbeats. Idempotent. */
+export async function stopClaimHeartbeats(): Promise<void> {
+  claimHeartbeatStarted = false;
+  if (claimHeartbeatTimer) {
+    clearTimeout(claimHeartbeatTimer);
+    claimHeartbeatTimer = null;
+  }
+  if (claimHeartbeatInFlight) await claimHeartbeatInFlight;
+}
+/**
  * A queued run may be batch-claimed and released back at most this many
  * times before the claim path stops re-queueing it and escalates to a
  * run failure (mirroring the reaper's dead-run transition). Guards against
@@ -3153,7 +3244,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     environmentRuntime,
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
-  const activeRunExecutions = new Set<string>();
+  // Uses the module-level process-wide activeRunExecutions set so the
+  // zombie-coalesce liveness view covers claims made through ANY service
+  // instance in this process, not just this one.
   const liveRunExecutions = {
     has(id: string) {
       return runningProcesses.has(id) || activeRunExecutions.has(id);
@@ -7798,6 +7891,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const beatMs = beatAt ? new Date(beatAt).getTime() : 0;
         if (now.getTime() - beatMs < EXECUTOR_HEARTBEAT_STALE_MS) continue;
       } else {
+        // Own claim with a fresh beat: alive by definition. This process
+        // stamps executor_heartbeat_at at claim time and re-stamps it every
+        // CLAIM_HEARTBEAT_INTERVAL_MS while the run executes locally, so a
+        // fresh beat shields the window between the claim UPDATE and
+        // activeRunExecutions.add, and claims this process made through any
+        // service instance. Safe because replica ids are unique per process:
+        // a restarted process never matches its predecessor's claims.
+        if (run.claimedBy === replicaId) {
+          const beatAt = run.executorHeartbeatAt ?? run.claimedAt;
+          const beatMs = beatAt ? new Date(beatAt).getTime() : 0;
+          if (now.getTime() - beatMs < EXECUTOR_HEARTBEAT_STALE_MS) continue;
+        }
+
         // Own (or legacy unclaimed) run: existing local-process logic.
         if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
