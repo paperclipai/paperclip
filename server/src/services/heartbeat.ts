@@ -2109,8 +2109,8 @@ export function formatRuntimeWorkspaceWarningLog(warning: string) {
 
 /**
  * A run is a "zombie" if it's marked as running in the DB but has no live
- * process tracked in the in-memory runningProcesses Map. This happens when
- * the server restarts and the child process is lost.
+ * execution tracked in memory. This happens when the server restarts and the
+ * execution is lost, or when the DB row outlives the in-memory run state.
  *
  * Queued runs are never zombies — they don't have processes yet.
  */
@@ -2138,7 +2138,7 @@ export function filterZombieCoalesceTarget<
   return target && isZombieRun(target, tracked) ? null : target;
 }
 
-function describeSessionResetReason(
+export function describeSessionResetReason(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
   if (contextSnapshot?.forceFreshSession === true) return "forceFreshSession was requested";
@@ -3119,6 +3119,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+  const liveRunExecutions = {
+    has(id: string) {
+      return runningProcesses.has(id) || activeRunExecutions.has(id);
+    },
+  };
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -10537,7 +10542,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             isSameExecutionAgent;
           const availableActiveExecutionRun = filterZombieCoalesceTarget(
             activeExecutionRun,
-            runningProcesses,
+            liveRunExecutions,
           );
 
           if (
@@ -10742,7 +10747,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const coalescedTargetRun = filterZombieCoalesceTarget(
       rawCoalescedTarget,
-      runningProcesses,
+      liveRunExecutions,
     );
 
     if (coalescedTargetRun) {

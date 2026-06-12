@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { and, asc, eq } from "drizzle-orm";
 import { WebSocketServer } from "ws";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   agentWakeupRequests,
@@ -12,6 +12,7 @@ import {
   issueComments,
   issues,
 } from "@paperclipai/db";
+import { runningProcesses } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY } from "../services/recovery/index.ts";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.ts";
@@ -161,6 +162,10 @@ describe("heartbeat comment wake batching", () => {
     await tempDb?.cleanup();
   });
 
+  afterEach(() => {
+    runningProcesses.clear();
+  });
+
   it("defers approval-approved wakes for a running issue so the assignee resumes after the run", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -200,6 +205,11 @@ describe("heartbeat comment wake batching", () => {
         taskId: issueId,
         wakeReason: "issue_assigned",
       },
+    });
+    runningProcesses.set(runId, {
+      child: {} as never,
+      graceSec: 0,
+      processGroupId: null,
     });
 
     await db.insert(issues).values({
