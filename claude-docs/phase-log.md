@@ -197,3 +197,78 @@ workspaces). Added a dedicated nullable `issues.pr_url` instead (migration 0101)
    PR → review gates → operator merge. Validate in the B1 pilot.
 
 ### Next: A4 (gate audit ledger UI) + A5 (cost visibility UI) — both credential-free.
+
+---
+
+## Session 4 — A6 (git-ops proxy) + GITOPS-2 (hardening) + E6 (budget guard) — 2026-06-12
+
+Supersedes A3's live half. Env-bound `GITHUB_TOKEN` is FORBIDDEN (threat model:
+plaintext in agent process env, readable/exfiltratable by a
+`--dangerously-skip-permissions` agent). Replaced by a server-side git-ops proxy.
+
+### A6 — Git-ops proxy ("commit local, ship by tool")
+Agents commit in their worktree credential-free, then call two MCP tools; push
+to fork + PR creation run server-side. Token resolved from a company secret
+inside `git-ops.ts` (no binding context → no env binding); never enters the
+agent env, argv, or worktree.
+
+- `server/src/services/git-ops.ts` — `runHardenedGitPush` (sole push site),
+  GitHub REST PR via `ghFetch`, persist `issues.pr_url`, idempotent PR.
+- `server/src/routes/git-ops.ts` — `POST /issues/:id/git/{push,pr}`, agent-only
+  + assignee-only.
+- `packages/shared/src/validators/git-ops.ts` — strict payload + project-policy
+  schemas (agents supply NO repo/remote/branch/base).
+- MCP `paperclipPushBranch` + `paperclipOpenPullRequest`; sandbox bridge
+  allowlist; openapi docs.
+- Hardening: token only in push subprocess env; credential helper host-checks
+  git stdin (defeats `url.insteadOf` redirect exfil); `core.hooksPath` empty dir
+  (no agent pre-push hook runs with the token); global/system git config nulled;
+  sanitized `{code,status}` errors.
+- Config: `projects.executionWorkspacePolicy.gitOps =
+  {remoteUrl, baseBranch, tokenSecretName}` (no migration).
+
+### GITOPS-2 — audit hardening (post-review fixes)
+- Identifier issue ref → resolve via `issueService.getById` (uuid+identifier,
+  unknown→404, never a pg cast 500).
+- `git push` 30s kill timeout → 504; both GitHub REST calls `AbortSignal`(10s).
+- `branchName` validated `^[A-Za-z0-9][A-Za-z0-9._/-]*$` + len≤255 → 409
+  before any push (option-injection guard; row is agent-writable).
+- 502 status-label fix on malformed-2xx PR body.
+
+### E6 — Run hygiene (runaway guard)
+dev_team activation installs an issue-scoped, lifetime, hard-stop budget policy
+on the plan-root issue from `plan_details.budgetCap*`. Subtree-aggregating, so
+one root policy bounds total burn across children. Best-effort (warns, never
+blocks activation). `server/src/services/plans.ts`.
+
+### Verification
+- typecheck clean (shared/server/mcp-server/adapter-utils).
+- git-ops 16, mcp tools 17, bridge 13, shared 124, plan-gate-activation 9
+  (incl 4 E6), budget-issue-scope 3 — all green.
+- openapi-routes failure set unchanged (5 pre-existing); the 2 git routes
+  documented.
+
+### Gates
+- A6: Code Review APPROVED (cycle 1), Wiring APPROVED (cycle 1).
+- GITOPS-2: Code Review + Wiring APPROVED (cycle 1).
+- E6: Code Review + Wiring APPROVED (cycle 1).
+
+### Commits
+- `feat(shared): add git-ops validators for the dev-team PR pipeline`
+- `feat(server): server-side git-ops proxy for push and PR`
+- `feat(mcp): add git push and open-PR tools`
+- `feat(adapters): allowlist git-ops routes on the sandbox bridge`
+- `feat(server): auto per-issue hard-stop budget on dev_team plan activation (E6)`
+
+### Operator setup to start the B1 pilot (no code left to build for the loop)
+1. Rebuild mcp-server so agents see the 2 new tools.
+2. Hive project: set executionWorkspacePolicy (isolated_workspace + git_worktree
+   + branchTemplate) AND `gitOps {remoteUrl, baseBranch, tokenSecretName}`.
+3. Create fork-scoped PAT as a **company secret** (NOT env-bound), name =
+   `tokenSecretName`.
+4. Staff dev-team agents with urlKeys architect/code-reviewer/wiring-expert.
+5. Implementor AGENTS.md: call `paperclipOpenPullRequest` / `paperclipPushBranch`
+   instead of `gh`.
+6. Set a plan budget cap so E6 installs the runaway guard before unattended runs.
+
+### Next: A4 (gate ledger UI) + A5 (cost UI) + E4 (model tiering) — all post-pilot-optional.
