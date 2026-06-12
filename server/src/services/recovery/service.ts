@@ -507,10 +507,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     companyId: string,
     issueId: string,
     errorCodeToMatch: string | null,
+    currentAssigneeAgentId: string,
   ) {
     const rows = await db
       .select({
         id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
@@ -529,6 +531,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     let consecutive = 0;
     let latestFinishedAt: Date | null = null;
     for (const row of rows) {
+      // Stop counting when we encounter a run from a different agent — that signals an
+      // assignee change and the new doer gets a fresh attempt budget (SAG-3210).
+      if (row.agentId !== currentAssigneeAgentId) break;
+
       const ctx = parseObject(row.contextSnapshot);
       const retryReason = readNonEmptyString(ctx.retryReason);
       if (retryReason !== "issue_continuation_needed") break;
@@ -2897,6 +2903,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             issue.companyId,
             issue.id,
             classification.errorCode,
+            agentId,
           );
           if (consecutive >= classification.maxAttempts) {
             const failureSummary = summarizeRunFailureForIssueComment(latestRun);
