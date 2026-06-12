@@ -151,6 +151,19 @@ def do_validate():
     print(f"OK: alle {sum(len(v[1]) for v in MATRIX.values())} Zuweisungen aufloesbar")
 
 
+def do_dry_run():
+    agents = {a["id"]: a for a in load_agents()}
+    for aid, (nm, target) in MATRIX.items():
+        cur = current_skills(agents[aid])
+        add, remove = compute_diff(cur, target)
+        if not add and not remove:
+            print(f"= {nm}: keine Aenderung")
+            continue
+        print(f"~ {nm}:")
+        for s in add:    print(f"    + {s}")
+        for s in remove: print(f"    - {s}")
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--print-matrix", action="store_true")
@@ -168,6 +181,8 @@ def main():
         do_backup(); return
     if args.validate:
         do_validate(); return
+    if args.dry_run:
+        do_dry_run(); return
     print("Kein Modus gewaehlt. Siehe --help.", file=sys.stderr)
 
 
