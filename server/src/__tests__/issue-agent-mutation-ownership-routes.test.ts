@@ -1147,4 +1147,71 @@ describe("agent issue mutation checkout ownership", () => {
     }));
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
+
+  it("allows the agent that created an issue to post plain comments after it is reassigned", async () => {
+    // SentryBridge files the ticket, CTO picks it up. SentryBridge later wants
+    // to append per-event evidence.
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        status: "in_progress",
+        assigneeAgentId: ownerAgentId,
+        createdByAgentId: peerAgentId,
+      }),
+    );
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "regression event #2" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("does NOT extend the creator bypass to reopen / resume / interrupt", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        status: "in_progress",
+        assigneeAgentId: ownerAgentId,
+        createdByAgentId: peerAgentId,
+      }),
+    );
+
+    const reopen = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "bump", reopen: true });
+    expect(reopen.status, JSON.stringify(reopen.body)).toBe(409);
+    expect(reopen.body.error).toBe("Issue is checked out by another agent");
+
+    const resume = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "bump", resume: true });
+    expect(resume.status, JSON.stringify(resume.body)).toBe(409);
+
+    const interrupt = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "bump", interrupt: true });
+    expect(interrupt.status, JSON.stringify(interrupt.body)).toBe(409);
+
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("still rejects peer agents that did not create the issue", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        status: "in_progress",
+        assigneeAgentId: ownerAgentId,
+        createdByAgentId: "99999999-9999-4999-8999-999999999999",
+      }),
+    );
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "unrelated peer noise" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue is checked out by another agent");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
 });
