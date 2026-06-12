@@ -678,15 +678,18 @@ export async function startServer(): Promise<StartedServer> {
   }
   
   const runtimeListenHost = config.host;
+  const preferLoopbackRuntimeApiUrl =
+    config.deploymentMode === "local_trusted" && isLoopbackHost(runtimeListenHost);
   const runtimeApiUrl = choosePrimaryRuntimeApiUrl({
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,
     allowedHostnames: config.allowedHostnames,
     bindHost: runtimeListenHost,
     port: listenPort,
+    preferBindHost: preferLoopbackRuntimeApiUrl,
   });
   const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || runtimeApiUrl;
   const runtimeApiCandidates = buildRuntimeApiCandidateUrls({
-    preferredApiUrl: configuredApiUrl,
+    preferredApiUrl: preferLoopbackRuntimeApiUrl ? runtimeApiUrl : configuredApiUrl,
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,
     allowedHostnames: config.allowedHostnames,
     bindHost: runtimeListenHost,
