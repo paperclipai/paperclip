@@ -313,7 +313,14 @@ export function AppDetail() {
           onToggleApp={() => toggleEnabled.mutate()}
         />
       )}
-      {activeTab === "review" && <ReviewPanel connectionId={connectionId} />}
+      {activeTab === "review" && (
+        <ReviewPanel
+          connectionId={connectionId}
+          quarantined={quarantined}
+          pending={pending}
+          onTurnOnQuarantined={(ids) => apply({ enabled: addAll(new Set(enabledIds), ids) })}
+        />
+      )}
       {activeTab === "permissions" && (
         <PermissionsPanel
           access={access}

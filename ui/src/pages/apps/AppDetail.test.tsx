@@ -264,7 +264,7 @@ describe("AppDetail", () => {
 
   it.each([
     ["setup", "Agents can use this app"],
-    ["review", "Nothing is waiting for your OK right now."],
+    ["review", "1 new action to review"],
     ["permissions", "Action permissions"],
     ["activity", "No activity yet."],
     ["advanced", "Technical details"],
@@ -276,6 +276,16 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("GitHub");
     expect(container.textContent).toContain("2 actions available");
     expect(container.textContent).toContain(expectedText);
+  });
+
+  it("shows new quarantined actions on the review tab instead of an empty state", async () => {
+    mockParams.tab = "review";
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("1 new action to review");
+    expect(container.textContent).toContain("Delete repo");
+    expect(container.textContent).not.toContain("Nothing is waiting for your OK right now.");
   });
 
   it("keeps setup focused on description and lifecycle", async () => {
