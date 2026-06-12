@@ -39,4 +39,35 @@ describe("live observer", () => {
     await flush();
     expect(btn.textContent).toBe("Run routine");
   });
+
+  it("self-write does not re-trigger translation (guard is load-bearing)", async () => {
+    // Cyclic dictionary: X<->Y. Without the loop guard, the engine's own write
+    // re-triggers the observer, which re-translates Y back to X, ad infinitum.
+    // The guard is the ONLY thing that stops this thrashing, so this test fails
+    // (assertion or runaway) if the guard is removed.
+    const cyclic = { text: { "Run routine": "Routine ausführen", "Routine ausführen": "Run routine" } };
+    document.body.innerHTML = ``;
+    const t = createTranslator(cyclic, { root: document.body });
+    t.start();
+    // Add the node AFTER start() so the observer (not the synchronous initial
+    // translateTree) handles it — this is what exercises the self-write path.
+    const btn = document.createElement("button");
+    const node = document.createTextNode("Run routine");
+    btn.appendChild(node);
+    // Count the engine's own writes directly via the nodeValue setter. Cap the
+    // count so a broken guard fails the assertion instead of hanging forever.
+    let writes = 0;
+    const desc = Object.getOwnPropertyDescriptor(Node.prototype, "nodeValue")!;
+    Object.defineProperty(node, "nodeValue", {
+      configurable: true,
+      get() { return desc.get!.call(this); },
+      set(v) { if (++writes > 50) return; desc.set!.call(this, v); },
+    });
+    document.body.appendChild(btn);
+    await flush(); await flush(); await flush();
+    delete (node as any).nodeValue; // restore prototype accessor
+    t.stop();
+    expect(writes).toBe(1); // only the engine's own write; guard stops re-translation
+    expect(node.nodeValue).toBe("Routine ausführen"); // settled, not flipped back
+  });
 });
