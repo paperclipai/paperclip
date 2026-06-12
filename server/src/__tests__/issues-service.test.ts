@@ -4034,6 +4034,179 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       executionRunId: successorRunId,
     });
   });
+
+  it("checkout refuses to promote a 'done' issue when 'done' is not in expectedStatuses, even with a lingering executionRunId pointer", async () => {
+    // Regression for PR #2482 checkout-adoption review finding: the original
+    // patch's stale-executionRunId adoption SQL set `status: 'in_progress'`
+    // unconditionally, bypassing the caller's expectedStatuses guard. With the
+    // guard restored, attempting to take over a 'done' issue with
+    // expectedStatuses=['todo'] must fail and leave the row untouched.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const failedRunId = randomUUID();
+    const successorRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: failedRunId,
+        companyId,
+        agentId,
+        status: "failed",
+        invocationSource: "manual",
+        finishedAt: new Date("2026-06-10T10:05:00.000Z"),
+      },
+      {
+        id: successorRunId,
+        companyId,
+        agentId,
+        status: "running",
+        invocationSource: "manual",
+        startedAt: new Date("2026-06-10T10:07:00.000Z"),
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale lock on done issue",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      executionRunId: failedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date("2026-06-10T10:00:00.000Z"),
+      completedAt: new Date("2026-06-10T10:01:00.000Z"),
+    });
+
+    await expect(svc.checkout(issueId, agentId, ["todo"], successorRunId))
+      .rejects.toMatchObject({ status: 409 });
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({
+      status: "done",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+    });
+  });
+
+  it("checkout adoption of a stale checkoutRunId preserves the issue's assigneeUserId", async () => {
+    // Regression for PR #2482 checkout-adoption review finding: any adoption
+    // helper that re-locks an existing in_progress issue (e.g. when the prior
+    // checkout/execution run is terminal) must not strip the row's
+    // assigneeUserId. We exercise this via the adoptStaleCheckoutRun path,
+    // which fires when checkoutRunId points at a terminal run while
+    // executionRunId still points at a different, non-terminal run.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const userId = randomUUID();
+    const issueId = randomUUID();
+    const failedCheckoutRunId = randomUUID();
+    const queuedExecutionRunId = randomUUID();
+    const successorRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: failedCheckoutRunId,
+        companyId,
+        agentId,
+        status: "failed",
+        invocationSource: "manual",
+        finishedAt: new Date("2026-06-10T10:05:00.000Z"),
+      },
+      {
+        id: queuedExecutionRunId,
+        companyId,
+        agentId,
+        status: "queued",
+        invocationSource: "manual",
+      },
+      {
+        id: successorRunId,
+        companyId,
+        agentId,
+        status: "running",
+        invocationSource: "manual",
+        startedAt: new Date("2026-06-10T10:07:00.000Z"),
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale checkout lock with user co-assignee",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      assigneeUserId: userId,
+      checkoutRunId: failedCheckoutRunId,
+      executionRunId: queuedExecutionRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date("2026-06-10T10:00:00.000Z"),
+    });
+
+    const result = await svc.checkout(issueId, agentId, ["todo", "in_progress"], successorRunId);
+    expect(result).toBeTruthy();
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      assigneeUserId: userId,
+      checkoutRunId: successorRunId,
+      executionRunId: successorRunId,
+    });
+  });
 });
 
 describeEmbeddedPostgres("accepted plan decomposition", () => {
