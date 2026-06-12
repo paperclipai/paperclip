@@ -2394,11 +2394,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ].join("\n");
   }
 
+  // GH #7840: stranded-issue candidates are selected while todo/in_progress, but the
+  // escalation write happens later — a run cancellation racing with completion (or a
+  // recovery action created before the issue closed) could regress done/cancelled
+  // issues back to blocked, reopening completed work. Re-read the live status at
+  // write time and refuse to escalate an issue that is already terminal.
+  async function isIssueTerminalNow(issueId: string) {
+    const current = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    return !current || current.status === "done" || current.status === "cancelled";
+  }
+
   async function escalateStrandedRecoveryIssueInPlace(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: "todo" | "in_progress";
     latestRun: LatestIssueRun;
   }) {
+    if (await isIssueTerminalNow(input.issue.id)) return null;
     const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
     if (!updated) return null;
 
@@ -2490,6 +2505,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         latestRun: input.latestRun,
       });
     }
+
+    // GH #7840: never regress an already-completed issue to blocked (see
+    // isIssueTerminalNow). The snapshot in input.issue may be stale by the
+    // time this escalation runs.
+    if (await isIssueTerminalNow(input.issue.id)) return null;
 
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
     const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
