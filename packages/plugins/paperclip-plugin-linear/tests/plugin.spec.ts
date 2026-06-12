@@ -1633,6 +1633,30 @@ describe("paperclip-plugin-linear", () => {
       // Should succeed — resolved via ctx.secrets.resolve
       expect(result.content).toContain("Found");
     });
+
+    it("caches and coalesces linearTokenRef secret resolution", async () => {
+      harness.setConfig({
+        linearClientId: "",
+        linearClientSecret: "",
+        linearTokenRef: "secret-uuid-cache",
+        teamId: "team-1",
+        syncComments: true,
+        syncDirection: "bidirectional",
+      });
+      const resolveSpy = vi.spyOn(harness.ctx.secrets, "resolve");
+
+      const [first, second] = await Promise.all([
+        harness.executeTool(TOOL_NAMES.search, { query: "first" }),
+        harness.executeTool(TOOL_NAMES.search, { query: "second" }),
+      ]);
+      const third = await harness.executeTool(TOOL_NAMES.search, { query: "third" });
+
+      expect(first.content).toContain("Found");
+      expect(second.content).toContain("Found");
+      expect(third.content).toContain("Found");
+      expect(resolveSpy).toHaveBeenCalledTimes(1);
+      expect(resolveSpy).toHaveBeenCalledWith("secret-uuid-cache");
+    });
   });
 
   // -----------------------------------------------------------------------

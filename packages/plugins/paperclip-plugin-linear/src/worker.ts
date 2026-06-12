@@ -75,6 +75,15 @@ const recentlyCreatedGoalFromLinear = new Set<string>();
 const inFlightInitiativeCreates = new Set<string>();
 const LINEAR_APP_ACTOR_NAME = "Paperclip";
 
+const TOKEN_REF_CACHE_TTL_MS = 10 * 60_000;
+const tokenRefCache = new Map<string, { token: string; expiresAt: number }>();
+const tokenRefInFlight = new Map<string, Promise<string>>();
+
+function clearTokenRefCache(): void {
+  tokenRefCache.clear();
+  tokenRefInFlight.clear();
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -83,8 +92,35 @@ const LINEAR_APP_ACTOR_NAME = "Paperclip";
 async function resolveToken(ctx: PluginContext): Promise<string> {
   // 1. Secret ref from config (manual setup via settings page — passes scope check)
   const config = await ctx.config.get();
-  const configRef = config.linearTokenRef as string | undefined;
-  if (configRef) return ctx.secrets.resolve(configRef);
+  const configRef = (config.linearTokenRef as string | undefined)?.trim();
+  if (configRef) {
+    const now = Date.now();
+    const cached = tokenRefCache.get(configRef);
+    if (cached && cached.expiresAt > now) {
+      return cached.token;
+    }
+
+    const inFlight = tokenRefInFlight.get(configRef);
+    if (inFlight) return inFlight;
+
+    const pending = ctx.secrets.resolve(configRef)
+      .then((token) => {
+        tokenRefCache.set(configRef, {
+          token,
+          expiresAt: Date.now() + TOKEN_REF_CACHE_TTL_MS,
+        });
+        return token;
+      })
+      .catch((err) => {
+        tokenRefCache.delete(configRef);
+        throw err;
+      })
+      .finally(() => {
+        tokenRefInFlight.delete(configRef);
+      });
+    tokenRefInFlight.set(configRef, pending);
+    return pending;
+  }
 
   // 2. OAuth token stored in plugin state
   const oauthToken = await ctx.state.get({
@@ -948,6 +984,7 @@ const plugin = definePlugin({
 
     /** Disconnect Linear: revoke token, delete secret, and clear state */
     ctx.actions.register(ACTION_KEYS.oauthDisconnect, async () => {
+      clearTokenRefCache();
       try {
         const token = await resolveToken(ctx);
         await linear.revokeToken(ctx.http.fetch.bind(ctx.http), token);
@@ -961,6 +998,7 @@ const plugin = definePlugin({
       await ctx.state.delete({ scopeKind: "instance", stateKey: STATE_KEYS.oauthTeamId });
       await ctx.state.delete({ scopeKind: "instance", stateKey: STATE_KEYS.oauthTeamKey });
       await ctx.state.delete({ scopeKind: "instance", stateKey: STATE_KEYS.connected });
+      clearTokenRefCache();
 
       ctx.logger.info("Linear disconnected");
       return { disconnected: true };
@@ -2739,6 +2777,7 @@ const plugin = definePlugin({
   async onConfigChanged(newConfig) {
     const ctx = currentCtx;
     if (!ctx) return;
+    clearTokenRefCache();
     try {
       const webhookResult = await refreshLinearWebhookRegistration(ctx, newConfig);
       if (webhookResult.registered) {

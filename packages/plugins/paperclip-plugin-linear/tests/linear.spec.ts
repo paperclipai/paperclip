@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   attachmentLinkURL,
+  createIssue,
   createIssueLabel,
   ensureProjectLink,
   listIssueLabels,
@@ -119,6 +120,52 @@ describe("listIssuesByIds", () => {
     const body = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
     expect(body.query).toContain("query ListIssuesByIds($ids: [ID!]!, $first: Int!)");
     expect(body.variables).toEqual({ ids: ["issue-1"], first: 1 });
+  });
+});
+
+describe("createIssue", () => {
+  it("sends only supported IssueCreateInput fields", async () => {
+    const fetch = mockFetch([
+      {
+        data: {
+          issueCreate: {
+            issue: {
+              id: "issue-1",
+              identifier: "BLO-1",
+              title: "Test",
+              description: null,
+              url: "https://linear.app/blockc/issue/BLO-1/test",
+              priority: 2,
+              createdAt: "2026-06-09T00:00:00.000Z",
+              updatedAt: "2026-06-09T00:00:00.000Z",
+              state: { name: "Todo", type: "unstarted" },
+              assignee: null,
+              labels: { nodes: [] },
+              project: null,
+            },
+          },
+        },
+      },
+    ]);
+
+    await createIssue(fetch, "tok", {
+      title: "Test",
+      description: "Body",
+      teamId: "team-1",
+      priority: 2,
+      assigneeId: "user-1",
+      createAsUser: "Paperclip",
+      projectId: "project-1",
+    } as Parameters<typeof createIssue>[2] & Record<string, unknown>);
+
+    const body = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(body.variables.input).toEqual({
+      title: "Test",
+      description: "Body",
+      teamId: "team-1",
+      priority: 2,
+      assigneeId: "user-1",
+    });
   });
 });
 

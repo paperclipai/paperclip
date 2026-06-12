@@ -515,6 +515,13 @@ export async function createIssue(
     assigneeId?: string;
   },
 ): Promise<LinearIssue> {
+  const issueInput = {
+    title: input.title,
+    teamId: input.teamId,
+    ...(input.description !== undefined ? { description: input.description } : {}),
+    ...(input.priority !== undefined ? { priority: input.priority } : {}),
+    ...(input.assigneeId !== undefined ? { assigneeId: input.assigneeId } : {}),
+  };
   const data = await gql<{
     issueCreate: { issue: LinearIssue };
   }>(fetch, token, `
@@ -530,7 +537,7 @@ export async function createIssue(
         }
       }
     }
-  `, { input });
+  `, { input: issueInput });
 
   return data.issueCreate.issue;
 }
