@@ -17,6 +17,12 @@ jobs:
   review:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      # Blockcast does not provision the upstream commitperclip bot key. Skip
+      # the bot steps (token + quality/security gates) when it is absent so
+      # Dependency Review still gates every PR instead of the whole job
+      # failing at token generation.
+      COMMITPERCLIP_ENABLED: ${{ secrets.COMMITPERCLIP_KEY != '' }}
     steps:
       - name: Checkout base branch (never PR code)
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -36,6 +42,7 @@ jobs:
 
       - name: Generate commitperclip token
         id: token
+        if: env.COMMITPERCLIP_ENABLED == 'true'
         run: |
           TOKEN=$(node .github/scripts/get-bot-token.mjs)
           echo "::add-mask::$TOKEN"
@@ -45,7 +52,9 @@ jobs:
 
       - name: Run quality gates
         id: quality
-        if: github.event.pull_request.user.login != 'dependabot[bot]'
+        if: >-
+          env.COMMITPERCLIP_ENABLED == 'true' &&
+          github.event.pull_request.user.login != 'dependabot[bot]'
         run: node .github/scripts/run-quality-gates.mjs
         continue-on-error: true
         env:
@@ -56,6 +65,7 @@ jobs:
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
 
       - name: Run security gates
+        if: env.COMMITPERCLIP_ENABLED == 'true'
         run: node .github/scripts/check-pr-security.mjs
         continue-on-error: true
         timeout-minutes: 3
