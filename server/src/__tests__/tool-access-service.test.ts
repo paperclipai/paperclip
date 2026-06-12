@@ -992,6 +992,88 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(db.select().from(toolCatalogEntries)).resolves.toHaveLength(0);
   });
 
+  it("reuses and revives an existing application when connecting with applicationId", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    mockToolsList([
+      {
+        name: "read_items",
+        description: "Read items.",
+        inputSchema: { type: "object", properties: {} },
+        annotations: { readOnlyHint: true },
+      },
+    ]);
+
+    const first = await service.connectGalleryApp(company.id, {
+      link: "https://reuse.example.test/actions",
+      name: "Reusable app",
+    }, { actorType: "user", actorId: "board" });
+    const applicationId = first.application.id;
+
+    // Simulate "Remove app": archive the connection and its application.
+    await db.update(toolConnections)
+      .set({ status: "archived" })
+      .where(eq(toolConnections.id, first.connectionId));
+    await db.update(toolApplications)
+      .set({ status: "archived", archivedAt: new Date() })
+      .where(eq(toolApplications.id, applicationId));
+
+    const second = await service.connectGalleryApp(company.id, {
+      link: "https://reuse.example.test/actions",
+      name: "Reusable app",
+      applicationId,
+    }, { actorType: "user", actorId: "board" });
+
+    expect(second.application.id).toBe(applicationId);
+    // The archived connection is revived in place, not duplicated.
+    expect(second.connectionId).toBe(first.connectionId);
+    await expect(db.select().from(toolApplications)).resolves.toHaveLength(1);
+    await expect(db.select().from(toolConnections)).resolves.toHaveLength(1);
+    const [revived] = await db.select().from(toolApplications).where(eq(toolApplications.id, applicationId));
+    expect(revived.status).toBe("draft");
+    expect(revived.archivedAt).toBeNull();
+
+    await expect(service.connectGalleryApp(company.id, {
+      link: "https://reuse.example.test/actions",
+      applicationId: randomUUID(),
+    }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("does not delete a reused application when the connect rolls back", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    mockToolsList([
+      {
+        name: "read_items",
+        description: "Read items.",
+        inputSchema: { type: "object", properties: {} },
+        annotations: { readOnlyHint: true },
+      },
+    ]);
+    const first = await service.connectGalleryApp(company.id, {
+      link: "https://rollback.example.test/actions",
+      name: "Rollback app",
+    }, { actorType: "user", actorId: "board" });
+    await db.update(toolConnections)
+      .set({ status: "archived" })
+      .where(eq(toolConnections.id, first.connectionId));
+    await db.update(toolApplications)
+      .set({ status: "archived", archivedAt: new Date() })
+      .where(eq(toolApplications.id, first.application.id));
+
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network down"));
+    await expect(service.connectGalleryApp(company.id, {
+      link: "https://rollback.example.test/actions",
+      applicationId: first.application.id,
+    }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({ status: 502 });
+
+    const [stillThere] = await db.select().from(toolApplications).where(eq(toolApplications.id, first.application.id));
+    expect(stillThere).toBeTruthy();
+    expect(stillThere.status).toBe("archived");
+    const [connectionBack] = await db.select().from(toolConnections).where(eq(toolConnections.id, first.connectionId));
+    expect(connectionBack.status).toBe("archived");
+  });
+
   it("connects pasted links with an optional secret-backed app key", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);

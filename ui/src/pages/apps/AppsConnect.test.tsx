@@ -9,6 +9,7 @@ import { AppsConnect } from "./AppsConnect";
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const connectAppMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
+const mockSearch = vi.hoisted(() => ({ value: "" }));
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -23,6 +24,7 @@ vi.mock("@/api/agents", () => ({
 
 vi.mock("@/lib/router", () => ({
   useNavigate: () => mockNavigate,
+  useSearchParams: () => [new URLSearchParams(mockSearch.value), vi.fn()],
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -82,6 +84,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    mockSearch.value = "";
     container = document.createElement("div");
     document.body.appendChild(container);
     listGalleryMock.mockResolvedValue({
@@ -237,5 +240,33 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       buttonContaining("Paste a config")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(mockNavigate).toHaveBeenCalledWith("/apps/advanced/paste-config");
+  });
+
+  // Reconnect from the app page: ?link/?name/?applicationId prefill skips the
+  // gallery and re-attaches the connection to the existing application.
+  it("prefills the link frame from search params and passes applicationId to connect", async () => {
+    mockSearch.value =
+      "link=https%3A%2F%2Fwww.example.com%2Factions&name=Bla&applicationId=app-77";
+    await render();
+
+    expect(container.textContent).toContain("Connect with a link");
+    expect(container.textContent).toContain("https://www.example.com/actions");
+    const nameInput = Array.from(container.querySelectorAll<HTMLInputElement>("input")).find(
+      (i) => i.getAttribute("placeholder") === "My app",
+    );
+    expect(nameInput?.value).toBe("Bla");
+
+    await act(async () => {
+      buttonByText("Check link")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    const [, input] = connectAppMock.mock.calls[0];
+    expect(input).toMatchObject({
+      link: "https://www.example.com/actions",
+      name: "Bla",
+      applicationId: "app-77",
+    });
   });
 });

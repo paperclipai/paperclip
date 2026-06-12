@@ -252,16 +252,22 @@ export function Apps() {
                         : status.tone === "not_connected"
                           ? "Connect it so agents can use it."
                         : null;
-                  const openApp = () => {
-                    if (primaryConnection) navigate(`/apps/${primaryConnection.id}`);
-                  };
+                  const appHref = primaryConnection
+                    ? `/apps/${primaryConnection.id}`
+                    : `/apps/app/${application.id}`;
+                  const actionLabel = !primaryConnection
+                    ? "Connect"
+                    : status.tone === "attention"
+                      ? "Reconnect"
+                      : attention
+                        ? "Review"
+                        : "Open";
                   return (
                     <tr
                       key={application.id}
-                      onClick={openApp}
+                      onClick={() => navigate(appHref)}
                       className={cn(
-                        "border-b border-border last:border-0",
-                        primaryConnection && "cursor-pointer transition-colors hover:bg-muted/30",
+                        "cursor-pointer border-b border-border transition-colors last:border-0 hover:bg-muted/30",
                         attention && "bg-amber-500/[0.06]",
                       )}
                     >
@@ -306,14 +312,10 @@ export function Apps() {
                           size="sm"
                           onClick={(event) => {
                             event.stopPropagation();
-                            if (primaryConnection) {
-                              navigate(`/apps/${primaryConnection.id}`);
-                            } else {
-                              navigate("/apps/connect");
-                            }
+                            navigate(appHref);
                           }}
                         >
-                          {primaryConnection ? (attention ? "Reconnect" : "Open") : "Connect"}
+                          {actionLabel}
                         </Button>
                       </td>
                     </tr>

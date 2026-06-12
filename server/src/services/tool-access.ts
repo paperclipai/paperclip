@@ -2378,7 +2378,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const galleryEntry = input.galleryKey ? getToolAppGalleryEntry(input.galleryKey) : null;
     if (input.galleryKey && !galleryEntry) throw notFound("Tool app gallery entry not found");
 
-    const name = input.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
+    let existingApplication: typeof toolApplications.$inferSelect | null = null;
+    if (input.applicationId) {
+      const [row] = await db.select().from(toolApplications).where(and(
+        eq(toolApplications.id, input.applicationId),
+        eq(toolApplications.companyId, companyId),
+      ));
+      if (!row) throw notFound("App not found");
+      existingApplication = row;
+    }
+
+    const name = input.name ?? existingApplication?.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
     const transportTemplate = galleryEntry?.transportTemplate ?? {
       transport: "remote_http" as const,
       url: input.link ?? "",
@@ -2400,6 +2410,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const createdSecretIds: string[] = [];
     let applicationRow: typeof toolApplications.$inferSelect | null = null;
     let connectionRow: typeof toolConnections.$inferSelect | null = null;
+    let revivedConnectionPrevious: typeof toolConnections.$inferSelect | null = null;
 
     try {
       const credentialFields = galleryEntry?.credentialFields ?? (
@@ -2448,32 +2459,73 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         }
       }
 
-      [applicationRow] = await db.insert(toolApplications).values({
-        companyId,
-        applicationKey: `app-gallery:${galleryEntry?.key ?? "link"}:${randomUUID()}`,
-        name,
-        description: galleryEntry?.tagline ?? `Connected app at ${input.link}`,
-        type: transport === "remote_http" ? "mcp_http" : "mcp_stdio",
-        status: "draft",
-        metadata: galleryEntry ? { sourceTemplateKey: galleryEntry.key, galleryKey: galleryEntry.key } : { source: "link" },
-      }).returning();
+      if (existingApplication) {
+        if (existingApplication.status !== "active") {
+          [applicationRow] = await db.update(toolApplications)
+            .set({ status: "draft", archivedAt: null, updatedAt: new Date() })
+            .where(eq(toolApplications.id, existingApplication.id))
+            .returning();
+        } else {
+          applicationRow = existingApplication;
+        }
+      } else {
+        [applicationRow] = await db.insert(toolApplications).values({
+          companyId,
+          applicationKey: `app-gallery:${galleryEntry?.key ?? "link"}:${randomUUID()}`,
+          name,
+          description: galleryEntry?.tagline ?? `Connected app at ${input.link}`,
+          type: transport === "remote_http" ? "mcp_http" : "mcp_stdio",
+          status: "draft",
+          metadata: galleryEntry ? { sourceTemplateKey: galleryEntry.key, galleryKey: galleryEntry.key } : { source: "link" },
+        }).returning();
+      }
 
       await assertSecretRefs(companyId, [...credentialRefs, ...credentialSecretRefs]);
-      [connectionRow] = await db.insert(toolConnections).values({
-        companyId,
-        applicationId: applicationRow.id,
-        name,
-        connectionKind: "managed",
-        transport,
-        status: "draft",
-        enabled: false,
-        config,
-        transportConfig: config,
-        credentialRefs,
-        credentialSecretRefs,
-        createdByAgentId: actor?.actorType === "agent" ? actor.actorId ?? null : null,
-        createdByUserId: actor?.actorType === "user" ? actor.actorId ?? null : null,
-      }).returning();
+      // Reconnecting an app revives its most recent archived connection instead
+      // of inserting a fresh row: keeps the connection id (and its activity
+      // history) stable and avoids the unique (company, name) constraint.
+      if (existingApplication) {
+        const [archived] = await db
+          .select()
+          .from(toolConnections)
+          .where(and(
+            eq(toolConnections.companyId, companyId),
+            eq(toolConnections.applicationId, existingApplication.id),
+            eq(toolConnections.status, "archived"),
+          ))
+          .orderBy(desc(toolConnections.updatedAt))
+          .limit(1);
+        revivedConnectionPrevious = archived ?? null;
+      }
+      if (revivedConnectionPrevious) {
+        [connectionRow] = await db.update(toolConnections).set({
+          name,
+          transport,
+          status: "draft",
+          enabled: false,
+          config,
+          transportConfig: config,
+          credentialRefs,
+          credentialSecretRefs,
+          updatedAt: new Date(),
+        }).where(eq(toolConnections.id, revivedConnectionPrevious.id)).returning();
+      } else {
+        [connectionRow] = await db.insert(toolConnections).values({
+          companyId,
+          applicationId: applicationRow.id,
+          name,
+          connectionKind: "managed",
+          transport,
+          status: "draft",
+          enabled: false,
+          config,
+          transportConfig: config,
+          credentialRefs,
+          credentialSecretRefs,
+          createdByAgentId: actor?.actorType === "agent" ? actor.actorId ?? null : null,
+          createdByUserId: actor?.actorType === "user" ? actor.actorId ?? null : null,
+        }).returning();
+      }
       await syncCredentialBindings(connectionRow);
       await ensureRuntimeSlot(connectionRow);
 
@@ -2504,11 +2556,28 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         },
       };
     } catch (error) {
-      if (connectionRow) {
+      if (connectionRow && revivedConnectionPrevious) {
+        await db.update(toolConnections).set({
+          name: revivedConnectionPrevious.name,
+          transport: revivedConnectionPrevious.transport,
+          status: revivedConnectionPrevious.status,
+          enabled: revivedConnectionPrevious.enabled,
+          config: revivedConnectionPrevious.config,
+          transportConfig: revivedConnectionPrevious.transportConfig,
+          credentialRefs: revivedConnectionPrevious.credentialRefs,
+          credentialSecretRefs: revivedConnectionPrevious.credentialSecretRefs,
+          updatedAt: new Date(),
+        }).where(eq(toolConnections.id, revivedConnectionPrevious.id)).catch(() => undefined);
+      } else if (connectionRow) {
         await db.delete(toolConnections).where(eq(toolConnections.id, connectionRow.id)).catch(() => undefined);
       }
-      if (applicationRow) {
+      if (applicationRow && !existingApplication) {
         await db.delete(toolApplications).where(eq(toolApplications.id, applicationRow.id)).catch(() => undefined);
+      } else if (existingApplication && applicationRow && applicationRow.status !== existingApplication.status) {
+        await db.update(toolApplications)
+          .set({ status: existingApplication.status, archivedAt: existingApplication.archivedAt, updatedAt: new Date() })
+          .where(eq(toolApplications.id, existingApplication.id))
+          .catch(() => undefined);
       }
       for (const secretId of createdSecretIds) {
         await secrets.remove(secretId).catch(() => undefined);

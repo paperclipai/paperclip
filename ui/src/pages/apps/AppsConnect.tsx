@@ -19,7 +19,7 @@ import type {
   ToolAppConnectionActionSummary,
 } from "@paperclipai/shared";
 import { getToolAppGalleryEntryForUrl } from "@paperclipai/shared";
-import { useNavigate } from "@/lib/router";
+import { useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
@@ -58,11 +58,23 @@ export function AppsConnect() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
+  const [searchParams] = useSearchParams();
 
-  const [step, setStep] = useState<Step>("gallery");
+  // Prefill arrives from the app page for reconnects; read once so later
+  // wizard navigation doesn't fight the URL.
+  const [prefill] = useState(() => {
+    const rawLink = searchParams.get("link")?.trim() ?? "";
+    return {
+      link: /^https?:\/\//i.test(rawLink) ? rawLink : "",
+      name: searchParams.get("name")?.trim() ?? "",
+      applicationId: searchParams.get("applicationId")?.trim() || undefined,
+    };
+  });
+
+  const [step, setStep] = useState<Step>(prefill.link ? "key" : "gallery");
   const [entry, setEntry] = useState<AppGalleryEntry | null>(null);
-  const [linkUrl, setLinkUrl] = useState("");
-  const [linkName, setLinkName] = useState("");
+  const [linkUrl, setLinkUrl] = useState(prefill.link);
+  const [linkName, setLinkName] = useState(prefill.name);
   const [linkNeedsKey, setLinkNeedsKey] = useState(false);
   const [linkKey, setLinkKey] = useState("");
   const [credentials, setCredentials] = useState<Record<string, string>>({});
@@ -89,7 +101,11 @@ export function AppsConnect() {
   const connectMutation = useMutation({
     mutationFn: () => {
       if (entry) {
-        return toolsApi.connectApp(selectedCompanyId!, { galleryKey: entry.key, credentialValues: credentials });
+        return toolsApi.connectApp(selectedCompanyId!, {
+          galleryKey: entry.key,
+          credentialValues: credentials,
+          applicationId: prefill.applicationId,
+        });
       }
       const trimmedKey = linkNeedsKey ? linkKey.trim() : "";
       const trimmedName = linkName.trim();
@@ -97,6 +113,7 @@ export function AppsConnect() {
         link: linkUrl,
         name: trimmedName || undefined,
         credentialValues: trimmedKey ? { [LINK_CREDENTIAL_CONFIG_PATH]: trimmedKey } : undefined,
+        applicationId: prefill.applicationId,
       });
     },
     onSuccess: (result) => {

@@ -485,7 +485,7 @@ function TechnicalDetails({ connection }: { connection: ToolConnection }) {
 
 // ---------- Danger zone ----------
 
-function DangerZone({
+export function DangerZone({
   appName,
   removing,
   onRemove,
@@ -1058,7 +1058,7 @@ function StatusBadge({ status }: { status: StatusInfo }) {
   );
 }
 
-function connectionAddress(connection: ToolConnection): string {
+export function connectionAddress(connection: ToolConnection): string {
   const config = connection.config ?? connection.transportConfig ?? {};
   const value = config.url ?? config.endpoint ?? config.remoteUrl;
   if (typeof value === "string" && value.trim().length > 0) return value;
@@ -1066,7 +1066,7 @@ function connectionAddress(connection: ToolConnection): string {
   return "Not set";
 }
 
-function connectionTransportLabel(transport: ToolConnection["transport"]): string {
+export function connectionTransportLabel(transport: ToolConnection["transport"]): string {
   if (transport === "remote_http") return "Remote HTTP";
   if (transport === "local_stdio") return "Local command";
   return "Unknown";

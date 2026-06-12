@@ -175,13 +175,14 @@ describe("Apps table (M1b)", () => {
       tr.textContent?.includes("GitHub"),
     );
     row?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github");
 
+    mockNavigate.mockClear();
     const connectButton = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Connect"),
+      button.textContent?.includes("Connect") && !button.textContent.includes("Connect an app"),
     );
     connectButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github");
   });
 
   it("rolls up multi-connection status, attention count, actions, and navigation by application", async () => {
@@ -258,5 +259,43 @@ describe("Apps table (M1b)", () => {
     );
     slackRow?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     expect(mockNavigate).toHaveBeenCalledWith("/apps/c-attention");
+    // 7. Button labels are honest: broken health says Reconnect, healthy/paused say Open.
+    const rowButtonLabel = (name: string) =>
+      Array.from(container.querySelectorAll("tbody tr"))
+        .find((tr) => tr.textContent?.includes(name))
+        ?.querySelector("td:last-child button")?.textContent;
+    expect(rowButtonLabel("GitHub")).toBe("Open");
+    expect(rowButtonLabel("Slack")).toBe("Reconnect");
+    expect(rowButtonLabel("Notion")).toBe("Open");
+  });
+
+  it("labels a healthy app that still needs review as Review, not Reconnect", async () => {
+    listApplicationsMock.mockResolvedValue({
+      applications: [application({ id: "app-github", name: "GitHub" })],
+    });
+    listConnectionsMock.mockResolvedValue({
+      connections: [connection({ id: "c-healthy", applicationId: "app-github", healthStatus: "healthy" })],
+    });
+    listAppsAttentionMock.mockResolvedValue({
+      apps: [
+        {
+          connection: connection({ id: "c-healthy", applicationId: "app-github", healthStatus: "healthy" }),
+          healthNeedsAttention: false,
+          quarantinedCatalogEntryCount: 2,
+          pendingActionRequestCount: 0,
+          reasons: ["quarantined_catalog_entries"],
+        },
+      ],
+    });
+
+    await renderApps();
+
+    expect(container.textContent).toContain("Healthy");
+    const button = Array.from(container.querySelectorAll("tbody tr"))
+      .find((tr) => tr.textContent?.includes("GitHub"))
+      ?.querySelector("td:last-child button");
+    expect(button?.textContent).toBe("Review");
+    button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/c-healthy");
   });
 });

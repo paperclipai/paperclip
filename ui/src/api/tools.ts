@@ -170,6 +170,7 @@ export const toolsApi = {
     link?: string;
     name?: string;
     credentialValues?: Record<string, string>;
+    applicationId?: string;
   }) =>
     api.post<ConnectToolAppResult>(`/companies/${companyId}/tools/apps/connect`, input),
   startOAuth: (connectionId: string) =>

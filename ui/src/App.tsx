@@ -41,6 +41,7 @@ import { Apps } from "./pages/apps/Apps";
 import { AppsConnect } from "./pages/apps/AppsConnect";
 import { AppsAttention } from "./pages/apps/AppsAttention";
 import { AppDetail } from "./pages/apps/AppDetail";
+import { AppNotConnected } from "./pages/apps/AppNotConnected";
 import { CompanyInvites } from "./pages/CompanyInvites";
 import { CompanySkills } from "./pages/CompanySkills";
 import { Secrets } from "./pages/Secrets";
@@ -96,6 +97,7 @@ function boardRoutes() {
       <Route path="apps/attention" element={<AppsAttention />} />
       <Route path="apps/advanced" element={<AdvancedToolsRoute />} />
       <Route path="apps/advanced/:tab" element={<AdvancedToolsRoute />} />
+      <Route path="apps/app/:applicationId" element={<AppNotConnected />} />
       <Route path="apps/:connectionId" element={<AppDetail />} />
       <Route path="company/settings/instance" element={<Navigate to="general" replace />} />
       <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
