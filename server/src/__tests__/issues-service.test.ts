@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import {
@@ -232,6 +232,42 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         assigneeAgentId: terminatedAgentId,
       },
     });
+  });
+
+  it("deduplicates a retried create from the same agent instead of persisting a second issue (#7980)", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, { id: agentId, name: "Creator" }));
+
+    const payload = {
+      title: "Implement the widget",
+      description: null,
+      status: "todo" as const,
+      priority: "medium" as const,
+      createdByAgentId: agentId,
+    };
+
+    const first = await svc.create(companyId, payload);
+    const second = await svc.create(companyId, payload);
+
+    // The retry returns the already-created issue, not a new one.
+    expect(second.id).toBe(first.id);
+
+    const sameTitleRows = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.title, "Implement the widget")));
+    expect(sameTitleRows).toHaveLength(1);
+
+    // A genuinely different issue (different title) from the same agent is NOT collapsed.
+    const distinct = await svc.create(companyId, { ...payload, title: "Implement the gadget" });
+    expect(distinct.id).not.toBe(first.id);
+
+    // A different creator with identical content is also NOT collapsed — scoped to createdByAgentId.
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, { id: otherAgentId, name: "OtherCreator" }));
+    const otherCreator = await svc.create(companyId, { ...payload, createdByAgentId: otherAgentId });
+    expect(otherCreator.id).not.toBe(first.id);
   });
 
   it("rejects invalid ancestor-chain assignees and preserves the existing assignment", async () => {

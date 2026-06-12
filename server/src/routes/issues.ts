@@ -4387,6 +4387,23 @@ export function issueRoutes(
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
     });
+    // svc.create is idempotent per run+content (#7980): a retried/repeated create
+    // returns the already-created issue, whose id differs from the one we minted.
+    // On that dedup path, skip the create-only side effects (a second
+    // "issue.created" activity entry and a duplicate assignment wake) and just
+    // return the existing issue so the retry is a clean no-op.
+    const createdNewIssue = issue.id === issueId;
+    if (!createdNewIssue) {
+      const existingReferenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+      res.status(200).json({
+        ...issue,
+        relatedWork: existingReferenceSummary,
+        referencedIssueIdentifiers: existingReferenceSummary.outbound.map(
+          (item) => item.issue.identifier ?? item.issue.id,
+        ),
+      });
+      return;
+    }
     await issueReferencesSvc.syncIssue(issue.id);
     const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
     const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
