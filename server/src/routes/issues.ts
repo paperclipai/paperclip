@@ -952,6 +952,13 @@ function buildExecutionStageWakeup(input: {
   return null;
 }
 
+class AutoApprovalIssueMissingError extends Error {
+  constructor() {
+    super("Issue not found during auto-approval transaction");
+    this.name = "AutoApprovalIssueMissingError";
+  }
+}
+
 export function issueRoutes(
   db: Db,
   storage: StorageService,
@@ -6740,41 +6747,48 @@ export function issueRoutes(
         metadata: req.body.metadata ?? null,
         sourceTrust,
       };
-      const txResult = await db.transaction(async (tx) => {
-        const insertedComment = await svc.addComment(
-          id,
-          req.body.body,
-          {
-            agentId: actor.agentId ?? undefined,
-            userId: actor.actorType === "user" ? actor.actorId : undefined,
-            runId: actor.runId,
-          },
-          commentOptions,
-          tx,
-        );
-        const updated = await svc.update(id, updatePatch, tx);
-        if (!updated) return null;
+      let txResult: { comment: Awaited<ReturnType<typeof svc.addComment>>; issue: NonNullable<Awaited<ReturnType<typeof svc.update>>> };
+      try {
+        txResult = await db.transaction(async (tx) => {
+          const insertedComment = await svc.addComment(
+            id,
+            req.body.body,
+            {
+              agentId: actor.agentId ?? undefined,
+              userId: actor.actorType === "user" ? actor.actorId : undefined,
+              runId: actor.runId,
+            },
+            commentOptions,
+            tx,
+          );
+          const updated = await svc.update(id, updatePatch, tx);
+          // Throw (not return null) so drizzle rolls back the inserted comment when the issue
+          // has been concurrently deleted between the initial fetch and the in-transaction update.
+          if (!updated) throw new AutoApprovalIssueMissingError();
 
-        if (transition.decision && decisionId) {
-          await tx.insert(issueExecutionDecisions).values({
-            id: decisionId,
-            companyId: updated.companyId,
-            issueId: updated.id,
-            stageId: transition.decision.stageId,
-            stageType: transition.decision.stageType,
-            actorAgentId: actor.agentId ?? null,
-            actorUserId: actor.actorType === "user" ? actor.actorId : null,
-            outcome: transition.decision.outcome,
-            body: transition.decision.body,
-            createdByRunId: actor.runId ?? null,
-          });
+          if (transition.decision && decisionId) {
+            await tx.insert(issueExecutionDecisions).values({
+              id: decisionId,
+              companyId: updated.companyId,
+              issueId: updated.id,
+              stageId: transition.decision.stageId,
+              stageType: transition.decision.stageType,
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+              outcome: transition.decision.outcome,
+              body: transition.decision.body,
+              createdByRunId: actor.runId ?? null,
+            });
+          }
+
+          return { comment: insertedComment, issue: updated };
+        });
+      } catch (err) {
+        if (err instanceof AutoApprovalIssueMissingError) {
+          res.status(404).json({ error: "Issue not found" });
+          return;
         }
-
-        return { comment: insertedComment, issue: updated };
-      });
-      if (!txResult) {
-        res.status(404).json({ error: "Issue not found" });
-        return;
+        throw err;
       }
       comment = txResult.comment;
       currentIssue = txResult.issue;
