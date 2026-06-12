@@ -73,6 +73,8 @@ export const plansApi = {
   get: (issueId: string) => api.get<PlanDetailResponse>(`/plans/${issueId}`),
   updateTiers: (issueId: string, tiers: PlanTier[]) =>
     api.put<{ planDetails: PlanDetails }>(`/plans/${issueId}/tiers`, { tiers }),
+  setBudget: (issueId: string, caps: { budgetCapCents?: number | null; budgetCapTokens?: number | null }) =>
+    api.patch<{ planDetails: PlanDetails }>(`/plans/${issueId}/budget`, caps),
   activate: (issueId: string) =>
     api.post<{ planDetails: PlanDetails; childIssueIds: string[] }>(
       `/plans/${issueId}/activate`,

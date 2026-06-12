@@ -63,6 +63,23 @@ export function PlanDetailDrawer({ companyId }: PlanDetailDrawerProps) {
     onError: (e) => pushToast({ title: "Activation failed", body: errMsg(e), tone: "error" }),
   });
 
+  const saveBudget = useMutation({
+    mutationFn: () => {
+      const trimmed = capDraft.trim();
+      const tokens = trimmed === "" ? null : Math.max(0, Math.floor(Number(trimmed)));
+      return plansApi.setBudget(planId!, { budgetCapTokens: tokens });
+    },
+    onSuccess: () => {
+      pushToast({ title: "Budget cap saved", tone: "success" });
+      invalidate();
+      if (companyId) queryClient.invalidateQueries({ queryKey: queryKeys.budgets.liveMeter(companyId) });
+    },
+    onError: (e) => pushToast({ title: "Could not save cap", body: errMsg(e), tone: "error" }),
+  });
+
+  const capDirty = capDraft.trim() !== (plan?.planDetails.budgetCapTokens?.toString() ?? "");
+  const capInvalid = capDraft.trim() !== "" && !Number.isFinite(Number(capDraft.trim()));
+
   const statusOf = (childId: string) =>
     plan?.childStatuses.find((c) => c.id === childId)?.status ?? null;
 
@@ -100,14 +117,19 @@ export function PlanDetailDrawer({ companyId }: PlanDetailDrawerProps) {
                     onChange={(e) => setCapDraft(e.target.value)}
                     placeholder="No cap"
                   />
-                  {plan.planDetails.budgetCapTokens ? (
-                    <span className="self-center whitespace-nowrap text-xs text-muted-foreground">
-                      {formatTokens(plan.planDetails.budgetCapTokens)} tok
-                    </span>
-                  ) : null}
+                  <Button
+                    variant="outline"
+                    onClick={() => saveBudget.mutate()}
+                    disabled={saveBudget.isPending || !capDirty || capInvalid}
+                  >
+                    {saveBudget.isPending ? "Saving…" : "Save"}
+                  </Button>
                 </div>
                 <p className="text-[11px] text-muted-foreground">
                   When total tokens under this plan cross the cap, the plan auto-stops.
+                  {plan.planDetails.budgetCapTokens
+                    ? ` Current cap: ${formatTokens(plan.planDetails.budgetCapTokens)} tok.`
+                    : ""}
                 </p>
               </div>
 
