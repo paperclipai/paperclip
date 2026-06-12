@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDb, pluginArtifactGenerations, type Db } from "@paperclipai/db";
 import {
@@ -198,6 +199,114 @@ describeEmbedded("plugin artifact replication", () => {
     }
   });
 
+  it("runExclusive converge-before-mutate: a stale replica's wrapped mutation keeps the peer's plugin", async () => {
+    // Replica A publishes generation 1 containing plugin file P1.
+    await fs.writeFile(path.join(dirA, "p1.txt"), "from-a");
+    const serviceA = makeService(dbA, dirA, "replica-a");
+    await serviceA.publishSnapshot();
+
+    // Replica B is stale (empty tree, marker 0). Its wrapped mutation must
+    // FIRST converge onto generation 1, THEN apply its own change (P2),
+    // THEN publish generation 2 — otherwise A's install (P1) is lost.
+    const serviceB = makeService(dbB, dirB, "replica-b");
+    await serviceB.runExclusive(async () => {
+      await serviceB.reconcile();
+      await fs.writeFile(path.join(dirB, "p2.txt"), "from-b");
+      await serviceB.publishSnapshot();
+    });
+
+    // Converge a fresh replica C on generation 2: BOTH plugins present.
+    const dirC = await mkTmpDir("paperclip-plugins-c-");
+    const serviceC = makeService(dbA, dirC, "replica-c");
+    const result = await serviceC.reconcile();
+    expect(result).toEqual({ applied: true, generation: 2 });
+    expect(await fs.readFile(path.join(dirC, "p1.txt"), "utf8")).toBe("from-a");
+    expect(await fs.readFile(path.join(dirC, "p2.txt"), "utf8")).toBe("from-b");
+  });
+
+  it("reconcile calls queue behind an in-flight runExclusive section (no swap mid-mutation)", async () => {
+    await fs.writeFile(path.join(dirA, "p1.txt"), "from-a");
+    const serviceA = makeService(dbA, dirA, "replica-a");
+    await serviceA.publishSnapshot();
+
+    const serviceB = makeService(dbB, dirB, "replica-b");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let mutationDone = false;
+    const exclusive = serviceB.runExclusive(async () => {
+      await gate;
+      mutationDone = true;
+    });
+    const queued = serviceB.reconcile().then((result) => {
+      // The externally-queued reconcile must not run until the exclusive
+      // section finished — a swap mid-npm-install would tear the tree.
+      expect(mutationDone).toBe(true);
+      return result;
+    });
+    release();
+    await exclusive;
+    await expect(queued).resolves.toEqual({ applied: true, generation: 1 });
+  });
+
+  it("reconcile coalesces: calls made while a follow-up pass is queued share that pass", async () => {
+    await fs.writeFile(path.join(dirA, "p1.txt"), "from-a");
+    const serviceA = makeService(dbA, dirA, "replica-a");
+    await serviceA.publishSnapshot();
+
+    let releaseDownload!: () => void;
+    const downloadGate = new Promise<void>((resolve) => { releaseDownload = resolve; });
+    const slowProvider: StorageProvider = {
+      ...provider,
+      getObject: async (input) => {
+        await downloadGate;
+        return provider.getObject(input);
+      },
+    };
+    const service = createPluginArtifactReplication({
+      db: dbB,
+      provider: slowProvider,
+      pluginsDir: dirB,
+      replicaId: "replica-b",
+      onApplySnapshot: async () => {},
+    });
+
+    const first = service.reconcile();
+    // Let the first pass start (it blocks inside the download).
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const second = service.reconcile();
+    const third = service.reconcile();
+    // Coalesced: both calls share the single queued follow-up pass instead
+    // of appending unboundedly to the chain.
+    expect(third).toBe(second);
+    expect(second).not.toBe(first);
+
+    releaseDownload();
+    await expect(first).resolves.toEqual({ applied: true, generation: 1 });
+    await expect(second).resolves.toEqual({ applied: false, generation: 1 });
+  });
+
+  it("reconcile times out a snapshot download that never completes", async () => {
+    await fs.writeFile(path.join(dirA, "p1.txt"), "from-a");
+    const serviceA = makeService(dbA, dirA, "replica-a");
+    await serviceA.publishSnapshot();
+
+    const stuckProvider: StorageProvider = {
+      ...provider,
+      getObject: async () => ({ stream: new Readable({ read() {} }) }),
+    };
+    const service = createPluginArtifactReplication({
+      db: dbB,
+      provider: stuckProvider,
+      pluginsDir: dirB,
+      replicaId: "replica-b",
+      downloadTimeoutMs: 100,
+      onApplySnapshot: async () => {},
+    });
+
+    await expect(service.reconcile()).rejects.toThrow(/timed out/i);
+    expect(service.isSynced()).toBe(false);
+  });
+
   it("disabled (provider null): every method no-ops", async () => {
     const service = createPluginArtifactReplication({
       db: dbA,
@@ -209,6 +318,7 @@ describeEmbedded("plugin artifact replication", () => {
 
     expect(await service.publishSnapshot()).toBeNull();
     expect(await service.reconcile()).toEqual({ applied: false, generation: null });
+    expect(await service.runExclusive(async () => 42)).toBe(42);
     expect(service.isSynced()).toBe(true);
     service.start();
     await service.stop();

@@ -5,12 +5,17 @@
  * In multi-replica deployments a runtime plugin install mutates the local
  * plugin tree on ONE replica only. The routes must therefore:
  *
- * 1. Serialize the mutation cluster-wide via the "plugin-install" advisory
- *    lock and publish a tree snapshot INSIDE that lock, after the disk +
- *    registry mutation succeeded and BEFORE the success response / live event.
- * 2. Reject local-path installs while replication is active (a local path
+ * 1. Serialize the mutation cluster-wide via the session-scoped
+ *    "plugin-install" advisory lock (a SESSION lock on a dedicated direct
+ *    connection — the critical section spans an npm install plus tar+upload,
+ *    far too long for a pooled transaction lock). Contention → 409.
+ * 2. Converge the local tree onto max(generation) FIRST (reconcile), then
+ *    run the mutation, then publish — all inside `runExclusive`, so a stale
+ *    replica's install can never drop a peer's newer install and no
+ *    reconcile pass can swap the tree mid-mutation.
+ * 3. Reject local-path installs while replication is active (a local path
  *    references one replica's filesystem and cannot be replicated).
- * 3. Fail the request loudly (500, no `plugin.ui.updated` event) when the
+ * 4. Fail the request loudly (500, no `plugin.ui.updated` event) when the
  *    snapshot publish fails — better a loud failure than replicas silently
  *    diverging from the local mutation.
  *
@@ -34,8 +39,23 @@ const mockLifecycle = vi.hoisted(() => ({
   disable: vi.fn(),
 }));
 
-const mockWithAdvisoryXactLock = vi.hoisted(() =>
-  vi.fn(async (_db: unknown, _name: string, fn: () => Promise<unknown>) => fn()),
+/**
+ * Stateful fake of `trySessionAdvisoryLock`: behaves like the real session
+ * lock (first acquirer wins, contenders get `{ acquired: false }` until
+ * release), so tests can hold the lock via a second call to the same fake.
+ */
+const heldSessionLocks = vi.hoisted(() => new Set<string>());
+const mockTrySessionAdvisoryLock = vi.hoisted(() =>
+  vi.fn(async (_connectionString: string, name: string) => {
+    if (heldSessionLocks.has(name)) return { acquired: false as const };
+    heldSessionLocks.add(name);
+    return {
+      acquired: true as const,
+      release: vi.fn(async () => {
+        heldSessionLocks.delete(name);
+      }),
+    };
+  }),
 );
 
 const mockPublishGlobalLiveEvent = vi.hoisted(() => vi.fn());
@@ -57,10 +77,13 @@ vi.mock("../services/live-events.js", () => ({
 }));
 
 vi.mock("../services/advisory-locks.js", () => ({
-  withAdvisoryXactLock: mockWithAdvisoryXactLock,
+  trySessionAdvisoryLock: mockTrySessionAdvisoryLock,
+  withAdvisoryXactLock: vi.fn(async (_db: unknown, _name: string, fn: () => Promise<unknown>) => fn()),
+  tryAdvisoryXactLock: vi.fn(),
 }));
 
 const PLUGIN_ID = "11111111-1111-4111-8111-111111111111";
+const LOCK_URL = "postgres://lock-url/test";
 
 const pluginRow = {
   id: PLUGIN_ID,
@@ -73,10 +96,13 @@ const pluginRow = {
 function createReplication(overrides: Partial<{
   isActive: () => boolean;
   publishSnapshot: ReturnType<typeof vi.fn>;
+  reconcile: ReturnType<typeof vi.fn>;
 }> = {}) {
   return {
     isActive: overrides.isActive ?? (() => true),
     publishSnapshot: overrides.publishSnapshot ?? vi.fn().mockResolvedValue({ generation: 1 }),
+    reconcile: overrides.reconcile ?? vi.fn().mockResolvedValue({ applied: false, generation: 1 }),
+    runExclusive: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   };
 }
 
@@ -109,7 +135,9 @@ async function createApp(replication?: ReturnType<typeof createReplication>) {
       undefined,
       undefined,
       undefined,
-      replication ? ({ replication } as never) : undefined,
+      replication
+        ? ({ replication, pluginMutationLockUrl: LOCK_URL } as never)
+        : undefined,
     ),
   );
   app.use(errorHandler);
@@ -119,9 +147,7 @@ async function createApp(replication?: ReturnType<typeof createReplication>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockWithAdvisoryXactLock.mockImplementation(
-    async (_db: unknown, _name: string, fn: () => Promise<unknown>) => fn(),
-  );
+  heldSessionLocks.clear();
   mockRegistry.getById.mockResolvedValue(pluginRow);
   mockRegistry.getByKey.mockResolvedValue(pluginRow);
   mockLifecycle.load.mockResolvedValue(pluginRow);
@@ -130,22 +156,11 @@ beforeEach(() => {
 });
 
 describe("POST /api/plugins/install (replication)", () => {
-  it("publishes a snapshot exactly once, inside the plugin-install advisory lock", async () => {
-    let insideLock = false;
-    let publishedInsideLock = false;
-    mockWithAdvisoryXactLock.mockImplementation(
-      async (_db: unknown, _name: string, fn: () => Promise<unknown>) => {
-        insideLock = true;
-        try {
-          return await fn();
-        } finally {
-          insideLock = false;
-        }
-      },
-    );
+  it("converges first, then installs, then publishes — all inside the session lock", async () => {
+    let publishedWhileLockHeld = false;
     const replication = createReplication({
       publishSnapshot: vi.fn(async () => {
-        publishedInsideLock = insideLock;
+        publishedWhileLockHeld = heldSessionLocks.has("plugin-install");
         return { generation: 7 };
       }),
     });
@@ -160,14 +175,50 @@ describe("POST /api/plugins/install (replication)", () => {
       packageName: "@acme/plugin-test",
       version: undefined,
     });
-    expect(mockWithAdvisoryXactLock).toHaveBeenCalledTimes(1);
-    expect(mockWithAdvisoryXactLock.mock.calls[0]?.[1]).toBe("plugin-install");
+    expect(mockTrySessionAdvisoryLock).toHaveBeenCalledTimes(1);
+    expect(mockTrySessionAdvisoryLock).toHaveBeenCalledWith(LOCK_URL, "plugin-install");
+    expect(replication.runExclusive).toHaveBeenCalledTimes(1);
+    expect(replication.reconcile).toHaveBeenCalledTimes(1);
     expect(replication.publishSnapshot).toHaveBeenCalledTimes(1);
-    expect(publishedInsideLock).toBe(true);
+    expect(publishedWhileLockHeld).toBe(true);
+    // Converge-before-mutate ordering: reconcile → install fn → publish.
+    const reconcileOrder = replication.reconcile.mock.invocationCallOrder[0]!;
+    const installOrder = loader.installPlugin.mock.invocationCallOrder[0]!;
+    const publishOrder = replication.publishSnapshot.mock.invocationCallOrder[0]!;
+    expect(reconcileOrder).toBeLessThan(installOrder);
+    expect(installOrder).toBeLessThan(publishOrder);
+    // The session lock is released after the request.
+    expect(heldSessionLocks.size).toBe(0);
     expect(mockPublishGlobalLiveEvent).toHaveBeenCalledWith({
       type: "plugin.ui.updated",
       payload: { pluginId: PLUGIN_ID, action: "installed" },
     });
+  });
+
+  it("returns 409 when the plugin-install session lock is held elsewhere", async () => {
+    const replication = createReplication();
+    const { app, loader } = await createApp(replication);
+
+    // Hold the lock via a second trySessionAdvisoryLock, as a concurrent
+    // mutation (this or another replica) would.
+    const held = await mockTrySessionAdvisoryLock(LOCK_URL, "plugin-install");
+    expect(held.acquired).toBe(true);
+    try {
+      const res = await request(app)
+        .post("/api/plugins/install")
+        .send({ packageName: "@acme/plugin-test" });
+
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual({
+        error: "another plugin operation is in progress on this instance",
+      });
+      expect(loader.installPlugin).not.toHaveBeenCalled();
+      expect(replication.reconcile).not.toHaveBeenCalled();
+      expect(replication.publishSnapshot).not.toHaveBeenCalled();
+      expect(mockPublishGlobalLiveEvent).not.toHaveBeenCalled();
+    } finally {
+      if (held.acquired) await held.release();
+    }
   });
 
   it("rejects local-path installs with 400 while replication is active", async () => {
@@ -194,8 +245,9 @@ describe("POST /api/plugins/install (replication)", () => {
 
     expect(res.status).toBe(200);
     expect(loader.installPlugin).toHaveBeenCalledWith({ localPath: "/tmp/my-plugin" });
-    // Disabled replication: no cluster lock, no snapshot publish.
-    expect(mockWithAdvisoryXactLock).not.toHaveBeenCalled();
+    // Disabled replication: no cluster lock, no reconcile, no snapshot publish.
+    expect(mockTrySessionAdvisoryLock).not.toHaveBeenCalled();
+    expect(replication.reconcile).not.toHaveBeenCalled();
     expect(replication.publishSnapshot).not.toHaveBeenCalled();
   });
 
@@ -208,10 +260,10 @@ describe("POST /api/plugins/install (replication)", () => {
 
     expect(res.status).toBe(200);
     expect(loader.installPlugin).toHaveBeenCalledWith({ localPath: "/tmp/my-plugin" });
-    expect(mockWithAdvisoryXactLock).not.toHaveBeenCalled();
+    expect(mockTrySessionAdvisoryLock).not.toHaveBeenCalled();
   });
 
-  it("returns 500 and emits no live event when publishSnapshot rejects", async () => {
+  it("returns 500, emits no live event, and releases the lock when publishSnapshot rejects", async () => {
     const replication = createReplication({
       publishSnapshot: vi.fn().mockRejectedValue(new Error("s3 unreachable")),
     });
@@ -225,11 +277,13 @@ describe("POST /api/plugins/install (replication)", () => {
     expect(res.body.error).toMatch(/snapshot replication failed/);
     expect(res.body.error).toMatch(/s3 unreachable/);
     expect(mockPublishGlobalLiveEvent).not.toHaveBeenCalled();
+    // The session lock must not leak on the failure path.
+    expect(heldSessionLocks.size).toBe(0);
   });
 });
 
 describe("DELETE /api/plugins/:pluginId (replication)", () => {
-  it("publishes a snapshot exactly once inside the advisory lock on uninstall", async () => {
+  it("reconciles and publishes exactly once inside the session lock on uninstall", async () => {
     const replication = createReplication();
     const { app } = await createApp(replication);
 
@@ -237,10 +291,32 @@ describe("DELETE /api/plugins/:pluginId (replication)", () => {
 
     expect(res.status).toBe(200);
     expect(mockLifecycle.unload).toHaveBeenCalledWith(PLUGIN_ID, false);
-    expect(mockWithAdvisoryXactLock).toHaveBeenCalledTimes(1);
-    expect(mockWithAdvisoryXactLock.mock.calls[0]?.[1]).toBe("plugin-install");
+    expect(mockTrySessionAdvisoryLock).toHaveBeenCalledTimes(1);
+    expect(mockTrySessionAdvisoryLock).toHaveBeenCalledWith(LOCK_URL, "plugin-install");
+    expect(replication.reconcile).toHaveBeenCalledTimes(1);
     expect(replication.publishSnapshot).toHaveBeenCalledTimes(1);
+    expect(heldSessionLocks.size).toBe(0);
     expect(mockPublishGlobalLiveEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns 409 when the plugin-install session lock is held elsewhere", async () => {
+    const replication = createReplication();
+    const { app } = await createApp(replication);
+
+    const held = await mockTrySessionAdvisoryLock(LOCK_URL, "plugin-install");
+    expect(held.acquired).toBe(true);
+    try {
+      const res = await request(app).delete(`/api/plugins/${PLUGIN_ID}`);
+
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual({
+        error: "another plugin operation is in progress on this instance",
+      });
+      expect(mockLifecycle.unload).not.toHaveBeenCalled();
+      expect(mockPublishGlobalLiveEvent).not.toHaveBeenCalled();
+    } finally {
+      if (held.acquired) await held.release();
+    }
   });
 
   it("returns 500 and emits no live event when publishSnapshot rejects", async () => {
@@ -254,11 +330,12 @@ describe("DELETE /api/plugins/:pluginId (replication)", () => {
     expect(res.status).toBe(500);
     expect(res.body.error).toMatch(/snapshot replication failed/);
     expect(mockPublishGlobalLiveEvent).not.toHaveBeenCalled();
+    expect(heldSessionLocks.size).toBe(0);
   });
 });
 
 describe("POST /api/plugins/:pluginId/upgrade (replication)", () => {
-  it("publishes a snapshot exactly once inside the advisory lock on upgrade", async () => {
+  it("reconciles and publishes exactly once inside the session lock on upgrade", async () => {
     const replication = createReplication();
     const { app } = await createApp(replication);
 
@@ -268,10 +345,32 @@ describe("POST /api/plugins/:pluginId/upgrade (replication)", () => {
 
     expect(res.status).toBe(200);
     expect(mockLifecycle.upgrade).toHaveBeenCalledWith(PLUGIN_ID, "1.1.0");
-    expect(mockWithAdvisoryXactLock).toHaveBeenCalledTimes(1);
-    expect(mockWithAdvisoryXactLock.mock.calls[0]?.[1]).toBe("plugin-install");
+    expect(mockTrySessionAdvisoryLock).toHaveBeenCalledTimes(1);
+    expect(mockTrySessionAdvisoryLock).toHaveBeenCalledWith(LOCK_URL, "plugin-install");
+    expect(replication.reconcile).toHaveBeenCalledTimes(1);
     expect(replication.publishSnapshot).toHaveBeenCalledTimes(1);
+    expect(heldSessionLocks.size).toBe(0);
     expect(mockPublishGlobalLiveEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns 409 when the plugin-install session lock is held elsewhere", async () => {
+    const replication = createReplication();
+    const { app } = await createApp(replication);
+
+    const held = await mockTrySessionAdvisoryLock(LOCK_URL, "plugin-install");
+    expect(held.acquired).toBe(true);
+    try {
+      const res = await request(app).post(`/api/plugins/${PLUGIN_ID}/upgrade`).send({});
+
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual({
+        error: "another plugin operation is in progress on this instance",
+      });
+      expect(mockLifecycle.upgrade).not.toHaveBeenCalled();
+      expect(mockPublishGlobalLiveEvent).not.toHaveBeenCalled();
+    } finally {
+      if (held.acquired) await held.release();
+    }
   });
 
   it("returns 500 and emits no live event when publishSnapshot rejects", async () => {
@@ -285,6 +384,7 @@ describe("POST /api/plugins/:pluginId/upgrade (replication)", () => {
     expect(res.status).toBe(500);
     expect(res.body.error).toMatch(/snapshot replication failed/);
     expect(mockPublishGlobalLiveEvent).not.toHaveBeenCalled();
+    expect(heldSessionLocks.size).toBe(0);
   });
 
   it("does not lock or publish when replication is disabled", async () => {
@@ -294,7 +394,7 @@ describe("POST /api/plugins/:pluginId/upgrade (replication)", () => {
     const res = await request(app).post(`/api/plugins/${PLUGIN_ID}/upgrade`).send({});
 
     expect(res.status).toBe(200);
-    expect(mockWithAdvisoryXactLock).not.toHaveBeenCalled();
+    expect(mockTrySessionAdvisoryLock).not.toHaveBeenCalled();
     expect(replication.publishSnapshot).not.toHaveBeenCalled();
   });
 });

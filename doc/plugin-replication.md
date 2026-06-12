@@ -23,9 +23,29 @@ retries.
 
 ### Publish path (CAS)
 
-Mutations — install, uninstall, upgrade — run inside the `"plugin-install"`
-advisory transaction lock. That serializes writers within a single database
-connection context. The publish sequence inside that lock is:
+Mutations — install, uninstall, upgrade — run inside the session-scoped
+`"plugin-install"` advisory lock (`trySessionAdvisoryLock`, held on a dedicated
+direct connection: the critical section spans an npm install plus tar+upload,
+which is far too long for a pooled transaction-scoped lock). The lock is
+try-acquire: if another mutation is in flight anywhere in the cluster the route
+responds `409 {"error": "another plugin operation is in progress on this
+instance"}` instead of queueing behind a minutes-long install.
+
+Inside the lock the mutation runs on the replica's reconcile serialization
+chain (`runExclusive`), in three steps:
+
+1. **Converge first** — `reconcile()` brings the LOCAL tree to
+   `max(generation)`. Without this, a replica that lags (worst case one 60s
+   tick) would mutate a stale tree and its published snapshot would silently
+   drop every newer peer install.
+2. **Mutate** — the npm install/uninstall/upgrade plus registry write.
+3. **Publish** — tar, upload, CAS-insert the next generation.
+
+Because the mutation holds the serialization chain, no reconcile pass can swap
+the tree out from under a running npm install on this replica; peers are
+excluded by the lock.
+
+The publish sequence is:
 
 1. Read `max(generation)` from the ledger.
 2. Tar the full plugin tree (`-C <pluginsDir> .`).
@@ -65,9 +85,12 @@ Replicas converge on the latest snapshot via `reconcile()`:
 9. Call the hot-reload hook (errors logged, not rethrown — the tree is already swapped).
 10. Best-effort cleanup of the old tree.
 
-Reconcile calls are serialized: a new call that arrives while one is in-flight
-queues exactly one follow-up pass behind it. There are never two concurrent tree
-swaps.
+Reconcile calls are serialized on a chain shared with `runExclusive` mutation
+sections: there are never two concurrent tree swaps, and a swap can never
+interleave with an in-flight mutation. Calls that arrive while a follow-up pass
+is already queued coalesce onto that pass instead of appending unboundedly. The
+snapshot download is bounded by a 60s timeout so a wedged storage stream fails
+the pass instead of parking the chain forever.
 
 ### GC
 
@@ -83,14 +106,22 @@ disk, or when `PAPERCLIP_PLUGIN_SNAPSHOTS=true` is set explicitly.
 
 When replication is active:
 
-- install, uninstall, and upgrade run under the advisory lock and publish a snapshot before responding;
+- install, uninstall, and upgrade run under the session advisory lock (409 on contention), converge to the latest generation first, and publish a snapshot before responding;
 - local-path installs are rejected (a local path references one replica's filesystem and cannot be meaningfully replicated);
-- every replica reconciles at startup (before the plugin loader runs), on `plugin.ui.updated` live events (debounced 2s to coalesce install bursts), and on a 60-second periodic tick.
+- every replica reconciles at startup (before the plugin loader runs), on `plugin.ui.updated` live events (debounced 2s to coalesce install bursts), and on a 60-second periodic tick;
+- after a snapshot swap, the loader reconciles its runtime: it loads newly installed plugins, unloads uninstalled ones, and restarts workers whose registry version moved (a peer upgrade would otherwise leave the old worker code running).
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `PAPERCLIP_PLUGIN_SNAPSHOTS` | unset | Force-enable replication regardless of storage provider. |
-| `PAPERCLIP_PLUGINS_MUST_SYNC` | unset | When set, the replica reports `503` from `/api/health` until its first reconcile converges on the latest snapshot. Use this to hold new pods out of the load balancer rotation until they are current. |
+| `PAPERCLIP_PLUGIN_SNAPSHOTS=true` | unset | Force-enable replication regardless of storage provider. |
+| `PAPERCLIP_PLUGINS_MUST_SYNC=true` | unset | When set, the replica reports `503 {"ready": false}` from `GET /api/health/ready` until its first reconcile converges on the latest snapshot. `GET /api/health` (liveness) is unaffected. Use this to hold new pods out of the load balancer rotation until they are current. |
+
+With `PAPERCLIP_PLUGINS_MUST_SYNC=true`, point the Kubernetes `readinessProbe`
+(or load-balancer health check) at `GET /api/health/ready` — the gate lives
+there, not on `/api/health`, so that liveness probes do not restart a healthy
+pod that is merely catching up. Note: in authenticated-mode deployments that
+use a plain TCP readiness probe, the flag does not affect routing unless the
+probe is switched to an HTTP probe against `/api/health/ready`.
 
 Single-replica and local-disk deployments: replication is disabled. Every
 method is a no-op and `isSynced()` always returns true. Behavior is identical
@@ -105,9 +136,13 @@ to pre-replication.
 
 - **Cross-replica propagation:** subscribers on other replicas receive
   `plugin.ui.updated` once the live-events transport delivers it. Until the
-  cross-replica live-events transport is deployed, the 60-second periodic tick
-  is the worst-case cross-replica bound. Once the transport lands, cross-replica
-  event latency will collapse to the same ~2–3s window.
+  cross-replica live-events transport is deployed (tracked upstream in
+  [paperclipai/paperclip#5875](https://github.com/paperclipai/paperclip/pull/5875)),
+  the 60-second periodic tick is the worst-case cross-replica bound. Once the
+  transport lands, cross-replica event latency will collapse to the same
+  ~2–3s window. The mutation routes do not depend on this bound for
+  correctness: they converge to the latest generation before mutating, so a
+  lagging replica cannot lose a peer's install.
 
 - **Startup:** a new or restarted pod reconciles synchronously at startup before
   accepting plugin load. With `PAPERCLIP_PLUGINS_MUST_SYNC`, it is also held
@@ -123,9 +158,9 @@ overwritten outside the replication path. Manual investigation is required.
 **Replica cannot converge (persistent reconcile errors).** The replica serves
 the plugin set it last successfully reconciled to, and logs errors on every
 failed reconcile attempt (both the 60s tick and event-triggered). With
-`PAPERCLIP_PLUGINS_MUST_SYNC`, the pod reports unhealthy and the load balancer
-removes it from rotation; without it, the pod continues serving traffic with
-stale plugins.
+`PAPERCLIP_PLUGINS_MUST_SYNC=true`, the pod reports not-ready from
+`/api/health/ready` and a readiness probe pointed there removes it from
+rotation; without it, the pod continues serving traffic with stale plugins.
 
 **Publish failure during install/uninstall/upgrade.** The local tree mutation
 succeeded (npm install ran, the registry row was written) but the snapshot
@@ -141,12 +176,15 @@ take up space; a periodic storage lifecycle rule can clean them up.
 
 ## Single-writer guarantee
 
-The `"plugin-install"` advisory lock serializes all mutating operations across
-replicas that share the same PostgreSQL connection. The CAS on the generation
-primary key provides a second layer for any concurrent writes that bypass the
-lock (e.g. from a misconfigured replica or a direct DB operation). Both
-guarantees are needed: the lock ensures only one mutation runs at a time; the
-CAS ensures the ledger remains consistent if the lock is ever absent.
+The session-scoped `"plugin-install"` advisory lock serializes all mutating
+operations across replicas that share the same PostgreSQL database; contenders
+get an immediate `409` instead of queueing. The lock lives exactly as long as
+its dedicated connection, so a crashed replica releases it implicitly. The CAS
+on the generation primary key provides a second layer for any concurrent
+writes that bypass the lock (e.g. from a misconfigured replica or a direct DB
+operation). Both guarantees are needed: the lock ensures only one mutation
+runs at a time; the CAS ensures the ledger remains consistent if the lock is
+ever absent.
 
 ## Npm-only constraint
 
