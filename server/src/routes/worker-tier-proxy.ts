@@ -75,7 +75,7 @@ export const WORKER_DEPENDENT_PLUGIN_ROUTES: ReadonlyArray<{
 ];
 
 /** Non-streaming proxied requests abort after this long. */
-const PROXY_REQUEST_TIMEOUT_MS = 30_000;
+const PROXY_REQUEST_TIMEOUT_MS = 120_000;
 const PROXY_GET_RETRY_INITIAL_MS = 250;
 const PROXY_GET_RETRY_MAX_MS = 2_000;
 
@@ -231,7 +231,7 @@ function createWorkerProxyHandler(
         }
       }
 
-      const retryStartupRace = req.method === "GET" && !streaming;
+      const retryStartupRace = req.method === "GET";
       const upstream = await fetchWithStartupRetry(targetUrl, {
         method: req.method,
         headers,

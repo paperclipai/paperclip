@@ -381,6 +381,42 @@ describe("registerWorkerTierProxyRoutes", () => {
     expect(res.text).toContain("data: 2");
   });
 
+  it("retries the SSE bridge route while the worker tier is briefly unreachable", async () => {
+    const port = await getFreePort();
+    const workersUrl = `http://127.0.0.1:${port}`;
+    const app = buildApp(workersUrl);
+    let hits = 0;
+
+    const delayedWorker = createServer((_req, res) => {
+      hits += 1;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end("event: ready\ndata: ok\n\n");
+    });
+    const listenTimer = setTimeout(() => {
+      delayedWorker.listen(port, "127.0.0.1");
+    }, 150);
+
+    try {
+      const res = await request(app)
+        .get("/api/plugins/ccrotate/bridge/stream/pool")
+        .timeout({ response: 5_000, deadline: 5_000 });
+
+      expect(res.status).toBe(200);
+      expect(res.headers["content-type"]).toMatch(/text\/event-stream/);
+      expect(res.text).toContain("event: ready");
+      expect(hits).toBe(1);
+    } finally {
+      clearTimeout(listenTimer);
+      await new Promise<void>((resolve) => {
+        if (!delayedWorker.listening) {
+          resolve();
+          return;
+        }
+        delayedWorker.close(() => resolve());
+      });
+    }
+  });
+
   it("covers exactly the worker-dependent plugin routes", () => {
     // Guard against accidental scope creep / drops in the allowlist.
     expect(WORKER_DEPENDENT_PLUGIN_ROUTES.map((r) => `${r.method} ${r.path}`))
