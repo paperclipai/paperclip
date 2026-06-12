@@ -121,6 +121,36 @@ def do_backup():
     return path
 
 
+def build_refmap_and_installed():
+    """refmap: slug -> vorhandene kanonische Ref (aus allen Agenten geharvestet).
+       installed: Slugs der installierten Company-Skills."""
+    agents = load_agents()
+    refmap = {}
+    for a in agents:
+        for r in current_skills(a):
+            refmap.setdefault(r.split("/")[-1], r)
+    sk = api_get(f"/api/companies/{CID}/skills")
+    sk = sk if isinstance(sk, list) else sk.get("skills", [])
+    installed = {s.get("slug") for s in sk}
+    return refmap, installed
+
+
+def do_validate():
+    refmap, installed = build_refmap_and_installed()
+    missing = []
+    for aid, (nm, slugs) in MATRIX.items():
+        for s in slugs:
+            try:
+                resolve(s, refmap, installed)
+            except ValueError:
+                missing.append((nm, s))
+    if missing:
+        for nm, s in missing:
+            print(f"NICHT AUFLOESBAR: {nm} -> {s}")
+        sys.exit(1)
+    print(f"OK: alle {sum(len(v[1]) for v in MATRIX.values())} Zuweisungen aufloesbar")
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--print-matrix", action="store_true")
@@ -136,6 +166,8 @@ def main():
         return
     if args.backup:
         do_backup(); return
+    if args.validate:
+        do_validate(); return
     print("Kein Modus gewaehlt. Siehe --help.", file=sys.stderr)
 
 
