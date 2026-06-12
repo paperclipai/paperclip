@@ -28,6 +28,7 @@ import {
   issueThreadInteractions,
   issues,
   labels,
+  planDetails,
   projectWorkspaces,
   projects,
   workspaceOperations,
@@ -5314,6 +5315,60 @@ export function issueService(db: Db) {
                   eq(issueRelations.type, "blocks"),
                 ),
               );
+          }
+        }
+
+        // A2 — when a dev_team-plan issue reaches a terminal state, flag its own
+        // isolated git worktree for cleanup. Provisioning of the worktree itself
+        // happens lazily at run time (heartbeat realizes it); this is the only
+        // lifecycle bookend Paperclip lacked. Scope is tight: the issue must
+        // belong to a dev_team plan AND own the workspace (sourceIssueId match,
+        // git_worktree provider). Branches are never auto-deleted — only the
+        // cleanup flag is set, for the existing close-readiness machinery. The
+        // whole block is best-effort: a flag failure must not roll back the
+        // terminal transition.
+        if (
+          (issueData.status === "done" || issueData.status === "cancelled") &&
+          existing.status !== issueData.status &&
+          existing.planRootIssueId &&
+          existing.executionWorkspaceId
+        ) {
+          try {
+            const [plan] = await tx
+              .select({ gateProfile: planDetails.gateProfile })
+              .from(planDetails)
+              .where(eq(planDetails.issueId, existing.planRootIssueId));
+            if (plan?.gateProfile === "dev_team") {
+              const [ws] = await tx
+                .select({
+                  id: executionWorkspaces.id,
+                  sourceIssueId: executionWorkspaces.sourceIssueId,
+                  providerType: executionWorkspaces.providerType,
+                  cleanupEligibleAt: executionWorkspaces.cleanupEligibleAt,
+                })
+                .from(executionWorkspaces)
+                .where(eq(executionWorkspaces.id, existing.executionWorkspaceId));
+              if (
+                ws &&
+                ws.sourceIssueId === existing.id &&
+                ws.providerType === "git_worktree" &&
+                !ws.cleanupEligibleAt
+              ) {
+                await tx
+                  .update(executionWorkspaces)
+                  .set({
+                    cleanupEligibleAt: new Date(),
+                    cleanupReason: `issue_${issueData.status}`,
+                    updatedAt: new Date(),
+                  })
+                  .where(eq(executionWorkspaces.id, ws.id));
+              }
+            }
+          } catch (err) {
+            logger.warn(
+              { err, issueId: existing.id, workspaceId: existing.executionWorkspaceId },
+              "failed to flag dev_team worktree for cleanup on terminal transition",
+            );
           }
         }
         return enriched;
