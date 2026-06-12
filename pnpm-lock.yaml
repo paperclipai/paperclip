@@ -222,14 +222,21 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+<<<<<<< HEAD
   packages/adapters/grok-local:
+=======
+  packages/adapters/minimax-local:
+>>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
     dependencies:
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
+<<<<<<< HEAD
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
+=======
+>>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
     devDependencies:
       '@types/node':
         specifier: ^24.6.0
@@ -660,9 +667,15 @@ importers:
       '@paperclipai/adapter-gemini-local':
         specifier: workspace:*
         version: link:../packages/adapters/gemini-local
+<<<<<<< HEAD
       '@paperclipai/adapter-grok-local':
         specifier: workspace:*
         version: link:../packages/adapters/grok-local
+=======
+      '@paperclipai/adapter-minimax-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/minimax-local
+>>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
       '@paperclipai/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway
@@ -826,9 +839,15 @@ importers:
       '@paperclipai/adapter-gemini-local':
         specifier: workspace:*
         version: link:../packages/adapters/gemini-local
+<<<<<<< HEAD
       '@paperclipai/adapter-grok-local':
         specifier: workspace:*
         version: link:../packages/adapters/grok-local
+=======
+      '@paperclipai/adapter-minimax-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/minimax-local
+>>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
       '@paperclipai/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway

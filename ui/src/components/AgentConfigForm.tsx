@@ -22,6 +22,10 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import {
+  DEFAULT_MINIMAX_LOCAL_MODEL,
+  DEFAULT_MINIMAX_SECRET_ID,
+} from "@paperclipai/adapter-minimax-local";
+import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -569,6 +573,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           "modelReasoningEffort",
           String(config.modelReasoningEffort ?? config.reasoningEffort ?? ""),
         )
+<<<<<<< HEAD
       : adapterType === "acpx_local" && acpxAgent === "codex"
         ? eff(
             "adapterConfig",
@@ -581,6 +586,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? eff("adapterConfig", "variant", String(config.variant ?? ""))
             : eff("adapterConfig", "effort", String(config.effort ?? ""));
   const showThinkingEffort = adapterType !== "gemini_local" && adapterType !== "cursor_cloud";
+=======
+      : adapterType === "cursor"
+        ? eff("adapterConfig", "mode", String(config.mode ?? ""))
+      : adapterType === "opencode_local"
+        ? eff("adapterConfig", "variant", String(config.variant ?? ""))
+      : eff("adapterConfig", "effort", String(config.effort ?? ""));
+  const showThinkingEffort = adapterType !== "gemini_local" && adapterType !== "minimax_local";
+  const showCommandField = adapterType !== "minimax_local";
+>>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
@@ -857,6 +871,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
                     } else if (t === "gemini_local") {
                       nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
+                    } else if (t === "minimax_local") {
+                      nextValues.model = DEFAULT_MINIMAX_LOCAL_MODEL;
+                      nextValues.cwd = "/paperclip/instances/default/workspaces/<agent-id>";
+                      nextValues.envBindings = {
+                        MINIMAX_API_KEY: {
+                          type: "secret_ref",
+                          secretId: DEFAULT_MINIMAX_SECRET_ID,
+                          version: "latest",
+                        },
+                      };
                     } else if (t === "cursor") {
                       nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
                     } else if (t === "opencode_local") {
@@ -876,8 +900,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                             ? DEFAULT_CODEX_LOCAL_MODEL
                             : t === "gemini_local"
                               ? DEFAULT_GEMINI_LOCAL_MODEL
+<<<<<<< HEAD
                             : t === "opencode_local"
                               ? DEFAULT_OPENCODE_LOCAL_MODEL
+=======
+                            : t === "minimax_local"
+                              ? DEFAULT_MINIMAX_LOCAL_MODEL
+>>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
                             : t === "cursor"
                               ? DEFAULT_CURSOR_LOCAL_MODEL
                               : "",
@@ -949,40 +978,42 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Permissions &amp; Configuration</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-              <Field label="Command" hint={help.localCommand}>
-                <DraftInput
-                  value={
-                    isCreate
-                      ? val!.command
-                      : eff(
-                          "adapterConfig",
-                          adapterCommandField,
-                          String(
-                            (adapterType === "hermes_local"
-                              ? config.hermesCommand ?? config.command
-                              : config.command) ?? "",
-                          ),
-                        )
-                  }
-                  onCommit={(v) =>
-                    isCreate
-                      ? set!({ command: v })
-                      : mark("adapterConfig", adapterCommandField, v || null)
-                  }
-                  immediate
-                  className={inputClass}
-                  placeholder={
-                    ({
-                      claude_local: "claude",
-                      codex_local: "codex",
-                      gemini_local: "gemini",
-                      pi_local: "pi",
-                      cursor: "agent",
-                      opencode_local: "opencode",
-                    } as Record<string, string>)[adapterType] ?? adapterType.replace(/_local$/, "")
-                  }
-                />
-              </Field>
+              {showCommandField && (
+                <Field label="Command" hint={help.localCommand}>
+                  <DraftInput
+                    value={
+                      isCreate
+                        ? val!.command
+                        : eff(
+                            "adapterConfig",
+                            adapterCommandField,
+                            String(
+                              (adapterType === "hermes_local"
+                                ? config.hermesCommand ?? config.command
+                                : config.command) ?? "",
+                            ),
+                          )
+                    }
+                    onCommit={(v) =>
+                      isCreate
+                        ? set!({ command: v })
+                        : mark("adapterConfig", adapterCommandField, v || null)
+                    }
+                    immediate
+                    className={inputClass}
+                    placeholder={
+                      ({
+                        claude_local: "claude",
+                        codex_local: "codex",
+                        gemini_local: "gemini",
+                        pi_local: "pi",
+                        cursor: "agent",
+                        opencode_local: "opencode",
+                      } as Record<string, string>)[adapterType] ?? adapterType.replace(/_local$/, "")
+                    }
+                  />
+                </Field>
+              )}
 
               {supportsModelProfiles && (
                 <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Primary model</div>

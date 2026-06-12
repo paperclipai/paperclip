@@ -1,0 +1,6 @@
+services:
+  server:
+    environment:
+      NODE_OPTIONS: "--require /app/epipe-guard.cjs"
+    volumes:
+      - ./epipe-guard.cjs:/app/epipe-guard.cjs:ro

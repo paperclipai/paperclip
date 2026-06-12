@@ -35,6 +35,7 @@ export const AGENT_ADAPTER_TYPES = [
   "codex_local",
   "cursor_cloud",
   "gemini_local",
+  "minimax_local",
   "opencode_local",
   "pi_local",
   "cursor",

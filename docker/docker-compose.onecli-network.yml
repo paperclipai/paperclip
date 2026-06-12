@@ -1,0 +1,10 @@
+services:
+  server:
+    networks:
+      - default
+      - onecli_external
+
+networks:
+  onecli_external:
+    external: true
+    name: onecli_onecli

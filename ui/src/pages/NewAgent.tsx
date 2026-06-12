@@ -38,7 +38,14 @@ import {
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+<<<<<<< HEAD
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
+=======
+import {
+  DEFAULT_MINIMAX_LOCAL_MODEL,
+  DEFAULT_MINIMAX_SECRET_ID,
+} from "@paperclipai/adapter-minimax-local";
+>>>>>>> 5481d2370 (Add minimax_local direct MiniMax adapter)
 
 function createValuesForAdapterType(
   adapterType: CreateConfigValues["adapterType"],
@@ -51,6 +58,16 @@ function createValuesForAdapterType(
       DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
   } else if (adapterType === "gemini_local") {
     nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
+  } else if (adapterType === "minimax_local") {
+    nextValues.model = DEFAULT_MINIMAX_LOCAL_MODEL;
+    nextValues.cwd = "/paperclip/instances/default/workspaces/<agent-id>";
+    nextValues.envBindings = {
+      MINIMAX_API_KEY: {
+        type: "secret_ref",
+        secretId: DEFAULT_MINIMAX_SECRET_ID,
+        version: "latest",
+      },
+    };
   } else if (adapterType === "cursor") {
     nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
   } else if (adapterType === "opencode_local") {
