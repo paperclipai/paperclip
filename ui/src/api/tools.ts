@@ -239,6 +239,14 @@ export const toolsApi = {
     api.post<ToolProfileWithDetails>(`/companies/${companyId}/tools/profiles`, input),
   updateProfile: (profileId: string, input: UpdateToolProfileInput) =>
     api.patch<ToolProfileWithDetails>(`/tool-profiles/${profileId}`, input),
+  duplicateProfile: (
+    profileId: string,
+    input: { name: string; includeAssignments?: boolean },
+  ) => api.post<ToolProfileWithDetails>(`/tool-profiles/${profileId}/duplicate`, input),
+  deleteProfile: (
+    profileId: string,
+    input: { force?: boolean; reassignToProfileId?: string } = {},
+  ) => api.delete<{ deleted: true }>(`/tool-profiles/${profileId}`, input),
   addProfileEntry: (profileId: string, input: ToolProfileEntryInput) =>
     api.post<ToolProfileEntry>(`/tool-profiles/${profileId}/entries`, input),
   updateProfileEntry: (entryId: string, input: Partial<ToolProfileEntryInput>) =>
