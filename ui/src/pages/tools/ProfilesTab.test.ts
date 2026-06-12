@@ -64,11 +64,22 @@ function profile(partial: Partial<ToolProfileWithDetails>): ToolProfileWithDetai
     description: null,
     status: "active",
     defaultAction: "deny",
+    newToolsReviewedAt: null,
     metadata: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     entries: [],
     bindings: [],
+    summary: {
+      accessMode: "selected",
+      allowedToolCount: 0,
+      allowedApplicationCount: 0,
+      excludedToolCount: 0,
+      totalToolCount: 0,
+      assignmentCount: 0,
+      appliesToAgentCount: 0,
+      isCompanyDefault: false,
+    },
     ...partial,
   };
 }

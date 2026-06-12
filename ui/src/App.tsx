@@ -37,6 +37,7 @@ import { BootstrapSetupUxLab } from "./pages/BootstrapSetupUxLab";
 import { CompanySettingsPluginPage } from "./pages/CompanySettingsPluginPage";
 import { CompanyAccess, CompanyAccessLegacyRoute } from "./pages/CompanyAccess";
 import { AdvancedToolsRoute } from "./pages/tools/AdvancedToolsRoute";
+import { ProfileWizardRoute } from "./pages/tools/profiles/ProfileWizardRoute";
 import { Apps } from "./pages/apps/Apps";
 import { AppsConnect } from "./pages/apps/AppsConnect";
 import { AppsAttention } from "./pages/apps/AppsAttention";
@@ -96,6 +97,8 @@ function boardRoutes() {
       <Route path="apps/connect" element={<AppsConnect />} />
       <Route path="apps/attention" element={<AppsAttention />} />
       <Route path="apps/advanced" element={<AdvancedToolsRoute />} />
+      <Route path="apps/advanced/profiles/new" element={<ProfileWizardRoute mode="new" />} />
+      <Route path="apps/advanced/profiles/:profileId/edit" element={<ProfileWizardRoute mode="edit" />} />
       <Route path="apps/advanced/:tab" element={<AdvancedToolsRoute />} />
       <Route path="apps/app/:applicationId" element={<AppNotConnected />} />
       <Route path="apps/:connectionId" element={<Navigate to="setup" replace />} />

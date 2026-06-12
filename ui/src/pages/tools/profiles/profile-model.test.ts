@@ -163,7 +163,7 @@ describe("buildEntries", () => {
 describe("parseEntries round-trips buildEntries", () => {
   it("round-trips all_except", () => {
     const g = gmail();
-    const sel = { [g.appKey]: { kind: "all_except", excluded: ["g-delete"] } as const };
+    const sel = { [g.appKey]: { kind: "all_except" as const, excluded: ["g-delete"] } };
     const entries = buildEntries([g], sel).map((e, i) => entry({ ...e, id: `e${i}` } as never));
     const parsed = parseEntries([g], entries);
     expect(parsed.selections[g.appKey]).toEqual({ kind: "all_except", excluded: ["g-delete"] });

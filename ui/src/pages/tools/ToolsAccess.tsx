@@ -4,7 +4,7 @@ import { Link, Navigate, useParams } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
-import { ProfilesTab } from "./ProfilesTab";
+import { ProfilesIndex } from "./profiles/ProfilesIndex";
 import { PoliciesTab } from "./PoliciesTab";
 import { RuntimeTab } from "./RuntimeTab";
 import { AuditTab } from "./AuditTab";
@@ -21,7 +21,7 @@ import {
 function renderTab(tab: ToolTabKey, companyId: string) {
   switch (tab) {
     case "profiles":
-      return <ProfilesTab companyId={companyId} />;
+      return <ProfilesIndex companyId={companyId} />;
     case "policies":
       return <PoliciesTab companyId={companyId} />;
     case "runtime":
