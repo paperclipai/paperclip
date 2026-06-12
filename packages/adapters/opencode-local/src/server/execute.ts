@@ -306,6 +306,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // selection is already handled via the --model CLI flag.  Set after the
   // envConfig loop so user overrides cannot disable this guard.
   env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
+  // Map Paperclip's maxTurnsPerRun to OpenCode's per-agent steps config
+  // via inline runtime config.  OpenCode's "opencode run" CLI does not
+  // expose a --max-steps flag, so we inject it as a JSON env var that
+  // takes effect at the agent config level (higher precedence than local
+  // opencode.json files).  When unset or zero, OpenCode's default applies
+  // (unlimited steps, with doom_loop permission as a secondary guard).
+  const maxSteps = asNumber(config.maxTurnsPerRun, 0);
+  if (maxSteps > 0) {
+    env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
+      agent: { build: { steps: maxSteps } },
+    });
+  }
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
