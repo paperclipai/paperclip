@@ -568,7 +568,6 @@ describe("agent issue mutation checkout ownership", () => {
   it.each([
     ["patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked" })],
     ["delete", (app: express.Express) => request(app).delete(`/api/issues/${issueId}`)],
-    ["comment", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "blocked" })],
     [
       "document upsert",
       (app: express.Express) =>
@@ -975,7 +974,6 @@ describe("agent issue mutation checkout ownership", () => {
 
   it.each([
     ["todo", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Todo update" })],
-    ["todo", "comment", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Todo noise" })],
     ["blocked", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked update" })],
   ])("rejects peer agent %s issue %s mutations outside active checkout ownership", async (status, _kind, sendRequest) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: status as "todo" | "blocked", assigneeAgentId: ownerAgentId }));
@@ -1005,6 +1003,50 @@ describe("agent issue mutation checkout ownership", () => {
       assigneeAgentId: null,
       title: "Claimable update",
     });
+  });
+
+  it("allows a non-assignee agent to post a plain comment on another agent's issue (201)", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId,
+      companyId,
+      body: "This is a plain comment from a non-assignee agent.",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: peerAgentId,
+      authorUserId: null,
+    });
+
+    const res = await request(await createApp(peerActor())).post(`/api/issues/${issueId}/comments`).send({
+      body: "This is a plain comment from a non-assignee agent.",
+    });
+
+    expect(res.status).toBe(201);
+  });
+
+  it("denies a non-assignee agent posting a comment with reopen: true (403)", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+
+    const res = await request(await createApp(peerActor())).post(`/api/issues/${issueId}/comments`).send({
+      body: "Reopening this issue.",
+      reopen: true,
+    });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+  });
+
+  it("denies a non-assignee agent posting a comment with resume: true (403)", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }));
+
+    const res = await request(await createApp(peerActor())).post(`/api/issues/${issueId}/comments`).send({
+      body: "Resuming this issue.",
+      resume: true,
+    });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Issue is checked out by another agent");
   });
 
   it("rejects peer-agent status updates that would clear a recovery action they do not own", async () => {
