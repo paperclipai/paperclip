@@ -49,3 +49,13 @@ def find_failed_workflows(rows):
                 "failed_at": started_at,
             })
     return findings
+
+
+def should_send_heartbeat(today, last_heartbeat_date, has_findings):
+    """today: datetime.date. Montag(0) + kein Befund + Heartbeat heute noch nicht
+    gesendet → True."""
+    if has_findings:
+        return False
+    if today.weekday() != 0:  # 0 = Montag
+        return False
+    return last_heartbeat_date != today.isoformat()

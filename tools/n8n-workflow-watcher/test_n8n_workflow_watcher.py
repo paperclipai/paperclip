@@ -33,5 +33,28 @@ class FindFailedWorkflows(unittest.TestCase):
         self.assertEqual(w.find_failed_workflows([]), [])
 
 
+from datetime import date
+
+
+class ShouldSendHeartbeat(unittest.TestCase):
+    MONDAY = date(2026, 6, 15)      # Montag
+    TUESDAY = date(2026, 6, 16)     # Dienstag
+
+    def test_monday_no_findings_overdue_true(self):
+        self.assertTrue(w.should_send_heartbeat(self.MONDAY, "2026-06-08", has_findings=False))
+
+    def test_monday_already_sent_today_false(self):
+        self.assertFalse(w.should_send_heartbeat(self.MONDAY, "2026-06-15", has_findings=False))
+
+    def test_monday_with_findings_false(self):
+        self.assertFalse(w.should_send_heartbeat(self.MONDAY, "2026-06-08", has_findings=True))
+
+    def test_non_monday_false(self):
+        self.assertFalse(w.should_send_heartbeat(self.TUESDAY, "2026-06-01", has_findings=False))
+
+    def test_monday_no_prior_heartbeat_true(self):
+        self.assertTrue(w.should_send_heartbeat(self.MONDAY, None, has_findings=False))
+
+
 if __name__ == "__main__":
     unittest.main()
