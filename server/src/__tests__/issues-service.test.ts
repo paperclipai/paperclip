@@ -4854,7 +4854,7 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
 
     expect(ownership.checkoutRunId).toBe(seeded.actorRunId);
     expect(ownership.executionRunId).toBe(seeded.actorRunId);
-    expect(ownership.adoptedFromRunId).toBe(seeded.staleRunId);
+    expect(ownership.adoptedFromRunId).toBeNull();
   });
 
   it("treats timed_out checkout owners as stale and recoverable", async () => {
@@ -4863,7 +4863,7 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
     const ownership = await svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId);
 
     expect(ownership.checkoutRunId).toBe(seeded.actorRunId);
-    expect(ownership.adoptedFromRunId).toBe(seeded.staleRunId);
+    expect(ownership.adoptedFromRunId).toBeNull();
   });
 
   it("does not allow non-assignees to adopt stale checkout ownership", async () => {
@@ -4898,7 +4898,7 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
       .where(eq(issues.id, seeded.issueId))
       .then((rows) => rows[0]);
     expect(row).toEqual({
-      checkoutRunId: seeded.staleRunId,
+      checkoutRunId: null,
       executionRunId: null,
     });
   });
