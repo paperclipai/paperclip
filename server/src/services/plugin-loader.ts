@@ -79,12 +79,37 @@ export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
 
 const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs");
 
+/**
+ * Model-provider API keys that sandbox-provider plugins (e.g.
+ * `@paperclipai/plugin-kubernetes`) are allowed to read from the
+ * server's process environment so they can inject them into per-run
+ * pod Secrets. All other host env vars remain stripped from plugin
+ * workers (see `PluginWorkerManager.spawnProcess`). The passthrough
+ * is gated on the plugin manifest declaring
+ * `environment.drivers.register` — non-sandbox plugins never receive
+ * these keys.
+ */
 const ADAPTER_ENV_PASSTHROUGH = [
   "ANTHROPIC_API_KEY",
   "OPENAI_API_KEY",
   "GOOGLE_API_KEY",
   "GEMINI_API_KEY",
   "OPENROUTER_API_KEY",
+];
+
+/**
+ * In-cluster Kubernetes service-discovery vars. A sandbox-provider plugin that
+ * runs in-cluster (e.g. `@paperclipai/plugin-kubernetes` with inCluster=true)
+ * builds its API client via `KubeConfig.loadFromCluster()`, which reads these
+ * to construct the apiserver URL. Without them the worker fails with "Invalid
+ * URL" at lease acquisition. The CA + token are files under
+ * /var/run/secrets/kubernetes.io/serviceaccount and are readable directly.
+ * Gated, like ADAPTER_ENV_PASSTHROUGH, on environment-driver registration.
+ */
+const K8S_IN_CLUSTER_ENV_PASSTHROUGH = [
+  "KUBERNETES_SERVICE_HOST",
+  "KUBERNETES_SERVICE_PORT",
+  "KUBERNETES_SERVICE_PORT_HTTPS",
 ];
 
 export function buildPluginWorkerEnv(input: {
@@ -101,7 +126,7 @@ export function buildPluginWorkerEnv(input: {
     && input.manifest.capabilities.includes("environment.drivers.register");
   if (!canRegisterEnvironmentDrivers) return env;
 
-  for (const key of ADAPTER_ENV_PASSTHROUGH) {
+  for (const key of [...ADAPTER_ENV_PASSTHROUGH, ...K8S_IN_CLUSTER_ENV_PASSTHROUGH]) {
     const value = processEnv[key];
     if (value && value.trim().length > 0) {
       env[key] = value;
