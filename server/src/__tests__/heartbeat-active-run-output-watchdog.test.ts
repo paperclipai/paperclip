@@ -686,6 +686,45 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(noisyResult).toMatchObject({ scanned: 0, created: 0 });
   });
 
+  it("suppresses runs that reached a terminal state between the scan snapshot and evaluation", async () => {
+    // TOCTOU guard regression: the candidate query filters on `status = 'running'` only,
+    // so a run whose finalizer already stamped `finished_at` (status write lagging) is
+    // still snapshotted as a stale candidate. The identical seed without `finished_at`
+    // produces `created: 1` (see "creates one medium-priority evaluation issue ..."), so
+    // this asserts the live re-read — not the candidate filter — suppresses the false flag.
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    // Run reaches terminal mid-scan: finished_at stamped while status still reads 'running'.
+    await db
+      .update(heartbeatRuns)
+      .set({ finishedAt: now })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ scanned: 1, created: 0, skipped: 1 });
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+
+    const [suppression] = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.action, "heartbeat.output_stale_suppressed_terminal"),
+        ),
+      );
+    expect(suppression?.entityId).toBe(runId);
+  });
+
   it("records watchdog decisions through recovery owner authorization", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const { companyId, managerId, runId } = await seedRunningRun({
