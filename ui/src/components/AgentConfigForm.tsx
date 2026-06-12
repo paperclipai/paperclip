@@ -61,6 +61,10 @@ import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, type AgentConfigOverlay } from "../lib/agent-config-patch";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { filterAcpxModelsByAgent } from "../lib/acpx-model-filter";
+import {
+  hasMixedCodexAuthModes,
+  toggleCredentialSelectionForAuthMode,
+} from "../lib/credential-selection";
 
 /* ---- Create mode values ---- */
 
@@ -446,16 +450,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   const toggleCredential = useCallback(
     (credentialId: string) => {
-      const next = selectedCredentialIds.includes(credentialId)
-        ? selectedCredentialIds.filter((id) => id !== credentialId)
-        : [...selectedCredentialIds, credentialId];
+      const next = toggleCredentialSelectionForAuthMode(
+        availableCredentials,
+        selectedCredentialIds,
+        credentialId,
+      );
       if (isCreate) {
         props.onChange({ credentialIds: next });
       } else {
         setOverlay((prev) => ({ ...prev, credentialIds: next }));
       }
     },
-    [isCreate, selectedCredentialIds, props],
+    [availableCredentials, isCreate, selectedCredentialIds, props],
   );
 
   const autoSelectedCredentialRef = useRef(false);
@@ -2053,6 +2059,7 @@ function CredentialMultiSelect({
     () => [...typeCounts.entries()].filter(([, count]) => count > 1).map(([type]) => type),
     [typeCounts],
   );
+  const mixedCodexAuthModes = hasMixedCodexAuthModes(credentials, selectedIds);
 
   return (
     <Field
@@ -2160,6 +2167,11 @@ function CredentialMultiSelect({
           Multiple {pooledTypes.join(", ")} credentials form a rotation pool — the
           agent uses the least-recently-used one and rotates to another if one hits
           a rate limit.
+        </p>
+      )}
+      {mixedCodexAuthModes && (
+        <p className="text-xs text-destructive mt-1">
+          Codex OAuth and OpenAI API key credentials cannot be used together. Select one auth mode.
         </p>
       )}
     </Field>

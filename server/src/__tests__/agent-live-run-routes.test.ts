@@ -20,6 +20,14 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
 }));
 
+const mockCredentialService = vi.hoisted(() => ({
+  listForAgent: vi.fn(async () => []),
+  setForAgent: vi.fn(async () => ({ ok: true, credentials: [] })),
+  validateForAdapterAssignment: vi.fn(async () => ({ ok: true, credentials: [] })),
+  getById: vi.fn(async () => null),
+  update: vi.fn(),
+}));
+
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(),
   getExperimental: vi.fn(),
@@ -60,6 +68,7 @@ function registerModuleMocks() {
     issueService: () => mockIssueService,
     logActivity: vi.fn(),
     secretService: () => ({}),
+    credentialService: () => mockCredentialService,
     syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
     workspaceOperationService: () => ({}),
   }));

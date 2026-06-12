@@ -108,6 +108,36 @@ import { recoveryService } from "../services/recovery/service.js";
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
 
+function sendCredentialAssignmentError(
+  res: Response,
+  result: { error: string; credentialId?: string; type?: string; message?: string },
+) {
+  if (result.error === "duplicate_type") {
+    res.status(422).json({
+      error: "duplicate_credential_type",
+      message: `An agent can hold at most one credential per provider type (got multiple ${result.type}).`,
+    });
+    return;
+  }
+  if (result.error === "mixed_codex_auth_modes") {
+    res.status(422).json({
+      error: "mixed_codex_auth_modes",
+      message:
+        result.message ??
+        "Codex agents must use either Codex OAuth credentials or OpenAI API-key credentials, not both.",
+    });
+    return;
+  }
+  if (result.error === "credential_not_found") {
+    res.status(404).json({
+      error: "credential_not_found",
+      credentialId: result.credentialId,
+    });
+    return;
+  }
+  res.status(422).json({ error: result.error, message: result.message });
+}
+
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
   if (!Number.isFinite(parsed)) return RUN_LOG_DEFAULT_LIMIT_BYTES;
@@ -2273,6 +2303,19 @@ export function agentRoutes(
       normalizeNewAgentRuntimeConfig(createInput.runtimeConfig),
       normalizedAdapterConfig,
     );
+    const requestedCredentialIdsForCreate = Array.isArray(requestedCredentialIds) ? requestedCredentialIds : [];
+    if (requestedCredentialIdsForCreate.length > 0) {
+      const credentialValidation = await credentialsSvc.validateForAdapterAssignment({
+        companyId,
+        adapterType: createInput.adapterType,
+        adapterConfig: normalizedAdapterConfig,
+        credentialIds: requestedCredentialIdsForCreate,
+      });
+      if (!credentialValidation.ok) {
+        sendCredentialAssignmentError(res, credentialValidation);
+        return;
+      }
+    }
     await assertAgentEnvironmentSelection(companyId, createInput.adapterType, createInput.defaultEnvironmentId);
     await assertAgentDefaultEnvironmentSelection(companyId, createInput.defaultEnvironmentId, {
       allowedDrivers: allowedEnvironmentDriversForAgent(createInput.adapterType),
@@ -2337,23 +2380,14 @@ export function agentRoutes(
       );
     }
 
-    if (Array.isArray(requestedCredentialIds) && requestedCredentialIds.length > 0) {
-      const setResult = await credentialsSvc.setForAgent(agent.id, requestedCredentialIds);
+    if (requestedCredentialIdsForCreate.length > 0) {
+      const setResult = await credentialsSvc.setForAgent(agent.id, requestedCredentialIdsForCreate, {
+        adapterType: createInput.adapterType,
+        adapterConfig: normalizedAdapterConfig,
+      });
       if (!setResult.ok) {
-        if (setResult.error === "duplicate_type") {
-          res.status(422).json({
-            error: "duplicate_credential_type",
-            message: `An agent can hold at most one credential per provider type (got multiple ${setResult.type}).`,
-          });
-          return;
-        }
-        if (setResult.error === "credential_not_found") {
-          res.status(404).json({
-            error: "credential_not_found",
-            credentialId: setResult.credentialId,
-          });
-          return;
-        }
+        sendCredentialAssignmentError(res, setResult);
+        return;
       }
     }
     const credentials = await credentialsSvc.listForAgent(agent.id);
@@ -2788,6 +2822,24 @@ export function agentRoutes(
       );
     }
 
+    if (hasCredentialIdsPatch || touchesAdapterConfiguration) {
+      const finalCredentialIds = hasCredentialIdsPatch
+        ? requestedCredentialIds ?? []
+        : (await credentialsSvc.listForAgent(existing.id)).map((credential) => credential.id);
+      if (finalCredentialIds.length > 0) {
+        const credentialValidation = await credentialsSvc.validateForAdapterAssignment({
+          companyId: existing.companyId,
+          adapterType: requestedAdapterType,
+          adapterConfig: asRecord(patchData.adapterConfig) ?? asRecord(existing.adapterConfig) ?? {},
+          credentialIds: finalCredentialIds,
+        });
+        if (!credentialValidation.ok) {
+          sendCredentialAssignmentError(res, credentialValidation);
+          return;
+        }
+      }
+    }
+
     const actor = getActorInfo(req);
     const agent = await svc.update(id, patchData, {
       recordRevision: {
@@ -2810,22 +2862,13 @@ export function agentRoutes(
     }
 
     if (requestedCredentialIds !== null) {
-      const setResult = await credentialsSvc.setForAgent(agent.id, requestedCredentialIds);
+      const setResult = await credentialsSvc.setForAgent(agent.id, requestedCredentialIds, {
+        adapterType: requestedAdapterType,
+        adapterConfig: asRecord(patchData.adapterConfig) ?? asRecord(agent.adapterConfig) ?? {},
+      });
       if (!setResult.ok) {
-        if (setResult.error === "duplicate_type") {
-          res.status(422).json({
-            error: "duplicate_credential_type",
-            message: `An agent can hold at most one credential per provider type (got multiple ${setResult.type}).`,
-          });
-          return;
-        }
-        if (setResult.error === "credential_not_found") {
-          res.status(404).json({
-            error: "credential_not_found",
-            credentialId: setResult.credentialId,
-          });
-          return;
-        }
+        sendCredentialAssignmentError(res, setResult);
+        return;
       }
     }
 

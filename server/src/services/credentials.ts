@@ -14,6 +14,12 @@ import {
 
 type CredentialRow = typeof providerCredentials.$inferSelect;
 type SafeCredential = Omit<CredentialRow, "credential">;
+type CredentialSelectionRow = Pick<CredentialRow, "id" | "type">;
+
+export type CredentialAssignmentValidationResult =
+  | { ok: true; credentials: SafeCredential[] }
+  | { ok: false; error: "credential_not_found"; credentialId: string }
+  | { ok: false; error: "mixed_codex_auth_modes"; message: string };
 
 function stripCredential(row: CredentialRow): SafeCredential {
   const { credential: _credential, ...safe } = row;
@@ -29,6 +35,17 @@ function decryptPayload(row: CredentialRow): Record<string, unknown> {
     return row.credential as Record<string, unknown>;
   }
   return {};
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function readCredentialConfigString(record: Record<string, unknown> | null | undefined, key: string): string | null {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 export function credentialService(db: Db) {
@@ -208,7 +225,13 @@ export function credentialService(db: Db) {
     async setForAgent(
       agentId: string,
       credentialIds: string[],
-    ): Promise<{ ok: true; credentials: SafeCredential[] } | { ok: false; error: "duplicate_type"; type: string } | { ok: false; error: "credential_not_found"; credentialId: string }> {
+      options?: { adapterType?: string; adapterConfig?: Record<string, unknown> | null },
+    ): Promise<
+      | { ok: true; credentials: SafeCredential[] }
+      | { ok: false; error: "duplicate_type"; type: string }
+      | { ok: false; error: "credential_not_found"; credentialId: string }
+      | { ok: false; error: "mixed_codex_auth_modes"; message: string }
+    > {
       const uniqueIds = Array.from(new Set(credentialIds));
 
       if (uniqueIds.length === 0) {
@@ -216,10 +239,29 @@ export function credentialService(db: Db) {
         return { ok: true, credentials: [] };
       }
 
+      const [agentRow] = await db
+        .select({
+          companyId: agents.companyId,
+          adapterType: agents.adapterType,
+          adapterConfig: agents.adapterConfig,
+        })
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .limit(1);
+
+      if (!agentRow) {
+        return { ok: false, error: "credential_not_found", credentialId: uniqueIds[0] };
+      }
+
       const creds = await db
         .select()
         .from(providerCredentials)
-        .where(inArray(providerCredentials.id, uniqueIds));
+        .where(
+          and(
+            eq(providerCredentials.companyId, agentRow.companyId),
+            inArray(providerCredentials.id, uniqueIds),
+          ),
+        );
 
       if (creds.length !== uniqueIds.length) {
         const found = new Set(creds.map((c) => c.id));
@@ -227,10 +269,52 @@ export function credentialService(db: Db) {
         return { ok: false, error: "credential_not_found", credentialId: missing };
       }
 
+      const authModeValidation = validateCredentialSelectionForAdapter({
+        adapterType: options?.adapterType ?? agentRow.adapterType,
+        adapterConfig: options?.adapterConfig ?? asRecord(agentRow.adapterConfig) ?? {},
+        credentials: creds,
+      });
+      if (!authModeValidation.ok) return authModeValidation;
+
       await db.transaction(async (tx) => {
         await tx.delete(agentCredentials).where(eq(agentCredentials.agentId, agentId));
         await tx.insert(agentCredentials).values(uniqueIds.map((credentialId) => ({ agentId, credentialId })));
       });
+
+      return { ok: true, credentials: creds.map(stripCredential) };
+    },
+
+    async validateForAdapterAssignment(input: {
+      companyId: string;
+      adapterType: string;
+      adapterConfig: Record<string, unknown> | null | undefined;
+      credentialIds: string[];
+    }): Promise<CredentialAssignmentValidationResult> {
+      const uniqueIds = Array.from(new Set(input.credentialIds));
+      if (uniqueIds.length === 0) return { ok: true, credentials: [] };
+
+      const creds = await db
+        .select()
+        .from(providerCredentials)
+        .where(
+          and(
+            eq(providerCredentials.companyId, input.companyId),
+            inArray(providerCredentials.id, uniqueIds),
+          ),
+        );
+
+      if (creds.length !== uniqueIds.length) {
+        const found = new Set(creds.map((c) => c.id));
+        const missing = uniqueIds.find((id) => !found.has(id))!;
+        return { ok: false, error: "credential_not_found", credentialId: missing };
+      }
+
+      const authModeValidation = validateCredentialSelectionForAdapter({
+        adapterType: input.adapterType,
+        adapterConfig: input.adapterConfig ?? {},
+        credentials: creds,
+      });
+      if (!authModeValidation.ok) return authModeValidation;
 
       return { ok: true, credentials: creds.map(stripCredential) };
     },
@@ -735,6 +819,85 @@ export function credentialTypesForAdapterType(adapterType: string): readonly str
   return ADAPTER_CREDENTIAL_TYPES[adapterType] ?? [];
 }
 
+function credentialTypesForAdapterRuntime(
+  adapterType: string,
+  adapterConfig: Record<string, unknown> | null | undefined,
+): readonly string[] {
+  if (adapterType !== "acpx_local") return credentialTypesForAdapterType(adapterType);
+
+  const acpxAgent = readCredentialConfigString(adapterConfig, "agent") ?? "claude";
+  if (acpxAgent === "claude") return ["claude_oauth", "claude_api_key"];
+  if (acpxAgent === "codex") return ["codex_oauth", "openai_api_key"];
+  return credentialTypesForAdapterType(adapterType);
+}
+
+function isCodexCredentialRuntime(input: {
+  adapterType: string | null | undefined;
+  adapterConfig: Record<string, unknown> | null | undefined;
+}): boolean {
+  if (input.adapterType === "codex_local") return true;
+  if (input.adapterType !== "acpx_local") return false;
+  return readCredentialConfigString(input.adapterConfig, "agent") === "codex";
+}
+
+export function validateCredentialSelectionForAdapter(input: {
+  adapterType: string | null | undefined;
+  adapterConfig?: Record<string, unknown> | null;
+  credentials: CredentialSelectionRow[];
+}): CredentialAssignmentValidationResult {
+  if (!isCodexCredentialRuntime({
+    adapterType: input.adapterType,
+    adapterConfig: input.adapterConfig ?? null,
+  })) {
+    return { ok: true, credentials: [] };
+  }
+
+  const selectedTypes = new Set(input.credentials.map((credential) => credential.type));
+  if (selectedTypes.has("codex_oauth") && selectedTypes.has("openai_api_key")) {
+    return {
+      ok: false,
+      error: "mixed_codex_auth_modes",
+      message:
+        "Codex agents must use one auth mode at a time. Select either Codex OAuth credentials for ChatGPT login rotation or OpenAI API-key credentials, not both.",
+    };
+  }
+
+  return { ok: true, credentials: [] };
+}
+
+export type ResolvedCredentialChoice = { credentialId: string; type: string };
+
+function hasNonEmptyEnvValue(env: Record<string, unknown>, key: string): boolean {
+  const raw = env[key];
+  return typeof raw === "string" && raw.trim().length > 0;
+}
+
+/**
+ * Attribute a run to the managed credential that the adapter will actually use.
+ * Codex is special because an API key wins over native CODEX_HOME auth, and
+ * current Codex reads that key from auth.json rather than directly from env.
+ */
+export function selectActiveCredentialForAdapter(input: {
+  adapterType: string;
+  adapterConfig?: Record<string, unknown> | null;
+  chosen: ResolvedCredentialChoice[];
+  env: Record<string, unknown>;
+}): ResolvedCredentialChoice | null {
+  const adapterConfig = input.adapterConfig ?? null;
+  const eligibleTypes = new Set(credentialTypesForAdapterRuntime(input.adapterType, adapterConfig));
+  const eligible = input.chosen.filter((choice) => eligibleTypes.has(choice.type));
+
+  if (isCodexCredentialRuntime({ adapterType: input.adapterType, adapterConfig })) {
+    const openAiChoice = eligible.find((choice) => choice.type === "openai_api_key") ?? null;
+    if (hasNonEmptyEnvValue(input.env, "OPENAI_API_KEY")) return openAiChoice;
+
+    const codexOAuthChoice = eligible.find((choice) => choice.type === "codex_oauth") ?? null;
+    if (hasNonEmptyEnvValue(input.env, "CODEX_HOME")) return codexOAuthChoice;
+  }
+
+  return eligible[0] ?? input.chosen[0] ?? null;
+}
+
 type RotationCandidate = {
   credentialId: string;
   type: string;
@@ -993,20 +1156,6 @@ export async function resolveAllCredentialEnv(
   credentialIds: string[];
   chosen: Array<{ credentialId: string; type: string }>;
 }> {
-  // Disabled credentials (auto-disabled after repeated failures, or manually)
-  // are excluded from the rotation pool entirely — the picker never selects
-  // them until the user re-enables them from the Credentials UI.
-  const joinRows = await db
-    .select({
-      credentialId: agentCredentials.credentialId,
-      type: providerCredentials.type,
-      cooldownUntil: providerCredentials.cooldownUntil,
-      lastUsedAt: providerCredentials.lastUsedAt,
-    })
-    .from(agentCredentials)
-    .innerJoin(providerCredentials, eq(agentCredentials.credentialId, providerCredentials.id))
-    .where(and(eq(agentCredentials.agentId, agentId), isNull(providerCredentials.disabledAt)));
-
   // adapterType decides how some credentials resolve (e.g. a deepseek_api_key on
   // a Claude Code agent routes the CLI through DeepSeek's Anthropic endpoint).
   const [agentRow] = await db
@@ -1016,36 +1165,80 @@ export async function resolveAllCredentialEnv(
     .limit(1);
   const adapterType = agentRow?.adapterType ?? undefined;
 
-  if (joinRows.length === 0) {
+  // Disabled credentials (auto-disabled after repeated failures, or manually)
+  // are excluded from the rotation pool entirely — the picker never selects
+  // them until the user re-enables them from the Credentials UI. Lock the pool
+  // rows before picking/touching so concurrent heartbeats spread across LRU
+  // candidates instead of racing on the same oldest credential.
+  const chosenCandidates = await db.transaction(async (tx) => {
+    await tx.execute(sql`
+      select ${providerCredentials.id}
+      from ${agentCredentials}
+      inner join ${providerCredentials}
+        on ${agentCredentials.credentialId} = ${providerCredentials.id}
+      where ${agentCredentials.agentId} = ${agentId}
+        and ${providerCredentials.disabledAt} is null
+      for update of provider_credentials
+    `);
+
+    const joinRows = await tx
+      .select({
+        credentialId: agentCredentials.credentialId,
+        type: providerCredentials.type,
+        cooldownUntil: providerCredentials.cooldownUntil,
+        lastUsedAt: providerCredentials.lastUsedAt,
+      })
+      .from(agentCredentials)
+      .innerJoin(providerCredentials, eq(agentCredentials.credentialId, providerCredentials.id))
+      .where(and(eq(agentCredentials.agentId, agentId), isNull(providerCredentials.disabledAt)));
+
+    const nowMs = Date.now();
+    const byType = new Map<string, RotationCandidate[]>();
+    for (const row of joinRows) {
+      const list = byType.get(row.type) ?? [];
+      list.push(row);
+      byType.set(row.type, list);
+    }
+
+    const picked: RotationCandidate[] = [];
+    for (const list of byType.values()) {
+      picked.push(pickPoolCredential(list, nowMs));
+    }
+
+    const lastUsedAt = new Date(nowMs);
+    for (const candidate of picked) {
+      await tx
+        .update(providerCredentials)
+        .set({ lastUsedAt })
+        .where(eq(providerCredentials.id, candidate.credentialId));
+    }
+
+    return picked;
+  });
+
+  if (chosenCandidates.length === 0) {
     if (!agentRow?.credentialId) return { env: {}, credentialIds: [], chosen: [] };
-    const res = await resolveCredentialEnv(db, agentId, agentRow.credentialId, adapterType);
-    await touchCredentialLastUsed(db, agentRow.credentialId);
     const [row] = await db
-      .select({ type: providerCredentials.type })
+      .select({ type: providerCredentials.type, disabledAt: providerCredentials.disabledAt })
       .from(providerCredentials)
       .where(eq(providerCredentials.id, agentRow.credentialId))
       .limit(1);
+    if (!row) return { env: {}, credentialIds: [], chosen: [] };
+    if (row.disabledAt) {
+      logger.warn(
+        { agentId, credentialId: agentRow.credentialId },
+        "legacy agent credential is disabled; skipping runtime resolution",
+      );
+      return { env: {}, credentialIds: [], chosen: [] };
+    }
+    const res = await resolveCredentialEnv(db, agentId, agentRow.credentialId, adapterType);
+    await touchCredentialLastUsed(db, agentRow.credentialId);
     return {
       env: res.env,
       home: res.home,
       credentialIds: [agentRow.credentialId],
-      chosen: row ? [{ credentialId: agentRow.credentialId, type: row.type }] : [],
+      chosen: [{ credentialId: agentRow.credentialId, type: row.type }],
     };
-  }
-
-  // Group bound credentials by provider type, then select exactly one per type
-  // (rotation pool). Preserves behaviour for agents with a single credential per
-  // type while enabling LRU rotation when several of the same type are bound.
-  const nowMs = Date.now();
-  const byType = new Map<string, RotationCandidate[]>();
-  for (const r of joinRows) {
-    const list = byType.get(r.type) ?? [];
-    list.push(r);
-    byType.set(r.type, list);
-  }
-  const chosenCandidates: RotationCandidate[] = [];
-  for (const list of byType.values()) {
-    chosenCandidates.push(pickPoolCredential(list, nowMs));
   }
 
   // Resolve oauth (HOME-owning) types last so their HOME overrides take
@@ -1067,7 +1260,6 @@ export async function resolveAllCredentialEnv(
     if (res.home) home = res.home;
     credentialIds.push(candidate.credentialId);
     chosen.push({ credentialId: candidate.credentialId, type: candidate.type });
-    await touchCredentialLastUsed(db, candidate.credentialId);
   }
 
   return { env, home, credentialIds, chosen };

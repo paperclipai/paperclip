@@ -63,13 +63,13 @@ import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import {
-  credentialTypesForAdapterType,
   hasAlternateCredentialOfType,
   isCredentialFailure,
   persistCodexRefreshedTokens,
   recordCredentialFailure,
   recordCredentialSuccess,
   resolveAllCredentialEnv,
+  selectActiveCredentialForAdapter,
 } from "./credentials.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
@@ -1000,7 +1000,7 @@ type SessionCompactionDecision = {
   previousRunId: string | null;
 };
 
-interface ParsedIssueAssigneeAdapterOverrides {
+export interface ParsedIssueAssigneeAdapterOverrides {
   modelProfile: ModelProfileKey | null;
   adapterConfig: Record<string, unknown> | null;
   useProjectWorkspace: boolean | null;
@@ -1037,6 +1037,12 @@ export type ResolvedWorkspaceForRun = {
 type ProjectWorkspaceCandidate = {
   id: string;
 };
+
+const ISSUE_ASSIGNEE_ADAPTER_CONFIG_OVERRIDE_TYPES = new Set([
+  "claude_local",
+  "codex_local",
+  "opencode_local",
+]);
 
 export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWorkspaceCandidate>(
   rows: T[],
@@ -1551,6 +1557,29 @@ function parseIssueAssigneeAdapterOverrides(
     modelProfile,
     adapterConfig,
     useProjectWorkspace,
+  };
+}
+
+export function supportsIssueAssigneeAdapterConfigOverrides(adapterType: string | null | undefined): boolean {
+  return Boolean(adapterType && ISSUE_ASSIGNEE_ADAPTER_CONFIG_OVERRIDE_TYPES.has(adapterType));
+}
+
+export function resolveIssueAssigneeAdapterOverridesForRun(input: {
+  adapterType: string | null | undefined;
+  raw: unknown;
+}): ParsedIssueAssigneeAdapterOverrides | null {
+  const parsed = parseIssueAssigneeAdapterOverrides(input.raw);
+  if (!parsed) return null;
+
+  const adapterConfig = supportsIssueAssigneeAdapterConfigOverrides(input.adapterType)
+    ? parsed.adapterConfig
+    : null;
+  if (!parsed.modelProfile && !adapterConfig && parsed.useProjectWorkspace === null) return null;
+
+  return {
+    modelProfile: parsed.modelProfile,
+    adapterConfig,
+    useProjectWorkspace: parsed.useProjectWorkspace,
   };
 }
 
@@ -6886,9 +6915,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : null;
     const issueAssigneeOverrides =
       issueContext && issueContext.assigneeAgentId === agent.id
-        ? parseIssueAssigneeAdapterOverrides(
-            issueContext.assigneeAdapterOverrides,
-          )
+        ? resolveIssueAssigneeAdapterOverridesForRun({
+            adapterType: agent.adapterType,
+            raw: issueContext.assigneeAdapterOverrides,
+          })
         : null;
     const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
     const issueExecutionWorkspaceSettings = isolatedWorkspacesEnabled
@@ -7122,16 +7152,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let runActiveCredentialType: string | null = null;
     try {
       const credResolution = await resolveAllCredentialEnv(db, agent.id);
-      const eligibleTypes = new Set(credentialTypesForAdapterType(agent.adapterType));
-      const activeChoice =
-        credResolution.chosen.find((c) => eligibleTypes.has(c.type)) ?? credResolution.chosen[0] ?? null;
+      const existingEnv = parseObject(resolvedConfig.env);
+      const mergedEnv = {
+        ...existingEnv,
+        ...credResolution.env,
+      };
+      const activeChoice = selectActiveCredentialForAdapter({
+        adapterType: agent.adapterType,
+        adapterConfig: parseObject(agent.adapterConfig),
+        chosen: credResolution.chosen,
+        env: mergedEnv,
+      });
       runActiveCredentialId = activeChoice?.credentialId ?? null;
       runActiveCredentialType = activeChoice?.type ?? null;
       if (Object.keys(credResolution.env).length > 0) {
-        resolvedConfig.env = {
-          ...parseObject(resolvedConfig.env),
-          ...credResolution.env,
-        };
+        resolvedConfig.env = mergedEnv;
         for (const key of Object.keys(credResolution.env)) {
           secretKeys.add(key);
         }

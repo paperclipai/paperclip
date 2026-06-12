@@ -51,7 +51,13 @@ import {
   isCodexUnknownSessionError,
   stripAnsi,
 } from "./parse.js";
-import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
+import {
+  pathExists,
+  prepareManagedCodexHome,
+  resolveManagedCodexHomeDir,
+  resolveSharedCodexHomeDir,
+  writeApiKeyAuthJson,
+} from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -60,7 +66,7 @@ const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
 const CODEX_AUTH_REQUIRED_RE =
-  /(?:not\s+logged\s+in|login\s+required|authentication\s+required|unauthorized|invalid(?:\s+or\s+missing)?\s+api(?:[_\s-]?key)?|please\s+run\s+`?codex\s+login`?)/i;
+  /(?:not\s+logged\s+in|login\s+required|authentication\s+required|unauthorized|invalid(?:\s+or\s+missing)?\s+api(?:[_\s-]?key)?|openai[_\s-]?api[_\s-]?key|api[_\s-]?key.*required|please\s+run\s+`?codex\s+login`?)/i;
 
 function detectCodexAuthRequired(stdout: string, stderr: string, parsedError: string | null): boolean {
   const evidence = [parsedError ?? "", stdout, stderr].join("\n");
@@ -91,7 +97,7 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
-function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
+function hasNonEmptyEnvValue(env: Record<string, string | undefined>, key: string): boolean {
   const raw = env[key];
   return typeof raw === "string" && raw.trim().length > 0;
 }
@@ -372,7 +378,9 @@ export async function runCodexLogin(input: {
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  const runtimeEnv = ensurePathInEnv({ ...sanitizeChildEnv(process.env), ...env });
+  const loginRuntimeEnv = ensurePathInEnv({ ...sanitizeChildEnv(process.env), ...env });
+  delete loginRuntimeEnv.OPENAI_API_KEY;
+  const runtimeEnv = loginRuntimeEnv;
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 
   // Device-auth flow polls every few seconds for up to 15min — give it room to breathe.
@@ -491,6 +499,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0
       ? envConfig.OPENAI_API_KEY.trim()
       : null;
+  const usingConfiguredCodexOAuthHome = configuredCodexHome !== null && configuredOpenAiApiKey === null;
   const preparedManagedCodexHome =
     configuredCodexHome
       ? null
@@ -500,6 +509,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
   const effectiveCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
   await fs.mkdir(effectiveCodexHome, { recursive: true });
+  if (configuredCodexHome && configuredOpenAiApiKey) {
+    await writeApiKeyAuthJson(effectiveCodexHome, configuredOpenAiApiKey);
+    await onLog(
+      "stdout",
+      `[paperclip] Wrote API-key auth.json into configured Codex home "${effectiveCodexHome}" from configured OPENAI_API_KEY.\n`,
+    );
+  } else if (usingConfiguredCodexOAuthHome && hasNonEmptyEnvValue(process.env, "OPENAI_API_KEY")) {
+    await onLog(
+      "stdout",
+      "[paperclip] Ignoring inherited OPENAI_API_KEY because this run is using configured Codex OAuth auth.\n",
+    );
+  }
   // Inject skills into the same CODEX_HOME that Codex will actually run with
   // (managed home in the default case, or an explicit override from adapter config).
   const codexSkillsDir = resolveCodexSkillsDir(effectiveCodexHome);
@@ -634,6 +655,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
   }
   env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
+  if (usingConfiguredCodexOAuthHome) {
+    // runChildProcess merges inherited process.env internally; an empty
+    // override is the spawn-boundary tombstone that keeps host API-key auth from
+    // bypassing a selected Codex OAuth credential.
+    env.OPENAI_API_KEY = "";
+  }
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
@@ -651,8 +678,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       Object.assign(env, paperclipBridge.env);
     }
   }
+  const inheritedEnv = sanitizeChildEnv(process.env);
+  if (usingConfiguredCodexOAuthHome) {
+    delete inheritedEnv.OPENAI_API_KEY;
+  }
   const effectiveEnv = Object.fromEntries(
-    Object.entries({ ...sanitizeChildEnv(process.env), ...env }).filter(
+    Object.entries({ ...inheritedEnv, ...env }).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );

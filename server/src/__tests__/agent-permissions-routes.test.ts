@@ -87,6 +87,14 @@ const mockSecretService = vi.hoisted(() => ({
   resolveAdapterConfigForRuntime: vi.fn(),
 }));
 
+const mockCredentialService = vi.hoisted(() => ({
+  listForAgent: vi.fn(),
+  setForAgent: vi.fn(),
+  validateForAdapterAssignment: vi.fn(),
+  getById: vi.fn(),
+  update: vi.fn(),
+}));
+
 const mockAgentInstructionsService = vi.hoisted(() => ({
   materializeManagedBundle: vi.fn(),
 }));
@@ -196,6 +204,7 @@ function registerModuleMocks() {
     issueService: () => mockIssueService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
+    credentialService: () => mockCredentialService,
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
     workspaceOperationService: () => mockWorkspaceOperationService,
     environmentService: () => mockEnvironmentService,
@@ -318,6 +327,11 @@ describe.sequential("agent permission routes", () => {
     mockIssueService.list.mockReset();
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
     mockSecretService.resolveAdapterConfigForRuntime.mockReset();
+    mockCredentialService.listForAgent.mockReset();
+    mockCredentialService.setForAgent.mockReset();
+    mockCredentialService.validateForAdapterAssignment.mockReset();
+    mockCredentialService.getById.mockReset();
+    mockCredentialService.update.mockReset();
     mockAgentInstructionsService.materializeManagedBundle.mockReset();
     mockCompanySkillService.listRuntimeSkillEntries.mockReset();
     mockCompanySkillService.resolveRequestedSkillKeys.mockReset();
@@ -378,6 +392,10 @@ describe.sequential("agent permission routes", () => {
     );
     mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => config);
     mockSecretService.resolveAdapterConfigForRuntime.mockImplementation(async (_companyId, config) => ({ config }));
+    mockCredentialService.listForAgent.mockResolvedValue([]);
+    mockCredentialService.setForAgent.mockResolvedValue({ ok: true, credentials: [] });
+    mockCredentialService.validateForAdapterAssignment.mockResolvedValue({ ok: true, credentials: [] });
+    mockCredentialService.getById.mockResolvedValue(null);
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
     });
