@@ -137,6 +137,23 @@ describe("DeliverableDetail page", () => {
     expect(img?.getAttribute("src")).toBe("/api/attachments/abc/content");
   });
 
+  it("uses the canonical download route in the generic fallback", async () => {
+    getMock.mockResolvedValue({
+      ...baseDetail,
+      contentType: "application/octet-stream",
+      preview: null,
+    });
+
+    await renderAt(container, "/deliverables/deliverable-1");
+    await flushReact();
+    await flushReact();
+
+    const downloadLinks = Array.from(container.querySelectorAll("a")).filter(
+      (a) => a.getAttribute("href") === "/api/deliverables/deliverable-1/content",
+    );
+    expect(downloadLinks.length).toBeGreaterThan(0);
+  });
+
   it("renders markdown previews inline for text deliverables", async () => {
     getMock.mockResolvedValue({
       ...baseDetail,

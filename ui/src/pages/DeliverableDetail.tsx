@@ -162,7 +162,7 @@ function ArtifactPreview({ data }: { data: DeliverableDetailType }) {
         </p>
       </div>
       <Button asChild size="sm" variant="outline">
-        <a href={contentPath} download={originalFilename ?? undefined}>
+        <a href={`/api/deliverables/${data.id}/content`} download={originalFilename ?? undefined}>
           <Download className="h-3.5 w-3.5 mr-1.5" />
           Download
         </a>
