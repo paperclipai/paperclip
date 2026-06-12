@@ -150,6 +150,33 @@ describe("runEvidenceGate", () => {
     expect(result.evidenceFound).toContain("e2e-run");
   });
 
+  it("detects PR links in agent-authored QA/recovery evidence comments", async () => {
+    const fetch = vi.fn<(id: string) => Promise<EvidenceFetchResult>>(
+      async () => ({
+        description: "## Done when\n- QA evidence exists",
+        labels: [],
+        comments: [
+          {
+            body: [
+              "## QA recovery evidence",
+              "- Implementation PR: https://github.com/Blockcast/Network-Operator-Portal/pull/319",
+              "- Test output: Test Files  1 passed (1)",
+              "| Criterion | Status | Evidence |",
+              "|---|---|---|",
+              "| QA evidence exists | [x] | qa-report |",
+            ].join("\n"),
+            authorAgentId: "qa-agent",
+            authorUserId: null,
+            createdAt: "2026-06-12T00:00:00.000Z",
+          },
+        ],
+        workProducts: [],
+      }),
+    );
+    const result = await runEvidenceGate(fetch, "issue-qa-only");
+    expect(result.evidenceFound).toEqual(expect.arrayContaining(["pr-link", "test-output", "checklist:done-when"]));
+  });
+
   it("propagates fetch failures back to the caller (no swallowing)", async () => {
     const fetch = vi.fn<(id: string) => Promise<EvidenceFetchResult>>(
       async () => {

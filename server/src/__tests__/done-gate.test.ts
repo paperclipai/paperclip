@@ -30,6 +30,16 @@ describe("shouldBlockNarratedDone", () => {
     ).toBe(false);
   });
 
+  it("allows QA-only closure when a refreshed evidence verdict found a PR link", () => {
+    expect(
+      shouldBlockNarratedDone({
+        ...base,
+        fromStatus: "blocked",
+        lastEvidenceVerdict: { verdict: "warn", evidenceFound: ["checklist:done-when", "test-output", "pr-link"] },
+      }),
+    ).toBe(false);
+  });
+
   it("does nothing for non-done transitions", () => {
     expect(shouldBlockNarratedDone({ ...base, toStatus: "in_review" })).toBe(false);
     expect(shouldBlockNarratedDone({ ...base, toStatus: undefined })).toBe(false);

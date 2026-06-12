@@ -5898,13 +5898,40 @@ export function issueService(db: Db) {
       // pr-link evidence was recorded — the failure mode where agents post
       // "## Done" via the board API without shipping code. Never gates human
       // actors. See server/src/services/done-gate.ts.
+      let doneTransitionEvidenceVerdict: Awaited<ReturnType<typeof runEvidenceGate>> | null = null;
+      let doneGateEvidenceVerdict = existing.lastEvidenceVerdict;
+      const doneGateInput = {
+        fromStatus: existing.status,
+        toStatus: issueData.status,
+        existingExecutionRunId: existing.executionRunId,
+        lastEvidenceVerdict: doneGateEvidenceVerdict,
+        isAgentActor: actorAgentId != null,
+      };
+      if (experimental.enableDoneExecutionGate && shouldBlockNarratedDone(doneGateInput)) {
+        try {
+          doneTransitionEvidenceVerdict = await runEvidenceGate(
+            (issueId) => fetchEvidenceForIssue(dbOrTx, issueId, existing.description),
+            id,
+          );
+          doneGateEvidenceVerdict = doneTransitionEvidenceVerdict;
+        } catch (err) {
+          logger.warn(
+            {
+              issueId: id,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "done-execution gate: evidence refresh failed; preserving block posture",
+          );
+        }
+      }
+
       if (
         experimental.enableDoneExecutionGate &&
         shouldBlockNarratedDone({
           fromStatus: existing.status,
           toStatus: issueData.status,
           existingExecutionRunId: existing.executionRunId,
-          lastEvidenceVerdict: existing.lastEvidenceVerdict,
+          lastEvidenceVerdict: doneGateEvidenceVerdict,
           isAgentActor: actorAgentId != null,
         })
       ) {
@@ -5918,6 +5945,9 @@ export function issueService(db: Db) {
         ...issueData,
         updatedAt: new Date(),
       };
+      if (doneTransitionEvidenceVerdict) {
+        patch.lastEvidenceVerdict = doneTransitionEvidenceVerdict;
+      }
       if (issueData.requestDepth !== undefined) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
       }
