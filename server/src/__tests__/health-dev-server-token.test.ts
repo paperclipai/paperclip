@@ -7,6 +7,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { healthRoutes } from "../routes/health.js";
 
+// The health route reads scheduler-leadership state on every request; this
+// suite's db double counts select() calls positionally, so the extra lease
+// query must be mocked out rather than absorbed into the sequence.
+vi.mock("../services/scheduler-leadership.js", () => ({
+  getSchedulerHealth: vi.fn().mockResolvedValue({ candidate: false, isLeader: false }),
+  registerSchedulerLeadershipForHealth: vi.fn(),
+  getRegisteredSchedulerLeadership: vi.fn().mockReturnValue(null),
+}));
+
 const tempDirs: string[] = [];
 
 function createDevServerStatusFile(payload: unknown) {
@@ -99,6 +108,7 @@ describe("GET /health dev-server supervisor access", () => {
         deploymentExposure: "private",
         bootstrapStatus: "ready",
         bootstrapInviteActive: false,
+        scheduler: { candidate: false, isLeader: false },
         devServer: {
           enabled: true,
           restartRequired: true,

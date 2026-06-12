@@ -684,7 +684,11 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       })
       .where(eq(issues.id, blockedIssueId));
 
+    // The sweep validates (cancelling the blocked run); execution now goes
+    // through the per-replica executor claim path.
     await heartbeat.resumeQueuedRuns();
+    const claimed = await heartbeat.claimRunsForExecution(10);
+    await Promise.all(claimed.map((runId) => heartbeat.executeRun(runId)));
 
     await waitForCondition(async () => {
       const run = await db

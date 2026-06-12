@@ -144,6 +144,7 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
 
   const heartbeatInterval = process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS ?? DEFAULT_HEARTBEAT_SCHEDULER_INTERVAL_MS;
   const heartbeatEnabled = process.env.HEARTBEAT_SCHEDULER_ENABLED ?? "true";
+  const runExecutorEnabled = process.env.PAPERCLIP_RUN_EXECUTOR ?? "true";
   const secretsProvider =
     process.env.PAPERCLIP_SECRETS_PROVIDER ??
     config?.secrets?.provider ??
@@ -266,7 +267,14 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
       value: heartbeatEnabled,
       source: process.env.HEARTBEAT_SCHEDULER_ENABLED ? "env" : "default",
       required: false,
-      note: "Set to `false` to disable timer scheduling",
+      note: "Set to `false` to opt this replica out of scheduler leader election (traffic-only)",
+    },
+    {
+      key: "PAPERCLIP_RUN_EXECUTOR",
+      value: runExecutorEnabled,
+      source: process.env.PAPERCLIP_RUN_EXECUTOR ? "env" : "default",
+      required: false,
+      note: "Set to `false` to stop this replica from batch-claiming and executing queued runs",
     },
     {
       key: "PAPERCLIP_SECRETS_PROVIDER",
