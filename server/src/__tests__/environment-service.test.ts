@@ -282,8 +282,8 @@ describeEmbeddedPostgres("environmentService leases", () => {
       updatedAt: new Date(),
     });
 
-    // No partial unique index covers sandbox drivers yet, so dedup is
-    // post-insert convergence (prefer the oldest row, delete the loser).
+    // No partial unique index covers sandbox drivers yet, so dedup relies on a
+    // per-company transaction lock around the managed Kubernetes ensure path.
     const results = await Promise.all(
       Array.from({ length: 8 }, () =>
         svc.ensureKubernetesEnvironment(companyId, { inCluster: true, backend: "job" }),

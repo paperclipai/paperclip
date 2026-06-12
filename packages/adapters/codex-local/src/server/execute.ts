@@ -34,6 +34,7 @@ import {
   resolvePaperclipDesiredSkillNames,
   renderTemplate,
   renderPaperclipWakePrompt,
+  sanitizeInheritedPaperclipEnv,
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   joinPromptSections,
@@ -421,8 +422,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? preparedExecutionTargetRuntime?.assetDirs.home ??
         path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "codex", "home")
       : null;
-    const hasExplicitApiKey =
-      typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
     const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
     env.PAPERCLIP_RUN_ID = runId;
     const wakeTaskId =
@@ -500,7 +499,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
     }
     env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
-    if (!hasExplicitApiKey && authToken) {
+    if (authToken) {
       env.PAPERCLIP_API_KEY = authToken;
     }
     if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
@@ -518,7 +517,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
     const effectiveEnv = Object.fromEntries(
-      Object.entries({ ...process.env, ...env }).filter(
+      Object.entries({ ...sanitizeInheritedPaperclipEnv(process.env), ...env }).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
