@@ -58,6 +58,7 @@ import {
   type CompanySearchResponse,
   type ExecutionWorkspace,
   type IssueRelationIssueSummary,
+  type PermissionKey,
   type SourceTrustMetadata,
   type SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
@@ -1854,6 +1855,7 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
+    options?: { crossIssueGrantKey?: PermissionKey },
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -1872,6 +1874,33 @@ export function issueRoutes(
     if (issue.assigneeAgentId !== actorAgentId) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
+      }
+      if (options?.crossIssueGrantKey) {
+        const hasGrant = await access.hasPermission(
+          issue.companyId,
+          "agent",
+          actorAgentId,
+          options.crossIssueGrantKey,
+        );
+        if (hasGrant) {
+          const actor = getActorInfo(req);
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.cross_agent_write",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              grantKey: options.crossIssueGrantKey,
+              actorAgentId,
+              assigneeAgentId: issue.assigneeAgentId,
+            },
+          });
+          return true;
+        }
       }
       if (issue.status === "in_progress") {
         res.status(409).json({
@@ -4800,7 +4829,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, { crossIssueGrantKey: "issues:patch:all" }))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -6624,7 +6653,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue, { crossIssueGrantKey: "issues:comment:all" }))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
