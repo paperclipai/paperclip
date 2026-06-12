@@ -37,6 +37,10 @@ fi
 
 if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
+elif [ "$(stat -c %u /paperclip)" != "$PUID" ]; then
+    # Fresh mounted volume (e.g. Railway) comes up root-owned even when UID/GID
+    # match the build. Fix ownership once so the app can write to /paperclip.
+    chown -R node:node /paperclip
 fi
 
 exec gosu node "$@"
