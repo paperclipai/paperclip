@@ -2659,7 +2659,7 @@ export function accessRoutes(
       }
 
       if (req.body.requestedCompanyId) {
-        assertCompanyAccess(req, req.body.requestedCompanyId);
+        await assertCompanyAccess(req, req.body.requestedCompanyId, db);
       }
 
       const key = await boardAuth.createNamedBoardApiKey({
@@ -2764,7 +2764,7 @@ export function accessRoutes(
     companyId: string,
     permissionKey: any
   ) {
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     if (req.actor.type === "agent") {
       if (!req.actor.agentId) throw forbidden();
       const allowed = await access.hasPermission(
@@ -2790,7 +2790,7 @@ export function accessRoutes(
     req: Request,
     companyId: string
   ) {
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     if (req.actor.type === "agent") {
       if (!req.actor.agentId) throw forbidden("Agent authentication required");
       const actorAgent = await agents.getById(req.actor.agentId);
@@ -4213,7 +4213,7 @@ export function accessRoutes(
 
   router.get("/companies/:companyId/user-directory", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const users = await loadCompanyUserDirectory(db, companyId);
     res.json({ users });
   });

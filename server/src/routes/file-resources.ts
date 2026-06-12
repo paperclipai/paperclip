@@ -337,7 +337,7 @@ export function fileResourceRoutes(db: Db, opts: {
     const issue = await svc.getIssue(req.params.issueId);
     const actor = getActorInfo(req);
     try {
-      assertCompanyAccess(req, issue.companyId);
+      await assertCompanyAccess(req, issue.companyId, db);
     } catch (error) {
       await logListDeniedAttempt({
         companyId: issue.companyId,
@@ -443,7 +443,7 @@ export function fileResourceRoutes(db: Db, opts: {
     const issue = await svc.getIssue(req.params.issueId);
     const actor = getActorInfo(req);
     try {
-      assertCompanyAccess(req, issue.companyId);
+      await assertCompanyAccess(req, issue.companyId, db);
     } catch (error) {
       await logDeniedAttempt({
         companyId: issue.companyId,
@@ -551,7 +551,7 @@ export function fileResourceRoutes(db: Db, opts: {
     const issue = await svc.getIssue(req.params.issueId);
     const actor = getActorInfo(req);
     try {
-      assertCompanyAccess(req, issue.companyId);
+      await assertCompanyAccess(req, issue.companyId, db);
     } catch (error) {
       await logDeniedAttempt({
         companyId: issue.companyId,

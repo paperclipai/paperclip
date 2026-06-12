@@ -27,7 +27,7 @@ export function routineRoutes(
   const access = accessService(db);
 
   async function assertBoardCanAssignTasks(req: Request, companyId: string) {
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     if (req.actor.type !== "board") return;
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
     const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
@@ -36,8 +36,8 @@ export function routineRoutes(
     }
   }
 
-  function assertCanManageCompanyRoutine(req: Request, companyId: string, assigneeAgentId?: string | null) {
-    assertCompanyAccess(req, companyId);
+  async function assertCanManageCompanyRoutine(req: Request, companyId: string, assigneeAgentId?: string | null) {
+    await assertCompanyAccess(req, companyId, db);
     if (req.actor.type === "board") return;
     if (req.actor.type !== "agent" || !req.actor.agentId) throw unauthorized();
     if (assigneeAgentId !== req.actor.agentId) {
@@ -48,7 +48,7 @@ export function routineRoutes(
   async function assertCanManageExistingRoutine(req: Request, routineId: string) {
     const routine = await svc.get(routineId);
     if (!routine) return null;
-    assertCompanyAccess(req, routine.companyId);
+    await assertCompanyAccess(req, routine.companyId, db);
     if (req.actor.type === "board") return routine;
     if (req.actor.type !== "agent" || !req.actor.agentId) throw unauthorized();
     if (routine.assigneeAgentId !== req.actor.agentId) {
@@ -87,7 +87,7 @@ export function routineRoutes(
 
   router.get("/companies/:companyId/routines", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const projectId = typeof req.query.projectId === "string" ? req.query.projectId : undefined;
     const result = await svc.list(companyId, { projectId });
     res.json(result);
@@ -96,7 +96,7 @@ export function routineRoutes(
   router.post("/companies/:companyId/routines", validate(createRoutineSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertBoardCanAssignTasks(req, companyId);
-    assertCanManageCompanyRoutine(req, companyId, req.body.assigneeAgentId);
+    await assertCanManageCompanyRoutine(req, companyId, req.body.assigneeAgentId);
     const created = await svc.create(companyId, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
@@ -135,7 +135,7 @@ export function routineRoutes(
       res.status(404).json({ error: "Routine not found" });
       return;
     }
-    assertCompanyAccess(req, detail.companyId);
+    await assertCompanyAccess(req, detail.companyId, db);
     res.json(detail);
   });
 
@@ -244,7 +244,7 @@ export function routineRoutes(
       res.status(404).json({ error: "Routine not found" });
       return;
     }
-    assertCompanyAccess(req, routine.companyId);
+    await assertCompanyAccess(req, routine.companyId, db);
     const limit = Number(req.query.limit ?? 50);
     const result = await svc.listRuns(routine.id, Number.isFinite(limit) ? limit : 50);
     res.json(result);

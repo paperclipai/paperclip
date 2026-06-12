@@ -69,7 +69,7 @@ export function projectRoutes(db: Db) {
         ? companyIdQuery.trim()
         : null;
     if (requestedCompanyId) {
-      assertCompanyAccess(req, requestedCompanyId);
+      await assertCompanyAccess(req, requestedCompanyId, db);
       return requestedCompanyId;
     }
     if (req.actor.type === "agent" && req.actor.companyId) {
@@ -122,7 +122,7 @@ export function projectRoutes(db: Db) {
 
   router.get("/companies/:companyId/projects", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const result = await svc.list(companyId);
     res.json(await filterProjectsForActor(req, result));
   });
@@ -134,14 +134,14 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, project.companyId);
+    await assertCompanyAccess(req, project.companyId, db);
     if (!(await assertProjectReadAllowed(req, res, project))) return;
     res.json(project);
   });
 
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     type CreateProjectPayload = Parameters<typeof svc.create>[1] & {
       workspace?: Parameters<typeof svc.createWorkspace>[1];
     };
@@ -214,7 +214,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(req, existing.companyId, db);
     const body = { ...req.body };
     assertNoAgentHostWorkspaceCommandMutation(
       req,
@@ -274,7 +274,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(req, existing.companyId, db);
     const workspaces = await svc.listWorkspaces(id);
     res.json(workspaces);
   });
@@ -286,7 +286,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(req, existing.companyId, db);
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectProjectWorkspaceCommandPaths(req.body),
@@ -328,7 +328,7 @@ export function projectRoutes(db: Db) {
         res.status(404).json({ error: "Project not found" });
         return;
       }
-      assertCompanyAccess(req, existing.companyId);
+      await assertCompanyAccess(req, existing.companyId, db);
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectProjectWorkspaceCommandPaths(req.body),
@@ -377,7 +377,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, project.companyId);
+    await assertCompanyAccess(req, project.companyId, db);
 
     const workspace = project.workspaces.find((entry) => entry.id === workspaceId) ?? null;
     if (!workspace) {
@@ -649,7 +649,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(req, existing.companyId, db);
     const workspace = await svc.removeWorkspace(id, workspaceId);
     if (!workspace) {
       res.status(404).json({ error: "Project workspace not found" });
@@ -681,7 +681,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(req, existing.companyId, db);
     const project = await svc.remove(id);
     if (!project) {
       res.status(404).json({ error: "Project not found" });

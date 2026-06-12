@@ -63,7 +63,7 @@ export function executionWorkspaceRoutes(db: Db) {
 
   router.get("/companies/:companyId/execution-workspaces", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     if (!(await assertExecutionWorkspaceReadAllowed(req, res, companyId))) return;
     const filters = {
       projectId: req.query.projectId as string | undefined,
@@ -85,7 +85,7 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
-    assertCompanyAccess(req, workspace.companyId);
+    await assertCompanyAccess(req, workspace.companyId, db);
     if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     res.json(workspace);
   });
@@ -97,7 +97,7 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
-    assertCompanyAccess(req, workspace.companyId);
+    await assertCompanyAccess(req, workspace.companyId, db);
     if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     const readiness = await svc.getCloseReadiness(id);
     if (!readiness) {
@@ -114,7 +114,7 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
-    assertCompanyAccess(req, workspace.companyId);
+    await assertCompanyAccess(req, workspace.companyId, db);
     if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     const operations = await workspaceOperationsSvc.listForExecutionWorkspace(id);
     res.json(operations);
@@ -133,7 +133,7 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(req, existing.companyId, db);
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
 
     await assertCanManageExecutionWorkspaceRuntimeServices(db, req, {
@@ -474,7 +474,7 @@ export function executionWorkspaceRoutes(db: Db) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(req, existing.companyId, db);
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
     assertNoAgentHostWorkspaceCommandMutation(
       req,
