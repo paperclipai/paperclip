@@ -227,6 +227,36 @@ export async function listOpenCodeModels(): Promise<AdapterModel[]> {
   }
 }
 
+export async function refreshOpenCodeModels(): Promise<AdapterModel[]> {
+  try {
+    // Clear the in-memory cache so the next discovery is forced fresh
+    discoveryCache.clear();
+
+    // Force OpenCode's own CLI cache to refresh from models.dev
+    const result = await runChildProcess(
+      `opencode-models-refresh-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      resolveOpenCodeCommand(undefined),
+      ["models", "--refresh"],
+      {
+        cwd: process.cwd(),
+        env: ensurePathInEnv({ ...process.env, OPENCODE_DISABLE_PROJECT_CONFIG: "true" }) as Record<string, string>,
+        timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
+        graceSec: 3,
+        onLog: async () => {},
+      },
+    );
+
+    if ((result.exitCode ?? 1) === 0) {
+      return sortModels(parseOpenCodeModelsOutput(result.stdout));
+    }
+
+    // Fall back to uncached discovery if the refresh command fails
+    return await discoverOpenCodeModels({});
+  } catch {
+    return [];
+  }
+}
+
 export function resetOpenCodeModelsCacheForTests() {
   discoveryCache.clear();
 }
