@@ -80,7 +80,7 @@ import {
   extractSecretRefPathsFromConfig,
   PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
 } from "../services/plugin-secrets-handler.js";
-import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { HttpError, badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
 type PluginUiSlotDeclaration = NonNullable<NonNullable<PaperclipPluginManifestV1["ui"]>["slots"]>[number];
@@ -1183,7 +1183,31 @@ export function pluginRoutes(
       // degraded paths below): the disk + registry mutation has happened by
       // then and peers must converge on it regardless of how we respond.
       const outcome = await withReplicatedPluginMutation(async () => {
-        const discovered = await loader.installPlugin(installOptions);
+        let discovered;
+        try {
+          discovered = await loader.installPlugin(installOptions);
+        } catch (err) {
+          // Publish-heal: a prior install applied locally but its snapshot
+          // publish failed (the handler returned 500 and asked the caller to
+          // retry). The retry then hits the registry's "already installed"
+          // conflict. When the existing row matches the requested package,
+          // treat the retry as idempotent success — the wrapper re-publishes
+          // the snapshot on the way out, which is exactly the missing half.
+          if (
+            err instanceof HttpError &&
+            err.status === 409 &&
+            !isLocalPath &&
+            replication?.isActive()
+          ) {
+            const rows = await registry.listInstalled();
+            const match = rows.find((r) => r.packageName === trimmedPackage);
+            if (match) {
+              const healed = await registry.getById(match.id);
+              return { kind: "healed", existingPlugin: healed, updated: healed } as const;
+            }
+          }
+          throw err;
+        }
 
         if (!discovered.manifest) {
           return { kind: "manifest_missing" } as const;
@@ -1207,6 +1231,11 @@ export function pluginRoutes(
       }
       if (outcome.kind === "not_registered") {
         res.status(500).json({ error: "Plugin installed but not found in registry" });
+        return;
+      }
+
+      if (outcome.kind === "healed") {
+        res.json(outcome.updated);
         return;
       }
 
