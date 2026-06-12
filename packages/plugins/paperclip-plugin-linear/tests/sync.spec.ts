@@ -181,7 +181,7 @@ describe("link lookup", () => {
       ],
     });
     vi.spyOn(harness.ctx.issues, "linkLinearIssue")
-      .mockRejectedValueOnce(new Error("Linear issue link conflict"));
+      .mockRejectedValueOnce({ error: "Linear issue link conflict" });
 
     await createLink(harness.ctx, {
       paperclipIssueId: "pc-1",

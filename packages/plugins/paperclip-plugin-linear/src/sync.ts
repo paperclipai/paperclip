@@ -30,7 +30,7 @@ export interface IssueLink {
 export type ProjectDriftSyncResult = "updated" | "unchanged" | "unavailable" | "failed";
 
 export function isHostWriteUnavailableError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
+  const message = errorMessage(err);
   return message.includes("missing, expired, or unknown invocation scope")
     || message.includes("not allowed to perform")
     || message.includes("CapabilityDeniedError")
@@ -38,14 +38,23 @@ export function isHostWriteUnavailableError(err: unknown): boolean {
 }
 
 export function isPaperclipIssueNotFoundError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
+  const message = errorMessage(err);
   return message.includes("Issue not found");
 }
 
 function isLinearIssueLinkConflictError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
+  const message = errorMessage(err);
   return message.includes("Linear issue link conflict")
     || message.includes("Linear issue already linked");
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (isRecord(err)) {
+    if (typeof err.message === "string") return err.message;
+    if (typeof err.error === "string") return err.error;
+  }
+  return String(err);
 }
 
 async function hostLinearIssueLinkAlreadyMatches(
