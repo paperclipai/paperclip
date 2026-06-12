@@ -4,6 +4,7 @@ import {
   AGENT_ROLES,
   AGENT_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
+  MODEL_PROFILE_KEYS,
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
 import { envConfigSchema } from "./secret.js";
@@ -135,6 +136,10 @@ export const wakeAgentSchema = z.object({
     (value) => (value === null ? undefined : value),
     z.boolean().optional().default(false),
   ),
+  // Optional model-tier override for this wake (E4). When set, the heartbeat
+  // applies the corresponding runtimeConfig.modelProfiles entry for the run —
+  // e.g. routing mechanical reviewer/implementor stages to the cheap tier.
+  modelProfile: z.enum(MODEL_PROFILE_KEYS).optional().nullable(),
 });
 
 export type WakeAgent = z.infer<typeof wakeAgentSchema>;
