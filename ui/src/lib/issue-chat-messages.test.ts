@@ -3,6 +3,7 @@ import type { Agent } from "@paperclipai/shared";
 import {
   buildAssistantPartsFromTranscript,
   buildIssueChatMessages,
+  createIssueChatMessageBuildCache,
   stabilizeThreadMessages,
   type IssueChatComment,
   type IssueChatLinkedRun,
@@ -960,5 +961,78 @@ describe("stabilizeThreadMessages", () => {
     );
 
     expect(secondStable.messages).toBe(firstStable.messages);
+  });
+
+  it("does not reuse a cached message when text content changes", () => {
+    const firstPass = buildIssueChatMessages({
+      comments: [createComment({ body: "Original body" })],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      currentUserId: "user-1",
+    });
+
+    const firstStable = stabilizeThreadMessages(firstPass, [], new Map());
+    const secondPass = buildIssueChatMessages({
+      comments: [createComment({ body: "Updated body" })],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      currentUserId: "user-1",
+    });
+
+    const secondStable = stabilizeThreadMessages(
+      secondPass,
+      firstStable.messages,
+      firstStable.cache,
+    );
+
+    expect(secondStable.messages[0]).not.toBe(firstStable.messages[0]);
+    expect(secondStable.messages[0]?.content).toMatchObject([
+      { type: "text", text: "Updated body" },
+    ]);
+  });
+
+  it("reuses transcript-derived content while invalidating changed transcript tails", () => {
+    const cache = createIssueChatMessageBuildCache();
+    const linkedRuns: IssueChatLinkedRun[] = [
+      {
+        runId: "run-history-1",
+        status: "succeeded",
+        agentId: "agent-1",
+        createdAt: new Date("2026-04-06T12:01:00.000Z"),
+        startedAt: new Date("2026-04-06T12:01:00.000Z"),
+        finishedAt: new Date("2026-04-06T12:03:00.000Z"),
+      },
+    ];
+    const transcript = [
+      { kind: "thinking" as const, ts: "2026-04-06T12:01:10.000Z", text: "Inspecting the thread." },
+      { kind: "assistant" as const, ts: "2026-04-06T12:02:30.000Z", text: "Updated the renderer." },
+    ];
+    const build = (entries: typeof transcript) =>
+      buildIssueChatMessages({
+        comments: [],
+        timelineEvents: [],
+        linkedRuns,
+        liveRuns: [],
+        transcriptsByRunId: new Map([["run-history-1", entries]]),
+        hasOutputForRun: (runId) => runId === "run-history-1",
+        currentUserId: "user-1",
+        buildCache: cache,
+      });
+
+    const firstPass = build(transcript);
+    const secondPass = build([...transcript]);
+    const thirdPass = build([
+      ...transcript,
+      { kind: "assistant" as const, ts: "2026-04-06T12:02:45.000Z", text: "Added a new result." },
+    ]);
+
+    expect(secondPass[0]?.content).toBe(firstPass[0]?.content);
+    expect(thirdPass[0]?.content).not.toBe(firstPass[0]?.content);
+    expect(thirdPass[0]?.content).toMatchObject([
+      { type: "reasoning", text: "Inspecting the thread." },
+      { type: "text", text: "Updated the renderer. Added a new result." },
+    ]);
   });
 });

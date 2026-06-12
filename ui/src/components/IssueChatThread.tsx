@@ -46,6 +46,7 @@ import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from "../hooks/usePaperclipIssueRuntime";
 import {
   buildIssueChatMessages,
+  createIssueChatMessageBuildCache,
   formatDurationWords,
   stabilizeThreadMessages,
   type IssueChatComment,
@@ -3753,6 +3754,11 @@ export function IssueChatThread({
   });
   const resolvedTranscriptByRun = transcriptsByRunId ?? transcriptByRun;
   const resolvedHasOutputForRun = hasOutputForRunOverride ?? hasOutputForRun;
+  const messageBuildCacheRef = useRef<ReturnType<typeof createIssueChatMessageBuildCache> | null>(null);
+  if (!messageBuildCacheRef.current) {
+    messageBuildCacheRef.current = createIssueChatMessageBuildCache();
+  }
+  const messageBuildCache = messageBuildCacheRef.current;
   const rawMessages = useMemo(
     () =>
       buildIssueChatMessages({
@@ -3770,6 +3776,7 @@ export function IssueChatThread({
         agentMap,
         currentUserId,
         userLabelMap,
+        buildCache: messageBuildCache,
       }),
     [
       comments,
@@ -3786,6 +3793,7 @@ export function IssueChatThread({
       agentMap,
       currentUserId,
       userLabelMap,
+      messageBuildCache,
     ],
   );
   const stableMessagesRef = useRef<readonly ThreadMessage[]>([]);
