@@ -33,6 +33,12 @@ export const WORKER_DEPENDENT_PLUGIN_ROUTES: ReadonlyArray<{
   path: string;
   /** Long-lived response (SSE) — skip the request timeout, stream the body. */
   streaming?: boolean;
+  /**
+   * Plugin-scoped API routes can run operator actions such as ccrotate
+   * relogin. Those handlers are still request/response, but some valid flows
+   * take longer than the generic proxy timeout.
+   */
+  timeoutProfile?: "plugin-api";
 }> = [
   // Static paths first so they are matched before parameterized ones.
   { method: "post", path: "/plugins/install" },
@@ -68,17 +74,23 @@ export const WORKER_DEPENDENT_PLUGIN_ROUTES: ReadonlyArray<{
   // path so one entry per method covers every plugin's apiRoutes manifest.
   // The dispatcher on the worker tier still validates the inner path
   // against the manifest and 404s if the plugin didn't declare it.
-  { method: "get", path: "/plugins/:pluginId/api/*splat" },
-  { method: "post", path: "/plugins/:pluginId/api/*splat" },
-  { method: "put", path: "/plugins/:pluginId/api/*splat" },
-  { method: "delete", path: "/plugins/:pluginId/api/*splat" },
+  { method: "get", path: "/plugins/:pluginId/api/*splat", timeoutProfile: "plugin-api" },
+  { method: "post", path: "/plugins/:pluginId/api/*splat", timeoutProfile: "plugin-api" },
+  { method: "put", path: "/plugins/:pluginId/api/*splat", timeoutProfile: "plugin-api" },
+  { method: "delete", path: "/plugins/:pluginId/api/*splat", timeoutProfile: "plugin-api" },
 ];
 
 /** Non-streaming proxied requests abort after this long. */
 const PROXY_REQUEST_TIMEOUT_MS = 120_000;
+const PROXY_PLUGIN_API_REQUEST_TIMEOUT_MS = 150_000;
 const PROXY_STREAM_STARTUP_RETRY_BUDGET_MS = 30_000;
 const PROXY_GET_RETRY_INITIAL_MS = 250;
 const PROXY_GET_RETRY_MAX_MS = 2_000;
+
+export interface WorkerTierProxyOptions {
+  requestTimeoutMs?: number;
+  pluginApiRequestTimeoutMs?: number;
+}
 
 /**
  * Hop-by-hop headers (RFC 7230 §6.1) plus headers that must be recomputed by
@@ -192,6 +204,7 @@ async function fetchWithStartupRetry(
 function createWorkerProxyHandler(
   workersInternalUrl: string,
   streaming: boolean,
+  requestTimeoutMs: number,
 ): RequestHandler {
   return async (req, res) => {
     const targetUrl = `${workersInternalUrl}${req.originalUrl}`;
@@ -211,7 +224,7 @@ function createWorkerProxyHandler(
     // stream itself stays open until the client disconnects.
     const timeout = streaming
       ? undefined
-      : setTimeout(() => controller.abort(), PROXY_REQUEST_TIMEOUT_MS);
+      : setTimeout(() => controller.abort(), requestTimeoutMs);
 
     try {
       const headers = forwardRequestHeaders(req.headers);
@@ -323,15 +336,27 @@ function createWorkerProxyHandler(
 export function registerWorkerTierProxyRoutes(
   router: Router,
   workersInternalUrl: string,
+  options: WorkerTierProxyOptions = {},
 ): void {
+  const defaultTimeoutMs = options.requestTimeoutMs ?? PROXY_REQUEST_TIMEOUT_MS;
+  const pluginApiTimeoutMs =
+    options.pluginApiRequestTimeoutMs ?? PROXY_PLUGIN_API_REQUEST_TIMEOUT_MS;
+
   for (const route of WORKER_DEPENDENT_PLUGIN_ROUTES) {
+    const timeoutMs =
+      route.timeoutProfile === "plugin-api" ? pluginApiTimeoutMs : defaultTimeoutMs;
     router[route.method](
       route.path,
-      createWorkerProxyHandler(workersInternalUrl, route.streaming ?? false),
+      createWorkerProxyHandler(workersInternalUrl, route.streaming ?? false, timeoutMs),
     );
   }
   logger.info(
-    { workersInternalUrl, routeCount: WORKER_DEPENDENT_PLUGIN_ROUTES.length },
+    {
+      workersInternalUrl,
+      routeCount: WORKER_DEPENDENT_PLUGIN_ROUTES.length,
+      requestTimeoutMs: defaultTimeoutMs,
+      pluginApiRequestTimeoutMs: pluginApiTimeoutMs,
+    },
     "worker-tier proxy: API tier will forward worker-dependent plugin routes",
   );
 }

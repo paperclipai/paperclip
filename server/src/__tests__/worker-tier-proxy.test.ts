@@ -11,6 +11,7 @@ import { AddressInfo } from "node:net";
 import request from "supertest";
 import {
   registerWorkerTierProxyRoutes,
+  type WorkerTierProxyOptions,
   WORKER_DEPENDENT_PLUGIN_ROUTES,
 } from "../routes/worker-tier-proxy.js";
 
@@ -27,13 +28,17 @@ function startWorkerStub(
     status: number;
     headers?: Record<string, string>;
     body: string;
-  },
+  } | Promise<{
+    status: number;
+    headers?: Record<string, string>;
+    body: string;
+  }>,
 ): Promise<{ url: string; close: () => Promise<void> }> {
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (c) => chunks.push(c));
-    req.on("end", () => {
-      const result = handler({
+    req.on("end", async () => {
+      const result = await handler({
         method: req.method ?? "",
         url: req.url ?? "",
         headers: req.headers,
@@ -70,6 +75,18 @@ function buildApp(workersUrl: string) {
   router.get("/plugins", (_req, res) => {
     res.status(200).json({ handledBy: "local" });
   });
+  app.use("/api", router);
+  return app;
+}
+
+function buildAppWithProxyOptions(
+  workersUrl: string,
+  options: WorkerTierProxyOptions,
+) {
+  const app = express();
+  app.use(express.json());
+  const router = express.Router();
+  registerWorkerTierProxyRoutes(router, workersUrl, options);
   app.use("/api", router);
   return app;
 }
@@ -326,6 +343,27 @@ describe("registerWorkerTierProxyRoutes", () => {
 
     expect(res.status).toBe(502);
     expect(res.body.error).toMatch(/worker tier unreachable/i);
+  });
+
+  it("lets plugin scoped API actions run longer than the generic proxy timeout", async () => {
+    let captured: CapturedRequest | undefined;
+    worker = await startWorkerStub(async (req) => {
+      captured = req;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return { status: 200, body: JSON.stringify({ ok: true }) };
+    });
+    const app = buildAppWithProxyOptions(worker.url, {
+      requestTimeoutMs: 50,
+      pluginApiRequestTimeoutMs: 250,
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/kkroo.ccrotate/api/claude-relogin")
+      .send({ companyId: "abc", email: "bot21@blockcast.net" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    expect(captured?.url).toBe("/api/plugins/kkroo.ccrotate/api/claude-relogin");
   });
 
   it("retries idempotent GET routes during worker startup races", async () => {
