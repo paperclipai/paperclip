@@ -6,7 +6,7 @@ import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-uti
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
-const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
+const SYMLINKED_SHARED_FILES = [] as const;
 
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -96,6 +96,51 @@ export async function ensureSymlink(target: string, source: string): Promise<voi
   await createExpectedSymlink(target, source);
 }
 
+export function buildApiKeyAuthContents(apiKey: string): string {
+  return `${JSON.stringify(
+    {
+      auth_mode: "apikey",
+      OPENAI_API_KEY: apiKey,
+    },
+    null,
+    2,
+  )}\n`;
+}
+
+async function syncManagedAuthFile(targetHome: string, sourceHome: string, apiKey: string | null): Promise<void> {
+  const target = path.join(targetHome, "auth.json");
+  if (apiKey) {
+    const desiredContents = buildApiKeyAuthContents(apiKey);
+    const existing = await fs.lstat(target).catch(() => null);
+    if (existing?.isFile()) {
+      const currentContents = await fs.readFile(target, "utf8").catch(() => null);
+      if (currentContents === desiredContents) {
+        await fs.chmod(target, 0o600).catch(() => {});
+        return;
+      }
+    }
+    if (existing) {
+      await fs.rm(target, { force: true });
+    }
+    await ensureParentDir(target);
+    await fs.writeFile(target, desiredContents, { encoding: "utf8", mode: 0o600 });
+    await fs.chmod(target, 0o600).catch(() => {});
+    return;
+  }
+
+  const source = path.join(sourceHome, "auth.json");
+  if (!(await pathExists(source))) {
+    await fs.rm(target, { force: true }).catch(() => {});
+    return;
+  }
+
+  const existing = await fs.lstat(target).catch(() => null);
+  if (existing && !existing.isSymbolicLink()) {
+    await fs.rm(target, { force: true });
+  }
+  await ensureSymlink(target, source);
+}
+
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (existing) return;
@@ -112,8 +157,20 @@ async function ensureCopiedFile(target: string, source: string): Promise<void> {
 export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise<void> {
   await fs.mkdir(home, { recursive: true });
   const target = path.join(home, "auth.json");
-  await fs.rm(target, { force: true });
-  await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
+  const desiredContents = buildApiKeyAuthContents(apiKey);
+  const existing = await fs.lstat(target).catch(() => null);
+  if (existing?.isFile()) {
+    const currentContents = await fs.readFile(target, "utf8").catch(() => null);
+    if (currentContents === desiredContents) {
+      await fs.chmod(target, 0o600).catch(() => {});
+      return;
+    }
+  }
+  if (existing) {
+    await fs.rm(target, { force: true });
+  }
+  await fs.writeFile(target, desiredContents, { encoding: "utf8", mode: 0o600 });
+  await fs.chmod(target, 0o600).catch(() => {});
 }
 
 export async function prepareManagedCodexHome(
@@ -123,24 +180,13 @@ export async function prepareManagedCodexHome(
   options: { apiKey?: string | null } = {},
 ): Promise<string> {
   const targetHome = resolveManagedCodexHomeDir(env, companyId);
-  const apiKey = nonEmpty(options.apiKey ?? undefined);
+  const apiKey = nonEmpty(options.apiKey ?? undefined) ?? nonEmpty(env.OPENAI_API_KEY);
 
   const sourceHome = resolveSharedCodexHomeDir(env);
   const seedFromShared = path.resolve(sourceHome) !== path.resolve(targetHome);
 
   await fs.mkdir(targetHome, { recursive: true });
-
-  // If a previous run wrote an apikey-mode auth.json (regular file) and this
-  // run has no apiKey, remove it so the chatgpt-mode symlink can be restored.
-  // Without this cleanup, ensureSymlink bails on a non-symlink and Codex keeps
-  // authenticating with the stale key after it is removed from configuration.
-  if (!apiKey && seedFromShared) {
-    const authPath = path.join(targetHome, "auth.json");
-    const existing = await fs.lstat(authPath).catch(() => null);
-    if (existing && !existing.isSymbolicLink()) {
-      await fs.rm(authPath, { force: true });
-    }
-  }
+  await syncManagedAuthFile(targetHome, sourceHome, apiKey);
 
   if (seedFromShared) {
     for (const name of SYMLINKED_SHARED_FILES) {
@@ -162,10 +208,9 @@ export async function prepareManagedCodexHome(
   }
 
   if (apiKey) {
-    await writeApiKeyAuthJson(targetHome, apiKey);
     await onLog(
       "stdout",
-      `[paperclip] Wrote API-key auth.json into Codex home "${targetHome}" from configured OPENAI_API_KEY.\n`,
+      `[paperclip] Wrote API-key auth.json into Codex home "${targetHome}" from OPENAI_API_KEY.\n`,
     );
   }
 
