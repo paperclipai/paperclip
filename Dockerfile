@@ -53,6 +53,21 @@ RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 
+# Build the kubernetes sandbox-provider plugin standalone. It is intentionally
+# excluded from the pnpm workspace to keep its heavy deps
+# (@kubernetes/client-node) out of the root lockfile, so the workspace install
+# above does NOT install or build it. Install + build it in place so its
+# dist/, node_modules/, and the @paperclipai/plugin-sdk dev symlink land in
+# /app and get copied into the production stage; app.ts auto-installs it at
+# startup so the "kubernetes" sandbox provider is registered in containers.
+# A build failure here fails the whole image build, so a broken plugin can
+# never produce a deployable image.
+RUN CI=true pnpm -C packages/plugins/sandbox-providers/kubernetes install --ignore-workspace --no-lockfile
+RUN CI=true pnpm -C packages/plugins/sandbox-providers/kubernetes run build
+RUN test -f packages/plugins/sandbox-providers/kubernetes/dist/manifest.js \
+  && test -f packages/plugins/sandbox-providers/kubernetes/dist/worker.js \
+  || (echo "ERROR: kubernetes plugin build output missing" && exit 1)
+
 FROM base AS production
 ARG USER_UID=1000
 ARG USER_GID=1000
