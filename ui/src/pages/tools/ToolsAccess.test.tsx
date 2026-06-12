@@ -25,8 +25,8 @@ vi.mock("@/context/CompanyContext", () => ({
   }),
 }));
 
-vi.mock("./ProfilesTab", () => ({
-  ProfilesTab: () => <section>Tool profiles</section>,
+vi.mock("./profiles/ProfilesIndex", () => ({
+  ProfilesIndex: () => <section>Tool profiles</section>,
 }));
 
 vi.mock("./PoliciesTab", () => ({
