@@ -56,5 +56,40 @@ class ShouldSendHeartbeat(unittest.TestCase):
         self.assertTrue(w.should_send_heartbeat(self.MONDAY, None, has_findings=False))
 
 
+class Rendering(unittest.TestCase):
+    FINDINGS = [
+        {"id": "wfA", "name": "Paperclip Daily Digest V12", "mode": "trigger",
+         "exec_id": 455196, "failed_at": "2026-06-12 03:00:00"},
+        {"id": "wfB", "name": "Google-Alert V9 <x>", "mode": "trigger",
+         "exec_id": 455607, "failed_at": "2026-06-12 02:30:00"},
+    ]
+
+    def test_subject_counts_findings(self):
+        self.assertIn("2", w.build_subject(self.FINDINGS))
+
+    def test_execution_url(self):
+        self.assertEqual(
+            w.execution_url("wfA", 455196),
+            "http://localhost:5678/workflow/wfA/executions/455196",
+        )
+
+    def test_text_lists_each_finding(self):
+        txt = w.render_report_text(self.FINDINGS)
+        self.assertIn("Paperclip Daily Digest V12", txt)
+        self.assertIn("455607", txt)
+
+    def test_html_escapes_names_and_has_links(self):
+        out = w.render_report_html(self.FINDINGS)
+        self.assertIn("Google-Alert V9 &lt;x&gt;", out)        # escaped
+        self.assertIn("/workflow/wfA/executions/455196", out)  # link
+        self.assertIn("<table", out)
+
+    def test_heartbeat_render(self):
+        subject, text, html_body = w.render_heartbeat(23)
+        self.assertIn("23", subject)
+        self.assertIn("23", text)
+        self.assertIn("23", html_body)
+
+
 if __name__ == "__main__":
     unittest.main()
