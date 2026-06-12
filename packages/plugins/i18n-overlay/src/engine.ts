@@ -21,6 +21,8 @@ const DEFAULT_SKIP = ["script", "style", "code", "pre", "textarea", '[contentedi
 
 export function createTranslator(dict: Dictionary, options: TranslatorOptions = {}): Translator {
   const text = dict.text ?? {};
+  const attr = dict.attr ?? {};
+  const attrs = options.attributes ?? DEFAULT_ATTRS;
   const skip = options.skipSelectors ?? DEFAULT_SKIP;
   // Records the exact value we wrote, so the observer (Task 4) can ignore our own writes.
   const written = new WeakMap<Node, string>();
@@ -45,12 +47,29 @@ export function createTranslator(dict: Dictionary, options: TranslatorOptions = 
     written.set(node, next);
   }
 
+  function translateElementAttrs(el: Element): void {
+    if (inSkippedSubtree(el)) return;
+    for (const name of attrs) {
+      const current = el.getAttribute(name);
+      if (current == null) continue;
+      const key = current.trim();
+      const value = attr[key];
+      if (value === undefined || value === key) continue;
+      el.setAttribute(name, value);
+    }
+  }
+
   function translateTree(root: Node): void {
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    const nodes: Text[] = [];
-    let n = walker.nextNode();
-    while (n) { nodes.push(n as Text); n = walker.nextNode(); }
-    for (const t of nodes) translateTextNode(t);
+    const textWalker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const textNodes: Text[] = [];
+    let t = textWalker.nextNode();
+    while (t) { textNodes.push(t as Text); t = textWalker.nextNode(); }
+    for (const node of textNodes) translateTextNode(node);
+
+    const elWalker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    if (root.nodeType === Node.ELEMENT_NODE) translateElementAttrs(root as Element);
+    let e = elWalker.nextNode();
+    while (e) { translateElementAttrs(e as Element); e = elWalker.nextNode(); }
   }
 
   const root = options.root ?? document.body;
