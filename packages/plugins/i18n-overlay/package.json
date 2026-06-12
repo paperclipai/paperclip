@@ -1,0 +1,38 @@
+{
+  "name": "@paperclipai/plugin-i18n-overlay",
+  "version": "0.1.0",
+  "description": "Translate the Paperclip GUI via swappable JSON language files (German seed).",
+  "type": "module",
+  "private": true,
+  "exports": { ".": "./src/index.ts" },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  },
+  "scripts": {
+    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "build": "tsc",
+    "build:userscript": "node esbuild.userscript.mjs",
+    "clean": "rm -rf dist",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit",
+    "test": "vitest run",
+    "harvest": "tsx tools/harvest.ts"
+  },
+  "dependencies": { "@paperclipai/plugin-sdk": "workspace:*" },
+  "devDependencies": {
+    "@babel/parser": "^7.25.0",
+    "@babel/traverse": "^7.25.0",
+    "@babel/types": "^7.25.0",
+    "@types/babel__traverse": "^7.20.6",
+    "@types/node": "^24.6.0",
+    "@types/react": "^19.0.8",
+    "esbuild": "^0.27.3",
+    "jsdom": "^25.0.0",
+    "react": "^19.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  },
+  "peerDependencies": { "react": ">=18" }
+}
