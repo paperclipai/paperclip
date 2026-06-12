@@ -418,3 +418,129 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 });
+
+describe("plugin-worker-manager legacy SDK invocation scope fallback (#7897)", () => {
+  function createLegacyHandle(hostHandlers: Parameters<typeof createPluginWorkerHandle>[1]["hostHandlers"]) {
+    return createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers,
+      env: { PLUGIN_WORKER_LEGACY_SDK: "1" },
+    });
+  }
+
+  it("allows nested host calls without an invocation id when the worker does not declare the echo capability", async () => {
+    const companiesGet = vi.fn(async (params: { companyId: string }) => ({ id: params.companyId }));
+    const handlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["companies.read"],
+      services: {
+        companies: {
+          get: companiesGet,
+        },
+      } as unknown as HostServices,
+    });
+    const handle = createLegacyHandle(handlers);
+
+    try {
+      await handle.start();
+
+      await expect(handle.call("performAction", {
+        key: "probe",
+        params: {
+          requestedCompanyId: "company-a",
+        },
+        actorContext: {
+          type: "agent",
+          userId: null,
+          agentId: "agent-1",
+          runId: "run-1",
+          companyId: "company-a",
+        },
+        renderEnvironment: null,
+      })).resolves.toEqual({ id: "company-a" });
+      expect(companiesGet).toHaveBeenCalledTimes(1);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("passes an unscoped context to host handlers for legacy workers while an invocation is active", async () => {
+    const companiesGet = vi.fn(async (
+      params: { companyId: string },
+      context?: { invocationScope?: { companyId?: string | null } | null; invalidInvocationScope?: boolean },
+    ) => ({
+      id: params.companyId,
+      scopedCompanyId: context?.invocationScope?.companyId ?? null,
+      invalidInvocationScope: context?.invalidInvocationScope ?? false,
+    }));
+    const handle = createLegacyHandle({
+      "companies.get": companiesGet as never,
+    });
+
+    try {
+      await handle.start();
+
+      await expect(handle.call("getData", {
+        key: "probe",
+        companyId: "company-1",
+        params: {
+          requestedCompanyId: "company-2",
+        },
+      } as HostToWorkerMethods["getData"][0])).resolves.toEqual({
+        id: "company-2",
+        scopedCompanyId: null,
+        invalidInvocationScope: false,
+      });
+      expect(companiesGet).toHaveBeenCalledWith({ companyId: "company-2" }, {});
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("still rejects forged invocation ids from legacy workers", async () => {
+    const companiesGet = vi.fn(async (params: { companyId: string }) => ({ id: params.companyId }));
+    const handlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["companies.read"],
+      services: {
+        companies: {
+          get: companiesGet,
+        },
+      } as unknown as HostServices,
+    });
+    const handle = createLegacyHandle(handlers);
+
+    try {
+      await handle.start();
+
+      await expect(handle.call("performAction", {
+        key: "probe",
+        params: {
+          mode: "unknown",
+          requestedCompanyId: "company-a",
+        },
+        actorContext: {
+          type: "agent",
+          userId: null,
+          agentId: "agent-1",
+          runId: "run-1",
+          companyId: "company-a",
+        },
+        renderEnvironment: null,
+      })).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+        message: expect.stringContaining("unknown invocation scope"),
+      });
+      expect(companiesGet).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});
