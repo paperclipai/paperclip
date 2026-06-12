@@ -127,6 +127,134 @@ function isBedrockAuth(env: Record<string, string>): boolean {
   );
 }
 
+/**
+ * Resolve @ file references in agent instructions content.
+ *
+ * Expands patterns like `@../../shared_all.md` by reading the referenced file
+ * and inlining its content. Supports recursive expansion (nested @ refs in
+ * referenced files) with cycle detection and a depth limit.
+ *
+ * Security: only resolves files within `instructionsRoot`. Paths that escape
+ * beyond that root (via excessive `../`) are silently skipped.
+ */
+async function resolveAtReferences(
+  content: string,
+  baseDir: string,
+  instructionsRoot: string,
+  contentCache: Map<string, string> = new Map(),
+  visited: Set<string> = new Set(),
+  depth: number = 0,
+): Promise<string> {
+  const MAX_DEPTH = 5;
+  if (depth > MAX_DEPTH) return content;
+
+  // Match @ followed by an optional path-like reference to a .md file.
+  // Require at least one "/" in the path so that bare words like @user.md
+  // or email-like strings (docs@company.md) are not treated as file refs.
+  // All genuine file refs carry a directory separator: @./file.md,
+  // @../../shared.md, @path/to/file.md.
+  const AT_REF_RE = /@[ \t]*(\S+\/\S*\.md)/gi;
+
+  // First pass: find all @ references and resolve their absolute paths.
+  // We collect replacement targets without mutating the string yet so that
+  // match positions stay valid.
+  const replacements: Array<{
+    full: string;
+    resolvedPath: string;
+    start: number;
+    end: number;
+  }> = [];
+
+  AT_REF_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = AT_REF_RE.exec(content)) !== null) {
+    const rawPath = match[1].trim();
+    // Strip markdown / prose wrappers so that all of these resolve
+    // to the same ./Test.md:
+    //   @(./Test.md)   @`./Test.md`   @"./Test.md"   @./Test.md
+    const matchedPath = rawPath
+      .replace(/^[`"'()]+|[`"'()]+$/g, "")
+      // Normalize Windows backslash separators to forward slashes.
+      .replace(/\\/g, "/");
+    const matchStart = match.index;
+    let matchEnd = matchStart + match[0].length;
+    // The regex \S+\.md stops at .md, so a closing delimiter after the
+    // path is left unconsumed. Eat one trailing char that looks like a
+    // paired wrapper so the replacement removes the whole construct.
+    let fullMatch = match[0];
+    if (/^[`"'()]/.test(rawPath)) {
+      const trailing = content.charAt(matchEnd);
+      if (trailing === "`" || trailing === '"' || trailing === "'" || trailing === ")") {
+        matchEnd += 1;
+        fullMatch = content.slice(matchStart, matchEnd);
+      }
+    }
+    const resolvedPath = path.resolve(baseDir, matchedPath);
+    const normalizedRoot = path.resolve(instructionsRoot) + path.sep;
+
+    // Security: reject paths that escape the instructions root.
+    if (
+      !resolvedPath.startsWith(normalizedRoot) &&
+      resolvedPath !== path.resolve(instructionsRoot)
+    ) {
+      continue;
+    }
+
+    // Verify the target is a readable file.
+    try {
+      const stat = await fs.stat(resolvedPath);
+      if (!stat.isFile()) continue;
+    } catch {
+      continue;
+    }
+
+    replacements.push({
+      full: fullMatch,
+      resolvedPath,
+      start: matchStart,
+      end: matchEnd,
+    });
+  }
+
+  // Second pass: apply replacements in reverse order so earlier string
+  // positions remain valid after later (higher-index) substitutions.
+  replacements.sort((a, b) => b.start - a.start);
+
+  for (const { full, resolvedPath, start, end } of replacements) {
+    if (visited.has(resolvedPath)) {
+      // Still inline the file content even if already visited — multiple
+      // @ references to the same file in the same document must all resolve.
+      // contentCache is shared across recursive calls so nested refs that
+      // point to a file already expanded at a higher depth are also served.
+      const cached = contentCache.get(resolvedPath);
+      if (cached !== undefined) {
+        content = content.slice(0, start) + cached + content.slice(end);
+      }
+      continue;
+    }
+    visited.add(resolvedPath);
+
+    try {
+      let refContent = await fs.readFile(resolvedPath, "utf-8");
+      // Recursively expand @ references in the referenced file.
+      refContent = await resolveAtReferences(
+        refContent,
+        path.dirname(resolvedPath),
+        instructionsRoot,
+        contentCache,
+        visited,
+        depth + 1,
+      );
+      contentCache.set(resolvedPath, refContent);
+      content = content.slice(0, start) + refContent + content.slice(end);
+    } catch {
+      // Leave @ reference as-is when the file cannot be read.
+    }
+  }
+
+  return content;
+}
+
 function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" | "metered_api" {
   if (isBedrockAuth(env)) return "metered_api";
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
@@ -442,7 +570,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let combinedInstructionsContents: string | null = null;
   if (instructionsFilePath) {
     try {
-      const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
+      let instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
+      // Resolve @ file references (e.g. @../../shared_all.md) before passing
+      // to Claude Code.
+      //
+      // The security boundary is the instructions root directory. For managed
+      // bundles the root points at …/agents/<id>/instructions/ and shared
+      // files live at the …/agents/ level, so we widen the boundary by 2
+      // directory levels to allow @../../shared_all.md to resolve. External
+      // (user-configured) bundles keep their exact root as the boundary — the
+      // operator chose that directory deliberately.
+      const configuredRoot = asString(config.instructionsRootPath, "").trim();
+      const bundleMode = asString(config.instructionsBundleMode, "").trim();
+      const instructionsRoot = configuredRoot || path.dirname(instructionsFilePath);
+      const instructionsBoundary =
+        configuredRoot && bundleMode === "managed"
+          ? path.resolve(instructionsRoot, "..", "..")
+          : instructionsRoot;
+      instructionsContent = await resolveAtReferences(
+        instructionsContent,
+        path.dirname(instructionsFilePath),
+        instructionsBoundary,
+      );
       const pathDirective =
         `\nThe above agent instructions were loaded from ${instructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsFileDir}. ` +
