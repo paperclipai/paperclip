@@ -53,7 +53,7 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "hermes-paperclip-adapter": "^0.2.0",
-    "i18next": "^26.1.0",
+    "i18next": "^26.3.1",
     "lexical": "0.35.0",
     "lucide-react": "^0.574.0",
     "mermaid": "^11.12.0",
