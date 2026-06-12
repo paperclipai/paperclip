@@ -142,8 +142,8 @@ export const queryKeys = {
     plan: (issueId: string) => ["plans", "detail", issueId] as const,
   },
   approvals: {
-    list: (companyId: string, status?: string) =>
-      ["approvals", companyId, status] as const,
+    list: (companyId: string, status?: string, planRootIssueId?: string) =>
+      ["approvals", companyId, status, planRootIssueId] as const,
     detail: (approvalId: string) => ["approvals", "detail", approvalId] as const,
     comments: (approvalId: string) => ["approvals", "comments", approvalId] as const,
     issues: (approvalId: string) => ["approvals", "issues", approvalId] as const,

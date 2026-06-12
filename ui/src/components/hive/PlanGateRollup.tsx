@@ -16,17 +16,19 @@ interface PlanGateRollupProps {
 // company approvals and filters to this plan via payload.planRootIssueId.
 export function PlanGateRollup({ companyId, planIssueId }: PlanGateRollupProps) {
   const { data: approvals } = useQuery({
-    queryKey: queryKeys.approvals.list(companyId!),
-    queryFn: () => approvalsApi.list(companyId!),
+    queryKey: queryKeys.approvals.list(companyId!, undefined, planIssueId),
+    queryFn: () => approvalsApi.list(companyId!, undefined, planIssueId),
     enabled: !!companyId,
   });
 
+  // Server already scopes to this plan via planRootIssueId; keep the client-side
+  // guard so a payload without the field is still excluded.
   const planGates = (approvals ?? []).filter(
     (a) => isGateType(a.type) && gatePlanRootIssueId(a.payload) === planIssueId,
   );
   if (planGates.length === 0) return null;
 
-  const planApproval = planGates.find((a) => (a.type as string) === "gate_plan_approval") ?? null;
+  const planApproval = planGates.find((a) => isGateType(a.type) && a.type === "gate_plan_approval") ?? null;
   const code = countGate(planGates, "gate_code_review");
   const wiring = countGate(planGates, "gate_wiring_review");
 
