@@ -73,9 +73,39 @@ export function createTranslator(dict: Dictionary, options: TranslatorOptions = 
   }
 
   const root = options.root ?? document.body;
+
+  let observer: MutationObserver | null = null;
+
+  function handleMutations(records: MutationRecord[]): void {
+    for (const rec of records) {
+      if (rec.type === "characterData") {
+        const node = rec.target as Text;
+        if (written.get(node) === node.nodeValue) continue; // our own write
+        translateTextNode(node);
+      } else if (rec.type === "attributes") {
+        if (rec.target.nodeType === Node.ELEMENT_NODE) translateElementAttrs(rec.target as Element);
+      } else {
+        rec.addedNodes.forEach((added) => {
+          if (added.nodeType === Node.TEXT_NODE) translateTextNode(added as Text);
+          else if (added.nodeType === Node.ELEMENT_NODE) translateTree(added);
+        });
+      }
+    }
+  }
+
   return {
-    start() { translateTree(root); },
-    stop() { /* observer wired up in Task 4 */ },
+    start() {
+      translateTree(root);
+      observer = new MutationObserver(handleMutations);
+      observer.observe(root, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: attrs,
+      });
+    },
+    stop() { observer?.disconnect(); observer = null; },
     translateTree,
   };
 }
