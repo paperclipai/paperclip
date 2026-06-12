@@ -309,6 +309,116 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     expect(allRows).toHaveLength(3);
   });
 
+  it("pluginRegistryService.getEntityByExternalId scopes by companyId — never returns another tenant's row", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const companyB = await seedCompany();
+
+    const registry = pluginRegistryService(db);
+
+    await registry.upsertEntity(pluginId, {
+      companyId: companyA,
+      entityType: "issue",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "ext-shared",
+      title: "A",
+      status: "open",
+      data: {},
+    });
+    await registry.upsertEntity(pluginId, {
+      companyId: companyB,
+      entityType: "issue",
+      scopeKind: "company",
+      scopeId: companyB,
+      externalId: "ext-shared",
+      title: "B",
+      status: "open",
+      data: {},
+    });
+    await registry.upsertEntity(pluginId, {
+      companyId: null,
+      entityType: "issue",
+      scopeKind: "instance",
+      scopeId: null,
+      externalId: "ext-shared",
+      title: "instance",
+      status: "open",
+      data: {},
+    });
+
+    const fromA = await registry.getEntityByExternalId(pluginId, "issue", "ext-shared", companyA);
+    expect(fromA?.companyId).toBe(companyA);
+    expect(fromA?.title).toBe("A");
+
+    const fromB = await registry.getEntityByExternalId(pluginId, "issue", "ext-shared", companyB);
+    expect(fromB?.companyId).toBe(companyB);
+    expect(fromB?.title).toBe("B");
+
+    const fromInstance = await registry.getEntityByExternalId(pluginId, "issue", "ext-shared", null);
+    expect(fromInstance?.companyId).toBeNull();
+    expect(fromInstance?.title).toBe("instance");
+
+    // Unknown tenant returns null, not another tenant's row.
+    const unknown = await registry.getEntityByExternalId(
+      pluginId,
+      "issue",
+      "ext-shared",
+      randomUUID(),
+    );
+    expect(unknown).toBeNull();
+  });
+
+  it("pluginRegistryService.createJobRun + createWebhookDelivery persist companyId so cascade delete reaps them", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const companyB = await seedCompany();
+
+    const registry = pluginRegistryService(db);
+    const jobId = randomUUID();
+    await db.insert(pluginJobs).values({
+      id: jobId,
+      pluginId,
+      jobKey: "test-job",
+      schedule: "* * * * *",
+    });
+
+    const runA = await registry.createJobRun(pluginId, jobId, "manual", companyA);
+    const runB = await registry.createJobRun(pluginId, jobId, "manual", companyB);
+    const runInstance = await registry.createJobRun(pluginId, jobId, "scheduled", null);
+
+    expect(runA?.companyId).toBe(companyA);
+    expect(runB?.companyId).toBe(companyB);
+    expect(runInstance?.companyId).toBeNull();
+
+    const whA = await registry.createWebhookDelivery(pluginId, "wh", companyA, {
+      payload: { who: "A" },
+    });
+    const whB = await registry.createWebhookDelivery(pluginId, "wh", companyB, {
+      payload: { who: "B" },
+    });
+    const whInstance = await registry.createWebhookDelivery(pluginId, "wh", null, {
+      payload: { who: "instance" },
+    });
+
+    expect(whA?.companyId).toBe(companyA);
+    expect(whB?.companyId).toBe(companyB);
+    expect(whInstance?.companyId).toBeNull();
+
+    // Cascade: deleting company A reaps A's rows; B's and instance-scope rows stay.
+    await db.delete(companies).where(eq(companies.id, companyA));
+
+    const runs = await db.select().from(pluginJobRuns);
+    expect(runs.map((r) => r.companyId).sort((a, b) => String(a).localeCompare(String(b)))).toEqual(
+      [companyB, null].sort((a, b) => String(a).localeCompare(String(b))),
+    );
+
+    const deliveries = await db.select().from(pluginWebhookDeliveries);
+    expect(
+      deliveries.map((r) => r.companyId).sort((a, b) => String(a).localeCompare(String(b))),
+    ).toEqual([companyB, null].sort((a, b) => String(a).localeCompare(String(b))));
+  });
+
   it("plugin_entities unique index treats NULL companyId as equal (NULLS NOT DISTINCT) so instance-scope dedup holds", async () => {
     const pluginId = await seedPlugin();
 
