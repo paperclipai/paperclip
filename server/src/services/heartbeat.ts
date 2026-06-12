@@ -1588,6 +1588,65 @@ function mergeModelProfileRunMetadata(
   };
 }
 
+function unsupportedModelProfileErrorMessage(input: {
+  adapterType: string | null;
+  modelProfile: ModelProfileApplication;
+}): string {
+  const requested = input.modelProfile.requested ?? "unknown";
+  const reason = input.modelProfile.fallbackReason ?? "adapter_profile_not_supported";
+  const adapter = input.adapterType ?? "unknown";
+  if (reason === "agent_runtime_profile_disabled") {
+    return (
+      `Requested model profile "${requested}" is disabled for this agent ` +
+      `(adapter=${adapter}). Re-enable it under the agent's runtime profile settings, ` +
+      `or use an adapter that supports the profile.`
+    );
+  }
+  if (reason === "adapter_profile_resolution_failed") {
+    return (
+      `Failed to resolve model profiles for adapter "${adapter}" while handling ` +
+      `requested profile "${requested}". Aborting instead of running a no-op.`
+    );
+  }
+  return (
+    `Adapter "${adapter}" does not support model profile "${requested}". ` +
+    `Aborting instead of running a no-op fallback that would record 0 tokens. ` +
+    `Use an adapter that advertises the profile, or remove the profile request.`
+  );
+}
+
+export function buildUnsupportedModelProfileAdapterResult(input: {
+  adapterType: string | null;
+  modelProfile: ModelProfileApplication;
+}): AdapterExecutionResult {
+  const errorMessage = unsupportedModelProfileErrorMessage(input);
+  const metadata = modelProfileRunMetadata(input.modelProfile);
+  return {
+    exitCode: 1,
+    signal: null,
+    timedOut: false,
+    errorMessage,
+    errorCode: "model_profile_not_supported",
+    errorMeta: metadata ? { modelProfile: metadata } : undefined,
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+    },
+    sessionId: null,
+    sessionParams: null,
+    sessionDisplayId: null,
+    provider: null,
+    biller: null,
+    model: null,
+    billingType: null,
+    costUsd: null,
+    resultJson: metadata ? { modelProfile: metadata } : null,
+    summary: errorMessage,
+    clearSession: false,
+  };
+}
+
 export function summarizeHeartbeatRunContextSnapshot(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> | null {
@@ -8997,56 +9056,101 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
 
       let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
-      try {
-        adapterResult = await adapter.execute({
-          runId: run.id,
-          agent,
-          runtime: runtimeForAdapter,
-          config: runtimeConfig,
-          context,
-          runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
-          executionTarget,
-          executionTransport: remoteExecution
-            ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
-            : undefined,
-          onLog,
-          onMeta: onAdapterMeta,
-          onSpawn: async (meta) => {
-            await persistRunProcessMetadata(run.id, {
-              pid: meta.pid,
-              processGroupId:
-                "processGroupId" in meta && typeof meta.processGroupId === "number"
-                  ? meta.processGroupId
-                  : null,
-              startedAt: meta.startedAt,
-            });
-          },
-          authToken: authToken ?? undefined,
+      if (modelProfileApplication.fallbackReason) {
+        const unsupportedResult = buildUnsupportedModelProfileAdapterResult({
+          adapterType: agent.adapterType,
+          modelProfile: modelProfileApplication,
         });
-        // Adapter returned cleanly, which means its workspace-restore finally
-        // block also ran without throwing. Record the workspace_finalize
-        // barrier so dependents that share this executionWorkspace can wake.
-        // If recording the barrier itself fails, propagate as a run failure
-        // rather than silently leaving dependents stranded behind a missing
-        // finalize row.
-        await recordWorkspaceFinalize("succeeded");
-      } catch (adapterErr) {
-        // Adapter (or its restore finally) threw — or the finalize record
-        // write itself threw. Either way the workspace may be in a partial
-        // state. Best-effort record finalize=failed so the dependent readiness
-        // check keeps the gate closed instead of waking on stale local state,
-        // and surface the original error to the caller.
+        await onLog(
+          "stderr",
+          `[paperclip] ${unsupportedResult.errorMessage}\n`,
+        );
+        // Record the workspace_finalize=failed barrier so dependents that
+        // share this executionWorkspace do not wake into a half-initialized
+        // state. The record is best-effort: a transient DB write failure
+        // must not mask the model_profile_not_supported run failure, so we
+        // swallow any throw with a warning and let the run surface the
+        // synthesized adapter result.
         try {
           await recordWorkspaceFinalize("failed", {
-            errorMessage: adapterErr instanceof Error ? adapterErr.message : String(adapterErr),
+            errorMessage: unsupportedResult.errorMessage ?? null,
           });
         } catch (recordErr) {
           logger.warn(
             { err: recordErr, runId: run.id, executionWorkspaceId: persistedExecutionWorkspace?.id ?? null },
-            "failed to record workspace_finalize=failed operation; dependents may remain gated",
+            "failed to record workspace_finalize=failed operation on model profile fast-fail; dependents may remain gated",
           );
         }
-        throw adapterErr;
+        try {
+          await appendRunEvent(currentRun, seq++, {
+            eventType: "adapter.invoke",
+            stream: "system",
+            level: "error",
+            message: "model profile fallback rejected; skipping adapter execution",
+            payload: {
+              adapterType: agent.adapterType,
+              ...(unsupportedResult.errorMeta ?? {}),
+            },
+          });
+        } catch (eventErr) {
+          logger.warn(
+            { err: eventErr, runId: run.id },
+            "failed to append adapter.invoke run event on model profile fast-fail",
+          );
+        }
+        adapterResult = unsupportedResult;
+      } else {
+        try {
+          adapterResult = await adapter.execute({
+            runId: run.id,
+            agent,
+            runtime: runtimeForAdapter,
+            config: runtimeConfig,
+            context,
+            runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
+            executionTarget,
+            executionTransport: remoteExecution
+              ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
+              : undefined,
+            onLog,
+            onMeta: onAdapterMeta,
+            onSpawn: async (meta) => {
+              await persistRunProcessMetadata(run.id, {
+                pid: meta.pid,
+                processGroupId:
+                  "processGroupId" in meta && typeof meta.processGroupId === "number"
+                    ? meta.processGroupId
+                    : null,
+                startedAt: meta.startedAt,
+              });
+            },
+            authToken: authToken ?? undefined,
+          });
+          // Adapter returned cleanly, which means its workspace-restore finally
+          // block also ran without throwing. Record the workspace_finalize
+          // barrier so dependents that share this executionWorkspace can wake.
+          // If recording the barrier itself fails, propagate as a run failure
+          // rather than silently leaving dependents stranded behind a missing
+          // finalize row.
+          await recordWorkspaceFinalize("succeeded");
+        } catch (adapterErr) {
+          // Adapter (or its restore finally) threw — or the finalize record
+          // write itself threw. Either way the workspace may be in a partial
+          // state. Best-effort record finalize=failed so the dependent readiness
+          // check keeps the gate closed instead of waking on stale local state,
+          // and surface the original error to the caller.
+          try {
+            await recordWorkspaceFinalize("failed", {
+              errorMessage: adapterErr instanceof Error ? adapterErr.message : String(adapterErr),
+            });
+          } catch (recordErr) {
+            logger.warn(
+              { err: recordErr, runId: run.id, executionWorkspaceId: persistedExecutionWorkspace?.id ?? null },
+              "failed to record workspace_finalize=failed operation; dependents may remain gated",
+            );
+          }
+          throw adapterErr;
+        }
       }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
