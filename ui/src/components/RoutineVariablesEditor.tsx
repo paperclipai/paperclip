@@ -258,7 +258,7 @@ export function RoutineVariablesHint() {
     <>
       <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground">
         <span>
-          Use `{"{{variable_name}}"}` placeholders in the instructions to prompt for inputs when the routine runs.
+          Use `{"{{variableName}}"}` placeholders in the instructions to prompt for inputs when the routine runs.
         </span>
         <button
           type="button"
@@ -287,14 +287,14 @@ export function RoutineVariablesHint() {
               <p className="text-muted-foreground">
                 Type{" "}
                 <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">
-                  {"{{variable_name}}"}
+                  {"{{variableName}}"}
                 </code>{" "}
                 anywhere in the title or instructions. Paperclip detects each placeholder, lists it
                 under <span className="font-medium text-foreground">Variables</span>, and prompts
                 for a value before each run.
               </p>
               <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
-                <li>Names must start with a letter and may use letters, numbers, and underscores.</li>
+                <li>Names must start with a letter and may use letters and numbers.</li>
                 <li>Pick a type (text, textarea, number, boolean, select), default value, and whether it is required.</li>
                 <li>The same name reused across the title and instructions is treated as one variable.</li>
               </ul>
