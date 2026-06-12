@@ -34,6 +34,7 @@ import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
+import { pushRoutes } from "./routes/push.js";
 import { openApiRoutes } from "./routes/openapi.js";
 import {
   instanceDatabaseBackupRoutes,
@@ -241,6 +242,7 @@ export async function createApp(
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
+  api.use(pushRoutes(db));
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
