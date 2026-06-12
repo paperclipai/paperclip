@@ -23,6 +23,7 @@ export interface IssueLink {
   syncDirection: "bidirectional" | "linear-to-paperclip" | "paperclip-to-linear";
   lastSyncAt: string;
   lastLinearStateType: string;
+  lastLinearStateName?: string | null;
   lastCommentSyncAt: string | null;
 }
 
@@ -111,6 +112,7 @@ export async function createLink(
     syncDirection: params.syncDirection,
     lastSyncAt: new Date().toISOString(),
     lastLinearStateType: params.linearStateType,
+    lastLinearStateName: null,
     lastCommentSyncAt: null,
   };
 
@@ -183,24 +185,50 @@ async function updateLink(ctx: PluginContext, link: IssueLink): Promise<void> {
   );
 }
 
-function linearStateToPaperclipStatus(stateType: string): IssueStatus {
+function normalizedStateName(stateName: string | null | undefined): string {
+  return (stateName ?? "").trim().toLowerCase().replace(/[\s_-]+/g, " ");
+}
+
+function linearStateToPaperclipStatus(stateType: string, stateName?: string | null): IssueStatus {
+  const normalizedName = normalizedStateName(stateName);
+  if (normalizedName === "in review" || normalizedName === "review") return "in_review";
+  if (normalizedName === "in progress" || normalizedName === "doing") return "in_progress";
+  if (normalizedName === "todo" || normalizedName === "to do") return "todo";
+  if (normalizedName === "blocked") return "blocked";
+  if (normalizedName === "backlog") return "backlog";
+  if (normalizedName === "done") return "done";
+  if (normalizedName === "canceled" || normalizedName === "cancelled") return "cancelled";
+
   switch (stateType) {
     case "completed": return "done";
     case "canceled":
     case "cancelled": return "cancelled";
     case "started": return "in_progress";
+    case "unstarted": return "todo";
     default: return "backlog";
   }
 }
 
-function paperclipStatusToLinearStateType(status: string): string {
-  switch (status) {
-    case "backlog": return "backlog";
-    case "done": return "completed";
-    case "cancelled": return "canceled";
-    case "in_progress": return "started";
-    default: return "unstarted";
+const PAPERCLIP_TO_LINEAR_STATE: Record<string, { names: string[]; fallbackType: string }> = {
+  backlog: { names: ["backlog"], fallbackType: "backlog" },
+  todo: { names: ["todo", "to do"], fallbackType: "unstarted" },
+  in_progress: { names: ["in progress", "doing"], fallbackType: "started" },
+  in_review: { names: ["in review", "review"], fallbackType: "started" },
+  blocked: { names: ["blocked", "todo", "to do"], fallbackType: "unstarted" },
+  done: { names: ["done"], fallbackType: "completed" },
+  cancelled: { names: ["canceled", "cancelled"], fallbackType: "canceled" },
+};
+
+function linearStateForPaperclipStatus(
+  status: string,
+  states: Array<{ id: string; name: string; type: string }>,
+): { id: string; name: string; type: string } | null {
+  const mapping = PAPERCLIP_TO_LINEAR_STATE[status] ?? PAPERCLIP_TO_LINEAR_STATE.todo;
+  for (const name of mapping.names) {
+    const match = states.find((state) => normalizedStateName(state.name) === name);
+    if (match) return match;
   }
+  return states.find((state) => state.type === mapping.fallbackType) ?? null;
 }
 
 function linearPriorityToPaperclip(priority: number): "critical" | "high" | "medium" | "low" {
@@ -245,14 +273,16 @@ export async function syncFromLinear(
 
   // Sync status
   const newStateType = linearIssue.state.type;
-  if (newStateType !== link.lastLinearStateType) {
-    const status = linearStateToPaperclipStatus(newStateType);
+  const newStateName = linearIssue.state.name ?? null;
+  if (newStateType !== link.lastLinearStateType || newStateName !== (link.lastLinearStateName ?? null)) {
+    const status = linearStateToPaperclipStatus(newStateType, newStateName);
     if (status === "in_progress") {
       const assigneeUserId = await resolvePaperclipUserIdForLinearAssignee(ctx, linearIssue.assignee);
       if (assigneeUserId) {
         patch.assigneeUserId = assigneeUserId;
         patch.status = status;
         link.lastLinearStateType = newStateType;
+        link.lastLinearStateName = newStateName;
       } else {
         ctx.logger.info(
           `Skipped in_progress status sync for ${linearIssue.identifier}: Linear assignee is not mapped to a Paperclip user`,
@@ -261,6 +291,7 @@ export async function syncFromLinear(
     } else {
       patch.status = status;
       link.lastLinearStateType = newStateType;
+      link.lastLinearStateName = newStateName;
     }
     linkNeedsUpdate = true;
   }
@@ -440,15 +471,19 @@ export async function syncToLinear(
 
   // Status → Linear state
   if (changes.status) {
-    const targetStateType = paperclipStatusToLinearStateType(changes.status);
-    if (targetStateType !== link.lastLinearStateType) {
-      const states = await linear.getWorkflowStates(ctx.http.fetch.bind(ctx.http), token, teamId);
-      const targetState = states.find((s) => s.type === targetStateType);
-      if (targetState) {
-        linearUpdate.stateId = targetState.id;
-        link.lastLinearStateType = targetStateType;
-        synced.push(`status:${targetState.name}`);
-      }
+    const states = await linear.getWorkflowStates(ctx.http.fetch.bind(ctx.http), token, teamId);
+    const targetState = linearStateForPaperclipStatus(changes.status, states);
+    if (
+      targetState
+      && (
+        targetState.type !== link.lastLinearStateType
+        || targetState.name !== (link.lastLinearStateName ?? null)
+      )
+    ) {
+      linearUpdate.stateId = targetState.id;
+      link.lastLinearStateType = targetState.type;
+      link.lastLinearStateName = targetState.name;
+      synced.push(`status:${targetState.name}`);
     }
   }
 

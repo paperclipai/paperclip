@@ -361,6 +361,47 @@ describe("syncFromLinear", () => {
     });
   });
 
+  it("maps Linear In Review to Paperclip in_review when the state type is still started", async () => {
+    const harness = createTestHarness({ manifest });
+    harness.seed({
+      issues: [
+        {
+          id: "pc-1",
+          companyId: "comp-1",
+          title: "Paperclip title",
+          status: "in_progress",
+          priority: "low",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        } as never,
+      ],
+    });
+
+    const update = vi.spyOn(harness.ctx.issues, "update");
+
+    await syncFromLinear(
+      harness.ctx,
+      makeLink({
+        lastLinearStateType: "started",
+        lastLinearStateName: "In Progress",
+      }),
+      makeLinearIssue({ state: { name: "In Review", type: "started" } }),
+    );
+
+    expect(update).toHaveBeenCalledWith(
+      "pc-1",
+      expect.objectContaining({ status: "in_review" }),
+      "comp-1",
+    );
+    expect(harness.getState({
+      scopeKind: "instance",
+      stateKey: `${STATE_KEYS.linkPrefix}pc-1`,
+    })).toMatchObject({
+      lastLinearStateType: "started",
+      lastLinearStateName: "In Review",
+    });
+  });
+
   it("moves an already-linked Paperclip issue to the mapped Linear project", async () => {
     const harness = createTestHarness({ manifest });
     harness.seed({
@@ -506,6 +547,55 @@ describe("syncToLinear", () => {
       "lin-token",
       "lin-1",
       { stateId: "state-backlog" },
+    );
+  });
+
+  it("maps Paperclip started statuses to exact Linear workflow state names", async () => {
+    const harness = createTestHarness({ manifest });
+    vi.spyOn(linearApi, "getWorkflowStates").mockResolvedValue([
+      { id: "state-review", name: "In Review", type: "started" },
+      { id: "state-progress", name: "In Progress", type: "started" },
+      { id: "state-todo", name: "Todo", type: "unstarted" },
+    ]);
+    const updateIssue = vi.spyOn(linearApi, "updateIssue").mockResolvedValue(makeLinearIssue());
+
+    await syncToLinear(
+      harness.ctx,
+      makeLink({
+        lastSyncAt: "2020-01-01T00:00:00.000Z",
+        lastLinearStateType: "started",
+        lastLinearStateName: "In Review",
+      }),
+      { status: "in_progress" },
+      "lin-token",
+      "team-1",
+    );
+
+    await syncToLinear(
+      harness.ctx,
+      makeLink({
+        lastSyncAt: "2020-01-01T00:00:00.000Z",
+        lastLinearStateType: "started",
+        lastLinearStateName: "In Progress",
+      }),
+      { status: "in_review" },
+      "lin-token",
+      "team-1",
+    );
+
+    expect(updateIssue).toHaveBeenNthCalledWith(
+      1,
+      expect.any(Function),
+      "lin-token",
+      "lin-1",
+      { stateId: "state-progress" },
+    );
+    expect(updateIssue).toHaveBeenNthCalledWith(
+      2,
+      expect.any(Function),
+      "lin-token",
+      "lin-1",
+      { stateId: "state-review" },
     );
   });
 

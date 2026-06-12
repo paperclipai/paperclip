@@ -4280,6 +4280,7 @@ async function runLinearMirrorReconcile(
             {
               ...link,
               lastLinearStateType: linearIssue.state.type,
+              lastLinearStateName: linearIssue.state.name,
               lastSyncAt: "1970-01-01T00:00:00.000Z",
             },
             changes,
