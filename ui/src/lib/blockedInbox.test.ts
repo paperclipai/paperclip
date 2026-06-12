@@ -295,6 +295,9 @@ describe("attentionVerb", () => {
   const cases: [IssueBlockedInboxReason, AttentionVerb][] = [
     ["pending_user_decision", "answer"],
     ["pending_board_decision", "approve"],
+    ["pending_plan_approval", "approve"],
+    ["pending_code_review", "review"],
+    ["pending_wiring_review", "review"],
     ["missing_successful_run_disposition", "approve"],
     ["in_review_without_action_path", "review"],
     ["invalid_review_participant", "review"],
@@ -342,6 +345,20 @@ describe("primaryAttentionAction", () => {
       makeAttention({ reason: "in_review_without_action_path", leafIssue: leaf }),
     );
     expect(a).toMatchObject({ verb: "review", kind: "reviewAccept", targetIssueRef: leaf });
+  });
+
+  it("gate plan-approval with an approvalId → approval kind", () => {
+    const a = primaryAttentionAction(
+      makeAttention({ reason: "pending_plan_approval", approvalId: "gate-1" }),
+    );
+    expect(a).toMatchObject({ verb: "approve", kind: "approval", approvalId: "gate-1" });
+  });
+
+  it("gate code-review with an approvalId → approval kind (not reviewAccept)", () => {
+    const a = primaryAttentionAction(
+      makeAttention({ reason: "pending_code_review", approvalId: "gate-2" }),
+    );
+    expect(a).toMatchObject({ verb: "review", kind: "approval", approvalId: "gate-2" });
   });
 
   it("answer with an interactionId → answer kind", () => {

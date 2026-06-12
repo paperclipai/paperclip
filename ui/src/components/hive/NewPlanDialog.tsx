@@ -45,6 +45,7 @@ export function NewPlanDialog({ open, onOpenChange, companyId }: NewPlanDialogPr
   const [tasksText, setTasksText] = useState("");
   const [capTokens, setCapTokens] = useState("");
   const [assigneeAgentId, setAssigneeAgentId] = useState<string>("");
+  const [gateProtocol, setGateProtocol] = useState(false);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(companyId!),
@@ -58,6 +59,7 @@ export function NewPlanDialog({ open, onOpenChange, companyId }: NewPlanDialogPr
     setTasksText("");
     setCapTokens("");
     setAssigneeAgentId("");
+    setGateProtocol(false);
     setMode("manual");
   };
 
@@ -90,6 +92,7 @@ export function NewPlanDialog({ open, onOpenChange, companyId }: NewPlanDialogPr
         overview: overview.trim() || null,
         tiers,
         budgetCapTokens: tokens && Number.isFinite(tokens) ? tokens : null,
+        gateProfile: gateProtocol ? "dev_team" : "none",
         assigneeAgentId: mode === "assign" ? assigneeAgentId || null : null,
       });
     },
@@ -224,6 +227,27 @@ export function NewPlanDialog({ open, onOpenChange, companyId }: NewPlanDialogPr
               placeholder="e.g. 500000 — auto-stops the plan when hit"
             />
           </div>
+
+          <label
+            htmlFor="plan-gate-protocol"
+            className="flex cursor-pointer items-start gap-2.5 rounded-md border border-border p-3"
+          >
+            <input
+              id="plan-gate-protocol"
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 cursor-pointer"
+              checked={gateProtocol}
+              onChange={(e) => setGateProtocol(e.target.checked)}
+            />
+            <span className="space-y-0.5">
+              <span className="block text-sm font-medium">Enforce dev-team gate protocol</span>
+              <span className="block text-[11px] text-muted-foreground">
+                Advisory. On activate, routes Architect plan-approval plus per-task
+                code-review and wiring-review gates to the designated agents. Nothing is
+                blocked — gates surface as decisions on the board.
+              </span>
+            </span>
+          </label>
         </div>
 
         <DialogFooter>

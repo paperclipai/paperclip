@@ -83,4 +83,41 @@ describe("NewPlanDialog manual-mode task guard", () => {
 
     flushSync(() => root.unmount());
   });
+
+  it("sends gateProfile 'dev_team' when the gate-protocol toggle is checked, 'none' otherwise", async () => {
+    mockPlansApi.create.mockResolvedValue({});
+    const root = render();
+    await flushReact();
+
+    setControlledValue(document.querySelector<HTMLInputElement>("#plan-title")!, "Gated work");
+    setControlledValue(document.querySelector<HTMLTextAreaElement>("#plan-tasks")!, "Do the thing");
+    await flushReact();
+
+    // Default (unchecked) → gateProfile 'none'.
+    createButton()!.click();
+    await flushReact();
+    expect(mockPlansApi.create).toHaveBeenCalledWith(
+      expect.objectContaining({ gateProfile: "none" }),
+    );
+
+    mockPlansApi.create.mockClear();
+
+    // onSuccess resets the form — re-fill before the second submit.
+    setControlledValue(document.querySelector<HTMLInputElement>("#plan-title")!, "Gated work");
+    setControlledValue(document.querySelector<HTMLTextAreaElement>("#plan-tasks")!, "Do the thing");
+    await flushReact();
+
+    // Check the toggle, re-submit → gateProfile 'dev_team'.
+    const toggle = document.querySelector<HTMLInputElement>("#plan-gate-protocol");
+    expect(toggle).not.toBeNull();
+    toggle!.click();
+    await flushReact();
+    createButton()!.click();
+    await flushReact();
+    expect(mockPlansApi.create).toHaveBeenCalledWith(
+      expect.objectContaining({ gateProfile: "dev_team" }),
+    );
+
+    flushSync(() => root.unmount());
+  });
 });

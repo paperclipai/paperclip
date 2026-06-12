@@ -17,6 +17,9 @@ export type BlockedReasonVariant =
 const VARIANT_BY_REASON: Record<IssueBlockedInboxReason, BlockedReasonVariant> = {
   pending_board_decision: "needs_decision",
   pending_user_decision: "needs_decision",
+  pending_plan_approval: "needs_decision",
+  pending_code_review: "needs_decision",
+  pending_wiring_review: "needs_decision",
   missing_successful_run_disposition: "needs_decision",
   blocked_chain_stalled: "stalled",
   blocked_by_unassigned_issue: "needs_attention",
@@ -50,6 +53,9 @@ export const BLOCKED_VARIANT_LABELS: Record<BlockedReasonVariant, string> = {
 const REASON_LABELS: Record<IssueBlockedInboxReason, string> = {
   pending_board_decision: "Pending board decision",
   pending_user_decision: "Pending user decision",
+  pending_plan_approval: "Pending plan approval",
+  pending_code_review: "Pending code review",
+  pending_wiring_review: "Pending wiring review",
   missing_successful_run_disposition: "Pick disposition",
   blocked_chain_stalled: "Blocked chain stalled",
   blocked_by_unassigned_issue: "Unassigned blocker",
@@ -291,6 +297,9 @@ export type AttentionVerb =
 const VERB_BY_REASON: Record<IssueBlockedInboxReason, AttentionVerb> = {
   pending_user_decision: "answer",
   pending_board_decision: "approve",
+  pending_plan_approval: "approve",
+  pending_code_review: "review",
+  pending_wiring_review: "review",
   missing_successful_run_disposition: "approve",
   in_review_without_action_path: "review",
   invalid_review_participant: "review",
@@ -365,7 +374,9 @@ export function primaryAttentionAction(
       // operator still navigates to make the call.
       return { ...base, kind: attention.approvalId ? "approval" : "navigate" };
     case "review":
-      return { ...base, kind: "reviewAccept" };
+      // A gate review carries an approvalId → one-click approve/reject. The
+      // existing review reasons (no approvalId) keep the accept-the-review flow.
+      return { ...base, kind: attention.approvalId ? "approval" : "reviewAccept" };
     case "answer":
       return { ...base, kind: attention.interactionId ? "answer" : "navigate" };
     case "unblock":
