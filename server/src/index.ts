@@ -54,6 +54,8 @@ import {
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
+import { createRunExecutor, type RunExecutor } from "./services/run-executor.js";
+import { PROCESS_REPLICA_ID } from "./replica-id.js";
 import {
   createSchedulerLeadership,
   registerSchedulerLeadershipForHealth,
@@ -113,16 +115,26 @@ export interface StartedServer {
  * The heartbeat/routines scheduler runtime, started and stopped by scheduler
  * leadership transitions. `start()` reruns the startup recovery chain on
  * every leadership ACQUISITION — that is the failover recovery by design:
- * a newly promoted leader reaps orphans and resumes queued work left behind
- * by the previous leader before it begins ticking.
+ * a newly promoted leader reaps orphans and revalidates queued work left
+ * behind by the previous leader before it begins ticking.
+ *
+ * `heartbeat` is the replica's shared always-on heartbeat-service instance
+ * (also used by the run executor). Sharing one instance matters: the
+ * orphaned-run reaper skips runs found in the instance's in-memory
+ * active-execution set, so the leader must reap with the SAME instance the
+ * executor dispatches through.
  */
-function createSchedulerRuntime(db: Db, pluginWorkerManager: PluginWorkerManager, intervalMs: number) {
+function createSchedulerRuntime(
+  db: Db,
+  heartbeat: ReturnType<typeof heartbeatService>,
+  pluginWorkerManager: PluginWorkerManager,
+  intervalMs: number,
+) {
   let tickTimer: ReturnType<typeof setInterval> | null = null;
   let stopped = false;
   return {
     async start() {
       stopped = false;
-      const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
       const routines = routineService(db as any, { pluginWorkerManager });
 
       // Reap orphaned running runs at startup while in-memory execution state is empty,
@@ -951,21 +963,30 @@ export async function startServer(): Promise<StartedServer> {
     throw err;
   }
 
+  // One always-on heartbeat-service instance per replica, shared by the run
+  // executor (every replica) and the leader-gated scheduler runtime. It is
+  // constructed OUTSIDE the leadership gate on purpose: executors run on
+  // every replica regardless of who holds the scheduler lease.
+  const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+
   // Every replica with HEARTBEAT_SCHEDULER_ENABLED (default) campaigns for the
   // scheduler lease; only the elected leader runs the heartbeat/routines
-  // scheduler. On failover the new leader reruns the recovery chain before
-  // ticking. HEARTBEAT_SCHEDULER_ENABLED=false opts the replica out of the
-  // election entirely (traffic-only).
+  // scheduler (triggering + queue hygiene). On failover the new leader reruns
+  // the recovery chain before ticking. HEARTBEAT_SCHEDULER_ENABLED=false opts
+  // the replica out of the election entirely (traffic-only).
   let schedulerLeadership: SchedulerLeadership | null = null;
   if (config.heartbeatSchedulerEnabled) {
     const schedulerRuntime = createSchedulerRuntime(
       db as any,
+      heartbeat,
       pluginWorkerManager,
       config.heartbeatSchedulerIntervalMs,
     );
     schedulerLeadership = createSchedulerLeadership({
       db: db as any,
-      leaderId: `${os.hostname()}-${process.pid}-${randomUUID()}`,
+      // Same string heartbeat_runs.claimed_by uses, so lease rows and run
+      // claims correlate per replica.
+      leaderId: PROCESS_REPLICA_ID,
       hostname: os.hostname(),
       onAcquired: () => schedulerRuntime.start(),
       onLost: () => schedulerRuntime.stop(),
@@ -975,6 +996,27 @@ export async function startServer(): Promise<StartedServer> {
   } else {
     logger.info(
       "heartbeat scheduler candidacy disabled (HEARTBEAT_SCHEDULER_ENABLED=false); this replica serves traffic only",
+    );
+  }
+
+  // Run execution is split from scheduling: EVERY replica runs an executor
+  // loop that batch-claims queued runs (SKIP LOCKED) and executes them,
+  // heartbeating its claims so other replicas' reapers leave them alone.
+  // PAPERCLIP_RUN_EXECUTOR=false opts a replica out (traffic-only replicas
+  // may also skip executing).
+  let runExecutor: RunExecutor | null = null;
+  if (process.env.PAPERCLIP_RUN_EXECUTOR !== "false") {
+    runExecutor = createRunExecutor({
+      replicaId: PROCESS_REPLICA_ID,
+      claimRuns: (limit) => heartbeat.claimRunsForExecution(limit),
+      executeRun: (runId) => heartbeat.executeRun(runId),
+      heartbeatClaims: (runIds) => heartbeat.heartbeatExecutorClaims(runIds),
+      releaseClaims: (runIds) => heartbeat.releaseExecutorClaims(runIds),
+    });
+    runExecutor.start();
+  } else {
+    logger.info(
+      "run executor disabled (PAPERCLIP_RUN_EXECUTOR=false); this replica does not execute queued runs",
     );
   }
   
@@ -1077,7 +1119,19 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-      // Resign scheduler leadership first so another replica can take over
+      // Drain the run executor BEFORE resigning leadership: stop() waits for
+      // in-flight runs (releasing leftovers back to queued), and resigning
+      // first would let the next leader's recovery chain reap/redispatch
+      // runs this replica is still finishing. Drain first, then hand over.
+      if (runExecutor) {
+        try {
+          await runExecutor.stop();
+        } catch (err) {
+          logger.warn({ err, signal }, "failed to drain run executor during shutdown");
+        }
+      }
+
+      // Resign scheduler leadership next so another replica can take over
       // within retryMs instead of waiting out the lease TTL.
       if (schedulerLeadership) {
         try {
