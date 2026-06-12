@@ -762,6 +762,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (seen.has(candidate.id)) continue;
       seen.add(candidate.id);
 
+      // If the stranded-recovery system already has an active action for this issue,
+      // adding an orphan-blocker assignment on top creates a parallel wake loop
+      // (agent wakes, finds nothing actionable, releases, sweep re-assigns, repeat).
+      // Let the recovery system drive resolution instead. (FMA-3284)
+      const existingRecoveryAction = await recoveryActionsSvc.getActiveForIssue(candidate.companyId, candidate.id);
+      if (existingRecoveryAction) {
+        skipped += 1;
+        continue;
+      }
+
       const creatorAgentId = candidate.createdByAgentId;
       if (!creatorAgentId) {
         skipped += 1;
