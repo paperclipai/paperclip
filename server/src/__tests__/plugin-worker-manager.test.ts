@@ -373,14 +373,25 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 
-  it("rejects missing or unknown invocation ids while a company invocation is active", async () => {
-    const companiesGet = vi.fn(async () => ({ id: "company-2" }));
+  it("allows invalid local folder status calls when the request stays explicitly single-company scoped", async () => {
+    const localFolderStatus = vi.fn(async (params: { companyId: string; folderKey: string }) => ({
+      companyId: params.companyId,
+      key: params.folderKey,
+      declaration: null,
+      configuredPath: null,
+      resolvedPath: null,
+      isConfigured: false,
+      isAccessible: false,
+      configuredAt: null,
+      lastValidatedAt: null,
+      accessibilityError: null,
+    }));
     const hostHandlers = createHostClientHandlers({
       pluginId: "test.plugin",
-      capabilities: ["companies.read"],
+      capabilities: ["local.folders"],
       services: {
-        companies: {
-          get: companiesGet,
+        localFolders: {
+          status: localFolderStatus,
         },
       } as unknown as HostServices,
     });
@@ -399,20 +410,24 @@ describe("plugin-worker-manager stderr failure context", () => {
     try {
       await handle.start();
 
-      for (const mode of ["omit", "unknown"]) {
+      for (const mode of ["local-folder-omit", "local-folder-unknown"]) {
         await expect(handle.call("getData", {
           key: "probe",
           companyId: "company-1",
           params: {
             mode,
-            requestedCompanyId: "company-2",
+            requestedCompanyId: "company-1",
+            folderKey: "wiki-root",
           },
-        } as HostToWorkerMethods["getData"][0])).rejects.toMatchObject({
-          code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+        } as HostToWorkerMethods["getData"][0])).resolves.toMatchObject({
+          companyId: "company-1",
+          key: "wiki-root",
         });
       }
 
-      expect(companiesGet).not.toHaveBeenCalled();
+      expect(localFolderStatus).toHaveBeenCalledTimes(2);
+      expect(localFolderStatus).toHaveBeenNthCalledWith(1, { companyId: "company-1", folderKey: "wiki-root" });
+      expect(localFolderStatus).toHaveBeenNthCalledWith(2, { companyId: "company-1", folderKey: "wiki-root" });
     } finally {
       await handle.stop().catch(() => undefined);
     }

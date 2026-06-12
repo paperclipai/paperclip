@@ -87,6 +87,43 @@ describe("createHostClientHandlers invocation company scope", () => {
     expect(stateGet).not.toHaveBeenCalled();
   });
 
+  it("allows explicit single-company local folder calls when the invocation scope token is invalid", async () => {
+    const localFolderStatus = vi.fn(async () => ({
+      companyId: "company-a",
+      key: "wiki-root",
+      declaration: null,
+      configuredPath: null,
+      resolvedPath: null,
+      isConfigured: false,
+      isAccessible: false,
+      configuredAt: null,
+      lastValidatedAt: null,
+      accessibilityError: null,
+    }));
+    const services = {
+      localFolders: {
+        status: localFolderStatus,
+      },
+    } as unknown as HostServices;
+
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["local.folders"],
+      services,
+    });
+
+    await expect(
+      handlers["localFolders.status"](
+        { companyId: "company-a", key: "wiki-root" },
+        { invalidInvocationScope: true },
+      ),
+    ).resolves.toMatchObject({
+      companyId: "company-a",
+      key: "wiki-root",
+    });
+    expect(localFolderStatus).toHaveBeenCalledWith({ companyId: "company-a", key: "wiki-root" });
+  });
+
   it.each([
     [
       "access.members.list",

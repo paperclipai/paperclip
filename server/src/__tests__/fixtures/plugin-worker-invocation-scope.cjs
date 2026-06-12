@@ -12,18 +12,25 @@ function sendNestedHostRequest(originalRequest, invocationId) {
   const params = originalRequest.params?.params ?? {};
   const mode = params.mode;
   const requestedCompanyId = params.requestedCompanyId;
+  const nestedMethod = mode && String(mode).startsWith("local-folder") ? "localFolders.status" : "companies.get";
   const nestedRequest = {
     jsonrpc: "2.0",
     id: nestedId,
-    method: "companies.get",
-    params: {
-      companyId: requestedCompanyId,
-    },
+    method: nestedMethod,
+    params:
+      nestedMethod === "localFolders.status"
+        ? {
+            companyId: requestedCompanyId,
+            folderKey: params.folderKey ?? "wiki-root",
+          }
+        : {
+            companyId: requestedCompanyId,
+          },
   };
 
-  if (mode === "echo") {
+  if (mode === "echo" || mode === "local-folder-echo") {
     nestedRequest.paperclipInvocationId = invocationId;
-  } else if (mode === "unknown") {
+  } else if (mode === "unknown" || mode === "local-folder-unknown") {
     nestedRequest.paperclipInvocationId = "unknown-invocation";
   }
 
