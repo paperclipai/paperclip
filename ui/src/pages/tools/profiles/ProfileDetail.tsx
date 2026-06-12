@@ -1,15 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  AlertTriangle,
-  ArchiveRestore,
-  Copy,
-  Pencil,
-  PlugZap,
-  ShieldCheck,
-  Trash2,
-  UserMinus,
-} from "lucide-react";
+import { ArchiveRestore, Copy, Pencil, PlugZap, ShieldCheck, Trash2, UserMinus } from "lucide-react";
 import type {
   ToolCatalogEntry,
   ToolProfileBinding,
@@ -38,6 +29,7 @@ import {
 } from "@/components/ui/dialog";
 import { useToast } from "@/context/ToastContext";
 import { ErrorState, LoadingState, RelativeTime, ToolsPageHeader } from "../shared";
+import { ProfileActionDialog, type ProfileActionDialogKind } from "./ProfileActionDialog";
 import { allowsLabel, STATUS_LABEL } from "./profile-summary";
 import { useProfilesData } from "./useProfilesData";
 
@@ -128,7 +120,7 @@ export function ProfileDetail({
   });
 
   const deleteProfile = useMutation({
-    mutationFn: () => toolsApi.deleteProfile(profileId, { force: Boolean(profile?.summary.isCompanyDefault) }),
+    mutationFn: () => toolsApi.deleteProfile(profileId),
     onSuccess: () => {
       invalidate();
       pushToast({ title: "Profile deleted", tone: "success" });
@@ -705,48 +697,16 @@ function ProfileDialogs({
     );
   }
 
-  const copy = {
-    archive: {
-      title: "Archive profile",
-      body: `This profile stops applying to ${profile.summary.appliesToAgentCount} ${profile.summary.appliesToAgentCount === 1 ? "agent" : "agents"}. You can restore it later.`,
-      confirm: "Archive",
-      action: onArchive,
-    },
-    restore: {
-      title: "Restore profile",
-      body: "This profile will be active again and can be assigned to agents.",
-      confirm: "Restore",
-      action: onRestore,
-    },
-    delete: {
-      title: "Delete profile",
-      body: `This permanently deletes the profile and removes ${profile.summary.assignmentCount} ${profile.summary.assignmentCount === 1 ? "assignment" : "assignments"}.`,
-      confirm: "Delete",
-      action: onDelete,
-    },
-  }[kind];
-
   return (
-    <Dialog open={open} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{copy.title}</DialogTitle>
-          <DialogDescription>{copy.body}</DialogDescription>
-        </DialogHeader>
-        {kind === "delete" && profile.summary.isCompanyDefault ? (
-          <div className="flex gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>This is the company default. Deleting it changes access for agents that do not have another profile.</span>
-          </div>
-        ) : null}
-        <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button variant={kind === "delete" ? "destructive" : "default"} disabled={pending} onClick={copy.action}>
-            {copy.confirm}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ProfileActionDialog
+      kind={kind as ProfileActionDialogKind}
+      profile={profile}
+      pending={pending}
+      onClose={onClose}
+      onArchive={onArchive}
+      onRestore={onRestore}
+      onDelete={onDelete}
+    />
   );
 }
 

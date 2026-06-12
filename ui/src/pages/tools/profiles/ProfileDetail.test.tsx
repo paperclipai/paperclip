@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act, createElement } from "react";
+import { createElement } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
@@ -187,10 +188,11 @@ describe("ProfileDetail", () => {
     api.reviewProfileNewTools.mockResolvedValue({ reviewedAt: new Date(), allowedCount: 0, keptBlockedCount: 0, entriesCreated: [], reviewedCatalogEntryIds: [], profile: profile() });
     api.updateProfile.mockResolvedValue(profile());
     api.duplicateProfile.mockResolvedValue(profile({ id: "copy", name: "Copy" }));
+    api.deleteProfile.mockResolvedValue({ deleted: true });
   });
 
   afterEach(() => {
-    act(() => root.unmount());
+    flushSync(() => root.unmount());
     container.remove();
     vi.clearAllMocks();
     document.body.innerHTML = "";
@@ -198,14 +200,14 @@ describe("ProfileDetail", () => {
 
   async function render() {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    await act(async () => {
+    flushSync(() => {
       root.render(
         <QueryClientProvider client={client}>
           <ProfileDetail companyId="c1" profileId="p1" />
         </QueryClientProvider>,
       );
-      await Promise.resolve();
     });
+    await Promise.resolve();
   }
 
   it("renders detail sections with resolved allowed tools and assignments", async () => {
@@ -250,32 +252,30 @@ describe("ProfileDetail", () => {
     setData([profile({ newToolsPendingCount: 3 })]);
     await render();
 
-    await act(async () => {
-      await Promise.resolve();
-      await new Promise((resolve) => window.setTimeout(resolve, 0));
-    });
+    await Promise.resolve();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
     expect(container.textContent).toContain("Gmail added 3 new tools since your last review");
 
     const review = [...container.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Review");
-    await act(async () => {
+    flushSync(() => {
       review?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await Promise.resolve();
     });
+    await Promise.resolve();
 
     expect(document.body.textContent).toContain("Send mail");
     expect(document.body.textContent).toContain("Keep blocked");
 
     const firstAllow = document.body.querySelector('input[name="review-new-send"][type="radio"]') as HTMLInputElement;
-    await act(async () => {
+    flushSync(() => {
       firstAllow.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await Promise.resolve();
     });
+    await Promise.resolve();
 
     const submit = [...document.body.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Submit review");
-    await act(async () => {
+    flushSync(() => {
       submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await Promise.resolve();
     });
+    await Promise.resolve();
 
     expect(api.reviewProfileNewTools).toHaveBeenCalledWith("p1", {
       decisions: [
@@ -299,15 +299,15 @@ describe("ProfileDetail", () => {
     await render();
 
     const edit = [...container.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Edit");
-    await act(async () => {
+    flushSync(() => {
       edit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await Promise.resolve();
     });
+    await Promise.resolve();
     const input = document.body.querySelector("#edit-profile-name") as HTMLInputElement;
-    await act(async () => {
+    flushSync(() => {
       setNativeValue(input, "Existing name");
-      await Promise.resolve();
     });
+    await Promise.resolve();
 
     expect(document.body.textContent).toContain("Another profile already uses this name.");
   });
@@ -317,15 +317,31 @@ describe("ProfileDetail", () => {
     await render();
 
     const archive = [...container.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Archive");
-    await act(async () => {
+    flushSync(() => {
       archive?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await Promise.resolve();
     });
+    await Promise.resolve();
     expect(document.body.textContent).toContain("This profile stops applying to 2 agents");
 
-    await act(async () => {
+    flushSync(() => {
       document.body.querySelector('[role="dialog"] button')?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
-      await Promise.resolve();
     });
+    await Promise.resolve();
+  });
+
+  it("blocks company-default delete from the detail dialog before the API call", async () => {
+    setData([profile({ summary: summary({ assignmentCount: 0, isCompanyDefault: true }) })]);
+    await render();
+
+    const deleteButton = [...container.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Delete");
+    flushSync(() => {
+      deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await Promise.resolve();
+
+    expect(document.body.textContent).toContain("Reassign the company default to another profile before deleting it.");
+    const dialogDelete = [...document.body.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent?.trim() === "Delete") as HTMLButtonElement | undefined;
+    expect(dialogDelete?.disabled).toBe(true);
+    expect(api.deleteProfile).not.toHaveBeenCalled();
   });
 });

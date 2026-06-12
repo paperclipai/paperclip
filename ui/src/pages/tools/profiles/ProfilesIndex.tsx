@@ -25,6 +25,7 @@ import {
 import { useToast } from "@/context/ToastContext";
 import { EffectiveAgentPanel } from "../ProfilesTab";
 import { ErrorState, LoadingState, RelativeTime, ToolsPageHeader } from "../shared";
+import { ProfileActionDialog, type ProfileActionDialogKind } from "./ProfileActionDialog";
 import { TEMPLATES, type TemplateKey } from "./profile-model";
 import { useProfilesData } from "./useProfilesData";
 import { allowsLabel, assignedLabel, isDraft, STATUS_LABEL } from "./profile-summary";
@@ -57,6 +58,10 @@ export function ProfilesIndex({
   const { profiles, agents } = useProfilesData(companyId);
   const [resolverOpen, setResolverOpen] = useState(Boolean(initialResolverOpen));
   const [statusFilter, setStatusFilter] = useState<"active" | "archived">(initialStatusFilter ?? "active");
+  const [actionDialog, setActionDialog] = useState<{
+    kind: ProfileActionDialogKind;
+    profile: ToolProfileWithDetails;
+  } | null>(null);
 
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get("check") === "1") setResolverOpen(true);
@@ -104,7 +109,7 @@ export function ProfilesIndex({
   });
 
   const remove = useMutation({
-    mutationFn: (profile: ToolProfileWithDetails) => toolsApi.deleteProfile(profile.id, { force: true }),
+    mutationFn: (profile: ToolProfileWithDetails) => toolsApi.deleteProfile(profile.id),
     onSuccess: () => {
       pushToast({ title: "Profile deleted", tone: "success" });
       invalidate();
@@ -283,20 +288,8 @@ export function ProfilesIndex({
                         onEdit={open}
                         onDuplicate={() => duplicate.mutate(profile)}
                         onArchive={() => archive.mutate(profile)}
-                        onRestore={profile.status === "archived" ? () => {
-                          if (window.confirm(`Restore "${profile.name}"? It can be assigned again after restore.`)) {
-                            restore.mutate(profile);
-                          }
-                        } : undefined}
-                        onDelete={() => {
-                          if (
-                            window.confirm(
-                              `Delete "${profile.name}"? Agents assigned to it will lose this access.`,
-                            )
-                          ) {
-                            remove.mutate(profile);
-                          }
-                        }}
+                        onRestore={profile.status === "archived" ? () => setActionDialog({ kind: "restore", profile }) : undefined}
+                        onDelete={() => setActionDialog({ kind: "delete", profile })}
                       />
                     </td>
                   </tr>
@@ -308,6 +301,24 @@ export function ProfilesIndex({
       )}
 
       {resolverDialog}
+      <ProfileActionDialog
+        kind={actionDialog?.kind ?? null}
+        profile={actionDialog?.profile ?? null}
+        pending={restore.isPending || remove.isPending}
+        onClose={() => setActionDialog(null)}
+        onArchive={() => {
+          if (!actionDialog) return;
+          archive.mutate(actionDialog.profile, { onSuccess: () => setActionDialog(null) });
+        }}
+        onRestore={() => {
+          if (!actionDialog) return;
+          restore.mutate(actionDialog.profile, { onSuccess: () => setActionDialog(null) });
+        }}
+        onDelete={() => {
+          if (!actionDialog) return;
+          remove.mutate(actionDialog.profile, { onSuccess: () => setActionDialog(null) });
+        }}
+      />
     </div>
   );
 }
