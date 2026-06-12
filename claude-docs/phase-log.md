@@ -142,3 +142,58 @@ provisioner.
   the B1 pilot (so pilot issues realize `issue/<id>-<slug>` worktrees).
 
 ### Next: A3 — GitHub PR pipeline (+ E2 caveman comms standard).
+
+---
+
+## Session 3 — A3 (code-only) + E2 — 2026-06-12
+
+A3 is the GitHub PR pipeline. Its live half (push to fork + `gh pr create`)
+needs a fork-scoped GitHub PAT as a Paperclip secret bound to `env.GITHUB_TOKEN`
+— operator-provided, never created by an agent. Operator chose **build the
+credential-free half now**.
+
+**Plan correction:** the roadmap assumed `issues.metadata.prUrl` exists. It does
+not — `issues` has no metadata column (those refs are comments/attachments/
+workspaces). Added a dedicated nullable `issues.pr_url` instead (migration 0101).
+
+### Built (code)
+- `issues.pr_url` column (migration 0101); `prUrl` on the issue base schema
+  (`z.string().url().max(2048)`, nullable) + the `Issue` type.
+- Read projection selects `pr_url`; `update()` persists it via the existing
+  `{...issueData}` spread. So an agent `PATCH /issues/:id {prUrl}` round-trips.
+- IssueDetail renders a PR link chip (new tab, `noreferrer`) by the identifier.
+- Test: `issue-pr-url` embedded-pg — persists + surfaces via projection; clears
+  to null.
+
+### Built (instructions — `.agents/dev-team`, gitignored/local)
+- Implementor AGENTS.md: commit on worktree branch → push to fork →
+  `gh pr create --base master` → `PATCH {prUrl}` + post PR comment; never touch
+  upstream; operator merges.
+- Code Reviewer + Wiring Expert AGENTS.md: review `git diff master...<branch>`,
+  decide gate via `POST /approvals/<id>/agent-decide`, post compact findings.
+- **E2** caveman comms standard appended to all six AGENTS.md (no filler,
+  `file:line` not pasted code, exact error quotes, JSON verdicts).
+
+### Verification
+- `issue-pr-url` (2) green; regression set (plan-gate, parity) green;
+  `pnpm -r typecheck` clean.
+- `openapi-routes` "covers mounted routes" still red with the **same 5
+  pre-existing** entries — `prUrl` is a field, not a route, so it added nothing.
+
+### Gates
+- Code Review: APPROVED (URL-validated, no injection/auth change).
+- Wiring: APPROVED (trace PATCH→spread→pr_url→projection→chip; migration 0101).
+
+### Commits
+- `feat(db): add issues.pr_url for the dev-team PR pipeline`
+- `feat(shared): accept prUrl on issues (URL-validated)`
+- `feat(server,ui): round-trip issue prUrl and show a PR chip`
+
+### Carry-forward — A3 live half (operator action required)
+1. Create a **fork-scoped** GitHub PAT (Moyal17/paperclip; `repo` + `pull
+   request` scope; **no** upstream access). Store as a Paperclip secret.
+2. Bind it to the project/company environment as `env.GITHUB_TOKEN`.
+3. Then a dev_team-plan issue can run end-to-end: worktree → implement → push →
+   PR → review gates → operator merge. Validate in the B1 pilot.
+
+### Next: A4 (gate audit ledger UI) + A5 (cost visibility UI) — both credential-free.
