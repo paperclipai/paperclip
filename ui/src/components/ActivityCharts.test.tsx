@@ -142,7 +142,7 @@ describe("ActivityCharts", () => {
     expect(colors).not.toContain(chartSemanticColors.other);
   });
 
-  it("renders priority bars with critical/high/medium/low semantic colors", () => {
+  it("renders priority bars with critical/high/medium semantic colors and neutral low color", () => {
     render(
       <PriorityChart
         issues={[
@@ -158,7 +158,8 @@ describe("ActivityCharts", () => {
     expect(colors).toContain(chartSemanticColors.danger);
     expect(colors).toContain(chartSemanticColors.high);
     expect(colors).toContain(chartSemanticColors.warning);
-    expect(colors).toContain(chartSemanticColors.info);
+    expect(colors).toContain("var(--foreground)");
+    expect(colors).not.toContain(chartSemanticColors.info);
   });
 
   it("renders issue status bars with workflow semantic colors", () => {
