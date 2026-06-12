@@ -448,12 +448,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     isCreate ? null : props.agent.credentialId,
   ]);
 
+  const enforceCodexAuthMode =
+    adapterType === "codex_local" || (adapterType === "acpx_local" && acpxAgent === "codex");
+
   const toggleCredential = useCallback(
     (credentialId: string) => {
       const next = toggleCredentialSelectionForAuthMode(
         availableCredentials,
         selectedCredentialIds,
         credentialId,
+        { enforceCodexAuthMode },
       );
       if (isCreate) {
         props.onChange({ credentialIds: next });
@@ -461,7 +465,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         setOverlay((prev) => ({ ...prev, credentialIds: next }));
       }
     },
-    [availableCredentials, isCreate, selectedCredentialIds, props],
+    [availableCredentials, enforceCodexAuthMode, isCreate, selectedCredentialIds, props],
   );
 
   const autoSelectedCredentialRef = useRef(false);
@@ -1018,6 +1022,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               onToggle={toggleCredential}
               open={credentialOpen}
               onOpenChange={setCredentialOpen}
+              enforceCodexAuthMode={enforceCodexAuthMode}
             />
           ) : null}
 
@@ -2005,6 +2010,19 @@ function credentialTypesForAdapterType(
         "claude_api_key",
         "gemini_api_key",
       ]);
+    case "pi_local":
+      // Pi selects a provider from adapterConfig.model's provider/model prefix.
+      // The server resolver injects only the env/auth material Pi consumes for
+      // that provider and records failures against the matching credential type.
+      return new Set<CredentialType>([
+        "codex_oauth",
+        "openai_api_key",
+        "deepseek_api_key",
+        "mimo_api_key",
+        "openrouter_api_key",
+        "claude_api_key",
+        "gemini_api_key",
+      ]);
     case "acpx_local":
       // ACPX dispatches based on adapterConfig.agent. Narrow the credential
       // picker to the provider that will actually be invoked so the user
@@ -2033,12 +2051,14 @@ function CredentialMultiSelect({
   onToggle,
   open,
   onOpenChange,
+  enforceCodexAuthMode,
 }: {
   credentials: ProviderCredential[];
   selectedIds: string[];
   onToggle: (id: string) => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  enforceCodexAuthMode: boolean;
 }) {
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const selectedCreds = useMemo(
@@ -2059,7 +2079,7 @@ function CredentialMultiSelect({
     () => [...typeCounts.entries()].filter(([, count]) => count > 1).map(([type]) => type),
     [typeCounts],
   );
-  const mixedCodexAuthModes = hasMixedCodexAuthModes(credentials, selectedIds);
+  const mixedCodexAuthModes = enforceCodexAuthMode && hasMixedCodexAuthModes(credentials, selectedIds);
 
   return (
     <Field

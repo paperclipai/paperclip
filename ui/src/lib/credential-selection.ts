@@ -22,6 +22,7 @@ export function toggleCredentialSelectionForAuthMode(
   credentials: CredentialSelectionItem[],
   selectedIds: string[],
   credentialId: string,
+  options: { enforceCodexAuthMode?: boolean } = {},
 ): string[] {
   const selectedSet = new Set(selectedIds);
   if (selectedSet.has(credentialId)) {
@@ -31,6 +32,8 @@ export function toggleCredentialSelectionForAuthMode(
   const typeById = credentialTypeById(credentials);
   const credentialType = typeById.get(credentialId);
   const next = [...selectedIds, credentialId];
+
+  if (options.enforceCodexAuthMode === false) return next;
 
   if (credentialType === "codex_oauth") {
     return next.filter((id) => typeById.get(id) !== "openai_api_key");

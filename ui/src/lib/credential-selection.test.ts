@@ -33,6 +33,14 @@ describe("credential selection auth mode helpers", () => {
     ]);
   });
 
+  it("allows Codex OAuth and OpenAI API-key credentials when auth-mode enforcement is disabled", () => {
+    expect(
+      toggleCredentialSelectionForAuthMode(credentials, ["codex-1"], "openai-1", {
+        enforceCodexAuthMode: false,
+      }),
+    ).toEqual(["codex-1", "openai-1"]);
+  });
+
   it("detects persisted mixed Codex auth mode selections", () => {
     expect(hasMixedCodexAuthModes(credentials, ["codex-1", "openai-1"])).toBe(true);
     expect(hasMixedCodexAuthModes(credentials, ["codex-1", "codex-2"])).toBe(false);

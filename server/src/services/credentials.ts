@@ -382,12 +382,15 @@ export function credentialService(db: Db) {
  * - `codex_oauth`: writes `auth.json` under an agent-specific CODEX_HOME and
  *   sets CODEX_HOME so the Codex CLI discovers the ChatGPT OAuth token.
  * - `gemini_api_key`: sets GEMINI_API_KEY and GOOGLE_API_KEY.
- * - `openai_api_key`: sets OPENAI_API_KEY (covers codex-local and cursor-local).
- * - `openrouter_api_key`: sets OPENROUTER_API_KEY (covers opencode-local).
+ * - `openai_api_key`: sets OPENAI_API_KEY (covers codex-local, cursor-local,
+ *   opencode-local, and pi-local's OpenAI API-key provider).
+ * - `openrouter_api_key`: sets OPENROUTER_API_KEY (covers opencode-local and
+ *   pi-local's OpenRouter provider).
  * - `deepseek_api_key`: sets DEEPSEEK_API_KEY (covers deepseek-api), or the
  *   ANTHROPIC_* env when bound to a Claude Code adapter.
  * - `mimo_api_key`: sets the ANTHROPIC_* env routing Claude Code through Xiaomi
- *   MiMo's Anthropic-compatible endpoint (Claude-Code-routing only).
+ *   MiMo's Anthropic-compatible endpoint, or XIAOMI_TOKEN_PLAN_SGP_API_KEY for
+ *   pi-local's Xiaomi MiMo Token Plan provider.
  */
 /**
  * Adapter types that drive the real Claude Code CLI. When one of these agents is
@@ -396,6 +399,10 @@ export function credentialService(db: Db) {
  * Anthropic-compatible endpoint so the full agentic loop runs on DeepSeek.
  */
 const CLAUDE_CODE_ADAPTER_TYPES = new Set(["claude_local", "claude_tui"]);
+const PI_LOCAL_ADAPTER_TYPES = new Set(["pi_local"]);
+const PI_OPENAI_CODEX_PROVIDER_ID = "openai-codex";
+const PI_CODING_AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+const PAPERCLIP_MANAGED_PI_AGENT_DIR_ENV = "PAPERCLIP_MANAGED_PI_AGENT_DIR";
 
 const DEEPSEEK_ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic";
 const DEEPSEEK_PRO_MODEL = "deepseek-v4-pro";
@@ -472,6 +479,57 @@ function buildMimoClaudeCodeEnv(
     ANTHROPIC_DEFAULT_HAIKU_MODEL: lite,
     CLAUDE_CODE_SUBAGENT_MODEL: lite,
     CLAUDE_CODE_EFFORT_LEVEL: "max",
+  };
+}
+
+function piAgentDirForAgent(agentId: string): string {
+  return path.join(resolvePaperclipInstanceRoot(), "agent-homes", agentId, ".pi", "agent");
+}
+
+async function readJsonObjectFile(filePath: string): Promise<Record<string, unknown>> {
+  try {
+    const raw = await fs.readFile(filePath, "utf-8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+async function writePiCodexAuth(input: {
+  agentId: string;
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  accountId: string;
+}): Promise<{ env: Record<string, string>; home: string }> {
+  const agentHome = path.join(resolvePaperclipInstanceRoot(), "agent-homes", input.agentId);
+  const piAgentDir = piAgentDirForAgent(input.agentId);
+  await fs.mkdir(piAgentDir, { recursive: true });
+
+  const authFile = path.join(piAgentDir, "auth.json");
+  const existing = await readJsonObjectFile(authFile);
+  const nextAuth: Record<string, unknown> = {
+    ...existing,
+    [PI_OPENAI_CODEX_PROVIDER_ID]: {
+      type: "oauth",
+      access: input.accessToken,
+      refresh: input.refreshToken,
+      expires: input.expiresAt,
+      ...(input.accountId ? { accountId: input.accountId } : {}),
+    },
+  };
+  await fs.writeFile(authFile, JSON.stringify(nextAuth, null, 2), "utf-8");
+  await fs.chmod(authFile, 0o600).catch(() => undefined);
+
+  return {
+    env: {
+      [PI_CODING_AGENT_DIR_ENV]: piAgentDir,
+      [PAPERCLIP_MANAGED_PI_AGENT_DIR_ENV]: piAgentDir,
+    },
+    home: agentHome,
   };
 }
 
@@ -622,6 +680,23 @@ export async function resolveCredentialEnv(
           accessToken: accessToken || null,
         }) ?? "";
       const lastRefresh = typeof payload.lastRefresh === "string" ? payload.lastRefresh : new Date().toISOString();
+
+      if (adapterType && PI_LOCAL_ADAPTER_TYPES.has(adapterType)) {
+        const expiresAt = typeof payload.expiresAt === "number" ? payload.expiresAt : 4102444800000;
+        const piAuth = await writePiCodexAuth({
+          agentId,
+          accessToken,
+          refreshToken,
+          expiresAt,
+          accountId,
+        });
+        logger.info(
+          { agentId, credentialId, piAgentDir: piAuth.env[PI_CODING_AGENT_DIR_ENV], hasRefreshToken: refreshToken.length > 0, hasAccountId: accountId.length > 0 },
+          "wrote pi openai-codex auth.json for agent",
+        );
+        return piAuth;
+      }
+
       const tokens: Record<string, string> = { access_token: accessToken };
       if (idToken) tokens.id_token = idToken;
       if (refreshToken) tokens.refresh_token = refreshToken;
@@ -694,16 +769,18 @@ export async function resolveCredentialEnv(
         logger.warn({ agentId, credentialId }, "mimo_api_key credential missing apiKey");
         return { env: {} };
       }
-      // MiMo is Claude-Code-routing only (no standalone chat adapter), so it
-      // always resolves to the Anthropic-endpoint env. It's only offered for
-      // claude_local/claude_tui in the UI; if bound elsewhere, inject nothing
-      // rather than a key the adapter can't use.
+      // MiMo has two consumers: Claude Code uses Xiaomi's Anthropic-compatible
+      // endpoint, while Pi reads the Token Plan key from its provider-specific
+      // env var for provider xiaomi-token-plan-sgp.
       if (adapterType && CLAUDE_CODE_ADAPTER_TYPES.has(adapterType)) {
         return { env: buildMimoClaudeCodeEnv(apiKey, payload) };
       }
+      if (adapterType && PI_LOCAL_ADAPTER_TYPES.has(adapterType)) {
+        return { env: { XIAOMI_TOKEN_PLAN_SGP_API_KEY: apiKey } };
+      }
       logger.warn(
         { agentId, credentialId, adapterType },
-        "mimo_api_key bound to a non-Claude-Code adapter; no env injected",
+        "mimo_api_key bound to an adapter that does not consume MiMo credentials; no env injected",
       );
       return { env: {} };
     }
@@ -813,6 +890,15 @@ const ADAPTER_CREDENTIAL_TYPES: Record<string, readonly string[]> = {
   deepseek_api: ["deepseek_api_key"],
   opencode_local: ["openrouter_api_key", "openai_api_key", "claude_api_key", "gemini_api_key"],
   acpx_local: ["claude_oauth", "claude_api_key", "codex_oauth", "openai_api_key"],
+  pi_local: [
+    "codex_oauth",
+    "openai_api_key",
+    "deepseek_api_key",
+    "mimo_api_key",
+    "openrouter_api_key",
+    "claude_api_key",
+    "gemini_api_key",
+  ],
 };
 
 export function credentialTypesForAdapterType(adapterType: string): readonly string[] {
@@ -872,10 +958,62 @@ function hasNonEmptyEnvValue(env: Record<string, unknown>, key: string): boolean
   return typeof raw === "string" && raw.trim().length > 0;
 }
 
+const PI_PROVIDER_CREDENTIAL_TYPES: Record<string, readonly string[]> = {
+  "openai-codex": ["codex_oauth"],
+  openai: ["openai_api_key"],
+  deepseek: ["deepseek_api_key"],
+  "xiaomi-token-plan-sgp": ["mimo_api_key"],
+  openrouter: ["openrouter_api_key"],
+  anthropic: ["claude_api_key"],
+  google: ["gemini_api_key"],
+};
+
+const PI_CREDENTIAL_ENV_KEYS: Record<string, readonly string[]> = {
+  codex_oauth: [PI_CODING_AGENT_DIR_ENV],
+  openai_api_key: ["OPENAI_API_KEY"],
+  deepseek_api_key: ["DEEPSEEK_API_KEY"],
+  mimo_api_key: ["XIAOMI_TOKEN_PLAN_SGP_API_KEY"],
+  openrouter_api_key: ["OPENROUTER_API_KEY"],
+  claude_api_key: ["ANTHROPIC_API_KEY"],
+  gemini_api_key: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+};
+
+function readPiModelProvider(adapterConfig: Record<string, unknown> | null | undefined): string | null {
+  const model = readCredentialConfigString(adapterConfig, "model");
+  if (!model) return null;
+  const slash = model.indexOf("/");
+  if (slash <= 0) return null;
+  return model.slice(0, slash).trim() || null;
+}
+
+function piChoiceHasRuntimeEnv(choice: ResolvedCredentialChoice, env: Record<string, unknown>): boolean {
+  const keys = PI_CREDENTIAL_ENV_KEYS[choice.type] ?? [];
+  return keys.some((key) => hasNonEmptyEnvValue(env, key));
+}
+
+function selectPiActiveCredential(input: {
+  adapterConfig: Record<string, unknown> | null | undefined;
+  chosen: ResolvedCredentialChoice[];
+  env: Record<string, unknown>;
+}): ResolvedCredentialChoice | null {
+  const provider = readPiModelProvider(input.adapterConfig);
+  if (provider) {
+    const providerTypes = PI_PROVIDER_CREDENTIAL_TYPES[provider];
+    if (providerTypes) {
+      return input.chosen.find((choice) => providerTypes.includes(choice.type) && piChoiceHasRuntimeEnv(choice, input.env)) ?? null;
+    }
+  }
+
+  return input.chosen.find((choice) => piChoiceHasRuntimeEnv(choice, input.env)) ?? null;
+}
+
 /**
  * Attribute a run to the managed credential that the adapter will actually use.
  * Codex is special because an API key wins over native CODEX_HOME auth, and
  * current Codex reads that key from auth.json rather than directly from env.
+ * Pi is provider-scoped: the model prefix decides which assigned credential type
+ * is consumed, so we must avoid attributing a DeepSeek Pi run to an OpenAI key
+ * that happened to be assigned to the same agent.
  */
 export function selectActiveCredentialForAdapter(input: {
   adapterType: string;
@@ -893,6 +1031,14 @@ export function selectActiveCredentialForAdapter(input: {
 
     const codexOAuthChoice = eligible.find((choice) => choice.type === "codex_oauth") ?? null;
     if (hasNonEmptyEnvValue(input.env, "CODEX_HOME")) return codexOAuthChoice;
+  }
+
+  if (input.adapterType === "pi_local") {
+    return selectPiActiveCredential({
+      adapterConfig,
+      chosen: eligible,
+      env: input.env,
+    });
   }
 
   return eligible[0] ?? input.chosen[0] ?? null;
@@ -1057,11 +1203,70 @@ export async function recordCredentialSuccess(db: Db, credentialId: string): Pro
     .where(and(eq(providerCredentials.id, credentialId), gt(providerCredentials.consecutiveFailureCount, 0)));
 }
 
+type CodexDiskTokens = {
+  accessToken: string;
+  refreshToken: string;
+  idToken: string;
+  accountId: string;
+  expiresAt: number | null;
+  updatedAtMs: number;
+};
+
+async function fileUpdatedAtMs(filePath: string): Promise<number> {
+  try {
+    return (await fs.stat(filePath)).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+async function readCodexCliDiskTokens(agentId: string): Promise<CodexDiskTokens | null> {
+  const authPath = path.join(resolvePaperclipInstanceRoot(), "agent-homes", agentId, ".codex", "auth.json");
+  const parsed = await readJsonObjectFile(authPath);
+  const tokens =
+    parsed.tokens && typeof parsed.tokens === "object" && !Array.isArray(parsed.tokens)
+      ? (parsed.tokens as Record<string, unknown>)
+      : {};
+  const accessToken = typeof tokens.access_token === "string" ? tokens.access_token : "";
+  if (!accessToken) return null;
+  return {
+    accessToken,
+    refreshToken: typeof tokens.refresh_token === "string" ? tokens.refresh_token : "",
+    idToken: typeof tokens.id_token === "string" ? tokens.id_token : "",
+    accountId: typeof tokens.account_id === "string" ? tokens.account_id : "",
+    expiresAt: null,
+    updatedAtMs: await fileUpdatedAtMs(authPath),
+  };
+}
+
+async function readPiCodexDiskTokens(agentId: string): Promise<CodexDiskTokens | null> {
+  const authPath = path.join(piAgentDirForAgent(agentId), "auth.json");
+  const parsed = await readJsonObjectFile(authPath);
+  const entry =
+    parsed[PI_OPENAI_CODEX_PROVIDER_ID] &&
+    typeof parsed[PI_OPENAI_CODEX_PROVIDER_ID] === "object" &&
+    !Array.isArray(parsed[PI_OPENAI_CODEX_PROVIDER_ID])
+      ? (parsed[PI_OPENAI_CODEX_PROVIDER_ID] as Record<string, unknown>)
+      : {};
+  const accessToken = typeof entry.access === "string" ? entry.access : "";
+  if (!accessToken) return null;
+  return {
+    accessToken,
+    refreshToken: typeof entry.refresh === "string" ? entry.refresh : "",
+    idToken: typeof entry.idToken === "string" ? entry.idToken : "",
+    accountId: typeof entry.accountId === "string" ? entry.accountId : "",
+    expiresAt: typeof entry.expires === "number" && Number.isFinite(entry.expires) ? entry.expires : null,
+    updatedAtMs: await fileUpdatedAtMs(authPath),
+  };
+}
+
 /**
  * After a codex run, the Codex CLI may have refreshed the OAuth token in place at
- * `agent-homes/<agentId>/.codex/auth.json`. Persist the refreshed access/refresh
- * tokens back to the DB credential so the next run uses a live token instead of
- * the stored-and-stale one (the intermittent "works then stops working" cause).
+ * `agent-homes/<agentId>/.codex/auth.json`. Pi runs can also refresh the same
+ * OpenAI Codex OAuth token in its managed `agent-homes/<agentId>/.pi/agent/auth.json`.
+ * Persist refreshed access/refresh tokens back to the DB credential so the next
+ * run uses a live token instead of the stored-and-stale one (the intermittent
+ * "works then stops working" cause).
  *
  * OpenAI drops chatgpt_account_id from the refreshed access_token, so we preserve
  * the stored account_id (and re-derive from the id_token if needed). Only writes
@@ -1080,46 +1285,31 @@ export async function persistCodexRefreshedTokens(
     .limit(1);
   if (!cred || cred.type !== "codex_oauth") return { updated: false };
 
-  const authPath = path.join(resolvePaperclipInstanceRoot(), "agent-homes", agentId, ".codex", "auth.json");
-  let raw: string;
-  try {
-    raw = await fs.readFile(authPath, "utf-8");
-  } catch {
-    return { updated: false }; // no on-disk auth.json (e.g. override CODEX_HOME) — nothing to persist
-  }
-
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return { updated: false };
-  }
-  const tokens =
-    parsed.tokens && typeof parsed.tokens === "object" && !Array.isArray(parsed.tokens)
-      ? (parsed.tokens as Record<string, unknown>)
-      : {};
-  const diskAccess = typeof tokens.access_token === "string" ? tokens.access_token : "";
-  if (!diskAccess) return { updated: false };
-
   const stored = decryptPayload(cred);
   const storedAccess = typeof stored.accessToken === "string" ? stored.accessToken : "";
-  if (diskAccess === storedAccess) return { updated: false }; // CLI didn't refresh — nothing to do
+  const disk = (await Promise.all([
+    readCodexCliDiskTokens(agentId),
+    readPiCodexDiskTokens(agentId),
+  ]))
+    .filter((candidate): candidate is CodexDiskTokens => candidate != null)
+    .filter((candidate) => candidate.accessToken !== storedAccess)
+    .sort((a, b) => b.updatedAtMs - a.updatedAtMs)[0] ?? null;
+  if (!disk) return { updated: false }; // CLI/Pi didn't refresh — nothing to do
 
-  const diskRefresh = typeof tokens.refresh_token === "string" ? tokens.refresh_token : "";
-  const diskId = typeof tokens.id_token === "string" ? tokens.id_token : "";
   const storedId = typeof stored.idToken === "string" ? stored.idToken : "";
   // Keep the id_token (and thus account_id source) if the refresh dropped it.
-  const effectiveIdToken = diskId || storedId;
+  const effectiveIdToken = disk.idToken || storedId;
   const accountId = resolveCodexAccountId({
-    accountId: typeof stored.accountId === "string" ? stored.accountId : null,
+    accountId: disk.accountId || (typeof stored.accountId === "string" ? stored.accountId : null),
     idToken: effectiveIdToken || null,
-    accessToken: diskAccess || null,
+    accessToken: disk.accessToken || null,
   });
 
-  const nextPayload: Record<string, unknown> = { ...stored, accessToken: diskAccess };
-  if (diskRefresh) nextPayload.refreshToken = diskRefresh;
+  const nextPayload: Record<string, unknown> = { ...stored, accessToken: disk.accessToken };
+  if (disk.refreshToken) nextPayload.refreshToken = disk.refreshToken;
   if (effectiveIdToken) nextPayload.idToken = effectiveIdToken;
   if (accountId) nextPayload.accountId = accountId;
+  if (disk.expiresAt != null) nextPayload.expiresAt = disk.expiresAt;
   nextPayload.lastRefresh = new Date().toISOString();
 
   await db

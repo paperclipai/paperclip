@@ -31,7 +31,22 @@ Core fields:
 - model (string, required): Pi model id in provider/model format (for example xai/grok-4)
 - thinking (string, optional): thinking level (off, minimal, low, medium, high, xhigh)
 - command (string, optional): defaults to "pi"
-- env (object, optional): KEY=VALUE environment variables
+- env (object, optional): KEY=VALUE environment variables. Prefer managed
+  Paperclip credentials for provider secrets instead of storing keys here.
+
+Managed credentials:
+- Pi can consume Paperclip-managed credentials assigned to the agent.
+- Match adapterConfig.model's provider prefix to the credential type:
+  - openai-codex/... uses Codex OAuth credentials (ChatGPT Plus/Pro login)
+  - openai/... uses OpenAI API Key credentials
+  - deepseek/... uses DeepSeek API Key credentials
+  - xiaomi-token-plan-sgp/... uses MiMo (Xiaomi) API Key credentials
+  - openrouter/... uses OpenRouter API Key credentials
+  - anthropic/... uses Claude API Key credentials
+  - google/... uses Gemini API Key credentials
+- Multiple credentials of the same type form a rotation pool. Paperclip picks
+  one per run, skips disabled/cooling credentials, and cools down a failed key
+  so the next run can rotate to another credential of the same type.
 
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds

@@ -16,6 +16,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import {
   credentialService,
+  persistCodexRefreshedTokens,
   resolveAllCredentialEnv,
   selectActiveCredentialForAdapter,
 } from "../services/credentials.js";
@@ -263,6 +264,147 @@ describeEmbeddedPostgres("credentials multi-resolve", () => {
     });
 
     expect(active).toBeNull();
+  });
+
+  it("resolves MiMo credentials for pi_local using Pi's Xiaomi Token Plan env var", async () => {
+    const { company, agent } = await setupCompanyAndAgent("pi_local");
+    const svc = credentialService(db);
+
+    const first = await svc.create(company.id, {
+      name: "mimo-1",
+      type: "mimo_api_key",
+      credential: { apiKey: "mimo-key-1" },
+    });
+    const second = await svc.create(company.id, {
+      name: "mimo-2",
+      type: "mimo_api_key",
+      credential: { apiKey: "mimo-key-2" },
+    });
+
+    const setResult = await svc.setForAgent(agent.id, [first.id, second.id]);
+    expect(setResult.ok).toBe(true);
+
+    const resolved = await resolveAllCredentialEnv(db, agent.id);
+    expect(resolved.chosen).toHaveLength(1);
+    expect(resolved.chosen[0].type).toBe("mimo_api_key");
+    expect(["mimo-key-1", "mimo-key-2"]).toContain(resolved.env.XIAOMI_TOKEN_PLAN_SGP_API_KEY);
+    expect(resolved.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+  });
+
+  it("writes Pi openai-codex auth for pi_local Codex OAuth credentials", async () => {
+    const { company, agent } = await setupCompanyAndAgent("pi_local");
+    const svc = credentialService(db);
+
+    const cred = await svc.create(company.id, {
+      name: "codex-oauth",
+      type: "codex_oauth",
+      credential: {
+        accessToken: "codex-access-token",
+        refreshToken: "codex-refresh-token",
+        expiresAt: 4102444800000,
+        accountId: "chatgpt-account-id",
+      },
+    });
+
+    const setResult = await svc.setForAgent(agent.id, [cred.id]);
+    expect(setResult.ok).toBe(true);
+
+    const resolved = await resolveAllCredentialEnv(db, agent.id);
+    expect(resolved.env.CODEX_HOME).toBeUndefined();
+    expect(resolved.env.PI_CODING_AGENT_DIR).toBeDefined();
+    expect(resolved.env.PAPERCLIP_MANAGED_PI_AGENT_DIR).toBe(resolved.env.PI_CODING_AGENT_DIR);
+
+    const auth = JSON.parse(await fs.readFile(`${resolved.env.PI_CODING_AGENT_DIR}/auth.json`, "utf8"));
+    expect(auth["openai-codex"]).toMatchObject({
+      type: "oauth",
+      access: "codex-access-token",
+      refresh: "codex-refresh-token",
+      expires: 4102444800000,
+      accountId: "chatgpt-account-id",
+    });
+  });
+
+  it("persists refreshed Pi openai-codex tokens back to the managed Codex credential", async () => {
+    const { company, agent } = await setupCompanyAndAgent("pi_local");
+    const svc = credentialService(db);
+
+    const cred = await svc.create(company.id, {
+      name: "codex-oauth",
+      type: "codex_oauth",
+      credential: {
+        accessToken: "codex-access-token",
+        refreshToken: "codex-refresh-token",
+        expiresAt: 4102444800000,
+        accountId: "chatgpt-account-id",
+      },
+    });
+
+    const setResult = await svc.setForAgent(agent.id, [cred.id]);
+    expect(setResult.ok).toBe(true);
+
+    const resolved = await resolveAllCredentialEnv(db, agent.id);
+    const authPath = `${resolved.env.PI_CODING_AGENT_DIR}/auth.json`;
+    const auth = JSON.parse(await fs.readFile(authPath, "utf8"));
+    auth["openai-codex"] = {
+      ...auth["openai-codex"],
+      access: "codex-access-token-refreshed",
+      refresh: "codex-refresh-token-refreshed",
+      expires: 4102444801000,
+    };
+    await fs.writeFile(authPath, JSON.stringify(auth, null, 2), "utf8");
+
+    await expect(persistCodexRefreshedTokens(db, agent.id, cred.id)).resolves.toEqual({
+      updated: true,
+    });
+    await expect(svc.getDecryptedPayload(cred.id)).resolves.toMatchObject({
+      accessToken: "codex-access-token-refreshed",
+      refreshToken: "codex-refresh-token-refreshed",
+      expiresAt: 4102444801000,
+      accountId: "chatgpt-account-id",
+    });
+  });
+
+  it("attributes pi_local failures to the credential matching the model provider", () => {
+    const chosen = [
+      { credentialId: "codex-cred", type: "codex_oauth" },
+      { credentialId: "openai-cred", type: "openai_api_key" },
+      { credentialId: "deepseek-cred", type: "deepseek_api_key" },
+      { credentialId: "mimo-cred", type: "mimo_api_key" },
+    ];
+    const env = {
+      PI_CODING_AGENT_DIR: "/tmp/pi-agent",
+      OPENAI_API_KEY: "sk-openai",
+      DEEPSEEK_API_KEY: "sk-deepseek",
+      XIAOMI_TOKEN_PLAN_SGP_API_KEY: "sk-mimo",
+    };
+
+    expect(selectActiveCredentialForAdapter({
+      adapterType: "pi_local",
+      adapterConfig: { model: "deepseek/deepseek-v4-pro" },
+      chosen,
+      env,
+    })).toEqual({ credentialId: "deepseek-cred", type: "deepseek_api_key" });
+
+    expect(selectActiveCredentialForAdapter({
+      adapterType: "pi_local",
+      adapterConfig: { model: "xiaomi-token-plan-sgp/mimo-v2.5" },
+      chosen,
+      env,
+    })).toEqual({ credentialId: "mimo-cred", type: "mimo_api_key" });
+
+    expect(selectActiveCredentialForAdapter({
+      adapterType: "pi_local",
+      adapterConfig: { model: "openai-codex/gpt-5.5" },
+      chosen,
+      env,
+    })).toEqual({ credentialId: "codex-cred", type: "codex_oauth" });
+
+    expect(selectActiveCredentialForAdapter({
+      adapterType: "pi_local",
+      adapterConfig: { model: "openai/gpt-5.4" },
+      chosen,
+      env,
+    })).toEqual({ credentialId: "openai-cred", type: "openai_api_key" });
   });
 
   it("falls back to legacy agents.credential_id when the join is empty", async () => {

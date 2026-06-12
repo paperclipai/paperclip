@@ -54,6 +54,9 @@ const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 const PAPERCLIP_SESSIONS_DIR = path.join(os.homedir(), ".pi", "paperclips");
 const PI_AGENT_SKILLS_DIR = path.join(os.homedir(), ".pi", "agent", "skills");
+const PI_CODING_AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+const PAPERCLIP_MANAGED_PI_AGENT_DIR_ENV = "PAPERCLIP_MANAGED_PI_AGENT_DIR";
+const PI_AGENT_DIR_RUNTIME_ASSET_KEY = "pi-agent-dir";
 
 function firstNonEmptyLine(text: string): string {
   return (
@@ -346,6 +349,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
+  const managedPiAgentDir = asString(env[PAPERCLIP_MANAGED_PI_AGENT_DIR_ENV], "").trim();
   const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
     executionTarget,
     asNumber(config.timeoutSec, 3600),
@@ -396,6 +400,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (executionTargetIsRemote) {
     try {
       localSkillsDir = await buildPiSkillsDir(config);
+      const runtimeAssets = [
+        {
+          key: "skills",
+          localDir: localSkillsDir,
+          followSymlinks: true,
+        },
+        ...(managedPiAgentDir
+          ? [{
+              key: PI_AGENT_DIR_RUNTIME_ASSET_KEY,
+              localDir: managedPiAgentDir,
+              followSymlinks: false,
+            }]
+          : []),
+      ];
       await onLog(
         "stdout",
         `[paperclip] Syncing workspace and Pi runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
@@ -408,13 +426,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         workspaceLocalDir: cwd,
         installCommand: SANDBOX_INSTALL_COMMAND,
         detectCommand: command,
-        assets: [
-          {
-            key: "skills",
-            localDir: localSkillsDir,
-            followSymlinks: true,
-          },
-        ],
+        assets: runtimeAssets,
       });
       restoreRemoteWorkspace = () => preparedRemoteRuntime.restoreWorkspace();
       effectiveExecutionCwd = preparedRemoteRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
@@ -436,6 +448,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
       remoteRuntimeRootDir = preparedRemoteRuntime.runtimeRootDir;
       remoteSkillsDir = preparedRemoteRuntime.assetDirs.skills ?? null;
+      const remotePiAgentDir = preparedRemoteRuntime.assetDirs[PI_AGENT_DIR_RUNTIME_ASSET_KEY] ?? null;
+      if (remotePiAgentDir) {
+        env[PI_CODING_AGENT_DIR_ENV] = remotePiAgentDir;
+        env[PAPERCLIP_MANAGED_PI_AGENT_DIR_ENV] = remotePiAgentDir;
+        loggedEnv = buildInvocationEnvForLogs(env, {
+          runtimeEnv: Object.fromEntries(
+            Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
+              (entry): entry is [string, string] => typeof entry[1] === "string",
+            ),
+          ),
+          includeRuntimeKeys: ["HOME"],
+          resolvedCommand,
+        });
+      }
     } catch (error) {
       await Promise.allSettled([
         restoreRemoteWorkspace?.(),
