@@ -20,9 +20,11 @@ export function ProfileWizardRoute({ mode }: { mode: "new" | "edit" }) {
   const [searchParams] = useSearchParams();
 
   const templateParam = searchParams.get("template");
+  const stepParam = Number(searchParams.get("step"));
   const initialTemplate = TEMPLATES.some((t) => t.key === templateParam)
     ? (templateParam as TemplateKey)
     : undefined;
+  const initialStep = stepParam === 2 || stepParam === 3 ? stepParam : undefined;
 
   useEffect(() => {
     setBreadcrumbs([
@@ -53,6 +55,7 @@ export function ProfileWizardRoute({ mode }: { mode: "new" | "edit" }) {
           companyId={selectedCompanyId}
           profileId={mode === "edit" ? params.profileId : undefined}
           initialTemplate={initialTemplate}
+          initialStep={initialStep}
         />
       </div>
     </ToolsAdminGate>

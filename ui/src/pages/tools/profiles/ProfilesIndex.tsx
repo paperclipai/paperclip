@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { MoreHorizontal, Plus, ShieldCheck, Users } from "lucide-react";
+import { ArchiveRestore, MoreHorizontal, Plus, ShieldCheck, Users } from "lucide-react";
 import type { ToolProfileWithDetails } from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
 import { toolsApi } from "@/api/tools";
@@ -42,12 +42,23 @@ function statusVariant(status: ToolProfileWithDetails["status"]): "default" | "s
   return "outline";
 }
 
-export function ProfilesIndex({ companyId }: { companyId: string }) {
+export function ProfilesIndex({
+  companyId,
+  initialStatusFilter,
+}: {
+  companyId: string;
+  initialStatusFilter?: "active" | "archived";
+}) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const { profiles, agents } = useProfilesData(companyId);
   const [resolverOpen, setResolverOpen] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<"active" | "archived">(initialStatusFilter ?? "active");
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("check") === "1") setResolverOpen(true);
+  }, []);
 
   const agentOptions = useMemo(
     () => (agents.data ?? []).map((a) => ({ id: a.id, name: a.name })),
@@ -78,6 +89,16 @@ export function ProfilesIndex({ companyId }: { companyId: string }) {
       invalidate();
     },
     onError: (error: unknown) => pushToast({ title: "Could not archive", body: errorBody(error), tone: "error" }),
+  });
+
+  const restore = useMutation({
+    mutationFn: (profile: ToolProfileWithDetails) =>
+      toolsApi.updateProfile(profile.id, { status: "active" }),
+    onSuccess: () => {
+      pushToast({ title: "Profile restored", tone: "success" });
+      invalidate();
+    },
+    onError: (error: unknown) => pushToast({ title: "Could not restore", body: errorBody(error), tone: "error" }),
   });
 
   const remove = useMutation({
@@ -139,14 +160,37 @@ export function ProfilesIndex({ companyId }: { companyId: string }) {
     );
   }
 
-  const rows = (profiles.data?.profiles ?? []).filter((p) => p.status !== "archived");
+  const allRows = profiles.data?.profiles ?? [];
+  const rows = allRows.filter((p) => (statusFilter === "archived" ? p.status === "archived" : p.status !== "archived"));
 
   return (
     <div className="space-y-5">
       {header}
 
+      <div className="inline-flex rounded-md border border-border p-0.5">
+        {(["active", "archived"] as const).map((key) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setStatusFilter(key)}
+            className={cn(
+              "rounded px-3 py-1 text-sm font-medium",
+              statusFilter === key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {key === "active" ? "Active" : "Archived"}
+          </button>
+        ))}
+      </div>
+
       {rows.length === 0 ? (
-        <EmptyTemplatePicker onPick={(key) => navigate(newProfileHref(key))} />
+        statusFilter === "archived" ? (
+          <div className="rounded-lg border border-dashed border-border px-4 py-5 text-sm text-muted-foreground">
+            No archived profiles.
+          </div>
+        ) : (
+          <EmptyTemplatePicker onPick={(key) => navigate(newProfileHref(key))} />
+        )
       ) : (
         <div className="overflow-hidden rounded-lg border border-border">
           <table className="w-full text-sm">
@@ -164,9 +208,7 @@ export function ProfilesIndex({ companyId }: { companyId: string }) {
               {rows.map((profile) => {
                 const assigned = assignedLabel(profile.summary);
                 const draft = isDraft(profile);
-                // The profile detail route is a follow-up issue; for now every
-                // open (resume a draft, edit a profile) lands in the wizard.
-                const open = () => navigate(`/apps/advanced/profiles/${profile.id}/edit`);
+                const open = () => navigate(draft ? `/apps/advanced/profiles/${profile.id}/edit` : `/apps/advanced/profiles/${profile.id}`);
                 return (
                   <tr
                     key={profile.id}
@@ -219,6 +261,11 @@ export function ProfilesIndex({ companyId }: { companyId: string }) {
                         onEdit={open}
                         onDuplicate={() => duplicate.mutate(profile)}
                         onArchive={() => archive.mutate(profile)}
+                        onRestore={profile.status === "archived" ? () => {
+                          if (window.confirm(`Restore "${profile.name}"? It can be assigned again after restore.`)) {
+                            restore.mutate(profile);
+                          }
+                        } : undefined}
                         onDelete={() => {
                           if (
                             window.confirm(
@@ -247,11 +294,13 @@ function RowMenu({
   onEdit,
   onDuplicate,
   onArchive,
+  onRestore,
   onDelete,
 }: {
   onEdit: () => void;
   onDuplicate: () => void;
   onArchive: () => void;
+  onRestore?: () => void;
   onDelete: () => void;
 }) {
   return (
@@ -268,7 +317,14 @@ function RowMenu({
       <DropdownMenuContent align="end">
         <DropdownMenuItem onSelect={onEdit}>Edit</DropdownMenuItem>
         <DropdownMenuItem onSelect={onDuplicate}>Duplicate</DropdownMenuItem>
-        <DropdownMenuItem onSelect={onArchive}>Archive</DropdownMenuItem>
+        {onRestore ? (
+          <DropdownMenuItem onSelect={onRestore}>
+            <ArchiveRestore className="mr-1.5 h-4 w-4" />
+            Restore
+          </DropdownMenuItem>
+        ) : (
+          <DropdownMenuItem onSelect={onArchive}>Archive</DropdownMenuItem>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={onDelete} className="text-destructive focus:text-destructive">
           Delete

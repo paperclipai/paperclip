@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ToolCatalogEntry, ToolProfileSummary, ToolProfileWithDetails } from "@paperclipai/shared";
+import type { ToolCatalogEntry, ToolConnection, ToolProfileSummary, ToolProfileWithDetails } from "@paperclipai/shared";
 import { queryKeys } from "@/lib/queryKeys";
+import { ProfileDetail } from "@/pages/tools/profiles/ProfileDetail";
 import { ProfilesIndex } from "@/pages/tools/profiles/ProfilesIndex";
 import { StepAssign, StepName } from "@/pages/tools/profiles/ProfileWizard";
 import { WizardToolsStep } from "@/pages/tools/profiles/WizardToolsStep";
@@ -140,6 +141,95 @@ const PROFILES: ToolProfileWithDetails[] = [
   profile("half-built", "Onboarding bot access", "draft", { allowedToolCount: 2 }, "2026-06-12T16:30:00Z"),
 ];
 
+const DETAIL_PROFILE: ToolProfileWithDetails = {
+  ...profile("detail", "Everyday work", "active", { allowedToolCount: 12, allowedApplicationCount: 1, appliesToAgentCount: 2, assignmentCount: 2 }, "2026-06-12T09:00:00Z"),
+  description: "Read and make routine changes across connected work apps.",
+  entries: [
+    {
+      id: "entry-gmail",
+      companyId: COMPANY,
+      profileId: "detail",
+      selectorType: "application",
+      effect: "include",
+      applicationId: "app-gmail",
+      connectionId: null,
+      catalogEntryId: null,
+      toolName: null,
+      riskLevel: null,
+      conditions: null,
+      createdAt: new Date("2026-06-01T00:00:00Z"),
+      updatedAt: new Date("2026-06-01T00:00:00Z"),
+    },
+  ],
+  bindings: [
+    {
+      id: "bind-sage",
+      companyId: COMPANY,
+      profileId: "detail",
+      targetType: "agent",
+      targetId: "a-sage",
+      priority: 0,
+      metadata: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      createdAt: new Date("2026-06-01T00:00:00Z"),
+      updatedAt: new Date("2026-06-01T00:00:00Z"),
+    },
+    {
+      id: "bind-atlas",
+      companyId: COMPANY,
+      profileId: "detail",
+      targetType: "agent",
+      targetId: "a-atlas",
+      priority: 0,
+      metadata: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      createdAt: new Date("2026-06-01T00:00:00Z"),
+      updatedAt: new Date("2026-06-01T00:00:00Z"),
+    },
+  ],
+};
+
+const CONNECTIONS: ToolConnection[] = [
+  {
+    id: "conn-gmail",
+    companyId: COMPANY,
+    applicationId: "app-gmail",
+    name: "Gmail",
+    connectionKind: "managed",
+    status: "active",
+    transportConfig: {},
+    credentialSecretRefs: [],
+    healthStatus: "ok",
+    healthCheckedAt: null,
+    lastError: null,
+    enabled: true,
+    createdByAgentId: null,
+    createdByUserId: null,
+    createdAt: new Date("2026-06-01T00:00:00Z"),
+    updatedAt: new Date("2026-06-01T00:00:00Z"),
+  } as ToolConnection,
+  {
+    id: "conn-slack",
+    companyId: COMPANY,
+    applicationId: "app-slack",
+    name: "Slack",
+    connectionKind: "managed",
+    status: "active",
+    transportConfig: {},
+    credentialSecretRefs: [],
+    healthStatus: "ok",
+    healthCheckedAt: null,
+    lastError: null,
+    enabled: true,
+    createdByAgentId: null,
+    createdByUserId: null,
+    createdAt: new Date("2026-06-01T00:00:00Z"),
+    updatedAt: new Date("2026-06-01T00:00:00Z"),
+  } as ToolConnection,
+];
+
 const AGENTS = [
   { id: "a-sage", name: "Sage" },
   { id: "a-atlas", name: "Atlas" },
@@ -148,7 +238,13 @@ const AGENTS = [
 
 // --- Seeded index host -----------------------------------------------------
 
-function SeededIndex({ profiles }: { profiles: ToolProfileWithDetails[] }) {
+function SeededIndex({
+  profiles,
+  initialStatusFilter,
+}: {
+  profiles: ToolProfileWithDetails[];
+  initialStatusFilter?: "active" | "archived";
+}) {
   const client = useMemo(() => {
     const c = new QueryClient({
       defaultOptions: { queries: { staleTime: Infinity, gcTime: Infinity, retry: false, refetchOnMount: false } },
@@ -164,7 +260,46 @@ function SeededIndex({ profiles }: { profiles: ToolProfileWithDetails[] }) {
   return (
     <QueryClientProvider client={client}>
       <div className="mx-auto max-w-6xl p-6">
-        <ProfilesIndex companyId={COMPANY} />
+        <ProfilesIndex companyId={COMPANY} initialStatusFilter={initialStatusFilter} />
+      </div>
+    </QueryClientProvider>
+  );
+}
+
+function SeededDetail({
+  profile,
+  catalog = CATALOG,
+  connections = CONNECTIONS,
+  initialCreated,
+}: {
+  profile: ToolProfileWithDetails;
+  catalog?: ToolCatalogEntry[];
+  connections?: ToolConnection[];
+  initialCreated?: boolean;
+}) {
+  const client = useMemo(() => {
+    const c = new QueryClient({
+      defaultOptions: { queries: { staleTime: Infinity, gcTime: Infinity, retry: false, refetchOnMount: false } },
+    });
+    c.setQueryData(queryKeys.tools.profiles(COMPANY), { profiles: [profile, ...PROFILES] });
+    c.setQueryData(queryKeys.tools.applications(COMPANY), {
+      applications: [
+        { id: "app-gmail", name: "Gmail" },
+        { id: "app-slack", name: "Slack" },
+      ],
+    });
+    c.setQueryData(queryKeys.tools.connections(COMPANY), { connections });
+    c.setQueryData(queryKeys.tools.catalog("conn-gmail"), { catalog: catalog.filter((tool) => tool.connectionId === "conn-gmail") });
+    c.setQueryData(queryKeys.tools.catalog("conn-slack"), { catalog: catalog.filter((tool) => tool.connectionId === "conn-slack") });
+    c.setQueryData(queryKeys.agents.list(COMPANY), AGENTS);
+    c.setQueryData(queryKeys.projects.list(COMPANY), []);
+    c.setQueryData(queryKeys.routines.list(COMPANY), []);
+    return c;
+  }, [profile, catalog, connections]);
+  return (
+    <QueryClientProvider client={client}>
+      <div className="mx-auto max-w-6xl p-6">
+        <ProfileDetail companyId={COMPANY} profileId={profile.id} initialCreated={initialCreated} />
       </div>
     </QueryClientProvider>
   );
@@ -186,6 +321,58 @@ export const IndexPopulated: Story = {
 export const IndexEmpty: Story = {
   name: "Index — empty (template cards)",
   render: () => <SeededIndex profiles={[]} />,
+};
+
+export const IndexArchived: Story = {
+  name: "Index — archived filter",
+  render: () => <SeededIndex initialStatusFilter="archived" profiles={[...PROFILES, profile("old-profile", "Archived profile", "archived", { allowedToolCount: 5, assignmentCount: 1 }, "2026-06-08T10:00:00Z")]} />,
+};
+
+export const DetailAssigned: Story = {
+  name: "Detail — assigned",
+  render: () => <SeededDetail profile={DETAIL_PROFILE} />,
+};
+
+export const DetailUnassignedPostCreate: Story = {
+  name: "Detail — unassigned post-create",
+  render: () => (
+    <SeededDetail
+      initialCreated
+      profile={{
+        ...DETAIL_PROFILE,
+        id: "detail-unassigned",
+        bindings: [],
+        summary: summary({ allowedToolCount: 12, allowedApplicationCount: 1, assignmentCount: 0, appliesToAgentCount: 0 }),
+      }}
+    />
+  ),
+};
+
+export const DetailArchived: Story = {
+  name: "Detail — archived",
+  render: () => (
+    <SeededDetail
+      profile={{
+        ...DETAIL_PROFILE,
+        id: "detail-archived",
+        status: "archived",
+      }}
+    />
+  ),
+};
+
+export const DetailDegraded: Story = {
+  name: "Detail — degraded",
+  render: () => (
+    <SeededDetail
+      profile={{
+        ...DETAIL_PROFILE,
+        id: "detail-degraded",
+        summary: summary({ allowedToolCount: 12, allowedApplicationCount: 1, appliesToAgentCount: 2, assignmentCount: 2 }),
+      }}
+      connections={[{ ...CONNECTIONS[0], status: "disabled", healthStatus: "error" } as ToolConnection, CONNECTIONS[1]]}
+    />
+  ),
 };
 
 export const WizardStep1: Story = {

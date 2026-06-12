@@ -125,12 +125,19 @@ describe("ProfilesIndex", () => {
     expect(container.textContent).toContain("Resume");
   });
 
-  it("hides archived profiles", async () => {
+  it("shows archived profiles only after switching to the Archived filter", async () => {
     setData([profile({ name: "Old one", status: "archived" })]);
     await render();
-    // No table; the empty-state template picker shows instead.
     expect(container.textContent).not.toContain("Old one");
     expect(container.textContent).toContain("Create your first access profile");
+
+    const archived = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Archived"));
+    await act(async () => {
+      archived?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("Old one");
+    expect(container.textContent).toContain("Archived");
   });
 
   it("shows the step-1 template cards as the empty state", async () => {

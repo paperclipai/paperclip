@@ -46,10 +46,12 @@ export function ProfileWizard({
   companyId,
   profileId,
   initialTemplate,
+  initialStep,
 }: {
   companyId: string;
   profileId?: string;
   initialTemplate?: TemplateKey;
+  initialStep?: WizardStep;
 }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -101,14 +103,14 @@ export function ProfileWizard({
     setTemplate(meta?.template ?? null);
     // Drafts resume at the first unfinished step; a finished profile being
     // edited starts at step 1 so the admin can review the whole thing.
-    setStep(existing.status === "draft" ? resumeStep(meta) : 1);
+    setStep(initialStep ?? (existing.status === "draft" ? resumeStep(meta) : 1));
     const targetIds = (type: string) =>
       new Set(existing.bindings.filter((b) => b.targetType === type).map((b) => b.targetId));
     setSelectedAgentIds(targetIds("agent"));
     setSelectedProjectIds(targetIds("project"));
     setSelectedRoutineIds(targetIds("routine"));
     setCompanyDefault(existing.bindings.some((b) => b.targetType === "company"));
-  }, [existing, appGroups, profileId]);
+  }, [existing, appGroups, profileId, initialStep]);
 
   // Key auto-derives from the name until the admin overrides it in Advanced.
   useEffect(() => {
@@ -196,12 +198,10 @@ export function ProfileWizard({
       });
       return profile;
     },
-    onSuccess: () => {
+    onSuccess: (profile) => {
       pushToast({ title: "Profile saved", tone: "success" });
       invalidate();
-      // TODO(PAP-10997 follow-up): once the profile detail route
-      // (/apps/advanced/profiles/:id) lands, navigate there instead of the index.
-      navigate("/apps/advanced/profiles");
+      navigate(`/apps/advanced/profiles/${profile.id}${selectedAgentIds.size === 0 && !companyDefault ? "?created=1" : ""}`);
     },
     onError: (error: unknown) =>
       pushToast({ title: "Could not save profile", body: String((error as Error)?.message ?? error), tone: "error" }),
