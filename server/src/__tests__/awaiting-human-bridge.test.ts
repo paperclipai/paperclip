@@ -1509,10 +1509,6 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
 
   it("hands primary approval to the secondary reviewer before waking the agent", async () => {
     const seeded = await seedAwaitingHumanInteraction();
-    await db
-      .update(issueThreadInteractions)
-      .set({ payload: { version: 1, prompt: "Approve this plan?", requiresSecondReview: true } })
-      .where(eq(issueThreadInteractions.id, seeded.interactionId));
     await db.insert(companyAwaitingHumanSettings).values({
       companyId: seeded.companyId,
       enabled: true,

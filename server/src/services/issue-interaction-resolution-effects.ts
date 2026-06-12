@@ -99,11 +99,7 @@ async function advanceToFinalApprovalReview(input: {
 }) {
   if (input.interaction.kind !== "request_confirmation") return false;
   const interaction = input.interaction;
-  if (
-    interaction.status !== "accepted"
-    || interaction.payload.approvalStage === "final"
-    || (!interaction.payload.requiresSecondReview && interaction.payload.approvalStage !== "primary")
-  ) {
+  if (interaction.status !== "accepted" || interaction.payload.approvalStage === "final") {
     return false;
   }
 
