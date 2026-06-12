@@ -125,6 +125,7 @@ describe("routine routes", () => {
       source: "manual",
       status: "issue_created",
     });
+    mockRoutineService.listRuns.mockResolvedValue([]);
     mockAccessService.canUser.mockResolvedValue(false);
     mockLogActivity.mockResolvedValue(undefined);
   });
@@ -280,5 +281,50 @@ describe("routine routes", () => {
       userId: "board-user",
     });
     expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
+  });
+
+  it("lists routine runs with projected token/cost fields", async () => {
+    mockRoutineService.listRuns.mockResolvedValue([
+      {
+        id: "run-with-usage",
+        tokensIn: 1000,
+        tokensOut: 500,
+        cachedInputTokens: 2000,
+        costCents: 12,
+      },
+      {
+        id: "run-without-usage",
+        tokensIn: null,
+        tokensOut: null,
+        cachedInputTokens: null,
+        costCents: null,
+      },
+    ]);
+    const app = createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app).get(`/api/routines/${routineId}/runs`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(2);
+    expect(res.body[0]).toMatchObject({
+      id: "run-with-usage",
+      tokensIn: 1000,
+      tokensOut: 500,
+      cachedInputTokens: 2000,
+      costCents: 12,
+    });
+    expect(res.body[1]).toMatchObject({
+      id: "run-without-usage",
+      tokensIn: null,
+      tokensOut: null,
+      cachedInputTokens: null,
+      costCents: null,
+    });
   });
 });

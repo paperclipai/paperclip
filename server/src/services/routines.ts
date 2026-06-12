@@ -1433,7 +1433,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             .from(heartbeatRuns)
             .where(
               and(
-                sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ANY(${issueIds})`,
+                inArray(sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`, issueIds),
                 isNotNull(heartbeatRuns.startedAt),
                 isNotNull(heartbeatRuns.usageJson),
               ),
