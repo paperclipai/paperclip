@@ -2296,7 +2296,11 @@ export async function runChildProcess(
         const stdin = child.stdin;
         if (opts.stdin != null && stdin) {
           void spawnPersistPromise.finally(() => {
-            if (child.killed || stdin.destroyed) return;
+            if (child.killed || stdin.destroyed || !stdin.writable) return;
+            stdin.on("error", (err: NodeJS.ErrnoException) => {
+              if (err.code === "EPIPE") return; // adapter closed stdin, ignore
+              throw err;
+            });
             stdin.write(opts.stdin as string);
             stdin.end();
           });

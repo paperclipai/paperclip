@@ -597,6 +597,37 @@ describe("runChildProcess", () => {
       }
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "does not crash the server when the child exits before stdin is written (EPIPE guard)",
+    async () => {
+      // Spawn a child that exits immediately without reading stdin.
+      // The server will attempt to write opts.stdin after onSpawn resolves,
+      // by which point the child's stdin pipe is already closed.
+      // Without the fix this triggers an unhandled EPIPE and crashes the process.
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        ["-e", "process.exit(0);"],
+        {
+          cwd: process.cwd(),
+          env: {},
+          stdin: "this should not cause a crash",
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+          onSpawn: async () => {
+            // Small delay to ensure the child has exited and closed its stdin
+            // before the server attempts to write.
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          },
+        },
+      );
+
+      // The child exited cleanly — no EPIPE crash, no unhandled exception.
+      expect(result.exitCode).toBe(0);
+    },
+  );
 });
 
 describe("renderPaperclipWakePrompt", () => {
