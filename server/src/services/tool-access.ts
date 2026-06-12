@@ -200,6 +200,10 @@ const APPROVED_STDIO_TEMPLATES: Record<string, {
   },
 };
 
+const GOOGLE_SHEETS_GALLERY_KEY = "google-sheets";
+const GOOGLE_SHEETS_TEMPLATE_ID = "paperclip.google-sheets";
+const GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS_ENV = "GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS";
+
 type ToolExampleDefinition = {
   id: string;
   title: string;
@@ -264,6 +268,26 @@ function googleSheetsAllowedSpreadsheetIds(configValues: Record<string, unknown>
   const raw = configValues?.allowedSpreadsheetIds;
   const values = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(/[\n,]/g) : [];
   return Array.from(new Set(values.map((value) => String(value).trim()).filter(Boolean)));
+}
+
+function isGoogleSheetsConnectionConfig(configValues: Record<string, unknown> | undefined): boolean {
+  return configValues?.sourceTemplateKey === GOOGLE_SHEETS_GALLERY_KEY || configValues?.templateId === GOOGLE_SHEETS_TEMPLATE_ID;
+}
+
+function normalizeGoogleSheetsConnectionConfig(configValues: Record<string, unknown>): Record<string, unknown> {
+  if (!isGoogleSheetsConnectionConfig(configValues)) return configValues;
+  const allowedSpreadsheetIds = googleSheetsAllowedSpreadsheetIds(configValues);
+  if (allowedSpreadsheetIds.length === 0) {
+    throw badRequest("Paste at least one Google Sheets link.");
+  }
+  return {
+    ...configValues,
+    allowedSpreadsheetIds,
+    env: {
+      ...asRecord(configValues.env),
+      [GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS_ENV]: allowedSpreadsheetIds.join(","),
+    },
+  };
 }
 
 // Detects a Postgres foreign_key_violation (SQLSTATE 23503) raised by the
@@ -1416,6 +1440,41 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         .from(companySecrets)
         .where(and(eq(companySecrets.id, secretId), eq(companySecrets.companyId, companyId)));
       if (!secret) throw unprocessable("Tool connection credential secrets must belong to the same company");
+    }
+  }
+
+  async function assertGoogleSheetsSpreadsheetOwnership(
+    companyId: string,
+    config: Record<string, unknown>,
+    options: { excludeConnectionId?: string } = {},
+  ) {
+    if (!isGoogleSheetsConnectionConfig(config)) return;
+    const allowedSpreadsheetIds = googleSheetsAllowedSpreadsheetIds(config);
+    if (allowedSpreadsheetIds.length === 0) return;
+    const allowed = new Set(allowedSpreadsheetIds);
+    const rows = await db
+      .select({
+        id: toolConnections.id,
+        companyId: toolConnections.companyId,
+        config: toolConnections.config,
+      })
+      .from(toolConnections)
+      .where(ne(toolConnections.status, "archived"));
+
+    const conflictingSpreadsheetIds = new Set<string>();
+    for (const row of rows) {
+      if (row.id === options.excludeConnectionId || row.companyId === companyId) continue;
+      if (!isGoogleSheetsConnectionConfig(row.config)) continue;
+      for (const spreadsheetId of googleSheetsAllowedSpreadsheetIds(row.config)) {
+        if (allowed.has(spreadsheetId)) conflictingSpreadsheetIds.add(spreadsheetId);
+      }
+    }
+
+    if (conflictingSpreadsheetIds.size > 0) {
+      throw conflict("Google Sheets spreadsheet is already connected to another company.", {
+        code: "google_sheets_spreadsheet_already_bound",
+        spreadsheetIds: Array.from(conflictingSpreadsheetIds).sort(),
+      });
     }
   }
 
@@ -2765,10 +2824,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const baseConfig = transport === "remote_http"
       ? { url: transportTemplate.url }
       : { templateId: transportTemplate.templateKey };
-    const config: Record<string, unknown> = galleryEntry
+    let config: Record<string, unknown> = galleryEntry
       ? { ...baseConfig, sourceTemplateKey: galleryEntry.key, quarantineNewEntries: true }
       : { ...baseConfig, quarantineNewEntries: true };
-    if (galleryEntry?.key === "google-sheets") {
+    if (galleryEntry?.key === GOOGLE_SHEETS_GALLERY_KEY) {
       const availability = googleSheetsRobotEmailFromEnv();
       if (!availability.available) {
         throw unprocessable(availability.reason, { code: "google_sheets_unavailable" });
@@ -2780,8 +2839,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       config.allowedSpreadsheetIds = allowedSpreadsheetIds;
       config.robotEmail = availability.robotEmail;
       config.env = {
-        GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS: allowedSpreadsheetIds.join(","),
+        [GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS_ENV]: allowedSpreadsheetIds.join(","),
       };
+      config = normalizeGoogleSheetsConnectionConfig(config);
+      await assertGoogleSheetsSpreadsheetOwnership(companyId, config);
     }
     if (transport === "remote_http") remoteEndpoint(config);
     if (transport === "local_stdio") await stdioTemplateId(companyId, config);
@@ -3819,10 +3880,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       let applicationId = input.applicationId;
       const transport = input.transport;
       if (!transport) throw badRequest("Tool connection transport is required");
-      const config = input.config ?? input.transportConfig ?? {};
+      const config = normalizeGoogleSheetsConnectionConfig(input.config ?? input.transportConfig ?? {});
       if (transport === "remote_http") remoteEndpoint(config);
       if (transport === "local_stdio") await stdioTemplateId(companyId, config);
       assertLocalStdioCanBeEnabled(transport, input.enabled ?? false);
+      await assertGoogleSheetsSpreadsheetOwnership(companyId, config);
       if (applicationId) {
         const app = await assertApplication(companyId, applicationId);
         if ((transport === "remote_http" && app.type !== "mcp_http") || (transport === "local_stdio" && app.type !== "mcp_stdio")) {
@@ -3849,7 +3911,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         status: input.status ?? "draft",
         enabled: input.enabled ?? false,
         config,
-        transportConfig: input.transportConfig ?? config,
+        transportConfig: isGoogleSheetsConnectionConfig(config) ? config : input.transportConfig ?? config,
         credentialRefs: input.credentialRefs ?? [],
         credentialSecretRefs: input.credentialSecretRefs ?? [],
       }).returning();
@@ -3864,10 +3926,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
 
     updateConnection: async (connectionId: string, input: UpdateToolConnection): Promise<ToolConnection> => {
       const existing = await getConnectionRow(connectionId);
-      const config = input.config ?? input.transportConfig ?? existing.config;
+      const config = normalizeGoogleSheetsConnectionConfig(input.config ?? input.transportConfig ?? existing.config);
       if (existing.transport === "remote_http") remoteEndpoint(config);
       if (existing.transport === "local_stdio") await stdioTemplateId(existing.companyId, config);
       assertLocalStdioCanBeEnabled(existing.transport, input.enabled ?? existing.enabled);
+      await assertGoogleSheetsSpreadsheetOwnership(existing.companyId, config, { excludeConnectionId: existing.id });
       await assertSecretRefs(existing.companyId, [...(input.credentialRefs ?? existing.credentialRefs), ...(input.credentialSecretRefs ?? existing.credentialSecretRefs)]);
       const [row] = await db
         .update(toolConnections)
@@ -3876,7 +3939,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           status: input.status ?? existing.status,
           enabled: input.enabled ?? existing.enabled,
           config,
-          transportConfig: input.transportConfig ?? config,
+          transportConfig: isGoogleSheetsConnectionConfig(config) ? config : input.transportConfig ?? config,
           credentialRefs: input.credentialRefs ?? existing.credentialRefs,
           credentialSecretRefs: input.credentialSecretRefs ?? existing.credentialSecretRefs,
           updatedAt: new Date(),

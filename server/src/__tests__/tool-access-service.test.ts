@@ -879,6 +879,123 @@ describeEmbeddedPostgres("tool access service", () => {
     );
   });
 
+  it("rejects Google Sheets gallery connects that claim a spreadsheet bound to another company", async () => {
+    const companyA = await createCompany(db);
+    const companyB = await createCompany(db);
+    const service = toolAccessService(db);
+    vi.stubEnv("GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON", JSON.stringify({
+      client_email: "robot@example.iam.gserviceaccount.com",
+    }));
+
+    await service.connectGalleryApp(companyB.id, {
+      galleryKey: "google-sheets",
+      name: "Company B sheets",
+      configValues: { allowedSpreadsheetIds: ["shared-sheet"] },
+    }, { actorType: "user", actorId: "board-b" });
+
+    await expect(service.connectGalleryApp(companyA.id, {
+      galleryKey: "google-sheets",
+      name: "Company A sheets",
+      configValues: { allowedSpreadsheetIds: ["shared-sheet"] },
+    }, { actorType: "user", actorId: "board-a" })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "google_sheets_spreadsheet_already_bound",
+        spreadsheetIds: ["shared-sheet"],
+      },
+    });
+
+    await expect(db.select().from(toolConnections)).resolves.toHaveLength(1);
+  });
+
+  it("rejects raw Google Sheets connection patches that claim another company's spreadsheet", async () => {
+    const companyA = await createCompany(db);
+    const companyB = await createCompany(db);
+    const service = toolAccessService(db);
+    const app = createRouteApp(db);
+    vi.stubEnv("GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON", JSON.stringify({
+      client_email: "robot@example.iam.gserviceaccount.com",
+    }));
+
+    await service.connectGalleryApp(companyB.id, {
+      galleryKey: "google-sheets",
+      name: "Company B sheets",
+      configValues: { allowedSpreadsheetIds: ["company-b-sheet"] },
+    }, { actorType: "user", actorId: "board-b" });
+    const companyAConnection = await service.connectGalleryApp(companyA.id, {
+      galleryKey: "google-sheets",
+      name: "Company A sheets",
+      configValues: { allowedSpreadsheetIds: ["company-a-sheet"] },
+    }, { actorType: "user", actorId: "board-a" });
+
+    const res = await request(app)
+      .patch(`/api/tool-connections/${companyAConnection.connectionId}`)
+      .send({
+        config: {
+          templateId: "paperclip.google-sheets",
+          sourceTemplateKey: "google-sheets",
+          allowedSpreadsheetIds: ["company-b-sheet"],
+          env: { GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS: "company-b-sheet" },
+        },
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({
+      error: "Google Sheets spreadsheet is already connected to another company.",
+      details: {
+        code: "google_sheets_spreadsheet_already_bound",
+        spreadsheetIds: ["company-b-sheet"],
+      },
+    });
+    const [stillCompanyA] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, companyAConnection.connectionId));
+    expect(stillCompanyA.config.allowedSpreadsheetIds).toEqual(["company-a-sheet"]);
+    expect(stillCompanyA.config.env).toMatchObject({
+      GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS: "company-a-sheet",
+    });
+  });
+
+  it("allows same-company Google Sheets updates and derives the env mirror from the allowlist", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    vi.stubEnv("GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON", JSON.stringify({
+      client_email: "robot@example.iam.gserviceaccount.com",
+    }));
+
+    const first = await service.connectGalleryApp(company.id, {
+      galleryKey: "google-sheets",
+      name: "First sheets",
+      configValues: { allowedSpreadsheetIds: ["same-company-sheet"] },
+    }, { actorType: "user", actorId: "board" });
+    const second = await service.connectGalleryApp(company.id, {
+      galleryKey: "google-sheets",
+      name: "Second sheets",
+      configValues: { allowedSpreadsheetIds: ["same-company-sheet"] },
+    }, { actorType: "user", actorId: "board" });
+
+    const updated = await service.updateConnection(second.connectionId, {
+      config: {
+        templateId: "paperclip.google-sheets",
+        sourceTemplateKey: "google-sheets",
+        allowedSpreadsheetIds: ["same-company-sheet", "new-company-sheet", "same-company-sheet"],
+        env: {
+          GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS: "attacker-controlled-sheet",
+          EXTRA_ENV: "preserved",
+        },
+      },
+    });
+
+    expect(first.connection.config.allowedSpreadsheetIds).toEqual(["same-company-sheet"]);
+    expect(updated.config.allowedSpreadsheetIds).toEqual(["same-company-sheet", "new-company-sheet"]);
+    expect(updated.config.env).toEqual({
+      EXTRA_ENV: "preserved",
+      GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS: "same-company-sheet,new-company-sheet",
+    });
+    expect(updated.transportConfig).toEqual(updated.config);
+  });
+
   it("starts and completes OAuth app sign-in with PKCE state and secret-backed tokens", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
