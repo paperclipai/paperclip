@@ -49,6 +49,8 @@
 
 import type { PluginContext } from "./types.js";
 import type {
+  ResolveRunContextParams,
+  ResolveRunContextResult,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
@@ -285,6 +287,15 @@ export interface PluginDefinition {
   onEnvironmentExecute?(
     params: PluginEnvironmentExecuteParams,
   ): Promise<PluginEnvironmentExecuteResult>;
+
+  /**
+   * Called before `adapter.execute()` to inject additional context into the
+   * agent prompt. Return a formatted string to prepend to the task context,
+   * or `{ context: null }` if no context should be injected.
+   */
+  onResolveRunContext?(
+    params: ResolveRunContextParams,
+  ): Promise<ResolveRunContextResult>;
 }
 
 // ---------------------------------------------------------------------------
