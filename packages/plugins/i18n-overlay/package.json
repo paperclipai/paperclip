@@ -12,7 +12,7 @@
   },
   "scripts": {
     "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json && node scripts/build-ui.mjs",
     "build:userscript": "node esbuild.userscript.mjs",
     "clean": "rm -rf dist",
     "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit",
