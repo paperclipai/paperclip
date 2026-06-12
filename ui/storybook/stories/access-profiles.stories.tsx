@@ -463,6 +463,24 @@ export const IndexNewToolsChip: Story = {
   render: () => <SeededIndex profiles={[NEW_TOOLS_PROFILE, ...PROFILES]} />,
 };
 
+export const IndexLongProfileName: Story = {
+  name: "Index — long profile name",
+  render: () => (
+    <SeededIndex
+      profiles={[
+        profile(
+          "long-profile-name",
+          "This profile has an exceptionally long name that should truncate before the Allows column",
+          "active",
+          { allowedToolCount: 14, allowedApplicationCount: 2, appliesToAgentCount: 1 },
+          "2026-06-12T18:00:00Z",
+        ),
+        ...PROFILES,
+      ]}
+    />
+  ),
+};
+
 export const AccessCheckerSheet: Story = {
   name: "Access checker sheet (AP8)",
   render: () => <SeededIndex profiles={PROFILES} initialResolverOpen />,
