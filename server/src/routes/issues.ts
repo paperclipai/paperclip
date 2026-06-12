@@ -1696,7 +1696,7 @@ export function issueRoutes(
   }
 
   async function assertCanManageIssueApprovalLinks(req: Request, res: Response, companyId: string) {
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     if (req.actor.type === "board") return true;
     if (!req.actor.agentId) {
       res.status(403).json({ error: "Agent authentication required" });
@@ -1744,7 +1744,7 @@ export function issueRoutes(
     companyId: string,
     assignmentScope?: TaskAssignmentAuthorizationScope,
   ) {
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const decision = await access.decide({
       actor: req.actor,
       action: "tasks:assign",
@@ -2385,7 +2385,7 @@ export function issueRoutes(
 
   router.get("/companies/:companyId/search", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const companyScopeDecision = await access.decide({
       actor: req.actor,
       action: "company_scope:read",
@@ -2413,7 +2413,7 @@ export function issueRoutes(
 
   router.get("/companies/:companyId/issues", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const assigneeUserFilterRaw = req.query.assigneeUserId as string | undefined;
     const touchedByUserFilterRaw = req.query.touchedByUserId as string | undefined;
     const inboxArchivedByUserFilterRaw = req.query.inboxArchivedByUserId as string | undefined;
@@ -2554,7 +2554,7 @@ export function issueRoutes(
 
   router.get("/companies/:companyId/issues/count", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const attention = req.query.attention as string | undefined;
     const hasPlanDocument = parseOptionalBooleanQuery(req.query.hasPlanDocument);
     if (attention !== "blocked") {
@@ -2638,14 +2638,14 @@ export function issueRoutes(
 
   router.get("/companies/:companyId/labels", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const result = await svc.listLabels(companyId);
     res.json(result);
   });
 
   router.post("/companies/:companyId/labels", validate(createIssueLabelSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const label = await svc.createLabel(companyId, req.body);
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -2669,7 +2669,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Label not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(req, existing.companyId, db);
     const removed = await svc.deleteLabel(labelId);
     if (!removed) {
       res.status(404).json({ error: "Label not found" });
@@ -2697,7 +2697,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
     const wakeCommentId =
@@ -2843,7 +2843,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const [
       { project, goal },
@@ -2921,7 +2921,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     const active = await revalidateActiveSourceRecoveryForRead({
       issue,
       trigger: "read_projection",
@@ -2940,7 +2940,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(req, existing.companyId, db);
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id);
     if (
@@ -3109,7 +3109,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.json(workProducts);
@@ -3122,7 +3122,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const docs = await documentsSvc.listIssueDocuments(issue.id, {
       includeSystem: req.query.includeSystem === "true",
@@ -3137,7 +3137,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
@@ -3167,7 +3167,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -3191,7 +3191,7 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      assertCompanyAccess(req, issue.companyId);
+      await assertCompanyAccess(req, issue.companyId, db);
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
       if (!keyParsed.success) {
@@ -3242,7 +3242,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -3270,7 +3270,7 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      assertCompanyAccess(req, issue.companyId);
+      await assertCompanyAccess(req, issue.companyId, db);
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
       if (!keyParsed.success) {
@@ -3327,7 +3327,7 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      assertCompanyAccess(req, issue.companyId);
+      await assertCompanyAccess(req, issue.companyId, db);
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
       if (!keyParsed.success) {
@@ -3371,7 +3371,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
@@ -3499,7 +3499,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -3547,7 +3547,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -3589,7 +3589,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -3610,7 +3610,7 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      assertCompanyAccess(req, issue.companyId);
+      await assertCompanyAccess(req, issue.companyId, db);
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
       const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
@@ -3725,7 +3725,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -3800,7 +3800,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
     const actor = getActorInfo(req);
@@ -3850,7 +3850,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
@@ -3995,7 +3995,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Work product not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(req, existing.companyId, db);
     const issue = await svc.getById(existing.issueId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
@@ -4055,7 +4055,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Work product not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(req, existing.companyId, db);
     const issue = await svc.getById(existing.issueId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
@@ -4096,7 +4096,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -4128,7 +4128,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -4160,7 +4160,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -4192,7 +4192,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Board authentication required" });
       return;
@@ -4224,7 +4224,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return;
     const approvals = await issueApprovalsSvc.listApprovalsForIssue(id);
     res.json(approvals);
@@ -4237,7 +4237,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertCanManageIssueApprovalLinks(req, res, issue.companyId))) return;
 
@@ -4271,7 +4271,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertCanManageIssueApprovalLinks(req, res, issue.companyId))) return;
 
@@ -4295,7 +4295,7 @@ export function issueRoutes(
 
   router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     if (await assertLowTrustControlPlaneDenied(req, res, companyId, null)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (req.actor.type === "agent" && !req.body.parentId) {
@@ -4443,7 +4443,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Parent issue not found" });
       return;
     }
-    assertCompanyAccess(req, parent.companyId);
+    await assertCompanyAccess(req, parent.companyId, db);
     if (!(await assertIssueReadAllowed(req, res, parent))) return;
     if (await assertLowTrustControlPlaneDenied(req, res, parent.companyId, parent)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
@@ -4554,7 +4554,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, sourceIssue.companyId);
+    await assertCompanyAccess(req, sourceIssue.companyId, db);
     const decompositions = await svc.listAcceptedPlanDecompositions(sourceIssue.id);
     res.json(decompositions);
   });
@@ -4566,7 +4566,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, sourceIssue.companyId);
+    await assertCompanyAccess(req, sourceIssue.companyId, db);
     if (!(await assertAgentIssueMutationAllowed(req, res, sourceIssue))) return;
 
     const requestedChildren = [];
@@ -4719,7 +4719,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     await assertCanManageIssueMonitor(access, req, issue.companyId, issue.assigneeAgentId, true);
 
     const actor = getActorInfo(req);
@@ -4741,7 +4741,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
 
     const actor = getActorInfo(req);
     const result = await heartbeat.retryScheduledRetryNow({
@@ -4778,7 +4778,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(req, existing.companyId, db);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
@@ -5789,7 +5789,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(req, existing.companyId, db);
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     const attachments = await svc.listAttachments(id);
 
@@ -5829,7 +5829,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
 
     if (issue.projectId) {
       const project = await projectsSvc.getById(issue.projectId);
@@ -5913,7 +5913,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(req, existing.companyId, db);
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;
@@ -5958,7 +5958,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    await assertCompanyAccess(req, existing.companyId, db);
 
     const clearAssignee = req.query.clearAssignee === "true";
     const result = await svc.adminForceRelease(id, { clearAssignee });
@@ -5996,7 +5996,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     const afterCommentId =
       typeof req.query.after === "string" && req.query.after.trim().length > 0
         ? req.query.after.trim()
@@ -6030,7 +6030,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     const actor = getActorInfo(req);
     const interactionSvc = issueThreadInteractionService(db);
     const expiredInteractions = await interactionSvc.expireRequestConfirmationsSupersededByHistoricalComments(issue);
@@ -6052,7 +6052,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (req.actor.type === "agent") {
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return;
@@ -6103,7 +6103,7 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      assertCompanyAccess(req, issue.companyId);
+      await assertCompanyAccess(req, issue.companyId, db);
       assertBoard(req);
 
       const actor = getActorInfo(req);
@@ -6210,7 +6210,7 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      assertCompanyAccess(req, issue.companyId);
+      await assertCompanyAccess(req, issue.companyId, db);
       assertBoard(req);
 
       const actor = getActorInfo(req);
@@ -6266,7 +6266,7 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      assertCompanyAccess(req, issue.companyId);
+      await assertCompanyAccess(req, issue.companyId, db);
       assertBoard(req);
 
       const actor = getActorInfo(req);
@@ -6318,7 +6318,7 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      assertCompanyAccess(req, issue.companyId);
+      await assertCompanyAccess(req, issue.companyId, db);
       assertBoard(req);
 
       const actor = getActorInfo(req);
@@ -6367,7 +6367,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     const comment = await svc.getComment(commentId);
     if (!comment || comment.issueId !== id) {
       res.status(404).json({ error: "Comment not found" });
@@ -6384,7 +6384,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
 
     const comment = await svc.getComment(commentId);
@@ -6523,7 +6523,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Only board users can view feedback votes" });
       return;
@@ -6540,7 +6540,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Only board users can view feedback traces" });
       return;
@@ -6603,7 +6603,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
@@ -7151,7 +7151,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Only board users can vote on AI feedback" });
       return;
@@ -7250,7 +7250,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await assertCompanyAccess(req, issue.companyId, db);
     const attachments = await svc.listAttachments(issueId);
     res.json(attachments.map(withContentPath));
   });
@@ -7258,7 +7258,7 @@ export function issueRoutes(
   router.post("/companies/:companyId/issues/:issueId/attachments", async (req, res) => {
     const companyId = req.params.companyId as string;
     const issueId = req.params.issueId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const issue = await svc.getById(issueId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
@@ -7358,7 +7358,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Attachment not found" });
       return;
     }
-    assertCompanyAccess(req, attachment.companyId);
+    await assertCompanyAccess(req, attachment.companyId, db);
 
     const contentLength = attachment.byteSize;
     const range = parseAttachmentRangeHeader(
@@ -7417,7 +7417,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Attachment not found" });
       return;
     }
-    assertCompanyAccess(req, attachment.companyId);
+    await assertCompanyAccess(req, attachment.companyId, db);
     const issue = await svc.getById(attachment.issueId);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });

@@ -86,7 +86,7 @@ export function companySkillRoutes(db: Db) {
   }
 
   async function assertCanMutateCompanySkills(req: Request, companyId: string) {
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
 
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
@@ -139,7 +139,7 @@ export function companySkillRoutes(db: Db) {
 
   router.get("/companies/:companyId/skills", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const result = await svc.list(companyId, companySkillListQuerySchema.parse({
       q: firstQueryString(req.query.q),
       sort: firstQueryString(req.query.sort),
@@ -155,14 +155,14 @@ export function companySkillRoutes(db: Db) {
 
   router.get("/companies/:companyId/skills/categories", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     res.json(await svc.categoryCounts(companyId));
   });
 
   router.get("/companies/:companyId/skills/:skillId", async (req, res) => {
     const companyId = req.params.companyId as string;
     const skillId = req.params.skillId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const result = await svc.detail(companyId, skillId, skillActor(req));
     if (!result) {
       res.status(404).json({ error: "Skill not found" });
@@ -174,7 +174,7 @@ export function companySkillRoutes(db: Db) {
   router.get("/companies/:companyId/skills/:skillId/versions", async (req, res) => {
     const companyId = req.params.companyId as string;
     const skillId = req.params.skillId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     res.json(await svc.listVersions(companyId, skillId));
   });
 
@@ -182,7 +182,7 @@ export function companySkillRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const skillId = req.params.skillId as string;
     const versionId = req.params.versionId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const result = await svc.getVersion(companyId, skillId, versionId);
     if (!result) {
       res.status(404).json({ error: "Skill version not found" });
@@ -222,7 +222,7 @@ export function companySkillRoutes(db: Db) {
   router.post("/companies/:companyId/skills/:skillId/star", async (req, res) => {
     const companyId = req.params.companyId as string;
     const skillId = req.params.skillId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const result = await svc.starSkill(companyId, skillId, skillActor(req));
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -242,7 +242,7 @@ export function companySkillRoutes(db: Db) {
   router.delete("/companies/:companyId/skills/:skillId/star", async (req, res) => {
     const companyId = req.params.companyId as string;
     const skillId = req.params.skillId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const result = await svc.unstarSkill(companyId, skillId, skillActor(req));
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -290,7 +290,7 @@ export function companySkillRoutes(db: Db) {
   router.get("/companies/:companyId/skills/:skillId/comments", async (req, res) => {
     const companyId = req.params.companyId as string;
     const skillId = req.params.skillId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     res.json(await svc.listComments(companyId, skillId));
   });
 
@@ -300,7 +300,7 @@ export function companySkillRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(req, companyId, db);
       const result = await svc.createComment(companyId, skillId, req.body, skillActor(req));
       const actor = getActorInfo(req);
       await logActivity(db, {
@@ -325,7 +325,7 @@ export function companySkillRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
       const commentId = req.params.commentId as string;
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(req, companyId, db);
       const result = await svc.updateComment(companyId, skillId, commentId, req.body, skillActor(req));
       const actor = getActorInfo(req);
       await logActivity(db, {
@@ -347,7 +347,7 @@ export function companySkillRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const skillId = req.params.skillId as string;
     const commentId = req.params.commentId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const result = await svc.deleteComment(companyId, skillId, commentId, skillActor(req));
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -367,7 +367,7 @@ export function companySkillRoutes(db: Db) {
   router.get("/companies/:companyId/skills/:skillId/update-status", async (req, res) => {
     const companyId = req.params.companyId as string;
     const skillId = req.params.skillId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const result = await svc.updateStatus(companyId, skillId);
     if (!result) {
       res.status(404).json({ error: "Skill not found" });
@@ -380,7 +380,7 @@ export function companySkillRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const skillId = req.params.skillId as string;
     const relativePath = String(req.query.path ?? "SKILL.md");
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     const result = await svc.readFile(companyId, skillId, relativePath);
     if (!result) {
       res.status(404).json({ error: "Skill not found" });

@@ -12,7 +12,7 @@ function makeReq(input: {
 }
 
 describe("assertCompanyAccess", () => {
-  it("allows viewer memberships to read", () => {
+  it("allows viewer memberships to read", async () => {
     const req = makeReq({
       method: "GET",
       actor: {
@@ -26,10 +26,10 @@ describe("assertCompanyAccess", () => {
       },
     });
 
-    expect(() => assertCompanyAccess(req, "company-1")).not.toThrow();
+    await expect(assertCompanyAccess(req, "company-1")).resolves.toBeUndefined();
   });
 
-  it("rejects viewer memberships for writes", () => {
+  it("rejects viewer memberships for writes", async () => {
     const req = makeReq({
       method: "PATCH",
       actor: {
@@ -43,10 +43,10 @@ describe("assertCompanyAccess", () => {
       },
     });
 
-    expect(() => assertCompanyAccess(req, "company-1")).toThrow("Viewer access is read-only");
+    await expect(assertCompanyAccess(req, "company-1")).rejects.toThrow("Viewer access is read-only");
   });
 
-  it("rejects writes when membership details are present but omit the target company", () => {
+  it("rejects writes when membership details are present but omit the target company", async () => {
     const req = makeReq({
       method: "POST",
       actor: {
@@ -58,10 +58,10 @@ describe("assertCompanyAccess", () => {
       },
     });
 
-    expect(() => assertCompanyAccess(req, "company-1")).toThrow("User does not have active company access");
+    await expect(assertCompanyAccess(req, "company-1")).rejects.toThrow("User does not have active company access");
   });
 
-  it("allows legacy board actors that only provide company ids", () => {
+  it("allows legacy board actors that only provide company ids", async () => {
     const req = makeReq({
       method: "POST",
       actor: {
@@ -72,10 +72,10 @@ describe("assertCompanyAccess", () => {
       },
     });
 
-    expect(() => assertCompanyAccess(req, "company-1")).not.toThrow();
+    await expect(assertCompanyAccess(req, "company-1")).resolves.toBeUndefined();
   });
 
-  it("rejects signed-in instance admins without explicit company access", () => {
+  it("rejects signed-in instance admins without explicit company access", async () => {
     const req = makeReq({
       method: "GET",
       actor: {
@@ -88,10 +88,10 @@ describe("assertCompanyAccess", () => {
       },
     });
 
-    expect(() => assertCompanyAccess(req, "company-1")).toThrow("User does not have access to this company");
+    await expect(assertCompanyAccess(req, "company-1")).rejects.toThrow("User does not have access to this company");
   });
 
-  it("allows local trusted board access without explicit membership", () => {
+  it("allows local trusted board access without explicit membership", async () => {
     const req = makeReq({
       method: "GET",
       actor: {
@@ -102,7 +102,7 @@ describe("assertCompanyAccess", () => {
       },
     });
 
-    expect(() => assertCompanyAccess(req, "company-1")).not.toThrow();
+    await expect(assertCompanyAccess(req, "company-1")).resolves.toBeUndefined();
   });
 });
 

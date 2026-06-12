@@ -34,7 +34,7 @@ export function teamsCatalogRoutes(db: Db) {
   }
 
   async function assertCanInstallCatalogTeam(req: Request, companyId: string) {
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
 
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
@@ -87,7 +87,7 @@ export function teamsCatalogRoutes(db: Db) {
 
   router.get("/companies/:companyId/teams/catalog/installed", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     res.json(await svc.listInstalledCatalogTeams(companyId));
   });
 
@@ -97,7 +97,7 @@ export function teamsCatalogRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const catalogRef = firstQueryString(req.query.ref) ?? (req.params.catalogId as string);
-      assertCompanyAccess(req, companyId);
+      await assertCompanyAccess(req, companyId, db);
       const result = await svc.previewCatalogTeamImport(companyId, catalogRef, {
         ...req.body,
         actor: getActorInfo(req),

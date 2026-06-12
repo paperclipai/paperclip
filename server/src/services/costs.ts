@@ -60,7 +60,16 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
       if (!agent) throw notFound("Agent not found");
       if (agent.companyId !== companyId) {
-        throw unprocessable("Agent does not belong to company");
+        const { crossCompanyGrantService, crossCompanyGrantsEnabled } = await import("./cross-company-grants.js");
+        if (
+          !crossCompanyGrantsEnabled() ||
+          !(await crossCompanyGrantService(db).findActiveCrossCompanyGrant({
+            granteeAgentId: agent.id,
+            targetCompanyId: companyId,
+          }))
+        ) {
+          throw unprocessable("Agent does not belong to company");
+        }
       }
 
       const event = await db
@@ -95,6 +104,15 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           updatedAt: new Date(),
         })
         .where(eq(companies.id, companyId));
+
+      if (agent.companyId !== companyId) {
+        const { crossCompanyGrantService } = await import("./cross-company-grants.js");
+        await crossCompanyGrantService(db).incrementBudgetSpent({
+          granteeAgentId: agent.id,
+          targetCompanyId: companyId,
+          costCents: event.costCents ?? 0,
+        });
+      }
 
       await budgets.evaluateCostEvent(event);
 

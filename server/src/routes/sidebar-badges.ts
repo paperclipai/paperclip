@@ -24,7 +24,7 @@ export function sidebarBadgeRoutes(db: Db) {
 
   router.get("/companies/:companyId/sidebar-badges", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCompanyAccess(req, companyId, db);
     let canApproveJoins = false;
     if (req.actor.type === "board") {
       canApproveJoins =

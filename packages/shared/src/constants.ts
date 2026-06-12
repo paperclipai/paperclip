@@ -733,6 +733,21 @@ export const PERMISSION_KEYS = [
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
+export const CROSS_COMPANY_GRANT_STATUSES = ["pending", "active", "revoked", "expired"] as const;
+export type CrossCompanyGrantStatus = (typeof CROSS_COMPANY_GRANT_STATUSES)[number];
+
+/** v1 cross-company-eligible authorization actions (conservative allowlist). */
+export const CROSS_COMPANY_ELIGIBLE_ACTIONS = [
+  "issue:read",
+  "project:read",
+  "company_scope:read",
+  "issue:mutate",
+] as const;
+export type CrossCompanyEligibleAction = (typeof CROSS_COMPANY_ELIGIBLE_ACTIONS)[number];
+
+/** Hard ceiling for cross-company grant TTL (hours). */
+export const CROSS_COMPANY_GRANT_MAX_TTL_HOURS = 720;
+
 // ---------------------------------------------------------------------------
 // Plugin System — see doc/plugins/PLUGIN_SPEC.md for the full specification
 // ---------------------------------------------------------------------------
