@@ -176,6 +176,21 @@ function computeETag(size: number, mtimeMs: number): string {
   return `"${hash}"`;
 }
 
+/**
+ * True when the error — or anything in its `cause` chain — carries the given
+ * Postgres error code. drizzle-orm wraps driver errors in DrizzleQueryError,
+ * so codes like 22P02 (invalid uuid input) live on `error.cause.code`, not
+ * `error.code` (GH #7639). Exported for unit testing.
+ */
+export function errorChainHasPgCode(error: unknown, pgCode: string): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && typeof current === "object" && current !== null; depth += 1) {
+    if ((current as { code?: unknown }).code === pgCode) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Route factory
 // ---------------------------------------------------------------------------
@@ -246,11 +261,11 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
     try {
       plugin = await registry.getById(pluginId);
     } catch (error) {
-      const maybeCode =
-        typeof error === "object" && error !== null && "code" in error
-          ? (error as { code?: unknown }).code
-          : undefined;
-      if (maybeCode !== "22P02") {
+      // GH #7639: when :pluginId is a manifest key (not a UUID), Postgres raises
+      // 22P02 — but drizzle wraps the driver error in DrizzleQueryError, so the
+      // code lives on error.cause.code. Check the error AND its cause chain so
+      // the key fallback below actually triggers instead of re-throwing a 500.
+      if (!errorChainHasPgCode(error, "22P02")) {
         throw error;
       }
     }
