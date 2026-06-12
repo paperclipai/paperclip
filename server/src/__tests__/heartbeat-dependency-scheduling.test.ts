@@ -399,6 +399,192 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(noActiveRuns).toBe(true);
   });
 
+  it("does not let skipped blocker-resolved wakes suppress the released barrier and dedupes repeats", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const firstBlockerId = randomUUID();
+    const secondBlockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: firstBlockerId,
+        companyId,
+        title: "First blocker",
+        status: "done",
+        priority: "high",
+      },
+      {
+        id: secondBlockerId,
+        companyId,
+        title: "Second blocker",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Dependent work",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    await db.insert(issueRelations).values([
+      {
+        companyId,
+        issueId: firstBlockerId,
+        relatedIssueId: blockedIssueId,
+        type: "blocks",
+      },
+      {
+        companyId,
+        issueId: secondBlockerId,
+        relatedIssueId: blockedIssueId,
+        type: "blocks",
+      },
+    ]);
+
+    const barrierIds = [firstBlockerId, secondBlockerId];
+    const sortedBarrierIds = [...barrierIds].sort();
+    const releaseKey = `issue_blockers_resolved:${blockedIssueId}:${sortedBarrierIds.join(",")}`;
+    const prematureWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: { issueId: blockedIssueId, resolvedBlockerIssueId: firstBlockerId, blockerIssueIds: barrierIds },
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        wakeReason: "issue_blockers_resolved",
+        resolvedBlockerIssueId: firstBlockerId,
+        blockerIssueIds: barrierIds,
+      },
+    });
+    expect(prematureWake).toBeNull();
+
+    const skippedWake = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(sql`${agentWakeupRequests.payload} ->> 'issueId' = ${blockedIssueId}`)
+      .then((rows) => rows[0] ?? null);
+    expect(skippedWake).toMatchObject({
+      status: "skipped",
+      reason: "issue_dependencies_blocked",
+      idempotencyKey: releaseKey,
+    });
+
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: new Date() })
+      .where(eq(issues.id, secondBlockerId));
+
+    let finishReleaseRun!: () => void;
+    const releaseRunFinished = new Promise<void>((resolve) => {
+      finishReleaseRun = resolve;
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await releaseRunFinished;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Released blocker barrier run complete.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const releasedWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: { issueId: blockedIssueId, resolvedBlockerIssueId: secondBlockerId, blockerIssueIds: barrierIds },
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        wakeReason: "issue_blockers_resolved",
+        resolvedBlockerIssueId: secondBlockerId,
+        blockerIssueIds: barrierIds,
+      },
+    });
+    expect(releasedWake).not.toBeNull();
+
+    const duplicateWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: { issueId: blockedIssueId, resolvedBlockerIssueId: secondBlockerId, blockerIssueIds: barrierIds },
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        wakeReason: "issue_blockers_resolved",
+        resolvedBlockerIssueId: secondBlockerId,
+        blockerIssueIds: barrierIds,
+      },
+    });
+    expect(duplicateWake?.id ?? null).toBe(releasedWake!.id);
+
+    finishReleaseRun();
+    await waitForCondition(async () => {
+      const row = await db
+        .select({
+          runStatus: heartbeatRuns.status,
+          wakeStatus: agentWakeupRequests.status,
+        })
+        .from(heartbeatRuns)
+        .leftJoin(agentWakeupRequests, eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId))
+        .where(eq(heartbeatRuns.id, releasedWake!.id))
+        .then((rows) => rows[0] ?? null);
+      return row?.runStatus === "succeeded" && row.wakeStatus === "completed";
+    });
+
+    const blockerReleaseRunCount = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${blockedIssueId}`,
+          sql`${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = 'issue_blockers_resolved'`,
+        ),
+      )
+      .then((rows) => rows[0]?.count ?? 0);
+    const releaseWakeRows = await db
+      .select({
+        status: agentWakeupRequests.status,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, releaseKey));
+
+    expect(blockerReleaseRunCount).toBe(1);
+    expect(releaseWakeRows.map((row) => row.status).sort()).toEqual(["coalesced", "completed", "skipped"]);
+  }, 30_000);
+
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

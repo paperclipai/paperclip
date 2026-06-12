@@ -157,6 +157,8 @@ export function IssueBlockedNotice({
     return collected;
   })();
   const showParkedRow = parkedBlockers.length > 0;
+  const showNeedsAttentionNoBlockers =
+    blockerAttention?.state === "needs_attention" && blockers.length === 0 && issueStatus === "blocked";
   const stalledLeafIdentifier =
     blockerAttention?.sampleStalledBlockerIdentifier ?? blockerAttention?.sampleBlockerIdentifier ?? null;
   const stalledLeafBlockers = (() => {
@@ -199,7 +201,9 @@ export function IssueBlockedNotice({
 
   return (
     <div
-      data-blocker-attention-state={blockerAttention?.state}
+      data-blocker-attention-state={
+        showNeedsAttentionNoBlockers ? "needs_attention_no_blockers" : blockerAttention?.state
+      }
       data-successful-run-handoff={showSuccessfulRunHandoff ? "required" : undefined}
       className="mb-3 rounded-md border border-amber-300/70 bg-amber-50/90 px-3 py-2.5 text-sm text-amber-950 shadow-sm dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100"
     >
@@ -257,15 +261,37 @@ export function IssueBlockedNotice({
           ) : null}
           {blockers.length > 0 || issueStatus === "blocked" ? (
             <>
-              <p className="leading-5">
-                {blockers.length > 0
-                  ? isStalled
-                    ? stalledLeafBlockers.length > 1
-                      ? <>Work on this task is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled reviews below or remove them as blockers.</>
-                      : <>Work on this task is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled review below or remove it as a blocker.</>
-                    : <>Work on this task is blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} complete. Comments still wake the assignee for questions or triage.</>
-                  : <>Work on this task is blocked until it is moved back to todo. Comments still wake the assignee for questions or triage.</>}
-              </p>
+              {showNeedsAttentionNoBlockers ? (
+                <>
+                  <p className="font-medium leading-5">
+                    This task is blocked but the system has no live next step.
+                  </p>
+                  <p className="leading-5">
+                    Earlier blockers resolved, and no recovery path or scheduled retry is active. The assignee
+                    needs to either move it back to{" "}
+                    <code className="rounded bg-amber-100 px-1 py-0.5 text-[12px] dark:bg-amber-400/15">
+                      todo
+                    </code>{" "}
+                    so a fresh run is queued, or add a real blocker if work genuinely can't proceed.
+                  </p>
+                  {(blockerAttention?.coveredBlockerCount ?? 0) > 0 ? (
+                    <p className="text-xs leading-5 text-amber-800 dark:text-amber-200">
+                      Some ancestor blockers are still covered by active work — see the "Ultimately waiting on" row
+                      below.
+                    </p>
+                  ) : null}
+                </>
+              ) : (
+                <p className="leading-5">
+                  {blockers.length > 0
+                    ? isStalled
+                      ? stalledLeafBlockers.length > 1
+                        ? <>Work on this task is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled reviews below or remove them as blockers.</>
+                        : <>Work on this task is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled review below or remove it as a blocker.</>
+                      : <>Work on this task is blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} complete. Comments still wake the assignee for questions or triage.</>
+                    : <>Work on this task is blocked until it is moved back to todo. Comments still wake the assignee for questions or triage.</>}
+                </p>
+              )}
               {blockers.length > 0 ? (
                 <div className="flex flex-wrap gap-1.5">
                   {blockers.map(renderBlockerChip)}

@@ -223,6 +223,43 @@ describe("IssueBlockedNotice", () => {
     expect(node.textContent).toBe("");
   });
 
+  it("renders live-next-step copy for blocked issues needing attention with no unresolved blockers", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[]}
+        blockerAttention={{
+          state: "needs_attention",
+          reason: "attention_required",
+          unresolvedBlockerCount: 0,
+          coveredBlockerCount: 0,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          sampleBlockerIdentifier: null,
+          sampleStalledBlockerIdentifier: null,
+        }}
+      />,
+    );
+
+    expect(node.textContent).toContain("This task is blocked but the system has no live next step.");
+    expect(node.textContent).toContain("Earlier blockers resolved, and no recovery path or scheduled retry is active.");
+    expect(node.textContent).not.toContain("Work on this task is blocked until it is moved back to todo.");
+    expect(node.querySelector('[data-blocker-attention-state="needs_attention_no_blockers"]')).not.toBeNull();
+  });
+
+  it("keeps the moved-back-to-todo fallback for manually parked blocked issues", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[]}
+        blockerAttention={null}
+      />,
+    );
+
+    expect(node.textContent).toContain("Work on this task is blocked until it is moved back to todo.");
+    expect(node.textContent).not.toContain("This task is blocked but the system has no live next step.");
+  });
+
   it("renders a recovery indicator on a blocker chip when the blocker has an active recovery action", () => {
     const node = render(
       <IssueBlockedNotice

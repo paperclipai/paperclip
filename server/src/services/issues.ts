@@ -655,6 +655,91 @@ export async function listUnfinalizedExecutionWorkspaceIds(
   return unfinalized;
 }
 
+type DoneBlockerFinalizeTarget = {
+  blockerIssueId: string;
+  executionWorkspaceId: string | null;
+};
+
+async function listPendingFinalizeBlockerIssueIds(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  blockers: DoneBlockerFinalizeTarget[],
+): Promise<Set<string>> {
+  const targets = blockers.filter((blocker) => blocker.executionWorkspaceId);
+  const pending = new Set<string>();
+  if (targets.length === 0) return pending;
+
+  const blockerIdsByWorkspaceId = new Map<string, Set<string>>();
+  for (const target of targets) {
+    if (!target.executionWorkspaceId) continue;
+    const blockerIds = blockerIdsByWorkspaceId.get(target.executionWorkspaceId) ?? new Set<string>();
+    blockerIds.add(target.blockerIssueId);
+    blockerIdsByWorkspaceId.set(target.executionWorkspaceId, blockerIds);
+  }
+
+  const rows = await dbOrTx
+    .select({
+      executionWorkspaceId: workspaceOperations.executionWorkspaceId,
+      phase: workspaceOperations.phase,
+      status: workspaceOperations.status,
+      startedAt: workspaceOperations.startedAt,
+      contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+      contextTaskId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskId'`,
+    })
+    .from(workspaceOperations)
+    .leftJoin(heartbeatRuns, eq(workspaceOperations.heartbeatRunId, heartbeatRuns.id))
+    .where(
+      and(
+        eq(workspaceOperations.companyId, companyId),
+        inArray(workspaceOperations.executionWorkspaceId, [...blockerIdsByWorkspaceId.keys()]),
+      ),
+    );
+
+  const latestByBlockerIssueId = new Map<string, { phase: string; status: string; startedAt: Date }>();
+  const latestLegacyByWorkspaceId = new Map<string, { phase: string; status: string; startedAt: Date }>();
+  for (const row of rows) {
+    if (!row.executionWorkspaceId) continue;
+    const blockerIds = blockerIdsByWorkspaceId.get(row.executionWorkspaceId);
+    if (!blockerIds) continue;
+    const runIssueIds = [row.contextIssueId, row.contextTaskId].filter(
+      (value): value is string => typeof value === "string" && value.length > 0,
+    );
+    if (runIssueIds.length === 0) {
+      const current = latestLegacyByWorkspaceId.get(row.executionWorkspaceId);
+      if (!current || row.startedAt > current.startedAt) {
+        latestLegacyByWorkspaceId.set(row.executionWorkspaceId, {
+          phase: row.phase,
+          status: row.status,
+          startedAt: row.startedAt,
+        });
+      }
+      continue;
+    }
+    for (const blockerIssueId of runIssueIds) {
+      if (!blockerIds.has(blockerIssueId)) continue;
+      const current = latestByBlockerIssueId.get(blockerIssueId);
+      if (!current || row.startedAt > current.startedAt) {
+        latestByBlockerIssueId.set(blockerIssueId, {
+          phase: row.phase,
+          status: row.status,
+          startedAt: row.startedAt,
+        });
+      }
+    }
+  }
+
+  for (const target of targets) {
+    const workspaceId = target.executionWorkspaceId;
+    const latest = latestByBlockerIssueId.get(target.blockerIssueId) ??
+      (workspaceId ? latestLegacyByWorkspaceId.get(workspaceId) : null);
+    if (!latest) continue; // no blocker-specific workspace ops recorded -> no finalize barrier
+    if (latest.phase === "workspace_finalize" && latest.status === "succeeded") continue;
+    pending.add(target.blockerIssueId);
+  }
+
+  return pending;
+}
+
 async function listIssueDependencyReadinessMap(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
@@ -680,23 +765,28 @@ async function listIssueDependencyReadinessMap(
       and(
         eq(issueRelations.companyId, companyId),
         eq(issueRelations.type, "blocks"),
+        eq(issues.companyId, companyId),
         inArray(issueRelations.relatedIssueId, uniqueIssueIds),
       ),
     );
 
-  // Collect executionWorkspaceIds of "done" blockers — these are the only ones
-  // subject to the workspace-finalize barrier. Blockers that aren't done already
-  // mark the dependent as not-ready and don't need a finalize check.
-  const doneBlockerWorkspaceIds = new Set<string>();
+  // Collect "done" blockers with execution workspaces — these are the only ones
+  // subject to the workspace-finalize barrier. The barrier is blocker-specific:
+  // a later sibling can reuse the same workspace without making this already-done
+  // blocker unresolved again.
+  const doneBlockers: DoneBlockerFinalizeTarget[] = [];
   for (const row of blockerRows) {
     if (row.blockerStatus === "done" && row.blockerExecutionWorkspaceId) {
-      doneBlockerWorkspaceIds.add(row.blockerExecutionWorkspaceId);
+      doneBlockers.push({
+        blockerIssueId: row.blockerIssueId,
+        executionWorkspaceId: row.blockerExecutionWorkspaceId,
+      });
     }
   }
-  const unfinalizedWorkspaceIds = await listUnfinalizedExecutionWorkspaceIds(
+  const pendingFinalizeBlockerIssueIds = await listPendingFinalizeBlockerIssueIds(
     dbOrTx,
     companyId,
-    [...doneBlockerWorkspaceIds],
+    doneBlockers,
   );
 
   for (const row of blockerRows) {
@@ -711,9 +801,9 @@ async function listIssueDependencyReadinessMap(
       current.isDependencyReady = false;
     } else if (
       row.blockerExecutionWorkspaceId &&
-      unfinalizedWorkspaceIds.has(row.blockerExecutionWorkspaceId)
+      pendingFinalizeBlockerIssueIds.has(row.blockerIssueId)
     ) {
-      // Workspace-finalize barrier: the blocker's most recent run on its
+      // Workspace-finalize barrier: the blocker's own most recent run on its
       // execution workspace hasn't recorded a successful workspace_finalize.
       // Treat the dependent as not-ready until sync-back lands (or the run
       // finalizes); a subsequent finalize wake will re-evaluate readiness.
@@ -2110,6 +2200,7 @@ async function blockedByMapForIssues(
         and(
           eq(issueRelations.companyId, companyId),
           eq(issueRelations.type, "blocks"),
+          eq(issues.companyId, companyId),
           inArray(issueRelations.relatedIssueId, issueIdChunk),
         ),
       );
@@ -3490,6 +3581,7 @@ export function issueService(db: Db) {
           and(
             eq(issueRelations.companyId, companyId),
             eq(issueRelations.type, "blocks"),
+            eq(issues.companyId, companyId),
             inArray(issueRelations.relatedIssueId, uniqueIssueIds),
           ),
         ),
@@ -3510,6 +3602,7 @@ export function issueService(db: Db) {
           and(
             eq(issueRelations.companyId, companyId),
             eq(issueRelations.type, "blocks"),
+            eq(issues.companyId, companyId),
             inArray(issueRelations.issueId, uniqueIssueIds),
           ),
         ),
@@ -4286,6 +4379,7 @@ export function issueService(db: Db) {
             eq(issueRelations.companyId, blockerIssue.companyId),
             eq(issueRelations.type, "blocks"),
             eq(issueRelations.issueId, blockerIssueId),
+            eq(issues.companyId, blockerIssue.companyId),
           ),
         );
       if (candidates.length === 0) return [];

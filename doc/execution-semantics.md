@@ -163,6 +163,20 @@ Blocked issues should stay idle while blockers remain unresolved. Paperclip shou
 
 If a parent is truly waiting on a child, model that with blockers. Do not rely on the parent/child relationship alone.
 
+#### Blocker release and finalization
+
+A blocker edge is released by the blocker issue's own completion state and required finalization evidence.
+
+For dependency purposes, the resolved fact is about the blocker issue itself:
+
+- the blocker issue is `done`
+- the blocker issue has completed any required terminal finalization for that status, such as durable status/activity persistence and any required post-run disposition evidence
+- every unresolved blocker leaf in the chain satisfies the same issue-local completion contract
+
+The resolved fact is not derived from the latest operation on a reused execution workspace. A later workspace operation may prove that a specific queued wake cannot be delivered coherently, but it must not make an already-completed blocker look unresolved again. Workspace coherence failures belong to adapter delivery and liveness recovery; they should repair, retry once where safe, or surface an explicit recovery action for the dependent issue instead of cancelling the dependent run as dependency-blocked.
+
+`cancelled` blockers are terminal but not dependency completion. If a cancelled issue should no longer block downstream work, the blocker edge must be explicitly removed or replaced with the real remaining dependency.
+
 ## 7. Accepted-Plan Decomposition
 
 An accepted plan confirmation is permission to decompose one specific accepted plan revision into child issues.

@@ -102,6 +102,28 @@ describe("StatusIcon", () => {
     expect(html).not.toContain("border-dashed");
   });
 
+  it("labels attention-required blocked issues with no unresolved blockers as needing assignee action", () => {
+    const html = renderToStaticMarkup(
+      <StatusIcon
+        status="blocked"
+        blockerAttention={{
+          state: "needs_attention",
+          reason: "attention_required",
+          unresolvedBlockerCount: 0,
+          coveredBlockerCount: 0,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          sampleBlockerIdentifier: null,
+          sampleStalledBlockerIdentifier: null,
+        }}
+      />,
+    );
+
+    expect(html).toContain('data-blocker-attention-state="needs_attention"');
+    expect(html).toContain('aria-label="Blocked · no live continuation path — assignee needs to act"');
+    expect(html).toContain("border-red-600");
+  });
+
   it("shows active covered work on mixed attention-required blockers", () => {
     const html = renderToStaticMarkup(
       <StatusIcon

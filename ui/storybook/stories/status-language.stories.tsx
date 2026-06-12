@@ -176,6 +176,18 @@ const coveredBlockedMatrix: CoveredBlockedCell[] = [
     expectedCopy: "Blocked · 1 unresolved blocker needs attention",
   },
   {
+    label: "Needs attention (no unresolved blockers)",
+    status: "blocked",
+    blockerAttention: attention({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 0,
+      attentionBlockerCount: 0,
+    }),
+    expectedVisual: "solid red ring",
+    expectedCopy: "Blocked · no live continuation path — assignee needs to act",
+  },
+  {
     label: "Non-blocked with prop ignored",
     status: "in_progress",
     blockerAttention: attention({
@@ -220,7 +232,8 @@ function summaryBlocker(
 type BlockedNoticeStateLabel =
   | "Default covered"
   | "Stalled (single leaf)"
-  | "Stalled (multiple leaves)";
+  | "Stalled (multiple leaves)"
+  | "Needs attention (no blockers)";
 
 type BlockedNoticeFixture = {
   label: BlockedNoticeStateLabel;
@@ -318,6 +331,18 @@ const blockedNoticeFixtures: BlockedNoticeFixture[] = [
       sampleStalledBlockerIdentifier: "PAP-2284",
     }),
   },
+  {
+    label: "Needs attention (no blockers)",
+    caption: "Earlier blockers resolved, but no live run, recovery path, or scheduled retry remains.",
+    blockers: [],
+    blockerAttention: attention({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 0,
+      coveredBlockerCount: 0,
+      attentionBlockerCount: 0,
+    }),
+  },
 ];
 
 function BlockedNoticeSurface({
@@ -340,7 +365,7 @@ function BlockedNoticeSurface({
             {size} · {mode}
           </span>
         </div>
-        <div className={isMobile ? "max-w-[358px] px-3 py-3" : "min-w-[620px] px-4 py-3"}>
+        <div className={isMobile ? "max-w-[358px] px-3 py-3" : "max-w-[620px] px-4 py-3"}>
           <IssueBlockedNotice
             issueStatus="blocked"
             blockers={fixture.blockers}

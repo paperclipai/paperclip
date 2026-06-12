@@ -50,6 +50,9 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
   }
 
   if (blockerAttention.reason === "attention_required") {
+    if (blockerAttention.unresolvedBlockerCount === 0) {
+      return "Blocked · no live continuation path — assignee needs to act";
+    }
     const count = blockerAttention.attentionBlockerCount || blockerAttention.unresolvedBlockerCount;
     const attentionCopy = `${count} ${count === 1 ? "blocker needs" : "blockers need"} attention`;
     const coveredCount = blockerAttention.coveredBlockerCount;

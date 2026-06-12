@@ -482,6 +482,7 @@ V1 non-terminal liveness rule:
 - agent-owned `todo`, `in_progress`, `in_review`, and `blocked` issues must have a live execution path, an explicit waiting path, or an explicit recovery path
 - `in_review` is healthy only when a typed execution participant, pending issue-thread interaction or approval, user owner, active run, queued wake, or explicit recovery action owns the next action
 - a blocked chain is covered only when each unresolved leaf issue is live or explicitly waiting
+- blocker edges release from the blocker issue's own `done` state and required terminal finalization evidence, not from the latest operation recorded on a reused execution workspace
 - when Paperclip cannot safely infer the next action, it surfaces the problem through visible blocked/recovery work instead of silently completing or reassigning work
 - explicit recovery actions are the liveness primitive; source-scoped actions are the default form, issue-backed recovery is a fallback for independent repair work or safety boundaries, and comments alone are evidence rather than a healthy liveness path
 

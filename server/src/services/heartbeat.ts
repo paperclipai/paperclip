@@ -1382,6 +1382,92 @@ interface WakeupOptions {
   contextSnapshot?: Record<string, unknown>;
 }
 
+const BLOCKER_RELEASE_WAKE_REASON = "issue_blockers_resolved";
+const BLOCKER_RELEASE_IDEMPOTENT_WAKE_STATUSES = [
+  "queued",
+  "deferred_issue_execution",
+  "claimed",
+  "coalesced",
+  "completed",
+];
+
+function normalizeBlockerReleaseIds(value: unknown) {
+  return Array.isArray(value)
+    ? [...new Set(value.filter((item): item is string => typeof item === "string" && item.trim().length > 0))]
+      .sort()
+    : [];
+}
+
+function buildBlockerReleaseIdempotencyKey(input: {
+  issueId: string;
+  blockerIssueIds: string[];
+}) {
+  const blockerFingerprint = input.blockerIssueIds.length > 0 ? input.blockerIssueIds.join(",") : "no-blockers";
+  return `${BLOCKER_RELEASE_WAKE_REASON}:${input.issueId}:${blockerFingerprint}`;
+}
+
+async function listIssueBlockerIdsForReleaseFingerprint(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  issueId: string,
+) {
+  const rows = await dbOrTx
+    .select({ id: issueRelations.issueId })
+    .from(issueRelations)
+    .where(
+      and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.relatedIssueId, issueId),
+        eq(issueRelations.type, "blocks"),
+      ),
+    );
+  return normalizeBlockerReleaseIds(rows.map((row) => row.id));
+}
+
+async function resolveBlockerReleaseIdempotencyKey(input: {
+  dbOrTx: Pick<Db, "select">;
+  companyId: string;
+  issueId: string;
+  payload: Record<string, unknown> | null;
+  contextSnapshot: Record<string, unknown>;
+}) {
+  const payloadBlockerIds = normalizeBlockerReleaseIds(input.payload?.blockerIssueIds);
+  const contextBlockerIds = normalizeBlockerReleaseIds(input.contextSnapshot.blockerIssueIds);
+  const blockerIssueIds = contextBlockerIds.length > 0
+    ? contextBlockerIds
+    : payloadBlockerIds.length > 0
+      ? payloadBlockerIds
+      : await listIssueBlockerIdsForReleaseFingerprint(input.dbOrTx, input.companyId, input.issueId);
+  return buildBlockerReleaseIdempotencyKey({ issueId: input.issueId, blockerIssueIds });
+}
+
+async function findExistingBlockerReleaseWake(
+  dbOrTx: Pick<Db, "select">,
+  input: {
+    companyId: string;
+    idempotencyKey: string;
+  },
+) {
+  return dbOrTx
+    .select({
+      id: agentWakeupRequests.id,
+      runId: agentWakeupRequests.runId,
+      status: agentWakeupRequests.status,
+      coalescedCount: agentWakeupRequests.coalescedCount,
+    })
+    .from(agentWakeupRequests)
+    .where(
+      and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        eq(agentWakeupRequests.idempotencyKey, input.idempotencyKey),
+        inArray(agentWakeupRequests.status, BLOCKER_RELEASE_IDEMPOTENT_WAKE_STATUSES),
+      ),
+    )
+    .orderBy(asc(agentWakeupRequests.requestedAt), asc(agentWakeupRequests.id))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+}
+
 type UsageTotals = {
   inputTokens: number;
   cachedInputTokens: number;
@@ -6900,7 +6986,89 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     });
 
+    if (readNonEmptyString(parseObject(cancelled.contextSnapshot).wakeReason) === BLOCKER_RELEASE_WAKE_REASON) {
+      await requeueBlockerReleaseWakeIfDependencyGateCleared({
+        companyId: cancelled.companyId,
+        agentId: cancelled.agentId,
+        issueId,
+        contextSnapshot: parseObject(cancelled.contextSnapshot),
+        payload: {
+          issueId,
+          unresolvedBlockerIssueIds,
+          cancelledDependencyGateRunId: cancelled.id,
+        },
+        sourceRun: cancelled,
+      });
+    }
+
     return cancelled;
+  }
+
+  async function requeueBlockerReleaseWakeIfDependencyGateCleared(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    contextSnapshot: Record<string, unknown>;
+    payload: Record<string, unknown> | null;
+    sourceRun?: typeof heartbeatRuns.$inferSelect;
+  }) {
+    const readiness = await issuesSvc
+      .listDependencyReadiness(input.companyId, [input.issueId])
+      .then((rows) => rows.get(input.issueId) ?? null);
+    if (!readiness?.isDependencyReady || readiness.blockerIssueIds.length === 0) return null;
+
+    const contextSnapshot = {
+      ...input.contextSnapshot,
+      issueId: input.issueId,
+      taskId: input.issueId,
+      wakeReason: BLOCKER_RELEASE_WAKE_REASON,
+      source: "issue.dependencies_gate_requeue",
+      blockerIssueIds: readiness.blockerIssueIds,
+      ...(input.sourceRun ? { requeuedAfterDependencyGateRunId: input.sourceRun.id } : {}),
+    };
+    const payload = {
+      ...(input.payload ?? {}),
+      issueId: input.issueId,
+      blockerIssueIds: readiness.blockerIssueIds,
+      ...(input.sourceRun ? { requeuedAfterDependencyGateRunId: input.sourceRun.id } : {}),
+    };
+    const idempotencyKey = await resolveBlockerReleaseIdempotencyKey({
+      dbOrTx: db,
+      companyId: input.companyId,
+      issueId: input.issueId,
+      payload,
+      contextSnapshot,
+    });
+    const existingWake = await findExistingBlockerReleaseWake(db, {
+      companyId: input.companyId,
+      idempotencyKey,
+    });
+    if (existingWake) return null;
+
+    if (input.sourceRun) {
+      await appendRunEvent(input.sourceRun, await nextRunEventSeq(input.sourceRun.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Requeued blocker-resolved wake because the dependency gate cleared after cancellation",
+        payload: {
+          issueId: input.issueId,
+          blockerIssueIds: readiness.blockerIssueIds,
+          idempotencyKey,
+        },
+      });
+    }
+
+    return enqueueWakeup(input.agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: BLOCKER_RELEASE_WAKE_REASON,
+      payload,
+      contextSnapshot,
+      idempotencyKey,
+      requestedByActorType: "system",
+      requestedByActorId: "heartbeat",
+    });
   }
 
   type QueuedRunStaleness =
@@ -10056,6 +10224,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload,
     });
     let issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
+    let effectiveIdempotencyKey = opts.idempotencyKey ?? null;
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
@@ -10074,7 +10243,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         status: "skipped",
         requestedByActorType: opts.requestedByActorType ?? null,
         requestedByActorId: opts.requestedByActorId ?? null,
-        idempotencyKey: opts.idempotencyKey ?? null,
+        idempotencyKey: effectiveIdempotencyKey,
         finishedAt: new Date(),
         ...patch,
       });
@@ -10152,6 +10321,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // project workspace even when context.projectId wasn't set by the caller.
     if (projectId && !readNonEmptyString(enrichedContextSnapshot.projectId)) {
       enrichedContextSnapshot.projectId = projectId;
+    }
+
+    if (reason === BLOCKER_RELEASE_WAKE_REASON && issueId && !effectiveIdempotencyKey) {
+      effectiveIdempotencyKey = await resolveBlockerReleaseIdempotencyKey({
+        dbOrTx: db,
+        companyId: agent.companyId,
+        issueId,
+        payload,
+        contextSnapshot: enrichedContextSnapshot,
+      });
+      enrichedContextSnapshot.blockerReleaseFingerprint = effectiveIdempotencyKey;
     }
 
     const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
@@ -10274,7 +10454,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
+            idempotencyKey: effectiveIdempotencyKey,
             finishedAt: new Date(),
           });
           return { kind: "skipped" as const };
@@ -10477,10 +10657,51 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
+            idempotencyKey: effectiveIdempotencyKey,
             finishedAt: new Date(),
           });
-          return { kind: "skipped" as const };
+          return { kind: "skipped" as const, dependencyGate: true as const };
+        }
+
+        if (reason === BLOCKER_RELEASE_WAKE_REASON && effectiveIdempotencyKey) {
+          const existingReleaseWake = await findExistingBlockerReleaseWake(tx, {
+            companyId: issue.companyId,
+            idempotencyKey: effectiveIdempotencyKey,
+          });
+          if (existingReleaseWake) {
+            const existingReleaseRun = existingReleaseWake.runId
+              ? await tx
+                .select()
+                .from(heartbeatRuns)
+                .where(eq(heartbeatRuns.id, existingReleaseWake.runId))
+                .then((rows) => rows[0] ?? null)
+              : null;
+            await tx.insert(agentWakeupRequests).values({
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason,
+              payload,
+              status: "coalesced",
+              coalescedCount: 1,
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: effectiveIdempotencyKey,
+              runId: existingReleaseWake.runId,
+              finishedAt: new Date(),
+            });
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                coalescedCount: (existingReleaseWake.coalescedCount ?? 0) + 1,
+                updatedAt: new Date(),
+              })
+              .where(eq(agentWakeupRequests.id, existingReleaseWake.id));
+            return existingReleaseRun
+              ? { kind: "existing" as const, run: existingReleaseRun }
+              : { kind: "duplicate" as const };
+          }
         }
 
         if (activeExecutionRun) {
@@ -10531,7 +10752,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               coalescedCount: 1,
               requestedByActorType: opts.requestedByActorType ?? null,
               requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey: opts.idempotencyKey ?? null,
+              idempotencyKey: effectiveIdempotencyKey,
               runId: mergedRun.id,
               finishedAt: new Date(),
             });
@@ -10596,7 +10817,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "deferred_issue_execution",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
+            idempotencyKey: effectiveIdempotencyKey,
           });
 
           return { kind: "deferred" as const };
@@ -10614,7 +10835,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "queued",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
+            idempotencyKey: effectiveIdempotencyKey,
           })
           .returning()
           .then((rows) => rows[0]);
@@ -10650,7 +10871,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "queued" as const, run: newRun };
       });
 
-      if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
+      if (outcome.kind === "deferred" || outcome.kind === "duplicate") return null;
+      if (outcome.kind === "existing") return outcome.run;
+      if (outcome.kind === "skipped") {
+        if ("dependencyGate" in outcome && outcome.dependencyGate && reason === BLOCKER_RELEASE_WAKE_REASON && issueId) {
+          await requeueBlockerReleaseWakeIfDependencyGateCleared({
+            companyId: agent.companyId,
+            agentId,
+            issueId,
+            contextSnapshot: enrichedContextSnapshot,
+            payload,
+          });
+        }
+        return null;
+      }
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
         return outcome.run;
@@ -10724,7 +10958,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         coalescedCount: 1,
         requestedByActorType: opts.requestedByActorType ?? null,
         requestedByActorId: opts.requestedByActorId ?? null,
-        idempotencyKey: opts.idempotencyKey ?? null,
+        idempotencyKey: effectiveIdempotencyKey,
         runId: mergedRun.id,
         finishedAt: new Date(),
       });
@@ -10743,7 +10977,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         status: "queued",
         requestedByActorType: opts.requestedByActorType ?? null,
         requestedByActorId: opts.requestedByActorId ?? null,
-        idempotencyKey: opts.idempotencyKey ?? null,
+        idempotencyKey: effectiveIdempotencyKey,
       })
       .returning()
       .then((rows) => rows[0]);
