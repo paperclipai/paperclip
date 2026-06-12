@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactRunLogChunk } from "../services/heartbeat.js";
+import { compactRunLogChunk, isSyntheticNonProgressRunLogChunk } from "../services/heartbeat.js";
 
 describe("compactRunLogChunk", () => {
   it("redacts inline base64 image data from structured log chunks", () => {
@@ -37,5 +37,24 @@ describe("compactRunLogChunk", () => {
     expect(compacted).not.toContain("paperclip-shell-secret");
     expect(compacted).not.toContain("paperclip-json-secret");
     expect(compacted).not.toContain("paperclip-flag-secret");
+  });
+});
+
+describe("isSyntheticNonProgressRunLogChunk", () => {
+  it("recognizes Paperclip k8s keepalive chunks", () => {
+    expect(
+      isSyntheticNonProgressRunLogChunk(
+        "[paperclip] keepalive — job ac-agent-123 running (713s since last output)\n",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not classify real output as synthetic keepalive", () => {
+    expect(isSyntheticNonProgressRunLogChunk("[paperclip] Starting workspace restore\n")).toBe(false);
+    expect(
+      isSyntheticNonProgressRunLogChunk(
+        "[paperclip] keepalive — job ac-agent-123 running (713s since last output)\nreal output\n",
+      ),
+    ).toBe(false);
   });
 });

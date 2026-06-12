@@ -257,6 +257,13 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+const STALE_QUEUED_MAINTENANCE_WAKE_MAX_AGE_MS = 30 * 60 * 1000;
+const STALE_QUEUED_MAINTENANCE_WAKE_BATCH_SIZE = 250;
+const STALE_QUEUED_MAINTENANCE_WAKE_REASONS = [
+  "heartbeat_timer",
+  "provider_quota_exhausted_recovered",
+  "transient_failure_retry",
+] as const;
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -1592,6 +1599,17 @@ export function compactRunLogChunk(chunk: string, maxChars = MAX_PERSISTED_LOG_C
   return `${normalized.slice(0, headChars)}${marker}${normalized.slice(normalized.length - tailChars)}`;
 }
 
+const SYNTHETIC_KEEPALIVE_RUN_LOG_LINE_RE =
+  /^\[paperclip\] keepalive\b.*\bjob\b.*\brunning \(\d+s since last output\)$/;
+
+export function isSyntheticNonProgressRunLogChunk(chunk: string) {
+  const lines = chunk
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines.length > 0 && lines.every((line) => SYNTHETIC_KEEPALIVE_RUN_LOG_LINE_RE.test(line));
+}
+
 function normalizeHeartbeatIntervalSec(value: unknown, fallback: number) {
   const parsed = Math.floor(asNumber(value, fallback));
   if (!Number.isFinite(parsed)) return fallback;
@@ -2913,6 +2931,10 @@ function enrichWakeContextSnapshot(input: {
   if (!readNonEmptyString(contextSnapshot["wakeTriggerDetail"]) && triggerDetail) {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
   }
+  if (!readNonEmptyString(contextSnapshot["taskKey"])) {
+    const fallbackTaskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, payload);
+    if (fallbackTaskKey) contextSnapshot.taskKey = fallbackTaskKey;
+  }
   normalizeModelProfileWakeContext({ contextSnapshot, payload });
   normalizeInteractionContinuationWakeContext(contextSnapshot, payload);
 
@@ -3294,7 +3316,7 @@ export async function buildPaperclipWakePayload(input: {
 }
 
 function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
-  return deriveTaskKey(run.contextSnapshot as Record<string, unknown> | null, null);
+  return deriveTaskKeyWithHeartbeatFallback(run.contextSnapshot as Record<string, unknown> | null, null);
 }
 
 function isSameTaskScope(left: string | null, right: string | null) {
@@ -9612,6 +9634,88 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
   }
 
+  function isQueuedMaintenanceWake(run: typeof heartbeatRuns.$inferSelect) {
+    const context = parseObject(run.contextSnapshot);
+    const wakeReason = readNonEmptyString(context.wakeReason);
+    return (
+      run.status === "queued" &&
+      !issueIdFromRunContext(context) &&
+      Boolean(wakeReason && STALE_QUEUED_MAINTENANCE_WAKE_REASONS.includes(
+        wakeReason as (typeof STALE_QUEUED_MAINTENANCE_WAKE_REASONS)[number],
+      ))
+    );
+  }
+
+  async function cancelStaleQueuedMaintenanceRun(run: typeof heartbeatRuns.$inferSelect, now: Date) {
+    const context = parseObject(run.contextSnapshot);
+    const wakeReason = readNonEmptyString(context.wakeReason);
+    const reason = "Cancelled stale non-issue maintenance wake backlog; the current or next timer wake represents latest state";
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: now,
+      error: reason,
+      errorCode: "stale_maintenance_wake_backlog",
+      resultJson: {
+        ...parseObject(run.resultJson),
+        stopReason: "stale_maintenance_wake_backlog",
+        wakeReason,
+        maintenanceCleanupAt: now.toISOString(),
+      },
+    });
+    await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+      finishedAt: now,
+      error: reason,
+    });
+    if (cancelled) {
+      await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "stale queued maintenance wake cancelled",
+        payload: {
+          wakeReason,
+          staleAgeMs: now.getTime() - new Date(run.updatedAt ?? run.createdAt).getTime(),
+        },
+      });
+    }
+    return cancelled;
+  }
+
+  async function pruneStaleQueuedMaintenanceRunsForAgent(agentId: string, now = new Date()) {
+    const staleCutoff = new Date(now.getTime() - STALE_QUEUED_MAINTENANCE_WAKE_MAX_AGE_MS);
+    const staleRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "queued"),
+          lt(heartbeatRuns.updatedAt, staleCutoff),
+          sql`not (${heartbeatRuns.contextSnapshot} ? 'issueId')`,
+          sql`not (${heartbeatRuns.contextSnapshot} ? 'taskId')`,
+          inArray(
+            sql<string>`${heartbeatRuns.contextSnapshot} ->> 'wakeReason'`,
+            [...STALE_QUEUED_MAINTENANCE_WAKE_REASONS],
+          ),
+        ),
+      )
+      .orderBy(asc(heartbeatRuns.updatedAt), asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+      .limit(STALE_QUEUED_MAINTENANCE_WAKE_BATCH_SIZE);
+
+    let cancelledCount = 0;
+    for (const run of staleRuns) {
+      if (!isQueuedMaintenanceWake(run)) continue;
+      const cancelled = await cancelStaleQueuedMaintenanceRun(run, now);
+      if (cancelled) cancelledCount += 1;
+    }
+    if (cancelledCount > 0) {
+      logger.info(
+        { agentId, cancelledCount, maxAgeMs: STALE_QUEUED_MAINTENANCE_WAKE_MAX_AGE_MS },
+        "pruned stale queued maintenance heartbeat runs",
+      );
+    }
+    return cancelledCount;
+  }
+
   function issueIdFromWakePayload(payload: unknown) {
     const parsed = parseObject(payload);
     const nestedContext = parseObject(parsed[DEFERRED_WAKE_CONTEXT_KEY]);
@@ -9865,6 +9969,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       const runningCount = await countRunningRunsForAgent(agentId);
       if (runningCount > 0 && hasExternalLifecycle(agent.adapterType)) {
+        await pruneStaleQueuedMaintenanceRunsForAgent(agentId);
         logger.debug(
           { agentId, adapterType: agent.adapterType, runningCount },
           "startNextQueuedRunForAgent: external-lifecycle agent already has an active run",
@@ -9872,6 +9977,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return [];
       }
       if (hasExternalLifecycle(agent.adapterType) && await hasActiveJobForAgent(agentId)) {
+        await pruneStaleQueuedMaintenanceRunsForAgent(agentId);
         logger.debug(
           { agentId, adapterType: agent.adapterType },
           "startNextQueuedRunForAgent: external-lifecycle agent still has an active Kubernetes Job or Pod",
@@ -11131,8 +11237,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const sanitizedChunk = compactRunLogChunk(
           redactCurrentUserText(chunk, currentUserRedactionOptions),
         );
-        if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
-        if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
+        const countsAsRunProgress = !isSyntheticNonProgressRunLogChunk(sanitizedChunk);
+        if (countsAsRunProgress && stream === "stdout") {
+          stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
+        }
+        if (countsAsRunProgress && stream === "stderr") {
+          stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
+        }
         const ts = new Date().toISOString();
 
         let appendedBytes = 0;
@@ -11144,14 +11255,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           });
           persistedLogBytes += appendedBytes;
         }
-        outputSeq += 1;
-        outputProgressState.pending = {
-          at: new Date(ts),
-          seq: outputSeq,
-          stream,
-          bytes: persistedLogBytes,
-        };
-        await flushOutputProgress();
+        if (countsAsRunProgress) {
+          outputSeq += 1;
+          outputProgressState.pending = {
+            at: new Date(ts),
+            seq: outputSeq,
+            stream,
+            bytes: persistedLogBytes,
+          };
+          await flushOutputProgress();
+        }
 
         const payloadChunk =
           sanitizedChunk.length > MAX_LIVE_LOG_CHUNK_BYTES
@@ -13360,13 +13473,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .orderBy(desc(heartbeatRuns.createdAt));
 
     const sameScopeQueuedRun = activeRuns.find(
-      (candidate) => candidate.status === "queued" && isSameTaskScope(runTaskKey(candidate), taskKey),
+      (candidate) => candidate.status === "queued" && isSameTaskScope(runTaskKey(candidate), effectiveTaskKey),
     );
     const sameScopeScheduledRetryRun = activeRuns.find(
-      (candidate) => candidate.status === "scheduled_retry" && isSameTaskScope(runTaskKey(candidate), taskKey),
+      (candidate) => candidate.status === "scheduled_retry" && isSameTaskScope(runTaskKey(candidate), effectiveTaskKey),
     );
     const sameScopeRunningRun = activeRuns.find(
-      (candidate) => candidate.status === "running" && isSameTaskScope(runTaskKey(candidate), taskKey),
+      (candidate) => candidate.status === "running" && isSameTaskScope(runTaskKey(candidate), effectiveTaskKey),
     );
     const shouldQueueFollowupForRunningWake =
       Boolean(sameScopeRunningRun) &&

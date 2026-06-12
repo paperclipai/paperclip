@@ -41,7 +41,10 @@ const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn<
-    (ctx: { runId: string }) => Promise<{
+    (ctx: {
+      runId: string;
+      onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+    }) => Promise<{
       exitCode: number;
       signal: string | null;
       timedOut: boolean;
@@ -1908,6 +1911,56 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(0);
+  });
+
+  it("does not treat synthetic k8s keepalive chunks as run output progress", async () => {
+    const readOutputProgress = async (runId: string) =>
+      db
+        .select({
+          lastOutputAt: heartbeatRuns.lastOutputAt,
+          lastOutputSeq: heartbeatRuns.lastOutputSeq,
+          lastOutputStream: heartbeatRuns.lastOutputStream,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+
+    let progressBeforeKeepalive: Awaited<ReturnType<typeof readOutputProgress>> = null;
+    let progressAfterKeepalive: Awaited<ReturnType<typeof readOutputProgress>> = null;
+
+    mockAdapterExecute.mockImplementationOnce(async (ctx) => {
+      progressBeforeKeepalive = await readOutputProgress(ctx.runId);
+      await ctx.onLog?.(
+        "stdout",
+        "[paperclip] keepalive — job ac-agent-123 running (713s since last output)\n",
+      );
+      progressAfterKeepalive = await readOutputProgress(ctx.runId);
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Completed after a synthetic keepalive.",
+        provider: "test",
+        model: "test-model",
+        resultJson: { result: "done" },
+      };
+    });
+
+    const { runId } = await seedQueuedIssueRunFixture();
+
+    await heartbeat.resumeQueuedRuns();
+    const settledRun = await waitForRunToSettle(heartbeat, runId);
+
+    expect(settledRun?.status).toBe("succeeded");
+    expect(settledRun?.logBytes ?? 0).toBeGreaterThan(0);
+    expect(progressAfterKeepalive).not.toBeNull();
+    expect(progressAfterKeepalive?.lastOutputAt?.toISOString() ?? null).toBe(
+      progressBeforeKeepalive?.lastOutputAt?.toISOString() ?? null,
+    );
+    expect(progressAfterKeepalive?.lastOutputSeq).toBe(progressBeforeKeepalive?.lastOutputSeq);
+    expect(progressAfterKeepalive?.lastOutputStream).toBe(progressBeforeKeepalive?.lastOutputStream);
+    expect(settledRun?.stdoutExcerpt ?? "").not.toContain("[paperclip] keepalive");
   });
 
   it("schedules a bounded retry for codex transient upstream failures instead of blocking the issue immediately", async () => {
