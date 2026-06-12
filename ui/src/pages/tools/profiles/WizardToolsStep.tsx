@@ -307,6 +307,12 @@ const RULE_KIND_OPTIONS: Array<{ value: AdvancedRuleKind; label: string }> = [
   { value: "catalog_entry", label: "By tool ID" },
 ];
 
+function createAdvancedRuleId() {
+  const randomUuid = globalThis.crypto?.randomUUID?.();
+  if (randomUuid) return randomUuid;
+  return `rule-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function ruleSummary(rule: AdvancedRule): string {
   const verb = rule.effect === "include" ? "Allow" : "Block";
   if (rule.kind === "tool_name") return `${verb} tools matching ${rule.value}`;
@@ -330,7 +336,7 @@ function AdvancedRules({
     const trimmed = value.trim();
     if (!trimmed && kind !== "risk_level") return;
     const rule: AdvancedRule = {
-      id: crypto.randomUUID(),
+      id: createAdvancedRuleId(),
       kind,
       value: kind === "risk_level" ? (trimmed || "destructive") : trimmed,
       riskLevel: kind === "risk_level" ? ((trimmed || "destructive") as AdvancedRule["riskLevel"]) : undefined,
