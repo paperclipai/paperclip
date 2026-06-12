@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import os from "node:os";
 import type { AdapterModel } from "@paperclipai/adapter-utils";
 import {
+  asNumber,
   asString,
   ensurePathInEnv,
   runChildProcess,
@@ -9,7 +10,13 @@ import {
 import { isValidOpenCodeModelId } from "../index.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
-const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
+const DEFAULT_MODELS_DISCOVERY_TIMEOUT_MS = 60_000;
+
+function resolveModelsDiscoveryTimeoutMs(modelsProbeTimeoutSec: unknown): number {
+  const overrideSec = asNumber(modelsProbeTimeoutSec, 0);
+  if (overrideSec > 0) return overrideSec * 1000;
+  return DEFAULT_MODELS_DISCOVERY_TIMEOUT_MS;
+}
 
 function resolveOpenCodeCommand(input: unknown): string {
   const envOverride =
@@ -113,10 +120,12 @@ export async function discoverOpenCodeModels(input: {
   command?: unknown;
   cwd?: unknown;
   env?: unknown;
+  modelsProbeTimeoutSec?: unknown;
 } = {}): Promise<AdapterModel[]> {
   const command = resolveOpenCodeCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
+  const timeoutMs = resolveModelsDiscoveryTimeoutMs(input.modelsProbeTimeoutSec);
   // Ensure HOME points to the actual running user's home directory.
   // When the server is started via `runuser -u <user>`, HOME may still
   // reflect the parent process (e.g. /root), causing OpenCode to miss
@@ -132,6 +141,7 @@ export async function discoverOpenCodeModels(input: {
   // Prevent OpenCode from writing an opencode.json into the working directory.
   const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env, ...(resolvedHome ? { HOME: resolvedHome } : {}), OPENCODE_DISABLE_PROJECT_CONFIG: "true" }));
 
+  const timeoutSec = timeoutMs / 1000;
   const result = await runChildProcess(
     `opencode-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     command,
@@ -139,14 +149,14 @@ export async function discoverOpenCodeModels(input: {
     {
       cwd,
       env: runtimeEnv,
-      timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
+      timeoutSec,
       graceSec: 3,
       onLog: async () => {},
     },
   );
 
   if (result.timedOut) {
-    throw new Error(`\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s.`);
+    throw new Error(`\`opencode models\` timed out after ${timeoutSec}s.`);
   }
   if ((result.exitCode ?? 1) !== 0) {
     const detail = firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);
@@ -160,6 +170,7 @@ export async function discoverOpenCodeModelsCached(input: {
   command?: unknown;
   cwd?: unknown;
   env?: unknown;
+  modelsProbeTimeoutSec?: unknown;
 } = {}): Promise<AdapterModel[]> {
   const command = resolveOpenCodeCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
@@ -170,7 +181,7 @@ export async function discoverOpenCodeModelsCached(input: {
   const cached = discoveryCache.get(key);
   if (cached && cached.expiresAt > now) return cached.models;
 
-  const models = await discoverOpenCodeModels({ command, cwd, env });
+  const models = await discoverOpenCodeModels({ command, cwd, env, modelsProbeTimeoutSec: input.modelsProbeTimeoutSec });
   discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
   return models;
 }
@@ -186,6 +197,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   command?: unknown;
   cwd?: unknown;
   env?: unknown;
+  modelsProbeTimeoutSec?: unknown;
 }): Promise<AdapterModel[]> {
   const model = requireOpenCodeModelId(input.model);
 
@@ -203,6 +215,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
     command: input.command,
     cwd: input.cwd,
     env: input.env,
+    modelsProbeTimeoutSec: input.modelsProbeTimeoutSec,
   });
 
   if (models.length === 0) {
