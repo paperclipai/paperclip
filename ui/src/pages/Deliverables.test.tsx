@@ -118,7 +118,7 @@ describe("Deliverables page", () => {
     expect(container.textContent).toContain("Internal");
 
     const downloadLinks = Array.from(container.querySelectorAll("a")).filter(
-      (a) => a.getAttribute("href") === "/api/attachments/abc/content",
+      (a) => a.getAttribute("href") === "/api/deliverables/deliverable-1/content",
     );
     expect(downloadLinks.length).toBeGreaterThan(0);
     const firstDownload = downloadLinks[0]!;

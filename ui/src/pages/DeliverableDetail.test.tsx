@@ -116,7 +116,7 @@ describe("DeliverableDetail page", () => {
     expect(container.textContent).toContain("PAP-12");
 
     const downloadLinks = Array.from(container.querySelectorAll("a")).filter(
-      (a) => a.getAttribute("href") === "/api/attachments/abc/content",
+      (a) => a.getAttribute("href") === "/api/deliverables/deliverable-1/content",
     );
     expect(downloadLinks.length).toBeGreaterThan(0);
     expect(downloadLinks[0]!.getAttribute("download")).toBe("report.pdf");

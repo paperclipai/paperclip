@@ -244,7 +244,7 @@ function DeliverableRow({ item }: { item: DeliverableListItem }) {
       </td>
       <td className="px-3 py-2 text-right align-top">
         <a
-          href={item.contentPath}
+          href={`/api/deliverables/${item.id}/content`}
           download={item.originalFilename ?? undefined}
           className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
           onClick={(event) => event.stopPropagation()}

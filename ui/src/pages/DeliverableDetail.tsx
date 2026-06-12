@@ -63,7 +63,7 @@ export function DeliverableDetail() {
 }
 
 function DeliverableDetailView({ data }: { data: DeliverableDetailType }) {
-  const downloadHref = data.contentPath;
+  const downloadHref = `/api/deliverables/${data.id}/content`;
   const downloadName = data.originalFilename ?? undefined;
 
   return (
