@@ -164,6 +164,13 @@ export async function createApp(
      * setups); null/undefined constructs the replication handle disabled.
      */
     pluginSnapshotStorageProvider?: StorageProvider | null;
+    /**
+     * Direct database connection string for the session-scoped
+     * `"plugin-install"` advisory lock taken around replicated plugin
+     * mutations (routes/plugins.ts). Required whenever
+     * `pluginSnapshotStorageProvider` is set.
+     */
+    pluginMutationLockUrl?: string;
     pluginWorkerManager?: PluginWorkerManager;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
@@ -328,6 +335,11 @@ export async function createApp(
   // handle always exists (disabled without a provider) so routes and health
   // can depend on it unconditionally.
   const pluginsMustSync = process.env.PAPERCLIP_PLUGINS_MUST_SYNC === "true";
+  if (opts.pluginSnapshotStorageProvider && !opts.pluginMutationLockUrl) {
+    throw new Error(
+      "pluginMutationLockUrl is required when pluginSnapshotStorageProvider is set (session-scoped plugin-install lock)",
+    );
+  }
   // Armed after the initial loadAll(): a snapshot applied during startup is
   // picked up by loadAll itself, and reconciling on top of it would
   // double-start every worker.
@@ -355,7 +367,10 @@ export async function createApp(
       { workerManager },
       { toolDispatcher },
       { workerManager },
-      { replication: pluginArtifactReplication },
+      {
+        replication: pluginArtifactReplication,
+        pluginMutationLockUrl: opts.pluginMutationLockUrl ?? "",
+      },
     ),
   );
   api.use(adapterRoutes());

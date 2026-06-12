@@ -201,7 +201,25 @@ describe("GET /health", () => {
     expect(res.body.scheduler).not.toHaveProperty("leader");
   });
 
-  it("returns 503 starting before the db probe while plugin snapshot sync is pending under mustSync", async () => {
+  it("GET /health/ready returns 503 not-ready while plugin snapshot sync is pending under mustSync", async () => {
+    mockGetRegisteredPluginReplication.mockReturnValue({
+      mustSync: true,
+      isSynced: () => false,
+    });
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+    } as unknown as Db;
+    const app = createApp(db);
+
+    const res = await request(app).get("/health/ready");
+
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ ready: false, reason: "plugin snapshot sync pending" });
+    // Readiness is the plugin-sync gate only — no db probe.
+    expect(db.execute).not.toHaveBeenCalled();
+  });
+
+  it("GET /health stays a 200 liveness view while plugin snapshot sync is pending under mustSync", async () => {
     mockGetRegisteredPluginReplication.mockReturnValue({
       mustSync: true,
       isSynced: () => false,
@@ -213,43 +231,13 @@ describe("GET /health", () => {
 
     const res = await request(app).get("/health");
 
-    expect(res.status).toBe(503);
-    expect(res.body).toEqual({ status: "starting", reason: "plugin snapshot sync pending" });
-    // Readiness gate: an unsynced replica must report 503 even when the
-    // database is reachable — the db probe is not consulted at all.
-    expect(db.execute).not.toHaveBeenCalled();
+    // The sync gate lives on /health/ready only: gating liveness too would
+    // make orchestrators restart a healthy pod that is merely catching up.
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: "ok", version: serverVersion });
   });
 
-  it("gates the redacted health view too while plugin snapshot sync is pending", async () => {
-    mockGetRegisteredPluginReplication.mockReturnValue({
-      mustSync: true,
-      isSynced: () => false,
-    });
-    const db = {
-      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
-    } as unknown as Db;
-    const app = express();
-    app.use((req, _res, next) => {
-      (req as any).actor = { type: "none", source: "none" };
-      next();
-    });
-    app.use(
-      "/health",
-      healthRoutes(db, {
-        deploymentMode: "authenticated",
-        deploymentExposure: "public",
-        authReady: true,
-        companyDeletionEnabled: false,
-      }),
-    );
-
-    const res = await request(app).get("/health");
-
-    expect(res.status).toBe(503);
-    expect(res.body).toEqual({ status: "starting", reason: "plugin snapshot sync pending" });
-  });
-
-  it("serves health normally once the plugin snapshot sync completed under mustSync", async () => {
+  it("GET /health/ready returns ready once the plugin snapshot sync completed under mustSync", async () => {
     mockGetRegisteredPluginReplication.mockReturnValue({
       mustSync: true,
       isSynced: () => true,
@@ -259,13 +247,13 @@ describe("GET /health", () => {
     } as unknown as Db;
     const app = createApp(db);
 
-    const res = await request(app).get("/health");
+    const res = await request(app).get("/health/ready");
 
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ status: "ok", version: serverVersion });
+    expect(res.body).toEqual({ ready: true });
   });
 
-  it("does not gate health when mustSync is off, even while unsynced", async () => {
+  it("GET /health/ready does not gate when mustSync is off, even while unsynced", async () => {
     mockGetRegisteredPluginReplication.mockReturnValue({
       mustSync: false,
       isSynced: () => false,
@@ -275,10 +263,20 @@ describe("GET /health", () => {
     } as unknown as Db;
     const app = createApp(db);
 
-    const res = await request(app).get("/health");
+    const res = await request(app).get("/health/ready");
 
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ status: "ok", version: serverVersion });
+    expect(res.body).toEqual({ ready: true });
+  });
+
+  it("GET /health/ready returns ready when no plugin replication is registered", async () => {
+    mockGetRegisteredPluginReplication.mockReturnValue(null);
+    const app = createApp();
+
+    const res = await request(app).get("/health/ready");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ready: true });
   });
 
   it("keeps detailed metadata for authenticated requests in authenticated mode", async () => {

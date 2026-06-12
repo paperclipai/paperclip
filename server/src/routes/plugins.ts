@@ -47,7 +47,7 @@ import {
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
-import { withAdvisoryXactLock } from "../services/advisory-locks.js";
+import { trySessionAdvisoryLock } from "../services/advisory-locks.js";
 import { getPluginUiContributionMetadata, pluginLoader } from "../services/plugin-loader.js";
 import { logActivity } from "../services/activity-log.js";
 import { publishGlobalLiveEvent } from "../services/live-events.js";
@@ -401,9 +401,10 @@ export interface PluginRouteBridgeDeps {
  * (install / uninstall / upgrade) across replicas.
  *
  * When provided AND active, mutation handlers serialize cluster-wide via the
- * `"plugin-install"` advisory lock and publish a plugin tree snapshot inside
- * that lock. When omitted or inactive (single-replica deployments), mutations
- * run exactly as before.
+ * session-scoped `"plugin-install"` advisory lock (409 on contention),
+ * converge the local tree onto max(generation) first, and publish a plugin
+ * tree snapshot before responding. When omitted or inactive (single-replica
+ * deployments), mutations run exactly as before.
  *
  * @see services/plugin-artifact-replication.ts
  */
@@ -413,7 +414,18 @@ export interface PluginRouteReplicationDeps {
     isActive(): boolean;
     /** Publish the local plugin tree as the next generation snapshot. */
     publishSnapshot(): Promise<{ generation: number } | null>;
+    /** Converge the local tree onto max(generation). */
+    reconcile(): Promise<{ applied: boolean; generation: number | null }>;
+    /** Serialize `fn` against this replica's reconcile passes. */
+    runExclusive<T>(fn: () => Promise<T>): Promise<T>;
   };
+  /**
+   * Direct (non-pooled) connection string for the session-scoped
+   * `"plugin-install"` advisory lock. Session scope keeps the minutes-long
+   * critical section (npm install + tar + upload) off a pooled transaction —
+   * see the `withAdvisoryXactLock` contract in services/advisory-locks.ts.
+   */
+  pluginMutationLockUrl: string;
 }
 
 /**
@@ -430,6 +442,32 @@ class PluginReplicationPublishError extends Error {
     );
     this.name = "PluginReplicationPublishError";
   }
+}
+
+/**
+ * Marker error: the session-scoped `"plugin-install"` advisory lock is held
+ * elsewhere (another mutation in flight, on this or another replica).
+ * Handlers map it to a 409 — the client retries once the other operation
+ * finished, instead of queueing behind a minutes-long npm install.
+ */
+class PluginMutationLockUnavailableError extends Error {
+  constructor() {
+    super("another plugin operation is in progress on this instance");
+    this.name = "PluginMutationLockUnavailableError";
+  }
+}
+
+/** Shared 409/500 mapping for the replicated mutation handlers. */
+function handleReplicatedMutationError(res: Response, err: unknown): boolean {
+  if (err instanceof PluginMutationLockUnavailableError) {
+    res.status(409).json({ error: err.message });
+    return true;
+  }
+  if (err instanceof PluginReplicationPublishError) {
+    res.status(500).json({ error: err.message });
+    return true;
+  }
+  return false;
 }
 
 interface PluginScopedApiRequest {
@@ -529,31 +567,51 @@ export function pluginRoutes(
   const replication = replicationDeps?.replication;
 
   /**
-   * Run a plugin-tree mutation. With replication active the mutation is
-   * serialized cluster-wide under the `"plugin-install"` advisory lock and a
-   * snapshot is published INSIDE the lock once `fn` resolved (i.e. after the
-   * disk + registry mutation succeeded) — callers respond and emit
-   * `plugin.ui.updated` only after the publish, so peers never learn of a
-   * change that was not replicated. With replication inactive `fn` runs
-   * directly: a single replica has no peers to race or to converge.
+   * Run a plugin-tree mutation. With replication active:
    *
-   * The critical section is bounded by one npm install/uninstall plus one
-   * tar+upload of the plugin tree.
+   * 1. Acquire the session-scoped `"plugin-install"` advisory lock (held on
+   *    a dedicated direct connection — the critical section spans an npm
+   *    install plus tar+upload, far too long for a pooled transaction lock).
+   *    Held elsewhere → PluginMutationLockUnavailableError (409): peers and
+   *    concurrent local mutations are excluded for the whole section.
+   * 2. Inside `runExclusive` (no reconcile pass can swap the tree while the
+   *    mutation runs on this replica):
+   *    a. `reconcile()` — converge the LOCAL tree onto max(generation)
+   *       first. This replica may be generations behind (cross-replica
+   *       events do not exist yet; the lag bound is the 60s tick), and
+   *       mutating a stale tree would silently drop every newer peer
+   *       install from the snapshot this mutation publishes.
+   *    b. `fn` — the disk + registry mutation, now based on max(generation).
+   *    c. `publishSnapshot()` — callers respond and emit `plugin.ui.updated`
+   *       only after the publish, so peers never learn of a change that was
+   *       not replicated.
    *
+   * With replication inactive `fn` runs directly: a single replica has no
+   * peers to race or to converge.
+   *
+   * @throws PluginMutationLockUnavailableError when the lock is contended
+   *         (mapped to 409 by the handlers).
    * @throws PluginReplicationPublishError when `fn` succeeded but the
    *         snapshot publish failed (mapped to 500 by the handlers).
    */
   async function withReplicatedPluginMutation<T>(fn: () => Promise<T>): Promise<T> {
-    if (!replication?.isActive()) return fn();
-    return withAdvisoryXactLock(db, "plugin-install", async () => {
-      const result = await fn();
-      try {
-        await replication.publishSnapshot();
-      } catch (err) {
-        throw new PluginReplicationPublishError(err);
-      }
-      return result;
-    });
+    if (!replication?.isActive() || !replicationDeps) return fn();
+    const lock = await trySessionAdvisoryLock(replicationDeps.pluginMutationLockUrl, "plugin-install");
+    if (!lock.acquired) throw new PluginMutationLockUnavailableError();
+    try {
+      return await replication.runExclusive(async () => {
+        await replication.reconcile();
+        const result = await fn();
+        try {
+          await replication.publishSnapshot();
+        } catch (err) {
+          throw new PluginReplicationPublishError(err);
+        }
+        return result;
+      });
+    } finally {
+      await lock.release();
+    }
   }
 
   function matchScopedApiRoute(route: PluginApiRouteDeclaration, method: string, requestPath: string) {
@@ -1163,10 +1221,7 @@ export function pluginRoutes(
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: existingPlugin.id, action: "installed" } });
       res.json(updated);
     } catch (err) {
-      if (err instanceof PluginReplicationPublishError) {
-        res.status(500).json({ error: err.message });
-        return;
-      }
+      if (handleReplicatedMutationError(res, err)) return;
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }
@@ -1937,10 +1992,7 @@ export function pluginRoutes(
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "uninstalled" } });
       res.json(result);
     } catch (err) {
-      if (err instanceof PluginReplicationPublishError) {
-        res.status(500).json({ error: err.message });
-        return;
-      }
+      if (handleReplicatedMutationError(res, err)) return;
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }
@@ -2185,10 +2237,7 @@ export function pluginRoutes(
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "upgraded" } });
       res.json(result);
     } catch (err) {
-      if (err instanceof PluginReplicationPublishError) {
-        res.status(500).json({ error: err.message });
-        return;
-      }
+      if (handleReplicatedMutationError(res, err)) return;
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }

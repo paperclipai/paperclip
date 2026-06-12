@@ -541,10 +541,21 @@ export interface PluginLoader {
   unloadSingle(pluginId: string, pluginKey: string): Promise<void>;
 
   /**
+   * The version this loader recorded when it activated `pluginId`, or
+   * `undefined` when the plugin was not activated by this loader instance.
+   *
+   * Read by `reconcileLoadedPlugins()` to detect peer upgrades: after a
+   * snapshot swap the registry row carries the NEW version while the running
+   * worker still executes the old code.
+   */
+  activePluginVersion(pluginId: string): string | undefined;
+
+  /**
    * Converge the in-memory plugin runtime onto the registry: activate
-   * `ready` plugins that have no worker handle and unload workers whose
+   * `ready` plugins that have no worker handle, unload workers whose
    * plugin is no longer `ready` (uninstalled or disabled on another
-   * replica).
+   * replica), and restart workers whose registry version moved (upgraded
+   * on another replica).
    *
    * Called after a plugin snapshot swap (plugin-artifact-replication.ts)
    * when the on-disk plugin tree changed underneath a running server.
@@ -834,6 +845,14 @@ export function pluginLoader(
    * unloadSingle; read by reconcileLoadedPlugins.
    */
   const activePluginKeys = new Map<string, string>();
+  /**
+   * pluginId → version recorded at activation. A peer upgrade lands here as
+   * a snapshot swap that bumps the REGISTRY version while the running worker
+   * still executes the previously activated code — reconcileLoadedPlugins
+   * compares against this map to know when a worker must be restarted.
+   * Maintained by activatePlugin / unloadSingle.
+   */
+  const activePluginVersions = new Map<string, string>();
 
   async function assertPageRoutePathsAvailable(manifest: PaperclipPluginManifestV1): Promise<void> {
     const requestedRoutePaths = getDeclaredPageRoutePaths(manifest);
@@ -1774,11 +1793,16 @@ export function pluginLoader(
       }
 
       activePluginKeys.delete(pluginId);
+      activePluginVersions.delete(pluginId);
 
       log.info(
         { pluginId, pluginKey },
         "plugin-loader: plugin unloaded successfully",
       );
+    },
+
+    activePluginVersion(pluginId: string): string | undefined {
+      return activePluginVersions.get(pluginId);
     },
 
     // -----------------------------------------------------------------------
@@ -1825,7 +1849,43 @@ export function pluginLoader(
       }
 
       for (const plugin of readyPlugins) {
-        if (activeIds.has(plugin.id)) continue;
+        if (activeIds.has(plugin.id)) {
+          // Present in both sets: restart when the registry version moved —
+          // a peer upgrade arrives as a snapshot swap that changes the
+          // on-disk code and registry row while this worker still runs the
+          // previously activated version. An unrecorded activation version
+          // is skipped (cannot tell an upgrade from a recording gap; never
+          // bounce a healthy worker blindly).
+          const activeVersion = this.activePluginVersion(plugin.id);
+          if (activeVersion === undefined || activeVersion === plugin.version) continue;
+          try {
+            await this.unloadSingle(
+              plugin.id,
+              activePluginKeys.get(plugin.id) ?? plugin.pluginKey,
+            );
+            unloaded.push(plugin.id);
+            const result = await this.loadSingle(plugin.id);
+            if (result.success) {
+              loaded.push(plugin.id);
+            } else {
+              log.warn(
+                { pluginId: plugin.id, activeVersion, registryVersion: plugin.version, error: result.error },
+                "plugin-loader: reconcile restart (upgrade) load failed (continuing)",
+              );
+            }
+          } catch (err) {
+            log.warn(
+              {
+                pluginId: plugin.id,
+                activeVersion,
+                registryVersion: plugin.version,
+                err: err instanceof Error ? err.message : String(err),
+              },
+              "plugin-loader: reconcile restart (upgrade) failed (continuing)",
+            );
+          }
+          continue;
+        }
         try {
           const result = await this.loadSingle(plugin.id);
           if (result.success) {
@@ -2080,7 +2140,10 @@ export function pluginLoader(
       // Remember the key for scoped cleanup in reconcileLoadedPlugins():
       // after a purge-uninstall on another replica the registry row is gone,
       // so the key cannot be recovered from the database at unload time.
+      // The version lets the same reconcile detect peer upgrades (registry
+      // version moved while this worker still runs the old code).
       activePluginKeys.set(pluginId, pluginKey);
+      activePluginVersions.set(pluginId, activePlugin.version);
 
       return { plugin: activePlugin, success: true, registered };
     } catch (err) {

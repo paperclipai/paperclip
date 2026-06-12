@@ -80,17 +80,26 @@ export function healthRoutes(
     res.status(202).json({ status: "restart_requested" });
   });
 
-  router.get("/", async (req, res) => {
-    // Readiness gate (PAPERCLIP_PLUGINS_MUST_SYNC, multi-replica): a replica
-    // that has not yet converged on the latest plugin snapshot must not be
-    // routed traffic — it would serve a stale plugin tree. Checked before the
-    // db probe and applied to both the redacted and full health views.
+  /**
+   * GET /api/health/ready — readiness probe (vs. `GET /api/health`, which
+   * stays a liveness view: a healthy process that is deliberately held out
+   * of rotation must not be restarted by a liveness check).
+   *
+   * Readiness gate (PAPERCLIP_PLUGINS_MUST_SYNC, multi-replica): a replica
+   * that has not yet converged on the latest plugin snapshot must not be
+   * routed traffic — it would serve a stale plugin tree. Deliberately
+   * minimal: plugin-sync gate only, 200 whenever no gate applies.
+   */
+  router.get("/ready", (_req, res) => {
     const pluginReplication = getRegisteredPluginReplication();
     if (pluginReplication?.mustSync && !pluginReplication.isSynced()) {
-      res.status(503).json({ status: "starting", reason: "plugin snapshot sync pending" });
+      res.status(503).json({ ready: false, reason: "plugin snapshot sync pending" });
       return;
     }
+    res.json({ ready: true });
+  });
 
+  router.get("/", async (req, res) => {
     const actorType = "actor" in req ? req.actor?.type : null;
     const exposeFullDetails = shouldExposeFullHealthDetails(
       actorType,

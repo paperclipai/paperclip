@@ -861,6 +861,7 @@ export async function startServer(): Promise<StartedServer> {
     companyDeletionEnabled: config.companyDeletionEnabled,
     pluginMigrationDb: pluginMigrationDb as any,
     pluginSnapshotStorageProvider,
+    pluginMutationLockUrl: activeDatabaseConnectionString,
     betterAuthHandler,
     resolveSession,
     pluginWorkerManager,

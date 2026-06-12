@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -51,6 +52,13 @@ const RECONCILE_DEBOUNCE_MS = 2_000;
 /** Periodic reconcile safety net for missed live events. */
 const RECONCILE_INTERVAL_MS = 60_000;
 
+/**
+ * Upper bound on one snapshot object download. Without it, a wedged storage
+ * stream parks a reconcile pass forever — and with it the whole serialization
+ * chain (later reconciles AND runExclusive mutations).
+ */
+const OBJECT_DOWNLOAD_TIMEOUT_MS = 60_000;
+
 export interface PluginArtifactReplication {
   /**
    * Tar the local plugin tree, upload it, and CAS-insert the next generation
@@ -59,9 +67,21 @@ export interface PluginArtifactReplication {
   publishSnapshot(): Promise<{ generation: number } | null>;
   /**
    * Converge the local tree onto max(generation): download, verify, extract,
-   * atomic swap. Serialized — concurrent calls share one in-flight pass.
+   * atomic swap. Passes are serialized on the same chain as `runExclusive`;
+   * calls made while a follow-up pass is queued coalesce onto that pass.
+   * Called from INSIDE a `runExclusive` callback it runs a direct pass
+   * (queueing would deadlock against the caller's own exclusive section).
    */
   reconcile(): Promise<{ applied: boolean; generation: number | null }>;
+  /**
+   * Run `fn` on the serialization chain reconcile passes use: while `fn`
+   * runs, no reconcile can swap the tree out from under it, and once `fn`
+   * starts every previously queued pass has completed. Used by the plugin
+   * mutation routes to converge-then-mutate-then-publish atomically with
+   * respect to this replica's reconciler. Runs `fn` directly when
+   * replication is disabled.
+   */
+  runExclusive<T>(fn: () => Promise<T>): Promise<T>;
   /** Subscribe to plugin live events (debounced reconcile) + periodic reconcile. */
   start(): void;
   /** Unsubscribe, clear timers, and await any in-flight reconcile. */
@@ -79,18 +99,40 @@ export function createPluginArtifactReplication(opts: {
   pluginsDir: string;
   replicaId: string;
   mustSync?: boolean;
+  /** Override for OBJECT_DOWNLOAD_TIMEOUT_MS (tests). */
+  downloadTimeoutMs?: number;
   /** Hot-reload hook; called after a successful tree swap (errors logged, not thrown). */
   onApplySnapshot: () => Promise<void>;
 }): PluginArtifactReplication {
   const { db, provider, pluginsDir, replicaId, onApplySnapshot } = opts;
+  const downloadTimeoutMs = opts.downloadTimeoutMs ?? OBJECT_DOWNLOAD_TIMEOUT_MS;
 
   let synced = false;
   let started = false;
   let unsubscribe: (() => void) | null = null;
   let intervalTimer: NodeJS.Timeout | null = null;
   let debounceTimer: NodeJS.Timeout | null = null;
-  /** Serializes reconciles: never two concurrent swaps. */
-  let inFlightReconcile: Promise<{ applied: boolean; generation: number | null }> | null = null;
+  /**
+   * Tail of the serialization chain shared by reconcile passes and
+   * runExclusive sections: at most one of either runs at a time, so a tree
+   * swap can never interleave with an exclusive mutation. The stored tail is
+   * always settled-swallowed — errors reach callers via their own promise.
+   */
+  let serializationTail: Promise<unknown> = Promise.resolve();
+  /** The reconcile pass that is queued on the chain but has not started yet. */
+  let queuedReconcile: Promise<{ applied: boolean; generation: number | null }> | null = null;
+  /** Truthy inside a runExclusive callback's async context (re-entrant reconcile). */
+  const exclusiveContext = new AsyncLocalStorage<boolean>();
+
+  /** Append `fn` to the serialization chain; its result/rejection is the caller's. */
+  function enqueue<T>(fn: () => Promise<T>): Promise<T> {
+    const next = serializationTail.then(() => fn());
+    serializationTail = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
 
   function markerPath(): string {
     return path.join(pluginsDir, SNAPSHOT_MARKER_FILENAME);
@@ -211,12 +253,31 @@ export function createPluginArtifactReplication(opts: {
     if (!provider) throw new Error("plugin artifact replication is disabled");
     // GetObjectResult carries a Readable in `.stream` — collect it fully so
     // we can hash-verify before anything touches the live tree.
-    const result = await provider.getObject({ objectKey: storageKey });
-    const chunks: Buffer[] = [];
-    for await (const chunk of result.stream) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const download = async (): Promise<Buffer> => {
+      const result = await provider.getObject({ objectKey: storageKey });
+      const chunks: Buffer[] = [];
+      for await (const chunk of result.stream) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      return Buffer.concat(chunks);
+    };
+    // Bounded: a wedged stream must fail the pass, not park the chain forever.
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(
+          new Error(
+            `Plugin snapshot download timed out after ${downloadTimeoutMs}ms (${storageKey})`,
+          ),
+        );
+      }, downloadTimeoutMs);
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([download(), timeout]);
+    } finally {
+      clearTimeout(timer);
     }
-    return Buffer.concat(chunks);
   }
 
   async function reconcileOnce(): Promise<{ applied: boolean; generation: number | null }> {
@@ -285,15 +346,28 @@ export function createPluginArtifactReplication(opts: {
 
   function reconcile(): Promise<{ applied: boolean; generation: number | null }> {
     if (!provider) return Promise.resolve({ applied: false, generation: null });
-    // Serialize through the in-flight promise: a call that arrives while a
-    // pass is running queues exactly one follow-up pass behind it.
-    const previous = inFlightReconcile ?? Promise.resolve(null);
-    const next = previous.catch(() => {}).then(() => reconcileOnce());
-    inFlightReconcile = next;
-    next.catch(() => {}).finally(() => {
-      if (inFlightReconcile === next) inFlightReconcile = null;
+    // Re-entrant call from inside a runExclusive callback: the chain is
+    // already held by that callback, so queueing would deadlock — run a
+    // direct pass; the surrounding exclusive section IS the serialization.
+    if (exclusiveContext.getStore()) return reconcileOnce();
+    // Coalesce: while a follow-up pass is queued but not started, additional
+    // calls share it — that pass will observe every generation published
+    // before it starts, so a second queued pass could never see more.
+    if (queuedReconcile) return queuedReconcile;
+    const pass: Promise<{ applied: boolean; generation: number | null }> = enqueue(async () => {
+      // The pass is now running: stop coalescing onto it. A reconcile()
+      // call from here on must queue a fresh pass to observe generations
+      // committed after this pass reads max(generation).
+      if (queuedReconcile === pass) queuedReconcile = null;
+      return reconcileOnce();
     });
-    return next;
+    queuedReconcile = pass;
+    return pass;
+  }
+
+  function runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    if (!provider) return fn();
+    return enqueue(() => exclusiveContext.run(true, fn));
   }
 
   function scheduleDebouncedReconcile(): void {
@@ -335,7 +409,8 @@ export function createPluginArtifactReplication(opts: {
       clearInterval(intervalTimer);
       intervalTimer = null;
     }
-    await inFlightReconcile?.catch(() => {});
+    // The tail never rejects (errors are swallowed when it is stored).
+    await serializationTail;
   }
 
   function isSynced(): boolean {
@@ -347,7 +422,7 @@ export function createPluginArtifactReplication(opts: {
     return provider !== null;
   }
 
-  return { publishSnapshot, reconcile, start, stop, isSynced, isActive };
+  return { publishSnapshot, reconcile, runExclusive, start, stop, isSynced, isActive };
 }
 
 // ---------------------------------------------------------------------------
@@ -355,7 +430,7 @@ export function createPluginArtifactReplication(opts: {
 // ---------------------------------------------------------------------------
 
 /**
- * Readiness view of the replication handle for /api/health (mirrors
+ * Readiness view of the replication handle for /api/health/ready (mirrors
  * `registerSchedulerLeadershipForHealth` in scheduler-leadership.ts).
  */
 export type PluginReplicationHealth = {
@@ -369,7 +444,7 @@ export type PluginReplicationHealth = {
 
 let healthHandle: PluginReplicationHealth | null = null;
 
-/** Registered at startup (app.ts) so /api/health can gate readiness (consumed in routes/health.ts). */
+/** Registered at startup (app.ts) so /api/health/ready can gate readiness (consumed in routes/health.ts). */
 export function registerPluginReplicationForHealth(handle: PluginReplicationHealth | null): void {
   healthHandle = handle;
 }
