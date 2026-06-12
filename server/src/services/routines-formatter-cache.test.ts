@@ -20,12 +20,14 @@ describe("nextCronTickInTimeZone formatter caching", () => {
   it("does not construct a new Intl.DateTimeFormat per minute-step", () => {
     const RealDateTimeFormat = Intl.DateTimeFormat;
     let constructions = 0;
-    vi.spyOn(Intl, "DateTimeFormat").mockImplementation(((
+    // Must be a `function` (not an arrow) so the mock stays constructable
+    // when the code under test calls `new Intl.DateTimeFormat(...)`.
+    vi.spyOn(Intl, "DateTimeFormat").mockImplementation(function (
       ...args: ConstructorParameters<typeof Intl.DateTimeFormat>
-    ) => {
+    ) {
       constructions += 1;
       return new RealDateTimeFormat(...args);
-    }) as typeof Intl.DateTimeFormat);
+    } as unknown as typeof Intl.DateTimeFormat);
 
     // A monthly cron scanned from just after the previous firing walks tens of
     // thousands of minute-steps before it matches. Use a timezone that nothing
