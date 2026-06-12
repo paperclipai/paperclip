@@ -143,6 +143,7 @@ export async function createLink(
     linearUrl: string;
     linearStateType: string;
     syncDirection: IssueLink["syncDirection"];
+    replaceExisting?: boolean;
   },
 ): Promise<IssueLink> {
   const link: IssueLink = {
@@ -166,6 +167,7 @@ export async function createLink(
         companyId: params.paperclipCompanyId,
         linearIssueId: params.linearIssueId,
         linearIdentifier: params.linearIdentifier,
+        replaceExisting: params.replaceExisting,
       });
     } catch (err) {
       if (isHostWriteUnavailableError(err)) {

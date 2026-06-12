@@ -1089,6 +1089,7 @@ export interface WorkerToHostMethods {
       companyId: string;
       linearIssueId: string;
       linearIdentifier: string;
+      replaceExisting?: boolean;
     },
     result: void,
   ];

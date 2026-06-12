@@ -4701,7 +4701,12 @@ export function issueService(db: Db) {
 
     linkLinearIssue: async (
       companyId: string,
-      input: { issueId: string; linearIssueId: string; linearIdentifier: string },
+      input: {
+        issueId: string;
+        linearIssueId: string;
+        linearIdentifier: string;
+        replaceExisting?: boolean;
+      },
     ) => {
       const issue = await getIssueByUuid(input.issueId);
       if (!issue || issue.companyId !== companyId) {
@@ -4746,6 +4751,28 @@ export function issueService(db: Db) {
         )
       );
       if (conflicts.length > 0) {
+        const replaceablePaperclipRow = input.replaceExisting
+          ? matchingRows.find((row) =>
+            row.companyId === companyId
+            && row.paperclipIssueId === input.issueId
+          )
+          : null;
+        const hasOnlySamePaperclipConflicts = conflicts.every((row) =>
+          row.companyId === companyId
+          && row.paperclipIssueId === input.issueId
+        );
+        if (replaceablePaperclipRow && hasOnlySamePaperclipConflicts) {
+          await db
+            .update(linearIssueLinks)
+            .set({
+              linearIssueId: input.linearIssueId,
+              linearIdentifier: input.linearIdentifier,
+              updatedAt: new Date(),
+            })
+            .where(eq(linearIssueLinks.id, replaceablePaperclipRow.id));
+          return;
+        }
+
         throw conflict("Linear issue link conflict", {
           issueId: input.issueId,
           linearIssueId: input.linearIssueId,

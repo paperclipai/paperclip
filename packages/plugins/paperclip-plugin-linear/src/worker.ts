@@ -1329,6 +1329,7 @@ const plugin = definePlugin({
         linearUrl: linearIssue.url,
         linearStateType: linearIssue.state.type,
         syncDirection,
+        replaceExisting,
       });
 
       try {
@@ -2069,6 +2070,7 @@ const plugin = definePlugin({
             linearUrl: linearIssue.url,
             linearStateType: linearIssue.state.type,
             syncDirection: effectiveSyncDirection,
+            replaceExisting,
           });
 
           try {

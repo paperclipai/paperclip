@@ -1732,6 +1732,7 @@ export function buildHostServices(
           issueId: params.issueId,
           linearIssueId: params.linearIssueId,
           linearIdentifier: params.linearIdentifier,
+          replaceExisting: params.replaceExisting,
         });
       },
       async create(params) {
