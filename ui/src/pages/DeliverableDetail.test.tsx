@@ -116,7 +116,7 @@ describe("DeliverableDetail page", () => {
     expect(container.textContent).toContain("PAP-12");
 
     const downloadLinks = Array.from(container.querySelectorAll("a")).filter(
-      (a) => a.getAttribute("href") === "/api/attachments/abc/content",
+      (a) => a.getAttribute("href") === "/api/deliverables/deliverable-1/content",
     );
     expect(downloadLinks.length).toBeGreaterThan(0);
     expect(downloadLinks[0]!.getAttribute("download")).toBe("report.pdf");
@@ -135,6 +135,23 @@ describe("DeliverableDetail page", () => {
 
     const img = container.querySelector("img");
     expect(img?.getAttribute("src")).toBe("/api/attachments/abc/content");
+  });
+
+  it("uses the canonical download route in the generic fallback", async () => {
+    getMock.mockResolvedValue({
+      ...baseDetail,
+      contentType: "application/octet-stream",
+      preview: null,
+    });
+
+    await renderAt(container, "/deliverables/deliverable-1");
+    await flushReact();
+    await flushReact();
+
+    const downloadLinks = Array.from(container.querySelectorAll("a")).filter(
+      (a) => a.getAttribute("href") === "/api/deliverables/deliverable-1/content",
+    );
+    expect(downloadLinks.length).toBeGreaterThan(0);
   });
 
   it("renders markdown previews inline for text deliverables", async () => {
