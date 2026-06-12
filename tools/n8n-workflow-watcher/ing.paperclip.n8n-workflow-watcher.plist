@@ -8,7 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>/Users/walterschoenenbroecher.de/Library/CloudStorage/SynologyDrive-Mac/Claude Code MAC/Paperclip/tools/n8n-workflow-watcher/n8n_workflow_watcher.py</string>
+        <string>/Users/walterschoenenbroecher.de/.paperclip/scripts/n8n-workflow-watcher.py</string>
         <string>--once</string>
     </array>
 
