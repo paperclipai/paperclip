@@ -211,12 +211,13 @@ describe.sequential("issue goal context routes", () => {
     mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+    const queryChain = {
+      where: vi.fn(() => queryChain),
+      orderBy: vi.fn(async () => []),
+      then: vi.fn(async (resolve: (rows: any[]) => unknown) => resolve([])),
+    };
     mockDb.select.mockReturnValue({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          orderBy: vi.fn(async () => []),
-        })),
-      })),
+      from: vi.fn(() => queryChain),
     });
     mockDb.execute.mockResolvedValue([]);
     mockProjectService.getById.mockResolvedValue({
