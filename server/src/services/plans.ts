@@ -369,6 +369,17 @@ export function planService(db: Db) {
         })
         .where(eq(planDetails.issueId, issueId))
         .returning();
+      // Re-sync the enforcement policy so a cap edited after activation actually
+      // bites. upsertPolicy is keyed by scope+metric+window, so this updates the
+      // existing E6 policy in place rather than duplicating it.
+      if (updated?.gateProfile === "dev_team") {
+        await createActivationBudgetPolicies(
+          updated.companyId,
+          issueId,
+          { budgetCapCents: updated.budgetCapCents, budgetCapTokens: updated.budgetCapTokens },
+          { agentId: null, userId: null },
+        );
+      }
       return updated;
     },
   };

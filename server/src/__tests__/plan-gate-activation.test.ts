@@ -238,4 +238,25 @@ describeEmbeddedPostgres("planService gate-profile (soft)", () => {
 
     expect(await issueBudgetPolicies(companyId, issue.id)).toHaveLength(0);
   });
+
+  it("A5: setBudgetCaps installs and then updates the enforcement policy in place", async () => {
+    const { companyId } = await seedCompany({ withGateAgents: true }, "EBE");
+    const { issue } = await createDevTeamPlan(companyId, "dev_team", ["Task"]);
+    await plans.activate(issue.id, { agentId: null, userId: "tester" });
+    // No cap at activation -> no policy yet.
+    expect(await issueBudgetPolicies(companyId, issue.id)).toHaveLength(0);
+
+    await plans.setBudgetCaps(issue.id, { budgetCapTokens: 1_000_000 });
+    let policies = await issueBudgetPolicies(companyId, issue.id);
+    expect(policies).toHaveLength(1);
+    expect(policies[0]!.metric).toBe("total_tokens");
+    expect(policies[0]!.amount).toBe(1_000_000);
+    expect(policies[0]!.hardStopEnabled).toBe(true);
+
+    // Editing the cap updates the same policy, not a duplicate.
+    await plans.setBudgetCaps(issue.id, { budgetCapTokens: 2_000_000 });
+    policies = await issueBudgetPolicies(companyId, issue.id);
+    expect(policies).toHaveLength(1);
+    expect(policies[0]!.amount).toBe(2_000_000);
+  });
 });

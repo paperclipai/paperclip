@@ -32,6 +32,15 @@ const updateTiersSchema = z.object({
   tiers: z.array(planTierSchema),
 });
 
+const setBudgetCapsSchema = z
+  .object({
+    budgetCapCents: z.number().int().nonnegative().nullish(),
+    budgetCapTokens: z.number().int().nonnegative().nullish(),
+  })
+  .refine((v) => v.budgetCapCents !== undefined || v.budgetCapTokens !== undefined, {
+    message: "Provide budgetCapCents and/or budgetCapTokens",
+  });
+
 export function planRoutes(
   db: Db,
   opts: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -120,6 +129,25 @@ export function planRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     const updated = await plans.updateTiers(req.params.issueId as string, parsed.data.tiers as PlanTier[]);
+    res.json({ planDetails: updated });
+  });
+
+  // Set/clear the plan budget caps. For a dev_team plan this also re-syncs the
+  // active hard-stop enforcement policy (see planService.setBudgetCaps), so a
+  // cap edited after activation takes effect on the running plan.
+  router.patch("/plans/:issueId/budget", async (req, res) => {
+    const parsed = setBudgetCapsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid budget payload", details: parsed.error.flatten() });
+      return;
+    }
+    const existing = await issues.getById(req.params.issueId as string);
+    if (!existing) {
+      res.status(404).json({ error: "Plan not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    const updated = await plans.setBudgetCaps(req.params.issueId as string, parsed.data);
     res.json({ planDetails: updated });
   });
 
