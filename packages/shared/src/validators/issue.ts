@@ -538,6 +538,7 @@ export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
 
 export const addIssueCommentSchema = z.object({
   body: multilineTextSchema.pipe(z.string().min(1)),
+  // `comment` is accepted as an alias for `body` (normalized server-side before validation).
   authorType: issueCommentAuthorTypeSchema.optional(),
   presentation: issueCommentPresentationSchema.nullable().optional(),
   metadata: issueCommentMetadataSchema.nullable().optional(),
