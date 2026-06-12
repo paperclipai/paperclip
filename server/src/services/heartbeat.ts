@@ -157,6 +157,10 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { recoveryService } from "./recovery/service.js";
+import {
+  buildIssueBlockersResolvedIdempotencyKey,
+  findDeliveredIssueBlockersResolvedWake,
+} from "./issue-blockers-resolved-wakes.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
@@ -9300,20 +9304,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // mid-run (so the original `issue_blockers_resolved` wake was gated by
         // the readiness check waiting for workspace_finalize), the finalize
         // row we just recorded now lets dependents proceed. Fire wakes here.
+        //
+        // Dedup: every successful run on an already-`done` blocker would
+        // otherwise re-emit `issue_blockers_resolved` to ready dependents that
+        // received the wake at PATCH time, billing budget and producing noise
+        // heartbeats with no new context (HMS-449 / paperclipai/paperclip#TBD).
+        // We skip dependents whose (dependent, blocker) pair already has a
+        // delivered wake row stamped with the per-pair idempotency key.
         if (issueId && adapterFinalizeOutcome === "succeeded") {
           try {
             const blockerIssueStatus = await db
-              .select({ status: issues.status })
+              .select({ status: issues.status, companyId: issues.companyId })
               .from(issues)
               .where(eq(issues.id, issueId))
-              .then((rows) => rows[0]?.status ?? null);
-            if (blockerIssueStatus === "done") {
+              .then((rows) => rows[0] ?? null);
+            if (blockerIssueStatus?.status === "done") {
               const dependents = await issuesSvc.listWakeableBlockedDependents(issueId);
               for (const dependent of dependents) {
+                const idempotencyKey = buildIssueBlockersResolvedIdempotencyKey({
+                  dependentIssueId: dependent.id,
+                  resolvedBlockerIssueId: issueId,
+                });
+                const existingWake = await findDeliveredIssueBlockersResolvedWake(db, {
+                  companyId: blockerIssueStatus.companyId,
+                  idempotencyKey,
+                });
+                if (existingWake) continue;
                 await enqueueWakeup(dependent.assigneeAgentId, {
                   source: "automation",
                   triggerDetail: "system",
                   reason: "issue_blockers_resolved",
+                  idempotencyKey,
                   payload: {
                     issueId: dependent.id,
                     resolvedBlockerIssueId: issueId,

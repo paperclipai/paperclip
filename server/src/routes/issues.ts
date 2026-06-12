@@ -105,6 +105,7 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { buildIssueBlockersResolvedIdempotencyKey } from "../services/issue-blockers-resolved-wakes.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
@@ -5741,6 +5742,13 @@ export function issueRoutes(
             source: "automation",
             triggerDetail: "system",
             reason: "issue_blockers_resolved",
+            // Stamp a per-pair idempotency key so the workspace_finalize
+            // re-fire path can suppress a duplicate wake for a (dependent,
+            // blocker) pair that already received one at PATCH time.
+            idempotencyKey: buildIssueBlockersResolvedIdempotencyKey({
+              dependentIssueId: dependent.id,
+              resolvedBlockerIssueId: issue.id,
+            }),
             payload: {
               issueId: dependent.id,
               resolvedBlockerIssueId: issue.id,
