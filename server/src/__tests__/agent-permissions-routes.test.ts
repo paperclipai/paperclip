@@ -82,6 +82,11 @@ const mockIssueApprovalService = vi.hoisted(() => ({
 
 const mockIssueService = vi.hoisted(() => ({
   list: vi.fn(),
+  listDependencyReadiness: vi.fn(),
+}));
+
+const mockIssueRecoveryActionService = vi.hoisted(() => ({
+  listActiveForIssues: vi.fn(),
 }));
 
 const mockSecretService = vi.hoisted(() => ({
@@ -156,6 +161,10 @@ function registerModuleMocks() {
     issueApprovalService: () => mockIssueApprovalService,
   }));
 
+  vi.doMock("../services/issue-recovery-actions.js", () => ({
+    issueRecoveryActionService: () => mockIssueRecoveryActionService,
+  }));
+
   vi.doMock("../services/issues.js", () => ({
     issueService: () => mockIssueService,
   }));
@@ -195,6 +204,7 @@ function registerModuleMocks() {
     heartbeatService: () => mockHeartbeatService,
     ISSUE_LIST_DEFAULT_LIMIT: 500,
     issueApprovalService: () => mockIssueApprovalService,
+    issueRecoveryActionService: () => mockIssueRecoveryActionService,
     issueService: () => mockIssueService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
@@ -284,6 +294,7 @@ describe.sequential("agent permission routes", () => {
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../services/instance-settings.js");
     vi.doUnmock("../services/issue-approvals.js");
+    vi.doUnmock("../services/issue-recovery-actions.js");
     vi.doUnmock("../services/issues.js");
     vi.doUnmock("../services/secrets.js");
     vi.doUnmock("../services/environments.js");
@@ -319,6 +330,8 @@ describe.sequential("agent permission routes", () => {
     mockHeartbeatService.cancelRun.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.list.mockReset();
+    mockIssueService.listDependencyReadiness.mockReset();
+    mockIssueRecoveryActionService.listActiveForIssues.mockReset();
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
     mockSecretService.resolveAdapterConfigForRuntime.mockReset();
     mockAgentInstructionsService.materializeManagedBundle.mockReset();
@@ -370,6 +383,8 @@ describe.sequential("agent permission routes", () => {
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(async (_companyId, requested) => requested);
     mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
+    mockIssueService.listDependencyReadiness.mockResolvedValue(new Map());
+    mockIssueRecoveryActionService.listActiveForIssues.mockResolvedValue(new Map());
     mockAgentInstructionsService.materializeManagedBundle.mockImplementation(
       async (agent: Record<string, unknown>, files: Record<string, string>) => ({
         bundle: null,
@@ -1489,6 +1504,138 @@ describe.sequential("agent permission routes", () => {
       inboxArchivedByUserId: "board-user",
       status: "backlog,todo,in_progress,in_review,blocked,done",
       limit: 500,
+    });
+  });
+
+  it("classifies assigned inbox-lite work as runnable or waiting", async () => {
+    const updatedAt = new Date("2026-06-03T12:00:00.000Z");
+    mockIssueService.list.mockResolvedValue([
+      {
+        id: "issue-todo",
+        identifier: "PAP-1151",
+        title: "Runnable assigned todo",
+        status: "todo",
+        priority: "medium",
+        projectId: null,
+        goalId: null,
+        parentId: null,
+        updatedAt,
+        activeRun: null,
+      },
+      {
+        id: "issue-blocked",
+        identifier: "PAP-1200",
+        title: "Blocked todo",
+        status: "todo",
+        priority: "medium",
+        projectId: null,
+        goalId: null,
+        parentId: null,
+        updatedAt,
+        activeRun: null,
+      },
+      {
+        id: "issue-running",
+        identifier: "PAP-1201",
+        title: "Running todo",
+        status: "todo",
+        priority: "medium",
+        projectId: null,
+        goalId: null,
+        parentId: null,
+        updatedAt,
+        activeRun: { id: "run-1", status: "queued" },
+      },
+      {
+        id: "issue-recovery",
+        identifier: "PAP-1202",
+        title: "Recovery todo",
+        status: "todo",
+        priority: "medium",
+        projectId: null,
+        goalId: null,
+        parentId: null,
+        updatedAt,
+        activeRun: null,
+      },
+      {
+        id: "issue-continuation",
+        identifier: "PAP-1205",
+        title: "Continuation work",
+        status: "in_progress",
+        priority: "medium",
+        projectId: null,
+        goalId: null,
+        parentId: null,
+        updatedAt,
+        activeRun: null,
+      },
+      {
+        id: "issue-review",
+        identifier: "PAP-1203",
+        title: "Review wait",
+        status: "in_review",
+        priority: "medium",
+        projectId: null,
+        goalId: null,
+        parentId: null,
+        updatedAt,
+        activeRun: null,
+      },
+      {
+        id: "issue-status-blocked",
+        identifier: "PAP-1204",
+        title: "Blocked status",
+        status: "blocked",
+        priority: "medium",
+        projectId: null,
+        goalId: null,
+        parentId: null,
+        updatedAt,
+        activeRun: null,
+      },
+    ]);
+    mockIssueService.listDependencyReadiness.mockResolvedValue(new Map([
+      ["issue-blocked", {
+        isDependencyReady: false,
+        unresolvedBlockerCount: 1,
+        unresolvedBlockerIssueIds: ["blocker-1"],
+      }],
+    ]));
+    mockIssueRecoveryActionService.listActiveForIssues.mockResolvedValue(new Map([
+      ["issue-recovery", { id: "recovery-1", status: "open" }],
+    ]));
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/agents/me/inbox-lite"));
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
+      assigneeAgentId: agentId,
+      status: "todo,in_progress,in_review,blocked",
+      includeRoutineExecutions: true,
+      limit: 500,
+    });
+    expect(res.body.map((issue: { id: string; runnableWork: unknown }) => [issue.id, issue.runnableWork])).toEqual([
+      ["issue-todo", { runnable: true, reason: "ready" }],
+      ["issue-blocked", { runnable: false, reason: "blocked_dependencies" }],
+      ["issue-running", { runnable: false, reason: "active_run" }],
+      ["issue-recovery", { runnable: false, reason: "active_recovery_action" }],
+      ["issue-continuation", { runnable: true, reason: "continuation_required" }],
+      ["issue-review", { runnable: false, reason: "awaiting_review" }],
+      ["issue-status-blocked", { runnable: false, reason: "issue_blocked" }],
+    ]);
+    expect(res.body[1]).toMatchObject({
+      dependencyReady: false,
+      unresolvedBlockerCount: 1,
+      unresolvedBlockerIssueIds: ["blocker-1"],
     });
   });
 
