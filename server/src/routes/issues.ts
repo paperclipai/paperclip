@@ -5647,7 +5647,7 @@ export function issueRoutes(
 
         for (const mentionedId of mentionedIds) {
           if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
-          if (mentionedId !== issue.assigneeAgentId) {
+          if (issue.assigneeAgentId !== null && mentionedId !== issue.assigneeAgentId) {
             logger.info({ issueId: id, mentionedId, assigneeAgentId: issue.assigneeAgentId }, "suppressed mention wake for non-assignee agent");
             continue;
           }
@@ -7001,7 +7001,7 @@ export function issueRoutes(
 
       for (const mentionedId of mentionedIds) {
         if (actorIsAgent && actor.actorId === mentionedId) continue;
-        if (mentionedId !== currentIssue.assigneeAgentId) {
+        if (currentIssue.assigneeAgentId !== null && mentionedId !== currentIssue.assigneeAgentId) {
           logger.info({ issueId: id, mentionedId, assigneeAgentId: currentIssue.assigneeAgentId }, "suppressed mention wake for non-assignee agent");
           continue;
         }
