@@ -167,6 +167,46 @@ describeEmbeddedPostgres("issueService.getByLinearIssueId (linear_issue_links lo
     })).resolves.toBeUndefined();
   });
 
+  it("linkLinearIssue refreshes a stale Linear identifier for the same Paperclip issue and Linear UUID", async () => {
+    const company = await seedCompany();
+    const [issue] = await db
+      .insert(issues)
+      .values({
+        companyId: company.id,
+        identifier: "BLO-61",
+        issueNumber: 61,
+        title: "Paperclip issue with stale Linear identifier",
+        originKind: "manual",
+      })
+      .returning();
+    const linearIssueUuid = randomUUID();
+
+    await svc.linkLinearIssue(company.id, {
+      issueId: issue.id,
+      linearIssueId: linearIssueUuid,
+      linearIdentifier: "PCL-2093",
+    });
+
+    await expect(svc.linkLinearIssue(company.id, {
+      issueId: issue.id,
+      linearIssueId: linearIssueUuid,
+      linearIdentifier: "BLO-1005",
+    })).resolves.toBeUndefined();
+
+    const [row] = await db
+      .select({
+        paperclipIssueId: linearIssueLinks.paperclipIssueId,
+        linearIssueId: linearIssueLinks.linearIssueId,
+        linearIdentifier: linearIssueLinks.linearIdentifier,
+      })
+      .from(linearIssueLinks);
+    expect(row).toMatchObject({
+      paperclipIssueId: issue.id,
+      linearIssueId: linearIssueUuid,
+      linearIdentifier: "BLO-1005",
+    });
+  });
+
   it("linkLinearIssue rejects conflicting Linear links", async () => {
     const company = await seedCompany();
     const [issueA, issueB] = await db

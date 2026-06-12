@@ -4731,11 +4731,19 @@ export function issueService(db: Db) {
           ),
         );
 
+      const sameBinding = matchingRows.find((row) =>
+        row.companyId === companyId
+        && row.paperclipIssueId === input.issueId
+        && row.linearIssueId === input.linearIssueId
+      );
       const conflicts = matchingRows.filter((row) =>
-        row.companyId !== companyId
-        || row.paperclipIssueId !== input.issueId
-        || row.linearIssueId !== input.linearIssueId
-        || row.linearIdentifier !== input.linearIdentifier
+        row.id !== sameBinding?.id
+        && (
+          row.companyId !== companyId
+          || row.paperclipIssueId !== input.issueId
+          || row.linearIssueId !== input.linearIssueId
+          || row.linearIdentifier !== input.linearIdentifier
+        )
       );
       if (conflicts.length > 0) {
         throw conflict("Linear issue link conflict", {
@@ -4746,11 +4754,14 @@ export function issueService(db: Db) {
         });
       }
 
-      const existing = matchingRows[0];
+      const existing = sameBinding ?? matchingRows[0];
       if (existing) {
         await db
           .update(linearIssueLinks)
-          .set({ updatedAt: new Date() })
+          .set({
+            linearIdentifier: input.linearIdentifier,
+            updatedAt: new Date(),
+          })
           .where(eq(linearIssueLinks.id, existing.id));
         return;
       }

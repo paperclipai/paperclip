@@ -158,6 +158,95 @@ describe("link lookup", () => {
     });
   });
 
+  it("repairs plugin link state when the host Linear link already points at the same issue", async () => {
+    const harness = createTestHarness({ manifest });
+    harness.seed({
+      issues: [
+        {
+          id: "pc-1",
+          companyId: "comp-1",
+          title: "Host-originated mirror",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        } as never,
+      ],
+      linearIssueLinks: [
+        {
+          companyId: "comp-1",
+          paperclipIssueId: "pc-1",
+          linearIssueId: "lin-1",
+        },
+      ],
+    });
+    vi.spyOn(harness.ctx.issues, "linkLinearIssue")
+      .mockRejectedValueOnce(new Error("Linear issue link conflict"));
+
+    await createLink(harness.ctx, {
+      paperclipIssueId: "pc-1",
+      paperclipCompanyId: "comp-1",
+      linearIssueId: "lin-1",
+      linearIdentifier: "BLO-1",
+      linearUrl: "https://linear.app/blockc/issue/BLO-1",
+      linearStateType: "unstarted",
+      syncDirection: "bidirectional",
+    });
+
+    await expect(getLinkByLinear(harness.ctx, "lin-1")).resolves.toMatchObject({
+      paperclipIssueId: "pc-1",
+      linearIssueId: "lin-1",
+      linearIdentifier: "BLO-1",
+    });
+  });
+
+  it("does not repair plugin link state when a host conflict points at another issue", async () => {
+    const harness = createTestHarness({ manifest });
+    harness.seed({
+      issues: [
+        {
+          id: "pc-1",
+          companyId: "comp-1",
+          title: "Target issue",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        } as never,
+        {
+          id: "pc-2",
+          companyId: "comp-1",
+          title: "Existing linked issue",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        } as never,
+      ],
+      linearIssueLinks: [
+        {
+          companyId: "comp-1",
+          paperclipIssueId: "pc-2",
+          linearIssueId: "lin-1",
+        },
+      ],
+    });
+    vi.spyOn(harness.ctx.issues, "linkLinearIssue")
+      .mockRejectedValueOnce(new Error("Linear issue link conflict"));
+
+    await expect(createLink(harness.ctx, {
+      paperclipIssueId: "pc-1",
+      paperclipCompanyId: "comp-1",
+      linearIssueId: "lin-1",
+      linearIdentifier: "BLO-1",
+      linearUrl: "https://linear.app/blockc/issue/BLO-1",
+      linearStateType: "unstarted",
+      syncDirection: "bidirectional",
+    })).rejects.toThrow("Linear issue link conflict");
+
+    await expect(getLinkByLinear(harness.ctx, "lin-1")).resolves.toBeNull();
+  });
+
   it("ignores malformed project forward link state", async () => {
     const harness = createTestHarness({ manifest });
     await harness.ctx.state.set(

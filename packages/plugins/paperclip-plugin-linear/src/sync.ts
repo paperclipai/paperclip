@@ -42,6 +42,39 @@ export function isPaperclipIssueNotFoundError(err: unknown): boolean {
   return message.includes("Issue not found");
 }
 
+function isLinearIssueLinkConflictError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes("Linear issue link conflict")
+    || message.includes("Linear issue already linked");
+}
+
+async function hostLinearIssueLinkAlreadyMatches(
+  ctx: PluginContext,
+  params: {
+    paperclipIssueId: string;
+    paperclipCompanyId: string;
+    linearIssueId: string;
+  },
+): Promise<boolean> {
+  const getByLinearIssueId = ctx.issues.getByLinearIssueId;
+  if (typeof getByLinearIssueId !== "function") return false;
+
+  try {
+    const hostLinkedIssue = await getByLinearIssueId.call(ctx.issues, {
+      linearIssueId: params.linearIssueId,
+      companyId: params.paperclipCompanyId,
+    });
+    return hostLinkedIssue?.id === params.paperclipIssueId;
+  } catch (err) {
+    ctx.logger.warn("Failed to verify existing host Linear issue link after conflict", {
+      paperclipIssueId: params.paperclipIssueId,
+      linearIssueId: params.linearIssueId,
+      error: String(err),
+    });
+    return false;
+  }
+}
+
 function linkStateKey(paperclipIssueId: string): string {
   return `${STATE_KEYS.linkPrefix}${paperclipIssueId}`;
 }
@@ -130,6 +163,16 @@ export async function createLink(
         ctx.logger.warn("Host Linear issue link write unavailable; falling back to plugin state only", {
           paperclipIssueId: params.paperclipIssueId,
           linearIssueId: params.linearIssueId,
+          error: String(err),
+        });
+      } else if (
+        isLinearIssueLinkConflictError(err)
+        && await hostLinearIssueLinkAlreadyMatches(ctx, params)
+      ) {
+        ctx.logger.warn("Host Linear issue link already exists; repairing plugin state only", {
+          paperclipIssueId: params.paperclipIssueId,
+          linearIssueId: params.linearIssueId,
+          linearIdentifier: params.linearIdentifier,
           error: String(err),
         });
       } else {
