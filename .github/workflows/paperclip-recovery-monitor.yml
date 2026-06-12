@@ -1,0 +1,179 @@
+name: PaperClip Recovery Monitor
+
+on:
+  schedule:
+    # Run every hour at :15 past the hour
+    - cron: '15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  recovery-monitor:
+    runs-on: ubuntu-latest
+    env:
+      PAPERCLIP_COMPANY_ID: ${{ secrets.PAPERCLIP_COMPANY_ID }}
+      PAPERCLIP_API_URL: ${{ secrets.PAPERCLIP_API_URL }}
+      PAPERCLIP_API_KEY: ${{ secrets.PAPERCLIP_API_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install psycopg[binary] requests
+
+      - name: Find stalled workflows
+        id: matches
+        run: |
+          python3 scripts/paperclip_recovery_monitor.py matches --json > /tmp/recovery-matches.json 2>&1 || echo "[]" > /tmp/recovery-matches.json
+          cat /tmp/recovery-matches.json
+
+      - name: Run recovery monitor (dry-run)
+        id: dry_run
+        run: |
+          python3 scripts/paperclip_recovery_monitor.py run --dry-run > /tmp/recovery-dry-run.txt 2>&1 || true
+          cat /tmp/recovery-dry-run.txt
+
+      - name: Run recovery monitor (execute)
+        id: execute
+        run: |
+          python3 scripts/paperclip_recovery_monitor.py run > /tmp/recovery-execute.txt 2>&1 || true
+          cat /tmp/recovery-execute.txt
+
+      - name: Capture execution results
+        if: always()
+        run: |
+          echo "Execution Summary:" > /tmp/recovery-summary.txt
+          cat /tmp/recovery-execute.txt >> /tmp/recovery-summary.txt || echo "No execution output" >> /tmp/recovery-summary.txt
+          cat /tmp/recovery-summary.txt
+
+      - name: Generate health check report
+        if: always()
+        run: |
+          python3 << 'REPORT_SCRIPT'
+          import json
+          import os
+          from datetime import datetime
+
+          # Load matches
+          try:
+              with open('/tmp/recovery-matches.json', 'r') as f:
+                  matches = json.load(f)
+          except:
+              matches = []
+
+          # Determine health status
+          timestamp = datetime.utcnow().isoformat() + 'Z'
+          match_count = len(matches) if isinstance(matches, list) else 0
+          is_healthy = match_count == 0
+
+          # Create report
+          report = {
+              "timestamp": timestamp,
+              "status": "healthy" if is_healthy else "warning",
+              "stalled_workflows_found": match_count,
+              "scenarios": {},
+              "github_run": f"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          }
+
+          # Group matches by scenario
+          if isinstance(matches, list):
+              for match in matches:
+                  scenario = match.get('scenario', 'unknown')
+                  if scenario not in report['scenarios']:
+                      report['scenarios'][scenario] = 0
+                  report['scenarios'][scenario] += 1
+
+          # Write report
+          with open('/tmp/recovery-health-report.json', 'w') as f:
+              json.dump(report, f, indent=2)
+
+          # Print summary
+          print(f"{'✓' if is_healthy else '⚠'} Recovery Monitor Health Check")
+          print(f"  Status: {report['status'].upper()}")
+          print(f"  Stalled workflows: {match_count}")
+          if report['scenarios']:
+              for scenario, count in report['scenarios'].items():
+                  print(f"    - {scenario}: {count}")
+          REPORT_SCRIPT
+
+      - name: Report to Paperclip
+        if: always()
+        continue-on-error: true
+        run: |
+          python3 << 'REPORT_SCRIPT'
+          import json
+          import requests
+          import os
+
+          api_url = os.environ.get("PAPERCLIP_API_URL", "http://localhost:3100")
+          api_key = os.environ.get("PAPERCLIP_API_KEY", "")
+
+          if not api_key:
+              print("PAPERCLIP_API_KEY not set, skipping Paperclip report")
+              exit(0)
+
+          # Load health report
+          try:
+              with open('/tmp/recovery-health-report.json', 'r') as f:
+                  health_report = json.load(f)
+          except:
+              print("Could not load health report")
+              exit(0)
+
+          # Build comment body
+          comment_body = f"""## Recovery Monitor Health Check
+
+**Status:** {'✓ Healthy' if health_report['status'] == 'healthy' else '⚠ Warning'}
+**Time:** {health_report['timestamp']}
+**Stalled Workflows:** {health_report['stalled_workflows_found']}
+
+"""
+          if health_report['stalled_workflows_found'] == 0:
+              comment_body += "No stalled workflows detected. Recovery actions are functioning normally.\n\n"
+          else:
+              comment_body += "### Stalled Workflows by Scenario\n\n"
+              for scenario, count in health_report['scenarios'].items():
+                  comment_body += f"- **{scenario}**: {count} issue(s)\n"
+              comment_body += "\n"
+
+          comment_body += f"[View Run]({health_report['github_run']})"
+
+          # Post to monitoring issue
+          headers = {
+              "Authorization": f"Bearer {api_key}",
+              "Content-Type": "application/json",
+              "X-Paperclip-Run-Id": "${{ github.run_id }}"
+          }
+
+          # Try to post to health monitoring issue
+          response = requests.post(
+              f"{api_url}/api/issues/BTCAAAAA-27958/comments",
+              headers=headers,
+              json={"body": comment_body},
+              timeout=10
+          )
+
+          if response.status_code in (200, 201):
+              print(f"✓ Posted health report to Paperclip")
+          else:
+              print(f"⚠ Failed to post to Paperclip: {response.status_code}")
+              if response.text:
+                  print(f"  Response: {response.text[:200]}")
+
+          REPORT_SCRIPT
+
+      - name: Upload recovery logs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v3
+        with:
+          name: recovery-monitor-logs
+          path: /tmp/recovery-*.txt
+          retention-days: 30
