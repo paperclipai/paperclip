@@ -43,8 +43,8 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
+import { FolderPickerButton } from "./FolderPicker";
 import { MarkdownEditor } from "./MarkdownEditor";
-import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { ReportsToPicker } from "./ReportsToPicker";
 import { EnvVarEditor } from "./EnvVarEditor";
@@ -987,7 +987,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   className="w-full bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40"
                   placeholder="/path/to/project"
                 />
-                <ChoosePathButton />
+                <FolderPickerButton
+                  value={
+                    isCreate
+                      ? val!.cwd
+                      : eff("adapterConfig", "cwd", String(config.cwd ?? ""))
+                  }
+                  onSelect={(path) =>
+                    isCreate
+                      ? set!({ cwd: path })
+                      : mark("adapterConfig", "cwd", path || undefined)
+                  }
+                />
               </div>
             </Field>
           )}

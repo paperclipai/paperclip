@@ -12,6 +12,9 @@ import { queryKeys } from "../lib/queryKeys";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -36,7 +39,7 @@ import {
 import { cn } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
-import { ChoosePathButton } from "./PathInstructionsModal";
+import { FolderPickerButton } from "./FolderPicker";
 
 const projectStatuses = [
   { value: "backlog", label: "Backlog" },
@@ -214,6 +217,13 @@ export function NewProjectDialog() {
         className={cn("p-0 gap-0", expanded ? "sm:max-w-2xl" : "sm:max-w-lg")}
         onKeyDown={handleKeyDown}
       >
+        <DialogHeader className="sr-only">
+          <DialogTitle>New project</DialogTitle>
+          <DialogDescription>
+            Create a project and optionally choose a linked repository or local folder for agent work.
+          </DialogDescription>
+        </DialogHeader>
+
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -321,7 +331,13 @@ export function NewProjectDialog() {
                 onChange={(e) => { setWorkspaceLocalPath(e.target.value); setWorkspaceError(null); }}
                 placeholder="/absolute/path/to/workspace"
               />
-              <ChoosePathButton />
+              <FolderPickerButton
+                value={workspaceLocalPath}
+                onSelect={(path) => {
+                  setWorkspaceLocalPath(path);
+                  setWorkspaceError(null);
+                }}
+              />
             </div>
           </div>
 
