@@ -71,6 +71,7 @@ const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const DEFAULT_STRANDED_RECOVERY_MAX_DISPATCHES_PER_PASS = 4;
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -161,6 +162,29 @@ function didAutomaticRecoveryFail(
     UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
     );
+}
+
+function strandedRecoveryMaxDispatchesPerPass() {
+  const raw = readNonEmptyString(process.env.PAPERCLIP_STRANDED_RECOVERY_MAX_DISPATCHES_PER_PASS);
+  const parsed = raw ? Number.parseInt(raw, 10) : DEFAULT_STRANDED_RECOVERY_MAX_DISPATCHES_PER_PASS;
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_STRANDED_RECOVERY_MAX_DISPATCHES_PER_PASS;
+}
+
+async function hasPendingIssueInteractionHold(db: Db, companyId: string, issueId: string) {
+  const rows = await db
+    .select({ id: issueThreadInteractions.id })
+    .from(issueThreadInteractions)
+    .where(
+      and(
+        eq(issueThreadInteractions.companyId, companyId),
+        eq(issueThreadInteractions.issueId, issueId),
+        eq(issueThreadInteractions.status, "pending"),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
 }
 
 const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
@@ -2479,7 +2503,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       issueIds: [] as string[],
     };
 
+    const maxDispatches = strandedRecoveryMaxDispatchesPerPass();
+    const dispatchedCount = () =>
+      result.assignmentDispatched +
+      result.dispatchRequeued +
+      result.continuationRequeued +
+      result.successfulRunHandoffEscalated +
+      result.escalated;
+
     for (const issue of candidates) {
+      if (dispatchedCount() >= maxDispatches) {
+        result.skipped += 1;
+        continue;
+      }
+
       const agentId = issue.assigneeAgentId;
       if (!agentId) {
         result.skipped += 1;
@@ -2498,6 +2535,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (await hasPendingIssueInteractionHold(db, issue.companyId, issue.id)) {
         result.skipped += 1;
         continue;
       }
