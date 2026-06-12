@@ -1,0 +1,18 @@
+{
+  "$meta": { "language": "de", "version": 1 },
+  "text": {
+    "Run routine": "Routine ausführen",
+    "No project": "Kein Projekt",
+    "No value": "Kein Wert",
+    "Company menu": "Firmen-Menü",
+    "Dashboard": "Übersicht",
+    "Settings": "Einstellungen",
+    "Agents": "Agenten",
+    "Projects": "Projekte",
+    "Issues": "Aufgaben",
+    "Goals": "Ziele",
+    "Activity": "Aktivität",
+    "Inbox": "Posteingang"
+  },
+  "attr": {}
+}
