@@ -5605,6 +5605,30 @@ describeEmbeddedPostgres("issueService repo-backed terminal-state gate", () => {
     expect(updated?.status).toBe("done");
   });
 
+  it("continues checking later PR references after an earlier lookup fails", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 404 } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ merged: true }),
+      } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Close after stale PR reference",
+      description: [
+        "Earlier attempt: PR #12",
+        "Final merged PR: https://github.com/paperclipai/paperclip/pull/3303",
+      ].join("\n"),
+      identifier: "PAP-9002A0",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("accepts bare PR references against the repo-backed workspace repo", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,

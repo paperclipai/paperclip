@@ -5915,8 +5915,7 @@ export function issueService(db: Db) {
                       break;
                     }
                   } catch (error) {
-                    verificationFailure = error instanceof Error ? error.message : String(error);
-                    break;
+                    verificationFailure ??= error instanceof Error ? error.message : String(error);
                   }
                 }
 
