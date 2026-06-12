@@ -798,6 +798,111 @@ Best practice:
 - After creating a pending checkbox confirmation, move the source issue to `in_review` with a comment that names exactly what the board must decide. Pending interactions are an explicit waiting path, not a synonym for `done`.
 - When a `superseded_by_comment` or `stale_target` wake fires, address the new comment or rebuild the target, then create a fresh checkbox confirmation with an idempotency key that includes the new revision id.
 
+### Structured questions (`ask_user_questions`)
+
+Use `ask_user_questions` for a short structured form when you need the board/user to answer one or more questions before you proceed (each question is single- or multi-select). For a single multi-select over a long list, prefer `request_checkbox_confirmation`.
+
+All content lives under `payload` with `"version": 1`. Each question requires `selectionMode` — there is **no** `allowMultiple` field.
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "ask_user_questions",
+  "idempotencyKey": "ask:{issueId}:{topic}:r1",
+  "title": "Refactor scope decisions",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "submitLabel": "Submit answers",
+    "questions": [
+      {
+        "id": "scope",
+        "prompt": "How aggressive should the refactor be?",
+        "helpText": "High blast-radius on the money path.",
+        "selectionMode": "single",
+        "required": true,
+        "options": [
+          { "id": "seam", "label": "Repository seam only", "description": "Zero behavior change. Recommended first step." },
+          { "id": "deep", "label": "Deepen the order-execution lifecycle" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Field rules:
+
+- `payload.version` is required and must be `1`.
+- `payload.title` (≤ 240) and `payload.submitLabel` (≤ 120) are optional form-level labels, distinct from the envelope-level `title` (the thread card title).
+- `questions`: 1–10 items, each `id` unique. `options`: 1–10 per question, each `id` unique.
+- `prompt` ≤ 500 chars; option `label` ≤ 120; option `description` ≤ 500; `helpText` ≤ 1000.
+- `selectionMode` is required and is `"single"` or `"multi"`.
+- `continuationPolicy` defaults to `"wake_assignee"` (the assignee is woken when the form is answered).
+
+Respond (board/user action; the creating agent cannot answer its own questions):
+
+```json
+POST /api/issues/{issueId}/interactions/{interactionId}/respond
+{
+  "answers": [{ "questionId": "scope", "optionIds": ["seam"] }],
+  "summaryMarkdown": "Start with the repository seam."
+}
+```
+
+`optionIds` carries one id for `single` questions and one or more for `multi`.
+
+### Suggested tasks (`suggest_tasks`)
+
+Use `suggest_tasks` to propose a batch of child tasks for one-click acceptance, where accepted items become subtasks. (If the items are not concrete tasks to create, use `request_checkbox_confirmation` instead.)
+
+All content lives under `payload` with `"version": 1` and a `tasks` array — there is **no** top-level `body` field.
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "suggest_tasks",
+  "idempotencyKey": "suggest:{issueId}:r1",
+  "title": "Proposed child issues",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "tasks": [
+      {
+        "clientKey": "identify",
+        "title": "Project identification",
+        "description": "Identify all projects routing through the pipeline.",
+        "priority": "high"
+      },
+      {
+        "clientKey": "adapt",
+        "parentClientKey": "identify",
+        "title": "Pipeline adaptations",
+        "description": "Draft project-specific adaptation strategies."
+      }
+    ]
+  }
+}
+```
+
+Field rules:
+
+- `payload.version` is required and must be `1`.
+- `payload.defaultParentId` (optional issue UUID) nests every suggested task under that issue unless a task overrides it with its own `parentId`/`parentClientKey`.
+- `tasks`: 1–50 items; each `clientKey` is required and unique within the interaction; `title` is required (≤ 240).
+- Optional per task: `description`, `priority`, `workMode`, `parentClientKey`/`parentId`, `projectId`, `goalId`, `billingCode`, `labels`, `hiddenInPreview`.
+- A task may set `assigneeAgentId` **or** `assigneeUserId`, never both.
+- `parentClientKey` references another task's `clientKey` in the same batch to nest suggestions.
+
+Accept (board/user action) — optionally accept a subset by `clientKey`:
+
+```json
+POST /api/issues/{issueId}/interactions/{interactionId}/accept
+{ "selectedClientKeys": ["identify"] }
+```
+
+Omit `selectedClientKeys` entirely to accept all suggested tasks. Do **not** send an empty array — `selectedClientKeys` requires at least one entry (min 1), so `[]` returns `422`. To accept nothing, reject the interaction instead.
+
 ### Checking approval status
 
 ```
@@ -1009,3 +1114,6 @@ Terminal states: `done`, `cancelled`
 | Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Comment the blocker and escalate immediately            |
 | Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, or `done` |
 | Block on another task without `blockedByIssueIds` | No automatic wake when blocker resolves; manual follow-up needed | Set `blockedByIssueIds` so Paperclip auto-wakes the assignee when all blockers are done |
+| Flatten interaction fields to the top level | The create-interaction validator is a discriminated union; content must be nested | Put kind-specific fields in `payload` with `"version": 1` (see the interaction sections) |
+| Use `allowMultiple` on an `ask_user_questions` question | Not a field; questions are validated against `selectionMode` | Set `selectionMode: "single"` or `"multi"` per question |
+| Send `suggest_tasks` with a free-text `body` | No `body` field; tasks are structured drafts | Use `payload.tasks: [{ clientKey, title, ... }]` |
