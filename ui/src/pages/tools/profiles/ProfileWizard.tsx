@@ -72,7 +72,16 @@ export function ProfileWizard({
   const [advancedRules, setAdvancedRules] = useState<AdvancedRule[]>([]);
   const [newToolsAction, setNewToolsAction] = useState<"deny" | "allow">("deny");
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(new Set());
+  const [selectedProjectIds, setSelectedProjectIds] = useState<Set<string>>(new Set());
+  const [selectedRoutineIds, setSelectedRoutineIds] = useState<Set<string>>(new Set());
   const [companyDefault, setCompanyDefault] = useState(false);
+
+  const toggleIn = (setter: typeof setSelectedAgentIds) => (id: string) =>
+    setter((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
 
   // Hydrate once when resuming an existing draft and its catalog is loaded.
   const hydrated = useRef(false);
@@ -93,9 +102,11 @@ export function ProfileWizard({
     // Drafts resume at the first unfinished step; a finished profile being
     // edited starts at step 1 so the admin can review the whole thing.
     setStep(existing.status === "draft" ? resumeStep(meta) : 1);
-    setSelectedAgentIds(
-      new Set(existing.bindings.filter((b) => b.targetType === "agent").map((b) => b.targetId)),
-    );
+    const targetIds = (type: string) =>
+      new Set(existing.bindings.filter((b) => b.targetType === type).map((b) => b.targetId));
+    setSelectedAgentIds(targetIds("agent"));
+    setSelectedProjectIds(targetIds("project"));
+    setSelectedRoutineIds(targetIds("routine"));
     setCompanyDefault(existing.bindings.some((b) => b.targetType === "company"));
   }, [existing, appGroups, profileId]);
 
@@ -179,6 +190,8 @@ export function ProfileWizard({
       });
       await reconcileBindings(companyId, profile, {
         agentIds: [...selectedAgentIds],
+        projectIds: [...selectedProjectIds],
+        routineIds: [...selectedRoutineIds],
         companyDefault,
       });
       return profile;
@@ -252,15 +265,15 @@ export function ProfileWizard({
         {step === 3 ? (
           <StepAssign
             agents={(agents.data ?? []).map((a) => ({ id: a.id, name: a.name }))}
+            projects={(data.projects.data ?? []).map((p) => ({ id: p.id, name: p.name }))}
+            routines={(data.routines.data ?? []).map((r) => ({ id: r.id, name: r.title }))}
             profiles={allProfiles}
             selectedAgentIds={selectedAgentIds}
-            onToggleAgent={(id) =>
-              setSelectedAgentIds((prev) => {
-                const next = new Set(prev);
-                next.has(id) ? next.delete(id) : next.add(id);
-                return next;
-              })
-            }
+            onToggleAgent={toggleIn(setSelectedAgentIds)}
+            selectedProjectIds={selectedProjectIds}
+            onToggleProject={toggleIn(setSelectedProjectIds)}
+            selectedRoutineIds={selectedRoutineIds}
+            onToggleRoutine={toggleIn(setSelectedRoutineIds)}
             companyDefault={companyDefault}
             onCompanyDefault={setCompanyDefault}
           />
@@ -339,12 +352,17 @@ export function ProfileWizard({
 async function reconcileBindings(
   companyId: string,
   profile: ToolProfileWithDetails,
-  desired: { agentIds: string[]; companyDefault: boolean },
+  desired: { agentIds: string[]; projectIds: string[]; routineIds: string[]; companyDefault: boolean },
 ) {
   const want = new Map<string, ToolProfileBindingInput>();
   if (desired.companyDefault) want.set(`company:${companyId}`, { targetType: "company", targetId: companyId });
   for (const id of desired.agentIds) want.set(`agent:${id}`, { targetType: "agent", targetId: id });
+  for (const id of desired.projectIds) want.set(`project:${id}`, { targetType: "project", targetId: id });
+  for (const id of desired.routineIds) want.set(`routine:${id}`, { targetType: "routine", targetId: id });
 
+  // Only the target types the wizard manages are reconciled — leave any
+  // issue-scoped or other bindings untouched.
+  const managed = new Set(["company", "agent", "project", "routine"]);
   const have = new Set(profile.bindings.map((b) => `${b.targetType}:${b.targetId}`));
 
   await Promise.all([
@@ -352,7 +370,7 @@ async function reconcileBindings(
       .filter(([k]) => !have.has(k))
       .map(([, input]) => toolsApi.bindProfile(companyId, profile.id, input)),
     ...profile.bindings
-      .filter((b) => (b.targetType === "agent" || b.targetType === "company") && !want.has(`${b.targetType}:${b.targetId}`))
+      .filter((b) => managed.has(b.targetType) && !want.has(`${b.targetType}:${b.targetId}`))
       .map((b) => toolsApi.unbindProfile(companyId, profile.id, { targetType: b.targetType, targetId: b.targetId })),
   ]);
 }
@@ -508,21 +526,39 @@ export function StepName({
   );
 }
 
+interface TargetOption {
+  id: string;
+  name: string;
+}
+
 export function StepAssign({
   agents,
+  projects = [],
+  routines = [],
   profiles,
   selectedAgentIds,
   onToggleAgent,
+  selectedProjectIds,
+  onToggleProject,
+  selectedRoutineIds,
+  onToggleRoutine,
   companyDefault,
   onCompanyDefault,
 }: {
-  agents: Array<{ id: string; name: string }>;
+  agents: TargetOption[];
+  projects?: TargetOption[];
+  routines?: TargetOption[];
   profiles: ToolProfileWithDetails[];
   selectedAgentIds: Set<string>;
   onToggleAgent: (id: string) => void;
+  selectedProjectIds?: Set<string>;
+  onToggleProject?: (id: string) => void;
+  selectedRoutineIds?: Set<string>;
+  onToggleRoutine?: (id: string) => void;
   companyDefault: boolean;
   onCompanyDefault: (v: boolean) => void;
 }) {
+  const [moreOpen, setMoreOpen] = useState(false);
   // Per-agent overlap context from already-loaded bindings — no extra fetch.
   const contextByAgent = useMemo(() => {
     const map = new Map<string, string[]>();
@@ -591,6 +627,60 @@ export function StepAssign({
         <p className="text-xs text-muted-foreground">
           If an agent has several profiles, it can use anything any of them allows.
         </p>
+      </div>
+
+      {(projects.length > 0 || routines.length > 0) && onToggleProject && onToggleRoutine ? (
+        <Collapsible open={moreOpen} onOpenChange={setMoreOpen} className="rounded-lg border border-border">
+          <CollapsibleTrigger className="flex w-full items-center justify-between px-4 py-3 text-left">
+            <span className="text-sm font-medium text-foreground">More targets</span>
+            <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", moreOpen && "rotate-180")} />
+          </CollapsibleTrigger>
+          <CollapsibleContent className="space-y-4 border-t border-border px-4 py-3">
+            <p className="text-xs text-muted-foreground">
+              Assign this profile to a whole project or a scheduled routine instead of (or as well as)
+              individual agents.
+            </p>
+            <TargetChecklist
+              label="Projects"
+              options={projects}
+              selected={selectedProjectIds ?? new Set()}
+              onToggle={onToggleProject}
+            />
+            <TargetChecklist
+              label="Routines"
+              options={routines}
+              selected={selectedRoutineIds ?? new Set()}
+              onToggle={onToggleRoutine}
+            />
+          </CollapsibleContent>
+        </Collapsible>
+      ) : null}
+    </div>
+  );
+}
+
+function TargetChecklist({
+  label,
+  options,
+  selected,
+  onToggle,
+}: {
+  label: string;
+  options: TargetOption[];
+  selected: Set<string>;
+  onToggle: (id: string) => void;
+}) {
+  if (options.length === 0) return null;
+  return (
+    <div className="space-y-1.5">
+      <h4 className="text-xs font-medium text-muted-foreground">{label}</h4>
+      <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+        {options.map((option) => (
+          <label key={option.id} className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
+            <input type="checkbox" checked={selected.has(option.id)} onChange={() => onToggle(option.id)} />
+            {option.name}
+          </label>
+        ))}
       </div>
     </div>
   );
