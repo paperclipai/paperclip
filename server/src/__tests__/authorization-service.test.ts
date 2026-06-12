@@ -94,7 +94,7 @@ async function grantAgentPermission(
   db: ReturnType<typeof createDb>,
   companyId: string,
   agentId: string,
-  permissionKey: "tasks:assign" | "tasks:assign_scope",
+  permissionKey: "agent_config:read" | "agents:create" | "tasks:assign" | "tasks:assign_scope",
   scope: Record<string, unknown> | null = null,
 ) {
   await db.insert(companyMemberships).values({
@@ -175,24 +175,27 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain("Allowed by explicit grant tasks:assign");
   });
 
-  it("allows agent grants for agent configuration decisions", async () => {
-    const company = await createCompany(db, "AgentGrant");
+  it("allows read-only agent config grants for agent configuration reads", async () => {
+    const company = await createCompany(db, "AgentConfigReadGrant");
     const actorAgent = await createAgent(db, company.id);
     const targetAgent = await createAgent(db, company.id);
-    await db.insert(companyMemberships).values({
-      companyId: company.id,
-      principalType: "agent",
-      principalId: actorAgent.id,
-      status: "active",
-      membershipRole: "member",
+    await grantAgentPermission(db, company.id, actorAgent.id, "agent_config:read");
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "agent_config:read",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
     });
-    await db.insert(principalPermissionGrants).values({
-      companyId: company.id,
-      principalType: "agent",
-      principalId: actorAgent.id,
-      permissionKey: "agents:create",
-      grantedByUserId: null,
-    });
+
+    expect(decision.allowed).toBe(true);
+    expect(decision.grant?.permissionKey).toBe("agent_config:read");
+  });
+
+  it("keeps agent create grants compatible with agent configuration reads", async () => {
+    const company = await createCompany(db, "AgentCreateReadCompat");
+    const actorAgent = await createAgent(db, company.id);
+    const targetAgent = await createAgent(db, company.id);
+    await grantAgentPermission(db, company.id, actorAgent.id, "agents:create");
 
     const decision = await authorizationService(db).decide({
       actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
