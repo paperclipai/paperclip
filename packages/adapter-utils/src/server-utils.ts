@@ -15,6 +15,7 @@ export interface RunProcessResult {
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
+  timeoutReason?: "wall" | "output_idle" | null;
   stdout: string;
   stderr: string;
   pid: number | null;
@@ -2141,6 +2142,7 @@ export async function runChildProcess(
     env: Record<string, string>;
     timeoutSec: number;
     graceSec: number;
+    outputIdleTimeoutSec?: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
@@ -2197,6 +2199,7 @@ export async function runChildProcess(
         runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
 
         let timedOut = false;
+        let timeoutReason: RunProcessResult["timeoutReason"] = null;
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
@@ -2204,6 +2207,7 @@ export async function runChildProcess(
         let terminalCleanupStarted = false;
         let terminalCleanupTimer: NodeJS.Timeout | null = null;
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
+        let outputIdleTimer: NodeJS.Timeout | null = null;
         let terminalResultStdoutScanOffset = 0;
         let terminalResultStderrScanOffset = 0;
 
@@ -2212,6 +2216,39 @@ export async function runChildProcess(
           if (terminalCleanupKillTimer) clearTimeout(terminalCleanupKillTimer);
           terminalCleanupTimer = null;
           terminalCleanupKillTimer = null;
+        };
+
+        const clearOutputIdleTimer = () => {
+          if (outputIdleTimer) clearTimeout(outputIdleTimer);
+          outputIdleTimer = null;
+        };
+
+        const terminateForTimeout = (reason: NonNullable<RunProcessResult["timeoutReason"]>) => {
+          if (timedOut) return;
+          timedOut = true;
+          timeoutReason = reason;
+          clearTerminalCleanupTimers();
+          clearOutputIdleTimer();
+          signalRunningProcess({ child, processGroupId }, "SIGTERM");
+          setTimeout(() => {
+            signalRunningProcess({ child, processGroupId }, "SIGKILL");
+          }, Math.max(1, opts.graceSec) * 1000);
+        };
+
+        const outputIdleTimeoutMs =
+          typeof opts.outputIdleTimeoutSec === "number" &&
+          Number.isFinite(opts.outputIdleTimeoutSec) &&
+          opts.outputIdleTimeoutSec > 0
+            ? Math.max(1, Math.floor(opts.outputIdleTimeoutSec * 1000))
+            : 0;
+
+        const armOutputIdleTimeout = () => {
+          if (outputIdleTimeoutMs <= 0 || timedOut || terminalCleanupStarted) return;
+          clearOutputIdleTimer();
+          outputIdleTimer = setTimeout(() => {
+            outputIdleTimer = null;
+            terminateForTimeout("output_idle");
+          }, outputIdleTimeoutMs);
         };
 
         const maybeArmTerminalResultCleanup = () => {
@@ -2252,12 +2289,7 @@ export async function runChildProcess(
         const timeout =
           opts.timeoutSec > 0
             ? setTimeout(() => {
-                timedOut = true;
-                clearTerminalCleanupTimers();
-                signalRunningProcess({ child, processGroupId }, "SIGTERM");
-                setTimeout(() => {
-                  signalRunningProcess({ child, processGroupId }, "SIGKILL");
-                }, Math.max(1, opts.graceSec) * 1000);
+                terminateForTimeout("wall");
               }, opts.timeoutSec * 1000)
             : null;
 
@@ -2267,6 +2299,7 @@ export async function runChildProcess(
           readable.pause();
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
+          armOutputIdleTimeout();
           maybeArmTerminalResultCleanup();
           logChain = logChain
             .then(() => opts.onLog("stdout", text))
@@ -2283,6 +2316,7 @@ export async function runChildProcess(
           readable.pause();
           const text = String(chunk);
           stderr = appendWithCap(stderr, text);
+          armOutputIdleTimeout();
           maybeArmTerminalResultCleanup();
           logChain = logChain
             .then(() => opts.onLog("stderr", text))
@@ -2299,12 +2333,18 @@ export async function runChildProcess(
             if (child.killed || stdin.destroyed) return;
             stdin.write(opts.stdin as string);
             stdin.end();
+            armOutputIdleTimeout();
+          });
+        } else {
+          void spawnPersistPromise.finally(() => {
+            armOutputIdleTimeout();
           });
         }
 
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
+          clearOutputIdleTimer();
           runningProcesses.delete(runId);
           void target.cleanup?.();
           const errno = (err as NodeJS.ErrnoException).code;
@@ -2323,6 +2363,7 @@ export async function runChildProcess(
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
+          clearOutputIdleTimer();
           runningProcesses.delete(runId);
           void logChain.finally(() => {
             void Promise.resolve()
@@ -2332,6 +2373,7 @@ export async function runChildProcess(
                 exitCode: code,
                 signal,
                 timedOut,
+                timeoutReason,
                 stdout,
                 stderr,
                 pid: child.pid ?? null,
