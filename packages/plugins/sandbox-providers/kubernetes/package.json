@@ -27,7 +27,11 @@
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts"
   },
-  "files": ["dist", "manifests", "README.md"],
+  "files": [
+    "dist",
+    "manifests",
+    "README.md"
+  ],
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",
     "worker": "./dist/worker.js"
@@ -56,5 +60,10 @@
     "@types/node": "^24.6.0",
     "typescript": "^5.7.3",
     "vitest": "^3.2.4"
+  },
+  "pnpm": {
+    "overrides": {
+      "esbuild": ">=0.28.1"
+    }
   }
 }
