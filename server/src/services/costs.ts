@@ -2,8 +2,10 @@ import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import { randomUUID } from "node:crypto";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
+import { publishPluginDomainEvent } from "./activity-log.js";
 
 export interface CostDateRange {
   from?: Date;
@@ -97,6 +99,41 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(eq(companies.id, companyId));
 
       await budgets.evaluateCostEvent(event);
+
+      // Forward to plugins as a first-class domain event. `cost_event.created`
+      // is a declared PluginEventType but had no host producer; emit it here so
+      // observability plugins receive cost signal as it flows.
+      publishPluginDomainEvent({
+        eventId: randomUUID(),
+        eventType: "cost_event.created",
+        occurredAt: new Date().toISOString(),
+        actorId: event.agentId,
+        actorType: "agent",
+        entityId: event.id,
+        entityType: "cost_event",
+        companyId: event.companyId,
+        payload: {
+          id: event.id,
+          companyId: event.companyId,
+          agentId: event.agentId,
+          issueId: event.issueId ?? null,
+          projectId: event.projectId ?? null,
+          goalId: event.goalId ?? null,
+          heartbeatRunId: event.heartbeatRunId ?? null,
+          billingCode: event.billingCode ?? null,
+          provider: event.provider,
+          biller: event.biller,
+          billingType: event.billingType,
+          model: event.model,
+          inputTokens: event.inputTokens,
+          cachedInputTokens: event.cachedInputTokens,
+          outputTokens: event.outputTokens,
+          costCents: event.costCents,
+          occurredAt: event.occurredAt instanceof Date
+            ? event.occurredAt.toISOString()
+            : event.occurredAt,
+        },
+      });
 
       return event;
     },
