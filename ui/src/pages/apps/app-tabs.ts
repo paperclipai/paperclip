@@ -14,6 +14,10 @@ export function appTabHref(connectionId: string, tab: AppTabKey): string {
   return `/apps/${connectionId}/${tab}`;
 }
 
+export function appApplicationTabHref(applicationId: string, tab: AppTabKey): string {
+  return `/apps/app/${applicationId}/${tab}`;
+}
+
 export function isAppTabKey(value: string | undefined): value is AppTabKey {
   return APP_TABS.some((tab) => tab.key === value);
 }

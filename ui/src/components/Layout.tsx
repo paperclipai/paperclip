@@ -5,7 +5,7 @@ import { Sidebar } from "./Sidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 import { CompanySettingsNav } from "./access/CompanySettingsNav";
 import { AppsSidebar } from "./AppsSidebar";
-import { AppConnectionSidebar } from "./AppConnectionSidebar";
+import { AppDetailSidebar } from "./AppConnectionSidebar";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
@@ -93,6 +93,10 @@ export function Layout() {
     isAppsRoute && companyPathSegments[1] && !RESERVED_APP_SUBPATHS.has(companyPathSegments[1].toLowerCase())
       ? companyPathSegments[1]
       : null;
+  const appDetailApplicationId =
+    isAppsRoute && companyPathSegments[1]?.toLowerCase() === "app" && companyPathSegments[2]
+      ? companyPathSegments[2]
+      : null;
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
   const previousPathname = useRef<string | null>(null);
@@ -135,7 +139,9 @@ export function Layout() {
   const secondarySidebar = isCompanySettingsRoute ? (
     <CompanySettingsSidebar />
   ) : appDetailConnectionId ? (
-    <AppConnectionSidebar connectionId={appDetailConnectionId} />
+    <AppDetailSidebar kind="connection" connectionId={appDetailConnectionId} />
+  ) : appDetailApplicationId ? (
+    <AppDetailSidebar kind="application" applicationId={appDetailApplicationId} />
   ) : isAppsRoute || isToolsRoute ? (
     <AppsSidebar />
   ) : routeSidebarSlot ? (

@@ -1,24 +1,42 @@
 import { ChevronLeft } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { humanizeConnectionDisplayName } from "@paperclipai/shared";
-import type { AppGalleryEntry, ToolConnection } from "@paperclipai/shared";
+import type { AppGalleryEntry, ToolApplication, ToolConnection } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { toolsApi } from "@/api/tools";
 import { useCompany } from "@/context/CompanyContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { queryKeys } from "@/lib/queryKeys";
-import { APP_TABS, appTabHref } from "@/pages/apps/app-tabs";
+import { APP_TABS, appApplicationTabHref, appTabHref, type AppTabKey } from "@/pages/apps/app-tabs";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { SidebarNavItem } from "./SidebarNavItem";
 
+type AppDetailSidebarProps =
+  | { kind: "connection"; connectionId: string }
+  | { kind: "application"; applicationId: string };
+
 export function AppConnectionSidebar({ connectionId }: { connectionId: string }) {
+  return <AppDetailSidebar kind="connection" connectionId={connectionId} />;
+}
+
+export function AppDetailSidebar(props: AppDetailSidebarProps) {
   const { selectedCompanyId } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
 
   const connectionQuery = useQuery({
-    queryKey: queryKeys.tools.connection(connectionId),
-    queryFn: () => toolsApi.getConnection(connectionId),
-    enabled: !!connectionId,
+    queryKey: queryKeys.tools.connection(props.kind === "connection" ? props.connectionId : "__none__"),
+    queryFn: () => toolsApi.getConnection(props.kind === "connection" ? props.connectionId : ""),
+    enabled: props.kind === "connection" && !!props.connectionId,
+  });
+  const applicationsQuery = useQuery({
+    queryKey: queryKeys.tools.applications(selectedCompanyId ?? "__none__"),
+    queryFn: () => toolsApi.listApplications(selectedCompanyId!),
+    enabled: props.kind === "application" && !!selectedCompanyId,
+  });
+  const connectionsQuery = useQuery({
+    queryKey: queryKeys.tools.connections(selectedCompanyId ?? "__none__"),
+    queryFn: () => toolsApi.listConnections(selectedCompanyId!),
+    enabled: props.kind === "application" && !!selectedCompanyId,
   });
   const galleryQuery = useQuery({
     queryKey: queryKeys.apps.gallery(selectedCompanyId ?? "__none__"),
@@ -33,9 +51,19 @@ export function AppConnectionSidebar({ connectionId }: { connectionId: string })
   });
 
   const connection = connectionQuery.data;
-  const appName = connection ? humanizeConnectionDisplayName(connection) : "App";
-  const logoEntry = galleryEntryFor(galleryQuery.data?.apps ?? [], connection);
-  const attentionItem = attentionQuery.data?.apps.find((app) => app.connection.id === connectionId);
+  const application = props.kind === "application"
+    ? (applicationsQuery.data?.applications ?? []).find((app) => app.id === props.applicationId)
+    : null;
+  const appConnections = props.kind === "application"
+    ? (connectionsQuery.data?.connections ?? []).filter((candidate) => candidate.applicationId === props.applicationId)
+    : [];
+  const previousConnection = latestArchivedConnection(appConnections);
+  const appName = connection ? humanizeConnectionDisplayName(connection) : application?.name ?? "App";
+  const logoEntry = galleryEntryFor(galleryQuery.data?.apps ?? [], connection, application ?? undefined);
+  const reviewConnectionId = connection?.id ?? previousConnection?.id ?? null;
+  const attentionItem = reviewConnectionId
+    ? attentionQuery.data?.apps.find((app) => app.connection.id === reviewConnectionId)
+    : null;
   const reviewCount =
     (attentionItem?.pendingActionRequestCount ?? 0) + (attentionItem?.quarantinedCatalogEntryCount ?? 0);
 
@@ -63,7 +91,7 @@ export function AppConnectionSidebar({ connectionId }: { connectionId: string })
           {APP_TABS.map((tab) => (
             <SidebarNavItem
               key={tab.key}
-              to={appTabHref(connectionId, tab.key)}
+              to={tabHref(props, tab.key)}
               label={tab.label}
               icon={tab.icon}
               end
@@ -78,8 +106,32 @@ export function AppConnectionSidebar({ connectionId }: { connectionId: string })
   );
 }
 
-function galleryEntryFor(apps: AppGalleryEntry[], connection: ToolConnection | undefined): AppGalleryEntry | null {
-  if (!connection) return null;
-  const name = connection.name.toLowerCase();
+function tabHref(props: AppDetailSidebarProps, tab: AppTabKey): string {
+  return props.kind === "connection"
+    ? appTabHref(props.connectionId, tab)
+    : appApplicationTabHref(props.applicationId, tab);
+}
+
+function galleryEntryFor(
+  apps: AppGalleryEntry[],
+  connection: ToolConnection | undefined,
+  application: ToolApplication | undefined,
+): AppGalleryEntry | null {
+  if (application?.applicationKey) {
+    const keyed = apps.find((app) => app.key === application.applicationKey);
+    if (keyed) return keyed;
+  }
+  const name = (connection?.name ?? application?.name)?.toLowerCase();
+  if (!name) return null;
   return apps.find((app) => app.name.toLowerCase() === name) ?? apps.find((app) => app.key === name) ?? null;
+}
+
+function latestArchivedConnection(connections: ToolConnection[]): ToolConnection | null {
+  const archived = connections.filter((connection) => connection.status === "archived");
+  if (archived.length === 0) return null;
+  return archived.reduce((latest, connection) => {
+    const latestTime = new Date(latest.updatedAt ?? latest.createdAt ?? 0).getTime();
+    const connectionTime = new Date(connection.updatedAt ?? connection.createdAt ?? 0).getTime();
+    return connectionTime > latestTime ? connection : latest;
+  });
 }

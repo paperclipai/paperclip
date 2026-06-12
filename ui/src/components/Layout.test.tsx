@@ -64,8 +64,12 @@ vi.mock("./AppsSidebar", () => ({
 }));
 
 vi.mock("./AppConnectionSidebar", () => ({
-  AppConnectionSidebar: ({ connectionId }: { connectionId: string }) => (
-    <div>App connection sidebar {connectionId}</div>
+  AppDetailSidebar: (props: { kind: "connection"; connectionId: string } | { kind: "application"; applicationId: string }) => (
+    <div>
+      {props.kind === "connection"
+        ? `App detail sidebar connection ${props.connectionId}`
+        : `App detail sidebar application ${props.applicationId}`}
+    </div>
   ),
 }));
 
@@ -588,7 +592,33 @@ describe("Layout", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("App connection sidebar conn-1");
+    expect(container.textContent).toContain("App detail sidebar connection conn-1");
+    expect(container.textContent).toContain("Main company nav");
+    expect(container.textContent).not.toContain("Apps sidebar");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("uses the app detail sidebar on not-connected app routes", async () => {
+    currentPathname = "/PAP/apps/app/app-1/permissions";
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("App detail sidebar application app-1");
     expect(container.textContent).toContain("Main company nav");
     expect(container.textContent).not.toContain("Apps sidebar");
 

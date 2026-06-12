@@ -103,6 +103,7 @@ function boardRoutes() {
       <Route path="apps/advanced/profiles/:profileId" element={<ProfileDetailRoute />} />
       <Route path="apps/advanced/:tab" element={<AdvancedToolsRoute />} />
       <Route path="apps/app/:applicationId" element={<AppNotConnected />} />
+      <Route path="apps/app/:applicationId/:tab" element={<AppNotConnected />} />
       <Route path="apps/:connectionId" element={<Navigate to="setup" replace />} />
       <Route path="apps/:connectionId/:tab" element={<AppDetail />} />
       <Route path="company/settings/instance" element={<Navigate to="general" replace />} />
