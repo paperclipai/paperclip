@@ -80,7 +80,7 @@ export async function fetchIssueDetail(
   queryClient: QueryClient,
   issueRef: string,
 ): Promise<Issue> {
-  const issue = await issuesApi.get(issueRef);
+  const issue = await issuesApi.get(issueRef, { includeBlockedInboxAttention: true });
   return seedIssueDetailCache(queryClient, issue, { issueRef });
 }
 

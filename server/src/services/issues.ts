@@ -4228,6 +4228,28 @@ export function issueService(db: Db) {
       return listIssueBlockerAttentionMap(dbOrTx, companyId, issueRows);
     },
 
+    // Rich blocked-inbox attention (owner + action + resolving ids) for a single
+    // issue. listIssueBlockedInboxAttentionMap rebuilds the company graph itself,
+    // but its result loop reads the passed row's companyId/status/identifier/etc.,
+    // so the full issue row must be supplied (a bare {id} is skipped).
+    getBlockedInboxAttention: async (
+      companyId: string,
+      issueId: string,
+      dbOrTx: any = db,
+    ): Promise<IssueBlockedInboxAttention | null> => {
+      const [row] = await dbOrTx
+        .select()
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
+      if (!row) return null;
+      const map = await listIssueBlockedInboxAttentionMap(
+        dbOrTx,
+        companyId,
+        [row as BlockedInboxIssueRow],
+      );
+      return map.get(issueId) ?? null;
+    },
+
     listProductivityReviews: async (
       companyId: string,
       sourceIssueIds: string[],

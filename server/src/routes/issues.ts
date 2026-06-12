@@ -2711,6 +2711,8 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const includeBlockedInboxAttention =
+      req.query.includeBlockedInboxAttention === "true" || req.query.includeBlockedInboxAttention === "1";
     const [
       { project, goal },
       ancestors,
@@ -2718,6 +2720,7 @@ export function issueRoutes(
       documentPayload,
       relations,
       blockerAttention,
+      blockedInboxAttention,
       productivityReview,
       referenceSummary,
       successfulRunHandoffStates,
@@ -2730,6 +2733,9 @@ export function issueRoutes(
       documentsSvc.getIssueDocumentPayload(issue),
       svc.getRelationSummaries(issue.id),
       svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
+      includeBlockedInboxAttention
+        ? svc.getBlockedInboxAttention(issue.companyId, issue.id)
+        : Promise.resolve(null),
       svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
       issueReferencesSvc.listIssueReferenceSummary(issue.id),
       listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
@@ -2763,6 +2769,7 @@ export function issueRoutes(
       goalId: goal?.id ?? issue.goalId,
       ancestors,
       ...(blockerAttention ? { blockerAttention } : {}),
+      ...(includeBlockedInboxAttention ? { blockedInboxAttention } : {}),
       productivityReview,
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
       scheduledRetry,

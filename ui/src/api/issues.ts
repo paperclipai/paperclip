@@ -124,7 +124,12 @@ export const issuesApi = {
   createLabel: (companyId: string, data: { name: string; color: string }) =>
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
-  get: (id: string) => api.get<Issue>(`/issues/${id}`),
+  get: (id: string, opts?: { includeBlockedInboxAttention?: boolean }) => {
+    const params = new URLSearchParams();
+    if (opts?.includeBlockedInboxAttention) params.set("includeBlockedInboxAttention", "true");
+    const qs = params.toString();
+    return api.get<Issue>(`/issues/${id}${qs ? `?${qs}` : ""}`);
+  },
   markRead: (id: string) => api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
   markUnread: (id: string) => api.delete<{ id: string; removed: boolean }>(`/issues/${id}/read`),
   archiveFromInbox: (id: string) =>

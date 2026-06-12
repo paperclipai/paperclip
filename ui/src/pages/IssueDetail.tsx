@@ -62,6 +62,7 @@ import { clearIssueExecutionRun, removeLiveRunById, upsertInterruptedRun } from 
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatDurationMs, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { ApprovalCard } from "../components/ApprovalCard";
+import { NextActionBanner } from "../components/hive/NextActionBanner";
 import { InlineEditor } from "../components/InlineEditor";
 import {
   IssueChatThread,
@@ -2111,6 +2112,25 @@ export function IssueDetail() {
     },
   });
 
+  // Accept a stalled review from the Next-action banner: marks the (possibly
+  // leaf) issue Done so the blocked chain can continue. Targets an arbitrary
+  // issue id, not just the current one.
+  const acceptReview = useMutation({
+    mutationFn: (targetIssueId: string) => issuesApi.update(targetIssueId, { status: "done" }),
+    onSuccess: () => {
+      invalidateIssueDetail();
+      invalidateIssueCollections();
+      pushToast({ title: "Accepted", body: "Marked done; the chain can continue.", tone: "success" });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Couldn't accept",
+        body: err instanceof Error ? err.message : "Unable to update the issue",
+        tone: "error",
+      });
+    },
+  });
+
   const addComment = useMutation({
     mutationFn: ({ body, reopen, interrupt }: { body: string; reopen?: boolean; interrupt?: boolean }) =>
       issuesApi.addComment(issueId!, body, reopen, interrupt),
@@ -3449,6 +3469,17 @@ export function IssueDetail() {
           <ChevronRight className="h-3 w-3 shrink-0" />
           <span className="text-foreground/60 truncate max-w-[200px]">{issue.title}</span>
         </nav>
+      )}
+
+      {issue.blockedInboxAttention && (
+        <NextActionBanner
+          attention={issue.blockedInboxAttention}
+          currentIssueId={issue.id}
+          acting={approvalDecision.isPending || acceptReview.isPending}
+          onApprove={(approvalId) => approvalDecision.mutate({ approvalId, action: "approve" })}
+          onReject={(approvalId) => approvalDecision.mutate({ approvalId, action: "reject" })}
+          onAccept={(targetIssueId) => acceptReview.mutate(targetIssueId)}
+        />
       )}
 
       {issue.hiddenAt && (
