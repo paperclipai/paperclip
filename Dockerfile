@@ -61,8 +61,11 @@ RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" &
 # /app and get copied into the production stage; app.ts auto-installs it at
 # startup so the "kubernetes" sandbox provider is registered in containers.
 # A build failure here fails the whole image build, so a broken plugin can
-# never produce a deployable image.
-RUN CI=true pnpm -C packages/plugins/sandbox-providers/kubernetes install --ignore-workspace --no-lockfile
+# never produce a deployable image. The plugin carries its own pnpm-lock.yaml
+# (it is outside the workspace, so the root lockfile cannot cover it);
+# --frozen-lockfile keeps the embedded @kubernetes/client-node resolution
+# reproducible across builds.
+RUN CI=true pnpm -C packages/plugins/sandbox-providers/kubernetes install --ignore-workspace --frozen-lockfile
 RUN CI=true pnpm -C packages/plugins/sandbox-providers/kubernetes run build
 RUN test -f packages/plugins/sandbox-providers/kubernetes/dist/manifest.js \
   && test -f packages/plugins/sandbox-providers/kubernetes/dist/worker.js \
