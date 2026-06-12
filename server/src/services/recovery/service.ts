@@ -2970,6 +2970,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         companyId: issues.companyId,
         identifier: issues.identifier,
         title: issues.title,
+        description: issues.description,
         status: issues.status,
         projectId: issues.projectId,
         goalId: issues.goalId,
@@ -3019,6 +3020,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           name: agents.name,
           role: agents.role,
           title: agents.title,
+          capabilities: agents.capabilities,
           status: agents.status,
           reportsTo: agents.reportsTo,
         })
