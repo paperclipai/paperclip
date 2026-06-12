@@ -104,6 +104,7 @@
     "build": "pnpm --filter @paperclipai/shared build && tsc",
     "clean": "rm -rf dist",
     "ensure-build-deps": "node ../../../scripts/ensure-plugin-build-deps.mjs",
+    "test": "vitest run",
     "typecheck": "pnpm --filter @paperclipai/shared build && tsc --noEmit",
     "dev:server": "tsx src/dev-cli.ts"
   },
@@ -114,6 +115,7 @@
   "devDependencies": {
     "@types/node": "^24.6.0",
     "@types/react": "^19.0.8",
+    "esbuild": "^0.28.0",
     "typescript": "^5.7.3"
   },
   "peerDependencies": {
