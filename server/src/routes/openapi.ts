@@ -126,6 +126,8 @@ import {
   secretProviderConfigDiscoveryPreviewSchema,
   remoteSecretImportPreviewSchema,
   remoteSecretImportSchema,
+  workspaceFileListQuerySchema,
+  workspaceFileResourceQuerySchema,
 } from "@paperclipai/shared";
 
 type JsonSchema = Record<string, unknown>;
@@ -430,6 +432,10 @@ const responses = {
     description: "Internal server error",
     content: { "application/json": { schema: ErrorSchema } },
   },
+  tooManyRequests: {
+    description: "Too many requests",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
 };
 
 const jsonBody = (schema: z.ZodTypeAny) => ({
@@ -566,6 +572,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/secrets/{id}/usage",
   "GET /api/secrets/{id}/access-events",
   "POST /api/health/dev-server/restart",
+  "GET /api/issues/{issueId}/file-resources/content",
+  "GET /api/issues/{issueId}/file-resources/list",
+  "GET /api/issues/{issueId}/file-resources/resolve",
   "POST /api/issues/{id}/interactions/{interactionId}/accept",
   "POST /api/issues/{id}/interactions/{interactionId}/reject",
   "POST /api/issues/{id}/interactions/{interactionId}/respond",
@@ -1640,6 +1649,60 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/issues/{issueId}/file-resources/list",
+  tags: ["issues"],
+  summary: "List workspace files for an issue",
+  request: {
+    params: z.object({ issueId: z.string() }),
+    query: workspaceFileListQuerySchema,
+  },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    404: r.notFound,
+    422: r.unprocessable,
+    429: r.tooManyRequests,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{issueId}/file-resources/resolve",
+  tags: ["issues"],
+  summary: "Resolve an issue workspace file",
+  request: {
+    params: z.object({ issueId: z.string() }),
+    query: workspaceFileResourceQuerySchema,
+  },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    404: r.notFound,
+    422: r.unprocessable,
+    429: r.tooManyRequests,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{issueId}/file-resources/content",
+  tags: ["issues"],
+  summary: "Read issue workspace file content",
+  request: {
+    params: z.object({ issueId: z.string() }),
+    query: workspaceFileResourceQuerySchema,
+  },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    404: r.notFound,
+    422: r.unprocessable,
+    429: r.tooManyRequests,
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/issues/{id}/attachments",
   tags: ["issues"],
   summary: "List issue attachments",
@@ -2396,6 +2459,25 @@ registry.registerPath({
   summary: "Update experimental instance settings",
   request: { body: jsonBody(patchInstanceExperimentalSettingsSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+// ─── Board chat (Conference Room Chat, experimental) ──────────────────────────
+
+registry.registerPath({
+  method: "post",
+  path: "/api/board/chat/stream",
+  tags: ["instance"],
+  summary: "Stream a board-level chat response (requires enableConferenceRoomChat)",
+  request: {
+    body: jsonBody(
+      z.object({
+        companyId: z.string(),
+        message: z.string(),
+        taskId: z.string().optional(),
+      }),
+    ),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Access / invites / members ───────────────────────────────────────────────
@@ -4205,7 +4287,19 @@ for (const route of [
   ["get", "/api/skills/catalog/{catalogId}", "Get a catalog skill"],
   ["get", "/api/skills/catalog/{catalogId}/files", "List catalog skill files"],
   ["post", "/api/companies/{companyId}/skills/install-catalog", "Install a catalog skill"],
+  ["get", "/api/companies/{companyId}/skills/categories", "List company skill categories"],
   ["post", "/api/companies/{companyId}/skills/{skillId}/audit", "Audit a company skill"],
+  ["patch", "/api/companies/{companyId}/skills/{skillId}", "Update a company skill"],
+  ["get", "/api/companies/{companyId}/skills/{skillId}/versions", "List skill versions"],
+  ["post", "/api/companies/{companyId}/skills/{skillId}/versions", "Create a skill version"],
+  ["get", "/api/companies/{companyId}/skills/{skillId}/versions/{versionId}", "Get a skill version"],
+  ["post", "/api/companies/{companyId}/skills/{skillId}/star", "Star a company skill"],
+  ["delete", "/api/companies/{companyId}/skills/{skillId}/star", "Unstar a company skill"],
+  ["post", "/api/companies/{companyId}/skills/{skillId}/fork", "Fork a company skill"],
+  ["get", "/api/companies/{companyId}/skills/{skillId}/comments", "List skill comments"],
+  ["post", "/api/companies/{companyId}/skills/{skillId}/comments", "Create a skill comment"],
+  ["patch", "/api/companies/{companyId}/skills/{skillId}/comments/{commentId}", "Update a skill comment"],
+  ["delete", "/api/companies/{companyId}/skills/{skillId}/comments/{commentId}", "Delete a skill comment"],
   ["post", "/api/companies/{companyId}/skills/{skillId}/reset", "Reset a company skill"],
 ] as const) {
   registerCurrentRoute({

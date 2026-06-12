@@ -495,6 +495,167 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("allows null-mapped visibility actions for active same-company board members", async () => {
+    const company = await createCompany(db, "BoardVisibility");
+    const userId = `user-${randomUUID()}`;
+    const project = await createProject(db, company.id, "Visible");
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, { projectId: project.id });
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "member",
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "board" as const, userId, source: "session" as const };
+
+    await expect(authorization.decide({
+      actor,
+      action: "agent:read",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "project:read",
+      resource: { type: "project", companyId: company.id, projectId: project.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "issue:read",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        projectId: issue.projectId,
+        parentIssueId: issue.parentId,
+        status: issue.status,
+      },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "runtime:manage",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "secrets:read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+  });
+
+  it("denies null-mapped visibility actions for board users without an active membership", async () => {
+    const memberCompany = await createCompany(db, "BoardVisibilityMember");
+    const otherCompany = await createCompany(db, "BoardVisibilityOther");
+    const userId = `user-${randomUUID()}`;
+    const targetAgent = await createAgent(db, otherCompany.id, { role: "engineer" });
+    const inactiveUserId = `user-${randomUUID()}`;
+    await db.insert(companyMemberships).values({
+      companyId: memberCompany.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "member",
+    });
+    await db.insert(companyMemberships).values({
+      companyId: otherCompany.id,
+      principalType: "user",
+      principalId: inactiveUserId,
+      status: "removed",
+      membershipRole: "member",
+    });
+
+    const authorization = authorizationService(db);
+
+    await expect(authorization.decide({
+      actor: { type: "board", userId, source: "session" },
+      action: "agent:read",
+      resource: { type: "agent", companyId: otherCompany.id, agentId: targetAgent.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_membership" });
+    await expect(authorization.decide({
+      actor: { type: "board", userId: inactiveUserId, source: "session" },
+      action: "company_scope:read",
+      resource: { type: "company", companyId: otherCompany.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_membership" });
+  });
+
+  it("keeps denying self-gated null-mapped actions for board members", async () => {
+    const company = await createCompany(db, "BoardWakeDenied");
+    const userId = `user-${randomUUID()}`;
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "member",
+    });
+
+    const authorization = authorizationService(db);
+
+    await expect(authorization.decide({
+      actor: { type: "board", userId, source: "session" },
+      action: "agent:wake",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_unsupported_action",
+    });
+    const issue = await createIssue(db, company.id, { title: "Wake denied issue" });
+    await expect(authorization.decide({
+      actor: { type: "board", userId, source: "session" },
+      action: "issue:mutate",
+      resource: { type: "issue", companyId: company.id, issueId: issue.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_unsupported_action",
+    });
+  });
+
+  it("limits viewer members to read-only visibility actions", async () => {
+    const company = await createCompany(db, "BoardViewerVisibility");
+    const userId = `user-${randomUUID()}`;
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "viewer",
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "board", userId, source: "session" } as const;
+
+    await expect(authorization.decide({
+      actor,
+      action: "agent:read",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "runtime:manage",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+    await expect(authorization.decide({
+      actor,
+      action: "secrets:read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+  });
+
   it("denies legacy board assignment context for viewers", async () => {
     const company = await createCompany(db, "BoardViewerAssignment");
     const userId = `user-${randomUUID()}`;
@@ -518,6 +679,48 @@ describeEmbeddedPostgres("authorization service", () => {
       allowed: false,
       reason: "deny_missing_grant",
     });
+  });
+
+  it("never elevates cloud_tenant actors through stale instance_admin rows", async () => {
+    const tenantCompany = await createCompany(db, "CloudTenantStale");
+    const otherCompany = await createCompany(db, "CloudTenantOther");
+    const userId = `user-${randomUUID()}`;
+    const targetAgent = await createAgent(db, otherCompany.id, { role: "engineer" });
+    await db.insert(companyMemberships).values({
+      companyId: tenantCompany.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "owner",
+    });
+    // Stale grant left behind by a pre-hardening cloud_tenant deployment.
+    await db.insert(instanceUserRoles).values({ userId, role: "instance_admin" });
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "board",
+        userId,
+        companyIds: [tenantCompany.id],
+        isInstanceAdmin: false,
+        source: "cloud_tenant",
+      },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: otherCompany.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).not.toBe("allow_instance_admin");
+
+    // Control: the instanceUserRoles lookup still elevates non-cloud_tenant
+    // board actors, so the carve-out is scoped to the tenant contract only.
+    const sessionDecision = await authorizationService(db).decide({
+      actor: { type: "board", userId, companyIds: [tenantCompany.id], source: "session" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: otherCompany.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+    expect(sessionDecision).toMatchObject({ allowed: true, reason: "allow_instance_admin" });
   });
 
   it("denies simple-mode assignment to a target agent from another company", async () => {

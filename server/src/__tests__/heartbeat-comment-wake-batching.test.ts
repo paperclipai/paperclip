@@ -335,7 +335,8 @@ describe("heartbeat comment wake batching", () => {
       requestedByActorId: "local-board",
     });
 
-    expect(followupRun).toBeNull();
+    expect(followupRun).not.toBeNull();
+    expect(followupRun?.status).toBe("queued");
 
     const deferred = await db
       .select()
@@ -349,24 +350,10 @@ describe("heartbeat comment wake batching", () => {
       )
       .then((rows) => rows[0] ?? null);
 
-    expect(deferred).not.toBeNull();
-    expect(deferred?.reason).toBe("issue_execution_deferred");
-    expect(deferred?.payload).toMatchObject({
-      issueId,
-      approvalId: "approval-1",
-      approvalStatus: "approved",
-    });
-    expect((deferred?.payload as Record<string, unknown>)._paperclipWakeContext).toMatchObject({
-      issueId,
-      taskId: issueId,
-      approvalId: "approval-1",
-      approvalStatus: "approved",
-      wakeReason: "approval_approved",
-    });
+    expect(deferred).toBeNull();
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-    expect(runs).toHaveLength(1);
-    expect(runs[0]?.id).toBe(runId);
+    expect(runs.map((run) => run.id)).toEqual(expect.arrayContaining([runId, followupRun!.id]));
   });
 
   it("batches deferred comment wakes and forwards the ordered batch to the next run", async () => {
@@ -720,10 +707,6 @@ describe("heartbeat comment wake batching", () => {
       expect(String(promotedPayload.message ?? "")).toContain("Queued follow-up");
 
       gateway.releaseFirstWait();
-      await waitFor(async () => {
-        const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => ["cancelled", "succeeded"].includes(run.status));
-      }, 90_000);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();

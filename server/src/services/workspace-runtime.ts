@@ -2683,10 +2683,44 @@ async function waitForReadiness(input: {
   throw new Error(`Readiness check failed for ${input.url}: ${lastError}`);
 }
 
-async function isRuntimeServiceUrlHealthy(url: string | null) {
-  if (!url) return true;
+function isPaperclipDevRuntimeService(input: { serviceName?: string | null; command?: string | null }) {
+  const serviceName = (input.serviceName ?? "").trim().toLowerCase();
+  const command = (input.command ?? "").trim().toLowerCase();
+  return (
+    serviceName === "paperclip-dev"
+    || serviceName === "paperclip-dev-once"
+    || (command.includes("dev:once") && command.includes("tailscale-auth"))
+  );
+}
+
+function resolveRuntimeServiceHealthUrl(
+  url: string | null,
+  input?: { serviceName?: string | null; command?: string | null },
+) {
+  if (!url || !isPaperclipDevRuntimeService(input ?? {})) return url;
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(2_000) });
+    const parsed = new URL(url);
+    if (parsed.pathname === "/" || parsed.pathname === "") {
+      parsed.pathname = "/api/health";
+      parsed.search = "";
+      parsed.hash = "";
+      return parsed.toString();
+    }
+  } catch {
+    return url;
+  }
+  return url;
+}
+
+async function isRuntimeServiceUrlHealthy(
+  url: string | null,
+  input?: { serviceName?: string | null; command?: string | null },
+) {
+  if (!url) return true;
+  const healthUrl = resolveRuntimeServiceHealthUrl(url, input);
+  if (!healthUrl) return true;
+  try {
+    const response = await fetch(healthUrl, { signal: AbortSignal.timeout(2_000) });
     return response.ok;
   } catch {
     return false;
@@ -2905,12 +2939,11 @@ async function startLocalRuntimeService(input: {
     companyId: input.agent.companyId,
     reuseKey: input.reuseKey,
   });
-  const reusableStoppedPort =
-    asString(portConfig.type, "") === "auto" && stoppedReuseCandidate?.port
-      ? (await readLocalServicePortOwner(stoppedReuseCandidate.port))
-        ? null
-        : stoppedReuseCandidate.port
-      : null;
+  let reusableStoppedPort: number | null = null;
+  if (asString(portConfig.type, "") === "auto" && stoppedReuseCandidate?.port) {
+    const ownerPid = await readLocalServicePortOwner(stoppedReuseCandidate.port);
+    reusableStoppedPort = ownerPid ? null : stoppedReuseCandidate.port;
+  }
   const port =
     asString(portConfig.type, "") === "auto"
       ? (reusableStoppedPort ?? await allocatePort())
@@ -2963,48 +2996,57 @@ async function startLocalRuntimeService(input: {
   });
   const adoptedRecord = await findAdoptableLocalService({
     serviceKey,
+    profileKind: "workspace-runtime",
+    serviceName,
     command,
     cwd: serviceCwd,
     envFingerprint: serviceIdentityFingerprint,
-    port: identityPort,
+    port: port ?? identityPort,
+    url,
   });
   if (adoptedRecord) {
-    return {
-      id: adoptedRecord.runtimeServiceId ?? randomUUID(),
-      companyId: input.agent.companyId,
-      projectId: input.workspace.projectId,
-      projectWorkspaceId: input.workspace.workspaceId,
-      executionWorkspaceId: input.executionWorkspaceId ?? null,
-      issueId: input.issue?.id ?? null,
-      serviceName,
-      status: "running",
-      lifecycle,
-      scopeType: input.scopeType,
-      scopeId: input.scopeId,
-      reuseKey: input.reuseKey,
-      command,
-      cwd: serviceCwd,
-      port: adoptedRecord.port ?? port,
-      url: adoptedRecord.url ?? url,
-      provider: "local_process",
-      providerRef: String(adoptedRecord.pid),
-      ownerAgentId: input.agent.id ?? null,
-      startedByRunId,
-      lastUsedAt: new Date().toISOString(),
-      startedAt: adoptedRecord.startedAt,
-      stoppedAt: null,
-      stopPolicy,
-      healthStatus: "healthy",
-      reused: true,
-      db: input.db,
-      child: null,
-      leaseRunIds: leaseRunId ? new Set([leaseRunId]) : new Set(),
-      idleTimer: null,
-      envFingerprint,
-      serviceKey,
-      profileKind: "workspace-runtime",
-      processGroupId: adoptedRecord.processGroupId ?? null,
-    };
+    const adoptedUrl = adoptedRecord.url ?? url;
+    if (!(await isRuntimeServiceUrlHealthy(adoptedUrl, { serviceName, command }))) {
+      await terminateLocalService(adoptedRecord);
+      await removeLocalServiceRegistryRecord(adoptedRecord.serviceKey);
+    } else {
+      return {
+        id: adoptedRecord.runtimeServiceId ?? randomUUID(),
+        companyId: input.agent.companyId,
+        projectId: input.workspace.projectId,
+        projectWorkspaceId: input.workspace.workspaceId,
+        executionWorkspaceId: input.executionWorkspaceId ?? null,
+        issueId: input.issue?.id ?? null,
+        serviceName,
+        status: "running",
+        lifecycle,
+        scopeType: input.scopeType,
+        scopeId: input.scopeId,
+        reuseKey: input.reuseKey,
+        command,
+        cwd: serviceCwd,
+        port: adoptedRecord.port ?? port,
+        url: adoptedRecord.url ?? url,
+        provider: "local_process",
+        providerRef: String(adoptedRecord.pid),
+        ownerAgentId: input.agent.id ?? null,
+        startedByRunId,
+        lastUsedAt: new Date().toISOString(),
+        startedAt: adoptedRecord.startedAt,
+        stoppedAt: null,
+        stopPolicy,
+        healthStatus: "healthy",
+        reused: true,
+        db: input.db,
+        child: null,
+        leaseRunIds: leaseRunId ? new Set([leaseRunId]) : new Set(),
+        idleTimer: null,
+        envFingerprint,
+        serviceKey,
+        profileKind: "workspace-runtime",
+        processGroupId: adoptedRecord.processGroupId ?? null,
+      };
+    }
   }
   if (identityPort) {
     const ownerPid = await readLocalServicePortOwner(identityPort);
@@ -3622,13 +3664,38 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
   let adopted = 0;
   let stopped = 0;
   for (const row of rows) {
-    const adoptedRecord = await findLocalServiceRegistryRecordByRuntimeServiceId({
+    let adoptedRecord = await findLocalServiceRegistryRecordByRuntimeServiceId({
       runtimeServiceId: row.id,
       profileKind: "workspace-runtime",
     });
+    if (!adoptedRecord && row.command && row.cwd) {
+      adoptedRecord = await findAdoptableLocalService({
+        serviceKey: createLocalServiceKey({
+          profileKind: "workspace-runtime",
+          serviceName: row.serviceName,
+          cwd: row.cwd,
+          command: row.command,
+          envFingerprint: row.reuseKey ?? "",
+          port: null,
+          scope: {
+            scopeType: row.scopeType as RuntimeServiceRecord["scopeType"],
+            scopeId: row.scopeId ?? null,
+            executionWorkspaceId: row.executionWorkspaceId ?? null,
+            reuseKey: row.reuseKey ?? null,
+          },
+        }),
+        profileKind: "workspace-runtime",
+        serviceName: row.serviceName,
+        command: row.command,
+        cwd: row.cwd,
+        envFingerprint: row.reuseKey ?? "",
+        port: row.port ?? null,
+        url: row.url ?? null,
+      });
+    }
     if (adoptedRecord) {
       const adoptedUrl = adoptedRecord.url ?? row.url ?? null;
-      if (!(await isRuntimeServiceUrlHealthy(adoptedUrl))) {
+      if (!(await isRuntimeServiceUrlHealthy(adoptedUrl, { serviceName: row.serviceName, command: row.command }))) {
         await removeLocalServiceRegistryRecord(adoptedRecord.serviceKey);
       } else {
         const record: RuntimeServiceRecord = {

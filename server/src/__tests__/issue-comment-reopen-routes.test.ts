@@ -639,7 +639,7 @@ describe.sequential("issue comment reopen routes", () => {
       }),
     );
     await waitForWakeup(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalled());
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalled();
   });
 
   it("does not move scheduled-retry issues to todo when POST comment retry cancellation fails", async () => {
@@ -689,7 +689,7 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
     await waitForWakeup(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalled());
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalled();
   });
 
   it("passes validated comment presentation fields to trusted board comment writes", async () => {
@@ -792,7 +792,7 @@ describe.sequential("issue comment reopen routes", () => {
     expect(res.status).toBe(201);
     expect(mockIssueService.update).not.toHaveBeenCalled();
     await waitForWakeup(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalled());
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalled();
   });
 
   it("does not reopen closed issues via POST comments when no agent is assigned", async () => {
@@ -918,7 +918,7 @@ describe.sequential("issue comment reopen routes", () => {
     );
     expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
     await waitForWakeup(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalled());
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalled();
   });
 
   it("does not move scheduled-retry issues to todo when PATCH comment retry cancellation fails", async () => {
@@ -1021,7 +1021,7 @@ describe.sequential("issue comment reopen routes", () => {
       expect.objectContaining({ status: "todo" }),
     );
     await waitForWakeup(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalled());
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalled();
   });
 
   it("wakes the assignee when an assigned blocked issue moves back to todo", async () => {
@@ -1265,7 +1265,11 @@ describe.sequential("issue comment reopen routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.getRun).toHaveBeenCalledWith("run-1");
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+      "run-1",
+      "Interrupted by board comment",
+      expect.objectContaining({ errorCode: "operator_interrupted" }),
+    );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
