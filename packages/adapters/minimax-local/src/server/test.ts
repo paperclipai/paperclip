@@ -1,171 +1,232 @@
-import fs from "node:fs/promises";
-import type {
-  AdapterEnvironmentCheck,
-  AdapterEnvironmentTestContext,
-  AdapterEnvironmentTestResult,
-} from "@paperclipai/adapter-utils";
-import { asString, parseObject } from "@paperclipai/adapter-utils/server-utils";
-import { DEFAULT_MINIMAX_LOCAL_BASE_URL, DEFAULT_MINIMAX_LOCAL_MODEL } from "../index.js";
+import { readFile } from "node:fs/promises";
+import type { AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 
-function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
-  if (checks.some((check) => check.level === "error")) return "fail";
-  if (checks.some((check) => check.level === "warn")) return "warn";
-  return "pass";
+const DEFAULT_BASE_URL = "https://api.minimax.io/v1";
+const DEFAULT_MODEL = "MiniMax-M3";
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-function firstNonEmptyString(...values: unknown[]): string | null {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim().length > 0) return value.trim();
-  }
-  return null;
+function adapterValue(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  const record = asRecord(value);
+  if (typeof record.value === "string") return record.value.trim();
+  if (typeof record.secretValue === "string") return record.secretValue.trim();
+  return "";
 }
 
-function normalizeBaseUrl(value: string): string {
-  return value.replace(/\/+$/, "");
+function envValue(env: Record<string, unknown>, key: string): string {
+  return adapterValue(env[key]);
 }
 
-async function resolveMiniMaxApiKey(config: Record<string, unknown>): Promise<{
-  key: string | null;
-  source: string | null;
-}> {
-  const env = parseObject(config.env);
-  const explicit = firstNonEmptyString(env.MINIMAX_API_KEY, process.env.MINIMAX_API_KEY);
+function firstNonEmpty(...values: string[]): string {
+  return values.map((value) => value.trim()).find(Boolean) ?? "";
+}
+
+function stripThink(text: unknown): string {
+  return String(text ?? "")
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/<\/?think>/gi, "")
+    .trim();
+}
+
+function truncate(text: unknown, limit = 500): string {
+  const value = String(text ?? "").replace(/\s+/g, " ").trim();
+  return value.length <= limit ? value : `${value.slice(0, limit)}…`;
+}
+
+async function resolveApiKey(config: Record<string, unknown>) {
+  const env = asRecord(config.env);
+  const explicit = firstNonEmpty(
+    envValue(env, "MINIMAX_API_KEY"),
+    process.env.MINIMAX_API_KEY ?? "",
+  );
+
   if (explicit) {
     return {
+      ok: true as const,
       key: explicit,
-      source: typeof env.MINIMAX_API_KEY === "string" ? "adapter config env" : "server environment",
+      source: envValue(env, "MINIMAX_API_KEY") ? "adapter config env" : "server environment",
     };
   }
 
-  const keyFile = firstNonEmptyString(env.MINIMAX_API_KEY_FILE, process.env.MINIMAX_API_KEY_FILE);
-  if (!keyFile) return { key: null, source: null };
-  try {
-    const raw = await fs.readFile(keyFile, "utf8");
+  const keyFile = firstNonEmpty(
+    envValue(env, "MINIMAX_API_KEY_FILE"),
+    process.env.MINIMAX_API_KEY_FILE ?? "",
+  );
+
+  if (!keyFile) {
     return {
-      key: raw.trim() || null,
-      source: typeof env.MINIMAX_API_KEY_FILE === "string" ? "adapter config key file" : "server key file",
+      ok: false as const,
+      error: "MiniMax API credentials are missing.",
+      hint: "Set env.MINIMAX_API_KEY or env.MINIMAX_API_KEY_FILE, or provide server-level MINIMAX_API_KEY_FILE.",
     };
-  } catch {
-    return { key: null, source: null };
+  }
+
+  try {
+    const key = (await readFile(keyFile, "utf8")).trim();
+    if (!key) {
+      return {
+        ok: false as const,
+        error: "MiniMax API key file is empty.",
+        hint: "Replace the MiniMax key file with the funded MiniMax Token Plan key.",
+      };
+    }
+
+    return {
+      ok: true as const,
+      key,
+      source: envValue(env, "MINIMAX_API_KEY_FILE") ? "adapter config key file" : "server key file",
+    };
+  } catch (error) {
+    return {
+      ok: false as const,
+      error: `Could not read MiniMax API key file: ${error instanceof Error ? error.message : String(error)}`,
+      hint: "Verify the key file exists and is readable by the server container.",
+    };
   }
 }
 
-export async function testEnvironment(
-  ctx: AdapterEnvironmentTestContext,
-): Promise<AdapterEnvironmentTestResult> {
-  const checks: AdapterEnvironmentCheck[] = [];
-  const config = parseObject(ctx.config);
-  const baseUrl = normalizeBaseUrl(
-    firstNonEmptyString(config.baseUrl) ?? DEFAULT_MINIMAX_LOCAL_BASE_URL,
-  );
-  const model = firstNonEmptyString(config.primaryModel, config.model) ?? DEFAULT_MINIMAX_LOCAL_MODEL;
-  const { key, source } = await resolveMiniMaxApiKey(config);
+export async function testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult> {
+  const testedAt = new Date().toISOString();
+  const config = asRecord(ctx.config);
+  const credential = await resolveApiKey(config);
 
-  if (key) {
-    checks.push({
-      code: "minimax_api_key_present",
+  if (!credential.ok) {
+    return {
+      adapterType: "minimax_local",
+      status: "fail",
+      testedAt,
+      checks: [
+        {
+          code: "minimax_credentials",
+          level: "error",
+          message: credential.error,
+          hint: credential.hint ?? null,
+        },
+      ],
+    };
+  }
+
+  const model = firstNonEmpty(adapterValue(config.model), adapterValue(config.primaryModel), DEFAULT_MODEL);
+  const baseUrl = firstNonEmpty(adapterValue(config.baseUrl), process.env.MINIMAX_BASE_URL ?? "", DEFAULT_BASE_URL).replace(/\/+$/, "");
+  const endpoint = `${baseUrl}/chat/completions`;
+
+  const checks: AdapterEnvironmentTestResult["checks"] = [
+    {
+      code: "minimax_credentials",
       level: "info",
       message: "MiniMax API credentials are configured.",
-      ...(source ? { detail: `Detected in ${source}.` } : {}),
-    });
-  } else {
-    checks.push({
-      code: "minimax_api_key_missing",
-      level: "error",
-      message: "MiniMax API credentials are missing.",
-      hint: "Set env.MINIMAX_API_KEY or env.MINIMAX_API_KEY_FILE for this agent.",
-    });
-  }
+      detail: `Detected in ${credential.source}.`,
+    },
+  ];
 
-  if (!key) {
-    return {
-      adapterType: "minimax_local",
-      status: summarizeStatus(checks),
-      checks,
-      testedAt: new Date().toISOString(),
-    };
-  }
+  const body = {
+    model,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are responding to a Paperclip adapter health check. Do not include reasoning, markdown, XML, or <think> tags. Return exactly the two letters OK.",
+      },
+      {
+        role: "user",
+        content: "Return exactly: OK",
+      },
+    ],
+    temperature: 0,
+    max_tokens: 128,
+    max_completion_tokens: 128,
+  };
 
-  let response: Response;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 45_000);
+
   try {
-    response = await fetch(`${baseUrl}/chat/completions`, {
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${key}`,
+        Authorization: `Bearer ${credential.key}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: "user", content: "Reply with exactly: OK" }],
-        temperature: 0,
-        max_tokens: 8,
-      }),
+      body: JSON.stringify(body),
+      signal: controller.signal,
     });
+
+    const text = await response.text();
+
+    if (!response.ok) {
+      checks.push({
+        code: "minimax_completion",
+        level: "error",
+        message: `MiniMax API probe failed with HTTP ${response.status}.`,
+        detail: truncate(text),
+      });
+
+      return {
+        adapterType: "minimax_local",
+        status: "fail",
+        testedAt,
+        checks,
+      };
+    }
+
+    let json: any = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      checks.push({
+        code: "minimax_completion",
+        level: "error",
+        message: "MiniMax API returned non-JSON output.",
+        detail: truncate(text),
+      });
+
+      return {
+        adapterType: "minimax_local",
+        status: "fail",
+        testedAt,
+        checks,
+      };
+    }
+
+    const raw = json?.choices?.[0]?.message?.content ?? "";
+    const cleaned = stripThink(raw);
+    const exactOk = /^OK[.!]?$/i.test(cleaned);
+
+    checks.push({
+      code: "minimax_completion",
+      level: "info",
+      message: exactOk
+        ? "MiniMax API completion probe succeeded."
+        : "MiniMax API authenticated and returned a completion response.",
+      detail: exactOk
+        ? `Model: ${model}`
+        : `Probe response was non-OK after stripping reasoning; not treated as credential failure. Sanitized response: ${truncate(cleaned || raw)}`,
+    });
+
+    return {
+      adapterType: "minimax_local",
+      status: "pass",
+      testedAt,
+      checks,
+    };
   } catch (error) {
     checks.push({
-      code: "minimax_probe_failed",
+      code: "minimax_completion",
       level: "error",
-      message: error instanceof Error ? error.message : "MiniMax probe failed.",
-      hint: `Verify connectivity to ${baseUrl}.`,
+      message: "MiniMax API probe failed.",
+      detail: error instanceof Error ? error.message : String(error),
     });
+
     return {
       adapterType: "minimax_local",
-      status: summarizeStatus(checks),
+      status: "fail",
+      testedAt,
       checks,
-      testedAt: new Date().toISOString(),
     };
+  } finally {
+    clearTimeout(timeout);
   }
-
-  let payload: Record<string, unknown> = {};
-  try {
-    payload = await response.json() as Record<string, unknown>;
-  } catch {
-    payload = {};
-  }
-
-  if (!response.ok) {
-    const errorRecord = parseObject(payload.error);
-    const message = firstNonEmptyString(
-      errorRecord.message,
-      payload.message,
-      `MiniMax API returned HTTP ${response.status}.`,
-    ) ?? `MiniMax API returned HTTP ${response.status}.`;
-    checks.push({
-      code: "minimax_probe_http_error",
-      level: "error",
-      message,
-      detail: `HTTP ${response.status}`,
-    });
-    return {
-      adapterType: "minimax_local",
-      status: summarizeStatus(checks),
-      checks,
-      testedAt: new Date().toISOString(),
-    };
-  }
-
-  const choice = Array.isArray(payload.choices) ? payload.choices[0] : null;
-  const content = asString(parseObject(parseObject(choice).message).content, "").trim();
-  if (content === "OK") {
-    checks.push({
-      code: "minimax_probe_passed",
-      level: "info",
-      message: "MiniMax hello probe succeeded.",
-      detail: `Model ${model} responded with OK.`,
-    });
-  } else {
-    checks.push({
-      code: "minimax_probe_unexpected_output",
-      level: "error",
-      message: "MiniMax probe returned unexpected output.",
-      detail: content.slice(0, 120) || "Empty response",
-    });
-  }
-
-  return {
-    adapterType: "minimax_local",
-    status: summarizeStatus(checks),
-    checks,
-    testedAt: new Date().toISOString(),
-  };
 }
