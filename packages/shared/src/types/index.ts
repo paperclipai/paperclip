@@ -251,6 +251,8 @@ export type {
   IssueBlockedInboxReason,
   IssueBlockedInboxSeverity,
   IssueBlockedInboxState,
+  PlanGateProfile,
+  GateApprovalType,
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
   IssueRecoveryAction,
@@ -328,6 +330,7 @@ export type {
   IssueAttachment,
   IssueLabel,
 } from "./issue.js";
+export { GATE_APPROVAL_TYPES } from "./issue.js";
 export type {
   IssueTreeControlPreview,
   IssueTreeHold,

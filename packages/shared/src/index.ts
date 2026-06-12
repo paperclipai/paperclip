@@ -507,6 +507,8 @@ export type {
   IssueBlockedInboxReason,
   IssueBlockedInboxSeverity,
   IssueBlockedInboxState,
+  PlanGateProfile,
+  GateApprovalType,
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
   IssueRecoveryAction,
@@ -770,6 +772,7 @@ export type {
   ProviderQuotaResult,
 } from "./types/index.js";
 export { COMPANY_SEARCH_SCOPES } from "./types/index.js";
+export { GATE_APPROVAL_TYPES } from "./types/index.js";
 export {
   ISSUE_REFERENCE_IDENTIFIER_RE,
   buildIssueReferenceHref,
@@ -1081,6 +1084,7 @@ export {
   upsertBudgetPolicySchema,
   resolveBudgetIncidentSchema,
   resolveApprovalSchema,
+  agentDecideApprovalSchema,
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
@@ -1088,6 +1092,7 @@ export {
   type UpsertBudgetPolicy,
   type ResolveBudgetIncident,
   type ResolveApproval,
+  type AgentDecideApproval,
   type RequestApprovalRevision,
   type ResubmitApproval,
   type AddApprovalComment,

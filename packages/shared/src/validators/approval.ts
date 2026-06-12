@@ -17,6 +17,13 @@ export const resolveApprovalSchema = z.object({
 
 export type ResolveApproval = z.infer<typeof resolveApprovalSchema>;
 
+export const agentDecideApprovalSchema = z.object({
+  decision: z.enum(["approved", "rejected"]),
+  decisionNote: multilineTextSchema.optional().nullable(),
+});
+
+export type AgentDecideApproval = z.infer<typeof agentDecideApprovalSchema>;
+
 export const requestApprovalRevisionSchema = z.object({
   decisionNote: multilineTextSchema.optional().nullable(),
 });

@@ -254,8 +254,25 @@ export type IssueBlockedInboxReason =
   | "missing_successful_run_disposition"
   | "pending_board_decision"
   | "pending_user_decision"
+  | "pending_plan_approval"
+  | "pending_code_review"
+  | "pending_wiring_review"
   | "external_owner_action"
   | "open_recovery_issue";
+
+// Advisory dev-team gate protocol on a plan. 'none' = no gates; 'dev_team' =
+// plan-approval + per-leaf code-review + wiring-review gates materialized at
+// activate and routed to the designated agents.
+export type PlanGateProfile = "none" | "dev_team";
+
+export const GATE_APPROVAL_TYPES = {
+  planApproval: "gate_plan_approval",
+  codeReview: "gate_code_review",
+  wiringReview: "gate_wiring_review",
+} as const;
+
+export type GateApprovalType =
+  (typeof GATE_APPROVAL_TYPES)[keyof typeof GATE_APPROVAL_TYPES];
 
 export type IssueBlockedInboxOwnerType = "agent" | "user" | "board" | "external" | "unknown";
 

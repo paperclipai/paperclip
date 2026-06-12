@@ -366,11 +366,13 @@ export {
 export {
   createApprovalSchema,
   resolveApprovalSchema,
+  agentDecideApprovalSchema,
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
   type CreateApproval,
   type ResolveApproval,
+  type AgentDecideApproval,
   type RequestApprovalRevision,
   type ResubmitApproval,
   type AddApprovalComment,
