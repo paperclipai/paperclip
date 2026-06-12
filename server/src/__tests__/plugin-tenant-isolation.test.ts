@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   companies,
   createDb,
@@ -11,11 +11,24 @@ import {
   pluginWebhookDeliveries,
   plugins,
 } from "@paperclipai/db";
+import { buildHostServices, flushPluginLogBuffer } from "../services/plugin-host-services.js";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+
+function createEventBusStub() {
+  return {
+    forPlugin() {
+      return {
+        emit: vi.fn(),
+        subscribe: vi.fn(),
+        clear: vi.fn(),
+      };
+    },
+  } as any;
+}
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -417,6 +430,66 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     expect(
       deliveries.map((r) => r.companyId).sort((a, b) => String(a).localeCompare(String(b))),
     ).toEqual([companyB, null].sort((a, b) => String(a).localeCompare(String(b))));
+  });
+
+  it("buildHostServices.logger.log + flushPluginLogBuffer persist companyId so cascade delete reaps log rows", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const companyB = await seedCompany();
+
+    // Flush any leftovers from prior tests (the buffer is module-scoped).
+    await flushPluginLogBuffer();
+    await db.delete(pluginLogs);
+
+    const services = buildHostServices(db, pluginId, "tenant-isolation-test", createEventBusStub());
+    try {
+      await services.logger.log({
+        level: "info",
+        message: "A log",
+        companyId: companyA,
+      });
+      await services.logger.log({
+        level: "warn",
+        message: "B log",
+        companyId: companyB,
+      });
+      await services.logger.log({
+        level: "info",
+        message: "instance log",
+        // companyId omitted — explicit instance-scope.
+      });
+      await services.logger.log({
+        level: "debug",
+        message: "explicit-null log",
+        companyId: null,
+      });
+
+      await flushPluginLogBuffer();
+
+      const rows = await db
+        .select()
+        .from(pluginLogs)
+        .where(eq(pluginLogs.pluginId, pluginId));
+      const byMessage = new Map(rows.map((r) => [r.message, r]));
+      expect(byMessage.get("A log")?.companyId).toBe(companyA);
+      expect(byMessage.get("B log")?.companyId).toBe(companyB);
+      expect(byMessage.get("instance log")?.companyId).toBeNull();
+      expect(byMessage.get("explicit-null log")?.companyId).toBeNull();
+
+      // Cascade: deleting company A reaps A's log row; B's + NULL rows remain.
+      await db.delete(companies).where(eq(companies.id, companyA));
+
+      const afterDelete = await db
+        .select()
+        .from(pluginLogs)
+        .where(eq(pluginLogs.pluginId, pluginId));
+      const messages = afterDelete.map((r) => r.message).sort();
+      expect(messages).toEqual(["B log", "explicit-null log", "instance log"]);
+    } finally {
+      services.dispose();
+      // Ensure no leftover entries leak into other tests.
+      await flushPluginLogBuffer();
+    }
   });
 
   it("plugin_entities unique index treats NULL companyId as equal (NULLS NOT DISTINCT) so instance-scope dedup holds", async () => {
