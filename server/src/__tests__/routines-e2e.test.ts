@@ -14,6 +14,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   instanceSettings,
+  issueReadStates,
   issues,
   principalPermissionGrants,
   projectWorkspaces,
@@ -101,6 +102,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(issueReadStates);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -325,6 +327,69 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
         "routine.run_triggered",
       ]),
     );
+  }, 15_000);
+
+  it("coalesces routine dispatch into an open execution issue even after its heartbeat run is no longer live", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Recover stalled sweep",
+        description: "Keep queue moving",
+        assigneeAgentId: agentId,
+        concurrencyPolicy: "coalesce_if_active",
+      });
+
+    expect([200, 201], JSON.stringify(createRes.body)).toContain(createRes.status);
+
+    const firstRunRes = await postRoutineRun(app, createRes.body.id, {
+      source: "manual",
+      payload: { issue: "NOX-1375" },
+    });
+    expect(firstRunRes.status).toBe(202);
+    expect(firstRunRes.body.status).toBe("issue_created");
+
+    const staleIssue = await db
+      .select({
+        id: issues.id,
+        executionRunId: issues.executionRunId,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(eq(issues.id, firstRunRes.body.linkedIssueId))
+      .then((rows) => rows[0]);
+
+    expect(staleIssue).toMatchObject({
+      id: firstRunRes.body.linkedIssueId,
+      status: "todo",
+    });
+    const staleRunId = staleIssue?.executionRunId;
+    expect(staleRunId).toBeTruthy();
+    if (!staleRunId) throw new Error("Expected routine issue to keep its execution run id");
+
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, staleRunId));
+
+    const secondRunRes = await postRoutineRun(app, createRes.body.id, {
+      source: "manual",
+      payload: { issue: "NOX-1375" },
+    });
+
+    expect(secondRunRes.status).toBe(202);
+    expect(secondRunRes.body.status).toBe("coalesced");
+    expect(secondRunRes.body.linkedIssueId).toBe(firstRunRes.body.linkedIssueId);
+    expect(secondRunRes.body.coalescedIntoRunId).toBe(firstRunRes.body.id);
   }, 15_000);
 
   it("runs routines with variable inputs and interpolates the execution issue description", async () => {

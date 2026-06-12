@@ -223,7 +223,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(allRoutines.map((entry) => entry.id)).toEqual(expect.arrayContaining([routine.id, otherRoutine.id]));
   });
 
-  it("creates a fresh execution issue when the previous routine issue is open but idle", async () => {
+  it("coalesces into a previous open routine issue even when it is idle", async () => {
     const { companyId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();
     const previousIssue = await issueSvc.create(companyId, {
@@ -254,8 +254,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(detailBefore?.activeIssue).toBeNull();
 
     const run = await svc.runRoutine(routine.id, { source: "manual" });
-    expect(run.status).toBe("issue_created");
-    expect(run.linkedIssueId).not.toBe(previousIssue.id);
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
 
     const routineIssues = await db
       .select({
@@ -265,9 +265,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .from(issues)
       .where(eq(issues.originId, routine.id));
 
-    expect(routineIssues).toHaveLength(2);
+    expect(routineIssues).toHaveLength(1);
     expect(routineIssues.map((issue) => issue.id)).toContain(previousIssue.id);
-    expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
   });
 
   it("creates draft routines without a project or default assignee", async () => {
@@ -717,6 +716,107 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(run.status).toBe("issue_created");
     expect(wakeupResolved).toBe(true);
+  });
+
+  it("coalesces when the assignment wakeup hits the open routine execution uniqueness guard", async () => {
+    let triggerConflict = false;
+    let competingIssueId: string | null = null;
+    const { agentId, companyId, routine, svc } = await seedFixture({
+      wakeup: async (wakeupAgentId, wakeupOpts) => {
+        const issueId =
+          (typeof wakeupOpts.payload?.issueId === "string" && wakeupOpts.payload.issueId) ||
+          (typeof wakeupOpts.contextSnapshot?.issueId === "string" && wakeupOpts.contextSnapshot.issueId) ||
+          null;
+        if (!issueId) return null;
+        const queuedRunId = randomUUID();
+        await db.insert(heartbeatRuns).values({
+          id: queuedRunId,
+          companyId,
+          agentId: wakeupAgentId,
+          invocationSource: wakeupOpts.source ?? "assignment",
+          triggerDetail: wakeupOpts.triggerDetail ?? null,
+          status: "queued",
+          contextSnapshot: { ...(wakeupOpts.contextSnapshot ?? {}), issueId },
+        });
+        if (triggerConflict && competingIssueId) {
+          await db
+            .update(issues)
+            .set({ hiddenAt: null })
+            .where(eq(issues.id, competingIssueId));
+        }
+        await db
+          .update(issues)
+          .set({
+            executionRunId: queuedRunId,
+            executionLockedAt: new Date(),
+          })
+          .where(eq(issues.id, issueId));
+        return { id: queuedRunId };
+      },
+    });
+
+    const firstRun = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(firstRun.status).toBe("issue_created");
+    expect(firstRun.linkedIssueId).toBeTruthy();
+    competingIssueId = firstRun.linkedIssueId;
+
+    await db
+      .update(issues)
+      .set({ hiddenAt: new Date("2026-03-20T12:02:00.000Z") })
+      .where(eq(issues.id, competingIssueId!));
+
+    triggerConflict = true;
+    const secondRun = await svc.runRoutine(routine.id, { source: "manual" });
+
+    expect(secondRun.status).toBe("coalesced");
+    expect(secondRun.linkedIssueId).toBe(competingIssueId);
+    expect(secondRun.coalescedIntoRunId).toBe(firstRun.id);
+
+    const routineIssues = await db
+      .select({
+        id: issues.id,
+        hiddenAt: issues.hiddenAt,
+      })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+
+    expect(routineIssues).toEqual([
+      expect.objectContaining({
+        id: competingIssueId,
+        hiddenAt: null,
+      }),
+    ]);
+  });
+
+  it("keeps the created issue for diagnostics when uniqueness coalescing finds no winner", async () => {
+    const { routine, svc } = await seedFixture({
+      wakeup: async () => {
+        throw {
+          code: "23505",
+          constraint: "issues_open_routine_execution_uq",
+          message: "duplicate open routine execution",
+        };
+      },
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+
+    expect(run.status).toBe("failed");
+    const routineIssues = await db
+      .select({
+        id: issues.id,
+        hiddenAt: issues.hiddenAt,
+        originRunId: issues.originRunId,
+      })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+
+    expect(routineIssues).toEqual([
+      expect.objectContaining({
+        hiddenAt: null,
+        originRunId: run.id,
+      }),
+    ]);
   });
 
   it("coalesces only when the existing routine issue has a live execution run", async () => {
