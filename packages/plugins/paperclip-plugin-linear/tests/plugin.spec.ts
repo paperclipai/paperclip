@@ -1085,6 +1085,52 @@ describe("paperclip-plugin-linear", () => {
       });
     });
 
+    it("does not use app actor attribution for linearTokenRef connections", async () => {
+      harness = createTestHarness({
+        manifest,
+        config: {
+          linearClientId: "",
+          linearClientSecret: "",
+          linearTokenRef: "secret-uuid-actor",
+          linearOAuthActor: "app",
+          teamId: "team-1",
+          syncComments: true,
+          syncDirection: "bidirectional",
+          paperclipBaseUrl: "https://paperclip.test",
+          linearBacklinkBestEffort: true,
+        },
+      });
+      await plugin.definition.setup(harness.ctx);
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthActor },
+        "app",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+
+      vi.spyOn(harness.ctx.issues, "list").mockResolvedValue([] as never);
+      vi.spyOn(harness.ctx.issues, "create").mockResolvedValue({
+        id: "pcp-iss-token-ref",
+        identifier: "LUC-1007",
+      } as never);
+      vi.spyOn(harness.ctx.issues, "update").mockResolvedValue(undefined as never);
+
+      const { attachmentLinkURL } = await import("../src/linear.js");
+      (attachmentLinkURL as ReturnType<typeof vi.fn>).mockClear();
+
+      await harness.performAction(ACTION_KEYS.importIssue, { linearRef: "LUC-1" });
+
+      const callArg = (attachmentLinkURL as ReturnType<typeof vi.fn>).mock.calls[0]![2];
+      expect(callArg).toMatchObject({
+        issueId: "lin-iss-1",
+        url: "https://paperclip.test/LUC/issues/LUC-1007",
+      });
+      expect(callArg.createAsUser).toBeUndefined();
+      expect(callArg.displayIconUrl).toBeUndefined();
+    });
+
     it("skips the back-link when paperclipBaseUrl is explicitly empty", async () => {
       harness.setConfig({ paperclipBaseUrl: "" });
       // companyId must be set so the action reaches the back-link block —

@@ -140,7 +140,9 @@ async function resolvePaperclipBaseUrl(ctx: PluginContext): Promise<string | nul
 }
 
 async function resolveLinearOAuthActor(ctx: PluginContext, config?: Record<string, unknown>): Promise<"app" | "user"> {
-  if ((config?.linearOAuthActor as string | undefined) === "app") return "app";
+  const currentConfig = config ?? await ctx.config.get();
+  if ((currentConfig.linearTokenRef as string | undefined)?.trim()) return "user";
+  if ((currentConfig.linearOAuthActor as string | undefined) === "app") return "app";
   const stored = await ctx.state.get({
     scopeKind: "instance",
     stateKey: STATE_KEYS.oauthActor,
