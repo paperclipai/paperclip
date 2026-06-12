@@ -669,6 +669,29 @@ function parseYamlBlock(
       index = nested.nextIndex;
       continue;
     }
+    if (remainder.startsWith(">") || remainder.startsWith("|")) {
+      // YAML 1.2 block scalar: folded (>) or literal (|).
+      // The first character determines the style; any trailing characters are
+      // chomping/indentation indicators (e.g. >-, |+, |2) — they are accepted
+      // here but treated as default 'clip' chomping; full chomping semantics
+      // are a follow-up.
+      // Consume all immediately following lines that are indented deeper than
+      // the current key's level. prepareYamlLines trims content and drops blank
+      // lines, so we join the surviving content lines:
+      //   folded (>): join with a space (paragraph-style)
+      //   literal (|): join with a newline (preserves line structure)
+      const joiner = remainder[0] === ">" ? " " : "\n";
+      const contentLines: string[] = [];
+      while (index < lines.length && lines[index]!.indent > indentLevel) {
+        contentLines.push(lines[index]!.content);
+        index += 1;
+      }
+      // YAML 1.2 §8.1.1.2: default 'clip' chomping appends a single trailing
+      // newline to the joined content.
+      const joined = contentLines.join(joiner);
+      record[key] = joined.length > 0 ? joined + "\n" : joined;
+      continue;
+    }
     record[key] = parseYamlScalar(remainder);
   }
   return { value: record, nextIndex: index };
