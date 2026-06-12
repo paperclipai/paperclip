@@ -141,16 +141,19 @@ async function resolveAtReferences(
   content: string,
   baseDir: string,
   instructionsRoot: string,
+  contentCache: Map<string, string> = new Map(),
   visited: Set<string> = new Set(),
   depth: number = 0,
 ): Promise<string> {
   const MAX_DEPTH = 5;
   if (depth > MAX_DEPTH) return content;
 
-  // Allow optional horizontal whitespace between @ and the path so that
-  //   @ ./path.md   @`./path.md`   @(./path.md)   @"./path.md"
-  // all match (not just the no-space forms).
-  const AT_REF_RE = /@[ \t]*(\S+\.md)/gi;
+  // Match @ followed by an optional path-like reference to a .md file.
+  // Require at least one "/" in the path so that bare words like @user.md
+  // or email-like strings (docs@company.md) are not treated as file refs.
+  // All genuine file refs carry a directory separator: @./file.md,
+  // @../../shared.md, @path/to/file.md.
+  const AT_REF_RE = /@[ \t]*(\S+\/\S*\.md)/gi;
 
   // First pass: find all @ references and resolve their absolute paths.
   // We collect replacement targets without mutating the string yet so that
@@ -217,15 +220,12 @@ async function resolveAtReferences(
   // positions remain valid after later (higher-index) substitutions.
   replacements.sort((a, b) => b.start - a.start);
 
-  // Cache already-read file contents so that multiple @ references to the
-  // same file (e.g. the 4 syntax variants all pointing to Test.md) are all
-  // inlined rather than having the later ones skipped by the visited guard.
-  const contentCache = new Map<string, string>();
-
   for (const { full, resolvedPath, start, end } of replacements) {
     if (visited.has(resolvedPath)) {
       // Still inline the file content even if already visited — multiple
       // @ references to the same file in the same document must all resolve.
+      // contentCache is shared across recursive calls so nested refs that
+      // point to a file already expanded at a higher depth are also served.
       const cached = contentCache.get(resolvedPath);
       if (cached !== undefined) {
         content = content.slice(0, start) + cached + content.slice(end);
@@ -241,6 +241,7 @@ async function resolveAtReferences(
         refContent,
         path.dirname(resolvedPath),
         instructionsRoot,
+        contentCache,
         visited,
         depth + 1,
       );
@@ -571,14 +572,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     try {
       let instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
       // Resolve @ file references (e.g. @../../shared_all.md) before passing
-      // to Claude Code. The security boundary is derived from the managed
-      // instructions root (which points at …/agents/<id>/instructions/) and
-      // widened by 2 levels to encompass shared files at the …/agents/ level.
+      // to Claude Code.
+      //
+      // The security boundary is the instructions root directory. For managed
+      // bundles the root points at …/agents/<id>/instructions/ and shared
+      // files live at the …/agents/ level, so we widen the boundary by 2
+      // directory levels to allow @../../shared_all.md to resolve. External
+      // (user-configured) bundles keep their exact root as the boundary — the
+      // operator chose that directory deliberately.
       const configuredRoot = asString(config.instructionsRootPath, "").trim();
+      const bundleMode = asString(config.instructionsBundleMode, "").trim();
       const instructionsRoot = configuredRoot || path.dirname(instructionsFilePath);
-      const instructionsBoundary = configuredRoot
-        ? path.resolve(instructionsRoot, "..", "..")
-        : instructionsRoot;
+      const instructionsBoundary =
+        configuredRoot && bundleMode === "managed"
+          ? path.resolve(instructionsRoot, "..", "..")
+          : instructionsRoot;
       instructionsContent = await resolveAtReferences(
         instructionsContent,
         path.dirname(instructionsFilePath),
