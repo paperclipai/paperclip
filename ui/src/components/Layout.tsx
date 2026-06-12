@@ -5,6 +5,7 @@ import { Sidebar } from "./Sidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 import { CompanySettingsNav } from "./access/CompanySettingsNav";
 import { AppsSidebar } from "./AppsSidebar";
+import { AppConnectionSidebar } from "./AppConnectionSidebar";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
@@ -42,12 +43,18 @@ import { NotFoundPage } from "../pages/NotFound";
 import { PluginSlotMount, resolveRouteSidebarSlot, usePluginSlots } from "../plugins/slots";
 
 function getCompanyRouteSegment(pathname: string, companyPrefix: string | undefined): string | null {
-  if (!companyPrefix) return null;
-  const segments = pathname.split("/").filter(Boolean);
-  if (segments.length < 2) return null;
-  if (segments[0]?.toUpperCase() !== companyPrefix.toUpperCase()) return null;
-  return segments[1]?.toLowerCase() ?? null;
+  return getCompanyPathSegments(pathname, companyPrefix)[0]?.toLowerCase() ?? null;
 }
+
+function getCompanyPathSegments(pathname: string, companyPrefix: string | undefined): string[] {
+  if (!companyPrefix) return [];
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments.length < 2) return [];
+  if (segments[0]?.toUpperCase() !== companyPrefix.toUpperCase()) return [];
+  return segments.slice(1);
+}
+
+const RESERVED_APP_SUBPATHS = new Set(["connect", "attention", "advanced", "app"]);
 
 export function Layout() {
   const {
@@ -79,8 +86,13 @@ export function Layout() {
   const location = useLocation();
   const navigationType = useNavigationType();
   const isCompanySettingsRoute = location.pathname.includes("/company/settings");
-  const isToolsRoute = getCompanyRouteSegment(location.pathname, companyPrefix) === "tools";
-  const isAppsRoute = getCompanyRouteSegment(location.pathname, companyPrefix) === "apps";
+  const companyPathSegments = getCompanyPathSegments(location.pathname, companyPrefix);
+  const isToolsRoute = companyPathSegments[0]?.toLowerCase() === "tools";
+  const isAppsRoute = companyPathSegments[0]?.toLowerCase() === "apps";
+  const appDetailConnectionId =
+    isAppsRoute && companyPathSegments[1] && !RESERVED_APP_SUBPATHS.has(companyPathSegments[1].toLowerCase())
+      ? companyPathSegments[1]
+      : null;
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
   const previousPathname = useRef<string | null>(null);
@@ -122,6 +134,8 @@ export function Layout() {
   // both desktop (SecondarySidebar) and mobile (off-canvas drawer).
   const secondarySidebar = isCompanySettingsRoute ? (
     <CompanySettingsSidebar />
+  ) : appDetailConnectionId ? (
+    <AppConnectionSidebar connectionId={appDetailConnectionId} />
   ) : isAppsRoute || isToolsRoute ? (
     <AppsSidebar />
   ) : routeSidebarSlot ? (

@@ -16,6 +16,8 @@ const listConnectionActivityMock = vi.hoisted(() => vi.fn());
 const listActionRequestsMock = vi.hoisted(() => vi.fn());
 const updateConnectionMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
+const mockParams = vi.hoisted(() => ({ connectionId: "conn-1", tab: "setup" as string | undefined }));
+const navigateComponentMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -38,12 +40,20 @@ vi.mock("@/api/tools", () => ({
 }));
 
 vi.mock("@/api/agents", () => ({
-  agentsApi: { list: vi.fn().mockResolvedValue([]) },
+  agentsApi: {
+    list: vi.fn().mockResolvedValue([
+      { id: "agent-1", name: "Coder", title: "Engineer", status: "active" },
+    ]),
+  },
 }));
 
 vi.mock("@/lib/router", () => ({
-  useParams: () => ({ connectionId: "conn-1" }),
+  useParams: () => mockParams,
   useNavigate: () => mockNavigate,
+  Navigate: ({ to, replace }: { to: string; replace?: boolean }) => {
+    navigateComponentMock({ to, replace });
+    return <div data-navigate-to={to} />;
+  },
   Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => (
     <a href={to} {...props}>
       {children}
@@ -70,10 +80,12 @@ vi.mock("@/context/ToastContext", () => ({
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 async function flushReact() {
-  await act(async () => {
-    await Promise.resolve();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-  });
+  for (let i = 0; i < 3; i += 1) {
+    await act(async () => {
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+  }
 }
 
 function connection(overrides: Record<string, unknown> = {}) {
@@ -102,6 +114,23 @@ function connection(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function catalogEntry(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "catalog-read",
+    companyId: "company-1",
+    connectionId: "conn-1",
+    toolName: "read_repo",
+    title: "Read repo",
+    description: "Read repository metadata",
+    status: "active",
+    isReadOnly: true,
+    riskLevel: "read",
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+    ...overrides,
+  };
+}
+
 describe("AppDetail", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
@@ -109,11 +138,54 @@ describe("AppDetail", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    mockParams.connectionId = "conn-1";
+    mockParams.tab = "setup";
     getConnectionMock.mockResolvedValue(connection());
     listGalleryMock.mockResolvedValue({ apps: [] });
-    listCatalogMock.mockResolvedValue({ catalog: [] });
-    listProfilesMock.mockResolvedValue({ profiles: [] });
-    listPoliciesMock.mockResolvedValue({ policies: [] });
+    listCatalogMock.mockResolvedValue({
+      catalog: [
+        catalogEntry(),
+        catalogEntry({
+          id: "catalog-write",
+          toolName: "write_issue",
+          title: "Write issue",
+          description: "Create or update an issue",
+          isReadOnly: false,
+        }),
+        catalogEntry({
+          id: "catalog-quarantined",
+          toolName: "delete_repo",
+          title: "Delete repo",
+          status: "quarantined",
+          isReadOnly: false,
+        }),
+      ],
+    });
+    listProfilesMock.mockResolvedValue({
+      profiles: [
+        {
+          profileKey: "app:conn-1",
+          entries: [
+            { effect: "include", catalogEntryId: "catalog-read" },
+            { effect: "include", catalogEntryId: "catalog-write" },
+          ],
+          bindings: [{ targetType: "company" }],
+        },
+      ],
+    });
+    listPoliciesMock.mockResolvedValue({
+      policies: [
+        {
+          policyType: "require_approval",
+          enabled: true,
+          config: {
+            source: "app_gallery_finish",
+            connectionId: "conn-1",
+            catalogEntryId: "catalog-write",
+          },
+        },
+      ],
+    });
     listConnectionActivityMock.mockResolvedValue({ events: [] });
     listActionRequestsMock.mockResolvedValue({ actionRequests: [] });
     updateConnectionMock.mockResolvedValue(connection({ enabled: false }));
@@ -152,5 +224,45 @@ describe("AppDetail", () => {
     await flushReact();
 
     expect(updateConnectionMock).toHaveBeenCalledWith("conn-1", { enabled: false });
+  });
+
+  it("redirects a missing tab to setup", async () => {
+    mockParams.tab = undefined;
+
+    await renderAppDetail();
+
+    expect(navigateComponentMock).toHaveBeenCalledWith({ to: "/apps/conn-1/setup", replace: true });
+  });
+
+  it.each([
+    ["setup", "Agents can use this app"],
+    ["review", "Nothing is waiting for your OK right now."],
+    ["permissions", "Needs your OK before running"],
+    ["activity", "No activity yet."],
+    ["advanced", "Technical details"],
+  ])("renders the %s tab panel", async (tab, expectedText) => {
+    mockParams.tab = tab;
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("GitHub");
+    expect(container.textContent).toContain("2 actions available");
+    expect(container.textContent).toContain(expectedText);
+  });
+
+  it("keeps the header and reconnect banner across tabs", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(connection({
+      healthStatus: "degraded",
+      healthMessage: "Token expired.",
+    }));
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("GitHub");
+    expect(container.textContent).toContain("Needs attention");
+    expect(container.textContent).toContain("This app needs reconnecting");
+    expect(container.textContent).toContain("Token expired.");
+    expect(container.textContent).toContain("Who can use it");
   });
 });

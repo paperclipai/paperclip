@@ -98,7 +98,8 @@ function boardRoutes() {
       <Route path="apps/advanced" element={<AdvancedToolsRoute />} />
       <Route path="apps/advanced/:tab" element={<AdvancedToolsRoute />} />
       <Route path="apps/app/:applicationId" element={<AppNotConnected />} />
-      <Route path="apps/:connectionId" element={<AppDetail />} />
+      <Route path="apps/:connectionId" element={<Navigate to="setup" replace />} />
+      <Route path="apps/:connectionId/:tab" element={<AppDetail />} />
       <Route path="company/settings/instance" element={<Navigate to="general" replace />} />
       <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
       <Route path="company/settings/instance/general" element={<InstanceGeneralSettings />} />

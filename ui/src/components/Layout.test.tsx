@@ -63,6 +63,12 @@ vi.mock("./AppsSidebar", () => ({
   AppsSidebar: () => <div>Apps sidebar</div>,
 }));
 
+vi.mock("./AppConnectionSidebar", () => ({
+  AppConnectionSidebar: ({ connectionId }: { connectionId: string }) => (
+    <div>App connection sidebar {connectionId}</div>
+  ),
+}));
+
 vi.mock("./BreadcrumbBar", () => ({
   BreadcrumbBar: () => <div>Breadcrumbs</div>,
 }));
@@ -559,6 +565,32 @@ describe("Layout", () => {
 
     expect(container.textContent).toContain("Apps sidebar");
     expect(container.textContent).toContain("Main company nav");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("uses the app connection sidebar on app detail routes", async () => {
+    currentPathname = "/PAP/apps/conn-1/permissions";
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("App connection sidebar conn-1");
+    expect(container.textContent).toContain("Main company nav");
+    expect(container.textContent).not.toContain("Apps sidebar");
 
     await act(async () => {
       root.unmount();
