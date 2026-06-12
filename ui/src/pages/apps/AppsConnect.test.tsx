@@ -315,11 +315,11 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Share your spreadsheet with this email");
-    expect(
-      Array.from(container.querySelectorAll<HTMLInputElement>("input"))
-        .some((input) => input.value === "robot@paperclip.iam.gserviceaccount.com"),
-    ).toBe(true);
+    expect(container.textContent).toContain("Share each sheet with this email");
+    expect(container.textContent).toContain("robot@paperclip.iam.gserviceaccount.com");
+    expect(container.textContent).toContain(
+      "In Google Sheets, click Share and add this email as an Editor. Then paste the sheet links below.",
+    );
     expect(buttonByText("Connect")?.disabled).toBe(true);
   });
 
@@ -352,7 +352,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Use Google Sheets links like docs.google.com/spreadsheets.");
+    expect(container.textContent).toContain("That doesn't look like a Google Sheets link.");
     expect(connectAppMock).not.toHaveBeenCalled();
   });
 

@@ -252,7 +252,7 @@ export function AppsConnect() {
             if (isGoogleSheetsEntry(entry)) {
               const parsed = parseGoogleSheetIds(googleSheetsLinks);
               if (parsed.invalidCount > 0) {
-                setGoogleSheetsError("Use Google Sheets links like docs.google.com/spreadsheets.");
+                setGoogleSheetsError("That doesn't look like a Google Sheets link.");
                 return;
               }
               if (parsed.ids.length === 0) {
@@ -436,6 +436,11 @@ function GalleryStep({
               key={app.key}
               type="button"
               disabled={oauth || unavailable}
+              title={
+                unavailable
+                  ? `${app.name} isn't configured on this instance yet. Ask your Paperclip admin.`
+                  : undefined
+              }
               onClick={() => onPick(app)}
               className={cn(
                 "flex flex-col rounded-xl border border-border bg-card p-4 text-left transition-colors",
@@ -447,7 +452,7 @@ function GalleryStep({
               <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">{copy.tagline}</div>
               <div className="mt-3 text-xs font-semibold text-foreground">
                 {unavailable ? (
-                  <span className="text-muted-foreground">Not available on this instance</span>
+                  <span className="text-muted-foreground">Not available on this instance - ask your admin.</span>
                 ) : oauth ? (
                   <span className="text-muted-foreground">Sign-in coming soon</span>
                 ) : (
@@ -764,7 +769,7 @@ function KeyStep({
         <div className="flex items-center gap-3">
           <AppLogo name={entry.name} logoUrl={entry.logoUrl} size={48} />
           <div>
-            <h2 className="text-xl font-bold tracking-tight">Connect Google Sheets</h2>
+            <h2 className="text-lg font-bold tracking-tight sm:text-xl">Connect Google Sheets</h2>
             <p className="text-sm text-muted-foreground">{copy.short}</p>
           </div>
         </div>
@@ -772,18 +777,27 @@ function KeyStep({
         <div className="mt-8 space-y-6">
           {robotEmail ? (
             <div>
-              <label className="text-sm font-medium text-foreground">Share your spreadsheet with this email</label>
-              <div className="mt-2 flex min-w-0 gap-2">
-                <Input readOnly value={robotEmail} className="h-11 font-mono text-sm" />
+              <label className="text-sm font-medium text-foreground">Share each sheet with this email</label>
+              <div className="mt-2 flex min-w-0 flex-col gap-2 sm:flex-row">
+                <div
+                  title={robotEmail}
+                  className="min-h-11 min-w-0 flex-1 rounded-md border border-input bg-muted/40 px-3 py-2.5 font-mono text-xs leading-tight text-foreground break-all"
+                >
+                  {robotEmail}
+                </div>
                 <Button
                   type="button"
                   variant="outline"
+                  className="shrink-0"
                   onClick={() => void navigator.clipboard?.writeText(robotEmail)}
                 >
                   <Copy className="mr-2 h-4 w-4" />
                   Copy
                 </Button>
               </div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                In Google Sheets, click Share and add this email as an Editor. Then paste the sheet links below.
+              </p>
             </div>
           ) : (
             <div className="rounded-lg bg-muted/50 p-4 text-sm text-muted-foreground">
@@ -792,7 +806,7 @@ function KeyStep({
           )}
 
           <div>
-            <label className="text-sm font-medium text-foreground">Paste your spreadsheet links</label>
+            <label className="text-sm font-medium text-foreground">Paste links to the sheets you shared</label>
             <Textarea
               value={googleSheetsLinks}
               onChange={(e) => onGoogleSheetsLinksChange(e.target.value)}
@@ -802,7 +816,7 @@ function KeyStep({
             <div className="mt-2 text-xs text-muted-foreground">
               {parsed.ids.length > 0
                 ? `${parsed.ids.length} ${parsed.ids.length === 1 ? "sheet" : "sheets"} ready to connect.`
-                : "Paste one link per line."}
+                : "Paste one link per line. Both .../edit and .../edit#gid=... links work."}
             </div>
             {googleSheetsError && <div className="mt-2 text-xs text-destructive">{googleSheetsError}</div>}
           </div>

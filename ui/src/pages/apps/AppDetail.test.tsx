@@ -346,7 +346,8 @@ describe("AppDetail", () => {
 
     await renderAppDetail();
 
-    expect(container.textContent).toContain("Shared spreadsheets");
+    expect(container.textContent).toContain("Sheets agents can use");
+    expect(container.textContent).toContain("https://docs.google.com/spreadsheets/d/sheet_existing/edit");
     expect(container.textContent).toContain("sheet_existing");
     const input = container.querySelector<HTMLInputElement>(
       'input[placeholder="https://docs.google.com/spreadsheets/d/..."]',

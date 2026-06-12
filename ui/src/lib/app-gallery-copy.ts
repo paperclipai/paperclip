@@ -72,7 +72,7 @@ const APP_COPY: Record<string, AppCopy> = {
   },
   "google-sheets": {
     tagline: "Read and update selected spreadsheets.",
-    short: "Read and update selected spreadsheets.",
+    short: "Share each sheet with the robot email, then paste the links.",
   },
   gmail: {
     tagline: "Read mail and send drafts for your review.",

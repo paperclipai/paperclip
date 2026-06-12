@@ -45,6 +45,10 @@ function currentSpreadsheetIds(connection: ToolConnection): string[] {
   return Array.isArray(raw) ? raw.map((value) => String(value).trim()).filter(Boolean) : [];
 }
 
+function googleSheetsUrlForId(id: string): string {
+  return `https://docs.google.com/spreadsheets/d/${encodeURIComponent(id)}/edit`;
+}
+
 function GoogleSheetsAllowlistSection({
   connection,
   disabled,
@@ -63,7 +67,7 @@ function GoogleSheetsAllowlistSection({
   return (
     <section className="rounded-xl border border-border bg-card px-5 py-4">
       <div>
-        <h2 className="text-sm font-bold text-foreground">Shared spreadsheets</h2>
+        <h2 className="text-sm font-bold text-foreground">Sheets agents can use</h2>
         <p className="mt-0.5 text-sm text-muted-foreground">
           Agents can only use the sheets listed here.
         </p>
@@ -73,20 +77,37 @@ function GoogleSheetsAllowlistSection({
         {ids.length === 0 ? (
           <div className="text-sm text-muted-foreground">No sheets are connected yet.</div>
         ) : (
-          ids.map((id) => (
-            <div key={id} className="flex items-center gap-3 border-t border-border py-2 first:border-t-0">
-              <div className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">{id}</div>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                disabled={disabled || ids.length <= 1}
-                onClick={() => saveIds(ids.filter((current) => current !== id))}
-              >
-                Remove
-              </Button>
-            </div>
-          ))
+          ids.map((id) => {
+            const sheetUrl = googleSheetsUrlForId(id);
+            return (
+              <div key={id} className="flex items-center gap-3 border-t border-border py-2 first:border-t-0">
+                <a
+                  href={sheetUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="min-w-0 flex-1 text-sm font-medium text-foreground underline-offset-2 hover:underline"
+                >
+                  <span className="block truncate">Open sheet</span>
+                  <span className="block truncate font-mono text-xs font-normal text-muted-foreground">
+                    {sheetUrl}
+                  </span>
+                  <span className="block truncate font-mono text-[11px] font-normal text-muted-foreground/80">
+                    ID: {id}
+                  </span>
+                </a>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={disabled || ids.length <= 1}
+                  title={ids.length <= 1 ? "Add another sheet before removing this one." : undefined}
+                  onClick={() => saveIds(ids.filter((current) => current !== id))}
+                >
+                  Remove
+                </Button>
+              </div>
+            );
+          })
         )}
       </div>
 
@@ -111,7 +132,7 @@ function GoogleSheetsAllowlistSection({
               return;
             }
             if (parsed.invalidCount > 0) {
-              setError("Use Google Sheets links like docs.google.com/spreadsheets.");
+              setError("That doesn't look like a Google Sheets link.");
               return;
             }
             saveIds(Array.from(new Set([...ids, ...parsed.ids])));
