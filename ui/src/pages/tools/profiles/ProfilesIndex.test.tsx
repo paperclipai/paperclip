@@ -133,6 +133,24 @@ describe("ProfilesIndex", () => {
     expect(container.textContent).toContain("3 new");
   });
 
+  it("constrains long profile names to the Profile column", async () => {
+    const longName = "A very long profile name that should truncate before it can overlap the Allows column";
+    setData([
+      profile({
+        name: longName,
+        summary: summary({ allowedToolCount: 4, allowedApplicationCount: 1 }),
+      }),
+    ]);
+    await render();
+
+    const table = container.querySelector("table");
+    const profileButton = container.querySelector<HTMLButtonElement>(`button[title="${longName}"]`);
+
+    expect(table?.className).toContain("table-fixed");
+    expect(profileButton?.className).toContain("w-full");
+    expect(profileButton?.className).toContain("truncate");
+  });
+
   it("flags an unassigned profile as having no effect", async () => {
     setData([profile({ name: "Orphan" })]);
     await render();

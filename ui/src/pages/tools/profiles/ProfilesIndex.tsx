@@ -197,7 +197,15 @@ export function ProfilesIndex({
         )
       ) : (
         <div className="overflow-hidden rounded-lg border border-border">
-          <table className="w-full text-sm">
+          <table className="w-full table-fixed text-sm">
+            <colgroup>
+              <col className="w-[30%]" />
+              <col className="w-[18%]" />
+              <col className="w-[24%]" />
+              <col className="w-[12%]" />
+              <col className="w-[12%]" />
+              <col className="w-10" />
+            </colgroup>
             <thead>
               <tr className="border-b border-border bg-muted/40 text-left text-xs font-medium text-muted-foreground">
                 <th className="px-3 py-2 font-medium">Profile</th>
@@ -218,11 +226,12 @@ export function ProfilesIndex({
                     key={profile.id}
                     className="group h-10 border-b border-border last:border-0 hover:bg-accent/40"
                   >
-                    <td className="max-w-[220px] px-3 py-1.5">
+                    <td className="min-w-0 px-3 py-1.5">
                       <button
                         type="button"
                         onClick={open}
-                        className="truncate text-left font-medium text-foreground hover:underline"
+                        title={profile.name}
+                        className="block w-full truncate text-left font-medium text-foreground hover:underline"
                       >
                         {profile.name}
                       </button>
