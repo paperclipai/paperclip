@@ -198,6 +198,7 @@ export interface LinearIssue {
   identifier: string;
   title: string;
   description: string | null;
+  team?: LinearTeam | null;
   state: { name: string; type: string };
   priority: number;
   url: string;
@@ -254,6 +255,11 @@ function labelNameMatches(label: { name: string }, query?: string): boolean {
   const needle = query?.trim().toLowerCase();
   if (!needle) return true;
   return label.name.toLowerCase().includes(needle);
+}
+
+function issueLabelIsAvailableForTeam(label: { team?: LinearTeam | null }, teamId?: string): boolean {
+  if (!teamId) return true;
+  return !label.team || label.team.id === teamId;
 }
 
 async function gql<T>(
@@ -349,7 +355,7 @@ export async function listIssueLabels(
     `, { after });
 
     for (const label of data.issueLabels.nodes) {
-      if (options.teamId && label.team?.id !== options.teamId) continue;
+      if (!issueLabelIsAvailableForTeam(label, options.teamId)) continue;
       if (!labelNameMatches(label, options.query)) continue;
       labels.push(label);
       if (labels.length >= limit) return labels;
@@ -493,6 +499,7 @@ export async function listIssuesByIds(
           id identifier title description url priority
           createdAt updatedAt
           state { name type }
+          team { id name key }
           assignee { name email }
           labels { nodes { name color } }
           project { id name description state }

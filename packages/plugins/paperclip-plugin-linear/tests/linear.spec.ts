@@ -214,6 +214,47 @@ describe("listIssueLabels", () => {
     expect(body.query).toContain("issueLabels(first: 100, after: $after)");
     expect(body.variables).toEqual({ after: null });
   });
+
+  it("includes workspace issue labels when filtering by team", async () => {
+    const fetch = mockFetch([
+      {
+        data: {
+          issueLabels: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [
+              {
+                id: "label-global",
+                name: "infra",
+                color: "#0ea5e9",
+                team: null,
+              },
+              {
+                id: "label-other-team",
+                name: "infra",
+                color: "#0ea5e9",
+                team: { id: "team-2", name: "Other", key: "OTH" },
+              },
+            ],
+          },
+        },
+      },
+    ]);
+
+    const labels = await listIssueLabels(fetch, "tok", {
+      teamId: "team-1",
+      query: "infra",
+      limit: 10,
+    });
+
+    expect(labels).toEqual([
+      {
+        id: "label-global",
+        name: "infra",
+        color: "#0ea5e9",
+        team: null,
+      },
+    ]);
+  });
 });
 
 describe("createIssueLabel", () => {

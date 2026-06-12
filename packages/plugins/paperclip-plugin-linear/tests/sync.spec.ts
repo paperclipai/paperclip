@@ -607,6 +607,53 @@ describe("syncToLinear", () => {
     );
   });
 
+  it("reuses an existing Linear label when create reports a duplicate name", async () => {
+    const harness = createTestHarness({ manifest });
+    vi.spyOn(harness.ctx.labels, "list").mockResolvedValue([
+      {
+        id: "pc-label-infra",
+        companyId: "comp-1",
+        name: "infra",
+        color: "#0ea5e9",
+      },
+    ]);
+    const listIssueLabels = vi.spyOn(linearApi, "listIssueLabels")
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: "lin-label-infra",
+          name: "infra",
+          color: "#0ea5e9",
+          team: null,
+        },
+      ]);
+    vi.spyOn(linearApi, "createIssueLabel").mockRejectedValue(
+      new Error("Linear GraphQL error: duplicate label name"),
+    );
+    const updateIssue = vi.spyOn(linearApi, "updateIssue").mockResolvedValue(makeLinearIssue());
+
+    await syncToLinear(
+      harness.ctx,
+      makeLink({ lastSyncAt: "2020-01-01T00:00:00.000Z" }),
+      { labelIds: ["pc-label-infra"] },
+      "lin-token",
+      "team-1",
+    );
+
+    expect(listIssueLabels).toHaveBeenNthCalledWith(
+      2,
+      expect.any(Function),
+      "lin-token",
+      { teamId: "team-1", query: "infra", limit: 500 },
+    );
+    expect(updateIssue).toHaveBeenCalledWith(
+      expect.any(Function),
+      "lin-token",
+      "lin-1",
+      { labelIds: ["lin-label-infra"] },
+    );
+  });
+
   it("clears Linear issue labels when Paperclip labelIds is empty", async () => {
     const harness = createTestHarness({ manifest });
     const listIssueLabels = vi.spyOn(linearApi, "listIssueLabels");

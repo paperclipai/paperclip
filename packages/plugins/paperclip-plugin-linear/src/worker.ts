@@ -4105,6 +4105,7 @@ async function runLinearMirrorReconcile(
   errors: number;
   scanned: number;
   skippedOtherCompany: number;
+  skippedOtherTeam: number;
   missingPaperclip: number;
   missingLinear: number;
   complete: boolean;
@@ -4119,6 +4120,7 @@ async function runLinearMirrorReconcile(
       errors: 0,
       scanned: 0,
       skippedOtherCompany: 0,
+      skippedOtherTeam: 0,
       missingPaperclip: 0,
       missingLinear: 0,
       complete: true,
@@ -4133,6 +4135,7 @@ async function runLinearMirrorReconcile(
       errors: 0,
       scanned: 0,
       skippedOtherCompany: 0,
+      skippedOtherTeam: 0,
       missingPaperclip: 0,
       missingLinear: 0,
       complete: true,
@@ -4150,6 +4153,7 @@ async function runLinearMirrorReconcile(
       errors: 0,
       scanned: 0,
       skippedOtherCompany: 0,
+      skippedOtherTeam: 0,
       missingPaperclip: 0,
       missingLinear: 0,
       complete: true,
@@ -4184,6 +4188,7 @@ async function runLinearMirrorReconcile(
   let reconciled = 0;
   let errors = 0;
   let skippedOtherCompany = 0;
+  let skippedOtherTeam = 0;
   let missingPaperclip = 0;
   let missingLinear = 0;
 
@@ -4232,6 +4237,13 @@ async function runLinearMirrorReconcile(
         const linearIssue = linearById.get(link.linearIssueId);
         if (!linearIssue) {
           missingLinear++;
+          continue;
+        }
+        if (linearIssue.team?.id && linearIssue.team.id !== teamId) {
+          skippedOtherTeam++;
+          ctx.logger.info(
+            `Linear mirror reconcile skipped ${link.linearIdentifier}: Linear issue belongs to team ${linearIssue.team.key ?? linearIssue.team.id}, not configured team ${teamId}`,
+          );
           continue;
         }
 
@@ -4285,11 +4297,12 @@ async function runLinearMirrorReconcile(
 
   await ctx.state.set(cursorKey, offset);
   const skipSuffix = skippedOtherCompany > 0 ? `, ${skippedOtherCompany} skipped (other company)` : "";
+  const skipTeamSuffix = skippedOtherTeam > 0 ? `, ${skippedOtherTeam} skipped (other team)` : "";
   const missingSuffix = missingPaperclip > 0 || missingLinear > 0
     ? `, ${missingPaperclip} missing Paperclip, ${missingLinear} missing Linear`
     : "";
   ctx.logger.info(
-    `Linear mirror reconcile ${complete ? "complete" : "paused"}: ${reconciled} reconciled from ${scanned} linked issues, ${errors} errors${skipSuffix}${missingSuffix}`,
+    `Linear mirror reconcile ${complete ? "complete" : "paused"}: ${reconciled} reconciled from ${scanned} linked issues, ${errors} errors${skipSuffix}${skipTeamSuffix}${missingSuffix}`,
   );
 
   return {
@@ -4297,6 +4310,7 @@ async function runLinearMirrorReconcile(
     errors,
     scanned,
     skippedOtherCompany,
+    skippedOtherTeam,
     missingPaperclip,
     missingLinear,
     complete,

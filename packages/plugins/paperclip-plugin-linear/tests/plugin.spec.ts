@@ -1625,6 +1625,85 @@ describe("paperclip-plugin-linear", () => {
         expect.objectContaining({ force: true }),
       );
     });
+
+    it("skips linked Linear issues from another team during mirror reconciliation", async () => {
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_123",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthTeamId },
+        "team-1",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: `${STATE_KEYS.linkPrefix}pc-issue-egy` },
+        {
+          paperclipIssueId: "pc-issue-egy",
+          paperclipCompanyId: "comp-1",
+          linearIssueId: "lin-issue-egy",
+          linearIdentifier: "EGY-216",
+          linearUrl: "https://linear.app/blockcast/issue/EGY-216",
+          syncDirection: "bidirectional",
+          lastSyncAt: "2020-01-01T00:00:00.000Z",
+          lastLinearStateType: "unstarted",
+          lastCommentSyncAt: null,
+        },
+      );
+      harness.seed({
+        issues: [
+          {
+            id: "pc-issue-egy",
+            companyId: "comp-1",
+            projectId: "pc-project-current",
+            title: "Paperclip EGY current",
+            status: "done",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+            labelIds: [],
+          } as never,
+        ],
+      });
+      const { listIssuesByIds } = await import("../src/linear.js");
+      (listIssuesByIds as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+        {
+          id: "lin-issue-egy",
+          identifier: "EGY-216",
+          title: "Foreign team issue",
+          description: null,
+          team: { id: "team-egy", name: "Egypt", key: "EGY" },
+          state: { name: "Todo", type: "unstarted" },
+          priority: 3,
+          url: "https://linear.app/blockcast/issue/EGY-216",
+          assignee: null,
+          labels: { nodes: [] },
+          project: null,
+          createdAt: "2026-06-10T00:00:00.000Z",
+          updatedAt: "2026-06-10T00:00:00.000Z",
+        },
+      ]);
+
+      const result = await harness.performAction<{
+        reconciled: number;
+        errors: number;
+        scanned: number;
+        skippedOtherTeam: number;
+        complete: boolean;
+      }>(ACTION_KEYS.reconcileLinearMirrors, { companyId: "comp-1", resetCursor: true });
+
+      expect(result).toMatchObject({
+        reconciled: 0,
+        errors: 0,
+        scanned: 1,
+        skippedOtherTeam: 1,
+        complete: true,
+      });
+      expect(syncModule.syncToLinear).not.toHaveBeenCalled();
+    });
   });
 
   // -----------------------------------------------------------------------
