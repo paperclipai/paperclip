@@ -549,3 +549,19 @@ describe("resolveExternalAdapterRegistration", () => {
     expect(resolved.sessionManagement).toBeUndefined();
   });
 });
+
+describe("acpx_local adapter lazy-loads codex-acp (#7795)", () => {
+  it("keeps execute/testEnvironment callable and the lightweight pieces wired without eager codex-acp import", async () => {
+    const adapter = requireServerAdapter("acpx_local");
+    // Heavy entry points must remain callable (now lazy dynamic-import wrappers).
+    expect(typeof adapter.execute).toBe("function");
+    expect(typeof adapter.testEnvironment).toBe("function");
+    // Lightweight, codex-acp-free pieces stay statically wired.
+    expect(adapter.sessionCodec).toBeDefined();
+    expect(typeof adapter.getConfigSchema).toBe("function");
+    // The clean config-schema sub-path resolves and returns a schema object.
+    const schema = await adapter.getConfigSchema!();
+    expect(schema).toBeTruthy();
+    expect(typeof schema).toBe("object");
+  });
+});

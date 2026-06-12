@@ -9,14 +9,17 @@ import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
 } from "@paperclipai/adapter-utils";
+// #7795: the acpx-local "/server" barrel re-exports execute.ts + test.ts, which
+// statically pull in @zed-industries/codex-acp (~165MB). Importing the barrel at
+// module scope dominated cold serverless boot (10s–300s hangs). Import only the
+// lightweight, codex-acp-free pieces statically, and lazy-load execute/test via
+// dynamic import so the heavy dependency is paid only when a run actually executes.
+import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-acpx-local/server/session-codec";
+import { getConfigSchema as getAcpxConfigSchema } from "@paperclipai/adapter-acpx-local/server/config-schema";
 import {
-  execute as acpxExecute,
-  testEnvironment as acpxTestEnvironment,
-  sessionCodec as acpxSessionCodec,
-  getConfigSchema as getAcpxConfigSchema,
   listAcpxSkills,
   syncAcpxSkills,
-} from "@paperclipai/adapter-acpx-local/server";
+} from "@paperclipai/adapter-acpx-local/server/skills";
 import {
   agentConfigurationDoc as acpxAgentConfigurationDoc,
   models as acpxModels,
@@ -267,6 +270,13 @@ const claudeLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: claudeAgentConfigurationDoc,
   getQuotaWindows: claudeGetQuotaWindows,
 };
+
+// #7795: lazy-load the heavy execute/test implementations (they pull
+// @zed-industries/codex-acp ~165MB) so cold boot never pays that import cost.
+const acpxExecute: ServerAdapterModule["execute"] = (ctx) =>
+  import("@paperclipai/adapter-acpx-local/server/execute").then((m) => m.execute(ctx));
+const acpxTestEnvironment: ServerAdapterModule["testEnvironment"] = (ctx) =>
+  import("@paperclipai/adapter-acpx-local/server/test").then((m) => m.testEnvironment(ctx));
 
 const acpxLocalAdapter: ServerAdapterModule = {
   type: "acpx_local",
