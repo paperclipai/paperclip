@@ -54,6 +54,7 @@ import {
   // Approval
   createApprovalSchema,
   resolveApprovalSchema,
+  agentDecideApprovalSchema,
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
@@ -2072,6 +2073,18 @@ registry.registerPath({
     body: jsonBody(resolveApprovalSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/approvals/{id}/agent-decide",
+  tags: ["approvals"],
+  summary: "Decide a dev-team gate approval as the designated agent",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(agentDecideApprovalSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
