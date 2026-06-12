@@ -80,6 +80,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/plugins/plugin-cost-clipper",
+    "name": "@paperclipai/plugin-cost-clipper",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/plugins/plugin-workspace-diff",
     "name": "@paperclipai/plugin-workspace-diff",
     "publishFromCi": false
