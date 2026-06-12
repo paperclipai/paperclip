@@ -57,6 +57,9 @@ interface RevisionMetadata {
   createdByUserId?: string | null;
   source?: string;
   rolledBackFromRevisionId?: string | null;
+  forceChangedKeys?: string[];
+  beforeConfigExtras?: Record<string, unknown>;
+  afterConfigExtras?: Record<string, unknown>;
 }
 
 interface UpdateAgentOptions {
@@ -141,11 +144,22 @@ function normalizeRuntimeConfigForNewAgent(runtimeConfig: unknown): Record<strin
   return normalizedRuntimeConfig;
 }
 
-function diffConfigSnapshot(
+export function diffConfigSnapshot(
   before: AgentConfigSnapshot,
   after: AgentConfigSnapshot,
 ): string[] {
   return CONFIG_REVISION_FIELDS.filter((field) => !jsonEqual(before[field], after[field]));
+}
+
+export function mergeRevisionChangedKeys(
+  beforeConfig: AgentConfigSnapshot,
+  afterConfig: AgentConfigSnapshot,
+  forcedChangedKeys: string[] = [],
+): string[] {
+  return [
+    ...diffConfigSnapshot(beforeConfig, afterConfig),
+    ...forcedChangedKeys.filter((key) => typeof key === "string" && key.trim().length > 0),
+  ].filter((key, index, keys) => keys.indexOf(key) === index);
 }
 
 function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$inferInsert> {
@@ -412,8 +426,12 @@ export function agentService(db: Db) {
       normalizedPatch.permissions = normalizeAgentPermissions(data.permissions, role);
     }
 
-    const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
-    const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
+    const forcedChangedKeys = options?.recordRevision?.forceChangedKeys ?? [];
+    const shouldRecordRevision =
+      Boolean(options?.recordRevision) && (hasConfigPatchFields(normalizedPatch) || forcedChangedKeys.length > 0);
+    const beforeConfig = shouldRecordRevision
+      ? { ...buildConfigSnapshot(existing), ...options?.recordRevision?.beforeConfigExtras }
+      : null;
 
     const updated = await db
       .update(agents)
@@ -424,8 +442,8 @@ export function agentService(db: Db) {
     const normalizedUpdated = updated ? await getById(updated.id) : null;
 
     if (normalizedUpdated && shouldRecordRevision && beforeConfig) {
-      const afterConfig = buildConfigSnapshot(normalizedUpdated);
-      const changedKeys = diffConfigSnapshot(beforeConfig, afterConfig);
+      const afterConfig = { ...buildConfigSnapshot(normalizedUpdated), ...options?.recordRevision?.afterConfigExtras };
+      const changedKeys = mergeRevisionChangedKeys(beforeConfig, afterConfig, forcedChangedKeys);
       if (changedKeys.length > 0) {
         await db.insert(agentConfigRevisions).values({
           companyId: normalizedUpdated.companyId,
