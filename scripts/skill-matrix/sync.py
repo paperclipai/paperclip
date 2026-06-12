@@ -99,6 +99,28 @@ def resolve(slug, refmap, installed):
     raise ValueError("nicht aufloesbar: " + slug)
 
 
+def load_agents():
+    d = api_get(f"/api/companies/{CID}/agents")
+    return d if isinstance(d, list) else d.get("agents", [])
+
+
+def current_skills(agent):
+    ac = agent.get("adapterConfig") or {}
+    return ((ac.get("paperclipSkillSync") or {}).get("desiredSkills")) or []
+
+
+def do_backup():
+    agents = load_agents()
+    snap = {a["id"]: {"name": a.get("name"), "desiredSkills": current_skills(a)} for a in agents}
+    os.makedirs(os.path.join(os.path.dirname(__file__), "backups"), exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = os.path.join(os.path.dirname(__file__), "backups", f"desiredSkills-{stamp}.json")
+    with open(path, "w") as f:
+        json.dump(snap, f, indent=2, ensure_ascii=False)
+    print(f"Backup: {path} ({len(snap)} Agenten)")
+    return path
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--print-matrix", action="store_true")
@@ -112,6 +134,8 @@ def main():
         for aid, (nm, slugs) in MATRIX.items():
             print(f"{nm:22} ({len(slugs)}): {', '.join(slugs)}")
         return
+    if args.backup:
+        do_backup(); return
     print("Kein Modus gewaehlt. Siehe --help.", file=sys.stderr)
 
 

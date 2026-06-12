@@ -1,0 +1,234 @@
+{
+  "f4bf1c83-9c79-4864-87eb-dd8c22fa604d": {
+    "name": "Bild & Video",
+    "desiredSkills": []
+  },
+  "3fcd92d8-5262-49f2-a2bc-52da0618e980": {
+    "name": "HomePod-Test-Agent",
+    "desiredSkills": []
+  },
+  "6bbbfe93-7fa8-44cb-8e21-23e81a9bb4dd": {
+    "name": "Vermögensverwaltung",
+    "desiredSkills": [
+      "paperclipai/paperclip/online-recherche",
+      "paperclipai/paperclip/paperclip",
+      "paperclipai/paperclip/paperclip-create-agent",
+      "paperclipai/paperclip/paperclip-create-plugin",
+      "paperclipai/paperclip/para-memory-files",
+      "local/014b2b1fc3/vermoegen-gold",
+      "local/391e0f8fd0/vermoegen-aktien",
+      "local/3d3c6aae03/whitestag-brand",
+      "local/a5ab7832f2/vermoegen-etf",
+      "local/ac12f5c457/whitestag-dsgvo",
+      "local/d86e45e9e8/vermoegen-overview"
+    ]
+  },
+  "caaeb345-9db1-41ab-95a3-115d3c70cf34": {
+    "name": "Link-Detektor",
+    "desiredSkills": []
+  },
+  "408f7e88-1ab6-4c9a-988b-68040fd28c13": {
+    "name": "CFO",
+    "desiredSkills": [
+      "paperclipai/paperclip/online-recherche",
+      "paperclipai/paperclip/paperclip",
+      "paperclipai/paperclip/paperclip-create-agent",
+      "paperclipai/paperclip/paperclip-create-plugin",
+      "paperclipai/paperclip/para-memory-files",
+      "local/014b2b1fc3/vermoegen-gold",
+      "local/063c626926/buchhaltung-euer",
+      "local/197c04341a/buchhaltung-einkommensteuer",
+      "local/391e0f8fd0/vermoegen-aktien",
+      "local/3d3c6aae03/whitestag-brand",
+      "local/a5ab7832f2/vermoegen-etf",
+      "local/ac12f5c457/whitestag-dsgvo",
+      "local/d86e45e9e8/vermoegen-overview"
+    ]
+  },
+  "d80fe6b9-b2ac-4d58-8525-8bbbb1d0caf7": {
+    "name": "Online-Rechercheur",
+    "desiredSkills": []
+  },
+  "56f7167b-b594-4533-9243-411947306907": {
+    "name": "Mistika VR",
+    "desiredSkills": [
+      "paperclipai/paperclip/online-recherche",
+      "paperclipai/paperclip/paperclip",
+      "paperclipai/paperclip/paperclip-create-agent",
+      "paperclipai/paperclip/paperclip-create-plugin",
+      "paperclipai/paperclip/para-memory-files",
+      "local/3d3c6aae03/whitestag-brand",
+      "local/3d72fa4b51/mistika-vr-pipeline",
+      "local/ac12f5c457/whitestag-dsgvo",
+      "local/e53814d40c/vr-produktion-pipeline"
+    ]
+  },
+  "e24b8d9d-143e-4141-b413-4361aa618771": {
+    "name": "Sekretärin",
+    "desiredSkills": [
+      "paperclipai/paperclip/paperclip",
+      "paperclipai/paperclip/para-memory-files",
+      "anthropics/skills/pdf"
+    ]
+  },
+  "5563514c-4254-48d5-9339-802172304119": {
+    "name": "VP Engineering",
+    "desiredSkills": [
+      "paperclipai/paperclip/online-recherche",
+      "paperclipai/paperclip/paperclip",
+      "paperclipai/paperclip/paperclip-create-agent",
+      "paperclipai/paperclip/paperclip-create-plugin",
+      "paperclipai/paperclip/para-memory-files",
+      "local/3d3c6aae03/whitestag-brand",
+      "local/ac12f5c457/whitestag-dsgvo",
+      "local/c19ebeca87/whitestag-n8n-workflow"
+    ]
+  },
+  "c73aceb3-63a5-4927-bff4-c595b408cd83": {
+    "name": "Buchhaltung",
+    "desiredSkills": []
+  },
+  "aa036cf5-0af7-4ed1-b04e-c7a54f71e553": {
+    "name": "CRO",
+    "desiredSkills": []
+  },
+  "506c873e-3a40-4483-9a45-0eb0fa1554bb": {
+    "name": "CEO",
+    "desiredSkills": [
+      "paperclipai/paperclip/online-recherche",
+      "paperclipai/paperclip/paperclip",
+      "paperclipai/paperclip/paperclip-create-agent",
+      "paperclipai/paperclip/paperclip-create-plugin",
+      "paperclipai/paperclip/para-memory-files",
+      "local/063c626926/buchhaltung-euer",
+      "local/197c04341a/buchhaltung-einkommensteuer",
+      "local/1ee1fae657/whitestag-angebot",
+      "local/3d3c6aae03/whitestag-brand",
+      "local/49da15791f/drehbuch-vr",
+      "local/ac12f5c457/whitestag-dsgvo",
+      "local/d86e45e9e8/vermoegen-overview",
+      "local/e53814d40c/vr-produktion-pipeline"
+    ]
+  },
+  "5b7cb8a7-945f-4861-b3a7-4ae84d242d1e": {
+    "name": "CTO",
+    "desiredSkills": [
+      "paperclipai/paperclip/online-recherche",
+      "paperclipai/paperclip/paperclip",
+      "paperclipai/paperclip/paperclip-create-agent",
+      "paperclipai/paperclip/paperclip-create-plugin",
+      "paperclipai/paperclip/para-memory-files",
+      "local/3d3c6aae03/whitestag-brand",
+      "local/ac12f5c457/whitestag-dsgvo",
+      "local/c19ebeca87/whitestag-n8n-workflow"
+    ]
+  },
+  "790bcaf2-83d8-4e04-8c43-914a96db7bd8": {
+    "name": "DPO",
+    "desiredSkills": [
+      "paperclipai/paperclip/online-recherche",
+      "paperclipai/paperclip/paperclip",
+      "paperclipai/paperclip/paperclip-create-agent",
+      "paperclipai/paperclip/paperclip-create-plugin",
+      "paperclipai/paperclip/para-memory-files",
+      "local/3d3c6aae03/whitestag-brand",
+      "local/ac12f5c457/whitestag-dsgvo"
+    ]
+  },
+  "ea38630c-5da8-4719-8e4a-1f0478c4bc40": {
+    "name": "Marken-Spezialist",
+    "desiredSkills": []
+  },
+  "bbf38291-1129-43db-97de-c03c998b691e": {
+    "name": "CMO",
+    "desiredSkills": [
+      "paperclipai/paperclip/online-recherche",
+      "paperclipai/paperclip/paperclip",
+      "paperclipai/paperclip/paperclip-create-agent",
+      "paperclipai/paperclip/paperclip-create-plugin",
+      "paperclipai/paperclip/para-memory-files",
+      "local/1ee1fae657/whitestag-angebot",
+      "local/3d3c6aae03/whitestag-brand",
+      "local/7c83df5c44/adobe-automation",
+      "local/ac12f5c457/whitestag-dsgvo"
+    ]
+  },
+  "4920b0be-b197-45ae-a169-54b99082c4ea": {
+    "name": "Creative Director",
+    "desiredSkills": []
+  },
+  "6d595481-8cbb-49bf-8ffb-8685c071d557": {
+    "name": "Produktentwicklung",
+    "desiredSkills": [
+      "paperclipai/paperclip/online-recherche",
+      "paperclipai/paperclip/paperclip",
+      "paperclipai/paperclip/paperclip-create-agent",
+      "paperclipai/paperclip/paperclip-create-plugin",
+      "paperclipai/paperclip/para-memory-files",
+      "local/3d3c6aae03/whitestag-brand",
+      "local/ac12f5c457/whitestag-dsgvo",
+      "local/c19ebeca87/whitestag-n8n-workflow"
+    ]
+  },
+  "358a70ad-927e-499f-85fe-d823d16d76a4": {
+    "name": "Adobe",
+    "desiredSkills": [
+      "paperclipai/paperclip/online-recherche",
+      "paperclipai/paperclip/paperclip",
+      "paperclipai/paperclip/paperclip-create-agent",
+      "paperclipai/paperclip/paperclip-create-plugin",
+      "paperclipai/paperclip/para-memory-files",
+      "local/3d3c6aae03/whitestag-brand",
+      "local/7c83df5c44/adobe-automation",
+      "local/ac12f5c457/whitestag-dsgvo",
+      "local/e53814d40c/vr-produktion-pipeline",
+      "local/7c83df5c44/comfyui-flux"
+    ]
+  },
+  "605c7900-c6f7-4fb3-9bed-1fcd36fcfdca": {
+    "name": "Web-Design Specialist",
+    "desiredSkills": []
+  },
+  "d4bdef1a-84fb-4393-8491-0eeaebcb3270": {
+    "name": "CPO",
+    "desiredSkills": [
+      "paperclipai/paperclip/online-recherche",
+      "paperclipai/paperclip/paperclip",
+      "paperclipai/paperclip/paperclip-create-agent",
+      "paperclipai/paperclip/paperclip-create-plugin",
+      "paperclipai/paperclip/para-memory-files",
+      "local/3d3c6aae03/whitestag-brand",
+      "local/ac12f5c457/whitestag-dsgvo",
+      "local/c19ebeca87/whitestag-n8n-workflow"
+    ]
+  },
+  "410a78b9-8472-4503-8232-0ff97bafa2f8": {
+    "name": "Social Media Specialist",
+    "desiredSkills": []
+  },
+  "3067ea1d-5050-4032-aff5-1f759f544160": {
+    "name": "Vault-Maintainer",
+    "desiredSkills": [
+      "paperclipai/paperclip/paperclip",
+      "paperclipai/paperclip/para-memory-files"
+    ]
+  },
+  "478fad75-48b1-4248-9dc5-5f3980a961fd": {
+    "name": "Drehbuch",
+    "desiredSkills": []
+  },
+  "8d8ab6da-d527-408d-b78f-de16a265c4ee": {
+    "name": "Blender",
+    "desiredSkills": [
+      "paperclipai/paperclip/online-recherche",
+      "paperclipai/paperclip/paperclip",
+      "paperclipai/paperclip/paperclip-create-agent",
+      "paperclipai/paperclip/paperclip-create-plugin",
+      "paperclipai/paperclip/para-memory-files",
+      "local/04097c98b7/blender-scripting",
+      "local/3d3c6aae03/whitestag-brand",
+      "local/ac12f5c457/whitestag-dsgvo",
+      "local/e53814d40c/vr-produktion-pipeline"
+    ]
+  }
+}
