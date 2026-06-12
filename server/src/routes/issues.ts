@@ -1239,6 +1239,7 @@ export function issueRoutes(
     workspace: Pick<ExecutionWorkspace, "closedAt" | "id" | "mode" | "name" | "status">,
   ) {
     res.status(409).json({
+      code: "execution_workspace_closed",
       error: getClosedIsolatedExecutionWorkspaceMessage(workspace),
       executionWorkspace: workspace,
     });
@@ -4032,7 +4033,13 @@ export function issueRoutes(
     res.json(bundle);
   });
 
-  router.post("/issues/:id/comments", validate(addIssueCommentSchema), async (req, res) => {
+  router.post("/issues/:id/comments", (req, _res, next) => {
+    // Normalize `comment` → `body` before schema validation (backward-compat alias).
+    if (req.body && !req.body.body && req.body.comment) {
+      req.body = { ...req.body, body: req.body.comment };
+    }
+    next();
+  }, validate(addIssueCommentSchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
     if (!issue) {

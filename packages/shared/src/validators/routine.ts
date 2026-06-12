@@ -112,21 +112,33 @@ const baseTriggerSchema = z.object({
   enabled: z.boolean().optional().default(true),
 });
 
-export const createRoutineTriggerSchema = z.discriminatedUnion("kind", [
-  baseTriggerSchema.extend({
-    kind: z.literal("schedule"),
-    cronExpression: z.string().trim().min(1),
-    timezone: z.string().trim().min(1).default("UTC"),
-  }),
-  baseTriggerSchema.extend({
-    kind: z.literal("webhook"),
-    signingMode: z.enum(ROUTINE_TRIGGER_SIGNING_MODES).optional().default("bearer"),
-    replayWindowSec: z.number().int().min(30).max(86_400).optional().default(300),
-  }),
-  baseTriggerSchema.extend({
-    kind: z.literal("api"),
-  }),
-]);
+// Accept `type` as an alias for `kind` for backward compatibility.
+export const createRoutineTriggerSchema = z.preprocess(
+  (input) => {
+    if (input && typeof input === "object" && !Array.isArray(input)) {
+      const obj = input as Record<string, unknown>;
+      if (!obj["kind"] && obj["type"]) {
+        return { ...obj, kind: obj["type"] };
+      }
+    }
+    return input;
+  },
+  z.discriminatedUnion("kind", [
+    baseTriggerSchema.extend({
+      kind: z.literal("schedule"),
+      cronExpression: z.string().trim().min(1),
+      timezone: z.string().trim().min(1).default("UTC"),
+    }),
+    baseTriggerSchema.extend({
+      kind: z.literal("webhook"),
+      signingMode: z.enum(ROUTINE_TRIGGER_SIGNING_MODES).optional().default("bearer"),
+      replayWindowSec: z.number().int().min(30).max(86_400).optional().default(300),
+    }),
+    baseTriggerSchema.extend({
+      kind: z.literal("api"),
+    }),
+  ]),
+);
 
 export type CreateRoutineTrigger = z.infer<typeof createRoutineTriggerSchema>;
 
