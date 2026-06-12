@@ -386,7 +386,7 @@ function Stepper({ current }: { current: WizardStep }) {
   );
 }
 
-function StepName({
+export function StepName({
   template,
   onTemplate,
   copyFromId,
@@ -508,7 +508,7 @@ function StepName({
   );
 }
 
-function StepAssign({
+export function StepAssign({
   agents,
   profiles,
   selectedAgentIds,
