@@ -82,6 +82,23 @@ def api_post(path, body):
     return json.load(urllib.request.urlopen(req))
 
 
+def compute_diff(current, target):
+    """Gibt (hinzuzufuegen, zu_entfernen) auf Slug-Basis zurueck, Reihenfolge stabil."""
+    cur_slugs = [r.split("/")[-1] for r in current]
+    add = [s for s in target if s not in cur_slugs]
+    remove = [s for s in cur_slugs if s not in target]
+    return add, remove
+
+
+def resolve(slug, refmap, installed):
+    """Slug -> kanonische Ref: vorhandene Ref bevorzugen, sonst reiner Slug wenn installiert."""
+    if slug in refmap:
+        return refmap[slug]
+    if slug in installed:
+        return slug
+    raise ValueError("nicht aufloesbar: " + slug)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--print-matrix", action="store_true")
