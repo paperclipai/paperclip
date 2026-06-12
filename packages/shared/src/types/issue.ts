@@ -516,6 +516,10 @@ export type RequestConfirmationTarget =
 export interface RequestConfirmationPayload {
   version: 1;
   prompt: string;
+  approvalName?: string | null;
+  approvalStage?: "primary" | "final" | null;
+  requiresSecondReview?: boolean | null;
+  priorApprovalInteractionId?: string | null;
   acceptLabel?: string | null;
   rejectLabel?: string | null;
   rejectRequiresReason?: boolean;

@@ -72,7 +72,12 @@ export function buildIssueThreadInteractionSummary(
   }
 
   if (interaction.kind === "request_confirmation") {
-    if (interaction.status === "accepted") return "Confirmed request";
+    if (interaction.status === "accepted") {
+      return interaction.payload.approvalStage === "primary"
+        || (interaction.payload.requiresSecondReview && interaction.payload.approvalStage !== "final")
+        ? "Primary review approved"
+        : "Confirmed request";
+    }
     if (interaction.status === "rejected") return "Declined request";
     if (interaction.status === "expired") {
       const outcome = interaction.result?.outcome;
@@ -80,7 +85,9 @@ export function buildIssueThreadInteractionSummary(
       if (outcome === "stale_target") return "Confirmation expired after target changed";
       return "Confirmation expired";
     }
-    return "Requested confirmation";
+    return interaction.payload.approvalStage === "final"
+      ? "Requested final approval"
+      : "Requested confirmation";
   }
 
   const count = interaction.payload.questions.length;

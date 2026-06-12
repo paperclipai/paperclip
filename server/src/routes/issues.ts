@@ -2901,7 +2901,7 @@ export function issueRoutes(
         outcome: "superseded",
         reason: "Issue thread interaction resolved via UI.",
       });
-      await finalizeAcceptedInteractionResolution({
+      const advancedToFinalReview = await finalizeAcceptedInteractionResolution({
         db,
         heartbeat,
         interaction,
@@ -2918,7 +2918,11 @@ export function issueRoutes(
         source: "issue.interaction.accept",
       });
 
-      res.json(interaction);
+      res.json(
+        advancedToFinalReview
+          ? await issueThreadInteractionService(db).getById(advancedToFinalReview.finalInteractionId) ?? interaction
+          : interaction,
+      );
     },
   );
 

@@ -910,7 +910,12 @@ function RequestConfirmationResolution({
   if (interaction.status === "accepted") {
     return (
       <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
-        <span className="font-medium">Confirmed</span>
+        <span className="font-medium">
+          {interaction.payload.approvalStage === "primary"
+          || (interaction.payload.requiresSecondReview && interaction.payload.approvalStage !== "final")
+            ? "Primary review approved"
+            : "Confirmed"}
+        </span>
         <RequestConfirmationTargetChip interaction={interaction} target={target} />
       </div>
     );
@@ -1050,6 +1055,11 @@ function RequestConfirmationCard({
     <div className="space-y-4">
       {interaction.status === "pending" ? (
         <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
+          {interaction.payload.approvalStage === "final" ? (
+            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700 dark:text-amber-300">
+              Final approval required
+            </div>
+          ) : null}
           <div className="text-sm leading-6 text-foreground">
             {interaction.payload.prompt}
           </div>

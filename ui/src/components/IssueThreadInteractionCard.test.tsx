@@ -184,6 +184,41 @@ describe("IssueThreadInteractionCard", () => {
     );
   });
 
+  it("labels final review requests and completed primary reviews", () => {
+    const finalHost = renderCard({
+      interaction: {
+        ...pendingRequestConfirmationInteraction,
+        id: "final-review",
+        payload: {
+          ...pendingRequestConfirmationInteraction.payload,
+          approvalStage: "final",
+          requiresSecondReview: true,
+          priorApprovalInteractionId: pendingRequestConfirmationInteraction.id,
+        },
+      },
+    });
+    expect(finalHost.textContent).toContain("Final approval required");
+
+    act(() => root?.unmount());
+    container?.remove();
+    root = null;
+    container = null;
+
+    const primaryHost = renderCard({
+      interaction: {
+        ...pendingRequestConfirmationInteraction,
+        status: "accepted",
+        payload: {
+          ...pendingRequestConfirmationInteraction.payload,
+          approvalStage: "primary",
+          requiresSecondReview: true,
+        },
+        result: { version: 1, outcome: "accepted" },
+      },
+    });
+    expect(primaryHost.textContent).toContain("Primary review approved");
+  });
+
   it("labels accept-only continuation policies in the card header", () => {
     const host = renderCard({
       interaction: {

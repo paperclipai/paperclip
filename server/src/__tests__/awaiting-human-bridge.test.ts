@@ -4,8 +4,10 @@ import {
   agents,
   agentWakeupRequests,
   awaitingHumanBridgeInboundEvents,
+  awaitingHumanNotificationOutbox,
   activityLog,
   companies,
+  companyAwaitingHumanSettings,
   createDb,
   goals,
   issues,
@@ -43,6 +45,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(agentWakeupRequests);
+    await db.delete(awaitingHumanNotificationOutbox);
     await db.delete(issueComments);
     await db.delete(awaitingHumanBridgeInboundEvents);
     await db.delete(awaitingHumanBridges);
@@ -50,6 +53,7 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
     await db.delete(issues);
     await db.delete(goals);
     await db.delete(agents);
+    await db.delete(companyAwaitingHumanSettings);
     await db.delete(companies);
     vi.restoreAllMocks();
   });
@@ -1501,6 +1505,139 @@ describeEmbeddedPostgres("awaitingHumanBridgeService", () => {
       status: "closed",
       closeOutcome: "approved",
     }));
+  });
+
+  it("hands primary approval to the secondary reviewer before waking the agent", async () => {
+    const seeded = await seedAwaitingHumanInteraction();
+    await db
+      .update(issueThreadInteractions)
+      .set({ payload: { version: 1, prompt: "Approve this plan?", requiresSecondReview: true } })
+      .where(eq(issueThreadInteractions.id, seeded.interactionId));
+    await db.insert(companyAwaitingHumanSettings).values({
+      companyId: seeded.companyId,
+      enabled: true,
+      provider: "clickup",
+      providerConfigJson: {
+        authTokenRef: null,
+        workspaceId: "workspace-1",
+        channelId: "channel-1",
+        attachmentTaskId: null,
+        primaryReviewerUserId: "primary-reviewer",
+        secondaryReviewerUserId: "secondary-reviewer",
+      },
+    });
+
+    const send = vi.fn(async () => ({
+      externalThreadId: randomUUID(),
+      externalMessageId: randomUUID(),
+      nextPollAt: new Date("2026-06-12T01:00:00.000Z"),
+    }));
+    const poll = vi.fn(async () => ({
+      status: "ok" as const,
+      detail: "ok",
+      events: [{
+        kind: "reply" as const,
+        externalEventId: randomUUID(),
+        body: "Approve",
+      }],
+    }));
+    const service = awaitingHumanBridgeService(db, {
+      resolveProviderForCompany: async () => "clickup",
+      hasAdapter: () => true,
+      resolveAdapter: () => ({
+        send,
+        poll,
+        close: vi.fn(async () => {}),
+      }),
+    });
+
+    const primaryBridge = await service.openOrReuseForInteraction({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      interactionId: seeded.interactionId,
+      agentId: seeded.agentId,
+      ...approvalNotification(),
+    });
+
+    await service.pollBridge(primaryBridge.id, new Date("2026-06-12T00:45:17.268Z"));
+
+    const interactionsAfterPrimary = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, seeded.issueId))
+      .orderBy(asc(issueThreadInteractions.createdAt));
+    expect(interactionsAfterPrimary).toHaveLength(2);
+    expect(interactionsAfterPrimary[0]).toMatchObject({
+      id: seeded.interactionId,
+      status: "accepted",
+      payload: {
+        approvalStage: "primary",
+        requiresSecondReview: true,
+      },
+    });
+    const finalInteraction = interactionsAfterPrimary[1]!;
+    expect(finalInteraction).toMatchObject({
+      status: "pending",
+      continuationPolicy: "wake_assignee_on_accept",
+      payload: {
+        approvalStage: "final",
+        requiresSecondReview: true,
+        priorApprovalInteractionId: seeded.interactionId,
+      },
+    });
+
+    const wakesAfterPrimary = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, seeded.agentId));
+    expect(wakesAfterPrimary).toHaveLength(0);
+
+    const outboxRows = await db
+      .select()
+      .from(awaitingHumanNotificationOutbox)
+      .where(eq(awaitingHumanNotificationOutbox.issueId, seeded.issueId));
+    expect(outboxRows).toHaveLength(1);
+    expect(outboxRows[0]?.notification).toMatchObject({
+      interactionId: finalInteraction.id,
+      approvalContext: {
+        approvalStage: "final",
+        requiresSecondReview: true,
+      },
+    });
+
+    const finalBridge = await service.openForPendingInteraction({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      interactionId: finalInteraction.id,
+    });
+    expect(finalBridge).not.toBeNull();
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({
+      interactionId: finalInteraction.id,
+      notification: expect.objectContaining({
+        approvalContext: expect.objectContaining({
+          approvalStage: "final",
+          requiresSecondReview: true,
+        }),
+      }),
+    }));
+
+    await service.pollBridge(finalBridge!.id, new Date("2026-06-12T00:46:17.268Z"));
+
+    const [resolvedFinalInteraction] = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, finalInteraction.id));
+    expect(resolvedFinalInteraction?.status).toBe("accepted");
+
+    const wakesAfterFinal = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, seeded.agentId));
+    expect(wakesAfterFinal).toHaveLength(1);
+    expect(wakesAfterFinal[0]?.payload).toMatchObject({
+      interactionId: finalInteraction.id,
+      interactionStatus: "accepted",
+    });
   });
 
   it("dedupes an approval signal if closeBridge fails after the transaction commits", async () => {

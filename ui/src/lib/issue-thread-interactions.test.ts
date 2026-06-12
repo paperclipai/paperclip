@@ -124,6 +124,45 @@ describe("issue thread interaction helpers", () => {
         answers: [{ questionId: "question-1", optionIds: ["option-1"] }],
       },
     })).toBe("Answered 1 question");
+
+    expect(buildIssueThreadInteractionSummary({
+      id: "interaction-primary-approved",
+      companyId: "company-1",
+      issueId: "issue-1",
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      createdAt: "2026-06-12T00:40:47.055Z",
+      updatedAt: "2026-06-12T00:45:17.268Z",
+      payload: {
+        version: 1,
+        prompt: "Approve?",
+        approvalStage: "primary",
+        requiresSecondReview: true,
+      },
+      result: {
+        version: 1,
+        outcome: "accepted",
+      },
+    })).toBe("Primary review approved");
+
+    expect(buildIssueThreadInteractionSummary({
+      id: "interaction-final-pending",
+      companyId: "company-1",
+      issueId: "issue-1",
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee_on_accept",
+      createdAt: "2026-06-12T00:45:17.300Z",
+      updatedAt: "2026-06-12T00:45:17.300Z",
+      payload: {
+        version: 1,
+        prompt: "Approve?",
+        approvalStage: "final",
+        requiresSecondReview: true,
+        priorApprovalInteractionId: "interaction-primary-approved",
+      },
+    })).toBe("Requested final approval");
   });
 
   it("maps stored option ids back to labels for answered summaries", () => {

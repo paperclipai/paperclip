@@ -35,6 +35,12 @@ vi.mock("../telemetry.js", () => ({
   getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
 }));
 
+vi.mock("../services/awaiting-human-settings.js", () => ({
+  awaitingHumanSettingsService: () => ({
+    get: vi.fn(async () => ({ enabled: false, provider: null, providerConfig: null })),
+  }),
+}));
+
 vi.mock("../middleware/logger.js", () => ({
   logger: {
     info: vi.fn(),

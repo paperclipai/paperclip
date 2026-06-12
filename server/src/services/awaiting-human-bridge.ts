@@ -465,6 +465,13 @@ function buildBridgeNotification(input: {
       labels: ["awaiting_human", "request_confirmation"],
       kind: interaction.kind,
       interactionId: interaction.id,
+      approvalContext: interaction.payload.approvalStage
+        ? {
+          approvalName: interaction.payload.approvalName ?? null,
+          approvalStage: interaction.payload.approvalStage,
+          requiresSecondReview: interaction.payload.requiresSecondReview ?? false,
+        }
+        : null,
       target: {
         label: interaction.payload.target?.label ?? null,
         href: interaction.payload.target?.href ?? null,

@@ -354,6 +354,10 @@ export const requestConfirmationTargetSchema = z.discriminatedUnion("type", [
 export const requestConfirmationPayloadSchema = z.object({
   version: z.literal(1),
   prompt: z.string().trim().min(1).max(1000),
+  approvalName: z.string().trim().min(1).max(240).nullable().optional(),
+  approvalStage: z.enum(["primary", "final"]).nullable().optional(),
+  requiresSecondReview: z.boolean().nullable().optional(),
+  priorApprovalInteractionId: z.string().uuid().nullable().optional(),
   acceptLabel: z.string().trim().min(1).max(80).nullable().optional(),
   rejectLabel: z.string().trim().min(1).max(80).nullable().optional(),
   rejectRequiresReason: z.boolean().optional(),
