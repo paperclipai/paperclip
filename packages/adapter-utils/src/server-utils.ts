@@ -133,10 +133,17 @@ export interface PaperclipSkillEntry {
   key: string;
   runtimeName: string;
   source: string;
+  versionId?: string | null;
+  currentVersionId?: string | null;
   sourceStatus?: "available" | "missing";
   missingDetail?: string | null;
   required?: boolean;
   requiredReason?: string | null;
+}
+
+export interface PaperclipDesiredSkillEntry {
+  key: string;
+  versionId: string | null;
 }
 
 export interface InstalledSkillTarget {
@@ -1446,6 +1453,8 @@ export function buildRuntimeMountedSkillSnapshot(
       entries.push({
         key: available.key,
         runtimeName: available.runtimeName,
+        versionId: available.versionId ?? null,
+        currentVersionId: available.currentVersionId ?? null,
         desired,
         managed: true,
         state: "missing",
@@ -1463,6 +1472,8 @@ export function buildRuntimeMountedSkillSnapshot(
     entries.push({
       key: available.key,
       runtimeName: available.runtimeName,
+      versionId: available.versionId ?? null,
+      currentVersionId: available.currentVersionId ?? null,
       desired,
       managed: true,
       state: configured ? "configured" : "available",
@@ -1528,6 +1539,10 @@ export function buildRuntimeMountedSkillSnapshot(
     supported,
     mode,
     desiredSkills,
+    desiredSkillEntries: desiredSkills.map((key) => ({
+      key,
+      versionId: availableByKey.get(key)?.versionId ?? null,
+    })),
     entries,
     warnings,
   };
@@ -1560,6 +1575,8 @@ export function buildPersistentSkillSnapshot(
       entries.push({
         key: available.key,
         runtimeName: available.runtimeName,
+        versionId: available.versionId ?? null,
+        currentVersionId: available.currentVersionId ?? null,
         desired,
         managed: true,
         state: "missing",
@@ -1595,6 +1612,8 @@ export function buildPersistentSkillSnapshot(
     entries.push({
       key: available.key,
       runtimeName: available.runtimeName,
+      versionId: available.versionId ?? null,
+      currentVersionId: available.currentVersionId ?? null,
       desired,
       managed,
       state,
@@ -1650,6 +1669,10 @@ export function buildPersistentSkillSnapshot(
     supported: true,
     mode: "persistent",
     desiredSkills,
+    desiredSkillEntries: desiredSkills.map((key) => ({
+      key,
+      versionId: availableByKey.get(key)?.versionId ?? null,
+    })),
     entries,
     warnings,
   };
@@ -1668,6 +1691,14 @@ function normalizeConfiguredPaperclipRuntimeSkills(value: unknown): PaperclipSki
       key,
       runtimeName,
       source,
+      versionId:
+        typeof entry.versionId === "string" && entry.versionId.trim().length > 0
+          ? entry.versionId.trim()
+          : null,
+      currentVersionId:
+        typeof entry.currentVersionId === "string" && entry.currentVersionId.trim().length > 0
+          ? entry.currentVersionId.trim()
+          : null,
       sourceStatus: entry.sourceStatus === "missing" ? "missing" : "available",
       missingDetail:
         typeof entry.missingDetail === "string" && entry.missingDetail.trim().length > 0
@@ -1714,22 +1745,41 @@ export async function readPaperclipSkillMarkdown(
 export function readPaperclipSkillSyncPreference(config: Record<string, unknown>): {
   explicit: boolean;
   desiredSkills: string[];
+  desiredSkillEntries: PaperclipDesiredSkillEntry[];
 } {
   const raw = config.paperclipSkillSync;
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return { explicit: false, desiredSkills: [] };
+    return { explicit: false, desiredSkills: [], desiredSkillEntries: [] };
   }
   const syncConfig = raw as Record<string, unknown>;
   const desiredValues = syncConfig.desiredSkills;
   const desired = Array.isArray(desiredValues)
-    ? desiredValues
-        .filter((value): value is string => typeof value === "string")
-        .map((value) => value.trim())
-        .filter(Boolean)
+    ? desiredValues.flatMap((value): PaperclipDesiredSkillEntry[] => {
+        if (typeof value === "string") {
+          const key = value.trim();
+          return key ? [{ key, versionId: null }] : [];
+        }
+        if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+          const record = value as Record<string, unknown>;
+          const key = typeof record.key === "string" ? record.key.trim() : "";
+          if (!key) return [];
+          const versionId = typeof record.versionId === "string" && record.versionId.trim()
+            ? record.versionId.trim()
+            : null;
+          return [{ key, versionId }];
+        }
+        return [];
+      })
     : [];
+  const byKey = new Map<string, PaperclipDesiredSkillEntry>();
+  for (const entry of desired) {
+    if (!byKey.has(entry.key)) byKey.set(entry.key, entry);
+  }
+  const desiredSkillEntries = Array.from(byKey.values());
   return {
     explicit: Object.prototype.hasOwnProperty.call(raw, "desiredSkills"),
-    desiredSkills: Array.from(new Set(desired)),
+    desiredSkills: desiredSkillEntries.map((entry) => entry.key),
+    desiredSkillEntries,
   };
 }
 
@@ -1775,7 +1825,7 @@ export function resolvePaperclipDesiredSkillNames(
 
 export function writePaperclipSkillSyncPreference(
   config: Record<string, unknown>,
-  desiredSkills: string[],
+  desiredSkills: Array<string | PaperclipDesiredSkillEntry>,
 ): Record<string, unknown> {
   const next = { ...config };
   const raw = next.paperclipSkillSync;
@@ -1783,13 +1833,23 @@ export function writePaperclipSkillSyncPreference(
     typeof raw === "object" && raw !== null && !Array.isArray(raw)
       ? { ...(raw as Record<string, unknown>) }
       : {};
-  current.desiredSkills = Array.from(
-    new Set(
-      desiredSkills
-        .map((value) => value.trim())
-        .filter(Boolean),
-    ),
-  );
+  const entries = desiredSkills.flatMap((value): PaperclipDesiredSkillEntry[] => {
+    if (typeof value === "string") {
+      const key = value.trim();
+      return key ? [{ key, versionId: null }] : [];
+    }
+    const key = value.key.trim();
+    if (!key) return [];
+    return [{ key, versionId: value.versionId ?? null }];
+  });
+  const byKey = new Map<string, PaperclipDesiredSkillEntry>();
+  for (const entry of entries) {
+    if (!byKey.has(entry.key)) byKey.set(entry.key, entry);
+  }
+  const normalized = Array.from(byKey.values());
+  current.desiredSkills = normalized.some((entry) => entry.versionId)
+    ? normalized
+    : normalized.map((entry) => entry.key);
   next.paperclipSkillSync = current;
   return next;
 }

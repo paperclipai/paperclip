@@ -284,6 +284,22 @@ Open source. Self-hosted. No Paperclip account required.
 npx paperclipai onboard --yes
 ```
 
+> **Troubleshooting: private npm registry `.npmrc`**
+>
+> If this fails with an `E404` for `paperclipai` (or similar) and you use a private npm registry (for example GitHub Packages) via a global `~/.npmrc`, `npx` may be resolving `paperclipai` against that private registry instead of the public npm registry.
+>
+> Diagnostic:
+>
+> ```bash
+> npm config get registry
+> ```
+>
+> Workaround (cross-platform; force the public npm registry for this command):
+>
+> ```bash
+> npx --registry https://registry.npmjs.org paperclipai onboard --yes
+> ```
+
 That quickstart path now defaults to trusted local loopback mode for the fastest first run. To start in authenticated/private mode instead, choose a bind preset explicitly:
 
 ```bash

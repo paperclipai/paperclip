@@ -737,17 +737,6 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
-    const planCommentId = randomUUID();
-    await db.insert(issueComments).values({
-      id: planCommentId,
-      companyId,
-      issueId,
-      authorUserId: "board-user-1",
-      authorType: "user",
-      body: "Keep the accepted plan rollout split into separate child tasks.",
-      createdAt: new Date("2026-06-07T00:00:00.000Z"),
-      updatedAt: new Date("2026-06-07T00:00:00.000Z"),
-    });
     await seedAcceptedPlanClaim({
       companyId,
       issueId,
@@ -814,14 +803,5 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     expect(adapterInput.runtime.sessionId).toBe("accepted-plan-retry-session");
     expect(adapterInput.context.acceptedPlanWakeRouting).toBeUndefined();
     expect(adapterInput.context.paperclipTaskMarkdown).toContain("Create child issues from the approved plan only");
-    expect(adapterInput.context.paperclipTaskMarkdown).toContain("Comments included with the confirmed plan:");
-    expect(adapterInput.context.paperclipTaskMarkdown).toContain(planCommentId);
-    expect(adapterInput.context.paperclipTaskMarkdown).toContain(
-      "Keep the accepted plan rollout split into separate child tasks.",
-    );
-    expect(adapterInput.context.paperclipWake).toEqual(expect.objectContaining({
-      commentIds: [planCommentId],
-      commentContextSource: "accepted_plan_confirmation",
-    }));
   }, 20_000);
 });

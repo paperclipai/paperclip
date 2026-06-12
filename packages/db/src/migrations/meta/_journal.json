@@ -694,6 +694,20 @@
       "when": 1780534200000,
       "tag": "0098_project_icon",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1781130000000,
+      "tag": "0099_skills_store_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1781480000000,
+      "tag": "0100_skill_install_count_backfill",
+      "breakpoints": true
     }
   ]
 }

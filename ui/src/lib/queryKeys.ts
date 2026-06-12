@@ -7,6 +7,8 @@ export const queryKeys = {
   companySkills: {
     list: (companyId: string) => ["company-skills", companyId] as const,
     detail: (companyId: string, skillId: string) => ["company-skills", companyId, skillId] as const,
+    versions: (companyId: string, skillId: string) => ["company-skills", companyId, skillId, "versions"] as const,
+    comments: (companyId: string, skillId: string) => ["company-skills", companyId, skillId, "comments"] as const,
     updateStatus: (companyId: string, skillId: string) =>
       ["company-skills", companyId, skillId, "update-status"] as const,
     file: (companyId: string, skillId: string, relativePath: string) =>
@@ -45,6 +47,7 @@ export const queryKeys = {
   },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,
+    mentionPool: (companyId: string) => ["issues", companyId, "mention-pool"] as const,
     search: (companyId: string, q: string, projectId?: string, limit?: number) =>
       ["issues", companyId, "search", q, projectId ?? "__all-projects__", limit ?? "__no-limit__"] as const,
     listAssignedToMe: (companyId: string) => ["issues", companyId, "assigned-to-me"] as const,
@@ -87,6 +90,30 @@ export const queryKeys = {
     liveRuns: (issueId: string) => ["issues", "live-runs", issueId] as const,
     activeRun: (issueId: string) => ["issues", "active-run", issueId] as const,
     workProducts: (issueId: string) => ["issues", "work-products", issueId] as const,
+    fileResources: (
+      issueId: string,
+      options: {
+        workspace?: string;
+        projectId?: string | null;
+        workspaceId?: string | null;
+        path?: string | null;
+        mode?: string;
+        q?: string | null;
+        limit?: number;
+        offset?: number;
+      } = {},
+    ) =>
+      ["issues", "file-resources", issueId, "list", options] as const,
+    fileResource: (
+      issueId: string,
+      query: { path: string; workspace?: string; projectId?: string | null; workspaceId?: string | null },
+    ) =>
+      ["issues", "file-resources", issueId, "resolve", query] as const,
+    fileResourceContent: (
+      issueId: string,
+      query: { path: string; workspace?: string; projectId?: string | null; workspaceId?: string | null },
+    ) =>
+      ["issues", "file-resources", issueId, "content", query] as const,
   },
   routines: {
     list: (companyId: string, filters?: { projectId?: string | null }) =>
