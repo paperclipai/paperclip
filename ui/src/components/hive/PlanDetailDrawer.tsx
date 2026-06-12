@@ -16,6 +16,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PlanGateRollup } from "./PlanGateRollup";
 
 interface PlanDetailDrawerProps {
   companyId: string | null;
@@ -84,6 +85,8 @@ export function PlanDetailDrawer({ companyId }: PlanDetailDrawerProps) {
               {plan.issue.description && (
                 <p className="text-sm text-muted-foreground">{plan.issue.description}</p>
               )}
+
+              {planId && <PlanGateRollup companyId={companyId} planIssueId={planId} />}
 
               {/* Budget cap */}
               <div className="space-y-1.5">

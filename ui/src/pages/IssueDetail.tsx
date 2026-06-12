@@ -63,6 +63,7 @@ import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatDurationMs, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { NextActionBanner } from "../components/hive/NextActionBanner";
+import { GateLedger } from "../components/hive/GateLedger";
 import { InlineEditor } from "../components/InlineEditor";
 import {
   IssueChatThread,
@@ -1141,6 +1142,7 @@ function IssueDetailActivityTab({
 
   return (
     <>
+      <GateLedger issueId={issueId} companyId={companyId} />
       {shouldShowCostSummary && (
         <div className="mb-3 px-3 py-2 rounded-lg border border-border">
           <div className="text-sm font-medium text-muted-foreground mb-1">Cost Summary</div>
