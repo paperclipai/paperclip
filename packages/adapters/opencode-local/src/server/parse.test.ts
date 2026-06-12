@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
+import { parseOpenCodeJsonl, isOpenCodeUnknownSessionError, sanitizeModelText } from "./parse.js";
 
 describe("parseOpenCodeJsonl", () => {
   it("parses assistant text, usage, cost, and errors", () => {
@@ -73,5 +73,169 @@ describe("parseOpenCodeJsonl", () => {
     expect(isOpenCodeUnknownSessionError("Session not found: s_123", "")).toBe(true);
     expect(isOpenCodeUnknownSessionError("", "unknown session id")).toBe(true);
     expect(isOpenCodeUnknownSessionError("all good", "")).toBe(false);
+  });
+
+  // SAG-722: leaked tool-call JSON, system-prompt echoes, and internal XML must
+  // be filtered from the summary produced by parseOpenCodeJsonl.
+
+  it("drops pure tool-call JSON text events from the summary (AC1, AC5)", () => {
+    const toolCallJson = JSON.stringify({
+      type: "function",
+      name: "fetch_issue",
+      parameters: { issue_id: "SAG-704" },
+    });
+    const stdout = [
+      JSON.stringify({ type: "text", sessionID: "s1", part: { text: toolCallJson } }),
+      JSON.stringify({ type: "text", sessionID: "s1", part: { text: "Done — updated the issue." } }),
+    ].join("\n");
+    const parsed = parseOpenCodeJsonl(stdout);
+    expect(parsed.summary).toBe("Done — updated the issue.");
+    expect(parsed.summary).not.toContain('"type": "function"');
+  });
+
+  it("drops text events whose content is a bare JSON array (AC1)", () => {
+    const arrayJson = JSON.stringify([{ tool: "bash", args: ["ls"] }]);
+    const stdout = JSON.stringify({ type: "text", sessionID: "s1", part: { text: arrayJson } });
+    const parsed = parseOpenCodeJsonl(stdout);
+    expect(parsed.summary).toBe("");
+  });
+
+  it("drops echoed system-prompt wakeup text (AC2)", () => {
+    const wakeText = "You are woken by reason: issue_assigned for issue SAG-677. Your task is…";
+    const stdout = [
+      JSON.stringify({ type: "text", sessionID: "s1", part: { text: wakeText } }),
+      JSON.stringify({ type: "text", sessionID: "s1", part: { text: "Acknowledged. Moving to in_progress." } }),
+    ].join("\n");
+    const parsed = parseOpenCodeJsonl(stdout);
+    expect(parsed.summary).toBe("Acknowledged. Moving to in_progress.");
+    expect(parsed.summary).not.toContain("You are woken by reason");
+  });
+
+  it("drops echoed agent-identity system-prompt lines (AC2)", () => {
+    const agentLine = "You are agent f3c48afc running as CTO. Here is your context…";
+    const stdout = JSON.stringify({ type: "text", sessionID: "s1", part: { text: agentLine } });
+    expect(parseOpenCodeJsonl(stdout).summary).toBe("");
+  });
+
+  it("strips <analysis> and <thinking> XML blocks, keeps surrounding text (AC3)", () => {
+    const raw = "<analysis>I need to check the issue first.</analysis>\n\nMoved to in_progress.";
+    const stdout = JSON.stringify({ type: "text", sessionID: "s1", part: { text: raw } });
+    const parsed = parseOpenCodeJsonl(stdout);
+    expect(parsed.summary).toBe("Moved to in_progress.");
+    expect(parsed.summary).not.toContain("<analysis>");
+  });
+
+  it("drops text events that consist solely of an internal XML block (AC3)", () => {
+    const raw = "<thinking>Let me think about this carefully.</thinking>";
+    const stdout = JSON.stringify({ type: "text", sessionID: "s1", part: { text: raw } });
+    expect(parseOpenCodeJsonl(stdout).summary).toBe("");
+  });
+
+  it("passes through normal natural-language update text unchanged", () => {
+    const text = "## Update\n\n- Filed sub-task SAG-723\n- Moved status to in_progress";
+    const stdout = JSON.stringify({ type: "text", sessionID: "s1", part: { text } });
+    expect(parseOpenCodeJsonl(stdout).summary).toBe(text);
+  });
+});
+
+// SAG-722: regression guard — sanitizeModelText directly
+
+describe("sanitizeModelText", () => {
+  it("returns null for pure tool-call JSON (AC5 regression guard)", () => {
+    expect(sanitizeModelText('{"type": "function", "name": "fetch_issue", "parameters": {}}')).toBeNull();
+  });
+
+  it("returns null for JSON that starts with {\"type\": \"function\" (AC5)", () => {
+    const s = JSON.stringify({ type: "function", name: "bash", parameters: { cmd: "ls" } });
+    expect(sanitizeModelText(s)).toBeNull();
+  });
+
+  it("returns null for a JSON array payload", () => {
+    expect(sanitizeModelText('[{"tool":"bash"}]')).toBeNull();
+  });
+
+  it("returns null for wake-payload echo lines", () => {
+    expect(sanitizeModelText("You are woken by reason: issue_assigned")).toBeNull();
+    expect(sanitizeModelText("You are agent abc123 running as CTO")).toBeNull();
+    expect(sanitizeModelText("The above agent instructions were loaded from /path")).toBeNull();
+    expect(sanitizeModelText("Treat this wake payload as the highest-priority context")).toBeNull();
+  });
+
+  it("returns null when the model self-identifies as an agent (internal monologue, SAG-773 evidence)", () => {
+    // SSI Director leaked: "I am agent 7cc4dafd... The latest comment on issue SAG-773..."
+    const leaked =
+      "I am agent 7cc4dafd-b41f-469c-b8ea-7b4110a11fe8 (SSI Director). The latest comment on issue SAG-773 is from agent 3ab7fa06. I will respond with a status update.";
+    expect(sanitizeModelText(leaked)).toBeNull();
+  });
+
+  it("strips internal XML blocks and returns remaining text", () => {
+    expect(sanitizeModelText("<analysis>internal</analysis>\n\nPosted comment.")).toBe("Posted comment.");
+    expect(sanitizeModelText("<thinking>internal</thinking>\n\nDone.")).toBe("Done.");
+  });
+
+  it("returns null when nothing remains after stripping XML", () => {
+    expect(sanitizeModelText("<analysis>only internal content here</analysis>")).toBeNull();
+  });
+
+  it("returns natural-language text unchanged", () => {
+    const text = "Moved issue to in_progress and posted update.";
+    expect(sanitizeModelText(text)).toBe(text);
+  });
+
+  it("returns null for whitespace-only input", () => {
+    expect(sanitizeModelText("   \n  ")).toBeNull();
+  });
+
+  // SAG-772 canary: Llama-70b emits prose then inline {"type":"function",...}
+  it("returns null when inline tool-call JSON is embedded after prose (SAG-772 canary)", () => {
+    const leaked =
+      'First, I need to check if there are any new comments on the issue since my last update.\n\n{"type": "function", "name": "get_issue_comments", "parameters": {"issue_id": "SAG-772"}}';
+    expect(sanitizeModelText(leaked)).toBeNull();
+  });
+
+  it("returns null for inline tool call with no spaces around colon", () => {
+    const leaked = 'Checking status.\n{"type":"function","name":"fetch_issue","parameters":{}}';
+    expect(sanitizeModelText(leaked)).toBeNull();
+  });
+
+  // SAG-819 fixture: 8b IC (llama3.1:8b Countertop Estimator) emitted the bare
+  // {"name":...,"parameters":...} dialect with NO "type":"function" wrapper —
+  // the original INLINE_TOOL_CALL_RE missed it. Comment 72f09e77 on SAG-819.
+  it("returns null when 8b IC leaks bare {name,parameters} tool-call form (SAG-819#72f09e77)", () => {
+    const leaked =
+      'I apologize for the issue. Let me try to look up the documentation on Countertop Estimator on another platform.  \n\n{"name": "webfetch", "parameters": {"url":"https://www.google.com/search?q=Countertop+Estimator"}}';
+    expect(sanitizeModelText(leaked)).toBeNull();
+  });
+
+  it("returns null when model leaks bare {name,arguments} tool-call form", () => {
+    const leaked =
+      'Looking it up now.\n{"name": "search", "arguments": {"query": "foo"}}';
+    expect(sanitizeModelText(leaked)).toBeNull();
+  });
+
+  it("returns null when model leaks {tool,args} bridge dialect", () => {
+    const leaked = 'Running command.\n{"tool": "bash", "args": ["ls", "-la"]}';
+    expect(sanitizeModelText(leaked)).toBeNull();
+  });
+
+  it("does not over-match: prose mentioning a JSON object with a name key is preserved", () => {
+    // A legitimate status update that happens to mention the literal string
+    // {"name":"..."} but without an adjacent parameters/arguments key.
+    const text = 'Found a config entry: {"name":"prod-cluster"} in the registry.';
+    expect(sanitizeModelText(text)).toBe(text);
+  });
+
+  it("drops inline tool-call blocks via parseOpenCodeJsonl (end-to-end)", () => {
+    const leaked =
+      'First, I need to check if there are any new comments on the issue since my last update.\n\n{"type": "function", "name": "get_issue_comments", "parameters": {"issue_id": "SAG-772"}}';
+    const clean = "Canary complete — all tests passing.";
+    const stdout = [
+      JSON.stringify({ type: "text", sessionID: "s1", part: { text: leaked } }),
+      JSON.stringify({ type: "text", sessionID: "s1", part: { text: clean } }),
+    ].join("\n");
+    const parsed = parseOpenCodeJsonl(stdout);
+    expect(parsed.summary).toBe(clean);
+    expect(parsed.summary).not.toContain('"type": "function"');
+    expect(parsed.summary).not.toContain("First, I need to check");
   });
 });

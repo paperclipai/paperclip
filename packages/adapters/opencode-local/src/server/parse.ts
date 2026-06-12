@@ -1,5 +1,64 @@
 import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
 
+// ---------------------------------------------------------------------------
+// SAG-722: comment sanitization — strip leaked tool-call JSON, echoed system
+// prompts, and internal-reasoning XML blocks before text reaches the summary.
+// ---------------------------------------------------------------------------
+
+function isPureJson(text: string): boolean {
+  const t = text.trim();
+  if (t.length < 2) return false;
+  const first = t[0];
+  if (first !== "{" && first !== "[") return false;
+  try {
+    JSON.parse(t);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const SYSTEM_PROMPT_ECHO_PATTERNS: RegExp[] = [
+  /^You are woken by reason:/i,
+  /^You are agent\b/i,
+  /^I am agent\b/i,
+  /^The above agent instructions were loaded from\b/i,
+  /^This base directory is authoritative for\b/i,
+  /^Treat this wake payload as/i,
+];
+
+// Match full <tag>…</tag> blocks for known internal-reasoning wrappers.
+const INTERNAL_XML_BLOCK_RE = /<(analysis|thinking|antml:thinking|antml:function_calls)>[\s\S]*?<\/\1>/gi;
+
+// Detect JSON tool-call objects embedded mid-text. Models leak several dialects
+// when they can't use the structured channel — broadened from the original
+// {"type":"function",...} form after SAG-819#72f09e77 (8b IC leaked the bare
+// {"name":"webfetch","parameters":{...}} shape that the narrower detector missed).
+const INLINE_TOOL_CALL_PATTERNS: RegExp[] = [
+  // OpenAI-style: {"type":"function", ...}
+  /\{\s*"type"\s*:\s*"function"/i,
+  // Bare-name dialect (Llama/Qwen 8b): {"name":"<ident>", ..., "parameters"|"arguments": ...}
+  /\{\s*"name"\s*:\s*"[A-Za-z_][\w.\-]*"[\s\S]{0,200}?"(?:parameters|arguments)"\s*:/i,
+  // OpenCode bridge dialect: {"tool":"<ident>", ..., "args"|"input": ...}
+  /\{\s*"tool"\s*:\s*"[A-Za-z_][\w.\-]*"[\s\S]{0,200}?"(?:args|input|arguments|parameters)"\s*:/i,
+];
+
+function hasInlineToolCall(text: string): boolean {
+  return INLINE_TOOL_CALL_PATTERNS.some((re) => re.test(text));
+}
+
+export function sanitizeModelText(text: string): string | null {
+  if (isPureJson(text)) return null;
+  if (SYSTEM_PROMPT_ECHO_PATTERNS.some((re) => re.test(text.trimStart()))) return null;
+  // Drop blocks where the model slipped an inline text-mode tool call anywhere
+  // in the text — the prose that precedes the JSON is also internal reasoning.
+  if (hasInlineToolCall(text)) return null;
+  const stripped = text.replace(INTERNAL_XML_BLOCK_RE, "").trim();
+  return stripped.length > 0 ? stripped : null;
+}
+
+// ---------------------------------------------------------------------------
+
 function errorText(value: unknown): string {
   if (typeof value === "string") return value;
   const rec = parseObject(value);
@@ -46,7 +105,10 @@ export function parseOpenCodeJsonl(stdout: string) {
     if (type === "text") {
       const part = parseObject(event.part);
       const text = asString(part.text, "").trim();
-      if (text) messages.push(text);
+      if (text) {
+        const sanitized = sanitizeModelText(text);
+        if (sanitized) messages.push(sanitized);
+      }
       continue;
     }
 
