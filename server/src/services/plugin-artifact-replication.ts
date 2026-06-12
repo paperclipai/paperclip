@@ -68,6 +68,8 @@ export interface PluginArtifactReplication {
   stop(): Promise<void>;
   /** True once the last reconcile/publish reached max generation (disabled → true). */
   isSynced(): boolean;
+  /** True when replication is configured (a storage provider was supplied). */
+  isActive(): boolean;
 }
 
 export function createPluginArtifactReplication(opts: {
@@ -341,5 +343,37 @@ export function createPluginArtifactReplication(opts: {
     return synced;
   }
 
-  return { publishSnapshot, reconcile, start, stop, isSynced };
+  function isActive(): boolean {
+    return provider !== null;
+  }
+
+  return { publishSnapshot, reconcile, start, stop, isSynced, isActive };
+}
+
+// ---------------------------------------------------------------------------
+// Health registry
+// ---------------------------------------------------------------------------
+
+/**
+ * Readiness view of the replication handle for /api/health (mirrors
+ * `registerSchedulerLeadershipForHealth` in scheduler-leadership.ts).
+ */
+export type PluginReplicationHealth = {
+  /**
+   * PAPERCLIP_PLUGINS_MUST_SYNC: when true, the replica must not be routed
+   * traffic until its first reconcile converged on the latest snapshot.
+   */
+  mustSync: boolean;
+  isSynced(): boolean;
+};
+
+let healthHandle: PluginReplicationHealth | null = null;
+
+/** Registered at startup (app.ts) so /api/health can gate readiness (consumed in routes/health.ts). */
+export function registerPluginReplicationForHealth(handle: PluginReplicationHealth | null): void {
+  healthHandle = handle;
+}
+
+export function getRegisteredPluginReplication(): PluginReplicationHealth | null {
+  return healthHandle;
 }

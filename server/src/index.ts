@@ -60,6 +60,7 @@ import {
   type SchedulerLeadership,
 } from "./services/scheduler-leadership.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
+import { createStorageProviderFromConfig } from "./storage/provider-registry.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
@@ -744,6 +745,15 @@ export async function startServer(): Promise<StartedServer> {
   });
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
+  // Plugin snapshot replication is active when a shared (non-local_disk)
+  // storage provider is configured, or explicitly forced via
+  // PAPERCLIP_PLUGIN_SNAPSHOTS=true (tests / shared-volume setups).
+  const pluginSnapshotsActive =
+    config.storageProvider !== "local_disk" ||
+    process.env.PAPERCLIP_PLUGIN_SNAPSHOTS === "true";
+  const pluginSnapshotStorageProvider = pluginSnapshotsActive
+    ? createStorageProviderFromConfig(config)
+    : null;
   const feedback = feedbackService(db as any, {
     shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
@@ -850,6 +860,7 @@ export async function startServer(): Promise<StartedServer> {
     authReady,
     companyDeletionEnabled: config.companyDeletionEnabled,
     pluginMigrationDb: pluginMigrationDb as any,
+    pluginSnapshotStorageProvider,
     betterAuthHandler,
     resolveSession,
     pluginWorkerManager,

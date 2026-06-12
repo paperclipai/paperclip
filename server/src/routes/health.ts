@@ -7,6 +7,7 @@ import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
 import { logger } from "../middleware/logger.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { getRegisteredPluginReplication } from "../services/plugin-artifact-replication.js";
 import { getSchedulerHealth } from "../services/scheduler-leadership.js";
 import { serverVersion } from "../version.js";
 
@@ -80,6 +81,16 @@ export function healthRoutes(
   });
 
   router.get("/", async (req, res) => {
+    // Readiness gate (PAPERCLIP_PLUGINS_MUST_SYNC, multi-replica): a replica
+    // that has not yet converged on the latest plugin snapshot must not be
+    // routed traffic — it would serve a stale plugin tree. Checked before the
+    // db probe and applied to both the redacted and full health views.
+    const pluginReplication = getRegisteredPluginReplication();
+    if (pluginReplication?.mustSync && !pluginReplication.isSynced()) {
+      res.status(503).json({ status: "starting", reason: "plugin snapshot sync pending" });
+      return;
+    }
+
     const actorType = "actor" in req ? req.actor?.type : null;
     const exposeFullDetails = shouldExposeFullHealthDetails(
       actorType,

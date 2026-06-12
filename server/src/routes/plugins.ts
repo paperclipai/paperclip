@@ -47,6 +47,7 @@ import {
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
+import { withAdvisoryXactLock } from "../services/advisory-locks.js";
 import { getPluginUiContributionMetadata, pluginLoader } from "../services/plugin-loader.js";
 import { logActivity } from "../services/activity-log.js";
 import { publishGlobalLiveEvent } from "../services/live-events.js";
@@ -395,6 +396,42 @@ export interface PluginRouteBridgeDeps {
   streamBus?: PluginStreamBus;
 }
 
+/**
+ * Optional dependencies for replicating runtime plugin-tree mutations
+ * (install / uninstall / upgrade) across replicas.
+ *
+ * When provided AND active, mutation handlers serialize cluster-wide via the
+ * `"plugin-install"` advisory lock and publish a plugin tree snapshot inside
+ * that lock. When omitted or inactive (single-replica deployments), mutations
+ * run exactly as before.
+ *
+ * @see services/plugin-artifact-replication.ts
+ */
+export interface PluginRouteReplicationDeps {
+  replication: {
+    /** True when a shared storage provider is configured (multi-replica mode). */
+    isActive(): boolean;
+    /** Publish the local plugin tree as the next generation snapshot. */
+    publishSnapshot(): Promise<{ generation: number } | null>;
+  };
+}
+
+/**
+ * Marker error: the local plugin-tree mutation succeeded but the snapshot
+ * publish did not, so other replicas would never converge on this change.
+ * Handlers map it to a 500 — better a loud failure the admin can retry than
+ * silent cross-replica divergence behind a 200.
+ */
+class PluginReplicationPublishError extends Error {
+  constructor(cause: unknown) {
+    super(
+      "plugin change applied locally but snapshot replication failed; retry the operation: " +
+        (cause instanceof Error ? cause.message : String(cause)),
+    );
+    this.name = "PluginReplicationPublishError";
+  }
+}
+
 interface PluginScopedApiRequest {
   routeKey: string;
   method: string;
@@ -480,6 +517,7 @@ export function pluginRoutes(
   webhookDeps?: PluginRouteWebhookDeps,
   toolDeps?: PluginRouteToolDeps,
   bridgeDeps?: PluginRouteBridgeDeps,
+  replicationDeps?: PluginRouteReplicationDeps,
 ) {
   const router = Router();
   const registry = pluginRegistryService(db);
@@ -488,6 +526,35 @@ export function pluginRoutes(
     workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
   });
   const issuesSvc = issueService(db);
+  const replication = replicationDeps?.replication;
+
+  /**
+   * Run a plugin-tree mutation. With replication active the mutation is
+   * serialized cluster-wide under the `"plugin-install"` advisory lock and a
+   * snapshot is published INSIDE the lock once `fn` resolved (i.e. after the
+   * disk + registry mutation succeeded) — callers respond and emit
+   * `plugin.ui.updated` only after the publish, so peers never learn of a
+   * change that was not replicated. With replication inactive `fn` runs
+   * directly: a single replica has no peers to race or to converge.
+   *
+   * The critical section is bounded by one npm install/uninstall plus one
+   * tar+upload of the plugin tree.
+   *
+   * @throws PluginReplicationPublishError when `fn` succeeded but the
+   *         snapshot publish failed (mapped to 500 by the handlers).
+   */
+  async function withReplicatedPluginMutation<T>(fn: () => Promise<T>): Promise<T> {
+    if (!replication?.isActive()) return fn();
+    return withAdvisoryXactLock(db, "plugin-install", async () => {
+      const result = await fn();
+      try {
+        await replication.publishSnapshot();
+      } catch (err) {
+        throw new PluginReplicationPublishError(err);
+      }
+      return result;
+    });
+  }
 
   function matchScopedApiRoute(route: PluginApiRouteDeclaration, method: string, requestPath: string) {
     if (route.method !== method) return null;
@@ -1038,37 +1105,68 @@ export function pluginRoutes(
       return;
     }
 
+    // A local path references ONE replica's filesystem (often a dev checkout
+    // with symlinked node_modules); the snapshot tarball cannot meaningfully
+    // replicate it to peers, so reject it up front in multi-replica mode.
+    if (isLocalPath && replication?.isActive()) {
+      res.status(400).json({
+        error:
+          "local-path plugin installs are not replicable across replicas; publish the plugin as an npm package",
+      });
+      return;
+    }
+
     try {
       const installOptions = isLocalPath
         ? { localPath: trimmedPackage }
         : { packageName: trimmedPackage, version: version?.trim() };
 
-      const discovered = await loader.installPlugin(installOptions);
+      // The snapshot publishes whenever installPlugin resolved (even on the
+      // degraded paths below): the disk + registry mutation has happened by
+      // then and peers must converge on it regardless of how we respond.
+      const outcome = await withReplicatedPluginMutation(async () => {
+        const discovered = await loader.installPlugin(installOptions);
 
-      if (!discovered.manifest) {
+        if (!discovered.manifest) {
+          return { kind: "manifest_missing" } as const;
+        }
+
+        const existingPlugin = await registry.getByKey(discovered.manifest.id);
+        if (!existingPlugin) {
+          // This shouldn't happen since installPlugin already registers in the DB
+          return { kind: "not_registered" } as const;
+        }
+
+        // Transition to ready state
+        await lifecycle.load(existingPlugin.id);
+        const updated = await registry.getById(existingPlugin.id);
+        return { kind: "installed", existingPlugin, updated } as const;
+      });
+
+      if (outcome.kind === "manifest_missing") {
         res.status(500).json({ error: "Plugin installed but manifest is missing" });
         return;
       }
-
-      // Transition to ready state
-      const existingPlugin = await registry.getByKey(discovered.manifest.id);
-      if (existingPlugin) {
-        await lifecycle.load(existingPlugin.id);
-        const updated = await registry.getById(existingPlugin.id);
-        await logPluginMutationActivity(req, "plugin.installed", existingPlugin.id, {
-          pluginId: existingPlugin.id,
-          pluginKey: existingPlugin.pluginKey,
-          packageName: updated?.packageName ?? existingPlugin.packageName,
-          version: updated?.version ?? existingPlugin.version,
-          source: isLocalPath ? "local_path" : "npm",
-        });
-        publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: existingPlugin.id, action: "installed" } });
-        res.json(updated);
-      } else {
-        // This shouldn't happen since installPlugin already registers in the DB
+      if (outcome.kind === "not_registered") {
         res.status(500).json({ error: "Plugin installed but not found in registry" });
+        return;
       }
+
+      const { existingPlugin, updated } = outcome;
+      await logPluginMutationActivity(req, "plugin.installed", existingPlugin.id, {
+        pluginId: existingPlugin.id,
+        pluginKey: existingPlugin.pluginKey,
+        packageName: updated?.packageName ?? existingPlugin.packageName,
+        version: updated?.version ?? existingPlugin.version,
+        source: isLocalPath ? "local_path" : "npm",
+      });
+      publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: existingPlugin.id, action: "installed" } });
+      res.json(updated);
     } catch (err) {
+      if (err instanceof PluginReplicationPublishError) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }
@@ -1830,7 +1928,7 @@ export function pluginRoutes(
     }
 
     try {
-      const result = await lifecycle.unload(plugin.id, purge);
+      const result = await withReplicatedPluginMutation(() => lifecycle.unload(plugin.id, purge));
       await logPluginMutationActivity(req, "plugin.uninstalled", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
@@ -1839,6 +1937,10 @@ export function pluginRoutes(
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "uninstalled" } });
       res.json(result);
     } catch (err) {
+      if (err instanceof PluginReplicationPublishError) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }
@@ -2072,7 +2174,7 @@ export function pluginRoutes(
       // 2. Compare capabilities
       // 3. If new capabilities, mark as upgrade_pending
       // 4. Otherwise, transition to ready
-      const result = await lifecycle.upgrade(plugin.id, version);
+      const result = await withReplicatedPluginMutation(() => lifecycle.upgrade(plugin.id, version));
       await logPluginMutationActivity(req, "plugin.upgraded", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
@@ -2083,6 +2185,10 @@ export function pluginRoutes(
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "upgraded" } });
       res.json(result);
     } catch (err) {
+      if (err instanceof PluginReplicationPublishError) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });
     }

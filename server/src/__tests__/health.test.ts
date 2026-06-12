@@ -8,6 +8,7 @@ import { serverVersion } from "../version.js";
 
 const mockReadPersistedDevServerStatus = vi.hoisted(() => vi.fn());
 const mockGetSchedulerHealth = vi.hoisted(() => vi.fn().mockResolvedValue({ candidate: false, isLeader: false }));
+const mockGetRegisteredPluginReplication = vi.hoisted(() => vi.fn().mockReturnValue(null));
 
 vi.mock("../dev-server-status.js", () => ({
   readPersistedDevServerStatus: mockReadPersistedDevServerStatus,
@@ -18,6 +19,11 @@ vi.mock("../services/scheduler-leadership.js", () => ({
   getSchedulerHealth: mockGetSchedulerHealth,
   registerSchedulerLeadershipForHealth: vi.fn(),
   getRegisteredSchedulerLeadership: vi.fn().mockReturnValue(null),
+}));
+
+vi.mock("../services/plugin-artifact-replication.js", () => ({
+  getRegisteredPluginReplication: mockGetRegisteredPluginReplication,
+  registerPluginReplicationForHealth: vi.fn(),
 }));
 
 function createApp(db?: Db) {
@@ -31,6 +37,7 @@ describe("GET /health", () => {
     vi.clearAllMocks();
     mockReadPersistedDevServerStatus.mockReturnValue(undefined);
     mockGetSchedulerHealth.mockResolvedValue({ candidate: false, isLeader: false });
+    mockGetRegisteredPluginReplication.mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -192,6 +199,86 @@ describe("GET /health", () => {
     expect(res.body.scheduler).toEqual({ candidate: true, isLeader: true });
     // lease row must NOT be present in the redacted view
     expect(res.body.scheduler).not.toHaveProperty("leader");
+  });
+
+  it("returns 503 starting before the db probe while plugin snapshot sync is pending under mustSync", async () => {
+    mockGetRegisteredPluginReplication.mockReturnValue({
+      mustSync: true,
+      isSynced: () => false,
+    });
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+    } as unknown as Db;
+    const app = createApp(db);
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ status: "starting", reason: "plugin snapshot sync pending" });
+    // Readiness gate: an unsynced replica must report 503 even when the
+    // database is reachable — the db probe is not consulted at all.
+    expect(db.execute).not.toHaveBeenCalled();
+  });
+
+  it("gates the redacted health view too while plugin snapshot sync is pending", async () => {
+    mockGetRegisteredPluginReplication.mockReturnValue({
+      mustSync: true,
+      isSynced: () => false,
+    });
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+    } as unknown as Db;
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as any).actor = { type: "none", source: "none" };
+      next();
+    });
+    app.use(
+      "/health",
+      healthRoutes(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+        authReady: true,
+        companyDeletionEnabled: false,
+      }),
+    );
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ status: "starting", reason: "plugin snapshot sync pending" });
+  });
+
+  it("serves health normally once the plugin snapshot sync completed under mustSync", async () => {
+    mockGetRegisteredPluginReplication.mockReturnValue({
+      mustSync: true,
+      isSynced: () => true,
+    });
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+    } as unknown as Db;
+    const app = createApp(db);
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: "ok", version: serverVersion });
+  });
+
+  it("does not gate health when mustSync is off, even while unsynced", async () => {
+    mockGetRegisteredPluginReplication.mockReturnValue({
+      mustSync: false,
+      isSynced: () => false,
+    });
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+    } as unknown as Db;
+    const app = createApp(db);
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: "ok", version: serverVersion });
   });
 
   it("keeps detailed metadata for authenticated requests in authenticated mode", async () => {
