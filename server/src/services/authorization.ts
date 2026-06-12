@@ -45,6 +45,7 @@ export type AuthorizationAction =
   | "agent:read"
   | "agent:wake"
   | "company_scope:read"
+  | "issue:comment"
   | "issue:mutate"
   | "issue:read"
   | "project:read"
@@ -118,7 +119,7 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
   ) {
     return null;
   }
-  if (action === "issue:mutate") return null;
+  if (action === "issue:mutate" || action === "issue:comment") return null;
   return action;
 }
 
@@ -753,7 +754,11 @@ export function authorizationService(db: Db) {
         : lowTrustDeny("Project is outside this low-trust boundary.");
     }
 
-    if (input.action === "issue:read" || input.action === "issue:mutate") {
+    if (
+      input.action === "issue:read" ||
+      input.action === "issue:mutate" ||
+      input.action === "issue:comment"
+    ) {
       if (input.resource.type !== "issue") {
         return lowTrustDeny("Low-trust issue access is missing an issue resource.");
       }
@@ -1151,6 +1156,24 @@ export function authorizationService(db: Db) {
         action: input.action,
         reason: "allow_simple_company_member",
         explanation: "Allowed by simple mode company-wide task assignment default.",
+      });
+    }
+
+    if (input.action === "issue:comment") {
+      if (input.resource.type !== "issue") {
+        return deny({
+          action: input.action,
+          reason: "deny_scope",
+          explanation: "Issue comment access requires an issue resource.",
+        });
+      }
+      // Comments are communicative, not state-changing: any same-company agent
+      // may reply on an issue thread (e.g. after an @-mention wake), while
+      // reassignment, status changes, and cancellation stay on issue:mutate.
+      return allow({
+        action: input.action,
+        reason: "allow_company_agent",
+        explanation: "Allowed because same-company agents can comment on issue threads.",
       });
     }
 

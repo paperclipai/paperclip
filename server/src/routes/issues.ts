@@ -1739,7 +1739,7 @@ export function issueRoutes(
       assigneeUserId: string | null;
       status: string;
     },
-    action: "issue:read" | "issue:mutate",
+    action: "issue:read" | "issue:mutate" | "issue:comment",
   ) {
     return access.decide({
       actor: req.actor,
@@ -1883,6 +1883,36 @@ export function issueRoutes(
           reason: "stale_checkout_run",
         },
       });
+    }
+    return true;
+  }
+
+  // Comment-only writes are communicative and do not contend for checkout
+  // ownership: any same-company agent (e.g. one woken by an @-mention) may
+  // reply on the thread. Status-changing comment flags (reopen/resume) still
+  // go through assertAgentIssueMutationAllowed.
+  async function assertAgentIssueCommentAllowed(
+    req: Request,
+    res: Response,
+    issue: {
+      id: string;
+      companyId: string;
+      projectId: string | null;
+      parentId: string | null;
+      status: string;
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+    },
+  ) {
+    if (req.actor.type !== "agent") return true;
+    if (!req.actor.agentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+    const boundaryDecision = await decideIssueAccess(req, issue, "issue:comment");
+    if (!boundaryDecision.allowed) {
+      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+      return false;
     }
     return true;
   }
@@ -6557,7 +6587,14 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    const reopenRequested = req.body.reopen === true;
+    const resumeRequested = req.body.resume === true;
+    const interruptRequested = req.body.interrupt === true;
+    if (reopenRequested || resumeRequested) {
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    } else if (!(await assertAgentIssueCommentAllowed(req, res, issue))) {
+      return;
+    }
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
@@ -6569,9 +6606,6 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
-    const reopenRequested = req.body.reopen === true;
-    const resumeRequested = req.body.resume === true;
-    const interruptRequested = req.body.interrupt === true;
     if (resumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
     if (resumeRequested !== true && reopenRequested === true && req.actor.type === "agent") {
       if (!(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
