@@ -11,6 +11,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { CopyText } from "../components/CopyText";
 import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceCloseDialog";
+import { MissingPluginTabPlaceholder } from "../components/MissingPluginTabPlaceholder";
 import { agentsApi } from "../api/agents";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -19,6 +20,7 @@ import { projectsApi } from "../api/projects";
 import { routinesApi } from "../api/routines";
 import { IssuesList } from "../components/IssuesList";
 import { PageTabBar } from "../components/PageTabBar";
+import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import {
   RoutineRunVariablesDialog,
   type RoutineRunDialogSubmitData,
@@ -54,9 +56,36 @@ type WorkspaceFormState = {
   workspaceRuntime: string;
 };
 
-type ExecutionWorkspaceTab = "services" | "configuration" | "runtime_logs" | "issues" | "routines";
+type ExecutionWorkspaceBaseTab = "services" | "configuration" | "runtime_logs" | "issues" | "routines";
+type ExecutionWorkspacePluginTab = `plugin:${string}`;
+type ExecutionWorkspaceTab = ExecutionWorkspaceBaseTab | ExecutionWorkspacePluginTab;
+type OrderedExecutionWorkspaceTabItem = {
+  value: ExecutionWorkspaceTab;
+  label: string;
+  order: number;
+};
 
-function resolveExecutionWorkspaceTab(pathname: string, workspaceId: string): ExecutionWorkspaceTab | null {
+const DEFAULT_PLUGIN_DETAIL_TAB_ORDER = 100;
+const EXECUTION_WORKSPACE_BASE_TAB_ITEMS: OrderedExecutionWorkspaceTabItem[] = [
+  { value: "issues", label: "Tasks", order: 10 },
+  { value: "services", label: "Services", order: 20 },
+  { value: "configuration", label: "Configuration", order: 30 },
+  { value: "runtime_logs", label: "Runtime logs", order: 40 },
+  { value: "routines", label: "Routines", order: 60 },
+];
+
+function isExecutionWorkspacePluginTab(value: string | null): value is ExecutionWorkspacePluginTab {
+  return typeof value === "string" && value.startsWith("plugin:");
+}
+
+function orderExecutionWorkspaceTabItems(items: OrderedExecutionWorkspaceTabItem[]) {
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => left.item.order - right.item.order || left.index - right.index)
+    .map(({ item }) => item);
+}
+
+function resolveExecutionWorkspaceTab(pathname: string, workspaceId: string): ExecutionWorkspaceBaseTab | null {
   const segments = pathname.split("/").filter(Boolean);
   const executionWorkspacesIndex = segments.indexOf("execution-workspaces");
   if (executionWorkspacesIndex === -1 || segments[executionWorkspacesIndex + 1] !== workspaceId) return null;
@@ -69,7 +98,7 @@ function resolveExecutionWorkspaceTab(pathname: string, workspaceId: string): Ex
   return null;
 }
 
-function executionWorkspaceTabPath(workspaceId: string, tab: ExecutionWorkspaceTab) {
+function executionWorkspaceTabPath(workspaceId: string, tab: ExecutionWorkspaceBaseTab) {
   const segment = tab === "runtime_logs" ? "runtime-logs" : tab;
   return `/execution-workspaces/${workspaceId}/${segment}`;
 }
@@ -536,7 +565,12 @@ export function ExecutionWorkspaceDetail() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [runtimeActionErrorMessage, setRuntimeActionErrorMessage] = useState<string | null>(null);
   const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
-  const activeTab = workspaceId ? resolveExecutionWorkspaceTab(location.pathname, workspaceId) : null;
+  const activeRouteTab = workspaceId ? resolveExecutionWorkspaceTab(location.pathname, workspaceId) : null;
+  const pluginTabFromSearch = useMemo(() => {
+    const tab = new URLSearchParams(location.search).get("tab");
+    return isExecutionWorkspacePluginTab(tab) ? tab : null;
+  }, [location.search]);
+  const activeTab: ExecutionWorkspaceTab | null = activeRouteTab ?? pluginTabFromSearch;
 
   const workspaceQuery = useQuery({
     queryKey: queryKeys.executionWorkspaces.detail(workspaceId!),
@@ -579,6 +613,30 @@ export function ExecutionWorkspaceDetail() {
   const linkedProjectWorkspace = useMemo(
     () => project?.workspaces.find((item) => item.id === workspace?.projectWorkspaceId) ?? null,
     [project, workspace?.projectWorkspaceId],
+  );
+
+  const {
+    slots: workspacePluginDetailSlots,
+    isLoading: workspacePluginDetailSlotsLoading,
+    errorMessage: workspacePluginDetailSlotsError,
+  } = usePluginSlots({
+    slotTypes: ["detailTab"],
+    entityType: "execution_workspace",
+    companyId: workspace?.companyId ?? null,
+    enabled: !!workspace?.companyId,
+  });
+  const workspacePluginTabItems = useMemo(
+    () => workspacePluginDetailSlots.map((slot) => ({
+      value: `plugin:${slot.pluginKey}:${slot.id}` as ExecutionWorkspacePluginTab,
+      label: slot.displayName,
+      order: slot.order ?? DEFAULT_PLUGIN_DETAIL_TAB_ORDER,
+      slot,
+    })),
+    [workspacePluginDetailSlots],
+  );
+  const workspaceTabItems = useMemo(
+    () => orderExecutionWorkspaceTabItems([...EXECUTION_WORKSPACE_BASE_TAB_ITEMS, ...workspacePluginTabItems]),
+    [workspacePluginTabItems],
   );
   const inheritedRuntimeConfig = linkedProjectWorkspace?.runtimeConfig?.workspaceRuntime ?? null;
   const effectiveRuntimeConfig = workspace?.config?.workspaceRuntime ?? inheritedRuntimeConfig;
@@ -684,11 +742,23 @@ export function ExecutionWorkspaceDetail() {
   });
   const pendingRuntimeAction = controlRuntimeServices.isPending ? controlRuntimeServices.variables ?? null : null;
 
+  const pluginSlotContext = {
+    companyId: workspace.companyId,
+    projectId: workspace.projectId,
+    entityId: workspace.id,
+    entityType: "execution_workspace" as const,
+  };
+  const activePluginTab = workspacePluginTabItems.find((item) => item.value === activeTab) ?? null;
+
   if (workspaceId && activeTab === null) {
     return <LegacyWorkspaceTabRedirect workspaceId={workspaceId} />;
   }
 
   const handleTabChange = (tab: ExecutionWorkspaceTab) => {
+    if (isExecutionWorkspacePluginTab(tab)) {
+      navigate(`/execution-workspaces/${workspace.id}?tab=${encodeURIComponent(tab)}`);
+      return;
+    }
     navigate(executionWorkspaceTabPath(workspace.id, tab));
   };
 
@@ -731,15 +801,18 @@ export function ExecutionWorkspaceDetail() {
         {runtimeActionErrorMessage ? <p className="text-sm text-destructive">{runtimeActionErrorMessage}</p> : null}
         {!runtimeActionErrorMessage && runtimeActionMessage ? <p className="text-sm text-muted-foreground">{runtimeActionMessage}</p> : null}
 
+        <PluginSlotOutlet
+          slotTypes={["toolbarButton", "contextMenuItem"]}
+          entityType="execution_workspace"
+          context={pluginSlotContext}
+          className="flex flex-wrap gap-2"
+          itemClassName="inline-flex"
+          missingBehavior="placeholder"
+        />
+
         <Tabs value={activeTab ?? "issues"} onValueChange={(value) => handleTabChange(value as ExecutionWorkspaceTab)}>
           <PageTabBar
-            items={[
-              { value: "issues", label: "Issues" },
-              { value: "services", label: "Services" },
-              { value: "configuration", label: "Configuration" },
-              { value: "runtime_logs", label: "Runtime logs" },
-              { value: "routines", label: "Routines" },
-            ]}
+            items={workspaceTabItems.map((item) => ({ value: item.value, label: item.label }))}
             align="start"
             value={activeTab ?? "issues"}
             onValueChange={(value) => handleTabChange(value as ExecutionWorkspaceTab)}
@@ -1004,7 +1077,7 @@ export function ExecutionWorkspaceDetail() {
                   "None"
                 )}
               </DetailRow>
-              <DetailRow label="Source issue">
+              <DetailRow label="Source task">
                 {sourceIssue ? (
                   <Link to={issueUrl(sourceIssue)} className="hover:underline">
                     {sourceIssue.identifier ?? sourceIssue.id} · {sourceIssue.title}
@@ -1128,11 +1201,32 @@ export function ExecutionWorkspaceDetail() {
             error={linkedIssuesQuery.error as Error | null}
             project={project}
           />
-        ) : (
+        ) : activePluginTab ? (
+          <PluginSlotMount
+            slot={activePluginTab.slot}
+            context={pluginSlotContext}
+            missingBehavior="placeholder"
+          />
+        ) : isExecutionWorkspacePluginTab(activeTab) && workspacePluginDetailSlotsLoading ? (
+          <Card>
+            <CardContent className="py-6 text-sm text-muted-foreground">Loading workspace plugin...</CardContent>
+          </Card>
+        ) : isExecutionWorkspacePluginTab(activeTab) && workspacePluginDetailSlotsError ? (
+          <Card>
+            <CardContent className="py-6 text-sm text-destructive">{workspacePluginDetailSlotsError}</CardContent>
+          </Card>
+        ) : isExecutionWorkspacePluginTab(activeTab) ? (
+          <MissingPluginTabPlaceholder
+            defaultTabHref={executionWorkspaceTabPath(workspace.id, "issues")}
+            defaultTabLabel="Back to tasks"
+          />
+        ) : activeTab === "routines" ? (
           <ExecutionWorkspaceRoutinesList
             workspace={workspace}
             project={project}
           />
+        ) : (
+          <LegacyWorkspaceTabRedirect workspaceId={workspace.id} />
         )}
       </div>
       <ExecutionWorkspaceCloseDialog

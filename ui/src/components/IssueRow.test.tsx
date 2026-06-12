@@ -228,7 +228,7 @@ describe("IssueRow", () => {
     });
   });
 
-  it("renders planning mode marker for planning work mode issues", () => {
+  it("does not render a planning mode marker for planning work mode issues", () => {
     const root = createRoot(container);
 
     act(() => {
@@ -237,8 +237,7 @@ describe("IssueRow", () => {
 
     const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
     expect(link).not.toBeNull();
-    expect(link?.textContent).toContain("Planning");
-    expect(link?.textContent?.match(/Planning/g)).toHaveLength(1);
+    expect(link?.textContent).not.toContain("Planning");
 
     act(() => {
       root.unmount();

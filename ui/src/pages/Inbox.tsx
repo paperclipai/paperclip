@@ -1495,7 +1495,7 @@ export function Inbox() {
       return { previousData };
     },
     onError: (err, id, context) => {
-      setActionError(err instanceof Error ? err.message : "Failed to archive issue");
+      setActionError(err instanceof Error ? err.message : "Failed to archive task");
       setArchivingIssueIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
@@ -2208,7 +2208,7 @@ export function Inbox() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="everything">All categories</SelectItem>
-              <SelectItem value="issues_i_touched">My recent issues</SelectItem>
+              <SelectItem value="issues_i_touched">My recent tasks</SelectItem>
               <SelectItem value="join_requests">Join requests</SelectItem>
               <SelectItem value="approvals">Approvals</SelectItem>
               <SelectItem value="failed_runs">Failed runs</SelectItem>
@@ -2326,6 +2326,7 @@ export function Inbox() {
                             depth === 0 && hasChildren && collapseParentId ? (
                               <button
                                 type="button"
+                                data-slot="icon-button"
                                 className="hidden w-4 shrink-0 items-center justify-center sm:inline-flex"
                                 onClick={(event) => {
                                   event.preventDefault();
@@ -2358,6 +2359,7 @@ export function Inbox() {
                         depth === 0 && hasChildren && collapseParentId ? (
                           <button
                             type="button"
+                            data-slot="icon-button"
                             onClick={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
@@ -2438,6 +2440,9 @@ export function Inbox() {
                         onClick={() => {
                           if (groupNavIdx >= 0) setSelectedIndex(groupNavIdx);
                         }}
+                        onMouseEnter={() => {
+                          if (groupNavIdx >= 0) setSelectedIndex(groupNavIdx);
+                        }}
                       >
                         <IssueGroupHeader
                           label={group.label}
@@ -2449,8 +2454,8 @@ export function Inbox() {
                               variant="ghost"
                               size="icon-xs"
                               className="-mr-2 text-muted-foreground"
-                              title={`New issue in ${group.label}`}
-                              aria-label={`New issue in ${group.label}`}
+                              title={`New task in ${group.label}`}
+                              aria-label={`New task in ${group.label}`}
                               onClick={(event) => {
                                 event.stopPropagation();
                                 openCreateIssueForGroup(group);
@@ -2474,6 +2479,7 @@ export function Inbox() {
                         data-inbox-item
                         className="relative"
                         onClick={() => setSelectedIndex(navIdx)}
+                        onMouseEnter={() => setSelectedIndex(navIdx)}
                       >
                         {child}
                       </div>
@@ -2641,7 +2647,12 @@ export function Inbox() {
                             key={`sel-issue:${child.id}`}
                             data-inbox-item
                             className="relative"
-                            onClick={() => setSelectedIndex(childNavIdx)}
+                            onClick={() => {
+                              if (childNavIdx >= 0) setSelectedIndex(childNavIdx);
+                            }}
+                            onMouseEnter={() => {
+                              if (childNavIdx >= 0) setSelectedIndex(childNavIdx);
+                            }}
                           >
                             {canArchiveIssue ? (
                               <SwipeToArchive

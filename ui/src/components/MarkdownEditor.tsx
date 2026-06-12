@@ -33,11 +33,12 @@ import {
 } from "@mdxeditor/editor";
 import {
   buildAgentMentionHref,
+  buildIssueReferenceHref,
   buildProjectMentionHref,
   buildRoutineMentionHref,
   buildUserMentionHref,
 } from "@paperclipai/shared";
-import { Boxes, CalendarClock, User } from "lucide-react";
+import { Boxes, CalendarClock, Hash, User } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
@@ -53,12 +54,15 @@ import { useEditorAutocomplete, type SlashCommandOption } from "../context/Edito
 export interface MentionOption {
   id: string;
   name: string;
-  kind?: "agent" | "project" | "user";
+  kind?: "agent" | "project" | "user" | "issue";
   agentId?: string;
   agentIcon?: string | null;
   projectId?: string;
   projectColor?: string | null;
   userId?: string;
+  /** Issue/task references (PAP-95f). `name` carries the searchable identifier + title. */
+  issueId?: string;
+  issueIdentifier?: string;
 }
 
 /* ---- Editor props ---- */
@@ -212,6 +216,7 @@ const MENTION_MENU_HEIGHT = 208;
 const MENTION_MENU_PADDING = 8;
 const MENTION_MENU_ROW_HEIGHT = 34;
 const MENTION_MENU_CHROME_HEIGHT = 8;
+const MAX_AUTOCOMPLETE_OPTIONS = 50;
 /** Roughly one space-width of breathing room between the caret and the menu. */
 const MENTION_MENU_CARET_GAP = 10;
 
@@ -419,7 +424,23 @@ function isSelectionInsideCodeLikeElement(container: HTMLElement | null) {
   return false;
 }
 
+/** The human title of an issue mention — `name` minus its leading identifier. */
+export function issueMentionTitle(option: MentionOption): string {
+  const name = option.name.trim();
+  const identifier = option.issueIdentifier?.trim();
+  if (identifier && name.toLowerCase().startsWith(identifier.toLowerCase())) {
+    return name.slice(identifier.length).trim();
+  }
+  return name;
+}
+
 function mentionMarkdown(option: MentionOption): string {
+  if (option.kind === "issue" && option.issueIdentifier) {
+    // Insert a compact issue link (e.g. `[PAP-123](/issues/PAP-123)`). The chip
+    // decorator recognizes this href as an `issue` mention and renders it as a
+    // task chip; MarkdownBody linkifies the same href on display.
+    return `[${option.issueIdentifier}](${buildIssueReferenceHref(option.issueIdentifier)}) `;
+  }
   if (option.kind === "project" && option.projectId) {
     return `[@${option.name}](${buildProjectMentionHref(option.projectId, option.projectColor ?? null)}) `;
   }
@@ -481,6 +502,9 @@ function autocompleteOptionMatchesLink(option: AutocompleteOption, href: string)
     return parsed.kind === "routine" && parsed.routineId === option.routineId;
   }
 
+  if (option.kind === "issue" && option.issueIdentifier) {
+    return parsed.kind === "issue" && parsed.identifier === option.issueIdentifier;
+  }
   if (option.kind === "project" && option.projectId) {
     return parsed.kind === "project" && parsed.projectId === option.projectId;
   }
@@ -603,6 +627,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   const [mentionState, setMentionState] = useState<MentionState | null>(null);
   const mentionStateRef = useRef<MentionState | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
+  const autocompleteOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const skillEnterArmedRef = useRef(false);
   const autocompleteSelectionHandledRef = useRef(false);
   const mentionActive = mentionState !== null && (
@@ -648,10 +673,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           if (!q) return true;
           return command.aliases.some((alias) => alias.toLowerCase().includes(q));
         })
-        .slice(0, 8);
+        .slice(0, MAX_AUTOCOMPLETE_OPTIONS);
     }
     if (!mentions) return [];
-    return mentions.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 8);
+    return mentions
+      .filter((m) => m.name.toLowerCase().includes(q))
+      .slice(0, MAX_AUTOCOMPLETE_OPTIONS);
   }, [mentionState, mentions, slashCommands]);
 
   useImperativeHandle(forwardedRef, () => ({
@@ -895,6 +922,18 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       window.removeEventListener("scroll", updatePosition, true);
     };
   }, [checkMention, mentionActive]);
+
+  useEffect(() => {
+    if (!mentionActive) return;
+    autocompleteOptionRefs.current.length = filteredMentions.length;
+    if (mentionIndex >= filteredMentions.length) {
+      setMentionIndex(Math.max(0, filteredMentions.length - 1));
+      return;
+    }
+    const activeOption = autocompleteOptionRefs.current[mentionIndex];
+    if (!activeOption || typeof activeOption.scrollIntoView !== "function") return;
+    activeOption.scrollIntoView({ block: "nearest" });
+  }, [filteredMentions.length, mentionActive, mentionIndex]);
 
   useEffect(() => {
     if (mentionActive) return;
@@ -1241,7 +1280,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       {mentionActive && filteredMentions.length > 0 && mentionMenuPosition &&
         createPortal(
           <div
-            className="fixed z-[9999] min-w-[180px] max-w-[calc(100vw-16px)] max-h-[208px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
+            data-paperclip-floating-ui=""
+            data-testid="mention-autocomplete-menu"
+            className="pointer-events-auto fixed z-[9999] min-w-[180px] max-w-[calc(100vw-16px)] max-h-[208px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
             style={{
               top: mentionMenuPosition.top,
               left: mentionMenuPosition.left,
@@ -1254,6 +1295,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 key={option.id}
                 type="button"
                 tabIndex={-1}
+                ref={(node) => {
+                  autocompleteOptionRefs.current[i] = node;
+                }}
                 className={cn(
                   "flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 transition-colors",
                   i === mentionIndex && "bg-accent",
@@ -1279,6 +1323,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   <CalendarClock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 ) : option.kind === "skill" ? (
                   <Boxes className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                ) : option.kind === "issue" ? (
+                  <Hash className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 ) : option.kind === "project" && option.projectId ? (
                   <span
                     className="inline-flex h-2 w-2 rounded-full border border-border/50"
@@ -1292,11 +1338,25 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                     className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
                   />
                 )}
-                <span>
-                  {option.kind === "skill" || option.kind === "routine"
-                    ? slashCommandLabel(option)
-                    : option.name}
-                </span>
+                {option.kind === "issue" && option.issueIdentifier ? (
+                  <span className="flex min-w-0 items-baseline gap-1.5">
+                    <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                      {option.issueIdentifier}
+                    </span>
+                    <span className="truncate">{issueMentionTitle(option)}</span>
+                  </span>
+                ) : (
+                  <span className="truncate">
+                    {option.kind === "skill" || option.kind === "routine"
+                      ? slashCommandLabel(option)
+                      : option.name}
+                  </span>
+                )}
+                {option.kind === "issue" && (
+                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Task
+                  </span>
+                )}
                 {option.kind === "project" && option.projectId && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
                     Project

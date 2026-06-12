@@ -86,6 +86,23 @@ describe("execution workspace policy helpers", () => {
     });
   });
 
+  it("preserves project authorization policy for trust-preset resolution", () => {
+    expect(parseProjectExecutionWorkspacePolicy({
+      enabled: true,
+      authorizationPolicy: {
+        trustBoundary: {
+          mode: "low_trust_review",
+          projectIds: ["33333333-3333-4333-8333-333333333333"],
+        },
+      },
+    })?.authorizationPolicy).toEqual({
+      trustBoundary: {
+        mode: "low_trust_review",
+        projectIds: ["33333333-3333-4333-8333-333333333333"],
+      },
+    });
+  });
+
   it("clears managed workspace strategy when issue opts out to project primary or agent default", () => {
     const baseConfig = {
       workspaceStrategy: { type: "git_worktree", branchTemplate: "{{issue.identifier}}" },
@@ -148,16 +165,117 @@ describe("execution workspace policy helpers", () => {
     });
   });
 
-  it("prefers persisted environment selection over issue and project defaults", () => {
+  it("reuses persisted workspace environment when it agrees with the assignee's identity", () => {
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        projectPolicy: { enabled: true, environmentId: "agent-env" },
+        issueSettings: { environmentId: "agent-env" },
+        workspaceConfig: { environmentId: "agent-env" },
+        agentDefaultEnvironmentId: "agent-env",
+        defaultEnvironmentId: "default-env",
+      }),
+    ).toEqual({
+      environmentId: "agent-env",
+      source: "workspace",
+      conflict: null,
+    });
+  });
+
+  it("refuses silent reuse when the persisted workspace env disagrees with the assignee (PAPA-380: sandbox agent on local workspace)", () => {
+    // Claude E2B was assigned to a child issue whose parent had already
+    // realized a `Local` workspace. The persisted workspace env must not
+    // shadow the agent's intended sandbox env.
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        projectPolicy: { enabled: true, environmentId: null },
+        issueSettings: { environmentId: "sandbox-env", mode: "shared_workspace" },
+        workspaceConfig: { environmentId: "local-env" },
+        agentDefaultEnvironmentId: "sandbox-env",
+        defaultEnvironmentId: "local-env",
+      }),
+    ).toEqual({
+      environmentId: "sandbox-env",
+      source: "issue",
+      conflict: {
+        reason: "reused_workspace_environment_mismatch",
+        workspaceEnvironmentId: "local-env",
+        assigneeIntendedEnvironmentId: "sandbox-env",
+        assigneeIntendedSource: "issue",
+      },
+    });
+  });
+
+  it("refuses silent reuse when a null-default (local) agent inherits a non-local workspace env (PAPA-431: Manual QA on engineer SSH workspace)", () => {
+    // Manual QA agent has defaultEnvironmentId: null. When a sibling issue's
+    // SSH workspace is inherited via inheritExecutionWorkspaceFromIssueId,
+    // the persisted SSH env must NOT shadow the agent's deliberate local
+    // identity. The inherited issueSettings.environmentId is treated as a
+    // promoted artifact, not an explicit operator choice.
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        projectPolicy: { enabled: true, environmentId: null },
+        issueSettings: { environmentId: "ssh-env", mode: "isolated_workspace" },
+        workspaceConfig: { environmentId: "ssh-env" },
+        agentDefaultEnvironmentId: null,
+        defaultEnvironmentId: "local-env",
+      }),
+    ).toEqual({
+      environmentId: "local-env",
+      source: "default",
+      conflict: {
+        reason: "reused_workspace_environment_mismatch",
+        workspaceEnvironmentId: "ssh-env",
+        assigneeIntendedEnvironmentId: "local-env",
+        assigneeIntendedSource: "default",
+      },
+    });
+  });
+
+  it("honors an explicit issue env override for null-default agents when no workspace is being reused", () => {
+    // Operator explicitly chose an env on this issue via PATCH (see the
+    // issues-service contract at issues-service.test.ts:1924). For null-default
+    // agents, this is a deliberate choice — only inherited issue env (which
+    // matches a reused workspace env) should be discarded.
     expect(
       resolveExecutionWorkspaceEnvironmentId({
         projectPolicy: { enabled: true, environmentId: "project-env" },
         issueSettings: { environmentId: "issue-env" },
-        workspaceConfig: { environmentId: "workspace-env" },
-        agentDefaultEnvironmentId: "agent-env",
-        defaultEnvironmentId: "default-env",
+        workspaceConfig: null,
+        agentDefaultEnvironmentId: null,
+        defaultEnvironmentId: "local-env",
       }),
-    ).toBe("workspace-env");
+    ).toEqual({
+      environmentId: "issue-env",
+      source: "issue",
+      conflict: null,
+    });
+  });
+
+  it("honors an explicit issue env override for null-default agents even against a disagreeing reused workspace", () => {
+    // Operator picked sandbox-env explicitly while the previously-realized
+    // workspace was on local-env. The mismatch is genuine — surface a conflict
+    // so the heartbeat forces a fresh realization on the operator's chosen env.
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        projectPolicy: { enabled: true, environmentId: null },
+        issueSettings: { environmentId: "sandbox-env", mode: "shared_workspace" },
+        workspaceConfig: { environmentId: "local-env" },
+        agentDefaultEnvironmentId: null,
+        defaultEnvironmentId: "local-env",
+      }),
+    ).toEqual({
+      environmentId: "sandbox-env",
+      source: "issue",
+      conflict: {
+        reason: "reused_workspace_environment_mismatch",
+        workspaceEnvironmentId: "local-env",
+        assigneeIntendedEnvironmentId: "sandbox-env",
+        assigneeIntendedSource: "issue",
+      },
+    });
+  });
+
+  it("prefers the explicit issue environment over project and agent defaults when no workspace is reused", () => {
     expect(
       resolveExecutionWorkspaceEnvironmentId({
         projectPolicy: { enabled: true, environmentId: "project-env" },
@@ -166,7 +284,11 @@ describe("execution workspace policy helpers", () => {
         agentDefaultEnvironmentId: "agent-env",
         defaultEnvironmentId: "default-env",
       }),
-    ).toBe("issue-env");
+    ).toEqual({
+      environmentId: "issue-env",
+      source: "issue",
+      conflict: null,
+    });
     expect(
       resolveExecutionWorkspaceEnvironmentId({
         projectPolicy: { enabled: true, environmentId: "project-env" },
@@ -175,7 +297,11 @@ describe("execution workspace policy helpers", () => {
         agentDefaultEnvironmentId: "agent-env",
         defaultEnvironmentId: "default-env",
       }),
-    ).toBe("project-env");
+    ).toEqual({
+      environmentId: "project-env",
+      source: "project",
+      conflict: null,
+    });
   });
 
   it("falls back to the agent default environment before the company default", () => {
@@ -187,7 +313,11 @@ describe("execution workspace policy helpers", () => {
         agentDefaultEnvironmentId: "agent-env",
         defaultEnvironmentId: "default-env",
       }),
-    ).toBe("agent-env");
+    ).toEqual({
+      environmentId: "agent-env",
+      source: "agent",
+      conflict: null,
+    });
     expect(
       resolveExecutionWorkspaceEnvironmentId({
         projectPolicy: { enabled: true, environmentId: null },
@@ -196,7 +326,11 @@ describe("execution workspace policy helpers", () => {
         agentDefaultEnvironmentId: "agent-env",
         defaultEnvironmentId: "default-env",
       }),
-    ).toBe("default-env");
+    ).toEqual({
+      environmentId: "default-env",
+      source: "project",
+      conflict: null,
+    });
     expect(
       resolveExecutionWorkspaceEnvironmentId({
         projectPolicy: null,
@@ -205,7 +339,11 @@ describe("execution workspace policy helpers", () => {
         agentDefaultEnvironmentId: null,
         defaultEnvironmentId: "default-env",
       }),
-    ).toBe("default-env");
+    ).toEqual({
+      environmentId: "default-env",
+      source: "default",
+      conflict: null,
+    });
     expect(
       resolveExecutionWorkspaceEnvironmentId({
         projectPolicy: { enabled: true, environmentId: null },
@@ -214,7 +352,11 @@ describe("execution workspace policy helpers", () => {
         agentDefaultEnvironmentId: null,
         defaultEnvironmentId: "default-env",
       }),
-    ).toBe("default-env");
+    ).toEqual({
+      environmentId: "default-env",
+      source: "default",
+      conflict: null,
+    });
   });
 
   it("maps persisted execution workspace modes back to issue settings", () => {

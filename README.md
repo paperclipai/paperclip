@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="doc/assets/header.png" alt="Paperclip — runs your business" width="720" />
+  <img src="doc/assets/banner.jpg" alt="Paperclip is the app people use to manage AI agents for work." width="720" />
 </p>
 
 <p align="center">
@@ -7,7 +7,8 @@
   <a href="https://paperclip.ing/docs"><strong>Docs</strong></a> &middot;
   <a href="https://github.com/paperclipai/paperclip"><strong>GitHub</strong></a> &middot;
   <a href="https://discord.gg/m4HZY7xNG3"><strong>Discord</strong></a> &middot;
-  <a href="https://x.com/papercliping"><strong>Twitter</strong></a>
+  <a href="https://x.com/papercliping"><strong>Twitter</strong></a> &middot;
+  <a href="https://paperclip.ing"><strong>Website</strong></a>
 </p>
 
 <p align="center">
@@ -24,15 +25,15 @@
 
 <br/>
 
-## What is Paperclip?
+# Paperclip is the app people use to manage AI agents for work.
 
-# Open-source orchestration for zero-human companies
+Open-source orchestration for teams of AI agents.
 
-**If OpenClaw is an _employee_, Paperclip is the _company_**
+**If OpenClaw is an _employee_, Paperclip is the _company_.**
 
-Paperclip is a Node.js server and React UI that orchestrates a team of AI agents to run a business. Bring your own agents, assign goals, and track your agents' work and costs from one dashboard.
+Paperclip is a Node.js server and React UI that orchestrates a team of AI agents to run a business. Bring your own agents, assign goals, and track work and costs from one dashboard.
 
-It looks like a task manager — but under the hood it has org charts, budgets, governance, goal alignment, and agent coordination.
+It looks like a task manager. Under the hood: org charts, budgets, governance, goal alignment, and agent coordination.
 
 **Manage business goals, not pull requests.**
 
@@ -41,10 +42,6 @@ It looks like a task manager — but under the hood it has org charts, budgets, 
 | **01** | Define the goal | _"Build the #1 AI note-taking app to $1M MRR."_                    |
 | **02** | Hire the team   | CEO, CTO, engineers, designers, marketers — any bot, any provider. |
 | **03** | Approve and run | Review strategy. Set budgets. Hit go. Monitor from the dashboard.  |
-
-<br/>
-
-> **COMING SOON: Clipmart** — Download and run entire companies with one click. Browse pre-built company templates — full org structures, agent configs, and skills — and import them into your Paperclip instance in seconds.
 
 <br/>
 
@@ -113,7 +110,7 @@ Every conversation traced. Every decision explained. Full tool-call tracing and 
 <tr>
 <td align="center">
 <h3>🛡️ Governance</h3>
-You're the board. Approve hires, override strategy, pause or terminate any agent — at any time.
+Approve hires, override strategy, pause or terminate any agent — at any time.
 </td>
 <td align="center">
 <h3>📊 Org Chart</h3>
@@ -222,7 +219,7 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 </td>
 <td>
 
-**Governance & Approvals** — Board approval workflows, execution policies with review/approval stages, decision tracking, budget hard-stops, agent pause/resume/terminate, and full audit logging. You're the board — nothing ships without your sign-off.
+**Governance & Approvals** — Board approval workflows, execution policies with review/approval stages, decision tracking, budget hard-stops, agent pause/resume/terminate, and full audit logging. Nothing ships without your sign-off.
 
 </td>
 </tr>
@@ -287,6 +284,22 @@ Open source. Self-hosted. No Paperclip account required.
 npx paperclipai onboard --yes
 ```
 
+> **Troubleshooting: private npm registry `.npmrc`**
+>
+> If this fails with an `E404` for `paperclipai` (or similar) and you use a private npm registry (for example GitHub Packages) via a global `~/.npmrc`, `npx` may be resolving `paperclipai` against that private registry instead of the public npm registry.
+>
+> Diagnostic:
+>
+> ```bash
+> npm config get registry
+> ```
+>
+> Workaround (cross-platform; force the public npm registry for this command):
+>
+> ```bash
+> npx --registry https://registry.npmjs.org paperclipai onboard --yes
+> ```
+
 That quickstart path now defaults to trusted local loopback mode for the fastest first run. To start in authenticated/private mode instead, choose a bind preset explicitly:
 
 ```bash
@@ -317,7 +330,7 @@ This starts the API server at `http://localhost:3100`. An embedded PostgreSQL da
 **What does a typical setup look like?**
 Locally, a single Node.js process manages an embedded Postgres and local file storage. For production, point it at your own Postgres and deploy however you like. Configure projects, agents, and goals — the agents take care of the rest.
 
-If you're a solo-entreprenuer you can use Tailscale to access Paperclip on the go. Then later you can deploy to e.g. Vercel when you need it.
+If you're a solo entrepreneur you can use Tailscale to access Paperclip on the go. Then later you can deploy to e.g. Vercel when you need it.
 
 **Can I run multiple companies?**
 Yes. A single deployment can run an unlimited number of companies with complete data isolation.
@@ -418,7 +431,7 @@ We welcome contributions. See the [contributing guide](CONTRIBUTING.md) for deta
 
 ## License
 
-MIT &copy; 2026 Paperclip
+MIT &copy; 2026 [Paperclip Labs, Inc](https://paperclip.ing)
 
 ## Star History
 
@@ -429,9 +442,5 @@ MIT &copy; 2026 Paperclip
 ---
 
 <p align="center">
-  <img src="doc/assets/footer.jpg" alt="" width="720" />
-</p>
-
-<p align="center">
-  <sub>Open source under MIT. Built for people who want to run companies, not babysit agents.</sub>
+  <sub>Open source under MIT. Built for people who want to get work done, not babysit agents.</sub>
 </p>

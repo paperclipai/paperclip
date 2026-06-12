@@ -263,6 +263,55 @@ wait_for_npm_package_version() {
   return 1
 }
 
+is_npm_tlog_duplicate_error() {
+  local output="$1"
+
+  grep -q "TLOG_CREATE_ENTRY_ERROR" <<< "$output" &&
+    grep -q "equivalent entry already exists in the transparency log" <<< "$output"
+}
+
+publish_package_to_npm() {
+  local dist_tag="$1"
+  local package_name="$2"
+  local package_version="$3"
+  local publish_log
+
+  publish_log="$(mktemp "${TMPDIR:-/tmp}/paperclip-npm-publish.XXXXXX")"
+
+  if (set -o pipefail; pnpm publish --no-git-checks --tag "$dist_tag" --access public 2>&1 | tee "$publish_log"); then
+    rm -f "$publish_log"
+    return 0
+  fi
+
+  if ! is_npm_tlog_duplicate_error "$(cat "$publish_log")"; then
+    rm -f "$publish_log"
+    return 1
+  fi
+
+  release_warn "npm publish hit a duplicate Sigstore transparency-log entry for ${package_name}@${package_version}."
+
+  if npm_package_version_exists "$package_name" "$package_version"; then
+    release_warn "npm already exposes ${package_name}@${package_version}; continuing to registry verification."
+    rm -f "$publish_log"
+    return 0
+  fi
+
+  if [ "$dist_tag" != "canary" ]; then
+    release_warn "Not retrying ${package_name}@${package_version} without provenance for dist-tag ${dist_tag}."
+    rm -f "$publish_log"
+    return 1
+  fi
+
+  release_warn "Retrying ${package_name}@${package_version} once with npm provenance disabled."
+  if pnpm publish --no-git-checks --tag "$dist_tag" --access public --provenance=false; then
+    rm -f "$publish_log"
+    return 0
+  fi
+
+  rm -f "$publish_log"
+  return 1
+}
+
 wait_for_release_registry_state() {
   local attempts="${1:-12}"
   local delay_seconds="${2:-5}"

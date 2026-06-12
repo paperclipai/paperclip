@@ -29,6 +29,8 @@ import type {
   CompanySecret,
   CompanySecretUsageBinding,
   CompanySecretProviderConfig,
+  SecretProviderConfigDiscoveryCandidate,
+  SecretProviderConfigDiscoveryPreviewResult,
   SecretAccessEvent,
   SecretManagedMode,
   SecretProvider,
@@ -325,6 +327,16 @@ function buildProviderVaultConfig(form: ProviderVaultForm): Record<string, unkno
   }
 }
 
+function getAwsProviderVaultDiscoveryQuery(form: ProviderVaultForm): string | null {
+  return (
+    form.secretNamePrefix.trim() ||
+    form.namespace.trim() ||
+    form.environmentTag.trim() ||
+    form.ownerTag.trim() ||
+    null
+  );
+}
+
 export function getAwsManagedPathPreview(input: {
   provider: SecretProviderDescriptor | null | undefined;
   health: SecretProviderHealthResponse | null;
@@ -372,8 +384,12 @@ export function Secrets() {
   const [deleteConfirm, setDeleteConfirm] = useState<CompanySecret | null>(null);
   const [vaultDialogOpen, setVaultDialogOpen] = useState(false);
   const [editingVault, setEditingVault] = useState<CompanySecretProviderConfig | null>(null);
+  const [removeVaultConfirm, setRemoveVaultConfirm] = useState<CompanySecretProviderConfig | null>(null);
   const [vaultForm, setVaultForm] = useState<ProviderVaultForm>(() => emptyProviderVaultForm());
   const [vaultError, setVaultError] = useState<string | null>(null);
+  const [vaultDiscovery, setVaultDiscovery] =
+    useState<SecretProviderConfigDiscoveryPreviewResult | null>(null);
+  const [vaultDiscoveryError, setVaultDiscoveryError] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Secrets" }]);
@@ -648,6 +664,24 @@ export function Secrets() {
     },
   });
 
+  const discoverVaultMutation = useMutation({
+    mutationFn: () =>
+      secretsApi.providerConfigDiscoveryPreview(selectedCompanyId!, {
+        provider: "aws_secrets_manager",
+        config: buildProviderVaultConfig(vaultForm),
+        query: getAwsProviderVaultDiscoveryQuery(vaultForm),
+        pageSize: 25,
+      }),
+    onSuccess: (preview) => {
+      setVaultDiscovery(preview);
+      setVaultDiscoveryError(null);
+    },
+    onError: (error) => {
+      setVaultDiscovery(null);
+      setVaultDiscoveryError(error instanceof ApiError ? error.message : (error as Error).message);
+    },
+  });
+
   const disableVaultMutation = useMutation({
     mutationFn: (id: string) => secretsApi.disableProviderConfig(id),
     onSuccess: (updated) => {
@@ -657,6 +691,26 @@ export function Secrets() {
     onError: (error) => {
       pushToast({
         title: "Disable failed",
+        body: error instanceof Error ? error.message : "Try again",
+        tone: "error",
+      });
+    },
+  });
+
+  const removeVaultMutation = useMutation({
+    mutationFn: (id: string) => secretsApi.removeProviderConfig(id),
+    onSuccess: (removed) => {
+      pushToast({
+        title: "Provider vault removed",
+        body: `${removed.displayName} was removed from Paperclip only.`,
+        tone: "info",
+      });
+      setRemoveVaultConfirm(null);
+      invalidateAll();
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Remove failed",
         body: error instanceof Error ? error.message : "Try again",
         tone: "error",
       });
@@ -735,6 +789,8 @@ export function Secrets() {
     setEditingVault(null);
     setVaultForm(emptyProviderVaultForm(provider));
     setVaultError(null);
+    setVaultDiscovery(null);
+    setVaultDiscoveryError(null);
     setVaultDialogOpen(true);
   }
 
@@ -742,7 +798,24 @@ export function Secrets() {
     setEditingVault(config);
     setVaultForm(providerVaultFormFromConfig(config));
     setVaultError(null);
+    setVaultDiscovery(null);
+    setVaultDiscoveryError(null);
     setVaultDialogOpen(true);
+  }
+
+  function applyVaultDiscoveryCandidate(candidate: SecretProviderConfigDiscoveryCandidate) {
+    if (candidate.provider !== "aws_secrets_manager") return;
+    const config = candidate.config as Record<string, unknown>;
+    setVaultForm((current) => ({
+      ...current,
+      displayName: current.displayName.trim() ? current.displayName : candidate.displayName,
+      region: providerConfigValue(config, "region"),
+      namespace: providerConfigValue(config, "namespace"),
+      secretNamePrefix: providerConfigValue(config, "secretNamePrefix"),
+      kmsKeyId: providerConfigValue(config, "kmsKeyId"),
+      ownerTag: providerConfigValue(config, "ownerTag"),
+      environmentTag: providerConfigValue(config, "environmentTag"),
+    }));
   }
 
   if (!selectedCompanyId) {
@@ -923,10 +996,12 @@ export function Secrets() {
             onCreate={openCreateVault}
             onEdit={openEditVault}
             onDisable={(config) => disableVaultMutation.mutate(config.id)}
+            onRemove={(config) => setRemoveVaultConfirm(config)}
             onSetDefault={(config) => defaultVaultMutation.mutate(config.id)}
             onHealthCheck={(config) => healthVaultMutation.mutate(config.id)}
             pendingActionId={
               disableVaultMutation.variables ??
+              removeVaultMutation.variables ??
               defaultVaultMutation.variables ??
               healthVaultMutation.variables ??
               null
@@ -1305,6 +1380,8 @@ export function Secrets() {
                   onChange={(event) => {
                     const provider = event.target.value as SecretProvider;
                     setVaultForm(emptyProviderVaultForm(provider));
+                    setVaultDiscovery(null);
+                    setVaultDiscoveryError(null);
                   }}
                 >
                   {PROVIDER_ORDER.map((provider) => (
@@ -1366,6 +1443,21 @@ export function Secrets() {
             </div>
 
             <ProviderVaultFields form={vaultForm} onChange={setVaultForm} />
+
+            {!editingVault && vaultForm.provider === "aws_secrets_manager" ? (
+              <AwsProviderVaultDiscoveryPanel
+                form={vaultForm}
+                preview={vaultDiscovery}
+                error={vaultDiscoveryError}
+                loading={discoverVaultMutation.isPending}
+                onDiscover={() => {
+                  setVaultDiscovery(null);
+                  setVaultDiscoveryError(null);
+                  discoverVaultMutation.mutate();
+                }}
+                onApply={applyVaultDiscoveryCandidate}
+              />
+            ) : null}
 
             {vaultForm.provider === "gcp_secret_manager" || vaultForm.provider === "vault" ? (
               <div className="rounded-md border border-sky-500/30 bg-sky-500/5 p-3 text-xs text-sky-700 dark:text-sky-300">
@@ -1510,6 +1602,32 @@ export function Secrets() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={Boolean(removeVaultConfirm)} onOpenChange={(open) => !open && setRemoveVaultConfirm(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Remove provider vault</DialogTitle>
+            <DialogDescription>
+              Removes <strong>{removeVaultConfirm?.displayName}</strong> from Paperclip only.{" "}
+              {removeVaultConfirm?.provider === "aws_secrets_manager"
+                ? "This does not delete the remote AWS Secrets Manager vault, secrets, or any AWS data."
+                : "This does not delete any remote provider data."}{" "}
+              Secrets using this vault will lose the vault association until you assign another one.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRemoveVaultConfirm(null)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              onClick={() => removeVaultConfirm && removeVaultMutation.mutate(removeVaultConfirm.id)}
+              disabled={removeVaultMutation.isPending}
+            >
+              {removeVaultMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
+              Remove from Paperclip
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1527,7 +1645,7 @@ function SecretsHowToUse() {
         </p>
         <p>
           Paperclip resolves the value server-side when the run starts and injects it as that env var. Project env
-          applies to every issue in the project and overrides agent env on matching keys.
+          applies to every task in the project and overrides agent env on matching keys.
         </p>
       </div>
     </div>
@@ -1748,6 +1866,7 @@ export function ProviderVaultsTab({
   onCreate,
   onEdit,
   onDisable,
+  onRemove,
   onSetDefault,
   onHealthCheck,
   pendingActionId,
@@ -1760,6 +1879,7 @@ export function ProviderVaultsTab({
   onCreate: (provider: SecretProvider) => void;
   onEdit: (config: CompanySecretProviderConfig) => void;
   onDisable: (config: CompanySecretProviderConfig) => void;
+  onRemove: (config: CompanySecretProviderConfig) => void;
   onSetDefault: (config: CompanySecretProviderConfig) => void;
   onHealthCheck: (config: CompanySecretProviderConfig) => void;
   pendingActionId: string | null;
@@ -1840,6 +1960,7 @@ export function ProviderVaultsTab({
                     pending={pendingActionId === config.id}
                     onEdit={() => onEdit(config)}
                     onDisable={() => onDisable(config)}
+                    onRemove={() => onRemove(config)}
                     onSetDefault={() => onSetDefault(config)}
                     onHealthCheck={() => onHealthCheck(config)}
                   />
@@ -1858,6 +1979,7 @@ function ProviderVaultCard({
   pending,
   onEdit,
   onDisable,
+  onRemove,
   onSetDefault,
   onHealthCheck,
 }: {
@@ -1865,6 +1987,7 @@ function ProviderVaultCard({
   pending: boolean;
   onEdit: () => void;
   onDisable: () => void;
+  onRemove: () => void;
   onSetDefault: () => void;
   onHealthCheck: () => void;
 }) {
@@ -1936,6 +2059,16 @@ function ProviderVaultCard({
           <Ban className="h-3.5 w-3.5 mr-1" />
           Disable
         </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="text-destructive hover:text-destructive"
+          onClick={onRemove}
+          disabled={pending}
+        >
+          <Trash2 className="h-3.5 w-3.5 mr-1" />
+          Remove
+        </Button>
       </div>
     </div>
   );
@@ -1998,6 +2131,162 @@ function ProviderVaultFields({
       <TextField label="Namespace" value={form.namespace} onChange={(value) => setField("namespace", value)} placeholder="admin" />
       <TextField label="Mount path" value={form.mountPath} onChange={(value) => setField("mountPath", value)} placeholder="secret" />
       <TextField label="Secret path prefix" value={form.secretPathPrefix} onChange={(value) => setField("secretPathPrefix", value)} placeholder="paperclip/prod" />
+    </div>
+  );
+}
+
+function AwsProviderVaultDiscoveryPanel({
+  form,
+  preview,
+  error,
+  loading,
+  onDiscover,
+  onApply,
+}: {
+  form: ProviderVaultForm;
+  preview: SecretProviderConfigDiscoveryPreviewResult | null;
+  error: string | null;
+  loading: boolean;
+  onDiscover: () => void;
+  onApply: (candidate: SecretProviderConfigDiscoveryCandidate) => void;
+}) {
+  const canDiscover = Boolean(form.region.trim());
+  const warnings = preview?.warnings ?? [];
+
+  return (
+    <div className="space-y-3 border-t border-border pt-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium">AWS discovery</p>
+          <p className="text-xs text-muted-foreground">
+            Uses the current draft routing fields to inspect AWS Secrets Manager metadata. Values are not read.
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onDiscover}
+          disabled={!canDiscover || loading}
+          data-testid="aws-vault-discovery-button"
+        >
+          {loading ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+          ) : (
+            <Search className="h-3.5 w-3.5 mr-1" />
+          )}
+          Find existing AWS values
+        </Button>
+      </div>
+
+      {!canDiscover ? (
+        <p className="text-xs text-muted-foreground">Enter an AWS region before discovery.</p>
+      ) : null}
+
+      {loading ? (
+        <div className="flex items-center gap-2 rounded-md border border-border bg-muted/20 p-3 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Searching AWS Secrets Manager metadata
+        </div>
+      ) : null}
+
+      {error ? (
+        <div
+          className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive"
+          role="alert"
+        >
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>{error}</span>
+        </div>
+      ) : null}
+
+      {warnings.length > 0 ? (
+        <div className="space-y-1 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-300">
+          {warnings.map((warning) => (
+            <div key={warning} className="flex gap-2">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>{warning}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {preview && preview.candidates.length === 0 && !loading ? (
+        <div className="rounded-md border border-dashed border-border bg-muted/20 p-3 text-xs text-muted-foreground">
+          No AWS vault metadata candidates found. Manual entry is still available.
+        </div>
+      ) : null}
+
+      {preview && preview.candidates.length > 0 ? (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Database className="h-3.5 w-3.5" />
+            <span>
+              {preview.candidates.length} candidate{preview.candidates.length === 1 ? "" : "s"} from{" "}
+              {preview.sampledSecretCount} sampled secret{preview.sampledSecretCount === 1 ? "" : "s"}
+            </span>
+          </div>
+          <div className="space-y-2" data-testid="aws-vault-discovery-candidates">
+            {preview.candidates.map((candidate, index) => (
+              <AwsProviderVaultDiscoveryCandidateRow
+                key={`${candidate.displayName}-${index}`}
+                candidate={candidate}
+                onApply={() => onApply(candidate)}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function AwsProviderVaultDiscoveryCandidateRow({
+  candidate,
+  onApply,
+}: {
+  candidate: SecretProviderConfigDiscoveryCandidate;
+  onApply: () => void;
+}) {
+  const fieldSummary = [
+    providerConfigValue(candidate.config, "region"),
+    providerConfigValue(candidate.config, "namespace"),
+    providerConfigValue(candidate.config, "secretNamePrefix"),
+  ].filter(Boolean);
+
+  return (
+    <div className="rounded-md border border-border bg-background p-3">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-medium leading-snug">{candidate.displayName}</p>
+            <span className="text-xs text-muted-foreground">
+              {candidate.sampleCount} sample{candidate.sampleCount === 1 ? "" : "s"}
+            </span>
+          </div>
+          <p className="mt-1 truncate text-xs text-muted-foreground">
+            {fieldSummary.length > 0 ? fieldSummary.join(" / ") : "No stable namespace or prefix detected"}
+          </p>
+          {candidate.samples[0] ? (
+            <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
+              {candidate.samples[0].name}
+            </p>
+          ) : null}
+        </div>
+        <Button type="button" variant="ghost" size="sm" onClick={onApply}>
+          Use values
+        </Button>
+      </div>
+      {candidate.warnings.length > 0 ? (
+        <div className="mt-2 space-y-1 text-xs text-amber-700 dark:text-amber-300">
+          {candidate.warnings.map((warning) => (
+            <div key={warning} className="flex gap-2">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>{warning}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

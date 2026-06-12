@@ -6,22 +6,32 @@ import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  agents,
+  documents,
   executionWorkspaces,
+  heartbeatRuns,
+  issueComments,
+  issueDocuments,
   issueExecutionDecisions,
   issueRelations,
   issues as issueRows,
+  issueWorkProducts,
   projectWorkspaces,
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
+  attachmentArtifactWorkProductMetadataSchema,
   cancelIssueThreadInteractionSchema,
   companySearchQuerySchema,
   createIssueAttachmentMetadataSchema,
   createIssueThreadInteractionSchema,
   createIssueWorkProductSchema,
   createIssueLabelSchema,
+  createAcceptedPlanDecompositionSchema,
   checkoutIssueSchema,
+  createDocumentAnnotationCommentSchema,
+  createDocumentAnnotationThreadSchema,
   createChildIssueSchema,
   createIssueSchema,
   resolveCreateIssueStatusDefault,
@@ -37,6 +47,7 @@ import {
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
   updateIssueWorkProductSchema,
+  updateDocumentAnnotationThreadSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
@@ -46,6 +57,7 @@ import {
   type CompanySearchResponse,
   type ExecutionWorkspace,
   type IssueRelationIssueSummary,
+  type SourceTrustMetadata,
   type SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
@@ -70,6 +82,7 @@ import {
   issueService,
   clampIssueListLimit,
   documentService,
+  documentAnnotationService,
   logActivity,
   projectService,
   routineService,
@@ -85,6 +98,7 @@ import {
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
   isInlineAttachmentContentType,
+  isAllowedContentType,
   normalizeIssueAttachmentMaxBytes,
   normalizeContentType,
   SVG_CONTENT_TYPE,
@@ -94,6 +108,7 @@ import { assertEnvironmentSelectionForCompany } from "./environment-selection.js
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { readAcceptedPlanConfirmationTarget } from "../services/issues.js";
 import { environmentService } from "../services/environments.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
@@ -109,10 +124,29 @@ import {
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import {
+  buildPromotedSourceTrust,
+  isLowTrustQuarantined,
+  redactQuarantinedBodyForHigherTrust,
+  resolveActorSourceTrustForIssue,
+  sanitizeQuarantinedCommentForHigherTrust,
+} from "../services/source-trust.js";
+import {
+  LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
+  resolveCoreTrustPreset,
+  type TrustPresetResolution,
+} from "../services/trust-preset-resolver.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
+});
+
+const promoteLowTrustOutputSchema = z.object({
+  sourceArtifactKind: z.enum(["comment", "document", "work_product", "issue"]),
+  sourceArtifactId: z.string().uuid(),
+  title: z.string().trim().min(1).max(200),
+  summary: z.string().trim().min(1).max(8_000),
 });
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
@@ -171,6 +205,50 @@ function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => 
   }
   next();
 }
+
+function buildAttachmentContentPath(attachmentId: string): string {
+  return `/api/attachments/${attachmentId}/content`;
+}
+
+const GENERIC_ATTACHMENT_CONTENT_TYPES = new Set([
+  "application/octet-stream",
+  "binary/octet-stream",
+  "application/x-binary",
+]);
+
+function inferVideoContentTypeFromFilename(filename: string | null | undefined): string | null {
+  const lower = (filename ?? "").toLowerCase();
+  if (lower.endsWith(".mp4") || lower.endsWith(".m4v")) return "video/mp4";
+  if (lower.endsWith(".webm")) return "video/webm";
+  if (lower.endsWith(".mov") || lower.endsWith(".qt") || lower.endsWith(".quicktime")) return "video/quicktime";
+  return null;
+}
+
+function resolveAttachmentResponseContentType(input: {
+  storedContentType: string | null | undefined;
+  objectContentType?: string | null;
+  originalFilename?: string | null;
+}) {
+  const storedContentType = normalizeContentType(input.storedContentType || input.objectContentType);
+  if (!GENERIC_ATTACHMENT_CONTENT_TYPES.has(storedContentType)) return storedContentType;
+  return inferVideoContentTypeFromFilename(input.originalFilename) ?? storedContentType;
+}
+
+function requiresPaperclipAttachmentMetadata(input: {
+  type?: unknown;
+  provider?: unknown;
+}, fallback?: {
+  type?: string | null;
+  provider?: string | null;
+}) {
+  const type = typeof input.type === "string" ? input.type : fallback?.type ?? null;
+  const provider = typeof input.provider === "string" ? input.provider : fallback?.provider ?? null;
+  return type === "artifact" && provider === "paperclip";
+}
+
+const attachmentArtifactMetadataInputSchema = z.object({
+  attachmentId: z.string().uuid(),
+}).passthrough();
 
 function buildCreateIssueActivityStatusDetails(
   issue: { assigneeAgentId: string | null; status: string },
@@ -480,6 +558,44 @@ function executionPrincipalsEqual(
   return left.type === "agent" ? left.agentId === right.agentId : left.userId === right.userId;
 }
 
+function actorMatchesExecutionParticipant(
+  actor: { actorType: "user" | "agent"; actorId: string },
+  participant: ParsedExecutionState["currentParticipant"] | null,
+) {
+  if (!participant) return false;
+  // Require the actor kind to match the participant kind before comparing ids. Without this
+  // an agent and a user that happen to share an id value would falsely satisfy participant
+  // gating on the auto-approval path.
+  if (participant.type !== actor.actorType) return false;
+  return participant.type === "agent" ? participant.agentId === actor.actorId : participant.userId === actor.actorId;
+}
+
+// Negation/rejection markers that invalidate an otherwise approval-looking heading.
+// Match common phrasings ("NOT APPROVED", "Do not approve", "Not approving", "Changes requested",
+// "Rejected", "Denied", "Blocked") so a reviewer comment intending to reject cannot auto-complete
+// the issue. We rely on the heading being a single line, so testing the heading text alone is safe.
+const APPROVAL_NEGATION_REGEX =
+  /\b(?:NOT|REJECT(?:ED|ING|S)?|DENY|DENIED|DENYING|BLOCK(?:ED|ING|S)?|CHANGES?\s+REQUESTED)\b/i;
+
+function isApprovalReviewComment(body: string) {
+  const normalized = body.replace(/\r\n?/g, "\n");
+  const headingMatch = normalized.match(/(?:^|\n)##\s*Review:\s*([^\n]*)/i);
+  if (headingMatch) {
+    const headingText = headingMatch[1];
+    if (/\bAPPROVED\b/i.test(headingText) && !APPROVAL_NEGATION_REGEX.test(headingText)) {
+      return true;
+    }
+  }
+  // Require the `kind: review` and `decision: approved` lines to appear on truly consecutive
+  // lines (no blank-line separation) so prose like "the previous sprint decision: approved"
+  // can't combine with an unrelated `kind: review` line elsewhere in the body to trigger
+  // auto-approval. Use `[ \t]*` between the lines so `\s*` does not silently swallow a newline.
+  return (
+    /^[ \t]*kind[ \t]*:[ \t]*review[ \t]*\n[ \t]*decision[ \t]*:[ \t]*approved[ \t]*$/im.test(normalized)
+    || /^[ \t]*decision[ \t]*:[ \t]*approved[ \t]*\n[ \t]*kind[ \t]*:[ \t]*review[ \t]*$/im.test(normalized)
+  );
+}
+
 function buildExecutionStageWakeContext(input: {
   state: ParsedExecutionState;
   wakeRole: ExecutionStageWakeContext["wakeRole"];
@@ -554,9 +670,23 @@ function applyActorMonitorScheduledBy(
   return setIssueExecutionPolicyMonitorScheduledBy(policy, actorType === "user" ? "board" : "assignee");
 }
 
-function assertCanManageIssueMonitor(req: Request, assigneeAgentId: string | null, monitorChanged: boolean) {
+async function assertCanManageIssueMonitor(
+  accessSvc: ReturnType<typeof accessService>,
+  req: Request,
+  companyId: string,
+  assigneeAgentId: string | null,
+  monitorChanged: boolean,
+) {
   if (!monitorChanged) return;
   if (req.actor.type === "board") return;
+  const runtimeDecision = await accessSvc.decide({
+    actor: req.actor,
+    action: "runtime:manage",
+    resource: { type: "company", companyId },
+  });
+  if (!runtimeDecision.allowed) {
+    throw forbidden(runtimeDecision.explanation);
+  }
   if (req.actor.type === "agent" && req.actor.agentId && req.actor.agentId === assigneeAgentId) return;
   throw forbidden("Only the assignee agent or a board user can manage issue monitors");
 }
@@ -617,7 +747,23 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
+  actorRunId: string | null | undefined;
+  checkoutRunId: string | null | undefined;
+  executionRunId: string | null | undefined;
 }) {
+  // Local-CLI agents post comments under user auth, so the actor.type is "user"
+  // even though the comment originates from the same heartbeat run that owns
+  // the issue lock. Without this guard, an agent that closes its own issue and
+  // then posts a follow-up comment in the same run silently reopens it.
+  // Suppress the implicit move whenever the comment's source run matches the
+  // issue's checkout/execution run.
+  if (
+    typeof input.actorRunId === "string"
+    && input.actorRunId.length > 0
+    && (input.actorRunId === input.checkoutRunId || input.actorRunId === input.executionRunId)
+  ) {
+    return false;
+  }
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
@@ -626,8 +772,39 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   return true;
 }
 
+function shouldHumanCommentResumeInProgressScheduledRetry(input: {
+  hasComment: boolean;
+  issueStatus: string | null | undefined;
+  assigneeAgentId: string | null | undefined;
+  actorType: "agent" | "user";
+}) {
+  if (!input.hasComment) return false;
+  if (input.actorType !== "user") return false;
+  if (input.issueStatus !== "in_progress") return false;
+  return typeof input.assigneeAgentId === "string" && input.assigneeAgentId.length > 0;
+}
+
 function isExplicitResumeCapableStatus(status: string | null | undefined) {
   return status === "done" || status === "blocked" || status === "todo" || status === "in_progress";
+}
+
+// Log-class comment from the assignee agent on a terminal (done/cancelled)
+// issue is not a reopen signal. When the caller did not pass `resume: true`,
+// this forces the reopen path off even if `reopen: true` was sent.
+function isAssigneeSelfCommentOnTerminalIssue(input: {
+  hasCommentBody: boolean;
+  resumeRequested: boolean;
+  issueStatus: string | null | undefined;
+  assigneeAgentId: string | null | undefined;
+  actorType: "agent" | "user";
+  actorId: string;
+}) {
+  if (!input.hasCommentBody) return false;
+  if (input.resumeRequested) return false;
+  if (!isClosedIssueStatus(input.issueStatus)) return false;
+  if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
+  if (input.actorType !== "agent") return false;
+  return input.actorId === input.assigneeAgentId;
 }
 
 function queueResolvedInteractionContinuationWakeup(input: {
@@ -815,6 +992,13 @@ function buildExecutionStageWakeup(input: {
   return null;
 }
 
+class AutoApprovalIssueMissingError extends Error {
+  constructor() {
+    super("Issue not found during auto-approval transaction");
+    this.name = "AutoApprovalIssueMissingError";
+  }
+}
+
 export function issueRoutes(
   db: Db,
   storage: StorageService,
@@ -855,6 +1039,7 @@ export function issueRoutes(
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
+  const documentAnnotationsSvc = documentAnnotationService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
   const routinesSvc = routineService(db, {
@@ -871,6 +1056,246 @@ export function issueRoutes(
   };
   const feedbackExportService = opts?.feedbackExportService;
   const environmentsSvc = environmentService(db);
+
+  async function sourceTrustForActorWrite(
+    issue: { id: string; companyId: string; projectId?: string | null; executionPolicy?: unknown },
+    actor: ReturnType<typeof getActorInfo>,
+  ) {
+    return resolveActorSourceTrustForIssue({ db, issue, actor });
+  }
+
+  function hasExplicitIssueWorkspaceCreateSelection(input: Record<string, unknown>) {
+    return input.parentId !== undefined ||
+      input.inheritExecutionWorkspaceFromIssueId !== undefined ||
+      input.projectWorkspaceId !== undefined ||
+      input.executionWorkspaceId !== undefined ||
+      input.executionWorkspacePreference !== undefined ||
+      input.executionWorkspaceSettings !== undefined;
+  }
+
+  async function resolveRunIssueWorkspaceInheritanceSource(
+    companyId: string,
+    actor: ReturnType<typeof getActorInfo>,
+  ): Promise<string | null> {
+    if (actor.actorType !== "agent" || !actor.agentId || !actor.runId) return null;
+    const run = await db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.id, actor.runId),
+        eq(heartbeatRuns.companyId, companyId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!run || run.agentId !== actor.agentId) return null;
+    const context = run.contextSnapshot && typeof run.contextSnapshot === "object"
+      ? run.contextSnapshot as Record<string, unknown>
+      : null;
+    if (!context || !readNonEmptyString(context.executionWorkspaceId)) return null;
+    const paperclipIssue = context.paperclipIssue && typeof context.paperclipIssue === "object"
+      ? context.paperclipIssue as Record<string, unknown>
+      : null;
+    return readNonEmptyString(context.issueId) ?? readNonEmptyString(paperclipIssue?.id);
+  }
+
+  async function resolveAgentTrustForIssue(
+    input: {
+      agentId: string | null | undefined;
+      runId?: string | null;
+    },
+    companyId: string,
+    issue?: { companyId: string; projectId?: string | null; executionPolicy?: unknown } | null,
+  ): Promise<TrustPresetResolution | null> {
+    if (!input.agentId) return null;
+    const [agent, run] = await Promise.all([
+      agentsSvc.getById(input.agentId),
+      input.runId
+        ? db
+            .select({
+              companyId: heartbeatRuns.companyId,
+              agentId: heartbeatRuns.agentId,
+              contextSnapshot: heartbeatRuns.contextSnapshot,
+            })
+            .from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, companyId)))
+            .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+    ]);
+    if (!agent || agent.companyId !== companyId) return null;
+    const runContext = run?.agentId === agent.id && run.contextSnapshot && typeof run.contextSnapshot === "object"
+      ? run.contextSnapshot as Record<string, unknown>
+      : null;
+    const runExecutionPolicy = runContext?.executionPolicy && typeof runContext.executionPolicy === "object"
+      ? runContext.executionPolicy as Record<string, unknown>
+      : null;
+    const project = issue?.projectId
+      ? await projectsSvc.getById(issue.projectId)
+      : null;
+    return resolveCoreTrustPreset({
+      companyId,
+      agent,
+      project: project?.companyId === companyId ? project : null,
+      issue: issue
+        ? {
+            companyId: issue.companyId,
+            executionPolicy: issue.executionPolicy,
+          }
+        : null,
+      run: runExecutionPolicy ? { companyId, executionPolicy: runExecutionPolicy } : null,
+    });
+  }
+
+  async function actorIsLowTrustReview(
+    req: Request,
+    companyId: string,
+    issue?: { companyId: string; projectId?: string | null; executionPolicy?: unknown } | null,
+  ) {
+    if (req.actor.type !== "agent") return false;
+    const resolution = await resolveAgentTrustForIssue({
+      agentId: req.actor.agentId,
+      runId: req.actor.runId,
+    }, companyId, issue);
+    if (resolution?.kind === "denied") {
+      throw forbidden(resolution.detail);
+    }
+    return resolution?.kind === "low_trust_review";
+  }
+
+  async function assertLowTrustControlPlaneDenied(
+    req: Request,
+    res: Response,
+    companyId: string,
+    issue?: { companyId: string; projectId?: string | null; executionPolicy?: unknown } | null,
+  ) {
+    if (!(await actorIsLowTrustReview(req, companyId, issue))) return false;
+    res.status(403).json({ error: "Low-trust actors cannot use this control-plane surface" });
+    return true;
+  }
+
+  async function shouldRedactLowTrustForHeartbeatContext(
+    issue: { id: string; companyId: string; projectId?: string | null; executionPolicy?: unknown },
+    actor: ReturnType<typeof getActorInfo>,
+  ) {
+    // Board users are trusted reviewers and intentionally receive raw quarantined output for promotion decisions.
+    if (actor.actorType !== "agent") return false;
+    const resolution = await resolveAgentTrustForIssue({
+      agentId: actor.agentId,
+      runId: actor.runId,
+    }, issue.companyId, issue);
+    if (resolution?.kind === "denied") {
+      throw forbidden(resolution.detail);
+    }
+    if (resolution?.kind === "low_trust_review") return false;
+    return true;
+  }
+
+  async function lookupLowTrustSourceArtifact(input: {
+    issueId: string;
+    artifactKind: "comment" | "document" | "work_product" | "issue";
+    artifactId: string;
+  }): Promise<SourceTrustMetadata | null> {
+    if (input.artifactKind === "issue") {
+      const row = await db
+        .select({
+          id: issueRows.id,
+          companyId: issueRows.companyId,
+          parentId: issueRows.parentId,
+          sourceTrust: issueRows.sourceTrust,
+        })
+        .from(issueRows)
+        .where(eq(issueRows.id, input.artifactId))
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      const sourceIssue = await db
+        .select({ companyId: issueRows.companyId })
+        .from(issueRows)
+        .where(eq(issueRows.id, input.issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!sourceIssue || row.companyId !== sourceIssue.companyId) return null;
+      if (row.id !== input.issueId) {
+        let cursor = row.parentId;
+        let isDescendant = false;
+        for (let depth = 0; cursor && depth < LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH; depth += 1) {
+          if (cursor === input.issueId) {
+            isDescendant = true;
+            break;
+          }
+          const parent = await db
+            .select({ id: issueRows.id, companyId: issueRows.companyId, parentId: issueRows.parentId })
+            .from(issueRows)
+            .where(eq(issueRows.id, cursor))
+            .then((rows) => rows[0] ?? null);
+          if (!parent || parent.companyId !== row.companyId) return null;
+          cursor = parent.parentId;
+        }
+        if (!isDescendant) return null;
+      }
+      return row?.sourceTrust ?? null;
+    }
+
+    if (input.artifactKind === "comment") {
+      const row = await db
+        .select({ sourceTrust: issueComments.sourceTrust })
+        .from(issueComments)
+        .where(and(eq(issueComments.id, input.artifactId), eq(issueComments.issueId, input.issueId)))
+        .then((rows) => rows[0] ?? null);
+      return row?.sourceTrust ?? null;
+    }
+
+    if (input.artifactKind === "document") {
+      const row = await db
+        .select({ sourceTrust: documents.sourceTrust })
+        .from(issueDocuments)
+        .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+        .where(and(eq(documents.id, input.artifactId), eq(issueDocuments.issueId, input.issueId)))
+        .then((rows) => rows[0] ?? null);
+      return row?.sourceTrust ?? null;
+    }
+
+    const row = await db
+      .select({ sourceTrust: issueWorkProducts.sourceTrust })
+      .from(issueWorkProducts)
+      .where(and(eq(issueWorkProducts.id, input.artifactId), eq(issueWorkProducts.issueId, input.issueId)))
+      .then((rows) => rows[0] ?? null);
+    return row?.sourceTrust ?? null;
+  }
+
+  async function cancelScheduledRetrySupersededByComment(input: {
+    scheduledRetryRunId: string | null | undefined;
+    issue: { id: string; companyId: string };
+    actor: ReturnType<typeof getActorInfo>;
+  }) {
+    const scheduledRetryRunId = readNonEmptyString(input.scheduledRetryRunId);
+    if (!scheduledRetryRunId) return null;
+
+    try {
+      const cancelled = await heartbeat.cancelRun(scheduledRetryRunId);
+      const cancelledRunId = cancelled?.id ?? scheduledRetryRunId;
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: input.actor.actorType,
+        actorId: input.actor.actorId,
+        agentId: input.actor.agentId,
+        runId: input.actor.runId,
+        action: "heartbeat.cancelled",
+        entityType: "heartbeat_run",
+        entityId: cancelledRunId,
+        details: {
+          source: "issue_comment_scheduled_retry_superseded",
+          issueId: input.issue.id,
+        },
+      });
+      return cancelledRunId;
+    } catch (err) {
+      logger.error(
+        { err, issueId: input.issue.id, runId: scheduledRetryRunId },
+        "failed to cancel scheduled retry superseded by issue comment",
+      );
+      throw err;
+    }
+  }
 
   async function classifySourceRecoveryRevalidation(input: {
     issue: IssueRouteSnapshot;
@@ -1048,14 +1473,110 @@ export function issueRoutes(
   }
 
   function withContentPath<T extends { id: string }>(attachment: T) {
+    const contentPath = `/api/attachments/${attachment.id}/content`;
     return {
       ...attachment,
-      contentPath: `/api/attachments/${attachment.id}/content`,
+      contentPath,
+      openPath: contentPath,
+      downloadPath: `${contentPath}?download=1`,
     };
+  }
+
+  type ParsedAttachmentRange =
+    | { kind: "none" }
+    | { kind: "invalid" }
+    | { kind: "range"; start: number; end: number };
+
+  function parseAttachmentRangeHeader(raw: string | undefined, contentLength: number): ParsedAttachmentRange {
+    if (!raw) return { kind: "none" };
+    if (!Number.isSafeInteger(contentLength) || contentLength <= 0) return { kind: "invalid" };
+
+    const prefix = "bytes=";
+    if (!raw.toLowerCase().startsWith(prefix)) return { kind: "invalid" };
+    const spec = raw.slice(prefix.length).trim();
+    if (!spec || spec.includes(",")) return { kind: "invalid" };
+
+    const [startRaw, endRaw] = spec.split("-", 2);
+    if (endRaw === undefined) return { kind: "invalid" };
+
+    if (startRaw === "") {
+      const suffixLength = Number.parseInt(endRaw, 10);
+      if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return { kind: "invalid" };
+      const start = Math.max(contentLength - suffixLength, 0);
+      return { kind: "range", start, end: contentLength - 1 };
+    }
+
+    const start = Number.parseInt(startRaw, 10);
+    if (!Number.isSafeInteger(start) || start < 0 || start >= contentLength) return { kind: "invalid" };
+    const end = endRaw === "" ? contentLength - 1 : Number.parseInt(endRaw, 10);
+    if (!Number.isSafeInteger(end) || end < start) return { kind: "invalid" };
+    return { kind: "range", start, end: Math.min(end, contentLength - 1) };
   }
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";
+  }
+
+  function parseOptionalBooleanQuery(value: unknown) {
+    if (value === undefined) return undefined;
+    if (value === true || value === "true" || value === "1") return true;
+    if (value === false || value === "false" || value === "0") return false;
+    return null;
+  }
+
+  function shouldIncludeDocumentAnnotations(req: Request) {
+    if (req.query.includeAnnotations === "false" || req.query.includeAnnotations === "0") return false;
+    return req.actor.type === "agent" || parseBooleanQuery(req.query.includeAnnotations);
+  }
+
+  function shouldIncludeDocumentAnnotationComments(req: Request) {
+    return parseBooleanQuery(req.query.includeAnnotationComments);
+  }
+
+  function annotationActorInput(req: Request) {
+    const actor = getActorInfo(req);
+    return {
+      actor,
+      annotationActor: {
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+        runId: actor.runId,
+      },
+    };
+  }
+
+  async function canonicalizePaperclipArtifactMetadata(input: {
+    issue: { id: string; companyId: string };
+    metadata: Record<string, unknown> | null | undefined;
+  }) {
+    const parsed = attachmentArtifactMetadataInputSchema.safeParse(input.metadata);
+    if (!parsed.success) {
+      throw unprocessable("Invalid attachment artifact metadata", {
+        code: "invalid_attachment_artifact_metadata",
+        details: parsed.error.issues,
+      });
+    }
+
+    const attachment = await svc.getAttachmentById(parsed.data.attachmentId);
+    if (!attachment || attachment.companyId !== input.issue.companyId || attachment.issueId !== input.issue.id) {
+      throw unprocessable("Attachment artifact must reference an attachment on the same issue", {
+        code: "invalid_attachment_artifact_metadata",
+        attachmentId: parsed.data.attachmentId,
+      });
+    }
+
+    const contentPath = buildAttachmentContentPath(attachment.id);
+    return attachmentArtifactWorkProductMetadataSchema.parse({
+      attachmentId: attachment.id,
+      contentType: normalizeContentType(attachment.contentType),
+      byteSize: attachment.byteSize,
+      contentPath,
+      openPath: contentPath,
+      downloadPath: `${contentPath}?download=1`,
+      originalFilename: attachment.originalFilename ?? null,
+    });
   }
 
   async function assertIssueEnvironmentSelection(
@@ -1198,29 +1719,105 @@ export function issueRoutes(
     return (req.actor.companyIds ?? []).includes(companyId);
   }
 
-  function canCreateAgentsLegacy(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
-    if (agent.role === "ceo") return true;
-    if (!agent.permissions || typeof agent.permissions !== "object") return false;
-    return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+  type TaskAssignmentAuthorizationScope = {
+    issueId?: string | null;
+    projectId?: string | null;
+    parentIssueId?: string | null;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+  };
+
+  async function resolveAssignmentProjectId(input: {
+    companyId: string;
+    projectId: string | null | undefined;
+    parentIssueId?: string | null;
+  }) {
+    if (input.projectId !== undefined) return input.projectId;
+    if (!input.parentIssueId) return null;
+    const parent = await svc.getById(input.parentIssueId);
+    if (!parent || parent.companyId !== input.companyId) return null;
+    return parent.projectId ?? null;
   }
 
-  async function assertCanAssignTasks(req: Request, companyId: string) {
+  async function assertCanAssignTasks(
+    req: Request,
+    companyId: string,
+    assignmentScope?: TaskAssignmentAuthorizationScope,
+  ) {
     assertCompanyAccess(req, companyId);
-    if (req.actor.type === "board") {
-      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-      const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
-      if (!allowed) throw forbidden("Missing permission: tasks:assign");
-      return;
-    }
-    if (req.actor.type === "agent") {
-      if (!req.actor.agentId) throw forbidden("Agent authentication required");
-      const allowedByGrant = await access.hasPermission(companyId, "agent", req.actor.agentId, "tasks:assign");
-      if (allowedByGrant) return;
-      const actorAgent = await agentsSvc.getById(req.actor.agentId);
-      if (actorAgent && actorAgent.companyId === companyId && canCreateAgentsLegacy(actorAgent)) return;
-      throw forbidden("Missing permission: tasks:assign");
-    }
-    throw unauthorized();
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId,
+        issueId: assignmentScope?.issueId ?? null,
+        projectId: assignmentScope?.projectId ?? null,
+        parentIssueId: assignmentScope?.parentIssueId ?? null,
+        assigneeAgentId: assignmentScope?.assigneeAgentId ?? null,
+        assigneeUserId: assignmentScope?.assigneeUserId ?? null,
+      },
+      scope: assignmentScope ?? null,
+    });
+    if (decision.allowed) return;
+    throw forbidden(decision.explanation);
+  }
+
+  async function decideIssueAccess(
+    req: Request,
+    issue: {
+      id: string;
+      companyId: string;
+      projectId: string | null;
+      parentId: string | null;
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+      status: string;
+    },
+    action: "issue:read" | "issue:mutate",
+  ) {
+    return access.decide({
+      actor: req.actor,
+      action,
+      resource: {
+        type: "issue",
+        companyId: issue.companyId,
+        issueId: issue.id,
+        projectId: issue.projectId,
+        parentIssueId: issue.parentId,
+        assigneeAgentId: issue.assigneeAgentId,
+        assigneeUserId: issue.assigneeUserId,
+        status: issue.status,
+      },
+      scope: {
+        issueId: issue.id,
+        projectId: issue.projectId,
+        parentIssueId: issue.parentId,
+        assigneeAgentId: issue.assigneeAgentId,
+        assigneeUserId: issue.assigneeUserId,
+      },
+    });
+  }
+
+  async function assertIssueReadAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueAccess>[1]) {
+    const decision = await decideIssueAccess(req, issue, "issue:read");
+    if (decision.allowed) return true;
+    res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+    return false;
+  }
+
+  async function filterIssuesForActor<T extends Parameters<typeof decideIssueAccess>[1]>(req: Request, rows: T[]) {
+    const decisions = await Promise.all(rows.map((issue) => decideIssueAccess(req, issue, "issue:read")));
+    return rows.filter((_, index) => decisions[index]?.allowed);
+  }
+
+  async function actorCanReadCompanyScope(req: Request, companyId: string) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId },
+    });
+    return decision.allowed;
   }
 
   function requireAgentRunId(req: Request, res: Response) {
@@ -1236,42 +1833,36 @@ export function issueRoutes(
     companyId: string,
     assigneeAgentId: string,
   ) {
-    const allowedByGrant = await access.hasPermission(
-      companyId,
-      "agent",
-      actorAgentId,
-      "tasks:manage_active_checkouts",
-    );
-    if (allowedByGrant) return true;
-
-    const companyAgents = await agentsSvc.list(companyId);
-    const agentsById = new Map(companyAgents.map((agent) => [agent.id, agent]));
-    const actorAgent = agentsById.get(actorAgentId);
-    if (!actorAgent) return false;
-    if (canCreateAgentsLegacy(actorAgent)) return true;
-
-    // Reporting-chain managers may intervene in an agent's active checkout
-    // without taking the task over. Peers must own the checkout/run first.
-    let cursor: string | null = assigneeAgentId;
-    for (let depth = 0; cursor && depth < 50; depth += 1) {
-      const assignee = agentsById.get(cursor);
-      if (!assignee) return false;
-      if (assignee.reportsTo === actorAgentId) return true;
-      cursor = assignee.reportsTo;
-    }
-
-    return false;
+    const decision = await access.decide({
+      actor: { type: "agent", agentId: actorAgentId, companyId },
+      action: "tasks:manage_active_checkouts",
+      resource: { type: "issue", companyId, assigneeAgentId },
+    });
+    return decision.allowed;
   }
 
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
-    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    issue: {
+      id: string;
+      companyId: string;
+      projectId: string | null;
+      parentId: string | null;
+      status: string;
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+    },
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
       res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+    if (!boundaryDecision.allowed) {
+      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
       return false;
     }
     if (issue.assigneeAgentId === null) {
@@ -1331,6 +1922,136 @@ export function issueRoutes(
     return true;
   }
 
+  function isStatusOnlyCheapRecoveryContext(contextSnapshot: unknown) {
+    if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return false;
+    const context = contextSnapshot as Record<string, unknown>;
+    return context.modelProfile === "cheap" &&
+      context.recoveryIntent === "status_only" &&
+      context.allowDeliverableWork === false &&
+      context.allowDocumentUpdates === false &&
+      context.resumeRequiresNormalModel === true;
+  }
+
+  function requestsCheapIssueAssigneeModelProfile(input: { assigneeAdapterOverrides?: unknown }) {
+    const overrides = input.assigneeAdapterOverrides;
+    return !!overrides &&
+      typeof overrides === "object" &&
+      !Array.isArray(overrides) &&
+      (overrides as Record<string, unknown>).modelProfile === "cheap";
+  }
+
+  async function loadActorRunContext(req: Request, companyId: string) {
+    if (req.actor.type !== "agent") return null;
+    const runId = req.actor.runId?.trim();
+    if (!runId) return null;
+    const run = await db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    if (!run || run.companyId !== companyId || run.agentId !== req.actor.agentId) return null;
+    return run;
+  }
+
+  async function assertCheapRecoveryIssueAssigneeProfileAllowed(
+    req: Request,
+    res: Response,
+    issue: { id?: string; companyId: string },
+    input: { assigneeAdapterOverrides?: unknown },
+  ) {
+    if (!requestsCheapIssueAssigneeModelProfile(input)) return true;
+    const run = await loadActorRunContext(req, issue.companyId);
+    if (!run || !isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
+
+    res.status(403).json({
+      error: "Cheap status-only recovery runs cannot assign downstream issue work to the cheap model profile",
+      details: {
+        issueId: issue.id ?? null,
+        runId: run.id,
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        resumeRequiresNormalModel: true,
+      },
+    });
+    return false;
+  }
+
+  async function assertDeliverableMutationAllowedByRunContext(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string },
+  ) {
+    const run = await loadActorRunContext(req, issue.companyId);
+    if (!run) return true;
+    if (!isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
+
+    res.status(403).json({
+      error: "Cheap status-only recovery runs cannot update issue documents, plans, or deliverable artifacts",
+      details: {
+        issueId: issue.id,
+        runId: run.id,
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        resumeRequiresNormalModel: true,
+      },
+    });
+    return false;
+  }
+
+  async function loadWorkProductRunAttribution(runId: string) {
+    return await db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        agentCompanyId: agents.companyId,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function resolveWorkProductCreatedByRunId(
+    req: Request,
+    res: Response,
+    companyId: string,
+    input: { createdByRunId?: string | null },
+    mode: "create" | "update",
+  ): Promise<string | null | undefined> {
+    const hasCreatedByRunId = Object.prototype.hasOwnProperty.call(input, "createdByRunId");
+    if (mode === "update" && !hasCreatedByRunId) return undefined;
+
+    const requestedRunId = input.createdByRunId ?? null;
+    if (req.actor.type === "agent") {
+      const actorRunId = req.actor.runId?.trim() || null;
+      if (requestedRunId && requestedRunId !== actorRunId) {
+        res.status(403).json({ error: "createdByRunId must match the authenticated agent run" });
+        return undefined;
+      }
+      if (!actorRunId) return requestedRunId;
+      const run = await loadWorkProductRunAttribution(actorRunId);
+      if (!run || run.companyId !== companyId || run.agentCompanyId !== companyId || run.agentId !== req.actor.agentId) {
+        res.status(403).json({ error: "createdByRunId is not valid for this work product actor" });
+        return undefined;
+      }
+      return actorRunId;
+    }
+
+    if (!requestedRunId) return null;
+    const run = await loadWorkProductRunAttribution(requestedRunId);
+    if (!run || run.companyId !== companyId || run.agentCompanyId !== companyId) {
+      res.status(403).json({ error: "createdByRunId is not valid for this company" });
+      return undefined;
+    }
+    return requestedRunId;
+  }
+
   function assertStructuredCommentFieldsAllowed(
     req: Request,
     res: Response,
@@ -1353,6 +2074,8 @@ export function issueRoutes(
     res: Response,
     issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
   ) {
+    if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
+
     if (issue.status === "cancelled") {
       res.status(409).json({
         error: "Cancelled issues must be restored through the dedicated restore flow",
@@ -1499,6 +2222,26 @@ export function issueRoutes(
     return runToInterrupt?.status === "running" ? runToInterrupt : null;
   }
 
+  function operatorInterruptCancelOptions(input: { issueId: string; actor: ReturnType<typeof getActorInfo> }) {
+    return {
+      errorCode: "operator_interrupted",
+      resultJson: {
+        operatorInterrupted: true,
+        interruptionSource: "issue_comment_interrupt",
+        interruptedIssueId: input.issueId,
+        interruptedByActorType: input.actor.actorType,
+        interruptedByActorId: input.actor.actorId,
+      },
+      eventMessage: "run interrupted by board comment",
+      eventPayload: {
+        issueId: input.issueId,
+        source: "issue_comment_interrupt",
+        interruptedByActorType: input.actor.actorType,
+        interruptedByActorId: input.actor.actorId,
+      },
+    };
+  }
+
   async function normalizeIssueAssigneeAgentReference(
     companyId: string,
     rawAssigneeAgentId: string | null | undefined,
@@ -1518,6 +2261,18 @@ export function issueRoutes(
     }
     if (!resolved.agent) {
       throw notFound("Agent not found");
+    }
+    if (resolved.agent.status === "pending_approval") {
+      throw conflict("Cannot assign work to pending approval agents");
+    }
+    if (resolved.agent.status === "terminated") {
+      throw conflict("Cannot assign work to terminated agents");
+    }
+    if (resolved.agent.orgChainHealth?.status === "invalid_org_chain") {
+      throw conflict(
+        resolved.agent.orgChainHealth?.repairGuidance ??
+          "Cannot assign work to agents with invalid org chains",
+      );
     }
     return resolved.agent.id;
   }
@@ -1631,6 +2386,15 @@ export function issueRoutes(
   router.get("/companies/:companyId/search", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const companyScopeDecision = await access.decide({
+      actor: req.actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId },
+    });
+    if (!companyScopeDecision.allowed) {
+      res.status(403).json({ error: "Company search is outside this actor's authorization boundary" });
+      return;
+    }
     const query = companySearchQuerySchema.parse(req.query);
     const rateLimit = searchRateLimiter.consume(companySearchRateLimitActor(req, companyId));
     res.setHeader("X-RateLimit-Limit", String(rateLimit.limit));
@@ -1680,6 +2444,9 @@ export function issueRoutes(
       ? Number.parseInt(rawOffset, 10)
       : null;
     const attention = req.query.attention as string | undefined;
+    const sortField = req.query.sortField as string | undefined;
+    const sortDir = req.query.sortDir as string | undefined;
+    const hasPlanDocument = parseOptionalBooleanQuery(req.query.hasPlanDocument);
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -1709,11 +2476,23 @@ export function issueRoutes(
       res.status(400).json({ error: "offset must be a non-negative integer" });
       return;
     }
+    if (sortField !== undefined && sortField !== "updated") {
+      res.status(400).json({ error: "sortField must be 'updated' when provided" });
+      return;
+    }
+    if (sortDir !== undefined && sortDir !== "asc" && sortDir !== "desc") {
+      res.status(400).json({ error: "sortDir must be 'asc' or 'desc' when provided" });
+      return;
+    }
+    if (hasPlanDocument === null) {
+      res.status(400).json({ error: "hasPlanDocument must be true or false when provided" });
+      return;
+    }
     const offset = parsedOffset ?? 0;
 
-    const result = await svc.list(companyId, {
+    const rawResult = await svc.list(companyId, {
       attention: attention === "blocked" ? "blocked" : undefined,
-      status: req.query.status as string | undefined,
+      status: req.query.status as string | string[] | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId,
@@ -1738,10 +2517,16 @@ export function issueRoutes(
       includeBlockedBy: req.query.includeBlockedBy === "true" || req.query.includeBlockedBy === "1",
       includeBlockedInboxAttention:
         req.query.includeBlockedInboxAttention === "true" || req.query.includeBlockedInboxAttention === "1",
+      hasPlanDocument,
       q: req.query.q as string | undefined,
       limit,
       offset,
+      sortField: sortField === "updated" ? "updated" : undefined,
+      sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
     });
+    const result = await actorCanReadCompanyScope(req, companyId)
+      ? rawResult
+      : await filterIssuesForActor(req, rawResult);
     const issueIds = result.map((issue) => issue.id);
     const [handoffStates, recoveryActionByIssue] = await Promise.all([
       listSuccessfulRunHandoffStates(db, companyId, issueIds),
@@ -1771,6 +2556,7 @@ export function issueRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const attention = req.query.attention as string | undefined;
+    const hasPlanDocument = parseOptionalBooleanQuery(req.query.hasPlanDocument);
     if (attention !== "blocked") {
       res.status(400).json({ error: "issues/count currently requires attention=blocked" });
       return;
@@ -1779,10 +2565,14 @@ export function issueRoutes(
       res.status(400).json({ error: "issues/count does not accept limit or offset" });
       return;
     }
+    if (hasPlanDocument === null) {
+      res.status(400).json({ error: "hasPlanDocument must be true or false when provided" });
+      return;
+    }
 
-    const count = await svc.count(companyId, {
+    const blockedCountFilters = {
       attention: "blocked",
-      status: req.query.status as string | undefined,
+      status: req.query.status as string | string[] | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId: req.query.assigneeUserId as string | undefined,
@@ -1803,8 +2593,46 @@ export function issueRoutes(
         req.query.includePluginOperations === "true" || req.query.includePluginOperations === "1",
       includeBlockedBy: true,
       includeBlockedInboxAttention: true,
+      hasPlanDocument,
       q: req.query.q as string | undefined,
-    });
+    } as const;
+
+    if (!(await actorCanReadCompanyScope(req, companyId))) {
+      const trustResolution = req.actor.type === "agent"
+        ? await resolveAgentTrustForIssue({
+            agentId: req.actor.agentId,
+            runId: req.actor.runId,
+          }, companyId, null)
+        : null;
+      if (trustResolution?.kind === "denied") {
+        throw forbidden(trustResolution.detail);
+      }
+      if (trustResolution?.kind === "low_trust_review") {
+        const count = await svc.count(companyId, {
+          ...blockedCountFilters,
+          lowTrustBoundary: trustResolution.boundary,
+        });
+        res.json({ count });
+        return;
+      }
+
+      let offset = 0;
+      let visibleCount = 0;
+      while (true) {
+        const rows = await svc.list(companyId, {
+          ...blockedCountFilters,
+          limit: ISSUE_LIST_MAX_LIMIT,
+          offset,
+        });
+        visibleCount += (await filterIssuesForActor(req, rows)).length;
+        if (rows.length < ISSUE_LIST_MAX_LIMIT) break;
+        offset += rows.length;
+      }
+      res.json({ count: visibleCount });
+      return;
+    }
+
+    const count = await svc.count(companyId, blockedCountFilters);
     res.json({ count });
   });
 
@@ -1870,6 +2698,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
     const wakeCommentId =
       typeof req.query.wakeCommentId === "string" && req.query.wakeCommentId.trim().length > 0
@@ -1922,6 +2751,17 @@ export function issueRoutes(
       actor: getActorInfo(req),
       activeRecoveryAction,
     });
+    const redactLowTrust = await shouldRedactLowTrustForHeartbeatContext(issue, getActorInfo(req));
+    const safeWakeComment =
+      wakeComment && wakeComment.issueId === issue.id
+        ? redactLowTrust
+          ? sanitizeQuarantinedCommentForHigherTrust(wakeComment)
+          : wakeComment
+        : null;
+    const safeContinuationSummary =
+      continuationSummary && redactLowTrust
+        ? redactQuarantinedBodyForHigherTrust(continuationSummary)
+        : continuationSummary;
 
     res.json({
       issue: {
@@ -1972,10 +2812,7 @@ export function issueRoutes(
           }
         : null,
       commentCursor,
-      wakeComment:
-        wakeComment && wakeComment.issueId === issue.id
-          ? wakeComment
-          : null,
+      wakeComment: safeWakeComment,
       attachments: attachments.map((a) => ({
         id: a.id,
         filename: a.originalFilename,
@@ -1984,14 +2821,15 @@ export function issueRoutes(
         contentPath: withContentPath(a).contentPath,
         createdAt: a.createdAt,
       })),
-      continuationSummary: continuationSummary
+      continuationSummary: safeContinuationSummary
         ? {
-            key: continuationSummary.key,
-            title: continuationSummary.title,
-            body: continuationSummary.body,
-            latestRevisionId: continuationSummary.latestRevisionId,
-            latestRevisionNumber: continuationSummary.latestRevisionNumber,
-            updatedAt: continuationSummary.updatedAt,
+            key: safeContinuationSummary.key,
+            title: safeContinuationSummary.title,
+            body: safeContinuationSummary.body ?? "",
+            latestRevisionId: safeContinuationSummary.latestRevisionId,
+            latestRevisionNumber: safeContinuationSummary.latestRevisionNumber,
+            updatedAt: safeContinuationSummary.updatedAt,
+            sourceTrust: safeContinuationSummary.sourceTrust ?? null,
           }
         : null,
       currentExecutionWorkspace,
@@ -2006,6 +2844,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const [
       { project, goal },
       ancestors,
@@ -2271,6 +3110,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.json(workProducts);
   });
@@ -2283,6 +3123,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const docs = await documentsSvc.listIssueDocuments(issue.id, {
       includeSystem: req.query.includeSystem === "true",
     });
@@ -2297,6 +3138,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -2307,8 +3149,220 @@ export function issueRoutes(
       res.status(404).json({ error: "Document not found" });
       return;
     }
-    res.json(doc);
+    if (!shouldIncludeDocumentAnnotations(req)) {
+      res.json(doc);
+      return;
+    }
+    const annotations = await documentAnnotationsSvc.listThreadsForIssueDocument(issue.id, keyParsed.data, {
+      status: "open",
+      includeComments: shouldIncludeDocumentAnnotationComments(req),
+    });
+    res.json({ ...doc, annotations });
   });
+
+  router.get("/issues/:id/documents/:key/annotations", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    if (!keyParsed.success) {
+      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+      return;
+    }
+    const status = req.query.status === "resolved" || req.query.status === "all" ? req.query.status : "open";
+    const threads = await documentAnnotationsSvc.listThreadsForIssueDocument(issue.id, keyParsed.data, {
+      status,
+      includeComments: parseBooleanQuery(req.query.includeComments),
+    });
+    res.json(threads);
+  });
+
+  router.post(
+    "/issues/:id/documents/:key/annotations",
+    validate(createDocumentAnnotationThreadSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      if (!keyParsed.success) {
+        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        return;
+      }
+
+      const { actor, annotationActor } = annotationActorInput(req);
+      const referenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+      const thread = await documentAnnotationsSvc.createThread(issue.id, keyParsed.data, req.body, annotationActor);
+      const firstComment = thread.comments[0];
+      if (firstComment) await issueReferencesSvc.syncAnnotationComment(firstComment.id);
+      const referenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+      const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(referenceSummaryBefore, referenceSummaryAfter);
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_annotation_thread_created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          documentKey: thread.documentKey,
+          documentId: thread.documentId,
+          threadId: thread.id,
+          commentId: firstComment?.id ?? null,
+          revisionNumber: thread.currentRevisionNumber,
+          quote: thread.selectedText.slice(0, 240),
+          ...summarizeIssueReferenceActivityDetails({
+            addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
+            removedReferencedIssues: referenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
+            currentReferencedIssues: referenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
+          }),
+        },
+      });
+
+      res.status(201).json(thread);
+    },
+  );
+
+  router.get("/issues/:id/documents/:key/annotations/:threadId", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+    if (!keyParsed.success) {
+      res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+      return;
+    }
+    const thread = await documentAnnotationsSvc.getThreadForIssueDocument(
+      issue.id,
+      keyParsed.data,
+      req.params.threadId as string,
+    );
+    if (!thread) {
+      res.status(404).json({ error: "Annotation thread not found" });
+      return;
+    }
+    res.json(thread);
+  });
+
+  router.post(
+    "/issues/:id/documents/:key/annotations/:threadId/comments",
+    validate(createDocumentAnnotationCommentSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      if (!keyParsed.success) {
+        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        return;
+      }
+
+      const { actor, annotationActor } = annotationActorInput(req);
+      const referenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+      const comment = await documentAnnotationsSvc.addComment(
+        issue.id,
+        keyParsed.data,
+        req.params.threadId as string,
+        req.body,
+        annotationActor,
+      );
+      await issueReferencesSvc.syncAnnotationComment(comment.id);
+      const referenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+      const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(referenceSummaryBefore, referenceSummaryAfter);
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_annotation_comment_added",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          documentKey: keyParsed.data,
+          threadId: comment.threadId,
+          commentId: comment.id,
+          bodySnippet: comment.body.slice(0, 120),
+          ...summarizeIssueReferenceActivityDetails({
+            addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
+            removedReferencedIssues: referenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
+            currentReferencedIssues: referenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
+          }),
+        },
+      });
+
+      res.status(201).json(comment);
+    },
+  );
+
+  router.patch(
+    "/issues/:id/documents/:key/annotations/:threadId",
+    validate(updateDocumentAnnotationThreadSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      if (!keyParsed.success) {
+        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        return;
+      }
+      const { actor, annotationActor } = annotationActorInput(req);
+      const thread = await documentAnnotationsSvc.updateThread(
+        issue.id,
+        keyParsed.data,
+        req.params.threadId as string,
+        req.body,
+        annotationActor,
+      );
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: thread.status === "resolved"
+          ? "issue.document_annotation_thread_resolved"
+          : "issue.document_annotation_thread_reopened",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          documentKey: thread.documentKey,
+          documentId: thread.documentId,
+          threadId: thread.id,
+          status: thread.status,
+        },
+      });
+      res.json(thread);
+    },
+  );
 
   router.put("/issues/:id/documents/:key", validate(upsertIssueDocumentSchema), async (req, res) => {
     const id = req.params.id as string;
@@ -2319,6 +3373,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -2326,6 +3381,7 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const sourceTrust = await sourceTrustForActorWrite(issue, actor);
     const referenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
     const result = await documentsSvc.upsertIssueDocument({
       issueId: issue.id,
@@ -2338,6 +3394,7 @@ export function issueRoutes(
       createdByAgentId: actor.agentId ?? null,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
       createdByRunId: actor.runId ?? null,
+      sourceTrust,
       lockedDocumentStrategy: req.actor.type === "agent" ? "create_new_document" : "conflict",
     });
     const doc = result.document;
@@ -2346,6 +3403,16 @@ export function issueRoutes(
     await issueReferencesSvc.syncDocument(doc.id);
     const referenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
     const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(referenceSummaryBefore, referenceSummaryAfter);
+    const remappedAnnotations = result.created
+      ? []
+      : await documentAnnotationsSvc.remapOpenThreadsForDocument({
+        issueId: issue.id,
+        key: doc.key,
+        documentId: doc.id,
+        nextRevisionId: doc.latestRevisionId,
+        nextRevisionNumber: doc.latestRevisionNumber,
+        nextBody: doc.body,
+      });
 
     await logActivity(db, {
       companyId: issue.companyId,
@@ -2370,6 +3437,28 @@ export function issueRoutes(
         }),
       },
     });
+
+    for (const remap of remappedAnnotations) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.document_annotation_remapped",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          key: doc.key,
+          documentId: doc.id,
+          threadId: remap.thread.id,
+          revisionNumber: doc.latestRevisionNumber,
+          anchorState: remap.thread.anchorState,
+          anchorConfidence: remap.thread.anchorConfidence,
+          snapshotId: remap.snapshot.id,
+        },
+      });
+    }
 
     if (!result.created) {
       const expiredInteractions = await issueThreadInteractionService(db).expireStaleRequestConfirmationsForIssueDocument(
@@ -2523,6 +3612,7 @@ export function issueRoutes(
       }
       assertCompanyAccess(req, issue.companyId);
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
       const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
       if (!keyParsed.success) {
         res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
@@ -2541,6 +3631,14 @@ export function issueRoutes(
       await issueReferencesSvc.syncDocument(result.document.id);
       const referenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       const referenceDiff = issueReferencesSvc.diffIssueReferenceSummary(referenceSummaryBefore, referenceSummaryAfter);
+      const remappedAnnotations = await documentAnnotationsSvc.remapOpenThreadsForDocument({
+        issueId: issue.id,
+        key: result.document.key,
+        documentId: result.document.id,
+        nextRevisionId: result.document.latestRevisionId,
+        nextRevisionNumber: result.document.latestRevisionNumber,
+        nextBody: result.document.body,
+      });
 
       await logActivity(db, {
         companyId: issue.companyId,
@@ -2566,6 +3664,28 @@ export function issueRoutes(
           }),
         },
       });
+
+      for (const remap of remappedAnnotations) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.document_annotation_remapped",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            key: result.document.key,
+            documentId: result.document.id,
+            threadId: remap.thread.id,
+            revisionNumber: result.document.latestRevisionNumber,
+            anchorState: remap.thread.anchorState,
+            anchorConfidence: remap.thread.anchorConfidence,
+            snapshotId: remap.snapshot.id,
+          },
+        });
+      }
 
       const expiredInteractions = await issueThreadInteractionService(db).expireStaleRequestConfirmationsForIssueDocument(
         issue,
@@ -2682,15 +3802,27 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
-    const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, {
+    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
+    const actor = getActorInfo(req);
+    const createInput = {
       ...req.body,
       projectId: req.body.projectId ?? issue.projectId ?? null,
-    });
+      sourceTrust: await sourceTrustForActorWrite(issue, actor),
+    };
+    const createdByRunId = await resolveWorkProductCreatedByRunId(req, res, issue.companyId, req.body, "create");
+    if (createdByRunId === undefined) return;
+    createInput.createdByRunId = createdByRunId;
+    if (requiresPaperclipAttachmentMetadata(createInput)) {
+      createInput.metadata = await canonicalizePaperclipArtifactMetadata({
+        issue,
+        metadata: req.body.metadata ?? null,
+      });
+    }
+    const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, createInput);
     if (!product) {
       res.status(422).json({ error: "Invalid work product payload" });
       return;
     }
-    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: issue.companyId,
       actorType: actor.actorType,
@@ -2711,6 +3843,151 @@ export function issueRoutes(
     res.status(201).json(product);
   });
 
+  router.post("/issues/:id/low-trust/promotions", validate(promoteLowTrustOutputSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
+    const actor = getActorInfo(req);
+    if (await sourceTrustForActorWrite(issue, actor)) {
+      res.status(403).json({ error: "Low-trust actors cannot promote quarantined output" });
+      return;
+    }
+    const sourceTrust = await lookupLowTrustSourceArtifact({
+      issueId: issue.id,
+      artifactKind: req.body.sourceArtifactKind,
+      artifactId: req.body.sourceArtifactId,
+    });
+    if (!sourceTrust) {
+      res.status(404).json({ error: "Low-trust source artifact not found" });
+      return;
+    }
+    if (!isLowTrustQuarantined(sourceTrust)) {
+      res.status(422).json({ error: "Source artifact is not quarantined low-trust output" });
+      return;
+    }
+
+    const promotedAt = new Date();
+    const promotionTrust = buildPromotedSourceTrust({
+      sourceIssueId: issue.id,
+      sourceArtifactKind: req.body.sourceArtifactKind,
+      sourceArtifactId: req.body.sourceArtifactId,
+      promotedByActorType: actor.actorType,
+      promotedByActorId: actor.actorId,
+      promotedAt,
+    });
+    const product = await db.transaction(async (tx) => {
+      const markPromoted = { sourceTrust: promotionTrust, updatedAt: promotedAt };
+      const updatedSource = await (async () => {
+        if (req.body.sourceArtifactKind === "issue") {
+          return tx
+            .update(issueRows)
+            .set(markPromoted)
+            .where(and(
+              eq(issueRows.id, req.body.sourceArtifactId),
+              eq(issueRows.sourceTrust, sourceTrust),
+            ))
+            .returning({ id: issueRows.id });
+        }
+        if (req.body.sourceArtifactKind === "comment") {
+          return tx
+            .update(issueComments)
+            .set(markPromoted)
+            .where(and(
+              eq(issueComments.id, req.body.sourceArtifactId),
+              eq(issueComments.issueId, issue.id),
+              eq(issueComments.sourceTrust, sourceTrust),
+            ))
+            .returning({ id: issueComments.id });
+        }
+        if (req.body.sourceArtifactKind === "document") {
+          return tx
+            .update(documents)
+            .set(markPromoted)
+            .where(and(
+              eq(documents.id, req.body.sourceArtifactId),
+              eq(documents.sourceTrust, sourceTrust),
+            ))
+            .returning({ id: documents.id });
+        }
+        return tx
+          .update(issueWorkProducts)
+          .set(markPromoted)
+          .where(and(
+            eq(issueWorkProducts.id, req.body.sourceArtifactId),
+            eq(issueWorkProducts.issueId, issue.id),
+            eq(issueWorkProducts.sourceTrust, sourceTrust),
+          ))
+          .returning({ id: issueWorkProducts.id });
+      })();
+      if (!updatedSource[0]) return null;
+
+      return tx
+        .insert(issueWorkProducts)
+        .values({
+          companyId: issue.companyId,
+          issueId: issue.id,
+          projectId: issue.projectId ?? null,
+          type: "artifact",
+          provider: "paperclip",
+          externalId: req.body.sourceArtifactId,
+          title: req.body.title,
+          status: "approved",
+          reviewState: "approved",
+          isPrimary: false,
+          healthStatus: "unknown",
+          summary: req.body.summary,
+          metadata: {
+            promotion: {
+              sourceArtifactKind: req.body.sourceArtifactKind,
+              sourceArtifactId: req.body.sourceArtifactId,
+            },
+          },
+          sourceTrust: promotionTrust,
+          createdByRunId: actor.runId ?? null,
+        })
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    });
+    if (!product) {
+      res.status(422).json({ error: "Source artifact is not quarantined low-trust output" });
+      return;
+    }
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.low_trust_output_promoted",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        sourceArtifacts: [{
+          artifactKind: req.body.sourceArtifactKind,
+          artifactId: req.body.sourceArtifactId,
+        }],
+        reviewerPrincipal: {
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+        },
+        targetIssueId: issue.id,
+        promotedWorkProductId: product.id,
+        decision: "promoted",
+      },
+    });
+
+    res.status(201).json(product);
+  });
+
   router.patch("/work-products/:id", validate(updateIssueWorkProductSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await workProductsSvc.getById(id);
@@ -2725,12 +4002,32 @@ export function issueRoutes(
       return;
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
-    const product = await workProductsSvc.update(id, req.body);
+    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
+    const actor = getActorInfo(req);
+    const patch = { ...req.body };
+    const createdByRunId = await resolveWorkProductCreatedByRunId(req, res, existing.companyId, req.body, "update");
+    if (createdByRunId === undefined && Object.prototype.hasOwnProperty.call(req.body, "createdByRunId")) return;
+    if (createdByRunId !== undefined) patch.createdByRunId = createdByRunId;
+    if (requiresPaperclipAttachmentMetadata(patch, existing)) {
+      if (patch.metadata !== undefined) {
+        patch.metadata = await canonicalizePaperclipArtifactMetadata({
+          issue,
+          metadata: patch.metadata ?? null,
+        });
+      } else if (!requiresPaperclipAttachmentMetadata(existing)) {
+        res.status(422).json({ error: "Attachment-backed artifact metadata is required" });
+        return;
+      }
+    }
+    const sourceTrust = await sourceTrustForActorWrite(issue, actor);
+    const product = await workProductsSvc.update(id, {
+      ...patch,
+      ...(sourceTrust ? { sourceTrust } : {}),
+    });
     if (!product) {
       res.status(404).json({ error: "Work product not found" });
       return;
     }
-    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: existing.companyId,
       actorType: actor.actorType,
@@ -2765,6 +4062,7 @@ export function issueRoutes(
       return;
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
     const removed = await workProductsSvc.remove(id);
     if (!removed) {
       res.status(404).json({ error: "Work product not found" });
@@ -2927,6 +4225,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return;
     const approvals = await issueApprovalsSvc.listApprovalsForIssue(id);
     res.json(approvals);
   });
@@ -2997,21 +4296,74 @@ export function issueRoutes(
   router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (await assertLowTrustControlPlaneDenied(req, res, companyId, null)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (req.body.assigneeAgentId || req.body.assigneeUserId) {
-      await assertCanAssignTasks(req, companyId);
+    if (req.actor.type === "agent" && !req.body.parentId) {
+      const companyScopeDecision = await access.decide({
+        actor: req.actor,
+        action: "company_scope:read",
+        resource: { type: "company", companyId },
+      });
+      if (!companyScopeDecision.allowed) {
+        res.status(403).json({ error: "Low-trust agents must create child issues inside their assigned boundary" });
+        return;
+      }
     }
-    await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
-
+    if (req.actor.type === "agent" && req.body.parentId) {
+      const parent = await svc.getById(req.body.parentId);
+      if (!parent || parent.companyId !== companyId) {
+        res.status(404).json({ error: "Parent issue not found" });
+        return;
+      }
+      if (!(await assertIssueReadAllowed(req, res, parent))) return;
+    }
+    const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
+      companyId,
+      req.body.assigneeAgentId as string | null | undefined,
+    );
     const actor = getActorInfo(req);
+    const runWorkspaceInheritanceSourceIssueId = hasExplicitIssueWorkspaceCreateSelection(req.body)
+      ? null
+      : await resolveRunIssueWorkspaceInheritanceSource(companyId, actor);
+    const createBody = {
+      ...req.body,
+      ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
+      ...(runWorkspaceInheritanceSourceIssueId
+        ? { inheritExecutionWorkspaceFromIssueId: runWorkspaceInheritanceSourceIssueId }
+        : {}),
+    };
+    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, createBody))) return;
+    if (req.body.assigneeAgentId || req.body.assigneeUserId) {
+      await assertCanAssignTasks(req, companyId, {
+        projectId: await resolveAssignmentProjectId({
+          companyId,
+          projectId: req.body.projectId,
+          parentIssueId: req.body.parentId,
+        }),
+        parentIssueId: req.body.parentId ?? null,
+        assigneeAgentId: createBody.assigneeAgentId ?? null,
+        assigneeUserId: req.body.assigneeUserId ?? null,
+      });
+    }
+    await assertIssueEnvironmentSelection(companyId, createBody.executionWorkspaceSettings?.environmentId);
+
     const executionPolicy = applyActorMonitorScheduledBy(
-      normalizeIssueExecutionPolicy(req.body.executionPolicy),
+      normalizeIssueExecutionPolicy(createBody.executionPolicy),
       actor.actorType,
     );
-    assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
-    const issue = await svc.create(companyId, {
-      ...req.body,
+    await assertCanManageIssueMonitor(access, req, companyId, createBody.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+    const issueId = randomUUID();
+    const sourceTrust = await sourceTrustForActorWrite({
+      id: issueId,
+      companyId,
+      projectId: createBody.projectId ?? null,
       executionPolicy,
+    }, actor);
+    const issue = await svc.create(companyId, {
+      ...createBody,
+      id: issueId,
+      executionPolicy,
+      ...(sourceTrust ? { sourceTrust } : {}),
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
     });
@@ -3092,21 +4444,46 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, parent.companyId);
+    if (!(await assertIssueReadAllowed(req, res, parent))) return;
+    if (await assertLowTrustControlPlaneDenied(req, res, parent.companyId, parent)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
+      parent.companyId,
+      req.body.assigneeAgentId as string | null | undefined,
+    );
+    const createBody = {
+      ...req.body,
+      ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
+    };
+    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, createBody))) return;
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
-      await assertCanAssignTasks(req, parent.companyId);
+      await assertCanAssignTasks(req, parent.companyId, {
+        projectId: createBody.projectId ?? parent.projectId ?? null,
+        parentIssueId: parent.id,
+        assigneeAgentId: createBody.assigneeAgentId ?? null,
+        assigneeUserId: createBody.assigneeUserId ?? null,
+      });
     }
-    await assertIssueEnvironmentSelection(parent.companyId, req.body.executionWorkspaceSettings?.environmentId);
+    await assertIssueEnvironmentSelection(parent.companyId, createBody.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
     const executionPolicy = applyActorMonitorScheduledBy(
-      normalizeIssueExecutionPolicy(req.body.executionPolicy),
+      normalizeIssueExecutionPolicy(createBody.executionPolicy),
       actor.actorType,
     );
-    assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
-    const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
-      ...req.body,
+    await assertCanManageIssueMonitor(access, req, parent.companyId, createBody.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+    const issueId = randomUUID();
+    const sourceTrust = await sourceTrustForActorWrite({
+      id: issueId,
+      companyId: parent.companyId,
+      projectId: createBody.projectId ?? parent.projectId ?? null,
       executionPolicy,
+    }, actor);
+    const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
+      ...createBody,
+      id: issueId,
+      executionPolicy,
+      ...(sourceTrust ? { sourceTrust } : {}),
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
       actorAgentId: actor.agentId,
@@ -3170,6 +4547,171 @@ export function issueRoutes(
     res.status(201).json(issue);
   });
 
+  router.get("/issues/:id/accepted-plan-decompositions", async (req, res) => {
+    const sourceIssueId = req.params.id as string;
+    const sourceIssue = await svc.getById(sourceIssueId);
+    if (!sourceIssue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, sourceIssue.companyId);
+    const decompositions = await svc.listAcceptedPlanDecompositions(sourceIssue.id);
+    res.json(decompositions);
+  });
+
+  router.post("/issues/:id/accepted-plan-decompositions", validate(createAcceptedPlanDecompositionSchema), async (req, res) => {
+    const sourceIssueId = req.params.id as string;
+    const sourceIssue = await svc.getById(sourceIssueId);
+    if (!sourceIssue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, sourceIssue.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, sourceIssue))) return;
+
+    const requestedChildren = [];
+    for (const child of req.body.children as Array<typeof req.body.children[number]>) {
+      const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
+        sourceIssue.companyId,
+        child.assigneeAgentId as string | null | undefined,
+      );
+      const childBody = {
+        ...child,
+        ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
+      };
+      requestedChildren.push(childBody);
+      assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(childBody));
+      if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, sourceIssue, childBody))) return;
+      if (childBody.assigneeAgentId || childBody.assigneeUserId) {
+        await assertCanAssignTasks(req, sourceIssue.companyId, {
+          projectId: childBody.projectId ?? sourceIssue.projectId ?? null,
+          parentIssueId: sourceIssue.id,
+          assigneeAgentId: childBody.assigneeAgentId ?? null,
+          assigneeUserId: childBody.assigneeUserId ?? null,
+        });
+      }
+      await assertIssueEnvironmentSelection(sourceIssue.companyId, childBody.executionWorkspaceSettings?.environmentId);
+    }
+
+    const actor = getActorInfo(req);
+    const normalizedChildren = [];
+    for (const child of requestedChildren) {
+      const executionPolicy = applyActorMonitorScheduledBy(
+        normalizeIssueExecutionPolicy(child.executionPolicy),
+        actor.actorType,
+      );
+      await assertCanManageIssueMonitor(access, req, sourceIssue.companyId, child.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+      const childIssueId = randomUUID();
+      const sourceTrust = await sourceTrustForActorWrite({
+        id: childIssueId,
+        companyId: sourceIssue.companyId,
+        projectId: child.projectId ?? sourceIssue.projectId ?? null,
+        executionPolicy,
+      }, actor);
+      normalizedChildren.push({
+        ...child,
+        id: childIssueId,
+        executionPolicy,
+        ...(sourceTrust ? { sourceTrust } : {}),
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+        actorAgentId: actor.agentId,
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+    }
+
+    const result = await svc.decomposeAcceptedPlan(sourceIssue.id, {
+      acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
+      children: normalizedChildren,
+      actorAgentId: actor.agentId,
+      actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      actorRunId: actor.runId ?? null,
+    });
+
+    await logActivity(db, {
+      companyId: sourceIssue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.accepted_plan_decomposition_updated",
+      entityType: "issue",
+      entityId: sourceIssue.id,
+      details: {
+        identifier: sourceIssue.identifier,
+        acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
+        decompositionId: result.decomposition.id,
+        status: result.decomposition.status,
+        requestedChildCount: req.body.children.length,
+        childIssueIds: result.childIssueIds,
+        newlyCreatedChildIssueIds: result.newlyCreatedIssues.map((issue) => issue.id),
+      },
+    });
+
+    for (const issue of result.newlyCreatedIssues) {
+      await logActivity(db, {
+        companyId: sourceIssue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.child_created",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          parentId: sourceIssue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          inheritedExecutionWorkspaceFromIssueId: sourceIssue.id,
+          acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
+          ...buildCreateIssueActivityStatusDetails(issue, res),
+        },
+      });
+
+      const executionPolicy = normalizeIssueExecutionPolicy(issue.executionPolicy);
+      if (executionPolicy?.monitor) {
+        await logActivity(db, {
+          companyId: sourceIssue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.monitor_scheduled",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            identifier: issue.identifier,
+            parentId: sourceIssue.id,
+            acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
+            nextCheckAt: executionPolicy.monitor.nextCheckAt,
+            notes: executionPolicy.monitor.notes,
+            scheduledBy: executionPolicy.monitor.scheduledBy,
+            serviceName: executionPolicy.monitor.serviceName ?? null,
+            timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
+            maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
+            recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
+          },
+        });
+      }
+
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue,
+        reason: "issue_assigned",
+        mutation: "accepted_plan_decomposition",
+        contextSource: "issue.accepted_plan_decomposition",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    }
+
+    res.json({
+      decomposition: result.decomposition,
+      childIssueIds: result.childIssueIds,
+      newlyCreatedChildIssueIds: result.newlyCreatedIssues.map((issue) => issue.id),
+    });
+  });
+
   router.post("/issues/:id/monitor/check-now", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -3178,7 +4720,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    assertCanManageIssueMonitor(req, issue.assigneeAgentId, true);
+    await assertCanManageIssueMonitor(access, req, issue.companyId, issue.assigneeAgentId, true);
 
     const actor = getActorInfo(req);
     await heartbeat.triggerIssueMonitor(issue.id, {
@@ -3239,6 +4781,7 @@ export function issueRoutes(
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);
@@ -3265,6 +4808,14 @@ export function issueRoutes(
       existing.status !== "cancelled" && updateFields.status === "cancelled";
     if (resumeRequested === true && !commentBody) {
       res.status(400).json({ error: "Follow-up intent requires a comment" });
+      return;
+    }
+    if (
+      (reopenRequested === true ||
+        resumeRequested === true ||
+        Array.isArray(req.body.blockedByIssueIds)) &&
+      await assertLowTrustControlPlaneDenied(req, res, existing.companyId, existing)
+    ) {
       return;
     }
     if (resumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
@@ -3297,15 +4848,40 @@ export function issueRoutes(
     ) {
       return;
     }
+    const scheduledRetryForHumanComment =
+      shouldHumanCommentResumeInProgressScheduledRetry({
+        hasComment: !!commentBody,
+        issueStatus: existing.status,
+        assigneeAgentId: requestedAssigneeAgentId,
+        actorType: actor.actorType,
+      })
+        ? await svc.getCurrentScheduledRetry(existing.id)
+        : null;
+    const shouldResumeInProgressScheduledRetry =
+      !!scheduledRetryForHumanComment &&
+      scheduledRetryForHumanComment.agentId === requestedAssigneeAgentId;
+    const assigneeSelfCommentOnTerminal = isAssigneeSelfCommentOnTerminalIssue({
+      hasCommentBody: !!commentBody,
+      resumeRequested: resumeRequested === true,
+      issueStatus: existing.status,
+      assigneeAgentId: existing.assigneeAgentId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+    });
     const effectiveMoveToTodoRequested =
-      explicitMoveToTodoRequested ||
-      (!!commentBody &&
-        shouldImplicitlyMoveCommentedIssueToTodo({
-          issueStatus: existing.status,
-          assigneeAgentId: requestedAssigneeAgentId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-        }));
+      !assigneeSelfCommentOnTerminal &&
+      (explicitMoveToTodoRequested ||
+        (!!commentBody &&
+          shouldImplicitlyMoveCommentedIssueToTodo({
+            issueStatus: existing.status,
+            assigneeAgentId: requestedAssigneeAgentId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            actorRunId: actor.runId,
+            checkoutRunId: existing.checkoutRunId,
+            executionRunId: existing.executionRunId,
+          })) ||
+        shouldResumeInProgressScheduledRetry);
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
       ? await issueReferencesSvc.listIssueReferenceSummary(existing.id)
       : null;
@@ -3339,7 +4915,11 @@ export function issueRoutes(
 
       const runToInterrupt = await resolveActiveIssueRun(existing);
       if (runToInterrupt) {
-        const cancelled = await heartbeat.cancelRun(runToInterrupt.id);
+        const cancelled = await heartbeat.cancelRun(
+          runToInterrupt.id,
+          "Interrupted by board comment",
+          operatorInterruptCancelOptions({ issueId: existing.id, actor }),
+        );
         if (cancelled) {
           interruptedRunId = cancelled.id;
           await logActivity(db, {
@@ -3351,7 +4931,13 @@ export function issueRoutes(
             action: "heartbeat.cancelled",
             entityType: "heartbeat_run",
             entityId: cancelled.id,
-            details: { agentId: cancelled.agentId, source: "issue_comment_interrupt", issueId: existing.id },
+            details: {
+              agentId: cancelled.agentId,
+              source: "issue_comment_interrupt",
+              issueId: existing.id,
+              cancellationKind: "operator_interrupted",
+              operatorInterrupted: true,
+            },
           });
         }
       }
@@ -3367,10 +4953,22 @@ export function issueRoutes(
     if (
       commentBody &&
       effectiveMoveToTodoRequested &&
-      (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers)) &&
+      (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers) || shouldResumeInProgressScheduledRetry) &&
       updateFields.status === undefined
     ) {
       updateFields.status = "todo";
+    }
+    let cancelledScheduledRetryRunId: string | null = null;
+    if (
+      commentBody &&
+      shouldResumeInProgressScheduledRetry &&
+      updateFields.status === "todo"
+    ) {
+      cancelledScheduledRetryRunId = await cancelScheduledRetrySupersededByComment({
+        scheduledRetryRunId: scheduledRetryForHumanComment?.runId,
+        issue: existing,
+        actor,
+      });
     }
     if (req.body.executionPolicy !== undefined) {
       updateFields.executionPolicy = applyActorMonitorScheduledBy(
@@ -3387,7 +4985,13 @@ export function issueRoutes(
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
     const monitorChanged = monitorPoliciesEqual(previousExecutionPolicy, nextExecutionPolicy) === false;
-    assertCanManageIssueMonitor(req, existing.assigneeAgentId, req.body.executionPolicy !== undefined && monitorChanged);
+    await assertCanManageIssueMonitor(
+      access,
+      req,
+      existing.companyId,
+      existing.assigneeAgentId,
+      req.body.executionPolicy !== undefined && monitorChanged,
+    );
 
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,
@@ -3457,7 +5061,23 @@ export function issueRoutes(
 
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
       if (!isAgentReturningIssueToCreator) {
-        await assertCanAssignTasks(req, existing.companyId);
+        await assertCanAssignTasks(req, existing.companyId, {
+          issueId: existing.id,
+          projectId: await resolveAssignmentProjectId({
+            companyId: existing.companyId,
+            projectId: updateFields.projectId === undefined
+              ? existing.projectId
+              : updateFields.projectId as string | null | undefined,
+            parentIssueId: (updateFields.parentId === undefined
+              ? existing.parentId
+              : updateFields.parentId) as string | null | undefined,
+          }),
+          parentIssueId: (updateFields.parentId === undefined
+            ? existing.parentId
+            : updateFields.parentId) as string | null | undefined,
+          assigneeAgentId: nextAssigneeAgentId,
+          assigneeUserId: nextAssigneeUserId,
+        });
       }
     }
 
@@ -3625,6 +5245,11 @@ export function issueRoutes(
       previous.status !== undefined &&
       issue.status === "todo";
     const reopenFromStatus = reopened ? existing.status : null;
+    const scheduledRetrySupersededByComment =
+      shouldResumeInProgressScheduledRetry &&
+      previous.status !== undefined &&
+      existing.status === "in_progress" &&
+      issue.status === "todo";
     const statusChangedFromBlockedToTodo =
       existing.status === "blocked" &&
       issue.status === "todo" &&
@@ -3666,6 +5291,13 @@ export function issueRoutes(
         ...(commentBody ? { source: "comment" } : {}),
         ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
+        ...(scheduledRetrySupersededByComment
+          ? {
+              scheduledRetrySupersededByComment: true,
+              scheduledRetryRunId: scheduledRetryForHumanComment?.runId ?? null,
+              ...(cancelledScheduledRetryRunId ? { cancelledScheduledRetryRunId } : {}),
+            }
+          : {}),
         ...(interruptedRunId ? { interruptedRunId } : {}),
         ...(cancelledStatusRunId ? { cancelledStatusRunId } : {}),
         ...(workspaceChange ? { workspaceChange } : {}),
@@ -3852,6 +5484,8 @@ export function issueRoutes(
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
         runId: actor.runId,
+      }, {
+        sourceTrust: await sourceTrustForActorWrite(issue, actor),
       });
       await issueReferencesSvc.syncComment(comment.id);
       const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
@@ -3883,6 +5517,13 @@ export function issueRoutes(
           issueTitle: issue.title,
           ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
           ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
+          ...(scheduledRetrySupersededByComment
+            ? {
+                scheduledRetrySupersededByComment: true,
+                scheduledRetryRunId: scheduledRetryForHumanComment?.runId ?? null,
+                ...(cancelledScheduledRetryRunId ? { cancelledScheduledRetryRunId } : {}),
+              }
+            : {}),
           ...(interruptedRunId ? { interruptedRunId } : {}),
           ...(hasFieldChanges ? { updated: true } : {}),
           ...summarizeIssueReferenceActivityDetails({
@@ -4208,6 +5849,16 @@ export function issueRoutes(
       return;
     }
 
+    if (issue.assigneeAgentId !== req.body.agentId) {
+      await assertCanAssignTasks(req, issue.companyId, {
+        issueId: issue.id,
+        projectId: issue.projectId ?? null,
+        parentIssueId: issue.parentId ?? null,
+        assigneeAgentId: req.body.agentId,
+        assigneeUserId: null,
+      });
+    }
+
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
     if (closedExecutionWorkspace) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
@@ -4380,7 +6031,17 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const interactions = await issueThreadInteractionService(db).listForIssue(id);
+    const actor = getActorInfo(req);
+    const interactionSvc = issueThreadInteractionService(db);
+    const expiredInteractions = await interactionSvc.expireRequestConfirmationsSupersededByHistoricalComments(issue);
+    await logExpiredRequestConfirmations({
+      issue,
+      interactions: expiredInteractions,
+      actor,
+      source: "issue.interactions.catchup_superseded_by_comment",
+    });
+
+    const interactions = await interactionSvc.listForIssue(id);
     res.json(interactions);
   });
 
@@ -4394,6 +6055,7 @@ export function issueRoutes(
     assertCompanyAccess(req, issue.companyId);
     if (req.actor.type === "agent") {
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return;
     } else {
       assertBoard(req);
     }
@@ -4515,10 +6177,14 @@ export function issueRoutes(
         });
       }
 
+      const acceptedPlanTarget = interaction.kind === "request_confirmation"
+        ? readAcceptedPlanConfirmationTarget(interaction.payload)
+        : null;
       const acceptedPlanConfirmation =
         interaction.kind === "request_confirmation" &&
         interaction.status === "accepted" &&
-        issue.workMode === "planning";
+        acceptedPlanTarget?.issueId === issue.id &&
+        acceptedPlanTarget.key === "plan";
       queueResolvedInteractionContinuationWakeup({
         heartbeat,
         issue: continuationWakeIssue,
@@ -4571,7 +6237,7 @@ export function issueRoutes(
           rejectionReason:
             interaction.kind === "suggest_tasks"
               ? (interaction.result?.rejectionReason ?? null)
-              : interaction.kind === "request_confirmation"
+              : interaction.kind === "request_confirmation" || interaction.kind === "request_checkbox_confirmation"
                 ? (interaction.result?.reason ?? null)
               : null,
         },
@@ -4732,24 +6398,93 @@ export function issueRoutes(
       actor.actorType === "agent"
         ? comment.authorAgentId === actor.agentId
         : comment.authorUserId === actor.actorId;
-    if (!actorOwnsComment) {
-      res.status(403).json({ error: "Only the comment author can cancel queued comments" });
-      return;
-    }
+    const deleteMode = req.query.mode === "cancel" ? "cancel" : "delete";
 
     const activeRun = await resolveActiveIssueRun(issue);
-    if (!activeRun) {
-      res.status(409).json({ error: "Queued comment can no longer be canceled" });
+    const isQueuedComment = activeRun ? isQueuedIssueCommentForActiveRun({ comment, activeRun }) : false;
+    if (deleteMode === "cancel" || isQueuedComment) {
+      if (!actorOwnsComment) {
+        res.status(403).json({ error: "Only the comment author can cancel queued comments" });
+        return;
+      }
+
+      if (!activeRun) {
+        res.status(409).json({ error: "Queued comment can no longer be canceled" });
+        return;
+      }
+
+      if (!isQueuedComment) {
+        res.status(409).json({ error: "Only queued comments can be canceled" });
+        return;
+      }
+
+      const removed = await svc.removeComment(commentId);
+      if (!removed) {
+        res.status(404).json({ error: "Comment not found" });
+        return;
+      }
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.comment_cancelled",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          commentId: removed.id,
+          bodySnippet: removed.body.slice(0, 120),
+          identifier: issue.identifier,
+          issueTitle: issue.title,
+          source: "queue_cancel",
+          queueTargetRunId: activeRun.id,
+        },
+      });
+
+      res.json(removed);
       return;
     }
 
-    if (!isQueuedIssueCommentForActiveRun({ comment, activeRun })) {
-      res.status(409).json({ error: "Only queued comments can be canceled" });
+    if (!actorOwnsComment) {
+      res.status(403).json({ error: "Only the comment author can delete comments" });
       return;
     }
 
-    const removed = await svc.removeComment(commentId);
-    if (!removed) {
+    if (comment.deletedAt) {
+      res.json(comment);
+      return;
+    }
+
+    let annotationCleanup = { deletedCommentIds: [] as string[], resolvedThreadIds: [] as string[] };
+    const deleted = await svc.tombstoneComment(
+      commentId,
+      {
+        actorType: actor.actorType,
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+        runId: actor.runId,
+      },
+      {
+        afterTombstone: async (deletedComment, tx) => {
+          await issueReferencesSvc.syncComment(deletedComment.id, tx);
+          annotationCleanup = await documentAnnotationsSvc.cleanupForIssueCommentDeletion(issue.id, deletedComment.id, {
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+            runId: actor.runId,
+          }, tx);
+          await Promise.all(
+            annotationCleanup.deletedCommentIds.map((annotationCommentId) =>
+              issueReferencesSvc.deleteCommentSource(annotationCommentId, tx)
+            ),
+          );
+        },
+      },
+    );
+    if (!deleted) {
       res.status(404).json({ error: "Comment not found" });
       return;
     }
@@ -4760,20 +6495,25 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
-      action: "issue.comment_cancelled",
+      action: "issue.comment_deleted",
       entityType: "issue",
       entityId: issue.id,
       details: {
-        commentId: removed.id,
-        bodySnippet: removed.body.slice(0, 120),
+        commentId: deleted.id,
         identifier: issue.identifier,
         issueTitle: issue.title,
-        source: "queue_cancel",
-        queueTargetRunId: activeRun.id,
+        source: "author_delete",
+        deletedByType: actor.actorType,
+        deletedByAgentId: actor.actorType === "agent" ? actor.agentId : null,
+        deletedByUserId: actor.actorType === "user" ? actor.actorId : null,
+        deletedByRunId: actor.runId,
+        deletedAt: deleted.deletedAt,
+        deletedAnnotationCommentIds: annotationCleanup.deletedCommentIds,
+        resolvedAnnotationThreadIds: annotationCleanup.resolvedThreadIds,
       },
     });
 
-    res.json(removed);
+    res.json(deleted);
   });
 
   router.get("/issues/:id/feedback-votes", async (req, res) => {
@@ -4886,14 +6626,39 @@ export function issueRoutes(
     const isClosed = isClosedIssueStatus(issue.status);
     const isBlocked = issue.status === "blocked";
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
-    const effectiveMoveToTodoRequested =
-      explicitMoveToTodoRequested ||
-      shouldImplicitlyMoveCommentedIssueToTodo({
+    const scheduledRetryForHumanComment =
+      shouldHumanCommentResumeInProgressScheduledRetry({
+        hasComment: true,
         issueStatus: issue.status,
         assigneeAgentId: issue.assigneeAgentId,
         actorType: actor.actorType,
-        actorId: actor.actorId,
-      });
+      })
+        ? await svc.getCurrentScheduledRetry(issue.id)
+        : null;
+    const shouldResumeInProgressScheduledRetry =
+      !!scheduledRetryForHumanComment &&
+      scheduledRetryForHumanComment.agentId === issue.assigneeAgentId;
+    const assigneeSelfCommentOnTerminal = isAssigneeSelfCommentOnTerminalIssue({
+      hasCommentBody: true,
+      resumeRequested: resumeRequested === true,
+      issueStatus: issue.status,
+      assigneeAgentId: issue.assigneeAgentId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+    });
+    const effectiveMoveToTodoRequested =
+      !assigneeSelfCommentOnTerminal &&
+      (explicitMoveToTodoRequested ||
+        shouldImplicitlyMoveCommentedIssueToTodo({
+          issueStatus: issue.status,
+          assigneeAgentId: issue.assigneeAgentId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          actorRunId: actor.runId,
+          checkoutRunId: issue.checkoutRunId,
+          executionRunId: issue.executionRunId,
+        }) ||
+        shouldResumeInProgressScheduledRetry);
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
         ? (await svc.getDependencyReadiness(issue.id)).unresolvedBlockerCount > 0
@@ -4906,16 +6671,31 @@ export function issueRoutes(
     let reopenFromStatus: string | null = null;
     let interruptedRunId: string | null = null;
     let currentIssue = issue;
+    let issueBeforeCommentDecision = issue;
+    let commentDecisionStageWakeup: ReturnType<typeof buildExecutionStageWakeup> | null = null;
     const commentReferenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
 
-    if (effectiveMoveToTodoRequested && (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers))) {
+    let scheduledRetrySupersededByComment = false;
+    let cancelledScheduledRetryRunId: string | null = null;
+    if (
+      effectiveMoveToTodoRequested &&
+      (isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers) || shouldResumeInProgressScheduledRetry)
+    ) {
+      scheduledRetrySupersededByComment = shouldResumeInProgressScheduledRetry && issue.status === "in_progress";
+      cancelledScheduledRetryRunId = scheduledRetrySupersededByComment
+        ? await cancelScheduledRetrySupersededByComment({
+            scheduledRetryRunId: scheduledRetryForHumanComment?.runId,
+            issue,
+            actor,
+          })
+        : null;
       const reopenedIssue = await svc.update(id, { status: "todo" });
       if (!reopenedIssue) {
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      reopened = true;
-      reopenFromStatus = issue.status;
+      reopened = isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers);
+      reopenFromStatus = reopened ? issue.status : null;
       currentIssue = reopenedIssue;
 
       await logActivity(db, {
@@ -4929,8 +6709,14 @@ export function issueRoutes(
         entityId: currentIssue.id,
         details: {
           status: "todo",
-          reopened: true,
-          reopenedFrom: reopenFromStatus,
+          ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
+          ...(scheduledRetrySupersededByComment
+            ? {
+                scheduledRetrySupersededByComment: true,
+                scheduledRetryRunId: scheduledRetryForHumanComment?.runId ?? null,
+                ...(cancelledScheduledRetryRunId ? { cancelledScheduledRetryRunId } : {}),
+              }
+            : {}),
           source: "comment",
           ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
           identifier: currentIssue.identifier,
@@ -4946,7 +6732,11 @@ export function issueRoutes(
 
       const runToInterrupt = await resolveActiveIssueRun(currentIssue);
       if (runToInterrupt) {
-        const cancelled = await heartbeat.cancelRun(runToInterrupt.id);
+        const cancelled = await heartbeat.cancelRun(
+          runToInterrupt.id,
+          "Interrupted by board comment",
+          operatorInterruptCancelOptions({ issueId: currentIssue.id, actor }),
+        );
         if (cancelled) {
           interruptedRunId = cancelled.id;
           await logActivity(db, {
@@ -4958,21 +6748,155 @@ export function issueRoutes(
             action: "heartbeat.cancelled",
             entityType: "heartbeat_run",
             entityId: cancelled.id,
-            details: { agentId: cancelled.agentId, source: "issue_comment_interrupt", issueId: currentIssue.id },
+            details: {
+              agentId: cancelled.agentId,
+              source: "issue_comment_interrupt",
+              issueId: currentIssue.id,
+              cancellationKind: "operator_interrupted",
+              operatorInterrupted: true,
+            },
           });
         }
       }
     }
 
-    const comment = await svc.addComment(id, req.body.body, {
-      agentId: actor.agentId ?? undefined,
-      userId: actor.actorType === "user" ? actor.actorId : undefined,
-      runId: actor.runId,
-    }, {
-      authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
-      presentation: req.body.presentation ?? null,
-      metadata: req.body.metadata ?? null,
-    });
+    const currentExecutionState = parseIssueExecutionState(currentIssue.executionState);
+    const currentExecutionPolicy = normalizeIssueExecutionPolicy(currentIssue.executionPolicy ?? null);
+    const shouldAutoApproveReviewComment =
+      currentIssue.status === "in_review" &&
+      currentExecutionState?.status === "pending" &&
+      actorMatchesExecutionParticipant(actor, currentExecutionState.currentParticipant ?? null) &&
+      isApprovalReviewComment(req.body.body);
+
+    // Persist the comment and the auto-approval state transition atomically when both apply.
+    // Without a single transaction, a 422 (or any error) thrown by the status update after the
+    // comment is inserted would leave an orphan comment without the corresponding state change.
+    let comment: Awaited<ReturnType<typeof svc.addComment>>;
+    if (shouldAutoApproveReviewComment) {
+      const transition = applyIssueExecutionPolicyTransition({
+        issue: currentIssue,
+        policy: currentExecutionPolicy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: {
+          agentId: actor.agentId ?? null,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+        commentBody: req.body.body,
+      });
+      const decisionId = transition.decision ? randomUUID() : null;
+      if (decisionId) {
+        const nextExecutionState = transition.patch.executionState;
+        if (!nextExecutionState || typeof nextExecutionState !== "object") {
+          throw new Error("Execution policy decision patch is missing executionState");
+        }
+        transition.patch.executionState = {
+          ...nextExecutionState,
+          lastDecisionId: decisionId,
+        };
+      }
+
+      issueBeforeCommentDecision = currentIssue;
+      const updatePatch = {
+        ...transition.patch,
+        status: typeof transition.patch.status === "string" ? transition.patch.status : "done",
+        actorAgentId: actor.agentId ?? null,
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      };
+
+      const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
+      const commentOptions = {
+        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        presentation: req.body.presentation ?? null,
+        metadata: req.body.metadata ?? null,
+        sourceTrust,
+      };
+      let txResult: { comment: Awaited<ReturnType<typeof svc.addComment>>; issue: NonNullable<Awaited<ReturnType<typeof svc.update>>> };
+      try {
+        txResult = await db.transaction(async (tx) => {
+          const insertedComment = await svc.addComment(
+            id,
+            req.body.body,
+            {
+              agentId: actor.agentId ?? undefined,
+              userId: actor.actorType === "user" ? actor.actorId : undefined,
+              runId: actor.runId,
+            },
+            commentOptions,
+            tx,
+          );
+          const updated = await svc.update(id, updatePatch, tx);
+          // Throw (not return null) so drizzle rolls back the inserted comment when the issue
+          // has been concurrently deleted between the initial fetch and the in-transaction update.
+          if (!updated) throw new AutoApprovalIssueMissingError();
+
+          if (transition.decision && decisionId) {
+            await tx.insert(issueExecutionDecisions).values({
+              id: decisionId,
+              companyId: updated.companyId,
+              issueId: updated.id,
+              stageId: transition.decision.stageId,
+              stageType: transition.decision.stageType,
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+              outcome: transition.decision.outcome,
+              body: transition.decision.body,
+              createdByRunId: actor.runId ?? null,
+            });
+          }
+
+          return { comment: insertedComment, issue: updated };
+        });
+      } catch (err) {
+        if (err instanceof AutoApprovalIssueMissingError) {
+          res.status(404).json({ error: "Issue not found" });
+          return;
+        }
+        throw err;
+      }
+      comment = txResult.comment;
+      currentIssue = txResult.issue;
+      // Mirror the normal status-change audit trail: every other in_review -> done path
+      // emits an `issue.updated` activity, so emit one here too for the auto-approval path.
+      if (issueBeforeCommentDecision.status !== currentIssue.status) {
+        await logActivity(db, {
+          companyId: currentIssue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: currentIssue.id,
+          details: {
+            status: currentIssue.status,
+            identifier: currentIssue.identifier,
+            source: "auto_approval_comment",
+            _previous: { status: issueBeforeCommentDecision.status },
+          },
+        });
+      }
+      commentDecisionStageWakeup = buildExecutionStageWakeup({
+        issueId: currentIssue.id,
+        previousState: currentExecutionState,
+        nextState: parseIssueExecutionState(currentIssue.executionState),
+        interruptedRunId,
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    } else {
+      comment = await svc.addComment(id, req.body.body, {
+        agentId: actor.agentId ?? undefined,
+        userId: actor.actorType === "user" ? actor.actorId : undefined,
+        runId: actor.runId,
+      }, {
+        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        presentation: req.body.presentation ?? null,
+        metadata: req.body.metadata ?? null,
+        sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
+      });
+    }
+
     await issueReferencesSvc.syncComment(comment.id);
     const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
     const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
@@ -5001,6 +6925,13 @@ export function issueRoutes(
         issueTitle: currentIssue.title,
         ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
+        ...(scheduledRetrySupersededByComment
+          ? {
+              scheduledRetrySupersededByComment: true,
+              scheduledRetryRunId: scheduledRetryForHumanComment?.runId ?? null,
+              ...(cancelledScheduledRetryRunId ? { cancelledScheduledRetryRunId } : {}),
+            }
+          : {}),
         ...(interruptedRunId ? { interruptedRunId } : {}),
         ...summarizeIssueReferenceActivityDetails({
           addedReferencedIssues: commentReferenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
@@ -5029,7 +6960,7 @@ export function issueRoutes(
       issue: currentIssue,
       trigger: "comment",
       actor,
-      statusChanged: reopened,
+      statusChanged: reopened || scheduledRetrySupersededByComment,
       resumeRequested: resumeRequested === true,
       reopened,
       blockedToTodoRecovery: reopened && reopenFromStatus === "blocked" && currentIssue.status === "todo",
@@ -5037,14 +6968,32 @@ export function issueRoutes(
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {
-      const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
+      type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
+      const wakeups = new Map<string, { agentId: string; wakeup: WakeupRequest }>();
+      const addWakeup = (agentId: string, wakeup: WakeupRequest) => {
+        const wakeIssueId =
+          wakeup.payload && typeof wakeup.payload === "object" && typeof wakeup.payload.issueId === "string"
+            ? wakeup.payload.issueId
+            : currentIssue.id;
+        const key = `${agentId}:${wakeIssueId}`;
+        if (wakeups.has(key)) return;
+        wakeups.set(key, { agentId, wakeup });
+      };
+
+      if (commentDecisionStageWakeup) {
+        addWakeup(commentDecisionStageWakeup.agentId, commentDecisionStageWakeup.wakeup);
+      }
+
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
-      const skipWake = selfComment || isClosed;
+      // Re-derive closed-ness from the post-mutation issue so the auto-approval
+      // transition (in_review -> done) suppresses a stale `issue_commented` wake
+      // to the returnAssignee for an already-completed issue.
+      const skipWake = selfComment || isClosedIssueStatus(currentIssue.status);
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
-          wakeups.set(assigneeId, {
+          addWakeup(assigneeId, {
             source: "automation",
             triggerDetail: "system",
             reason: "issue_reopened_via_comment",
@@ -5071,7 +7020,7 @@ export function issueRoutes(
             },
           });
         } else {
-          wakeups.set(assigneeId, {
+          addWakeup(assigneeId, {
             source: "automation",
             triggerDetail: "system",
             reason: "issue_commented",
@@ -5106,9 +7055,8 @@ export function issueRoutes(
       }
 
       for (const mentionedId of mentionedIds) {
-        if (wakeups.has(mentionedId)) continue;
         if (actorIsAgent && actor.actorId === mentionedId) continue;
-        wakeups.set(mentionedId, {
+        addWakeup(mentionedId, {
           source: "automation",
           triggerDetail: "system",
           reason: "issue_comment_mentioned",
@@ -5126,7 +7074,67 @@ export function issueRoutes(
         });
       }
 
-      for (const [agentId, wakeup] of wakeups.entries()) {
+      const becameDone = issueBeforeCommentDecision.status !== "done" && currentIssue.status === "done";
+      if (becameDone) {
+        const dependents = await svc.listWakeableBlockedDependents(currentIssue.id);
+        for (const dependent of dependents) {
+          addWakeup(dependent.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_blockers_resolved",
+            payload: {
+              issueId: dependent.id,
+              resolvedBlockerIssueId: currentIssue.id,
+              blockerIssueIds: dependent.blockerIssueIds,
+            },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: dependent.id,
+              taskId: dependent.id,
+              wakeReason: "issue_blockers_resolved",
+              source: "issue.blockers_resolved",
+              resolvedBlockerIssueId: currentIssue.id,
+              blockerIssueIds: dependent.blockerIssueIds,
+            },
+          });
+        }
+      }
+
+      const becameTerminal =
+        !["done", "cancelled"].includes(issueBeforeCommentDecision.status) &&
+        ["done", "cancelled"].includes(currentIssue.status);
+      if (becameTerminal && currentIssue.parentId) {
+        const parent = await svc.getWakeableParentAfterChildCompletion(currentIssue.parentId);
+        if (parent) {
+          addWakeup(parent.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_children_completed",
+            payload: {
+              issueId: parent.id,
+              completedChildIssueId: currentIssue.id,
+              childIssueIds: parent.childIssueIds,
+              childIssueSummaries: parent.childIssueSummaries,
+              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+            },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: parent.id,
+              taskId: parent.id,
+              wakeReason: "issue_children_completed",
+              source: "issue.children_completed",
+              completedChildIssueId: currentIssue.id,
+              childIssueIds: parent.childIssueIds,
+              childIssueSummaries: parent.childIssueSummaries,
+              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+            },
+          });
+        }
+      }
+
+      for (const { agentId, wakeup } of wakeups.values()) {
         heartbeat
           .wakeup(agentId, wakeup)
           .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
@@ -5261,6 +7269,7 @@ export function issueRoutes(
       return;
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
 
     const company = await companiesSvc.getById(companyId);
     const attachmentMaxBytes = normalizeIssueAttachmentMaxBytes(company?.attachmentMaxBytes);
@@ -5287,6 +7296,10 @@ export function issueRoutes(
     const contentType = normalizeContentType(file.mimetype);
     if (file.buffer.length <= 0) {
       res.status(422).json({ error: "Attachment is empty" });
+      return;
+    }
+    if (!isAllowedContentType(contentType)) {
+      res.status(422).json({ error: `Unsupported attachment content type: ${contentType}` });
       return;
     }
 
@@ -5347,22 +7360,53 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, attachment.companyId);
 
-    const object = await storage.getObject(attachment.companyId, attachment.objectKey);
-    const responseContentType = normalizeContentType(attachment.contentType || object.contentType);
+    const contentLength = attachment.byteSize;
+    const range = parseAttachmentRangeHeader(
+      typeof req.headers.range === "string" ? req.headers.range : undefined,
+      contentLength,
+    );
+    res.setHeader("Accept-Ranges", "bytes");
+    if (range.kind === "invalid") {
+      res.setHeader("Content-Range", `bytes */${contentLength}`);
+      res.status(416).end();
+      return;
+    }
+
+    const object = await storage.getObject(
+      attachment.companyId,
+      attachment.objectKey,
+      range.kind === "range" ? { range: { start: range.start, end: range.end } } : undefined,
+    );
+    const responseContentType = resolveAttachmentResponseContentType({
+      storedContentType: attachment.contentType,
+      objectContentType: object.contentType,
+      originalFilename: attachment.originalFilename,
+    });
     res.setHeader("Content-Type", responseContentType);
-    res.setHeader("Content-Length", String(attachment.byteSize || object.contentLength || 0));
     res.setHeader("Cache-Control", "private, max-age=60");
     res.setHeader("X-Content-Type-Options", "nosniff");
     if (responseContentType === SVG_CONTENT_TYPE) {
       res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'");
     }
     const filename = attachment.originalFilename ?? "attachment";
-    const disposition = isInlineAttachmentContentType(responseContentType) ? "inline" : "attachment";
+    const disposition = parseBooleanQuery(req.query.download)
+      ? "attachment"
+      : isInlineAttachmentContentType(responseContentType) ? "inline" : "attachment";
     res.setHeader("Content-Disposition", `${disposition}; filename=\"${filename.replaceAll("\"", "")}\"`);
 
     object.stream.on("error", (err) => {
       next(err);
     });
+    if (range.kind === "range") {
+      const rangeLength = range.end - range.start + 1;
+      res.status(206);
+      res.setHeader("Content-Length", String(rangeLength));
+      res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${contentLength}`);
+      object.stream.pipe(res);
+      return;
+    }
+
+    res.setHeader("Content-Length", String(contentLength || object.contentLength || 0));
     object.stream.pipe(res);
   });
 
@@ -5380,6 +7424,7 @@ export function issueRoutes(
       return;
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
 
     try {
       await storage.deleteObject(attachment.companyId, attachment.objectKey);
