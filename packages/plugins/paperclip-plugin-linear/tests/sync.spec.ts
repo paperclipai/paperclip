@@ -482,6 +482,33 @@ describe("syncFromLinear", () => {
 });
 
 describe("syncToLinear", () => {
+  it("maps Paperclip backlog status to the Linear Backlog state", async () => {
+    const harness = createTestHarness({ manifest });
+    vi.spyOn(linearApi, "getWorkflowStates").mockResolvedValue([
+      { id: "state-backlog", name: "Backlog", type: "backlog" },
+      { id: "state-todo", name: "Todo", type: "unstarted" },
+    ]);
+    const updateIssue = vi.spyOn(linearApi, "updateIssue").mockResolvedValue(makeLinearIssue());
+
+    await syncToLinear(
+      harness.ctx,
+      makeLink({
+        lastSyncAt: "2020-01-01T00:00:00.000Z",
+        lastLinearStateType: "unstarted",
+      }),
+      { status: "backlog" },
+      "lin-token",
+      "team-1",
+    );
+
+    expect(updateIssue).toHaveBeenCalledWith(
+      expect.any(Function),
+      "lin-token",
+      "lin-1",
+      { stateId: "state-backlog" },
+    );
+  });
+
   it("moves the Linear issue to the bound Linear project when Paperclip projectId changes", async () => {
     const harness = createTestHarness({ manifest });
     await createProjectLink(harness.ctx, {

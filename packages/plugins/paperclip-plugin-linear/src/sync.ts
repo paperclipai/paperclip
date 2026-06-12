@@ -195,6 +195,7 @@ function linearStateToPaperclipStatus(stateType: string): IssueStatus {
 
 function paperclipStatusToLinearStateType(status: string): string {
   switch (status) {
+    case "backlog": return "backlog";
     case "done": return "completed";
     case "cancelled": return "canceled";
     case "in_progress": return "started";
