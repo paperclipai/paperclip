@@ -216,6 +216,11 @@ export async function startServer(): Promise<StartedServer> {
     if (config.deploymentMode !== "authenticated" || config.deploymentExposure !== "public") {
       return;
     }
+    // Embedded postgres is a managed local database — allow it even in authenticated/public mode.
+    // This handles local dev instances where the server owns the postgres lifecycle.
+    if (config.databaseMode === "embedded-postgres") {
+      return;
+    }
     if (!config.databaseUrl) {
       throw new Error(
         "authenticated public deployments require DATABASE_URL or config.database.connectionString; refusing embedded PostgreSQL fallback",
