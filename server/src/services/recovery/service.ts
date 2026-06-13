@@ -69,6 +69,7 @@ export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
+export const DEFAULT_MAX_STRANDED_RECOVERY_DEPTH = 3;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
@@ -2489,6 +2490,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         previousStatus: input.previousStatus,
         latestRun: input.latestRun,
       });
+    }
+
+    // Depth cap: prevent unbounded recovery chains (GH#7006)
+    if (input.issue.requestDepth >= DEFAULT_MAX_STRANDED_RECOVERY_DEPTH) {
+      const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+      const updated = await issuesSvc.update(input.issue.id, {
+        status: "blocked",
+        blockedByIssueIds: blockerIds,
+      });
+      if (!updated) return null;
+      await issuesSvc.addComment(
+        input.issue.id,
+        [
+          `Recovery depth cap (${DEFAULT_MAX_STRANDED_RECOVERY_DEPTH}) exceeded. Manual intervention required.`,
+          `This issue has been auto-blocked after ${input.issue.requestDepth} recovery escalation attempts.`,
+        ].join("\n"),
+        {},
+        { authorType: "system" },
+      );
+      return updated;
     }
 
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
