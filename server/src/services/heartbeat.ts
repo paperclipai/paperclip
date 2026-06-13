@@ -7163,12 +7163,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ? "idle"
           : "error";
 
+    // When transitioning to "error", preserve the last failed run's error
+    // payload on agents.metadata so operators can diagnose why the agent
+    // stopped accepting work without trawling logs.
+    let nextMetadata: Record<string, unknown> | undefined;
+    if (nextStatus === "error") {
+      const lastFailed = await db
+        .select({
+          runId: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          error: heartbeatRuns.error,
+          errorCode: heartbeatRuns.errorCode,
+          finishedAt: heartbeatRuns.finishedAt,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId))
+        .orderBy(desc(heartbeatRuns.finishedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const prevMetadata =
+        (existing.metadata && typeof existing.metadata === "object"
+          ? (existing.metadata as Record<string, unknown>)
+          : {}) ?? {};
+      nextMetadata = {
+        ...prevMetadata,
+        lastError: {
+          outcome,
+          message: lastFailed?.error ?? null,
+          code: lastFailed?.errorCode ?? null,
+          runId: lastFailed?.runId ?? null,
+          at: new Date().toISOString(),
+        },
+      };
+    }
+
     const updated = await db
       .update(agents)
       .set({
         status: nextStatus,
         lastHeartbeatAt: new Date(),
         updatedAt: new Date(),
+        ...(nextMetadata ? { metadata: nextMetadata } : {}),
       })
       .where(eq(agents.id, agentId))
       .returning()
