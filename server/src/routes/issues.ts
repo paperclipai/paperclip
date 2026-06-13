@@ -98,6 +98,12 @@ import {
 } from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
+  assignmentToCheckoutLatencyMs,
+  buildStaleHandoffGuardrailComment,
+  isStaleHandoffLatency,
+  STALE_HANDOFF_THRESHOLD_MS,
+} from "./issues-handoff-guardrails.js";
+import {
   isInlineAttachmentContentType,
   isAllowedContentType,
   normalizeIssueAttachmentMaxBytes,
@@ -5889,8 +5895,28 @@ export function issueRoutes(
     if (req.actor.type === "agent" && !checkoutRunId) return;
     const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
+    const checkoutStartedAt = updated.startedAt;
+    const handoffLatencyMs = checkoutStartedAt
+      ? assignmentToCheckoutLatencyMs({
+          createdAt: issue.updatedAt,
+          startedAt: checkoutStartedAt,
+        })
+      : 0;
+    const shouldEmitStaleHandoffGuardrail =
+      Boolean(checkoutStartedAt) &&
+      issue.status !== "in_progress" &&
+      isStaleHandoffLatency(handoffLatencyMs);
 
-    await logActivity(db, {
+    if (!checkoutStartedAt) {
+      logger.warn(
+        { issueId: issue.id, agentId: req.body.agentId, checkoutRunId },
+        "issue checkout startedAt missing; skipping stale handoff guardrail emission",
+      );
+    }
+
+    res.json(updated);
+
+    void logActivity(db, {
       companyId: issue.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
@@ -5899,8 +5925,25 @@ export function issueRoutes(
       action: "issue.checked_out",
       entityType: "issue",
       entityId: issue.id,
-      details: { agentId: req.body.agentId },
-    });
+      details: { agentId: req.body.agentId, handoffLatencyMs },
+    }).catch((err) => logger.warn({ err, issueId: issue.id }, "failed to log issue checkout activity"));
+
+    if (shouldEmitStaleHandoffGuardrail) {
+      void svc
+        .addComment(
+          issue.id,
+          buildStaleHandoffGuardrailComment({
+            issueIdentifier: issue.identifier ?? null,
+            latencyMs: handoffLatencyMs,
+            thresholdMs: STALE_HANDOFF_THRESHOLD_MS,
+          }),
+          {
+            agentId: req.body.agentId,
+            runId: checkoutRunId,
+          },
+        )
+        .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to emit stale handoff guardrail comment"));
+    }
 
     if (
       shouldWakeAssigneeOnCheckout({
@@ -5922,8 +5965,6 @@ export function issueRoutes(
         })
         .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue checkout"));
     }
-
-    res.json(updated);
   });
 
   router.post("/issues/:id/release", async (req, res) => {
