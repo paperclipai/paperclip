@@ -85,7 +85,7 @@ export function ApprovalDetail() {
   };
 
   const approveMutation = useMutation({
-    mutationFn: () => approvalsApi.approve(approvalId!),
+    mutationFn: (note?: string) => approvalsApi.approve(approvalId!, note || undefined),
     onSuccess: () => {
       setError(null);
       refresh();
@@ -95,7 +95,7 @@ export function ApprovalDetail() {
   });
 
   const rejectMutation = useMutation({
-    mutationFn: () => approvalsApi.reject(approvalId!),
+    mutationFn: (note?: string) => approvalsApi.reject(approvalId!, note || undefined),
     onSuccess: () => {
       setError(null);
       refresh();
@@ -104,7 +104,7 @@ export function ApprovalDetail() {
   });
 
   const revisionMutation = useMutation({
-    mutationFn: () => approvalsApi.requestRevision(approvalId!),
+    mutationFn: (note?: string) => approvalsApi.requestRevision(approvalId!, note || undefined),
     onSuccess: () => {
       setError(null);
       refresh();
@@ -266,7 +266,7 @@ export function ApprovalDetail() {
               <Button
                 size="sm"
                 className="bg-green-700 hover:bg-green-600 text-white"
-                onClick={() => approveMutation.mutate()}
+                onClick={() => { const note = window.prompt("Add a note (optional):"); if (note !== null) approveMutation.mutate(note); }}
                 disabled={approveMutation.isPending}
               >
                 Approve
@@ -274,7 +274,7 @@ export function ApprovalDetail() {
               <Button
                 variant="destructive"
                 size="sm"
-                onClick={() => rejectMutation.mutate()}
+                onClick={() => { const note = window.prompt("Reason for rejection (optional):"); if (note !== null) rejectMutation.mutate(note); }}
                 disabled={rejectMutation.isPending}
               >
                 Reject
@@ -290,7 +290,7 @@ export function ApprovalDetail() {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => revisionMutation.mutate()}
+              onClick={() => { const note = window.prompt("What should be revised? (optional):"); if (note !== null) revisionMutation.mutate(note); }}
               disabled={revisionMutation.isPending}
             >
               Request revision
