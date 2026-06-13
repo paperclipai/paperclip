@@ -122,8 +122,26 @@ export function buildPluginWorkerEnv(input: {
     PAPERCLIP_DEPLOYMENT_MODE: input.instanceInfo.deploymentMode ?? "",
     PAPERCLIP_DEPLOYMENT_EXPOSURE: input.instanceInfo.deploymentExposure ?? "",
   };
-  const canRegisterEnvironmentDrivers = Array.isArray(input.manifest.capabilities)
-    && input.manifest.capabilities.includes("environment.drivers.register");
+  const capabilities: string[] = Array.isArray(input.manifest.capabilities)
+    ? (input.manifest.capabilities as string[])
+    : [];
+
+  // Forward the agent-JWT secret so plugins that need to mint short-lived
+  // agent tokens (e.g. plugins with `agents.read` that call back into the
+  // Paperclip API on behalf of an agent) can do so without a separate
+  // out-of-band credential. Only forwarded when the manifest declares
+  // `agents.read`, to keep the worker env minimal for plugins that don't
+  // need it.
+  if (capabilities.includes("agents.read")) {
+    const secret = processEnv.PAPERCLIP_AGENT_JWT_SECRET;
+    if (secret && secret.trim().length > 0) env.PAPERCLIP_AGENT_JWT_SECRET = secret;
+    const issuer = processEnv.PAPERCLIP_AGENT_JWT_ISSUER;
+    if (issuer && issuer.trim().length > 0) env.PAPERCLIP_AGENT_JWT_ISSUER = issuer;
+    const audience = processEnv.PAPERCLIP_AGENT_JWT_AUDIENCE;
+    if (audience && audience.trim().length > 0) env.PAPERCLIP_AGENT_JWT_AUDIENCE = audience;
+  }
+
+  const canRegisterEnvironmentDrivers = capabilities.includes("environment.drivers.register");
   if (!canRegisterEnvironmentDrivers) return env;
 
   for (const key of [...ADAPTER_ENV_PASSTHROUGH, ...K8S_IN_CLUSTER_ENV_PASSTHROUGH]) {
