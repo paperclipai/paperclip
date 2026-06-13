@@ -12,6 +12,7 @@ import {
 } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
+import { isAgentDailyActivityDiary } from "./agent-daily-activity-diary.js";
 import { budgetService } from "./budgets.js";
 import { issueService } from "./issues.js";
 import {
@@ -797,6 +798,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     const prefixCache = new Map<string, string>();
     for (const candidate of candidates) {
       if (!candidate.assigneeAgentId) {
+        result.skipped += 1;
+        continue;
+      }
+      if (isAgentDailyActivityDiary(candidate)) {
         result.skipped += 1;
         continue;
       }

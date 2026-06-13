@@ -55,6 +55,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     startedAt?: Date;
     parentId?: string | null;
     originKind?: string;
+    title?: string;
   }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
@@ -97,7 +98,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     await db.insert(issues).values({
       id: issueId,
       companyId,
-      title: "Implement data import",
+      title: opts?.title ?? "Implement data import",
       status: opts?.status ?? "in_progress",
       priority: "medium",
       assigneeAgentId: coderId,
@@ -467,6 +468,30 @@ describeEmbeddedPostgres("productivity review service", () => {
 
     expect(result.created).toBe(0);
     expect(reviews).toHaveLength(1);
+  });
+
+  it("skips agent daily-activity diaries so high-churn/no-comment-streak detectors do not spawn reviews on Discord ingestion days (FIG-592)", async () => {
+    const now = new Date("2026-05-26T15:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      title: "Bruto-26May2026 - Discord activity",
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.updated).toBe(0);
+    expect(result.skipped).toBeGreaterThan(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
   });
 
   it("treats a recently completed review as a snooze window", async () => {
