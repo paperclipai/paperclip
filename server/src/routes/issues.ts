@@ -4510,48 +4510,56 @@ export function issueRoutes(
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
     });
 
-    await logActivity(db, {
-      companyId: parent.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "issue.child_created",
-      entityType: "issue",
-      entityId: issue.id,
-      details: {
-        parentId: parent.id,
-        identifier: issue.identifier,
-        title: issue.title,
-        ...buildCreateIssueActivityStatusDetails(issue, res),
-        inheritedExecutionWorkspaceFromIssueId: parent.id,
-        ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
-        ...(parentBlockerAdded ? { parentBlockerAdded: true } : {}),
-      },
-    });
-
-    if (executionPolicy?.monitor) {
+    try {
       await logActivity(db, {
         companyId: parent.companyId,
         actorType: actor.actorType,
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
-        action: "issue.monitor_scheduled",
+        action: "issue.child_created",
         entityType: "issue",
         entityId: issue.id,
         details: {
-          identifier: issue.identifier,
           parentId: parent.id,
-          nextCheckAt: executionPolicy.monitor.nextCheckAt,
-          notes: executionPolicy.monitor.notes,
-          scheduledBy: executionPolicy.monitor.scheduledBy,
-          serviceName: executionPolicy.monitor.serviceName ?? null,
-          timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
-          maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
-          recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
+          identifier: issue.identifier,
+          title: issue.title,
+          ...buildCreateIssueActivityStatusDetails(issue, res),
+          inheritedExecutionWorkspaceFromIssueId: parent.id,
+          ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
+          ...(parentBlockerAdded ? { parentBlockerAdded: true } : {}),
         },
       });
+    } catch (err) {
+      logger.error({ err, issueId: issue.id, parentId: parent.id }, "Failed to log child_created activity");
+    }
+
+    if (executionPolicy?.monitor) {
+      try {
+        await logActivity(db, {
+          companyId: parent.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.monitor_scheduled",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            identifier: issue.identifier,
+            parentId: parent.id,
+            nextCheckAt: executionPolicy.monitor.nextCheckAt,
+            notes: executionPolicy.monitor.notes,
+            scheduledBy: executionPolicy.monitor.scheduledBy,
+            serviceName: executionPolicy.monitor.serviceName ?? null,
+            timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
+            maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
+            recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
+          },
+        });
+      } catch (err) {
+        logger.error({ err, issueId: issue.id }, "Failed to log monitor_scheduled activity");
+      }
     }
 
     void queueIssueAssignmentWakeup({
