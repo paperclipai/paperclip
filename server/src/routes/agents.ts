@@ -3454,7 +3454,20 @@ export function agentRoutes(
 
   router.get("/heartbeat-runs/:runId", async (req, res) => {
     const runId = req.params.runId as string;
-    const run = await heartbeat.getRun(runId);
+    // Caller can request the full `result_json` JSONB (instead of the
+    // safe projection that summarises oversized payloads) by passing
+    // `?include=resultJson` or `?expand=full`. Useful for dashboards
+    // / smoke tests / external-adapter consumers that need the
+    // adapter's structured telemetry (tool-call audit, retry history,
+    // MCP server health, etc.) which lives only in the persisted
+    // JSONB. Auth (`assertCompanyAccess`) and redaction
+    // (`redactCurrentUserValue`) below run unchanged.
+    const includeFullResultJson =
+      req.query.include === "resultJson" || req.query.expand === "full";
+    const run = await heartbeat.getRun(
+      runId,
+      includeFullResultJson ? { unsafeFullResultJson: true } : undefined,
+    );
     if (!run) {
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
