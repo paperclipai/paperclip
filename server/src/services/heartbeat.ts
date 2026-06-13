@@ -7430,7 +7430,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const reaped: string[] = [];
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
-      if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+      // Validate the in-memory handle: if it's stale (entry exists but the
+      // child PID is dead), drop it so the reaper can finalize the run.
+      // This is belt-and-suspenders for the MISA-545 spawnTracked fix —
+      // without it, any path that fails to clear runningProcesses on exit
+      // (e.g. an unhandled exception in the close handler) leaves the
+      // agent slot locked.
+      const inMemHandle = runningProcesses.get(run.id);
+      if (inMemHandle) {
+        const memChildPid = inMemHandle.child.pid;
+        const memChildAlive = typeof memChildPid === "number" && memChildPid > 0
+          ? isProcessAlive(memChildPid)
+          : false;
+        if (memChildAlive) continue;
+        runningProcesses.delete(run.id);
+      }
+      if (activeRunExecutions.has(run.id)) continue;
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {

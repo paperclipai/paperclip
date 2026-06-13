@@ -2147,6 +2147,13 @@ export async function runChildProcess(
     terminalResultCleanup?: TerminalResultCleanupOptions;
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
+    /**
+     * Override the delay after the child's `exit` event before forcing
+     * resolution if `close` hasn't fired (because grandchildren held stdio
+     * open). Defaults to 30s. Set lower in tests; set 0 to disable. See
+     * MISA-545 for the orphan-grandchild zombie scenario.
+     */
+    exitCloseFallbackMs?: number;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -2302,9 +2309,31 @@ export async function runChildProcess(
           });
         }
 
+        // Fallback for the orphan-grandchild zombie case: when the spawned
+        // child exits but its grandchildren (e.g. MCP servers, tool sub-shells)
+        // inherited stdio and keep the pipes open, node never fires 'close' on
+        // the parent. Without this fallback, the promise never resolves, the
+        // dispatcher's await hangs forever, and runningProcesses never gets
+        // cleared — locking the agent slot until the 60-min silence watchdog.
+        // See MISA-545.
+        let exitFallbackTimer: NodeJS.Timeout | null = null;
+        let exitFallbackKillTimer: NodeJS.Timeout | null = null;
+        let lastExitCode: number | null = null;
+        let lastExitSignal: NodeJS.Signals | null = null;
+        const EXIT_CLOSE_FALLBACK_MS = Math.max(0, opts.exitCloseFallbackMs ?? 30_000);
+        const EXIT_CLOSE_FALLBACK_KILL_MS = 1_000;
+
+        const clearExitFallbackTimers = () => {
+          if (exitFallbackTimer) clearTimeout(exitFallbackTimer);
+          if (exitFallbackKillTimer) clearTimeout(exitFallbackKillTimer);
+          exitFallbackTimer = null;
+          exitFallbackKillTimer = null;
+        };
+
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
+          clearExitFallbackTimers();
           runningProcesses.delete(runId);
           void target.cleanup?.();
           const errno = (err as NodeJS.ErrnoException).code;
@@ -2316,13 +2345,53 @@ export async function runChildProcess(
           reject(new Error(msg));
         });
 
-        child.on("exit", () => {
+        child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+          lastExitCode = code;
+          lastExitSignal = signal;
           maybeArmTerminalResultCleanup();
+          if (EXIT_CLOSE_FALLBACK_MS === 0 || exitFallbackTimer) return;
+          exitFallbackTimer = setTimeout(() => {
+            exitFallbackTimer = null;
+            // 'close' already fired? runningProcesses.delete in close handler.
+            if (!runningProcesses.has(runId)) return;
+            // Kick lingering grandchildren out of the inherited stdio pipes.
+            try {
+              signalRunningProcess({ child, processGroupId }, "SIGKILL");
+            } catch {
+              // best-effort
+            }
+            // Give SIGKILL a moment to take effect; if 'close' still doesn't
+            // fire, force-resolve from the exit-event data so the dispatcher
+            // can release the agent slot.
+            exitFallbackKillTimer = setTimeout(() => {
+              exitFallbackKillTimer = null;
+              if (!runningProcesses.has(runId)) return;
+              if (timeout) clearTimeout(timeout);
+              clearTerminalCleanupTimers();
+              runningProcesses.delete(runId);
+              void logChain.finally(() => {
+                void Promise.resolve()
+                  .then(() => target.cleanup?.())
+                  .finally(() => {
+                    resolve({
+                      exitCode: lastExitCode,
+                      signal: lastExitSignal,
+                      timedOut,
+                      stdout,
+                      stderr,
+                      pid: child.pid ?? null,
+                      startedAt,
+                    });
+                  });
+              });
+            }, EXIT_CLOSE_FALLBACK_KILL_MS);
+          }, EXIT_CLOSE_FALLBACK_MS);
         });
 
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
+          clearExitFallbackTimers();
           runningProcesses.delete(runId);
           void logChain.finally(() => {
             void Promise.resolve()

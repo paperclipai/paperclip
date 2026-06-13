@@ -597,6 +597,91 @@ describe("runChildProcess", () => {
       }
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "force-resolves when child exits but a grandchild keeps stdio open (MISA-545)",
+    async () => {
+      // Repro of the orphan-grandchild zombie: the immediate child exits
+      // cleanly, but a grandchild it spawned with inherited stdout keeps the
+      // pipe open. Without the exit→close fallback, runChildProcess hangs
+      // forever, locking the agent slot. With the fallback armed at 200ms,
+      // we expect the promise to resolve under ~2s and the run-id entry to
+      // be cleared from runningProcesses.
+      const runId = randomUUID();
+      const startedAt = Date.now();
+      const resultPromise = runChildProcess(
+        runId,
+        process.execPath,
+        [
+          "-e",
+          [
+            "const { spawn } = require('node:child_process');",
+            // Grandchild inherits stdout — it will hold the pipe open and
+            // print 'noise' every 100ms long after the immediate child exits.
+            "const g = spawn(process.execPath, ['-e', \"setInterval(() => process.stdout.write('noise\\\\n'), 100)\"], { stdio: ['ignore', 'inherit', 'ignore'] });",
+            "process.stdout.write(`grandchild:${g.pid}\\n`);",
+            // Immediate child exits 50ms in.
+            "setTimeout(() => process.exit(0), 50);",
+          ].join(" "),
+        ],
+        {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 0,
+          graceSec: 1,
+          onLog: async () => {},
+          exitCloseFallbackMs: 200,
+        },
+      );
+
+      const result = await resultPromise;
+      const elapsedMs = Date.now() - startedAt;
+
+      // Resolved well under 5s — without the fallback, this would never
+      // settle.
+      expect(elapsedMs).toBeLessThan(5_000);
+      expect(result.exitCode).toBe(0);
+
+      // runningProcesses entry must be cleared so reapOrphanedRuns will
+      // process the run normally and the agent slot is released.
+      expect(runningProcesses.has(runId)).toBe(false);
+
+      // Grandchild should be killed (SIGKILL via process group fired in the
+      // fallback path).
+      const grandchildPid = Number.parseInt(
+        result.stdout.match(/grandchild:(\d+)/)?.[1] ?? "",
+        10,
+      );
+      if (Number.isInteger(grandchildPid) && grandchildPid > 0) {
+        expect(await waitForPidExit(grandchildPid, 2_000)).toBe(true);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "still resolves via the close handler when grandchildren behave normally",
+    async () => {
+      // Sanity check: when nothing holds stdio open, the normal close path
+      // fires before the exit-fallback timer. Behaviour matches pre-MISA-545.
+      const runId = randomUUID();
+      const result = await runChildProcess(
+        runId,
+        process.execPath,
+        ["-e", "process.stdout.write('done\\n');"],
+        {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 0,
+          graceSec: 1,
+          onLog: async () => {},
+          exitCloseFallbackMs: 5_000,
+        },
+      );
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("done\n");
+      expect(runningProcesses.has(runId)).toBe(false);
+    },
+  );
 });
 
 describe("renderPaperclipWakePrompt", () => {
