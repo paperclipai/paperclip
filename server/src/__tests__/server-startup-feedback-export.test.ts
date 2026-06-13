@@ -305,6 +305,7 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     loadConfigMock.mockReturnValue(buildTestConfig());
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;
+    delete process.env.PAPERCLIP_RUNTIME_API_URL;
   });
 
   afterEach(() => {
@@ -375,5 +376,20 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     expect(started.listenPort).toBe(3110);
     expect(started.apiUrl).toBe("https://paperclip.example");
     expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("https://paperclip.example");
+  });
+
+  it("honors a preset PAPERCLIP_RUNTIME_API_URL instead of recomputing from allowedHostnames", async () => {
+    // Operator-supplied PAPERCLIP_RUNTIME_API_URL must win over the computed default
+    // so launcher scripts can pin spawned agents to a reachable URL even when
+    // allowedHostnames[0] resolves to a hostname not bound to the listen port.
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({
+      port: 3100,
+      allowedHostnames: ["leverage.local"],
+    }));
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://127.0.0.1:3100";
+
+    await startServer();
+
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:3100");
   });
 });
