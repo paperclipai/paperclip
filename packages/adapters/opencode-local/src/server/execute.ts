@@ -58,6 +58,12 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+interface OpenCodeInstructionsBundle {
+  sourceRootPath: string;
+  entryFile: string;
+  sourceFilePath: string;
+}
+
 function firstNonEmptyLine(text: string): string {
   return (
     text
@@ -76,6 +82,44 @@ function parseModelProvider(model: string | null): string | null {
 
 function resolveOpenCodeBiller(env: Record<string, string>, provider: string | null): string {
   return inferOpenAiCompatibleBiller(env, null) ?? provider ?? "unknown";
+}
+
+function normalizeInstructionsEntryFile(candidate: string): string {
+  const normalized = path.posix.normalize(candidate.replaceAll("\\", "/")).replace(/^\/+/, "");
+  if (
+    normalized.length === 0 ||
+    normalized === "." ||
+    normalized === ".." ||
+    normalized.startsWith("../")
+  ) {
+    return "";
+  }
+  return normalized;
+}
+
+function resolveOpenCodeInstructionsBundle(
+  config: Record<string, unknown>,
+  cwd: string,
+): OpenCodeInstructionsBundle | null {
+  const instructionsRootPath = asString(config.instructionsRootPath, "").trim();
+  const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
+  if (!instructionsRootPath && !instructionsFilePath) return null;
+
+  const sourceRootPath = instructionsRootPath
+    ? path.resolve(cwd, instructionsRootPath)
+    : path.dirname(path.resolve(cwd, instructionsFilePath));
+  const entryFile = normalizeInstructionsEntryFile(
+    asString(config.instructionsEntryFile, "").trim() ||
+    path.basename(instructionsFilePath) ||
+    "AGENTS.md",
+  );
+  if (!entryFile) return null;
+
+  return {
+    sourceRootPath,
+    entryFile,
+    sourceFilePath: path.resolve(sourceRootPath, entryFile),
+  };
 }
 
 const REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC = 20;
@@ -239,6 +283,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const instructionsBundle = resolveOpenCodeInstructionsBundle(config, cwd);
+  const instructionsRootIsReadableDirectory = instructionsBundle
+    ? await fs.stat(instructionsBundle.sourceRootPath).then((stat) => stat.isDirectory()).catch(() => false)
+    : false;
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   if (!executionTargetIsRemote) {
     await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
@@ -364,6 +412,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
     let localSkillsDir: string | null = null;
     let remoteRuntimeRootDir: string | null = null;
+    let preparedExecutionTargetRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
     let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
 
     if (executionTarget?.kind === "remote") {
@@ -372,7 +421,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "stdout",
         `[paperclip] Syncing workspace and OpenCode runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
       );
-      const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
+      const preparedRuntime = await prepareAdapterExecutionTargetRuntime({
         runId,
         target: executionTarget,
         adapterKey: "opencode",
@@ -386,6 +435,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             localDir: localSkillsDir,
             followSymlinks: true,
           },
+          ...(instructionsBundle && instructionsRootIsReadableDirectory
+            ? [{
+              key: "instructions",
+              localDir: instructionsBundle.sourceRootPath,
+              followSymlinks: true,
+            }]
+            : []),
           ...(localRuntimeConfigHome
             ? [{
               key: "xdgConfig",
@@ -394,8 +450,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             : []),
         ],
       });
-      restoreRemoteWorkspace = () => preparedExecutionTargetRuntime.restoreWorkspace();
-      effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
+      preparedExecutionTargetRuntime = preparedRuntime;
+      restoreRemoteWorkspace = () => preparedRuntime.restoreWorkspace();
+      effectiveExecutionCwd = preparedRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
       refreshPaperclipWorkspaceEnvForExecution({
         env: preparedRuntimeConfig.env,
         envConfig,
@@ -409,16 +466,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         executionTargetIsRemote,
         executionCwd: effectiveExecutionCwd,
       });
-      remoteRuntimeRootDir = preparedExecutionTargetRuntime.runtimeRootDir;
+      remoteRuntimeRootDir = preparedRuntime.runtimeRootDir;
       const managedHome = adapterExecutionTargetUsesManagedHome(executionTarget);
-      if (managedHome && preparedExecutionTargetRuntime.runtimeRootDir) {
-        preparedRuntimeConfig.env.HOME = preparedExecutionTargetRuntime.runtimeRootDir;
+      if (managedHome && preparedRuntime.runtimeRootDir) {
+        preparedRuntimeConfig.env.HOME = preparedRuntime.runtimeRootDir;
       }
-      if (localRuntimeConfigHome && preparedExecutionTargetRuntime.assetDirs.xdgConfig) {
-        preparedRuntimeConfig.env.XDG_CONFIG_HOME = preparedExecutionTargetRuntime.assetDirs.xdgConfig;
+      if (localRuntimeConfigHome && preparedRuntime.assetDirs.xdgConfig) {
+        preparedRuntimeConfig.env.XDG_CONFIG_HOME = preparedRuntime.assetDirs.xdgConfig;
       }
-      const remoteHomeDir = managedHome && preparedExecutionTargetRuntime.runtimeRootDir
-        ? preparedExecutionTargetRuntime.runtimeRootDir
+      const remoteHomeDir = managedHome && preparedRuntime.runtimeRootDir
+        ? preparedRuntime.runtimeRootDir
         : await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
             cwd,
             env: preparedRuntimeConfig.env,
@@ -426,12 +483,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             graceSec,
             onLog,
           });
-      if (remoteHomeDir && preparedExecutionTargetRuntime.assetDirs.skills) {
+      if (remoteHomeDir && preparedRuntime.assetDirs.skills) {
         const remoteSkillsDir = path.posix.join(remoteHomeDir, ".claude", "skills");
         await runAdapterExecutionTargetShellCommand(
           runId,
           executionTarget,
-          `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSkillsDir))} && rm -rf ${JSON.stringify(remoteSkillsDir)} && cp -a ${JSON.stringify(preparedExecutionTargetRuntime.assetDirs.skills)} ${JSON.stringify(remoteSkillsDir)}`,
+          `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSkillsDir))} && rm -rf ${JSON.stringify(remoteSkillsDir)} && cp -a ${JSON.stringify(preparedRuntime.assetDirs.skills)} ${JSON.stringify(remoteSkillsDir)}`,
           { cwd, env: preparedRuntimeConfig.env, timeoutSec, graceSec, onLog },
         );
       }
@@ -491,40 +548,59 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] OpenCode session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
       );
     }
-    const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-    const resolvedInstructionsFilePath = instructionsFilePath
-      ? path.resolve(cwd, instructionsFilePath)
+    const effectiveInstructionsFilePath = (() => {
+      if (!instructionsBundle) return "";
+      if (
+        executionTargetIsRemote &&
+        instructionsRootIsReadableDirectory &&
+        preparedExecutionTargetRuntime?.assetDirs.instructions
+      ) {
+        return path.posix.join(
+          preparedExecutionTargetRuntime.assetDirs.instructions,
+          ...instructionsBundle.entryFile.split("/"),
+        );
+      }
+      return instructionsBundle.sourceFilePath;
+    })();
+    const effectiveInstructionsDir = effectiveInstructionsFilePath
+      ? `${path.dirname(effectiveInstructionsFilePath)}/`
       : "";
-    const instructionsDir = resolvedInstructionsFilePath ? `${path.dirname(resolvedInstructionsFilePath)}/` : "";
     let instructionsPrefix = "";
-    if (resolvedInstructionsFilePath) {
+    if (instructionsBundle) {
       try {
-        const instructionsContents = await fs.readFile(resolvedInstructionsFilePath, "utf8");
+        const instructionsContents = await fs.readFile(instructionsBundle.sourceFilePath, "utf8");
+        const locationDirective =
+          effectiveInstructionsFilePath && effectiveInstructionsFilePath !== instructionsBundle.sourceFilePath
+            ? `The above agent instructions were loaded from ${instructionsBundle.sourceFilePath}. ` +
+              `For this run, Paperclip materialized the instructions bundle at ${effectiveInstructionsDir}. `
+            : `The above agent instructions were loaded from ${instructionsBundle.sourceFilePath}. `;
         instructionsPrefix =
           `${instructionsContents}\n\n` +
-          `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
-          `Resolve any relative file references from ${instructionsDir}.\n\n`;
+          locationDirective +
+          `Resolve any relative file references from ${effectiveInstructionsDir}. ` +
+          `This base directory is authoritative for sibling instruction files such as ` +
+          `./HEARTBEAT.md, ./SOUL.md, ./TOOLS.md, and ./skills/; do not resolve those from the workspace root.\n\n`;
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         await onLog(
           "stdout",
-          `[paperclip] Warning: could not read agent instructions file "${resolvedInstructionsFilePath}": ${reason}\n`,
+          `[paperclip] Warning: could not read agent instructions file "${instructionsBundle.sourceFilePath}": ${reason}\n`,
         );
       }
     }
 
     const commandNotes = (() => {
       const notes = [...preparedRuntimeConfig.notes];
-      if (!resolvedInstructionsFilePath) return notes;
+      if (!instructionsBundle) return notes;
       if (instructionsPrefix.length > 0) {
-        notes.push(`Loaded agent instructions from ${resolvedInstructionsFilePath}`);
+        notes.push(`Loaded agent instructions from ${instructionsBundle.sourceFilePath}`);
         notes.push(
-          `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
+          `Prepended instructions + path directive to stdin prompt (relative references from ${effectiveInstructionsDir}).`,
         );
         return notes;
       }
       notes.push(
-        `Configured instructionsFilePath ${resolvedInstructionsFilePath}, but file could not be read; continuing without injected instructions.`,
+        `Configured instructionsFilePath ${instructionsBundle.sourceFilePath}, but file could not be read; continuing without injected instructions.`,
       );
       return notes;
     })();

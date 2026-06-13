@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -238,6 +238,86 @@ describe("opencode remote execution", () => {
     expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
     expect(startAdapterExecutionTargetPaperclipBridge).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
+  });
+
+  it("syncs external instructions bundles and resolves sibling files from the remote runtime asset", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-instructions-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const instructionsRoot = path.join(rootDir, "agent-instructions");
+    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-instructions/workspace";
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(path.join(instructionsRoot, "skills"), { recursive: true });
+    await writeFile(
+      path.join(instructionsRoot, "AGENTS.md"),
+      "Read ./HEARTBEAT.md and ./skills/review.md before acting.\n",
+      "utf8",
+    );
+    await writeFile(path.join(instructionsRoot, "HEARTBEAT.md"), "Heartbeat checklist.\n", "utf8");
+    await writeFile(path.join(instructionsRoot, "skills", "review.md"), "Review skill.\n", "utf8");
+
+    await execute({
+      runId: "run-instructions",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "OpenCode Builder",
+        adapterType: "opencode_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "opencode",
+        model: "opencode/gpt-5-nano",
+        instructionsBundleMode: "external",
+        instructionsRootPath: instructionsRoot,
+        instructionsEntryFile: "AGENTS.md",
+        instructionsFilePath: path.join(instructionsRoot, "AGENTS.md"),
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    const remoteInstructionsDir = `${managedRemoteWorkspace}/.paperclip-runtime/opencode/instructions`;
+    expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
+      localDir: instructionsRoot,
+      remoteDir: remoteInstructionsDir,
+      followSymlinks: true,
+    }));
+
+    const runCall = runChildProcess.mock.calls.find((entry) => Array.isArray(entry[2]) && entry[2].includes("run")) as
+      | [string, string, string[], { stdin?: string }]
+      | undefined;
+    expect(runCall?.[3].stdin).toContain("Read ./HEARTBEAT.md and ./skills/review.md before acting.");
+    expect(runCall?.[3].stdin).toContain(
+      `For this run, Paperclip materialized the instructions bundle at ${remoteInstructionsDir}/`,
+    );
+    expect(runCall?.[3].stdin).toContain(
+      `Resolve any relative file references from ${remoteInstructionsDir}/`,
+    );
+    expect(runCall?.[3].stdin).not.toContain(`Resolve any relative file references from ${workspaceDir}`);
   });
 
   it("fails before the remote run when the configured model is unavailable on the SSH target", async () => {
