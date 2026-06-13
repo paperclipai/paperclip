@@ -44,6 +44,7 @@ import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
+import { githubWebhookRoutes } from "./routes/github-webhooks.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
@@ -310,6 +311,7 @@ export async function createApp(
       },
     },
   );
+  api.use(githubWebhookRoutes(db));
   api.use(
     pluginRoutes(
       db,
