@@ -1194,11 +1194,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(and(eq(agents.id, run.agentId), notInArray(agents.status, ["paused", "terminated"])));
   }
 
+  type SourceTerminalEvidence =
+    | NonNullable<Awaited<ReturnType<typeof latestSameRunSourceTerminalEvidence>>>
+    | { kind: "status_terminal"; id: string; createdAt: Date; action: string };
+
   async function foldSourceResolvedStaleRun(input: {
     run: typeof heartbeatRuns.$inferSelect;
     runningAgent: typeof agents.$inferSelect;
     sourceIssue: typeof issues.$inferSelect;
-    evidence: Awaited<ReturnType<typeof latestSameRunSourceTerminalEvidence>>;
+    evidence: SourceTerminalEvidence | null;
     existingEvaluation: Awaited<ReturnType<typeof findOpenStaleRunEvaluation>>;
     silenceStartedAt: Date | null;
     silenceAgeMs: number | null;
@@ -1612,18 +1616,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         sourceIssue,
         evidenceAfter: silenceStartedAt,
       });
-      if (terminalEvidence) {
-        return foldSourceResolvedStaleRun({
-          run: input.run,
-          runningAgent,
-          sourceIssue,
-          evidence: terminalEvidence,
-          existingEvaluation: existing,
-          silenceStartedAt,
-          silenceAgeMs: silenceAgeMsForRun(input.run, input.now),
-          now: input.now,
-        });
-      }
+      // Fold as a false positive whenever the source issue has reached a terminal
+      // disposition, regardless of whether same-run activity evidence exists.
+      // When marked done/cancelled by the board or a different run, no same-run
+      // evidence is recorded — but the run is still orphaned and must not generate
+      // repeated "Review silent active run" issues.
+      const evidence: SourceTerminalEvidence = terminalEvidence ?? {
+        kind: "status_terminal",
+        id: sourceIssue.id,
+        createdAt: input.now,
+        action: `issue.status.${sourceIssue.status}`,
+      };
+      return foldSourceResolvedStaleRun({
+        run: input.run,
+        runningAgent,
+        sourceIssue,
+        evidence,
+        existingEvaluation: existing,
+        silenceStartedAt,
+        silenceAgeMs: silenceAgeMsForRun(input.run, input.now),
+        now: input.now,
+      });
     }
 
     // Idle output is expected when the source issue is blocked — skip ticket creation entirely.
