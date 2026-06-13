@@ -20,15 +20,20 @@ konservativer Auto-Recovery-Agent mit genau einer mutierenden Aktion.
   n8n-UI (Settings → API) **ohne Neustart** erzeugt wird. REST `POST /workflows/{id}/activate`
   registriert den Trigger auf der **laufenden** Instanz — die CLI (`update/publish:workflow`)
   schreibt nur die DB und greift i.d.R. erst nach Neustart.
-- **Retry/Re-Run:** **weggelassen.** Kein sauberer, zuverlässiger Weg; Trigger-Workflows
-  laufen beim nächsten regulären Trigger ohnehin neu. Transiente Fehler kennzeichnet der
-  Agent und weist auf Selbstheilung hin; ein im Ausnahmefall sinnvolles Retry wird nur
-  **empfohlen/eskaliert** (bestehender Pfad, kein neuer Code).
-- **Autonomie konservativ:**
+- **Retry/Re-Run:** Ein sauberer REST-Retry existiert in 2.25.7
+  (`POST /api/v1/executions/{id}/retry`, optional `{loadWorkflow: bool}`). Das eigentliche
+  Risiko ist nicht Machbarkeit, sondern **Doppel-Seiteneffekte** (doppelte Mail/API-Calls).
+  Entscheidung: `retry_execution` wird als getestetes Werkzeug gebaut, der **Agent ruft es
+  aber NICHT selbst auf**. Er empfiehlt Retry nur bei `transient`-Fällen mit *geringem*
+  Seiteneffekt-Risiko und liefert den fertigen Aufruf in der Eskalation mit; **ein Mensch
+  führt aus**. Kein Auto-Retry (instruktions-basiertes Verbot wäre hier zu weich).
+- **Autonomie konservativ (drei Stufen):**
   - 🟢 GRÜN (Agent führt selbst aus): **genau eine** Aktion — Workflow reaktivieren via REST.
-  - 🔴 ROT: n8n-Neustart, Credential-Sync, Workflow-JSON-Edit → Agent erstellt eine
-    Approval/Eskalation an den CTO mit konkretem Schritt-Plan; **Ausführung bleibt menschlich**
-    (auch nach Approval führt der Agent diese NICHT selbst aus).
+  - 🟡 GELB (Agent empfiehlt, Mensch führt aus): Retry via REST — mit Seiteneffekt-Einschätzung
+    + fertigem Aufruf in der Eskalation.
+  - 🔴 ROT (Agent empfiehlt, Mensch führt aus): n8n-Neustart, Credential-Sync, Workflow-JSON-Edit
+    → Approval/Eskalation an den CTO mit konkretem Schritt-Plan. Der Agent führt ROT- und
+    GELB-Aktionen NIE selbst aus (auch nicht nach Approval).
 
 ## Architektur — was neu dazukommt
 
@@ -42,6 +47,9 @@ Neues kleines Toolkit unter `tools/n8n-workflow-watcher/recovery/`:
   - `activate_workflow(base, key, wf_id) -> dict` — `POST /api/v1/workflows/{id}/activate`.
   - `deactivate_workflow(base, key, wf_id) -> dict` — `POST /api/v1/workflows/{id}/deactivate`
     (nur für den deactivate→activate-Fallback-Zyklus).
+  - `retry_execution(base, key, exec_id, load_workflow=False) -> dict` —
+    `POST /api/v1/executions/{id}/retry` (Body `{"loadWorkflow": bool}`). Werkzeug für die
+    GELB-Stufe; vom Agenten NICHT automatisch aufgerufen.
   - Fehler (HTTP/Netz) → `N8nApiError`.
 - `n8n_health.py` — read-only Diagnose-Helfer für die Klassifikation:
   - `healthz(base) -> bool` (`GET /healthz`).
@@ -90,8 +98,8 @@ Nie-schlechter-zurücklassen-Regel (s. Fehlerbehandlung).
 ## Testing
 
 - `n8n_rest.py`: Unit-Tests mit gemocktem `urllib.request.urlopen` (Header `X-N8N-API-KEY`,
-  korrekte activate/deactivate-URLs, 401/HTTP-Fehler → `N8nApiError`, `load_api_key`
-  aus Env und aus `~/.whitestag.env`-Fixture) — analog zum bewährten `paperclip_client`.
+  korrekte activate/deactivate/retry-URLs + retry-Body, 401/HTTP-Fehler → `N8nApiError`,
+  `load_api_key` aus Env und aus `~/.whitestag.env`-Fixture) — analog zum bewährten `paperclip_client`.
 - `n8n_health.py`: Unit-Tests für das Parsen von `ps eww`-Output-Fixtures + `healthz`-Mock.
 - **Live-Verifikation (Plan-Phase, nach Key-Erzeugung):** echte activate-Semantik gegen die
   laufende Instanz (re-register vs. no-op) an einem unkritischen Workflow.
@@ -99,7 +107,7 @@ Nie-schlechter-zurücklassen-Regel (s. Fehlerbehandlung).
 
 ## Abgrenzung (YAGNI)
 
-- Keine Retry-/Re-Run-Mechanik.
+- Kein Auto-Retry; `retry_execution` existiert als Werkzeug (GELB), wird aber nur vom Menschen ausgelöst.
 - Keine automatische Ausführung von Neustart, Credential-Sync oder JSON-Edit.
 - Keine Erweiterung des Detektors (auto-deaktivierte `active=0`-Workflows bleiben außen vor —
   falls relevant, eigener späterer Schritt).
