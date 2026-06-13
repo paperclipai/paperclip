@@ -25,7 +25,20 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS = 6;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_HOURLY = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_SIX_HOURS = 30;
-export const DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS = 6 * 60 * 60 * 1000;
+// 24h. MUST be materially larger than `longActiveMs` (6h) — see invariant
+// in buildThresholds(). Otherwise permanently-`in_progress` source issues
+// (routine_execution, continuous signal bus) re-satisfy the long-active
+// trigger the instant the snooze expires, producing a perpetual loop.
+// BLU-7716: BLU-7316 cycled through 4 reviews in ~24h at the prior 6h value.
+export const DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS = 24 * 60 * 60 * 1000;
+// After this many consecutive PRODUCTIVE closes on the same source, apply the
+// extended snooze. A `cancelled` review breaks the streak.
+export const DEFAULT_PRODUCTIVITY_REVIEW_EXTENDED_SNOOZE_AFTER_CLOSES = 3;
+// 7d. Applied once consecutive PRODUCTIVE closes ≥ extendedSnoozeAfterCloses —
+// covers permanently-active sources (signal bus, weekly rollup) so the scanner
+// stops re-firing on a fixed cadence after the reviewer has confirmed the
+// pattern is expected.
+export const DEFAULT_PRODUCTIVITY_REVIEW_EXTENDED_SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS = 3;
 export const DEFAULT_PRODUCTIVITY_REVIEW_CREATION_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -49,6 +62,8 @@ type ProductivityReviewThresholds = {
   highChurnHourly: number;
   highChurnSixHours: number;
   resolvedSnoozeMs: number;
+  extendedSnoozeAfterCloses: number;
+  extendedSnoozeMs: number;
   refreshIntervalMs: number;
   maxRefreshComments: number;
   creationWindowMs: number;
@@ -160,6 +175,14 @@ function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): Pro
       overrides?.resolvedSnoozeMs ?? DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS,
       DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS,
     ),
+    extendedSnoozeAfterCloses: readPositiveInteger(
+      overrides?.extendedSnoozeAfterCloses ?? DEFAULT_PRODUCTIVITY_REVIEW_EXTENDED_SNOOZE_AFTER_CLOSES,
+      DEFAULT_PRODUCTIVITY_REVIEW_EXTENDED_SNOOZE_AFTER_CLOSES,
+    ),
+    extendedSnoozeMs: readPositiveInteger(
+      overrides?.extendedSnoozeMs ?? DEFAULT_PRODUCTIVITY_REVIEW_EXTENDED_SNOOZE_MS,
+      DEFAULT_PRODUCTIVITY_REVIEW_EXTENDED_SNOOZE_MS,
+    ),
     refreshIntervalMs: readPositiveInteger(
       overrides?.refreshIntervalMs ?? DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
       DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
@@ -259,13 +282,44 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .then((rows) => rows[0] ?? null);
   }
 
+  async function countConsecutiveProductiveCloses(companyId: string, sourceIssueId: string) {
+    // Count consecutive `done` reviews from newest backwards. A `cancelled` review
+    // breaks the streak — cancellation signals the reviewer (or governance) rejected
+    // the productive pattern, so accumulated `done` history shouldn't keep extending
+    // the snooze after a reset.
+    const recent = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
+          eq(issues.originId, sourceIssueId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(10);
+    let count = 0;
+    for (const row of recent) {
+      if (row.status === "done") count += 1;
+      else break;
+    }
+    return count;
+  }
+
   async function findRecentResolvedProductivityReview(
     companyId: string,
     sourceIssueId: string,
     thresholds: ProductivityReviewThresholds,
     now: Date,
   ) {
-    const cutoff = new Date(now.getTime() - thresholds.resolvedSnoozeMs);
+    const consecutiveCloses = await countConsecutiveProductiveCloses(companyId, sourceIssueId);
+    const effectiveSnoozeMs = consecutiveCloses >= thresholds.extendedSnoozeAfterCloses
+      ? thresholds.extendedSnoozeMs
+      : thresholds.resolvedSnoozeMs;
+    const cutoff = new Date(now.getTime() - effectiveSnoozeMs);
     return db
       .select({ id: issues.id, identifier: issues.identifier, status: issues.status, updatedAt: issues.updatedAt })
       .from(issues)

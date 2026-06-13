@@ -16,9 +16,13 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 import {
+  DEFAULT_PRODUCTIVITY_REVIEW_EXTENDED_SNOOZE_AFTER_CLOSES,
+  DEFAULT_PRODUCTIVITY_REVIEW_EXTENDED_SNOOZE_MS,
+  DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS,
   DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS,
   DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
   DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
+  DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS,
   PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
   productivityReviewService,
@@ -286,9 +290,13 @@ describeEmbeddedPostgres("productivity review service", () => {
       }),
     );
 
+    // Disable snooze (resolved + extended) so this test exercises the creation-cap
+    // path directly. The default 24h resolved-snooze would otherwise short-circuit
+    // before the cap is consulted on these 8–10h-old historical closes (BLU-7716).
     const result = await productivityReviewService(db).reconcileProductivityReviews({
       now,
       companyId: seeded.companyId,
+      thresholds: { resolvedSnoozeMs: 1, extendedSnoozeMs: 1 },
     });
 
     expect(result.created).toBe(0);
@@ -495,6 +503,112 @@ describeEmbeddedPostgres("productivity review service", () => {
 
     expect(result.snoozed).toBe(1);
     expect(reviews).toHaveLength(1);
+  });
+
+  it("BLU-7716: default resolved-snooze must be materially larger than the long-active trigger", () => {
+    // Invariant: a snooze expiry must not immediately re-satisfy the long-active trigger,
+    // otherwise permanently-`in_progress` source issues (signal bus, routine_execution)
+    // produce a perpetual loop — observed at 4 cycles on BLU-7316 before this fix.
+    const longActiveMs = DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS * 60 * 60 * 1000;
+    expect(DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS).toBeGreaterThan(longActiveMs);
+    expect(DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS).toBeGreaterThanOrEqual(longActiveMs * 4);
+    expect(DEFAULT_PRODUCTIVITY_REVIEW_EXTENDED_SNOOZE_MS).toBeGreaterThan(DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS);
+  });
+
+  it("BLU-7716: extends the snooze window after N consecutive PRODUCTIVE closes on the same source", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+    // Three prior PRODUCTIVE closes — the most recent at 25h ago, just outside the
+    // default 24h snooze cutoff. Without the extended snooze the scanner would re-fire
+    // here (this is exactly the BLU-7316 loop pattern).
+    const closeHoursAgo = [36, 30, 25];
+    expect(closeHoursAgo.length).toBe(DEFAULT_PRODUCTIVITY_REVIEW_EXTENDED_SNOOZE_AFTER_CLOSES);
+    await db.insert(issues).values(
+      closeHoursAgo.map((hoursAgo, index) => {
+        const ts = new Date(now.getTime() - hoursAgo * 60 * 60 * 1000);
+        return {
+          id: randomUUID(),
+          companyId: seeded.companyId,
+          title: `Closed productivity review ${index + 1}`,
+          status: "done" as const,
+          priority: "medium" as const,
+          originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+          originId: seeded.issueId,
+          originFingerprint: `productivity-review:${seeded.issueId}`,
+          parentId: seeded.issueId,
+          issueNumber: index + 2,
+          identifier: `${seeded.issuePrefix}-${index + 2}`,
+          createdAt: ts,
+          updatedAt: ts,
+        };
+      }),
+    );
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.snoozed).toBe(1);
+    expect(result.created).toBe(0);
+    // Three historical reviews + no new one.
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(3);
+  });
+
+  it("BLU-7716: a cancelled review resets the consecutive-close streak", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+    // History (oldest → newest): cancelled@36h, done@28h, done@25h.
+    // The cancelled review breaks the streak — only 2 consecutive `done` from newest,
+    // below the threshold. Latest done is 25h ago, outside the 24h default snooze
+    // window, so the scanner must re-fire.
+    const history: Array<{ hoursAgo: number; status: "done" | "cancelled" }> = [
+      { hoursAgo: 36, status: "cancelled" },
+      { hoursAgo: 28, status: "done" },
+      { hoursAgo: 25, status: "done" },
+    ];
+    await db.insert(issues).values(
+      history.map((entry, index) => {
+        const ts = new Date(now.getTime() - entry.hoursAgo * 60 * 60 * 1000);
+        return {
+          id: randomUUID(),
+          companyId: seeded.companyId,
+          title: `Historical productivity review ${index + 1}`,
+          status: entry.status,
+          priority: "medium" as const,
+          originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+          originId: seeded.issueId,
+          originFingerprint: `productivity-review:${seeded.issueId}`,
+          parentId: seeded.issueId,
+          issueNumber: index + 2,
+          identifier: `${seeded.issuePrefix}-${index + 2}`,
+          createdAt: ts,
+          updatedAt: ts,
+        };
+      }),
+    );
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    expect(result.snoozed).toBe(0);
   });
 
   it("reports and logs soft-stop holds for open no-comment reviews", async () => {
