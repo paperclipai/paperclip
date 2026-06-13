@@ -406,8 +406,49 @@ export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
+const SEARCH_SNIPPET_MAX_CHARS = 160;
+const SEARCH_SNIPPET_LEADING_CONTEXT = 40;
+const SEARCH_COMMENT_BODY_PREVIEW_MAX_BYTES = SEARCH_SNIPPET_MAX_CHARS * 4;
+
+export type IssueMatchedField = "title" | "identifier" | "description" | "comments";
+
+const ISSUE_MATCHED_FIELD_RANK: Record<IssueMatchedField, number> = {
+  title: 1,
+  identifier: 2,
+  comments: 3,
+  description: 4,
+};
+
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
+}
+
+function escapeSnippetHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+export function buildIssueSearchSnippet(source: string | null | undefined, term: string): string | null {
+  if (!source || !term) return null;
+  const normalizedSource = source.replace(/\s+/g, " ").trim();
+  if (!normalizedSource) return null;
+  const lowerSource = normalizedSource.toLowerCase();
+  const lowerTerm = term.toLowerCase();
+  const matchIndex = lowerSource.indexOf(lowerTerm);
+  if (matchIndex < 0) return null;
+  const matchEnd = matchIndex + lowerTerm.length;
+  const windowStart = Math.max(0, matchIndex - SEARCH_SNIPPET_LEADING_CONTEXT);
+  const windowEnd = Math.min(normalizedSource.length, Math.max(matchEnd, windowStart + SEARCH_SNIPPET_MAX_CHARS));
+  const before = normalizedSource.slice(windowStart, matchIndex);
+  const matched = normalizedSource.slice(matchIndex, matchEnd);
+  const after = normalizedSource.slice(matchEnd, windowEnd);
+  const prefix = windowStart > 0 ? "…" : "";
+  const suffix = windowEnd < normalizedSource.length ? "…" : "";
+  return `${prefix}${escapeSnippetHtml(before)}<mark>${escapeSnippetHtml(matched)}</mark>${escapeSnippetHtml(after)}${suffix}`;
 }
 
 export function clampIssueListLimit(limit: number): number {
@@ -2010,6 +2051,44 @@ async function userCommentStatsForIssues(
     stats.push(...rows);
   }
   return stats;
+}
+
+async function firstMatchingCommentBodiesForIssues(
+  dbOrTx: any,
+  companyId: string,
+  issueIds: string[],
+  rawSearchTerm: string,
+): Promise<Map<string, string>> {
+  const bodies = new Map<string, string>();
+  if (issueIds.length === 0 || !rawSearchTerm) return bodies;
+  const containsPattern = `%${escapeLikePattern(rawSearchTerm)}%`;
+  const lowerTerm = rawSearchTerm.toLowerCase();
+  for (const issueIdChunk of chunkList(issueIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+    const rows = await dbOrTx
+      .select({
+        issueId: issueComments.issueId,
+        body: issueComments.body,
+        createdAt: issueComments.createdAt,
+      })
+      .from(issueComments)
+      .where(and(
+        eq(issueComments.companyId, companyId),
+        inArray(issueComments.issueId, issueIdChunk),
+        sql<boolean>`${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'`,
+      ))
+      .orderBy(issueComments.issueId, issueComments.createdAt);
+    for (const row of rows as Array<{ issueId: string; body: string | null }>) {
+      if (bodies.has(row.issueId)) continue;
+      const body = row.body ?? "";
+      if (!body) continue;
+      const matchIndex = body.toLowerCase().indexOf(lowerTerm);
+      if (matchIndex < 0) continue;
+      const windowStart = Math.max(0, matchIndex - SEARCH_SNIPPET_LEADING_CONTEXT);
+      const windowEnd = Math.min(body.length, windowStart + SEARCH_SNIPPET_MAX_CHARS * 2);
+      bodies.set(row.issueId, body.slice(windowStart, windowEnd));
+    }
+  }
+  return bodies;
 }
 
 async function userReadStatsForIssues(
@@ -4109,12 +4188,62 @@ export function issueService(db: Db) {
       }));
       const withLabels = await withIssueLabels(db, rows);
       const runMap = await activeRunMapForIssues(db, withLabels);
-      const withRuns = withActiveRuns(withLabels, runMap);
+      let withRuns = withActiveRuns(withLabels, runMap);
       if (withRuns.length === 0) {
         return withRuns;
       }
 
       const issueIds = withRuns.map((row) => row.id);
+
+      if (hasSearch) {
+        const term = rawSearch;
+        const lowerTerm = term.toLowerCase();
+        const provisionalFields = new Map<string, IssueMatchedField>();
+        const commentLookupIds: string[] = [];
+        for (const row of withRuns) {
+          const titleMatches = (row.title ?? "").toLowerCase().includes(lowerTerm);
+          const identifierMatches = (row.identifier ?? "").toLowerCase().includes(lowerTerm);
+          const descriptionMatches = (row.description ?? "").toLowerCase().includes(lowerTerm);
+          if (titleMatches) {
+            provisionalFields.set(row.id, "title");
+          } else if (identifierMatches) {
+            provisionalFields.set(row.id, "identifier");
+          } else if (descriptionMatches) {
+            provisionalFields.set(row.id, "description");
+            commentLookupIds.push(row.id);
+          } else {
+            provisionalFields.set(row.id, "comments");
+            commentLookupIds.push(row.id);
+          }
+        }
+        const commentBodies = await firstMatchingCommentBodiesForIssues(
+          db,
+          companyId,
+          commentLookupIds,
+          term,
+        );
+        withRuns = withRuns.map((row) => {
+          let field = provisionalFields.get(row.id);
+          if (!field) return row;
+          if (commentBodies.has(row.id)) {
+            field = "comments";
+          } else if (field === "comments") {
+            field = "description";
+          }
+          let snippetSource: string | null = null;
+          if (field === "title") snippetSource = row.title ?? null;
+          else if (field === "identifier") snippetSource = row.identifier ?? null;
+          else if (field === "description") snippetSource = row.description ?? null;
+          else if (field === "comments") snippetSource = commentBodies.get(row.id) ?? null;
+          return {
+            ...row,
+            matchedField: field,
+            matchedFieldRank: ISSUE_MATCHED_FIELD_RANK[field],
+            matchSnippet: buildIssueSearchSnippet(snippetSource, term),
+          };
+        });
+      }
+
       const [statsRows, readRows, lastActivityRows, blockedByMap] = await Promise.all([
         contextUserId
           ? userCommentStatsForIssues(db, companyId, contextUserId, issueIds)

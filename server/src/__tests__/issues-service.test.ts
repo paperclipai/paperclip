@@ -1002,6 +1002,137 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([commentMatchId, descriptionMatchId]);
   });
 
+  it("attaches matchedField/matchedFieldRank/matchSnippet for hits in title, identifier, description and comments", async () => {
+    const companyId = randomUUID();
+    const titleHitId = randomUUID();
+    const identifierHitId = randomUUID();
+    const commentHitId = randomUUID();
+    const descriptionHitId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: titleHitId,
+        companyId,
+        title: "Looking into the dockerfile race condition",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: identifierHitId,
+        companyId,
+        issueNumber: 4242,
+        identifier: "DOCKERFILE-4242",
+        title: "Some other thing",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: commentHitId,
+        companyId,
+        title: "Unrelated work",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: descriptionHitId,
+        companyId,
+        title: "Yet another item",
+        description: "Replace the legacy dockerfile pipeline before the release.",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: commentHitId,
+      body: "We discussed the dockerfile fix last sprint.",
+    });
+
+    const results = await svc.list(companyId, { q: "dockerfile", limit: 10 });
+    const byId = new Map(results.map((issue) => [issue.id, issue]));
+
+    const titleHit = byId.get(titleHitId) as any;
+    expect(titleHit?.matchedField).toBe("title");
+    expect(titleHit?.matchedFieldRank).toBe(1);
+    expect(titleHit?.matchSnippet).toContain("<mark>dockerfile</mark>");
+
+    const identifierHit = byId.get(identifierHitId) as any;
+    expect(identifierHit?.matchedField).toBe("identifier");
+    expect(identifierHit?.matchedFieldRank).toBe(2);
+    expect(identifierHit?.matchSnippet).toContain("<mark>");
+    expect(identifierHit?.matchSnippet?.toLowerCase()).toContain("dockerfile");
+
+    const commentHit = byId.get(commentHitId) as any;
+    expect(commentHit?.matchedField).toBe("comments");
+    expect(commentHit?.matchedFieldRank).toBe(3);
+    expect(commentHit?.matchSnippet).toContain("<mark>dockerfile</mark>");
+
+    const descriptionHit = byId.get(descriptionHitId) as any;
+    expect(descriptionHit?.matchedField).toBe("description");
+    expect(descriptionHit?.matchedFieldRank).toBe(4);
+    expect(descriptionHit?.matchSnippet).toContain("<mark>dockerfile</mark>");
+  });
+
+  it("escapes html in match snippets to prevent injection", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reproducer <script>alert(\"xss\")</script> for needle bug",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const [result] = await svc.list(companyId, { q: "needle" });
+    const snippet = (result as any).matchSnippet as string;
+
+    expect(snippet).toContain("<mark>needle</mark>");
+    expect(snippet).not.toContain("<script>");
+    expect(snippet).toContain("&lt;script&gt;");
+  });
+
+  it("omits matchedField fields when no search term is provided", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Hello",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const [result] = await svc.list(companyId, {});
+    expect((result as any).matchedField).toBeUndefined();
+    expect((result as any).matchedFieldRank).toBeUndefined();
+    expect((result as any).matchSnippet).toBeUndefined();
+  });
+
   it("filters issue lists to the full descendant tree for a root issue", async () => {
     const companyId = randomUUID();
     const rootId = randomUUID();
