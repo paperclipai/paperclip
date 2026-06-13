@@ -971,6 +971,73 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
+  it("reattaches to an orphaned run when the process is alive and matches command name", async () => {
+    if (process.platform !== "linux") {
+      return; // Skip on non-linux where reattachment is not supported
+    }
+
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "opencode"], {
+      stdio: "ignore",
+    });
+    expect(child.pid).toBeTypeOf("number");
+
+    try {
+      const { runId } = await seedRunFixture({
+        processPid: child.pid ?? null,
+        includeIssue: false,
+      });
+      const heartbeat = heartbeatService(db);
+
+      expect(runningProcesses.has(runId)).toBe(false);
+
+      const result = await heartbeat.reapOrphanedRuns();
+      expect(result.reaped).toBe(0);
+
+      expect(runningProcesses.has(runId)).toBe(true);
+
+      const run = await heartbeat.getRun(runId);
+      expect(run?.status).toBe("running");
+      expect(run?.errorCode).toBeNull();
+    } finally {
+      child.kill();
+    }
+  });
+
+  it("clears detached status when reattaching to a previously detached run", async () => {
+    if (process.platform !== "linux") {
+      return; // Skip on non-linux where reattachment is not supported
+    }
+
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "opencode"], {
+      stdio: "ignore",
+    });
+    expect(child.pid).toBeTypeOf("number");
+
+    try {
+      const { runId } = await seedRunFixture({
+        processPid: child.pid ?? null,
+        includeIssue: false,
+        runErrorCode: "process_detached",
+        runError: "Lost in-memory process handle, but child pid is still alive",
+      });
+      const heartbeat = heartbeatService(db);
+
+      expect(runningProcesses.has(runId)).toBe(false);
+
+      const result = await heartbeat.reapOrphanedRuns();
+      expect(result.reaped).toBe(0);
+
+      expect(runningProcesses.has(runId)).toBe(true);
+
+      const run = await heartbeat.getRun(runId);
+      expect(run?.status).toBe("running");
+      expect(run?.errorCode).toBeNull();
+      expect(run?.error).toBeNull();
+    } finally {
+      child.kill();
+    }
+  });
+
   it("queues exactly one retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",

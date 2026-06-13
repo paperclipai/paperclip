@@ -53,9 +53,7 @@ describe("openCode models", () => {
         model: "anthropic/tensorix/deepseek/deepseek-chat-v3.1",
         env: { OPENCODE_ALLOW_ALL_MODELS: "true" },
       }),
-    ).resolves.toEqual([
-      { id: "anthropic/tensorix/deepseek/deepseek-chat-v3.1", label: "anthropic/tensorix/deepseek/deepseek-chat-v3.1" },
-    ]);
+    ).resolves.toEqual("anthropic/tensorix/deepseek/deepseek-chat-v3.1");
   });
 
   it("honours OPENCODE_ALLOW_ALL_MODELS from the process env", async () => {
@@ -63,7 +61,7 @@ describe("openCode models", () => {
     process.env.OPENCODE_ALLOW_ALL_MODELS = "1";
     await expect(
       ensureOpenCodeModelConfiguredAndAvailable({ model: "anthropic/gateway/some-model" }),
-    ).resolves.toEqual([{ id: "anthropic/gateway/some-model", label: "anthropic/gateway/some-model" }]);
+    ).resolves.toEqual("anthropic/gateway/some-model");
   });
 
   it("still enforces provider/model format when OPENCODE_ALLOW_ALL_MODELS is set", async () => {
@@ -73,5 +71,22 @@ describe("openCode models", () => {
         env: { OPENCODE_ALLOW_ALL_MODELS: "true" },
       }),
     ).rejects.toThrow("OpenCode requires `adapterConfig.model`");
+  });
+
+  it("uses the fallback model if primary is unavailable but fallback is available", async () => {
+    const resolved = await ensureOpenCodeModelConfiguredAndAvailable({
+      model: "openai/nonexistent-model",
+      fallbackModel: "google/antigravity-gemini-3-flash",
+    });
+    expect(resolved).toBe("google/antigravity-gemini-3-flash");
+  });
+
+  it("throws if both primary and fallback models are unavailable", async () => {
+    await expect(
+      ensureOpenCodeModelConfiguredAndAvailable({
+        model: "openai/nonexistent-model",
+        fallbackModel: "openai/another-nonexistent-model",
+      }),
+    ).rejects.toThrow("Configured OpenCode model is unavailable");
   });
 });

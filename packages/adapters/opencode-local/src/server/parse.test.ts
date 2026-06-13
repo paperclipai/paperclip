@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
+import { parseOpenCodeJsonl, isOpenCodeUnknownSessionError, isOpenCodeConnectionErrorOrHang } from "./parse.js";
 
 describe("parseOpenCodeJsonl", () => {
   it("parses assistant text, usage, cost, and errors", () => {
@@ -73,5 +73,12 @@ describe("parseOpenCodeJsonl", () => {
     expect(isOpenCodeUnknownSessionError("Session not found: s_123", "")).toBe(true);
     expect(isOpenCodeUnknownSessionError("", "unknown session id")).toBe(true);
     expect(isOpenCodeUnknownSessionError("all good", "")).toBe(false);
+  });
+
+  it("detects connection errors or hang patterns", () => {
+    expect(isOpenCodeConnectionErrorOrHang("", "fetch failed", "")).toBe(true);
+    expect(isOpenCodeConnectionErrorOrHang("Connection refused", "", "")).toBe(true);
+    expect(isOpenCodeConnectionErrorOrHang("", "", "Unexpected server error")).toBe(true);
+    expect(isOpenCodeConnectionErrorOrHang("all good", "", "")).toBe(false);
   });
 });

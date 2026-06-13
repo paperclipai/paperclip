@@ -183,11 +183,14 @@ export function isTruthyEnvFlag(value: string | undefined): boolean {
 
 export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   model?: unknown;
+  fallbackModel?: unknown;
   command?: unknown;
   cwd?: unknown;
   env?: unknown;
-}): Promise<AdapterModel[]> {
+  onLog?: (type: "stdout" | "stderr", message: string) => Promise<void>;
+}): Promise<string> {
   const model = requireOpenCodeModelId(input.model);
+  const fallbackModel = input.fallbackModel ? requireOpenCodeModelId(input.fallbackModel) : null;
 
   // When the caller opts into OPENCODE_ALLOW_ALL_MODELS, OpenCode accepts any
   // provider/model at run time (e.g. gateway-routed models that never appear in
@@ -196,7 +199,7 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   // the configured model. Prefer the explicit run env, then the process env.
   const env = normalizeEnv(input.env);
   if (isTruthyEnvFlag(env.OPENCODE_ALLOW_ALL_MODELS ?? process.env.OPENCODE_ALLOW_ALL_MODELS)) {
-    return [{ id: model, label: model }];
+    return model;
   }
 
   const models = await discoverOpenCodeModelsCached({
@@ -209,14 +212,24 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
     throw new Error("OpenCode returned no models. Run `opencode models` and verify provider auth.");
   }
 
-  if (!models.some((entry) => entry.id === model)) {
-    const sample = models.slice(0, 12).map((entry) => entry.id).join(", ");
-    throw new Error(
-      `Configured OpenCode model is unavailable: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
-    );
+  if (models.some((entry) => entry.id === model)) {
+    return model;
   }
 
-  return models;
+  if (fallbackModel && models.some((entry) => entry.id === fallbackModel)) {
+    if (input.onLog) {
+      await input.onLog(
+        "stdout",
+        `[paperclip] Primary model "${model}" is unavailable. Falling back to "${fallbackModel}".\n`,
+      );
+    }
+    return fallbackModel;
+  }
+
+  const sample = models.slice(0, 12).map((entry) => entry.id).join(", ");
+  throw new Error(
+    `Configured OpenCode model is unavailable: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
+  );
 }
 
 export async function listOpenCodeModels(): Promise<AdapterModel[]> {

@@ -43,13 +43,15 @@ import {
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   resolvePaperclipDesiredSkillNames,
+  runningProcesses,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
+import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl, isOpenCodeConnectionErrorOrHang } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
   parseOpenCodeModelsOutput,
   requireOpenCodeModelId,
+  discoverOpenCodeModelsCached,
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
@@ -85,12 +87,15 @@ export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   executionTarget: NonNullable<AdapterExecutionContext["executionTarget"]>;
   command: string;
   model: string;
+  fallbackModel?: string;
   cwd: string;
   env: Record<string, string>;
   timeoutSec: number;
   graceSec: number;
-}) {
+  onLog?: (type: "stdout" | "stderr", message: string) => Promise<void>;
+}): Promise<string> {
   const model = requireOpenCodeModelId(input.model);
+  const fallbackModel = input.fallbackModel ? requireOpenCodeModelId(input.fallbackModel) : null;
 
   // When the caller opts into OPENCODE_ALLOW_ALL_MODELS, OpenCode accepts any
   // provider/model at run time (e.g. gateway-routed models that never appear in
@@ -99,7 +104,7 @@ export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   // Mirrors the local ensureOpenCodeModelConfiguredAndAvailable bypass. Prefer the
   // explicit run env, then the process env.
   if (isTruthyEnvFlag(input.env.OPENCODE_ALLOW_ALL_MODELS ?? process.env.OPENCODE_ALLOW_ALL_MODELS)) {
-    return;
+    return model;
   }
 
   const defaultProbeTimeoutSec =
@@ -143,12 +148,24 @@ export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
     );
   }
 
-  if (!models.some((entry) => entry.id === model)) {
-    const sample = models.slice(0, 12).map((entry) => entry.id).join(", ");
-    throw new Error(
-      `Configured OpenCode model is unavailable on the remote execution target: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
-    );
+  if (models.some((entry) => entry.id === model)) {
+    return model;
   }
+
+  if (fallbackModel && models.some((entry) => entry.id === fallbackModel)) {
+    if (input.onLog) {
+      await input.onLog(
+        "stdout",
+        `[paperclip] Primary model "${model}" is unavailable on remote execution target. Falling back to "${fallbackModel}".\n`
+      );
+    }
+    return fallbackModel;
+  }
+
+  const sample = models.slice(0, 12).map((entry) => entry.id).join(", ");
+  throw new Error(
+    `Configured OpenCode model is unavailable on the remote execution target: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
+  );
 }
 
 function claudeSkillsHome(): string {
@@ -220,7 +237,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, "opencode");
   const model = asString(config.model, "").trim();
+  const fallbackModel = asString(config.fallbackModel, "").trim();
   const variant = asString(config.variant, "").trim();
+  let resolvedModel = model;
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -312,6 +331,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
+  let heartbeatInterval: NodeJS.Timeout | undefined;
+  let silenceInterval: NodeJS.Timeout | undefined;
   try {
     const runtimeEnv = Object.fromEntries(
       Object.entries(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env })).filter(
@@ -323,16 +344,73 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       asNumber(config.timeoutSec, 0),
     );
     const graceSec = asNumber(config.graceSec, 20);
+
+    let lastOutputTime = Date.now();
+    let wasTerminatedDueToSilence = false;
+
+    const wrappedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
+      lastOutputTime = Date.now();
+      await onLog(stream, chunk);
+    };
+
+    let spawnMeta: { pid: number; processGroupId: number | null } | null = null;
+    const wrappedOnSpawn = async (meta: { pid: number; processGroupId: number | null; startedAt: string }) => {
+      spawnMeta = meta;
+      if (onSpawn) {
+        await onSpawn(meta);
+      }
+    };
+
+    heartbeatInterval = setInterval(() => {
+      onLog("stdout", `[paperclip] opencode_local heartbeat\n`).catch(() => {});
+    }, 60_000);
+
+    silenceInterval = setInterval(() => {
+      const silenceDurationMs = Date.now() - lastOutputTime;
+      if (silenceDurationMs > 5 * 60_000) {
+        wasTerminatedDueToSilence = true;
+        onLog("stderr", `[paperclip] OpenCode process has been silent for ${Math.round(silenceDurationMs / 1000)}s. Terminating process.\n`).catch(() => {});
+        if (spawnMeta) {
+          const { pid, processGroupId } = spawnMeta;
+          const running = runningProcesses.get(runId);
+          if (running) {
+            const { child, processGroupId: pgid } = running;
+            if (!child.killed) {
+              if (process.platform !== "win32" && pgid) {
+                try {
+                  process.kill(-pgid, "SIGKILL");
+                } catch {
+                  try { child.kill("SIGKILL"); } catch {}
+                }
+              } else {
+                try { child.kill("SIGKILL"); } catch {}
+              }
+            }
+          } else if (pid) {
+            if (process.platform !== "win32" && processGroupId) {
+              try {
+                process.kill(-processGroupId, "SIGKILL");
+              } catch {
+                try { process.kill(pid, "SIGKILL"); } catch {}
+              }
+            } else {
+              try { process.kill(pid, "SIGKILL"); } catch {}
+            }
+          }
+        }
+      }
+    }, 10_000);
+
     await ensureAdapterExecutionTargetRuntimeCommandInstalled({
       runId,
       target: executionTarget,
       installCommand: ctx.runtimeCommandSpec?.installCommand,
-    detectCommand: ctx.runtimeCommandSpec?.detectCommand,
+      detectCommand: ctx.runtimeCommandSpec?.detectCommand,
       cwd,
       env: runtimeEnv,
       timeoutSec,
       graceSec,
-      onLog,
+      onLog: wrappedOnLog,
     });
     await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv, {
       installCommand: SANDBOX_INSTALL_COMMAND,
@@ -345,11 +423,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resolvedCommand,
     });
     if (!executionTargetIsRemote) {
-      await ensureOpenCodeModelConfiguredAndAvailable({
+      resolvedModel = await ensureOpenCodeModelConfiguredAndAvailable({
         model,
+        fallbackModel,
         command,
         cwd,
         env: runtimeEnv,
+        onLog,
       });
     }
 
@@ -421,7 +501,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             env: preparedRuntimeConfig.env,
             timeoutSec,
             graceSec,
-            onLog,
+            onLog: wrappedOnLog,
           });
       if (remoteHomeDir && preparedExecutionTargetRuntime.assetDirs.skills) {
         const remoteSkillsDir = path.posix.join(remoteHomeDir, ".claude", "skills");
@@ -429,18 +509,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           runId,
           executionTarget,
           `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSkillsDir))} && rm -rf ${JSON.stringify(remoteSkillsDir)} && cp -a ${JSON.stringify(preparedExecutionTargetRuntime.assetDirs.skills)} ${JSON.stringify(remoteSkillsDir)}`,
-          { cwd, env: preparedRuntimeConfig.env, timeoutSec, graceSec, onLog },
+          { cwd, env: preparedRuntimeConfig.env, timeoutSec, graceSec, onLog: wrappedOnLog },
         );
       }
-      await ensureRemoteOpenCodeModelConfiguredAndAvailable({
+      resolvedModel = await ensureRemoteOpenCodeModelConfiguredAndAvailable({
         runId,
         executionTarget,
         command,
         model,
+        fallbackModel,
         cwd,
         env: preparedRuntimeConfig.env,
         timeoutSec,
         graceSec,
+        onLog: wrappedOnLog,
       });
     }
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
@@ -452,7 +534,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         adapterKey: "opencode",
         timeoutSec,
         hostApiToken: preparedRuntimeConfig.env.PAPERCLIP_API_KEY,
-        onLog,
+        onLog: wrappedOnLog,
       });
       if (paperclipBridge) {
         Object.assign(preparedRuntimeConfig.env, paperclipBridge.env);
@@ -572,7 +654,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const args = ["run", "--format", "json"];
       if (printLogs) args.push("--print-logs");
       if (resumeSessionId) args.push("--session", resumeSessionId);
-      if (model) args.push("--model", model);
+      if (resolvedModel) args.push("--model", resolvedModel);
       if (variant) args.push("--variant", variant);
       if (extraArgs.length > 0) args.push(...extraArgs);
       return args;
@@ -600,8 +682,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stdin: prompt,
         timeoutSec,
         graceSec,
-        onSpawn,
-        onLog,
+        onSpawn: wrappedOnSpawn,
+        onLog: wrappedOnLog,
       });
       return {
         proc,
@@ -649,18 +731,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
       const rawExitCode = attempt.proc.exitCode;
-      const synthesizedExitCode = parsedError && (rawExitCode ?? 0) === 0 ? 1 : rawExitCode;
-      const fallbackErrorMessage =
-        parsedError ||
-        stderrLine ||
-        `OpenCode exited with code ${synthesizedExitCode ?? -1}`;
-      const modelId = model || null;
+      const synthesizedExitCode = (parsedError || wasTerminatedDueToSilence) && (rawExitCode ?? 0) === 0 ? 1 : rawExitCode;
+      const fallbackErrorMessage = wasTerminatedDueToSilence
+        ? "OpenCode process was terminated due to silence"
+        : (parsedError ||
+           stderrLine ||
+           `OpenCode exited with code ${synthesizedExitCode ?? -1}`);
+      const modelId = resolvedModel || null;
 
       return {
         exitCode: synthesizedExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
         errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
+        errorCode: wasTerminatedDueToSilence ? "process_lost" : null,
         usage: {
           inputTokens: attempt.parsed.usage.inputTokens,
           outputTokens: attempt.parsed.usage.outputTokens,
@@ -684,23 +768,75 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     try {
-      const initial = await runAttempt(sessionId);
-      const initialFailed =
-        !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage));
+      let currentSessionId = sessionId;
+      let initial = await runAttempt(currentSessionId);
+      let initialFailed =
+        initial.proc.timedOut ||
+        (initial.proc.exitCode ?? 0) !== 0 ||
+        Boolean(initial.parsed.errorMessage);
+
       if (
-        sessionId &&
+        currentSessionId &&
         initialFailed &&
+        !initial.proc.timedOut &&
         isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr)
       ) {
         await onLog(
           "stdout",
-          `[paperclip] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+          `[paperclip] OpenCode session "${currentSessionId}" is unavailable; retrying with a fresh session.\n`,
         );
-        const retry = await runAttempt(null);
-        return toResult(retry, true);
+        currentSessionId = null;
+        initial = await runAttempt(null);
+        initialFailed =
+          initial.proc.timedOut ||
+          (initial.proc.exitCode ?? 0) !== 0 ||
+          Boolean(initial.parsed.errorMessage);
       }
 
-      return toResult(initial);
+      if (
+        initialFailed &&
+        fallbackModel &&
+        resolvedModel !== fallbackModel
+      ) {
+        const isTimeout = initial.proc.timedOut;
+        const isConnectionOrHang =
+          !isTimeout &&
+          isOpenCodeConnectionErrorOrHang(
+            initial.proc.stdout,
+            initial.rawStderr,
+            initial.parsed.errorMessage,
+          );
+
+        if (isTimeout || isConnectionOrHang) {
+          const reason = isTimeout ? "timeout" : "connection error/hang";
+          await onLog(
+            "stdout",
+            `[paperclip] Run failed due to ${reason} on model "${resolvedModel}". Retrying with fallback model "${fallbackModel}".\n`,
+          );
+          resolvedModel = fallbackModel;
+          const fallbackAttempt = await runAttempt(currentSessionId);
+          const fallbackFailed =
+            fallbackAttempt.proc.timedOut ||
+            (fallbackAttempt.proc.exitCode ?? 0) !== 0 ||
+            Boolean(fallbackAttempt.parsed.errorMessage);
+          if (
+            currentSessionId &&
+            fallbackFailed &&
+            !fallbackAttempt.proc.timedOut &&
+            isOpenCodeUnknownSessionError(fallbackAttempt.proc.stdout, fallbackAttempt.rawStderr)
+          ) {
+            await onLog(
+              "stdout",
+              `[paperclip] OpenCode session "${currentSessionId}" is unavailable; retrying with a fresh session on fallback model "${fallbackModel}".\n`,
+            );
+            const retryFallback = await runAttempt(null);
+            return toResult(retryFallback, true);
+          }
+          return toResult(fallbackAttempt, currentSessionId === null);
+        }
+      }
+
+      return toResult(initial, currentSessionId === null);
     } finally {
       await Promise.all([
         paperclipBridge?.stop(),
@@ -709,6 +845,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ]);
     }
   } finally {
+    if (heartbeatInterval) clearInterval(heartbeatInterval);
+    if (silenceInterval) clearInterval(silenceInterval);
     await preparedRuntimeConfig.cleanup();
   }
 }

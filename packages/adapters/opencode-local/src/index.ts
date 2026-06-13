@@ -59,9 +59,10 @@ export const models: Array<{ id: string; label: string }> = [
   { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
   { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
   { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
+  { id: "google/antigravity-gemini-3-flash", label: "google/antigravity-gemini-3-flash" },
 ];
 
-export const DEFAULT_OPENCODE_CHEAP_MODEL = "openai/gpt-5.1-codex-mini";
+export const DEFAULT_OPENCODE_CHEAP_MODEL = "google/antigravity-gemini-3-flash";
 
 // The "cheap" budget profile (used for recovery retries and other low-cost lanes).
 // Defaults to OpenCode's known Codex mini model, but is overridable so a deployment
@@ -114,6 +115,7 @@ Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - model (string, required): OpenCode model id in provider/model format (for example anthropic/claude-sonnet-4-5)
+- fallbackModel (string, optional): OpenCode model id in provider/model format to retry with on failure/timeout
 - variant (string, optional): provider-specific reasoning/profile variant passed as --variant (for example minimal|low|medium|high|xhigh|max)
 - dangerouslySkipPermissions (boolean, optional): inject a runtime OpenCode config that allows \`external_directory\` access without interactive prompts; defaults to true for unattended Paperclip runs
 - promptTemplate (string, optional): run prompt template

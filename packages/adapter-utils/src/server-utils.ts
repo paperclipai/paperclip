@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
+import fsSync, { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
@@ -75,7 +75,6 @@ function signalRunningProcess(
   }
 }
 
-export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
@@ -109,6 +108,116 @@ export function resolvePaperclipInstanceRootForAdapter(input: {
   if (!PATH_SEGMENT_RE.test(instanceId)) throw new Error(`Invalid PAPERCLIP_INSTANCE_ID '${instanceId}'.`);
   return path.resolve(homeDir, "instances", instanceId);
 }
+
+class PersistentRunningProcessesMap extends Map<string, RunningProcess> {
+  private filePath: string;
+
+  constructor() {
+    super();
+    try {
+      const instanceRoot = resolvePaperclipInstanceRootForAdapter();
+      this.filePath = path.resolve(instanceRoot, "runningProcesses.json");
+    } catch {
+      this.filePath = path.resolve(os.homedir(), ".paperclip", "instances", "default", "runningProcesses.json");
+    }
+    this.rehydrate();
+    this.setupExitHandlers();
+  }
+
+  private save() {
+    try {
+      const dir = path.dirname(this.filePath);
+      if (!fsSync.existsSync(dir)) {
+        fsSync.mkdirSync(dir, { recursive: true });
+      }
+      const data = Array.from(this.entries()).map(([runId, proc]) => ({
+        runId,
+        processPid: proc.child?.pid ?? null,
+        processGroupId: proc.processGroupId,
+        graceSec: proc.graceSec,
+      }));
+      fsSync.writeFileSync(this.filePath, JSON.stringify(data), "utf8");
+    } catch (err) {
+      // ignore
+    }
+  }
+
+  private rehydrate() {
+    try {
+      if (!fsSync.existsSync(this.filePath)) {
+        return;
+      }
+      const raw = fsSync.readFileSync(this.filePath, "utf8");
+      if (!raw.trim()) return;
+      const data = JSON.parse(raw);
+      if (!Array.isArray(data)) return;
+      for (const entry of data) {
+        if (!entry.runId || typeof entry.processPid !== "number") continue;
+        const pid = entry.processPid;
+        const processGroupId = entry.processGroupId ?? null;
+        const graceSec = entry.graceSec ?? 30;
+
+        const stubChild = {
+          killed: false,
+          kill(signal: NodeJS.Signals | number) {
+            try {
+              if (process.platform !== "win32" && processGroupId && processGroupId > 0) {
+                process.kill(-processGroupId, signal);
+              } else {
+                process.kill(pid, signal);
+              }
+            } catch (err) {
+              // ignore
+            }
+          },
+          pid,
+        };
+
+        super.set(entry.runId, {
+          child: stubChild as any,
+          graceSec,
+          processGroupId,
+        });
+      }
+    } catch (err) {
+      // ignore
+    }
+  }
+
+  private setupExitHandlers() {
+    const clean = () => {
+      try {
+        if (fsSync.existsSync(this.filePath)) {
+          fsSync.unlinkSync(this.filePath);
+        }
+      } catch (err) {
+        // ignore
+      }
+    };
+    process.on("exit", clean);
+    process.on("SIGINT", clean);
+    process.on("SIGTERM", clean);
+  }
+
+  set(key: string, value: RunningProcess): this {
+    super.set(key, value);
+    this.save();
+    return this;
+  }
+
+  delete(key: string): boolean {
+    const res = super.delete(key);
+    this.save();
+    return res;
+  }
+
+  clear(): void {
+    super.clear();
+    this.save();
+  }
+}
+
+export const runningProcesses = new PersistentRunningProcessesMap();
 
 export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
@@ -2147,6 +2256,7 @@ export async function runChildProcess(
     terminalResultCleanup?: TerminalResultCleanupOptions;
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
+    idleTimeoutSec?: number;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -2206,6 +2316,28 @@ export async function runChildProcess(
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
         let terminalResultStdoutScanOffset = 0;
         let terminalResultStderrScanOffset = 0;
+        let idleTimer: NodeJS.Timeout | null = null;
+
+        const clearIdleTimer = () => {
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = null;
+        };
+
+        const resetIdleTimer = () => {
+          if (!opts.idleTimeoutSec || opts.idleTimeoutSec <= 0) return;
+          clearIdleTimer();
+          idleTimer = setTimeout(() => {
+            idleTimer = null;
+            if (timedOut) return;
+            timedOut = true;
+            if (timeout) clearTimeout(timeout);
+            clearTerminalCleanupTimers();
+            signalRunningProcess({ child, processGroupId }, "SIGTERM");
+            setTimeout(() => {
+              signalRunningProcess({ child, processGroupId }, "SIGKILL");
+            }, Math.max(1, opts.graceSec) * 1000);
+          }, opts.idleTimeoutSec * 1000);
+        };
 
         const clearTerminalCleanupTimers = () => {
           if (terminalCleanupTimer) clearTimeout(terminalCleanupTimer);
@@ -2253,6 +2385,7 @@ export async function runChildProcess(
           opts.timeoutSec > 0
             ? setTimeout(() => {
                 timedOut = true;
+                clearIdleTimer();
                 clearTerminalCleanupTimers();
                 signalRunningProcess({ child, processGroupId }, "SIGTERM");
                 setTimeout(() => {
@@ -2261,12 +2394,15 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
+        resetIdleTimer();
+
         child.stdout?.on("data", (chunk: unknown) => {
           const readable = child.stdout;
           if (!readable) return;
           readable.pause();
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
+          resetIdleTimer();
           maybeArmTerminalResultCleanup();
           logChain = logChain
             .then(() => opts.onLog("stdout", text))
@@ -2283,6 +2419,7 @@ export async function runChildProcess(
           readable.pause();
           const text = String(chunk);
           stderr = appendWithCap(stderr, text);
+          resetIdleTimer();
           maybeArmTerminalResultCleanup();
           logChain = logChain
             .then(() => opts.onLog("stderr", text))
@@ -2304,6 +2441,7 @@ export async function runChildProcess(
 
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
+          clearIdleTimer();
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
           void target.cleanup?.();
@@ -2322,6 +2460,7 @@ export async function runChildProcess(
 
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
+          clearIdleTimer();
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
           void logChain.finally(() => {

@@ -99,3 +99,28 @@ export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): b
     haystack,
   );
 }
+
+export function isOpenCodeConnectionErrorOrHang(stdout: string, stderr: string, errorMessage?: string | null): boolean {
+  const combined = `${stdout}\n${stderr}\n${errorMessage ?? ""}`.toLowerCase();
+  const patterns = [
+    "connection error",
+    "connection reset",
+    "connection refused",
+    "connect etimedout",
+    "etimedout",
+    "econnrefused",
+    "econnreset",
+    "enotfound",
+    "eai_again",
+    "socket hang up",
+    "fetch failed",
+    "network error",
+    "unexpected server error",
+    "unexpected error",
+    "failed to fetch",
+    "dns resolution",
+    "gateway timeout",
+    "bad gateway"
+  ];
+  return patterns.some(pattern => combined.includes(pattern));
+}

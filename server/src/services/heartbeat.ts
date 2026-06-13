@@ -2853,6 +2853,46 @@ function isProcessAlive(pid: number | null | undefined) {
   }
 }
 
+async function tryReattachProcess(
+  runId: string,
+  pid: number,
+  processGroupId: number | null,
+): Promise<boolean> {
+  if (process.platform !== "linux") {
+    return false;
+  }
+
+  try {
+    const cmdline = await fs.readFile(`/proc/${pid}/cmdline`, "utf8");
+    const cmdlineStr = cmdline.replace(/\0/g, " ");
+    if (!cmdlineStr.includes("opencode") && !cmdlineStr.includes("paperclip")) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+
+  if (!isProcessAlive(pid)) {
+    return false;
+  }
+
+  const stubChild = {
+    killed: false,
+    kill(signal: NodeJS.Signals | number) {
+      process.kill(pid, signal);
+    },
+    pid,
+  };
+
+  runningProcesses.set(runId, {
+    child: stubChild as any,
+    graceSec: 30,
+    processGroupId,
+  });
+
+  return true;
+}
+
 async function terminateHeartbeatRunProcess(input: {
   pid: number | null | undefined;
   processGroupId: number | null | undefined;
@@ -7415,6 +7455,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
+    const reattachmentAttempted = new Set<string>();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
@@ -7430,7 +7471,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const reaped: string[] = [];
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
-      if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+      if (activeRunExecutions.has(run.id)) continue;
+
+      const running = runningProcesses.get(run.id);
+      if (running) {
+        const pid = running.child.pid ?? run.processPid;
+        const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+        const alive = tracksLocalChild && pid && isProcessAlive(pid);
+        if (alive) {
+          continue;
+        }
+        runningProcesses.delete(run.id);
+      }
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
@@ -7441,7 +7493,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
-      if (processPidAlive) {
+      if (processPidAlive && run.processPid) {
+        if (!reattachmentAttempted.has(run.id)) {
+          reattachmentAttempted.add(run.id);
+          const reattached = await tryReattachProcess(run.id, run.processPid, run.processGroupId);
+          if (reattached) {
+            if (run.errorCode === DETACHED_PROCESS_ERROR_CODE) {
+              await setRunStatus(run.id, "running", {
+                error: null,
+                errorCode: null,
+              });
+              await appendRunEvent(run, await nextRunEventSeq(run.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "info",
+                message: `Reattached to orphaned process pid ${run.processPid}`,
+                payload: {
+                  processPid: run.processPid,
+                },
+              });
+            }
+            continue;
+          }
+        }
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {

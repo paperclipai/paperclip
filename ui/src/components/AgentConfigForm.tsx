@@ -453,6 +453,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [runPolicyAdvancedOpen, setRunPolicyAdvancedOpen] = useState(false);
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
+  const [fallbackModelOpen, setFallbackModelOpen] = useState(false);
   const [cheapModelOpen, setCheapModelOpen] = useState(false);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
 
@@ -557,6 +558,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const currentModelId = isCreate
     ? val!.model
     : eff("adapterConfig", "model", String(config.model ?? ""));
+
+  const currentFallbackModelId = isCreate
+    ? (val!.fallbackModel ?? "")
+    : eff("adapterConfig", "fallbackModel", String(config.fallbackModel ?? ""));
 
   async function handleRefreshModels() {
     if (!selectedCompanyId) return;
@@ -1081,6 +1086,33 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       ? fetchedModelsError.message
                       : "Failed to load adapter models.")}
                 </p>
+              )}
+              {adapterType === "opencode_local" && (
+                <>
+                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground mt-3">Fallback model</div>
+                  <ModelDropdown
+                    models={models}
+                    value={currentFallbackModelId}
+                    onChange={(v) =>
+                      isCreate
+                        ? set!({ fallbackModel: v })
+                        : mark("adapterConfig", "fallbackModel", v || undefined)
+                    }
+                    open={fallbackModelOpen}
+                    onOpenChange={setFallbackModelOpen}
+                    allowDefault={true}
+                    required={false}
+                    groupByProvider={true}
+                    creatable
+                    detectedModel={null}
+                    detectedModelCandidates={[]}
+                    onDetectModel={undefined}
+                    onRefreshModels={undefined}
+                    refreshingModels={false}
+                    detectModelLabel="Detect model"
+                    emptyDetectHint="No model detected. Select or enter one manually."
+                  />
+                </>
               )}
               {adapterType === "opencode_local"
                 && currentDefaultEnvironment

@@ -3020,6 +3020,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     if (adapterType !== "opencode_local") return;
     try {
       requireOpenCodeModelId(adapterConfig.model);
+      if (adapterConfig.fallbackModel !== undefined && adapterConfig.fallbackModel !== null && adapterConfig.fallbackModel !== "") {
+        requireOpenCodeModelId(adapterConfig.fallbackModel);
+      }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);

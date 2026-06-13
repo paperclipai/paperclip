@@ -55,6 +55,7 @@ export function buildOpenCodeLocalConfig(v: CreateConfigValues): Record<string, 
   if (v.cwd) ac.cwd = v.cwd;
   if (v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
   if (v.model) ac.model = v.model;
+  if (v.fallbackModel) ac.fallbackModel = v.fallbackModel;
   if (v.thinkingEffort) ac.variant = v.thinkingEffort;
   ac.dangerouslySkipPermissions = v.dangerouslySkipPermissions;
   // OpenCode sessions can run until the CLI exits naturally; keep timeout disabled (0)
