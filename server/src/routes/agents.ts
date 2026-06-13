@@ -1292,6 +1292,18 @@ export function agentRoutes(
     );
   }
 
+  function assertNoAgentAdapterModelMutation(
+    req: Request,
+    adapterConfig: Record<string, unknown> | null | undefined,
+    path = "adapterConfig",
+  ) {
+    if (req.actor.type !== "agent" || !adapterConfig) return;
+    if (adapterConfig.model === undefined) return;
+    throw forbidden(
+      `Agent-authenticated callers cannot modify adapterConfig.model — model changes require board/user confirmation (${path}.model)`,
+    );
+  }
+
   function adapterConfigTouchesInstructionsConfig(adapterConfig: Record<string, unknown>) {
     return KNOWN_INSTRUCTIONS_BUNDLE_KEYS.some((key) => adapterConfig[key] !== undefined);
   }
@@ -1302,6 +1314,7 @@ export function agentRoutes(
     path = "adapterConfig",
   ) {
     assertNoAgentInstructionsConfigMutation(req, adapterConfig, path);
+    assertNoAgentAdapterModelMutation(req, adapterConfig, path);
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectAgentAdapterWorkspaceCommandPaths(adapterConfig, path),
