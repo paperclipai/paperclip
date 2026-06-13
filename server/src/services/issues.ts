@@ -296,6 +296,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
+  dedupByFingerprint?: boolean;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -4066,8 +4067,25 @@ export function issueService(db: Db) {
         labelIds: inputLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
+        dedupByFingerprint,
         ...issueData
       } = data;
+      // GRA-2691: recurring auto-generated issues (strategic-review, morning-brief, ...)
+      // are created through the manual API path with a stable originFingerprint but
+      // historically never opted into dedup, so a stalled boss heartbeat let each cycle
+      // clone the prior open instance (5 strategic reviews open at once on 2026-06-10).
+      // Treat a non-sentinel fingerprint on a manual-origin issue as an implicit dedup
+      // request. routine_execution issues are left alone -- the routine dispatcher owns
+      // their concurrency/stale-cancellation. An explicit dedupByFingerprint:false still
+      // wins (opt-out preserved).
+      const effectiveOriginKind = issueData.originKind ?? "manual";
+      const shouldDedupByFingerprint =
+        dedupByFingerprint === true ||
+        (dedupByFingerprint === undefined &&
+          effectiveOriginKind === "manual" &&
+          typeof issueData.originFingerprint === "string" &&
+          issueData.originFingerprint.length > 0 &&
+          issueData.originFingerprint !== "default");
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -4086,7 +4104,8 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
+      let cancelledForDedup: Array<{ id: string; identifier: string | null }> = [];
+      const newIssue = await db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
@@ -4214,6 +4233,29 @@ export function issueService(db: Db) {
         if (executionWorkspaceId) {
           await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
         }
+        if (shouldDedupByFingerprint && issueData.originFingerprint && issueData.originFingerprint !== "default") {
+          const assigneeFilter = issueData.assigneeAgentId
+            ? eq(issues.assigneeAgentId, issueData.assigneeAgentId)
+            : issueData.assigneeUserId
+            ? eq(issues.assigneeUserId, issueData.assigneeUserId)
+            : null;
+          if (assigneeFilter) {
+            const cancelledAt = new Date();
+            cancelledForDedup = await tx
+              .update(issues)
+              .set({ status: "cancelled", cancelledAt, updatedAt: cancelledAt })
+              .where(
+                and(
+                  eq(issues.companyId, companyId),
+                  eq(issues.originFingerprint, issueData.originFingerprint),
+                  inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
+                  isNull(issues.hiddenAt),
+                  assigneeFilter,
+                ),
+              )
+              .returning({ id: issues.id, identifier: issues.identifier });
+          }
+        }
         // Self-correcting counter: use MAX(issue_number) + 1 if the counter
         // has drifted below the actual max, preventing identifier collisions.
         const [maxRow] = await tx
@@ -4289,6 +4331,27 @@ export function issueService(db: Db) {
         const [enriched] = await withIssueLabels(tx, [issue]);
         return enriched;
       });
+      // Post "superseded by" comments on issues auto-cancelled by dedupByFingerprint (best-effort).
+      if (cancelledForDedup.length > 0 && newIssue.identifier) {
+        const idPrefix = newIssue.identifier.replace(/-\d+$/, "");
+        const newIssueLink = `[${newIssue.identifier}](/${idPrefix}/issues/${newIssue.identifier})`;
+        for (const cancelled of cancelledForDedup) {
+          try {
+            await db.insert(issueComments).values({
+              companyId,
+              issueId: cancelled.id,
+              authorType: "system",
+              authorAgentId: null,
+              authorUserId: null,
+              createdByRunId: null,
+              body: `Auto-cancelled: superseded by ${newIssueLink}`,
+            });
+          } catch (err) {
+            logger.warn({ err, issueId: cancelled.id }, "failed to post dedup-superseded comment");
+          }
+        }
+      }
+      return newIssue;
     },
 
     update: async (
