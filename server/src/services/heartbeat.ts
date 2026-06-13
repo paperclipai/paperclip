@@ -6681,10 +6681,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
 
+    // `wakeOnDemand` gates the operator-initiated / event sources (on_demand, assignment).
+    // Legacy aliases wakeOnAssignment / wakeOnOnDemand still feed it. NOTE: wakeOnAutomation is
+    // deliberately NOT folded in here anymore — it is now an independent gate (see below) so
+    // operators can suppress server-originated automation wakes (issue_children_completed,
+    // issue_blockers_resolved, recovery sweeps) WITHOUT also killing legitimate on-demand wakes.
+    const wakeOnDemand = asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand, true);
     return {
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
-      wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
+      wakeOnDemand,
+      // `wakeOnAutomation` gates source:"automation" wakes only. Default = explicit flag if set,
+      // else inherit wakeOnDemand so prior configs that only set wakeOnDemand:false keep suppressing
+      // automation too (no behavior change for existing agents); defaults to true otherwise.
+      wakeOnAutomation: asBoolean(heartbeat.wakeOnAutomation ?? wakeOnDemand, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
     };
   }
@@ -10246,7 +10256,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await writeSkippedRequest("heartbeat.disabled");
       return null;
     }
-    if (source !== "timer" && !policy.wakeOnDemand) {
+    if (source === "automation" && !policy.wakeOnAutomation) {
+      // Independent gate: lets an operator silence server-originated automation wakes
+      // (issue_children_completed, issue_blockers_resolved, recovery) without disabling
+      // on-demand/assignment wakes. Defaults to enabled (true), so no behavior change unless set.
+      await writeSkippedRequest("heartbeat.wakeOnAutomation.disabled");
+      return null;
+    }
+    if (source !== "timer" && source !== "automation" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
     }
