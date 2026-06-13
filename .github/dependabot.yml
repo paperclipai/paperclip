@@ -1,23 +1,42 @@
 version: 2
 updates:
   - package-ecosystem: npm
-    directory: "/"
+    directory: /
     schedule:
       interval: weekly
       day: monday
-      time: "06:00"
-    open-pull-requests-limit: 10
+      time: "10:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 8
     labels:
-      - "dependencies"
-    ignore:
-      # Ignore major version bumps — review those manually
-      - dependency-name: "*"
-        update-types: ["version-update:semver-major"]
+      - dependencies
+    groups:
+      production-dependencies:
+        dependency-type: production
+        update-types:
+          - minor
+          - patch
+      development-dependencies:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+      major-dependencies:
+        update-types:
+          - major
 
   - package-ecosystem: github-actions
-    directory: "/"
+    directory: /
     schedule:
       interval: weekly
       day: monday
-      time: "06:00"
+      time: "10:30"
+      timezone: Etc/UTC
     open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    groups:
+      github-actions:
+        patterns:
+          - "*"
