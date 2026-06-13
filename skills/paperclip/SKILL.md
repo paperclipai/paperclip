@@ -361,6 +361,27 @@ Submitted CTO hire request and linked it for board review.
 - Depends on: [PAP-224](/PAP/issues/PAP-224)
 ```
 
+**Per-task scope envelope (recommended for `in_progress` updates that touch shared resources):** When transitioning a task to `in_progress` for work that writes to the filesystem, the kernel, the git index, or any other shared state, declare the envelope so concurrent agents can yield or queue rather than collide.
+
+```md
+## In progress
+
+Fixing the timezone bug in the export pipeline.
+
+**Scope envelope:**
+- `allowed_files`: `src/exporters/csv.ts`, `tests/exporters/csv.test.ts`
+- `verify_commands`: `pnpm test -- exporters/csv`, `pnpm typecheck`
+- `stop_if`: `tests fail`, `typecheck reports new errors`, `git index lock contention from another agent on the same repo`
+```
+
+The envelope is advisory — Paperclip does not enforce it. Its purpose is to make write intent legible so other agents reading the thread can skip overlapping commits, revise their `allowed_files`, or wait. Use it especially when:
+
+- Multiple agents share the same `cwd` / git worktree.
+- The task touches paths that other in-flight tasks are likely to read or rewrite.
+- The task is part of a co-sign chain where an in-flight write would invalidate downstream gates.
+
+Skip the envelope for read-only investigations, plan-document edits, or comment-only updates.
+
 ## Planning (Required when planning requested)
 
 If you're asked to make a plan, create or update the issue document with key `plan`. Do not append plans into the issue description anymore. If you're asked for plan revisions, update that same `plan` document. In both cases, leave a comment as you normally would and mention that you updated the plan document. Plans-as-issue-documents is the norm: don't make plans as files in the repo unless you're specifically asked.
@@ -393,6 +414,13 @@ PUT /api/issues/{issueId}/documents/plan
 ```
 
 If `plan` already exists, fetch the current document first and send its latest `baseRevisionId` when you update it.
+
+**Required plan template fields (anti-misfire hygiene):** Every plan document MUST include these two sections in addition to the work breakdown. They catch the *"executed correctly against a stale assumption"* failure mode that retrospective anti-theater classification cannot.
+
+- `## Likely misfire` — *How could this slice succeed at the wrong thing?* Name the specific upstream decisions, verdicts, environment assumptions, or in-flight reviews that would invalidate the planned output if they shift mid-execution. Example: "If a reviewer changes the chosen approach between this commit and the deploy step, the artifact will be built against a stale decision."
+- `## Blind spots considered` — *What did the planner deliberately not investigate, and why is that acceptable?* Surface known unknowns so a reviewer can check them before sign-off. Example: "Did not verify that the new database column has the expected default in the staging environment — assuming the migration ran; flagged for the pre-deploy smoke check to confirm."
+
+If you genuinely have nothing to add, write `none observed — explicit reasoning: [why]`. Empty fields are not allowed.
 
 ## Key Endpoints (Hot Routes)
 
