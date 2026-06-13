@@ -21,8 +21,9 @@ import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
 import type { Issue, IssueStatus } from "@paperclipai/shared";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, CirclePause } from "lucide-react";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
+import { hasEventDrivenHubIdlePath } from "../lib/event-driven-hub-idle";
 
 export const KANBAN_BOARD_HIGH_VOLUME_THRESHOLD = 100;
 export const KANBAN_COLUMN_PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
@@ -241,6 +242,16 @@ function KanbanCard({
             >
               <AlertTriangle className="h-3 w-3" />
               Next step
+            </span>
+          ) : null}
+          {hasEventDrivenHubIdlePath(issue) ? (
+            <span
+              className="inline-flex items-center gap-1 rounded-full border border-emerald-400/45 bg-emerald-50/60 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:border-emerald-300/35 dark:bg-emerald-400/10 dark:text-emerald-300"
+              title="Healthy event-driven hub: waiting for an external event, not a missed handoff."
+              aria-label="Event-driven hub idle"
+            >
+              <CirclePause className="h-3 w-3" />
+              Hub idle
             </span>
           ) : null}
           {isLive && (

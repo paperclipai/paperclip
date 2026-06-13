@@ -1,5 +1,6 @@
 import type { Agent } from "@paperclipai/shared";
 import type { CompanyUserProfile } from "./company-members";
+import { hasEventDrivenHubIdleDetail } from "./event-driven-hub-idle";
 
 type ActivityDetails = Record<string, unknown> | null | undefined;
 
@@ -206,6 +207,10 @@ function readStringArrayLength(value: unknown): number {
   return value.filter((entry) => typeof entry === "string" && entry.length > 0).length;
 }
 
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 function formatAcceptedPlanDecompositionDetail(details: ActivityDetails): string | null {
   if (!details) return null;
   const status = typeof details.status === "string" ? details.status : null;
@@ -328,6 +333,48 @@ function formatStructuredIssueChange(input: {
   return null;
 }
 
+function formatSuccessfulRunHandoffActivity(action: string, details: ActivityDetails, forIssueDetail: boolean): string | null {
+  if (action === "issue.successful_run_handoff_resolved" && hasEventDrivenHubIdleDetail(details)) {
+    return forIssueDetail ? "Event-driven hub idle" : "recorded event-driven hub idle on";
+  }
+  return null;
+}
+
+function formatRecoveryActionActivity(action: string, details: ActivityDetails, forIssueDetail: boolean): string | null {
+  if (!details) return null;
+  const outcome = readString(details.outcome);
+  const source = readString(details.source);
+  const note = readString(details.resolutionNote);
+
+  if (action === "issue.recovery_action_resolved" && outcome === "false_positive") {
+    if (hasEventDrivenHubIdleDetail(details)) {
+      return forIssueDetail
+        ? "Folded recovery: event-driven hub idle"
+        : "folded recovery as event-driven hub idle on";
+    }
+    return forIssueDetail
+      ? "Folded recovery: false positive"
+      : "folded false-positive recovery on";
+  }
+
+  if (
+    action === "issue.recovery_action_escalated" ||
+    (action === "issue.recovery_action_resolved" && (outcome === "escalated" || source === "recovery.exhausted"))
+  ) {
+    return forIssueDetail
+      ? "Recovery exhausted and escalated"
+      : "escalated exhausted recovery on";
+  }
+
+  if (action === "issue.recovery_action_resolved" && note?.toLowerCase().includes("exhaust")) {
+    return forIssueDetail
+      ? "Recovery exhausted and escalated"
+      : "escalated exhausted recovery on";
+  }
+
+  return null;
+}
+
 export function formatActivityVerb(
   action: string,
   details?: Record<string, unknown> | null,
@@ -345,6 +392,12 @@ export function formatActivityVerb(
     forIssueDetail: false,
   });
   if (structuredChange) return structuredChange;
+
+  const successfulRunHandoff = formatSuccessfulRunHandoffActivity(action, details, false);
+  if (successfulRunHandoff) return successfulRunHandoff;
+
+  const recoveryAction = formatRecoveryActionActivity(action, details, false);
+  if (recoveryAction) return recoveryAction;
 
   return ACTIVITY_ROW_VERBS[action] ?? action.replace(/[._]/g, " ");
 }
@@ -366,6 +419,12 @@ export function formatIssueActivityAction(
     forIssueDetail: true,
   });
   if (structuredChange) return structuredChange;
+
+  const successfulRunHandoff = formatSuccessfulRunHandoffActivity(action, details, true);
+  if (successfulRunHandoff) return successfulRunHandoff;
+
+  const recoveryAction = formatRecoveryActionActivity(action, details, true);
+  if (recoveryAction) return recoveryAction;
 
   if (action === "issue.accepted_plan_decomposition_updated") {
     const detail = formatAcceptedPlanDecompositionDetail(details);

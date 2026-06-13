@@ -1243,7 +1243,7 @@ function IssueDetailActivityTab({
           hasLiveRuns={hasLiveRuns}
           activityEvents={activity ?? []}
           renderActivityEvent={(evt) => {
-            const tone = successfulRunHandoffActivityTone(evt.action);
+            const tone = successfulRunHandoffActivityTone(evt.action, evt.details);
             const isHandoffWarning =
               evt.action === SUCCESSFUL_RUN_HANDOFF_REQUIRED_ACTION
               || evt.action === SUCCESSFUL_RUN_HANDOFF_ESCALATED_ACTION;

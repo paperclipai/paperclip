@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { Eye, Flag, X } from "lucide-react";
+import { CirclePause, Eye, Flag, X } from "lucide-react";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
@@ -16,6 +16,7 @@ import {
 import { StatusIcon } from "./StatusIcon";
 import { productivityReviewTriggerLabel } from "./ProductivityReviewBadge";
 import { hasAssignedBacklogBlocker } from "../lib/issue-blockers";
+import { hasEventDrivenHubIdlePath } from "../lib/event-driven-hub-idle";
 
 type UnreadState = "hidden" | "visible" | "fading";
 
@@ -91,6 +92,7 @@ export function IssueRow({
   ) : null;
   const recoveryAction = issue.activeRecoveryAction ?? null;
   const recoveryIndicator = recoveryAction ? renderRecoveryChip(recoveryAction, selected) : null;
+  const hubIdleIndicator = hasEventDrivenHubIdlePath(issue) ? renderHubIdleChip(selected) : null;
   const parkedBlockerIndicator = hasAssignedBacklogBlocker(issue.blockedBy) ? (
     <span
       data-testid="issue-row-parked-blocker"
@@ -123,6 +125,7 @@ export function IssueRow({
         {mobileLeading ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} className={selectedStatusClass} />}
         {productivityReviewIndicator}
         {parkedBlockerIndicator}
+        {hubIdleIndicator}
         {recoveryIndicator}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
@@ -149,6 +152,7 @@ export function IssueRow({
                 {identifier}
               </span>
               {parkedBlockerIndicator}
+              {hubIdleIndicator}
               {recoveryIndicator}
             </>
           )}
@@ -229,6 +233,24 @@ export function IssueRow({
         </span>
       ) : null}
     </Link>
+  );
+}
+
+function renderHubIdleChip(selected: boolean): ReactNode {
+  return (
+    <span
+      data-testid="issue-row-hub-idle-indicator"
+      role="status"
+      aria-label="Event-driven hub idle"
+      className={cn(
+        "ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border border-emerald-500/45 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300",
+        selected ? "!border-muted-foreground !text-muted-foreground" : null,
+      )}
+      title="Healthy event-driven hub: waiting for an external event, not a missed handoff."
+    >
+      <CirclePause className="h-2.5 w-2.5" aria-hidden />
+      Hub idle
+    </span>
   );
 }
 
