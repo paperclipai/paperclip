@@ -19,10 +19,12 @@ import {
   issueAttachments,
   issueComments,
   issueApprovals,
+  issueLabels,
   issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
   issues,
+  labels,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -50,10 +52,12 @@ import {
 import {
   RECOVERY_ORIGIN_KINDS,
   buildIssueGraphLivenessLeafKey,
+  isProductivityReviewOriginKind,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "./origins.js";
 import {
+  PERPETUAL_TRACKER_LABEL,
   classifyIssueGraphLiveness,
   type IssueLivenessFinding,
 } from "./issue-graph-liveness.js";
@@ -2491,6 +2495,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
 
+    // BLU-10308: productivity_review issues are reviewer-decision artifacts with no
+    // execution to recover. Exempt them from the stranded-work blocked-flip and the
+    // source_scoped_recovery_action wake — flipping them to blocked is what fed the
+    // 27-issue productivity-review loop. Returning null is treated as a skip by callers.
+    if (isProductivityReviewOriginKind(input.issue.originKind)) {
+      return null;
+    }
+
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
     const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
       issue: input.issue,
@@ -3002,6 +3014,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       approvalRows,
       recoveryIssueRows,
       recoveryActionRows,
+      perpetualTrackerLabelRows,
     ] = await Promise.all([
       issueRowsPromise,
       db
@@ -3111,7 +3124,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               ),
             );
       }),
+      // BLU-10337: only the perpetual-tracker label affects liveness classification.
+      // Match the single label name unconditionally so this runs concurrently with the
+      // issue scan instead of waiting on it — results are scoped to analyzed issues at
+      // classifier-input build time via perpetualTrackerIssueIds.has(row.id).
+      db
+        .select({ issueId: issueLabels.issueId })
+        .from(issueLabels)
+        .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+        .where(eq(labels.name, PERPETUAL_TRACKER_LABEL)),
     ]);
+
+    const perpetualTrackerIssueIds = new Set(perpetualTrackerLabelRows.map((row) => row.issueId));
 
     const openRecoveryIssues = recoveryIssueRows.flatMap((row) => {
       if (row.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation) {
@@ -3141,7 +3165,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
 
     return classifyIssueGraphLiveness({
-      issues: issueRows,
+      issues: issueRows.map((row) => ({
+        ...row,
+        labels: perpetualTrackerIssueIds.has(row.id) ? [PERPETUAL_TRACKER_LABEL] : [],
+      })),
       relations: relationRows,
       agents: agentRows,
       activeRuns: activeRunRows.map((row) => ({

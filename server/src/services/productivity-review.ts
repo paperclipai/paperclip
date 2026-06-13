@@ -307,17 +307,29 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   }
 
   async function getRefreshCommentState(companyId: string, reviewIssueId: string) {
+    const refreshLike = `${PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX}%`;
     return db
       .select({
         count: sql<number>`count(*)::int`,
         latestCreatedAt: sql<Date | null>`max(${issueComments.createdAt})`,
+        // BLU-10308: surface the body of the most recent refresh comment so the
+        // caller can skip posting byte-identical evidence. Deterministic tiebreak
+        // (created_at desc, id desc) mirrors the ordering used elsewhere here.
+        latestBody: sql<string | null>`(
+          select c2.body from ${issueComments} c2
+          where c2.company_id = ${companyId}
+            and c2.issue_id = ${reviewIssueId}
+            and c2.body like ${refreshLike}
+          order by c2.created_at desc, c2.id desc
+          limit 1
+        )`,
       })
       .from(issueComments)
       .where(
         and(
           eq(issueComments.companyId, companyId),
           eq(issueComments.issueId, reviewIssueId),
-          sql`${issueComments.body} like ${`${PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX}%`}`,
+          sql`${issueComments.body} like ${refreshLike}`,
         ),
       )
       .then((rows) => {
@@ -325,6 +337,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         return {
           count: Number(row?.count ?? 0),
           latestCreatedAt: coerceDate(row?.latestCreatedAt),
+          latestBody: row?.latestBody ?? null,
         };
       });
   }
@@ -639,33 +652,52 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   ) {
     const existing = await findOpenProductivityReview(evidence.sourceIssue.companyId, evidence.sourceIssue.id);
     if (existing) {
-      const refreshState = await getRefreshCommentState(evidence.sourceIssue.companyId, existing.id);
-      const lastRefreshOrCreationAt = refreshState.latestCreatedAt ?? existing.createdAt;
-      if (
-        refreshState.count >= opts.thresholds.maxRefreshComments ||
-        evidence.generatedAt.getTime() - lastRefreshOrCreationAt.getTime() < opts.thresholds.refreshIntervalMs
-      ) {
-        return { kind: "existing" as const, reviewIssueId: existing.id };
-      }
-      await addRefreshComment(existing.id, buildRefreshComment(evidence, opts.prefix), evidence.generatedAt);
-      await logActivity(db, {
-        companyId: evidence.sourceIssue.companyId,
-        actorType: "system",
-        actorId: "system",
-        action: "issue.productivity_review_updated",
-        entityType: "issue",
-        entityId: existing.id,
-        agentId: existing.assigneeAgentId,
-        details: {
-          source: "productivity_review.reconcile",
-          sourceIssueId: evidence.sourceIssue.id,
-          trigger: evidence.trigger,
-          noCommentStreak: evidence.noCommentStreak,
-          runCountLastHour: evidence.runCountLastHour,
-          commentCountLastHour: evidence.commentCountLastHour,
-        },
+      // Serialize cap + interval evaluation per review issue. The SELECT-then-INSERT
+      // pattern below would otherwise race across concurrent reconcile runs (each
+      // server process fires reconcileProductivityReviews on a 30s setInterval),
+      // letting every racer see the same pre-burst count and all racers insert.
+      // BLU-7718: BLU-7325 accumulated 3,754 refresh comments through this race.
+      // pg_advisory_xact_lock auto-releases when the transaction commits.
+      return db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${`productivity_review_refresh:${existing.id}`}, 0))`,
+        );
+        const refreshState = await getRefreshCommentState(evidence.sourceIssue.companyId, existing.id);
+        const lastRefreshOrCreationAt = refreshState.latestCreatedAt ?? existing.createdAt;
+        if (
+          refreshState.count >= opts.thresholds.maxRefreshComments ||
+          evidence.generatedAt.getTime() - lastRefreshOrCreationAt.getTime() < opts.thresholds.refreshIntervalMs
+        ) {
+          return { kind: "existing" as const, reviewIssueId: existing.id };
+        }
+        // BLU-10308: skip posting when the rendered evidence is byte-identical to the
+        // last refresh comment. The unguarded ~30s repost flooded threads (15-20k
+        // machine comments) and re-tripped the recovery loop. buildRefreshComment is
+        // timestamp-free, so identical evidence renders identical bodies.
+        const refreshBody = buildRefreshComment(evidence, opts.prefix);
+        if (refreshState.latestBody !== null && refreshState.latestBody === refreshBody) {
+          return { kind: "existing" as const, reviewIssueId: existing.id };
+        }
+        await addRefreshComment(existing.id, refreshBody, evidence.generatedAt);
+        await logActivity(db, {
+          companyId: evidence.sourceIssue.companyId,
+          actorType: "system",
+          actorId: "system",
+          action: "issue.productivity_review_updated",
+          entityType: "issue",
+          entityId: existing.id,
+          agentId: existing.assigneeAgentId,
+          details: {
+            source: "productivity_review.reconcile",
+            sourceIssueId: evidence.sourceIssue.id,
+            trigger: evidence.trigger,
+            noCommentStreak: evidence.noCommentStreak,
+            runCountLastHour: evidence.runCountLastHour,
+            commentCountLastHour: evidence.commentCountLastHour,
+          },
+        });
+        return { kind: "updated" as const, reviewIssueId: existing.id };
       });
-      return { kind: "updated" as const, reviewIssueId: existing.id };
     }
 
     const recentCreationCount = await countRecentProductivityReviews(
