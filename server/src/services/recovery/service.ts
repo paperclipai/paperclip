@@ -71,6 +71,7 @@ export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
+const STALE_RUN_CTO_ESCALATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleRunCtoEscalation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
@@ -890,6 +891,57 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  async function countSourceIssueStaleEvaluations(companyId: string, sourceIssueId: string) {
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.parentId, sourceIssueId),
+          isNull(issues.hiddenAt),
+        ),
+      );
+    return Number(row?.count ?? 0);
+  }
+
+  function buildCtoEscalationDescription(input: {
+    sourceIssue: typeof issues.$inferSelect;
+    run: typeof heartbeatRuns.$inferSelect;
+    runningAgent: typeof agents.$inferSelect;
+    prefix: string;
+    priorEvalCount: number;
+    silenceAgeMs: number | null;
+  }) {
+    return [
+      "Paperclip hard cap exceeded: this source issue has triggered more stale-run evaluations than the policy limit (Rule 2).",
+      "",
+      "## Rule-2 Escalation Packet",
+      "",
+      `- Source issue: ${issueUiLink({ identifier: input.sourceIssue.identifier, id: input.sourceIssue.id }, input.prefix)}`,
+      `- Stale run: \`${input.run.id}\``,
+      `- Assigned agent: ${agentUiLink(input.runningAgent, input.prefix)} (${input.runningAgent.adapterType})`,
+      `- Silent for: ${formatDuration(input.silenceAgeMs)}`,
+      `- Prior stale evaluations on this source issue: ${input.priorEvalCount} (cap: 1)`,
+      `- Process metadata: pid \`${input.run.processPid ?? "unknown"}\`, process group \`${input.run.processGroupId ?? "unknown"}\``,
+      "",
+      "## Required Fields (fill before closing)",
+      "",
+      "- Last known completed checkpoint (commit, file, flow name):",
+      "- Remaining acceptance criteria still unmet:",
+      "- Suspected blocker (with evidence):",
+      "- Recommended next action:",
+      "",
+      "## Next Action",
+      "",
+      "As CTO, review this escalation, fill in the packet fields above, then:",
+      "1. Kill the stale run if it is still alive (pid above).",
+      "2. Decide whether to restart from the last checkpoint or cancel the source issue.",
+      "3. Comment on the source issue with the decision and close this escalation `done`.",
+    ].join("\n");
+  }
+
   async function findOpenStaleRunEvaluation(companyId: string, runId: string) {
     const [row] = await db
       .select({
@@ -1685,6 +1737,97 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     const prefix = await getCompanyIssuePrefix(input.run.companyId);
+    if (sourceIssue && !existing && !isTerminalIssueStatus(sourceIssue.status)) {
+      const [priorEvalCount, hasContinueDecision] = await Promise.all([
+        countSourceIssueStaleEvaluations(input.run.companyId, sourceIssue.id),
+        db
+          .select({ id: heartbeatRunWatchdogDecisions.id })
+          .from(heartbeatRunWatchdogDecisions)
+          .where(
+            and(
+              eq(heartbeatRunWatchdogDecisions.companyId, input.run.companyId),
+              eq(heartbeatRunWatchdogDecisions.runId, input.run.id),
+              eq(heartbeatRunWatchdogDecisions.decision, "continue"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => Boolean(rows[0])),
+      ]);
+      if (priorEvalCount >= 1 && !hasContinueDecision) {
+        const silenceAgeMs = silenceAgeMsForRun(input.run, input.now);
+        const ctoAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
+        let ctoEscalation: Awaited<ReturnType<typeof issuesSvc.create>> | null = null;
+        try {
+          ctoEscalation = await issuesSvc.create(input.run.companyId, {
+            title: `CTO escalation: stale-run hard cap exceeded for ${sourceIssue.identifier ?? sourceIssue.id}`,
+            description: buildCtoEscalationDescription({
+              sourceIssue,
+              run: input.run,
+              runningAgent,
+              prefix,
+              priorEvalCount,
+              silenceAgeMs,
+            }),
+            status: "todo",
+            priority: "high",
+            parentId: sourceIssue.id,
+            projectId: sourceIssue.projectId ?? null,
+            goalId: sourceIssue.goalId ?? null,
+            billingCode: sourceIssue.billingCode ?? null,
+            assigneeAgentId: ctoAgentId,
+            assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides("status_only"),
+            originKind: STALE_RUN_CTO_ESCALATION_ORIGIN_KIND,
+            originId: input.run.id,
+            originRunId: input.run.id,
+            originFingerprint: `stale_cto_escalation:${input.run.companyId}:${sourceIssue.id}:${input.run.id}`,
+          });
+        } catch {
+          ctoEscalation = null;
+        }
+        await logActivity(db, {
+          companyId: input.run.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: input.run.agentId,
+          runId: input.run.id,
+          action: "heartbeat.output_stale_cap_exceeded",
+          entityType: "heartbeat_run",
+          entityId: input.run.id,
+          details: {
+            source: "recovery.scan_silent_active_runs",
+            reason: "source_issue_evaluation_cap_exceeded",
+            sourceIssueId: sourceIssue.id,
+            sourceIssueIdentifier: sourceIssue.identifier,
+            priorEvalCount,
+            ctoEscalationIssueId: ctoEscalation?.id ?? null,
+            silenceAgeMs,
+          },
+        });
+        if (ctoAgentId && ctoEscalation) {
+          await deps.enqueueWakeup(ctoAgentId, {
+            source: "assignment",
+            triggerDetail: "system",
+            reason: "issue_assigned",
+            payload: withRecoveryModelProfileHint({
+              issueId: ctoEscalation.id,
+              staleRunId: input.run.id,
+              sourceIssueId: sourceIssue.id,
+            }, "status_only"),
+            requestedByActorType: "system",
+            requestedByActorId: null,
+            contextSnapshot: withRecoveryModelProfileHint({
+              issueId: ctoEscalation.id,
+              taskId: ctoEscalation.id,
+              wakeReason: "issue_assigned",
+              source: "recovery.stale_run_cto_escalation",
+              staleRunId: input.run.id,
+              sourceIssueId: sourceIssue.id,
+            }, "status_only"),
+          });
+        }
+        return { kind: "skipped" as const };
+      }
+    }
     const evidence = await collectStaleRunEvidence({
       run: input.run,
       runningAgent,
