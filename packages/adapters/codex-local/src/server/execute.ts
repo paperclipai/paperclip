@@ -371,127 +371,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
-<<<<<<< HEAD
   const preparedRuntimeConfig = await prepareCodexRuntimeConfig({
     env: envConfigStrings,
     codexHome: configuredCodexHome ? null : effectiveCodexHome,
-=======
-  const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
-    executionTarget,
-    asNumber(config.timeoutSec, 0),
-  );
-  const graceSec = asNumber(config.graceSec, 20);
-  let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
-  const preparedExecutionTargetRuntime = executionTargetIsRemote
-    ? await (async () => {
-        await onLog(
-          "stdout",
-          `[paperclip] Syncing workspace and CODEX_HOME to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
-        );
-        return await prepareAdapterExecutionTargetRuntime({
-          runId,
-          target: executionTarget,
-          adapterKey: "codex",
-          timeoutSec,
-          workspaceLocalDir: cwd,
-          installCommand: SANDBOX_INSTALL_COMMAND,
-          detectCommand: command,
-          assets: [
-            {
-              key: "home",
-              localDir: effectiveCodexHome,
-              followSymlinks: true,
-            },
-          ],
-        });
-      })()
-    : null;
-  if (preparedExecutionTargetRuntime?.workspaceRemoteDir) {
-    effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir;
-  }
-  const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
-  const executionTargetIsSandbox =
-    runtimeExecutionTarget?.kind === "remote" && runtimeExecutionTarget.transport === "sandbox";
-  const restoreRemoteWorkspace = preparedExecutionTargetRuntime
-    ? () => preparedExecutionTargetRuntime.restoreWorkspace()
-    : null;
-  let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
-  const remoteCodexHome = executionTargetIsRemote
-    ? preparedExecutionTargetRuntime?.assetDirs.home ??
-      path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "codex", "home")
-    : null;
-  const hasExplicitApiKey =
-    typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
-  if (!executionTargetIsRemote && !hasNonEmptyEnvValue(envConfig, "PAPERCLIP_API_URL")) {
-    env.PAPERCLIP_API_URL = resolveLocalPaperclipApiUrl();
-  }
-  env.PAPERCLIP_RUN_ID = runId;
-  const wakeTaskId =
-    (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
-    (typeof context.issueId === "string" && context.issueId.trim().length > 0 && context.issueId.trim()) ||
-    null;
-  const wakeReason =
-    typeof context.wakeReason === "string" && context.wakeReason.trim().length > 0
-      ? context.wakeReason.trim()
-      : null;
-  const wakeCommentId =
-    (typeof context.wakeCommentId === "string" && context.wakeCommentId.trim().length > 0 && context.wakeCommentId.trim()) ||
-    (typeof context.commentId === "string" && context.commentId.trim().length > 0 && context.commentId.trim()) ||
-    null;
-  const approvalId =
-    typeof context.approvalId === "string" && context.approvalId.trim().length > 0
-      ? context.approvalId.trim()
-      : null;
-  const approvalStatus =
-    typeof context.approvalStatus === "string" && context.approvalStatus.trim().length > 0
-      ? context.approvalStatus.trim()
-      : null;
-  const linkedIssueIds = Array.isArray(context.issueIds)
-    ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-    : [];
-  const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
-  const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
-  if (wakeTaskId) {
-    env.PAPERCLIP_TASK_ID = wakeTaskId;
-  }
-  if (issueWorkMode) {
-    env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
-  }
-  if (wakeReason) {
-    env.PAPERCLIP_WAKE_REASON = wakeReason;
-  }
-  if (wakeCommentId) {
-    env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
-  }
-  if (approvalId) {
-    env.PAPERCLIP_APPROVAL_ID = approvalId;
-  }
-  if (approvalStatus) {
-    env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
-  }
-  if (linkedIssueIds.length > 0) {
-    env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
-  }
-  if (wakePayloadJson) {
-    env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
-  }
-  refreshPaperclipWorkspaceEnvForExecution({
-    env,
-    envConfig,
-    workspaceCwd: effectiveWorkspaceCwd,
-    workspaceSource,
-    workspaceStrategy,
-    workspaceId,
-    workspaceRepoUrl,
-    workspaceRepoRef,
-    workspaceBranch,
-    workspaceWorktreePath,
-    workspaceHints,
-    agentHome,
-    executionTargetIsRemote,
-    executionCwd: effectiveExecutionCwd,
->>>>>>> 71cd236a (SDL-2438: Prefer local runtime API for codex_local)
   });
   try {
     for (const note of preparedRuntimeConfig.notes) {
@@ -555,6 +437,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const hasExplicitApiKey =
       typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
     const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+    if (!executionTargetIsRemote && !hasNonEmptyEnvValue(envConfig, "PAPERCLIP_API_URL")) {
+      env.PAPERCLIP_API_URL = resolveLocalPaperclipApiUrl();
+    }
     env.PAPERCLIP_RUN_ID = runId;
     const wakeTaskId =
       (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
