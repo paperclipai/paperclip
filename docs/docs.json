@@ -57,6 +57,17 @@
             ]
           },
           {
+            "group": "Brandbook",
+            "pages": [
+              "guides/brandbook/README",
+              "guides/brandbook/voice-tone",
+              "guides/brandbook/color-palette",
+              "guides/brandbook/typography",
+              "guides/brandbook/iconography",
+              "guides/brandbook/motion"
+            ]
+          },
+          {
             "group": "Agent Developer",
             "pages": [
               "guides/agent-developer/how-agents-work",

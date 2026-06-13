@@ -2939,6 +2939,37 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      // Prevent infinite recovery loop: if the latest run succeeded but the agent could not
+      // make concrete progress (livenessState "needs_followup"), and the run was itself a
+      // recovery continuation attempt, escalate to blocked instead of re-enqueueing.
+      if (
+        latestRun &&
+        latestRun.status === "succeeded" &&
+        latestRun.livenessState === "needs_followup"
+      ) {
+        const latestContext = parseObject(latestRun.contextSnapshot);
+        const latestRetryReason = readNonEmptyString(latestContext.retryReason);
+        if (latestRetryReason === "issue_continuation_needed") {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_progress",
+            latestRun,
+            comment:
+              "Paperclip automatically retried continuation for this assigned `in_progress` issue, " +
+              "but the latest run ended with `needs_followup` liveness — the agent produced useful output " +
+              "but could not make concrete progress toward closing the issue. " +
+              "Moving it to `blocked` to prevent an infinite recovery loop and make it visible for intervention.",
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+      }
+
       const queued = await enqueueStrandedIssueRecovery({
         issueId: issue.id,
         agentId,
