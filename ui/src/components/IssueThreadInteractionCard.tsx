@@ -952,8 +952,8 @@ function AskUserQuestionsCard({
                   ) : (
                     "Cancel question"
                   )}
-                  </Button>
-                ) : null}
+                </Button>
+              ) : null}
               <Button
                 size="sm"
                 disabled={!onSubmitInteractionAnswers || !canSubmit || working || cancelling}
@@ -1279,7 +1279,7 @@ function RequestConfirmationCard({
       {interaction.status === "pending" ? (
         <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
           <div className="text-sm leading-6 text-foreground">
-            {interaction.payload.prompt}
+            <MarkdownBody>{interaction.payload.prompt}</MarkdownBody>
           </div>
           {interaction.payload.detailsMarkdown ? (
             <div className="border-t border-border/60 pt-3 text-sm">
@@ -1338,7 +1338,7 @@ function RequestConfirmationCard({
                 className={cn(
                   "min-h-24 bg-background text-sm",
                   rejectAttempted && declineReasonInvalid
-                    && "border-rose-500 focus-visible:ring-rose-500/25",
+                  && "border-rose-500 focus-visible:ring-rose-500/25",
                 )}
               />
               {rejectAttempted && declineReasonInvalid ? (
@@ -1896,12 +1896,12 @@ export function IssueThreadInteractionCard({
   const resolvedByLabel =
     interaction.resolvedByAgentId || interaction.resolvedByUserId
       ? resolveActorLabel({
-          agentId: interaction.resolvedByAgentId,
-          userId: interaction.resolvedByUserId,
-          agentMap,
-          currentUserId,
-          userLabelMap,
-        })
+        agentId: interaction.resolvedByAgentId,
+        userId: interaction.resolvedByUserId,
+        agentMap,
+        currentUserId,
+        userLabelMap,
+      })
       : null;
 
   return (
