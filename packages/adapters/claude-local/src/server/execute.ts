@@ -62,6 +62,7 @@ import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
+import { loadActiveMemories, buildActiveMemorySection, buildMemorySelfCheckBlock } from "./active-memory.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -457,6 +458,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
+  // Active Memory Enforcement (VOG-5736, Component A):
+  // When ACTIVE_MEMORY_ENFORCEMENT_ENABLED !== 'false', prepend always-check
+  // memories to the system prompt so the agent cannot miss them, even if the
+  // Claude Code harness system-reminder is not injected.
+  if (process.env["ACTIVE_MEMORY_ENFORCEMENT_ENABLED"] !== "false") {
+    try {
+      const memories = await loadActiveMemories(cwd);
+      const section = buildActiveMemorySection(memories);
+      if (section) {
+        combinedInstructionsContents = combinedInstructionsContents
+          ? `${section}\n\n---\n\n${combinedInstructionsContents}`
+          : section;
+        await onLog("stdout", `[paperclip] Active memory enforcement: injected ${memories.length} always-check rule(s).\n`);
+      }
+    } catch (err) {
+      // Non-fatal: memory injection failure must not block agent execution.
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog("stderr", `[paperclip] Warning: active memory enforcement injection failed: ${reason}\n`);
+    }
+  }
   const promptBundle = await prepareClaudePromptBundle({
     companyId: agent.companyId,
     skills: claudeSkillEntries.filter((entry) => desiredSkillNames.has(entry.key)),
@@ -664,13 +685,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+  // Memory Self-Check injection (VOG-5839): append always-check memories to wake prompt.
+  // Feature flag: MEMORY_ENFORCE_ENABLED=true (default off; enable in staging first).
+  let memorySelfCheckBlock = "";
+  if (process.env.MEMORY_ENFORCE_ENABLED === "true" && agentHome) {
+    try {
+      const alwaysCheckMemories = await loadActiveMemories(agentHome);
+      memorySelfCheckBlock = buildMemorySelfCheckBlock(alwaysCheckMemories);
+      if (memorySelfCheckBlock) {
+        await onLog(
+          "stdout",
+          `[paperclip] Memory self-check: injected ${alwaysCheckMemories.length} always-check rule(s) into wake prompt (+${memorySelfCheckBlock.length} chars).\n`,
+        );
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog("stderr", `[paperclip] Warning: memory self-check injection failed: ${reason}\n`);
+    }
+  }
+  const finalWakePrompt =
+    wakePrompt && memorySelfCheckBlock
+      ? `${wakePrompt}\n\n${memorySelfCheckBlock}`
+      : memorySelfCheckBlock || wakePrompt;
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const taskContextNote = asString(context.paperclipTaskMarkdown, "").trim();
   const prompt = joinPromptSections([
     renderedBootstrapPrompt,
-    wakePrompt,
+    finalWakePrompt,
     sessionHandoffNote,
     taskContextNote,
     renderedPrompt,
@@ -679,6 +722,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     promptChars: prompt.length,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     wakePromptChars: wakePrompt.length,
+    memorySelfCheckChars: memorySelfCheckBlock.length,
     sessionHandoffChars: sessionHandoffNote.length,
     taskContextChars: taskContextNote.length,
     heartbeatPromptChars: renderedPrompt.length,
