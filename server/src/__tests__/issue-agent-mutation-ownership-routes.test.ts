@@ -568,7 +568,6 @@ describe("agent issue mutation checkout ownership", () => {
   it.each([
     ["patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked" })],
     ["delete", (app: express.Express) => request(app).delete(`/api/issues/${issueId}`)],
-    ["comment", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "blocked" })],
     [
       "document upsert",
       (app: express.Express) =>
@@ -975,7 +974,6 @@ describe("agent issue mutation checkout ownership", () => {
 
   it.each([
     ["todo", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Todo update" })],
-    ["todo", "comment", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Todo noise" })],
     ["blocked", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked update" })],
   ])("rejects peer agent %s issue %s mutations outside active checkout ownership", async (status, _kind, sendRequest) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: status as "todo" | "blocked", assigneeAgentId: ownerAgentId }));
@@ -987,6 +985,61 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  // AIM-57 / AIM-55: comment creation is append-only, company-scoped communication.
+  // A same-company peer (non-assignee, non-manager) must be able to post comments on
+  // another agent's issue regardless of status, while every other mutation stays gated.
+  it.each([
+    ["todo"],
+    ["in_progress"],
+    ["done"],
+    ["blocked"],
+    ["backlog"],
+  ])("allows a same-company peer agent to comment on agent %s issue (append-only)", async (status) => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: status as "todo" | "in_progress" | "done" | "blocked" | "backlog", assigneeAgentId: ownerAgentId }),
+    );
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Peer note from an unrelated same-company agent" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Peer note from an unrelated same-company agent",
+      expect.any(Object),
+      expect.any(Object),
+    );
+  });
+
+  it("still rejects cross-company agent comments via company scoping", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+
+    const res = await request(await createApp(peerActor({ companyId: "99999999-9999-4999-8999-999999999999" })))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Cross-company comment attempt" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent key cannot access another company");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("still gates non-comment mutations (patch/delete/document) for a same-company peer", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    const app = await createApp(peerActor());
+
+    await request(app).patch(`/api/issues/${issueId}`).send({ title: "Peer patch" }).expect(403);
+    await request(app).delete(`/api/issues/${issueId}`).expect(403);
+    await request(app)
+      .put(`/api/issues/${issueId}/documents/plan`)
+      .send({ format: "markdown", body: "# peer doc" })
+      .expect(403);
+
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.remove).not.toHaveBeenCalled();
+    expect(mockDocumentService.upsertIssueDocument).not.toHaveBeenCalled();
   });
 
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {
