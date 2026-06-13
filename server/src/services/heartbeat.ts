@@ -236,6 +236,7 @@ const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_r
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
+const WAKEUP_REQUEST_NON_TERMINAL_STATUSES = ["queued", "claimed", "deferred_issue_execution"] as const;
 export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
@@ -4697,6 +4698,81 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
   }
 
+  function terminalWakeupStatusForRunStatus(runStatus: string | null) {
+    switch (runStatus) {
+      case "succeeded":
+        return "completed";
+      case "failed":
+      case "cancelled":
+      case "timed_out":
+        return runStatus;
+      default:
+        return "failed";
+    }
+  }
+
+  async function reapZombieWakeupRequests() {
+    const zombies = await db
+      .select({
+        wakeupRequestId: agentWakeupRequests.id,
+        wakeupRunId: agentWakeupRequests.runId,
+        wakeupError: agentWakeupRequests.error,
+        runStatus: heartbeatRuns.status,
+        runError: heartbeatRuns.error,
+        runFinishedAt: heartbeatRuns.finishedAt,
+      })
+      .from(agentWakeupRequests)
+      .leftJoin(heartbeatRuns, eq(agentWakeupRequests.runId, heartbeatRuns.id))
+      .where(
+        and(
+          inArray(agentWakeupRequests.status, [...WAKEUP_REQUEST_NON_TERMINAL_STATUSES]),
+          sql`${agentWakeupRequests.runId} is not null`,
+          or(
+            isNull(heartbeatRuns.id),
+            inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
+          ),
+        ),
+      );
+
+    const now = new Date();
+    const reaped: string[] = [];
+    for (const zombie of zombies) {
+      const targetStatus = terminalWakeupStatusForRunStatus(zombie.runStatus ?? null);
+      const missingRun = !zombie.runStatus;
+      const fallbackError = missingRun
+        ? `Wake request references missing heartbeat run ${zombie.wakeupRunId ?? ""}`.trim()
+        : targetStatus === "completed"
+          ? null
+          : `Linked heartbeat run ended with status ${zombie.runStatus}`;
+      const updated = await db
+        .update(agentWakeupRequests)
+        .set({
+          status: targetStatus,
+          finishedAt: zombie.runFinishedAt ?? now,
+          error: zombie.wakeupError ?? zombie.runError ?? fallbackError,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(agentWakeupRequests.id, zombie.wakeupRequestId),
+            inArray(agentWakeupRequests.status, [...WAKEUP_REQUEST_NON_TERMINAL_STATUSES]),
+          ),
+        )
+        .returning({ id: agentWakeupRequests.id })
+        .then((rows) => rows[0] ?? null);
+      if (updated) reaped.push(updated.id);
+    }
+
+    if (reaped.length > 0) {
+      logger.warn(
+        { reapedCount: reaped.length, wakeupRequestIds: reaped },
+        "reaped zombie wakeup requests",
+      );
+    }
+
+    return { reaped: reaped.length, wakeupRequestIds: reaped };
+  }
+
   async function addContinuationExhaustedCommentOnce(input: {
     run: typeof heartbeatRuns.$inferSelect;
     issueId: string;
@@ -7415,6 +7491,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
+    await reapZombieWakeupRequests();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
