@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeTransientUpstreamError,
   isClaudePoisonedPreviousMessageIdError,
@@ -253,5 +254,58 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+});
+
+describe("detectClaudeLoginRequired", () => {
+  it("does not flag a successful run whose agent output mentions auth keywords", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result:
+          "Published the docs page. The HTTP error reference now lists `401 Unauthorized` and `403 Forbidden` next to the recommended retry guidance.",
+      },
+      stdout: "",
+      stderr: "",
+    });
+    expect(result.requiresLogin).toBe(false);
+  });
+
+  it("flags a real CLI auth failure on stderr", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: null,
+      stdout: "",
+      stderr: "Please log in. Run `claude login` first.",
+    });
+    expect(result.requiresLogin).toBe(true);
+  });
+
+  it("flags an error envelope whose result text describes the auth failure", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: {
+        subtype: "error",
+        is_error: true,
+        result: "authentication required: please run claude login",
+      },
+      stdout: "",
+      stderr: "",
+    });
+    expect(result.requiresLogin).toBe(true);
+  });
+
+  it("flags a structured errors entry that names an auth failure even on a success envelope", () => {
+    const result = detectClaudeLoginRequired({
+      parsed: {
+        subtype: "success",
+        is_error: false,
+        result: "All good — finished writing the post.",
+        errors: [{ message: "login required" }],
+      },
+      stdout: "",
+      stderr: "",
+    });
+    expect(result.requiresLogin).toBe(true);
   });
 });
