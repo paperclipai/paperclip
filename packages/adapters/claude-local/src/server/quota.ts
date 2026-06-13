@@ -137,13 +137,40 @@ function describeClaudeSubscriptionAuth(status: ClaudeAuthStatus | null): string
     : "Claude is logged in via claude.ai";
 }
 
+/** macOS stores the Claude Code OAuth credentials in the login Keychain rather
+ *  than in ~/.claude/.credentials.json, so fall back to reading it from there. */
+async function readClaudeTokenFromKeychain(): Promise<string | null> {
+  if (process.platform !== "darwin") return null;
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(
+      "security",
+      ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
+      { timeout: 5_000, maxBuffer: 1024 * 1024 },
+    ));
+  } catch {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const oauth = (parsed as Record<string, unknown>)["claudeAiOauth"];
+  if (typeof oauth !== "object" || oauth === null) return null;
+  const token = (oauth as Record<string, unknown>)["accessToken"];
+  return typeof token === "string" && token.length > 0 ? token : null;
+}
+
 export async function readClaudeToken(): Promise<string | null> {
   const configDir = claudeConfigDir();
   for (const filename of [".credentials.json", "credentials.json"]) {
     const token = await readClaudeTokenFromFile(path.join(configDir, filename));
     if (token) return token;
   }
-  return null;
+  return readClaudeTokenFromKeychain();
 }
 
 interface AnthropicUsageWindow {
