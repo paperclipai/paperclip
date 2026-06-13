@@ -1023,6 +1023,7 @@ export function issueRoutes(
   const routinesSvc = routineService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
+  type ActiveIssueRecoveryAction = Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>>;
   const issueTreeControlFactory = Object.prototype.hasOwnProperty.call(
     serviceIndex,
     "issueTreeControlService",
@@ -1856,13 +1857,19 @@ export function issueRoutes(
       assigneeUserId: string | null;
       executionState?: unknown;
     },
-    options: { allowBlockedCorrection?: boolean } = {},
+    options: {
+      allowBlockedCorrection?: boolean;
+      allowScopedRecoveryOwnerSourceMutation?: boolean;
+    } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
       res.status(403).json({ error: "Agent authentication required" });
       return false;
+    }
+    if (options.allowScopedRecoveryOwnerSourceMutation) {
+      return true;
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!boundaryDecision.allowed) {
@@ -1927,6 +1934,58 @@ export function issueRoutes(
       });
     }
     return true;
+  }
+
+  function isScopedRecoveryOwnerRestorePatch(
+    req: Request,
+    issue: { id: string; assigneeAgentId: string | null },
+    activeRecoveryAction: ActiveIssueRecoveryAction,
+    body: Record<string, unknown>,
+  ) {
+    if (req.actor.type !== "agent") return false;
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId || !activeRecoveryAction) return false;
+    if (activeRecoveryAction.sourceIssueId !== issue.id) return false;
+    if (activeRecoveryAction.ownerAgentId !== actorAgentId) return false;
+
+    const allowedKeys = new Set([
+      "assigneeAgentId",
+      "assigneeUserId",
+      "blockedByIssueIds",
+      "comment",
+      "interrupt",
+      "reopen",
+      "resume",
+      "status",
+    ]);
+    const keys = Object.keys(body).filter((key) => body[key] !== undefined);
+    if (!keys.length || keys.some((key) => !allowedKeys.has(key))) return false;
+
+    if (body.status !== undefined && body.status !== "todo") return false;
+    if (body.blockedByIssueIds !== undefined) {
+      if (!Array.isArray(body.blockedByIssueIds) || body.blockedByIssueIds.length !== 0) return false;
+    }
+    if (body.assigneeUserId !== undefined && body.assigneeUserId !== null) return false;
+    if (body.interrupt !== undefined && body.interrupt !== false) return false;
+
+    if (body.assigneeAgentId !== undefined) {
+      if (typeof body.assigneeAgentId !== "string") return false;
+      const allowedReturnOwners = new Set([
+        issue.assigneeAgentId,
+        activeRecoveryAction.previousOwnerAgentId,
+        activeRecoveryAction.returnOwnerAgentId,
+      ].filter((id): id is string => typeof id === "string" && id.length > 0));
+      if (!allowedReturnOwners.has(body.assigneeAgentId)) return false;
+    }
+
+    return (
+      body.status !== undefined ||
+      body.reopen === true ||
+      body.resume === true ||
+      body.blockedByIssueIds !== undefined ||
+      body.assigneeAgentId !== undefined ||
+      body.assigneeUserId !== undefined
+    );
   }
 
   function assertAgentIssueCommentAllowed(
@@ -4847,7 +4906,32 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing, { allowBlockedCorrection: true }))) return;
+    let activeRecoveryActionForPatch: ActiveIssueRecoveryAction | undefined;
+    if (
+      req.actor.type === "agent" &&
+      req.actor.agentId &&
+      existing.assigneeAgentId &&
+      existing.assigneeAgentId !== req.actor.agentId
+    ) {
+      activeRecoveryActionForPatch = await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id);
+    }
+    const allowScopedRecoveryOwnerSourceMutation = activeRecoveryActionForPatch
+      ? isScopedRecoveryOwnerRestorePatch(
+        req,
+        existing,
+        activeRecoveryActionForPatch,
+        req.body as Record<string, unknown>,
+      )
+      : false;
+    if (!(await assertAgentIssueMutationAllowed(
+      req,
+      res,
+      existing,
+      {
+        allowBlockedCorrection: true,
+        allowScopedRecoveryOwnerSourceMutation,
+      },
+    ))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -4901,7 +4985,9 @@ export function issueRoutes(
       req.body.executionPolicy !== undefined ||
       explicitMoveToTodoRequested;
     const activeRecoveryActionBeforeUpdate = recoveryRelevantSourceMutationRequested
-      ? await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id)
+      ? activeRecoveryActionForPatch !== undefined
+        ? activeRecoveryActionForPatch
+        : await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id)
       : null;
     if (
       recoveryRelevantSourceMutationRequested &&
@@ -4940,10 +5026,23 @@ export function issueRoutes(
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
       ? await issueReferencesSvc.listIssueReferenceSummary(existing.id)
       : null;
+    const scopedRecoveryOwnerRestoreNeedsDependencyReadiness =
+      allowScopedRecoveryOwnerSourceMutation &&
+      isBlocked &&
+      (updateFields.status === "todo" ||
+        reopenRequested === true ||
+        resumeRequested === true ||
+        Array.isArray(req.body.blockedByIssueIds));
+    const blockedIssueReadiness =
+      isBlocked && (effectiveMoveToTodoRequested || scopedRecoveryOwnerRestoreNeedsDependencyReadiness)
+        ? await svc.getDependencyReadiness(existing.id)
+        : null;
     const hasUnresolvedFirstClassBlockers =
-      isBlocked && effectiveMoveToTodoRequested
-        ? (await svc.getDependencyReadiness(existing.id)).unresolvedBlockerCount > 0
-        : false;
+      (blockedIssueReadiness?.unresolvedBlockerCount ?? 0) > 0;
+    if (scopedRecoveryOwnerRestoreNeedsDependencyReadiness && hasUnresolvedFirstClassBlockers) {
+      res.status(409).json({ error: "Issue recovery restore blocked by unresolved blockers" });
+      return;
+    }
     if (resumeRequested === true && isBlocked && hasUnresolvedFirstClassBlockers) {
       res.status(409).json({ error: "Issue follow-up blocked by unresolved blockers" });
       return;
@@ -5113,9 +5212,13 @@ export function issueRoutes(
       typeof nextAssigneeUserId === "string" &&
       !!existing.createdByUserId &&
       nextAssigneeUserId === existing.createdByUserId;
+    const isScopedRecoveryOwnerReturnAssignment =
+      allowScopedRecoveryOwnerSourceMutation &&
+      req.actor.type === "agent" &&
+      req.body.assigneeAgentId !== undefined;
 
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
-      if (!isAgentReturningIssueToCreator) {
+      if (!isAgentReturningIssueToCreator && !isScopedRecoveryOwnerReturnAssignment) {
         await assertCanAssignTasks(req, existing.companyId, {
           issueId: existing.id,
           projectId: await resolveAssignmentProjectId({
