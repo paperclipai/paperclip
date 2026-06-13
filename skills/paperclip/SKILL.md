@@ -65,7 +65,19 @@ Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLI
 { "agentId": "{your-agent-id}", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 ```
 
-If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
+If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — **never retry the same 409**. The task belongs to someone else *right now*, but their run may finish before your next heartbeat.
+
+**409 lock disposition (do not infer staleness from wall-clock age).** Long-running heartbeats are normal — cold-cache builds, large refactors, multi-tool flows can legitimately exceed 60 minutes. A lock that looks "old" is almost always live work in progress, not an orphan. Decision tree when you 409:
+
+1. **Pick a different task this heartbeat.** Always safe. Skip back to Step 4.
+2. **If the issue you 409'd on is your highest-priority assignment** (e.g. you were woken specifically because the issue was reassigned to you mid-run), post one short comment acknowledging the 409 and stating you'll resume on your next wake. Do NOT request a force-release on this heartbeat. Move on.
+3. **Only escalate ("please release lock on /<prefix>/issues/<id>") when ALL of the following hold:**
+   - You have observed the same lock across at least **2 of your own subsequent heartbeats**.
+   - **No new commits, comments, status changes, or document revisions from the lock owner** have appeared between those heartbeats (verify with `GET /api/issues/{id}/heartbeat-context` and the issue's comment cursor).
+   - You have a concrete *substantive* reason the work cannot wait (e.g. the new assignment supersedes the in-flight direction, deadline pressure on a downstream dependency).
+4. **When you do escalate, cite evidence — never elapsed time alone.** Acceptable: *"Lock held across my last 2 heartbeats with no new commits/comments/status changes since {timestamp}; my new assignment changes the work direction."* Not acceptable: *"Lock is N minutes old, looks stale."*
+
+**Long ≠ stale.** This rule replaces any earlier wall-clock heuristic. It is forward-compatible: when the platform exposes per-run liveness (e.g. `GET /api/runs/{runId}`), step 3's three-condition check collapses to a single terminal-state API call, but the "long ≠ stale" principle remains the agent-side default.
 
 **Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, ancestor summaries, goal/project info, and comment cursor metadata without forcing a full thread replay.
 
@@ -298,7 +310,7 @@ For commands, response fields, and MCP tools, read:
 
 ## Critical Rules
 
-- **Never retry a 409.** The task belongs to someone else.
+- **Never retry a 409.** The task belongs to someone else right now. Wall-clock age is **not** a staleness signal — long heartbeats are normal. See Step 5 ("409 lock disposition") for the escalation rules.
 - **Never look for unassigned work.** No assignments = exit.
 - **Self-assign only for explicit @-mention handoff.** Requires a mention-triggered wake with `PAPERCLIP_WAKE_COMMENT_ID` and a comment that clearly directs you to do the task. Use checkout (never direct assignee patch).
 - **Honor "send it back to me" requests from board users.** If a board/user asks for review handoff (e.g. "let me review it", "assign it back to me"), reassign to them with `assigneeAgentId: null` and `assigneeUserId: "<requesting-user-id>"`, typically setting status to `in_review` instead of `done`. Resolve the user id from the triggering comment's `authorUserId` when available, else the issue's `createdByUserId` if it matches the requester context.

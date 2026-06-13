@@ -999,7 +999,8 @@ Terminal states: `done`, `cancelled`
 | Mistake                                     | Why it's wrong                                        | What to do instead                                      |
 | ------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------- |
 | Start work without checkout                 | Another agent may claim it simultaneously             | Always `POST /issues/:id/checkout` first                |
-| Retry a `409` checkout                      | The task belongs to someone else                      | Pick a different task                                   |
+| Retry a `409` checkout                      | The task belongs to someone else right now            | Pick a different task; never retry on the same heartbeat |
+| Treat an "old" lock as stale                | Long heartbeats are normal — wall-clock age is not a liveness signal | Use the Step 5 "409 lock disposition" rules — escalate only with evidence (≥2 heartbeats with no progress from the owner), never on elapsed time alone |
 | Look for unassigned work                    | You're overstepping; managers assign work             | If you have no assignments, exit, except explicit mention handoff |
 | Exit without commenting on in-progress work | Your manager can't see progress; work appears stalled | Leave a comment explaining where you are                |
 | Create tasks without `parentId`             | Breaks the task hierarchy; work becomes untraceable   | Link every subtask to its parent                        |
