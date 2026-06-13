@@ -188,6 +188,7 @@ describe("GbrainClient", () => {
       fetch: fetchMock as unknown as typeof fetch,
       authProvider,
       onAuthFailure,
+      authRetryBackoffMs: 0,
     });
     const out = await authed.call("put_page", {});
     expect(out).toEqual({ ok: true });
@@ -198,6 +199,45 @@ describe("GbrainClient", () => {
     expect((fetchMock.mock.calls[1][1].headers as Record<string, string>).authorization).toBe("Bearer fresh-tok");
   });
 
+  it("waits briefly before retrying after a 401", async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock
+        .mockResolvedValueOnce(new Response("unauthorized", { status: 401 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          result: { content: [{ type: "text", text: "{\"ok\":true}" }] },
+        }), { headers: { "content-type": "application/json" } }));
+
+      const authProvider = vi.fn(async () => "tok");
+      const onAuthFailure = vi.fn();
+      const authed = new GbrainClient({
+        url: "http://gbrain.test/mcp",
+        fetch: fetchMock as unknown as typeof fetch,
+        authProvider,
+        onAuthFailure,
+        authRetryBackoffMs: 250,
+      });
+
+      const call = authed.call("put_page", {});
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(onAuthFailure).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(249);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(call).resolves.toEqual({ ok: true });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not retry a 401 a second time (gives up after one rotation)", async () => {
     fetchMock.mockResolvedValue(new Response("unauthorized", { status: 401 }));
     const authProvider = vi.fn(async () => "tok");
@@ -205,6 +245,7 @@ describe("GbrainClient", () => {
       url: "http://gbrain.test/mcp",
       fetch: fetchMock as unknown as typeof fetch,
       authProvider,
+      authRetryBackoffMs: 0,
     });
     await expect(authed.call("put_page", {})).rejects.toBeInstanceOf(GbrainCallError);
     expect(fetchMock).toHaveBeenCalledTimes(2);

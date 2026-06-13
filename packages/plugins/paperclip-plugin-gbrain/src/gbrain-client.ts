@@ -2,6 +2,7 @@ export interface GbrainClientOptions {
   url: string;
   fetch?: typeof fetch;
   timeoutMs?: number;
+  authRetryBackoffMs?: number;
   /**
    * Returns a Bearer token to attach as `Authorization: Bearer <token>`.
    * When omitted, calls are anonymous (legacy bridge path).
@@ -57,10 +58,16 @@ function parseMcpResponseBody(text: string): JsonRpcResponse {
   throw new Error(`unexpected MCP response body: ${text.slice(0, 120)}`);
 }
 
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export class GbrainClient {
   private readonly url: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly authRetryBackoffMs: number;
   private readonly authProvider?: () => Promise<string>;
   private readonly onAuthFailure?: () => void;
   private nextId = 1;
@@ -69,6 +76,7 @@ export class GbrainClient {
     this.url = opts.url;
     this.fetchImpl = opts.fetch ?? fetch;
     this.timeoutMs = opts.timeoutMs ?? 15_000;
+    this.authRetryBackoffMs = opts.authRetryBackoffMs ?? 500;
     this.authProvider = opts.authProvider;
     this.onAuthFailure = opts.onAuthFailure;
   }
@@ -112,6 +120,7 @@ export class GbrainClient {
       if (resp.status === 401 && retryOnAuth && this.authProvider) {
         this.onAuthFailure?.();
         clearTimeout(timer);
+        await sleep(this.authRetryBackoffMs);
         return this.callWithRetry<T>(tool, args, /*retryOnAuth*/ false);
       }
 
