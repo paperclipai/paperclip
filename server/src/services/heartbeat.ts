@@ -5263,6 +5263,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  async function findRunIssueCommentByRunIdOnly(runId: string, companyId: string) {
+    return db
+      .select({
+        id: issueComments.id,
+      })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, companyId),
+          eq(issueComments.createdByRunId, runId),
+        ),
+      )
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function refreshContinuationSummaryForRun(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -5462,6 +5479,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) {
+      // Wake-9 case: contextSnapshot.issueId can be absent even when the run
+      // produced an auto-posted comment via the effectiveIssueIdForAutoPost
+      // fallback path. The comment-side FK (issue_comments.created_by_run_id)
+      // is authoritative; consult it before falling back to 'not_applicable'.
+      const fallbackComment = await findRunIssueCommentByRunIdOnly(run.id, run.companyId);
+      if (fallbackComment) {
+        if (
+          run.issueCommentStatus !== "satisfied"
+          || run.issueCommentSatisfiedByCommentId !== fallbackComment.id
+        ) {
+          await patchRunIssueCommentStatus(run.id, {
+            issueCommentStatus: "satisfied",
+            issueCommentSatisfiedByCommentId: fallbackComment.id,
+            issueCommentRetryQueuedAt: null,
+          });
+        }
+        return { outcome: "satisfied" as const, queuedRun: null };
+      }
       if (run.issueCommentStatus !== "not_applicable") {
         await patchRunIssueCommentStatus(run.id, {
           issueCommentStatus: "not_applicable",
