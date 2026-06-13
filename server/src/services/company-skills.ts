@@ -1146,7 +1146,7 @@ export async function discoverProjectWorkspaceSkillDirectories(target: ProjectSk
     .sort((left, right) => left.skillDir.localeCompare(right.skillDir));
 }
 
-async function readLocalSkillImports(companyId: string, sourcePath: string): Promise<ImportedSkill[]> {
+export async function readLocalSkillImports(companyId: string, sourcePath: string): Promise<ImportedSkill[]> {
   const resolvedPath = path.resolve(sourcePath);
   const stat = await fs.stat(resolvedPath).catch(() => null);
   if (!stat) {
@@ -1197,13 +1197,41 @@ async function readLocalSkillImports(companyId: string, sourcePath: string): Pro
     throw unprocessable("No SKILL.md files were found in the provided path.");
   }
 
+  // Precompute the directories of every other discovered skill so a root-level
+  // SKILL.md does not silently absorb files that belong to nested sibling skills.
+  // This guards the rare-but-possible mixed layout: SKILL.md at the root AND
+  // <root>/<sub>/SKILL.md. Without this, the root inventory would include the
+  // nested skill's files and the nested skill would also register them, causing
+  // double-inclusion. Each nested directory contributes the prefix `${dir}/` to
+  // exclude.
+  const skillDirsByPath = new Map<string, string>();
+  for (const skillPath of skillPaths) {
+    skillDirsByPath.set(skillPath, path.posix.dirname(skillPath));
+  }
+
   const imports: ImportedSkill[] = [];
   for (const skillPath of skillPaths) {
-    const skillDir = path.posix.dirname(skillPath);
+    const skillDir = skillDirsByPath.get(skillPath)!;
+    // When SKILL.md sits at the import root, path.posix.dirname returns ".",
+    // so prefix-matching with `${skillDir}/` would become "./" and never match
+    // entries returned by walkLocalFiles (which are relative paths without "./").
+    // Treat that case as "everything walked from root belongs to this skill",
+    // minus any subtree owned by a nested sibling skill.
+    const isRootSkill = skillDir === ".";
+    const skillDirPrefix = isRootSkill ? "" : `${skillDir}/`;
+    const otherSkillPrefixes = isRootSkill
+      ? Array.from(skillDirsByPath.values())
+          .filter((dir) => dir !== ".")
+          .map((dir) => `${dir}/`)
+      : [];
     const inventory = allFiles
-      .filter((entry) => entry === skillPath || entry.startsWith(`${skillDir}/`))
+      .filter((entry) => {
+        if (!entry.startsWith(skillDirPrefix)) return false;
+        if (otherSkillPrefixes.some((prefix) => entry.startsWith(prefix))) return false;
+        return true;
+      })
       .map((entry) => {
-        const relative = entry === skillPath ? "SKILL.md" : entry.slice(skillDir.length + 1);
+        const relative = entry.slice(skillDirPrefix.length) || "SKILL.md";
         return {
           path: normalizePortablePath(relative),
           kind: classifyInventoryKind(relative),

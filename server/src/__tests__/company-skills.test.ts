@@ -8,6 +8,7 @@ import {
   normalizeGitHubSkillDirectory,
   parseSkillImportSourceInput,
   readLocalSkillImportFromDirectory,
+  readLocalSkillImports,
 } from "../services/company-skills.js";
 
 const cleanupDirs = new Set<string>();
@@ -184,6 +185,97 @@ describe("project workspace skill discovery", () => {
         },
       ],
     });
+  });
+});
+
+describe("readLocalSkillImports — directory walks", () => {
+  it("includes references/ and scripts/ when SKILL.md sits at the import root", async () => {
+    const skillDir = await makeTempDir("paperclip-skill-root-");
+    await fs.writeFile(
+      path.join(skillDir, "SKILL.md"),
+      "---\nname: root-skill\n---\n\n# root skill\n",
+      "utf8",
+    );
+    await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
+    await fs.writeFile(path.join(skillDir, "references", "guide.md"), "# guide\n", "utf8");
+    await fs.mkdir(path.join(skillDir, "scripts"), { recursive: true });
+    await fs.writeFile(path.join(skillDir, "scripts", "tool.py"), "print('hi')\n", "utf8");
+
+    const imports = await readLocalSkillImports(
+      "44444444-4444-4444-8444-444444444444",
+      skillDir,
+    );
+
+    expect(imports).toHaveLength(1);
+    const inventory = imports[0]!.fileInventory.map((entry) => entry.path).sort();
+    expect(inventory).toEqual([
+      "SKILL.md",
+      "references/guide.md",
+      "scripts/tool.py",
+    ]);
+    expect(imports[0]!.trustLevel).toBe("scripts_executables");
+  });
+
+  it("still discovers nested SKILL.md trees with multiple skills", async () => {
+    const root = await makeTempDir("paperclip-skill-nested-");
+    const a = path.join(root, "skill-a");
+    const b = path.join(root, "skill-b");
+    await fs.mkdir(path.join(a, "references"), { recursive: true });
+    await fs.writeFile(path.join(a, "SKILL.md"), "---\nname: a\n---\n\n# a\n", "utf8");
+    await fs.writeFile(path.join(a, "references", "ref.md"), "# ref\n", "utf8");
+    await fs.mkdir(b, { recursive: true });
+    await fs.writeFile(path.join(b, "SKILL.md"), "---\nname: b\n---\n\n# b\n", "utf8");
+
+    const imports = await readLocalSkillImports(
+      "55555555-5555-4555-8555-555555555555",
+      root,
+    );
+
+    expect(imports.map((skill) => skill.slug).sort()).toEqual(["a", "b"]);
+    const aImport = imports.find((skill) => skill.slug === "a")!;
+    expect(aImport.fileInventory.map((entry) => entry.path).sort()).toEqual([
+      "SKILL.md",
+      "references/ref.md",
+    ]);
+    const bImport = imports.find((skill) => skill.slug === "b")!;
+    expect(bImport.fileInventory.map((entry) => entry.path).sort()).toEqual(["SKILL.md"]);
+  });
+
+  it("does not let a root-level SKILL.md absorb files of nested sibling skills", async () => {
+    // Mixed layout: SKILL.md at the import root AND a nested SKILL.md sub-skill.
+    // The root skill's inventory must NOT include files that belong to the nested
+    // skill, otherwise both skills would register the same files (double-inclusion).
+    const root = await makeTempDir("paperclip-skill-mixed-root-nested-");
+    await fs.writeFile(
+      path.join(root, "SKILL.md"),
+      "---\nname: root-skill\n---\n\n# root\n",
+      "utf8",
+    );
+    await fs.mkdir(path.join(root, "references"), { recursive: true });
+    await fs.writeFile(path.join(root, "references", "guide.md"), "# guide\n", "utf8");
+    const nested = path.join(root, "nested");
+    await fs.mkdir(path.join(nested, "scripts"), { recursive: true });
+    await fs.writeFile(path.join(nested, "SKILL.md"), "---\nname: nested\n---\n\n# nested\n", "utf8");
+    await fs.writeFile(path.join(nested, "scripts", "tool.py"), "print('hi')\n", "utf8");
+
+    const imports = await readLocalSkillImports(
+      "66666666-6666-4666-8666-666666666666",
+      root,
+    );
+
+    expect(imports.map((skill) => skill.slug).sort()).toEqual(["nested", "root-skill"]);
+    const rootImport = imports.find((skill) => skill.slug === "root-skill")!;
+    // Root keeps only its own files; the nested/ subtree is excluded.
+    expect(rootImport.fileInventory.map((entry) => entry.path).sort()).toEqual([
+      "SKILL.md",
+      "references/guide.md",
+    ]);
+    const nestedImport = imports.find((skill) => skill.slug === "nested")!;
+    // Nested keeps its own files, paths still relative to its own directory.
+    expect(nestedImport.fileInventory.map((entry) => entry.path).sort()).toEqual([
+      "SKILL.md",
+      "scripts/tool.py",
+    ]);
   });
 });
 
