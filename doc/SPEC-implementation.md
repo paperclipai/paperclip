@@ -794,17 +794,19 @@ Failed source-work retries, process-loss retries, transient/scheduled retries, m
 
 ## 11.6 Scheduler Rules
 
-Per-agent schedule fields in `adapter_config`:
+Per-agent schedule fields in `runtimeConfig.heartbeat`:
 
 - `enabled` boolean
 - `intervalSec` integer (minimum 30)
 - `maxConcurrentRuns` integer; new agents default to `20`; scheduler clamps configured values to `1..50`
+- `idleSkip.enabled` boolean; when true, unscoped timer wakes with no active assigned issue are recorded as skipped before adapter invocation
 
 Scheduler must skip invocation when:
 
 - agent is paused/terminated
 - an existing run is active
 - hard budget limit has been hit
+- `idleSkip.enabled` is true and the timer wake has no explicit issue plus no assigned `todo`, `in_progress`, `in_review`, or `blocked` issue
 
 ## 12. Governance and Approval Flows
 

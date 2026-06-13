@@ -368,6 +368,7 @@ function mergeAdapterRecoveryMetadata(input: {
   };
 }
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set(["approval_approved"]);
+const IDLE_SKIP_ACTIVE_ISSUE_STATUSES = ["todo", "in_progress", "in_review", "blocked"] as const;
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -6680,13 +6681,67 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
+    const idleSkip = parseObject(heartbeat.idleSkip);
 
     return {
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
+      idleSkipEnabled: asBoolean(idleSkip.enabled, false),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
     };
+  }
+
+  async function recordTimerIdleSkipIfIdle(agent: typeof agents.$inferSelect, opts: {
+    source: "timer";
+    triggerDetail: string | null;
+    payload: Record<string, unknown> | null;
+    requestedByActorType?: string | null;
+    requestedByActorId?: string | null;
+    idempotencyKey?: string | null;
+    checkedAt: Date;
+  }) {
+    return await db.transaction(async (tx) => {
+      const assignedIssue = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, agent.companyId),
+            eq(issues.assigneeAgentId, agent.id),
+            inArray(issues.status, [...IDLE_SKIP_ACTIVE_ISSUE_STATUSES]),
+            isNull(issues.hiddenAt),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      if (assignedIssue) return false;
+
+      await tx.insert(agentWakeupRequests).values({
+        companyId: agent.companyId,
+        agentId: agent.id,
+        source: opts.source,
+        triggerDetail: opts.triggerDetail,
+        reason: "heartbeat.idle_skip.no_work",
+        payload: opts.payload,
+        status: "skipped",
+        requestedByActorType: opts.requestedByActorType ?? null,
+        requestedByActorId: opts.requestedByActorId ?? null,
+        idempotencyKey: opts.idempotencyKey ?? null,
+        finishedAt: opts.checkedAt,
+      });
+
+      await tx
+        .update(agents)
+        .set({
+          lastHeartbeatAt: opts.checkedAt,
+          updatedAt: opts.checkedAt,
+        })
+        .where(eq(agents.id, agent.id));
+
+      return true;
+    });
   }
 
   function parseMaxTurnContinuationPolicy(agent: typeof agents.$inferSelect): MaxTurnContinuationPolicy {
@@ -10856,6 +10911,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         finishedAt: new Date(),
       });
       return mergedRun;
+    }
+
+    if (source === "timer" && policy.idleSkipEnabled && !issueId && activeRuns.length === 0) {
+      const checkedAt = new Date();
+      const skipped = await recordTimerIdleSkipIfIdle(agent, {
+        source,
+        triggerDetail,
+        payload,
+        requestedByActorType: opts.requestedByActorType,
+        requestedByActorId: opts.requestedByActorId,
+        idempotencyKey: opts.idempotencyKey,
+        checkedAt,
+      });
+      if (skipped) {
+        return null;
+      }
     }
 
     const wakeupRequest = await db
