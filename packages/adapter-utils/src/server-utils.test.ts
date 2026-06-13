@@ -15,6 +15,7 @@ import {
   renderPaperclipWakePrompt,
   runningProcesses,
   runChildProcess,
+  sanitizeInheritedPaperclipEnv,
   sanitizeSshRemoteEnv,
   shapePaperclipWorkspaceEnvForExecution,
   rewriteWorkspaceCwdEnvVarsForExecution,
@@ -144,6 +145,23 @@ describe("sanitizeSshRemoteEnv", () => {
         },
       ),
     ).toEqual({ PATH: "/explicit/remote/bin" });
+  });
+});
+
+describe("sanitizeInheritedPaperclipEnv", () => {
+  it("drops RC-2 T1 vars inherited from the Paperclip server process", () => {
+    expect(
+      sanitizeInheritedPaperclipEnv({
+        DATABASE_URL: "test-only-db-url",
+        GEMINI_API_KEY: "test-only-gemini-key",
+        HELP2DAY_QA_BYPASS_TOKEN: "test-only-bypass-token",
+        PAPERCLIP_RUNTIME_API_URL: "http://127.0.0.1:3100",
+        SAFE_VALUE: "visible",
+      }),
+    ).toEqual({
+      PAPERCLIP_RUNTIME_API_URL: "http://127.0.0.1:3100",
+      SAFE_VALUE: "visible",
+    });
   });
 });
 
@@ -388,6 +406,53 @@ describe("adapter skill snapshots", () => {
 });
 
 describe("runChildProcess", () => {
+  it("does not pass RC-2 T1 vars from the parent env to child processes", async () => {
+    const previous = {
+      DATABASE_URL: process.env.DATABASE_URL,
+      GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+      HELP2DAY_QA_BYPASS_TOKEN: process.env.HELP2DAY_QA_BYPASS_TOKEN,
+    };
+    process.env.DATABASE_URL = "test-only-db-url";
+    process.env.GEMINI_API_KEY = "test-only-gemini-key";
+    process.env.HELP2DAY_QA_BYPASS_TOKEN = "test-only-bypass-token";
+
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        [
+          "-e",
+          [
+            "const keys=['DATABASE_URL','GEMINI_API_KEY','HELP2DAY_QA_BYPASS_TOKEN'];",
+            "process.stdout.write(JSON.stringify(Object.fromEntries(keys.map((key)=>[key,process.env[key]!=null]))));",
+          ].join(""),
+        ],
+        {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        DATABASE_URL: false,
+        GEMINI_API_KEY: false,
+        HELP2DAY_QA_BYPASS_TOKEN: false,
+      });
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    }
+  });
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),
