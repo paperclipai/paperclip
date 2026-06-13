@@ -1,6 +1,6 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, approvals, companies, costEvents, heartbeatRuns, issueThreadInteractions, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 
@@ -46,11 +46,38 @@ export function dashboardService(db: Db) {
         .where(eq(issues.companyId, companyId))
         .groupBy(issues.status);
 
-      const pendingApprovals = await db
+      const pendingApprovalCount = await db
         .select({ count: sql<number>`count(*)` })
         .from(approvals)
         .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
         .then((rows) => Number(rows[0]?.count ?? 0));
+
+      const pendingBoardConfirmations = await db
+        .select({
+          id: issueThreadInteractions.id,
+          issueId: issueThreadInteractions.issueId,
+          issueIdentifier: issues.identifier,
+          kind: issueThreadInteractions.kind,
+          title: issueThreadInteractions.title,
+          summary: issueThreadInteractions.summary,
+          createdAt: issueThreadInteractions.createdAt,
+          createdByAgentName: agents.name,
+          continuationPolicy: issueThreadInteractions.continuationPolicy,
+        })
+        .from(issueThreadInteractions)
+        .innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId))
+        .leftJoin(agents, eq(agents.id, issueThreadInteractions.createdByAgentId))
+        .where(
+          and(
+            eq(issueThreadInteractions.companyId, companyId),
+            eq(issueThreadInteractions.kind, "request_confirmation"),
+            eq(issueThreadInteractions.status, "pending"),
+            sql`${issueThreadInteractions.continuationPolicy} in ('wake_assignee', 'wake_assignee_on_accept')`,
+          ),
+        )
+        .orderBy(desc(issueThreadInteractions.createdAt));
+
+      const pendingApprovals = pendingApprovalCount + pendingBoardConfirmations.length;
 
       const agentCounts: Record<string, number> = {
         active: 0,
@@ -149,6 +176,11 @@ export function dashboardService(db: Db) {
           monthUtilizationPercent: Number(utilization.toFixed(2)),
         },
         pendingApprovals,
+        pendingBoardConfirmations: pendingBoardConfirmations.map((confirmation) => ({
+          ...confirmation,
+          kind: "request_confirmation" as const,
+          continuationPolicy: confirmation.continuationPolicy as "wake_assignee" | "wake_assignee_on_accept",
+        })),
         budgets: {
           activeIncidents: budgetOverview.activeIncidents.length,
           pendingApprovals: budgetOverview.pendingApprovalCount,
