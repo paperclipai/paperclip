@@ -1290,6 +1290,26 @@ async function resolveSpawnTarget(
   }
 
   if (/\.(cmd|bat)$/i.test(executable)) {
+    // Try to resolve the actual executable from .cmd/.bat wrappers to avoid
+    // spawning cmd.exe which creates visible console windows on Windows.
+    // npm .cmd wrappers typically contain: "%dp0%\node_modules\<pkg>\bin\<name>.exe" %*
+    try {
+      const content = await fs.readFile(executable, "utf8");
+      const exeMatch =
+        content.match(/"%dp0%\\(.+?\.exe)"/i) ?? content.match(/%dp0%\\(.+?\.exe)/i);
+      if (exeMatch) {
+        const dir = path.dirname(executable);
+        const resolvedExe = path.resolve(dir, exeMatch[1]);
+        try {
+          await fs.access(resolvedExe);
+          return { command: resolvedExe, args };
+        } catch {
+          // exe doesn't exist, fall through to cmd.exe wrapper
+        }
+      }
+    } catch {
+      // can't read .cmd file, fall through to cmd.exe wrapper
+    }
     // Always use cmd.exe for .cmd/.bat wrappers. Some environments override
     // ComSpec to PowerShell, which breaks cmd-specific flags like /d /s /c.
     const shell = resolveWindowsCmdShell(env);
@@ -2122,6 +2142,7 @@ export async function runChildProcess(
           env: mergedEnv,
           detached: process.platform !== "win32",
           shell: false,
+          windowsHide: process.platform === "win32",
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
