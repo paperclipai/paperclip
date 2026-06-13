@@ -149,7 +149,7 @@ function usePluginRegistrySubscription(): void {
 }
 
 function requiresEntityType(slotType: PluginUiSlotType): boolean {
-  return slotType === "detailTab" || slotType === "taskDetailView" || slotType === "contextMenuItem" || slotType === "commentAnnotation" || slotType === "commentContextMenuItem" || slotType === "projectSidebarItem" || slotType === "toolbarButton";
+  return slotType === "detailTab" || slotType === "taskDetailView" || slotType === "contextMenuItem" || slotType === "commentAnnotation" || slotType === "commentContextMenuItem" || slotType === "projectSidebarItem" || slotType === "toolbarButton" || slotType === "issueProperty";
 }
 
 function getErrorMessage(error: unknown): string {
