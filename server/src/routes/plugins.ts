@@ -145,6 +145,18 @@ interface PluginHealthCheckResult {
   lastError?: string;
 }
 
+interface PluginHealthAlert {
+  alertname: "PaperclipPluginError";
+  severity: "page";
+  pluginId: string;
+  pluginKey: string;
+  status: "error";
+  lastError: string | null;
+  summary: string;
+  description: string;
+  updatedAt: string;
+}
+
 /** UUID v4 regex used for plugin ID route resolution. */
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -857,6 +869,50 @@ export function pluginRoutes(
   router.get("/plugins/examples", async (req, res) => {
     assertBoardOrgAccess(req);
     res.json(await listBundledPlugins());
+  });
+
+  /**
+   * GET /api/plugins/alerts/plugin-health
+   *
+   * Polling endpoint for paging integrations (Prometheus JSON exporter,
+   * Alertmanager webhook receiver, or direct on-call script). Returns only
+   * plugins in `error` state; ready, disabled, and paused plugins are
+   * suppressed by the `listByStatus("error")` filter.
+   *
+   * Paging integration path: configure a Prometheus JSON exporter or
+   * Alertmanager receiver to poll this route with a board token on a
+   * 1–5 minute interval. When `status == "firing"` the `alerts[]` array
+   * carries `pluginId`, `pluginKey`, `severity: "page"`, and `lastError`
+   * in a shape compatible with Alertmanager label routing.
+   *
+   * @see doc/plugins/PLUGIN_HEALTH_ALERT_RUNBOOK.md for full integration
+   *   steps, Alertmanager rule examples, and on-call response procedures.
+   */
+  router.get("/plugins/alerts/plugin-health", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const erroredPlugins = await registry.listByStatus("error");
+    const alerts: PluginHealthAlert[] = erroredPlugins.map((plugin) => {
+      const lastError = plugin.lastError ?? null;
+      return {
+        alertname: "PaperclipPluginError",
+        severity: "page",
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        status: "error",
+        lastError,
+        summary: `Plugin ${plugin.pluginKey} is in error state`,
+        description: lastError
+          ? `Plugin ${plugin.pluginKey} (${plugin.id}) entered error state: ${lastError}`
+          : `Plugin ${plugin.pluginKey} (${plugin.id}) entered error state without a recorded last_error.`,
+        updatedAt: plugin.updatedAt.toISOString(),
+      };
+    });
+
+    res.json({
+      status: alerts.length > 0 ? "firing" : "ok",
+      alerts,
+      checkedAt: new Date().toISOString(),
+    });
   });
 
   // IMPORTANT: Static routes must come before parameterized routes

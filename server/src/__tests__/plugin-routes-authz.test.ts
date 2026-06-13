@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
   getByKey: vi.fn(),
+  listByStatus: vi.fn(),
   upsertConfig: vi.fn(),
   getCompanySettings: vi.fn(),
   upsertCompanySettings: vi.fn(),
@@ -146,10 +147,9 @@ describe.sequential("plugin install and upgrade authz", () => {
     const res = await request(app).get("/api/plugins/examples");
 
     expect(res.status).toBe(200);
-    type PluginExample = { packageName: string; experimental: boolean };
-    const packageNames = res.body.map((plugin: PluginExample) => plugin.packageName);
-    const byPackageName = new Map<string, PluginExample>(
-      res.body.map((plugin: PluginExample) => [plugin.packageName, plugin]),
+    const packageNames = res.body.map((plugin: { packageName: string }) => plugin.packageName);
+    const byPackageName = new Map(
+      res.body.map((plugin: { packageName: string; experimental: boolean }) => [plugin.packageName, plugin]),
     );
     expect(packageNames).toContain("@paperclipai/plugin-workspace-diff");
     expect(packageNames).toContain("@paperclipai/plugin-llm-wiki");
@@ -160,6 +160,51 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(byPackageName.get("@paperclipai/plugin-llm-wiki")?.experimental).toBe(true);
     expect(byPackageName.get("@paperclipai/plugin-modal")?.experimental).toBe(true);
     expect(byPackageName.get("@paperclipai/plugin-authoring-smoke-example")?.experimental).toBe(false);
+  }, 20_000);
+
+  it("returns one plugin-health page payload for errored active plugins", async () => {
+    const erroredPlugin = {
+      id: pluginId,
+      pluginKey: "paperclip-plugin-alertmanager",
+      version: "1.0.0",
+      status: "error",
+      lastError: "worker exited with code 1",
+      updatedAt: new Date("2026-06-13T12:00:00.000Z"),
+    };
+    mockRegistry.listByStatus.mockResolvedValue([erroredPlugin]);
+
+    const { app } = await createApp(boardActor());
+    const res = await request(app).get("/api/plugins/alerts/plugin-health");
+
+    expect(res.status).toBe(200);
+    expect(mockRegistry.listByStatus).toHaveBeenCalledWith("error");
+    expect(res.body.status).toBe("firing");
+    expect(res.body.alerts).toEqual([
+      expect.objectContaining({
+        alertname: "PaperclipPluginError",
+        severity: "page",
+        pluginId,
+        pluginKey: "paperclip-plugin-alertmanager",
+        status: "error",
+        lastError: "worker exited with code 1",
+        updatedAt: "2026-06-13T12:00:00.000Z",
+      }),
+    ]);
+    expect(res.body.alerts[0].description).toContain("worker exited with code 1");
+  }, 20_000);
+
+  it("suppresses healthy, disabled, and paused plugin fixtures from plugin-health pages", async () => {
+    mockRegistry.listByStatus.mockResolvedValue([]);
+
+    const { app } = await createApp(boardActor());
+    const res = await request(app).get("/api/plugins/alerts/plugin-health");
+
+    expect(res.status).toBe(200);
+    expect(mockRegistry.listByStatus).toHaveBeenCalledWith("error");
+    expect(res.body).toMatchObject({
+      status: "ok",
+      alerts: [],
+    });
   }, 20_000);
 
   it("rejects plugin installation for non-admin board users", async () => {
@@ -1191,5 +1236,70 @@ describe.sequential("plugin tool and bridge authz", () => {
 
     expect(res.status).toBe(403);
     expect(executeTool).not.toHaveBeenCalled();
+  });
+});
+
+describe.sequential("GET /api/plugins/alerts/plugin-health", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns ok with empty alerts when no plugins are in error state", async () => {
+    mockRegistry.listByStatus.mockResolvedValue([]);
+    const { app } = await createApp(boardActor());
+    const res = await request(app).get("/api/plugins/alerts/plugin-health");
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("ok");
+    expect(res.body.alerts).toEqual([]);
+    expect(res.body.checkedAt).toBeDefined();
+    expect(mockRegistry.listByStatus).toHaveBeenCalledWith("error");
+  });
+
+  it("returns firing with alert entries when plugins are in error state", async () => {
+    const errorPlugin = {
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      status: "error",
+      lastError: "Connection refused",
+      updatedAt: new Date("2026-01-15T12:00:00Z"),
+    };
+    mockRegistry.listByStatus.mockResolvedValue([errorPlugin]);
+    const { app } = await createApp(boardActor());
+    const res = await request(app).get("/api/plugins/alerts/plugin-health");
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("firing");
+    expect(res.body.alerts).toHaveLength(1);
+    const alert = res.body.alerts[0];
+    expect(alert.alertname).toBe("PaperclipPluginError");
+    expect(alert.severity).toBe("page");
+    expect(alert.pluginId).toBe(pluginId);
+    expect(alert.pluginKey).toBe("paperclip.example");
+    expect(alert.status).toBe("error");
+    expect(alert.lastError).toBe("Connection refused");
+    expect(alert.summary).toBe("Plugin paperclip.example is in error state");
+    expect(alert.updatedAt).toBe("2026-01-15T12:00:00.000Z");
+  });
+
+  it("sets lastError to null and uses fallback description when lastError is absent", async () => {
+    const errorPlugin = {
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      status: "error",
+      lastError: null,
+      updatedAt: new Date("2026-01-15T12:00:00Z"),
+    };
+    mockRegistry.listByStatus.mockResolvedValue([errorPlugin]);
+    const { app } = await createApp(boardActor());
+    const res = await request(app).get("/api/plugins/alerts/plugin-health");
+    expect(res.status).toBe(200);
+    expect(res.body.alerts[0].lastError).toBeNull();
+    expect(res.body.alerts[0].description).toContain("without a recorded last_error");
+  });
+
+  it("rejects non-board callers with 403", async () => {
+    const { app } = await createApp(agentActor());
+    const res = await request(app).get("/api/plugins/alerts/plugin-health");
+    expect(res.status).toBe(403);
+    expect(mockRegistry.listByStatus).not.toHaveBeenCalled();
   });
 });

@@ -3495,6 +3495,14 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/plugins/alerts/plugin-health",
+  tags: ["plugins"],
+  summary: "List active plugin error alerts for paging integrations",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/plugins/ui-contributions",
   tags: ["plugins"],
   summary: "List plugin UI contributions",
