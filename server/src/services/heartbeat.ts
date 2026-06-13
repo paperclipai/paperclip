@@ -5675,6 +5675,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_terminal_status"
           | "issue_not_in_progress"
           | "issue_execution_lock_changed"
+          | "issue_already_active"
           | "issue_review_participant_changed"
           | "issue_paused"
           | "issue_dependencies_blocked";
@@ -5799,6 +5800,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           issueId,
           expectedExecutionRunId: run.id,
           currentExecutionRunId: issue.executionRunId,
+        },
+      };
+    }
+
+    // For non-max_turns retries: if a newer run has already checked out the
+    // issue (executionRunId is set to a run that is neither the retry run
+    // itself nor the original failed run it retries), suppress this retry to
+    // prevent duplicate parallel execution.  This is the fix for the race
+    // where SIGTERM kills Run A → Run B takes over → recovery promotes Run C
+    // as a retry of A while B is still running.
+    if (
+      retryReason !== MAX_TURN_CONTINUATION_RETRY_REASON &&
+      issue.executionRunId !== null &&
+      issue.executionRunId !== run.id &&
+      issue.executionRunId !== run.retryOfRunId
+    ) {
+      return {
+        allowed: false,
+        reason:
+          "Scheduled retry suppressed because the issue is already held by a different active run",
+        errorCode: "issue_already_active",
+        issueId,
+        details: {
+          issueId,
+          activeRunId: issue.executionRunId,
+          retryRunId: run.id,
+          originalRunId: run.retryOfRunId,
         },
       };
     }
