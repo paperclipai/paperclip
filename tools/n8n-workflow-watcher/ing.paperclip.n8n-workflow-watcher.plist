@@ -8,7 +8,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>/Users/walterschoenenbroecher.de/.paperclip/scripts/n8n-workflow-watcher.py</string>
+        <string>/Users/walterschoenenbroecher.de/.paperclip/scripts/n8n_workflow_watcher.py</string>
         <string>--once</string>
     </array>
 
@@ -18,6 +18,8 @@
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>
         <string>/Users/walterschoenenbroecher.de</string>
+        <key>N8N_RECOVERY_AGENT_ID</key>
+        <string>dfa8d0e2-d48a-4342-82c2-f7cf6de9d562</string>
     </dict>
 
     <key>StartCalendarInterval</key>
