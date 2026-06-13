@@ -8,6 +8,7 @@ import {
   type IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "@paperclipai/shared";
 import {
+  activityLog,
   agents,
   agentWakeupRequests,
   approvals,
@@ -65,6 +66,9 @@ import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js"
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
+const ORPHAN_BLOCKER_RECONCILE_ACTIVITY_SOURCE = "recovery.reconcile_unassigned_blocking_issue";
+const ORPHAN_BLOCKER_RECONCILE_COOLDOWN_MS = 10 * 60 * 1000;
+const ORPHAN_BLOCKER_DEDUP_HEARTBEAT_RUN_STATUSES = ["queued", "running"] as const;
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
@@ -769,6 +773,42 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
       const creatorAgent = await getAgent(creatorAgentId);
       if (!creatorAgent || creatorAgent.companyId !== candidate.companyId || !(await isAgentInvokable(creatorAgent))) {
+        skipped += 1;
+        continue;
+      }
+
+      const cooldownCutoff = new Date(Date.now() - ORPHAN_BLOCKER_RECONCILE_COOLDOWN_MS);
+      const [recentReconcile] = await db
+        .select({ createdAt: activityLog.createdAt })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, candidate.companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.entityId, candidate.id),
+            sql`${activityLog.details} ->> 'source' = ${ORPHAN_BLOCKER_RECONCILE_ACTIVITY_SOURCE}`,
+            gt(activityLog.createdAt, cooldownCutoff),
+          ),
+        )
+        .orderBy(desc(activityLog.createdAt))
+        .limit(1);
+      if (recentReconcile) {
+        skipped += 1;
+        continue;
+      }
+
+      const [activeRunForCandidate] = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, creatorAgent.id),
+            inArray(heartbeatRuns.status, [...ORPHAN_BLOCKER_DEDUP_HEARTBEAT_RUN_STATUSES]),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${candidate.id}`,
+          ),
+        )
+        .limit(1);
+      if (activeRunForCandidate) {
         skipped += 1;
         continue;
       }

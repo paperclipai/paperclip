@@ -2546,6 +2546,263 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("applies a 10-minute cooldown so rapid orphan-blocker firings do not re-assign the same issue", async () => {
+    const companyId = randomUUID();
+    const creatorAgentId = randomUUID();
+    const blockedAssigneeAgentId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "SecurityEngineer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: blockedAssigneeAgentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "Fix blocker",
+        status: "todo",
+        priority: "high",
+        createdByAgentId: creatorAgentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked work",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: blockedAssigneeAgentId,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+      createdByAgentId: creatorAgentId,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const reorphanBlocker = async () => {
+      await db
+        .update(issues)
+        .set({ assigneeAgentId: null, assigneeUserId: null, status: "todo" })
+        .where(eq(issues.id, blockerIssueId));
+      const activeRuns = await db
+        .select({ id: heartbeatRuns.id, wakeupRequestId: heartbeatRuns.wakeupRequestId })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, creatorAgentId));
+      for (const run of activeRuns) {
+        await waitForRunToSettle(heartbeat, run.id);
+      }
+    };
+
+    const first = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(first.orphanBlockersAssigned).toBe(1);
+    expect(first.issueIds).toContain(blockerIssueId);
+
+    await reorphanBlocker();
+    const second = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(second.orphanBlockersAssigned).toBe(0);
+    expect(second.skipped).toBe(1);
+    expect(second.issueIds).not.toContain(blockerIssueId);
+
+    await reorphanBlocker();
+    const third = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(third.orphanBlockersAssigned).toBe(0);
+    expect(third.skipped).toBe(1);
+    expect(third.issueIds).not.toContain(blockerIssueId);
+
+    const blockerAfterCooldown = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, blockerIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(blockerAfterCooldown?.assigneeAgentId).toBeNull();
+
+    const elevenMinutesAgo = new Date(Date.now() - 11 * 60 * 1000);
+    await db
+      .update(activityLog)
+      .set({ createdAt: elevenMinutesAgo })
+      .where(
+        and(
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, blockerIssueId),
+        ),
+      );
+
+    await reorphanBlocker();
+    const fourth = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(fourth.orphanBlockersAssigned).toBe(1);
+    expect(fourth.issueIds).toContain(blockerIssueId);
+
+    const finalRuns = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, creatorAgentId));
+    for (const run of finalRuns) {
+      await waitForRunToSettle(heartbeat, run.id);
+    }
+  });
+
+  it("skips orphan-blocker re-assignment when an active heartbeat run already targets the same issue", async () => {
+    const companyId = randomUUID();
+    const creatorAgentId = randomUUID();
+    const blockedAssigneeAgentId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const existingRunId = randomUUID();
+    const existingWakeupId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "SecurityEngineer",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: blockedAssigneeAgentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "Fix blocker",
+        status: "todo",
+        priority: "high",
+        createdByAgentId: creatorAgentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked work",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: blockedAssigneeAgentId,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+      createdByAgentId: creatorAgentId,
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: existingWakeupId,
+      companyId,
+      agentId: creatorAgentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: blockerIssueId, mutation: "unassigned_blocker_recovery" },
+      status: "claimed",
+      runId: existingRunId,
+      claimedAt: new Date(),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: existingRunId,
+      companyId,
+      agentId: creatorAgentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "running",
+      startedAt: new Date(),
+      wakeupRequestId: existingWakeupId,
+      contextSnapshot: {
+        issueId: blockerIssueId,
+        taskId: blockerIssueId,
+        wakeReason: "issue_assigned",
+        source: "issue.unassigned_blocker_recovery",
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.orphanBlockersAssigned).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).not.toContain(blockerIssueId);
+
+    const blocker = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, blockerIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(blocker?.assigneeAgentId).toBeNull();
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, creatorAgentId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.id).toBe(existingWakeupId);
+
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, existingRunId));
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(agentWakeupRequests.id, existingWakeupId));
+  });
+
   it("re-enqueues continuation for stranded in-progress work with no active run", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
