@@ -383,7 +383,7 @@ export async function createApp(
         }
         res
           .status(200)
-          .set("Content-Type", "text/html")
+          .set("Content-Type", "text/html; charset=utf-8")
           .set("Cache-Control", "no-cache")
           .end(readBrandedStaticIndexHtml(uiDist));
       });
@@ -428,7 +428,7 @@ export async function createApp(
       }
       try {
         const html = await renderViteHtml.render(req.originalUrl);
-        res.status(200).set({ "Content-Type": "text/html" }).end(html);
+        res.status(200).set({ "Content-Type": "text/html; charset=utf-8" }).end(html);
       } catch (err) {
         next(err);
       }
