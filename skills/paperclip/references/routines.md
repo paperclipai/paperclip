@@ -176,6 +176,20 @@ PATCH /api/routines/{routineId}
 
 ---
 
+## Terminal-Condition Self-Disable
+
+When a routine has a terminal condition (≥N count, elapsed time, external state flip) and an execution fire detects the condition is already met, the routine fire is a no-op. The assignee MUST:
+
+1. Close the current fire `done` with a one-line comment ("terminal condition already met").
+2. **Disable the source routine** — `PATCH /api/routines/{routineId}` with `{"status":"archived"}` (use `"paused"` only if a re-arm decision is pending). If the agent does not own the routine, send a single comment to the routine owner **once** ("terminal-condition reached on routine <id>, please disable") rather than re-commenting on every subsequent fire.
+3. Record the terminal-condition reach in the routine description so the next agent sees why it was disabled.
+
+A routine with a terminal condition that does not self-disable on that condition is a leak.
+
+**Worked incident — NOC-509 visitor monitoring (CMO-owned, routine `fedc3185-…`).** Terminal condition: "≥100 visitors OR 72h elapsed". 72h elapsed on 2026-05-27. The routine continued to fire every 6h through 2026-06-01, producing ~13 identical `1 visitor / 2 pageviews / 2 visits` snapshots ([NOC-1392](/NOC/issues/NOC-1392), [NOC-1412](/NOC/issues/NOC-1412), [NOC-1437](/NOC/issues/NOC-1437), [NOC-1447](/NOC/issues/NOC-1447), [NOC-1456](/NOC/issues/NOC-1456), [NOC-1465](/NOC/issues/NOC-1465), [NOC-1474](/NOC/issues/NOC-1474), [NOC-1482](/NOC/issues/NOC-1482), [NOC-1491](/NOC/issues/NOC-1491), [NOC-1500](/NOC/issues/NOC-1500), [NOC-1517](/NOC/issues/NOC-1517), [NOC-1526](/NOC/issues/NOC-1526), [NOC-1535](/NOC/issues/NOC-1535)) plus three cancelled manual loop-break attempts ([NOC-1326](/NOC/issues/NOC-1326), [NOC-1422](/NOC/issues/NOC-1422), [NOC-1429](/NOC/issues/NOC-1429)). Net: ~12 CMO heartbeats burned on confirmed no-ops and the NOC-509 thread polluted with duplicate comments.
+
+---
+
 ## Reading Routines and Runs
 
 ```
