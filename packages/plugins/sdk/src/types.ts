@@ -615,7 +615,9 @@ export interface PluginDatabaseClient {
 /**
  * `ctx.http` — make outbound HTTP requests.
  *
- * Requires `http.outbound` capability.
+ * Requires `http.outbound` capability. Requests to loopback, private LAN,
+ * link-local, or other reserved address ranges also require the
+ * `http.private-network` capability.
  *
  * @see PLUGIN_SPEC.md §15.1 — Capabilities: Runtime/Integration
  */
@@ -624,6 +626,7 @@ export interface PluginHttpClient {
    * Perform an outbound HTTP request.
    *
    * The host enforces `http.outbound` capability before allowing the call.
+   * Private-network targets also require `http.private-network`.
    * Plugins may also use standard Node `fetch` or other libraries directly —
    * this client exists for host-managed tracing and audit logging.
    *
@@ -1864,7 +1867,7 @@ export interface PluginContext {
   /** Restricted plugin-owned database namespace. Requires database namespace capabilities. */
   db: PluginDatabaseClient;
 
-  /** Make outbound HTTP requests. Requires `http.outbound`. */
+  /** Make outbound HTTP requests. Requires `http.outbound`; private targets also require `http.private-network`. */
   http: PluginHttpClient;
 
   /** Resolve secret references. Requires `secrets.read-ref`. */
