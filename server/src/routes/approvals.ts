@@ -373,6 +373,74 @@ export function approvalRoutes(
       details: { commentId: comment.id },
     });
 
+    // Wake the approval requester so they see the new comment — mirrors the
+    // issue_commented behaviour in routes/issues.ts. Skip self-wake when the
+    // commenter is the requester themselves (matches the issue-comment pattern).
+    if (
+      approval.requestedByAgentId &&
+      approval.requestedByAgentId !== actor.agentId
+    ) {
+      try {
+        const primaryIssueId = approval.linkedIssueIds?.[0] ?? null;
+        const wakeRun = await heartbeat.wakeup(approval.requestedByAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "approval_commented",
+          payload: {
+            approvalId: approval.id,
+            approvalStatus: approval.status,
+            commentId: comment.id,
+            issueId: primaryIssueId,
+          },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            source: "approval.comment_added",
+            approvalId: approval.id,
+            approvalStatus: approval.status,
+            commentId: comment.id,
+            issueId: primaryIssueId,
+            taskId: primaryIssueId,
+            wakeReason: "approval_commented",
+            wakeCommentId: comment.id,
+          },
+        });
+
+        await logActivity(db, {
+          companyId: approval.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          action: "approval.requester_wakeup_queued",
+          entityType: "approval",
+          entityId: approval.id,
+          details: {
+            requesterAgentId: approval.requestedByAgentId,
+            wakeRunId: wakeRun?.id ?? null,
+            commentId: comment.id,
+            wakeReason: "approval_commented",
+          },
+        });
+      } catch (err) {
+        logger.warn(
+          { err, approvalId: approval.id, commentId: comment.id },
+          "failed to queue requester wakeup after approval comment",
+        );
+        await logActivity(db, {
+          companyId: approval.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          action: "approval.requester_wakeup_failed",
+          entityType: "approval",
+          entityId: approval.id,
+          details: {
+            requesterAgentId: approval.requestedByAgentId,
+            commentId: comment.id,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        });
+      }
+    }
+
     res.status(201).json(comment);
   });
 
