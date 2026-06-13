@@ -721,6 +721,15 @@ export function IssuesList({
     enabled: !!selectedCompanyId && normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues,
     placeholderData: (previousData) => previousData,
   });
+  // Per-status board column fetches. Always ask the server for the
+  // most-recent slice (`sortField=updated`, `sortDir=desc`) regardless of
+  // the user's chosen display direction. The server's default sort is
+  // priority-first, which silently truncates recently-completed
+  // low-priority items in busy columns past `ISSUE_BOARD_COLUMN_RESULT_LIMIT`.
+  // Sorting by updated ensures the fetch window contains recent work; the
+  // client-side `sortIssues` (driven by `viewState.sortField` and
+  // `viewState.sortDir`) still applies for display ordering within each
+  // column.
   const boardIssueQueries = useQueries({
     queries: boardIssueStatuses.map((status) => ({
       queryKey: [
@@ -740,6 +749,8 @@ export function IssuesList({
           projectId,
           status,
           limit: ISSUE_BOARD_COLUMN_RESULT_LIMIT,
+          sortField: "updated",
+          sortDir: "desc",
           ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
         }),
       enabled: !!selectedCompanyId && viewState.viewMode === "board" && !searchWithinLoadedIssues,
