@@ -5486,6 +5486,20 @@ export function issueService(db: Db) {
       if (!issueCompany) throw notFound("Issue not found");
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
 
+      // Ensure checkoutRunId always has a corresponding heartbeat_runs row before FK write.
+      if (checkoutRunId) {
+        await db
+          .insert(heartbeatRuns)
+          .values({
+            id: checkoutRunId,
+            companyId: issueCompany.companyId,
+            agentId,
+            invocationSource: "on_demand",
+            status: "running",
+          })
+          .onConflictDoNothing();
+      }
+
       const now = new Date();
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issueCompany.companyId, id);
       if (
