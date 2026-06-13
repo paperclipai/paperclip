@@ -101,6 +101,35 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       return event;
     },
 
+    agentSpend: async (agentId: string, companyId: string, range?: CostDateRange) => {
+      const conditions: ReturnType<typeof eq>[] = [
+        eq(costEvents.companyId, companyId),
+        eq(costEvents.agentId, agentId),
+      ];
+      if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
+      if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+
+      const [row] = await db
+        .select({
+          costCents: sumAsNumber(costEvents.costCents),
+          inputTokens: sumAsNumber(costEvents.inputTokens),
+          cachedInputTokens: sumAsNumber(costEvents.cachedInputTokens),
+          outputTokens: sumAsNumber(costEvents.outputTokens),
+        })
+        .from(costEvents)
+        .where(and(...conditions));
+
+      return {
+        agentId,
+        from: range?.from ?? null,
+        to: range?.to ?? null,
+        costCents: row?.costCents ?? 0,
+        inputTokens: row?.inputTokens ?? 0,
+        cachedInputTokens: row?.cachedInputTokens ?? 0,
+        outputTokens: row?.outputTokens ?? 0,
+      };
+    },
+
     summary: async (companyId: string, range?: CostDateRange) => {
       const company = await db
         .select()

@@ -41,6 +41,7 @@ import {
   approvalService,
   companySkillService,
   budgetService,
+  costService,
   heartbeatService,
   ISSUE_LIST_DEFAULT_LIMIT,
   issueApprovalService,
@@ -52,6 +53,7 @@ import {
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
+import { parseCostDateRange } from "./costs.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectAgentAdapterWorkspaceCommandPaths,
@@ -1966,6 +1968,16 @@ export function agentRoutes(
     });
 
     res.json(rows);
+  });
+
+  router.get("/agents/me/spend", async (req, res) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {
+      res.status(401).json({ error: "Agent authentication required" });
+      return;
+    }
+    const range = parseCostDateRange(req.query);
+    const spend = await costService(db).agentSpend(req.actor.agentId, req.actor.companyId, range);
+    res.json(spend);
   });
 
   router.get("/agents/:id", async (req, res) => {
