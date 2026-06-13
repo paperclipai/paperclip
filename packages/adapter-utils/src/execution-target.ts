@@ -79,6 +79,12 @@ export interface AdapterExecutionTargetProcessOptions {
   stdin?: string;
   timeoutSec: number;
   graceSec: number;
+  /**
+   * Stdout/stderr silence watchdog (seconds). Local target: passed through to
+   * `runChildProcess`. Sandbox / SSH targets accept the option but ignore it
+   * for now — see TODO(stream-silence-remote) below.
+   */
+  silenceTimeoutSec?: number;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   terminalResultCleanup?: TerminalResultCleanupOptions;
@@ -402,6 +408,10 @@ export async function runAdapterExecutionTargetProcess(
   options: AdapterExecutionTargetProcessOptions,
 ): Promise<RunProcessResult> {
   if (target?.kind === "remote" && target.transport === "sandbox") {
+    // TODO(stream-silence-remote): the sandbox runner does not expose live
+    // stdout/stderr `data` events the same way `runChildProcess` does. Wiring
+    // silence detection into this path requires a separate change; the option
+    // is accepted but ignored for sandbox/SSH targets in v1.
     const runner = requireSandboxRunner(target);
     const env = sanitizeRemoteExecutionEnv(options.env);
     return await runner.execute({
@@ -423,12 +433,16 @@ export async function runAdapterExecutionTargetProcess(
       ? sanitizeRemoteExecutionEnv(options.env)
       : options.env;
 
+  // TODO(stream-silence-remote): SSH path also goes through `runChildProcess`,
+  // but the child is `ssh`, not the remote command. Silence on the local SSH
+  // pipe is a coarse proxy for remote silence; behaves like local for now.
   return await runChildProcess(runId, command, args, {
     cwd: options.cwd,
     env,
     stdin: options.stdin,
     timeoutSec: options.timeoutSec,
     graceSec: options.graceSec,
+    silenceTimeoutSec: options.silenceTimeoutSec,
     onLog: options.onLog,
     onSpawn: options.onSpawn,
     terminalResultCleanup: options.terminalResultCleanup,

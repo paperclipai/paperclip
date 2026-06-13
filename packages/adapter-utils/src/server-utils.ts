@@ -11,10 +11,20 @@ import type {
   AdapterSkillSnapshot,
 } from "./types.js";
 
+export type RunProcessTimeoutErrorCode = "timeout" | "stream_silence_timeout";
+
 export interface RunProcessResult {
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
+  /**
+   * Populated when `timedOut === true`. `"timeout"` for the wall-clock
+   * `timeoutSec` path; `"stream_silence_timeout"` for the stdout/stderr
+   * silence-watchdog path. `null` otherwise. Optional so existing
+   * `RunProcessResult` literals across the codebase keep type-checking;
+   * `runChildProcess` always sets it to a concrete value.
+   */
+  errorCode?: RunProcessTimeoutErrorCode | null;
   stdout: string;
   stderr: string;
   pid: number | null;
@@ -2141,6 +2151,15 @@ export async function runChildProcess(
     env: Record<string, string>;
     timeoutSec: number;
     graceSec: number;
+    /**
+     * Watchdog: kill the child if no stdout/stderr `data` event arrives within
+     * `silenceTimeoutSec * 1000` ms. Timer arms at spawn (so a child that
+     * produces zero bytes is also killed) and resets on every data event.
+     * `undefined` or `<= 0` disables the watchdog (current behavior).
+     * On expiry: SIGTERM, then SIGKILL after `graceSec` seconds.
+     * Result has `timedOut: true` + `errorCode: "stream_silence_timeout"`.
+     */
+    silenceTimeoutSec?: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onLogError?: (err: unknown, runId: string, message: string) => void;
     onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
@@ -2197,6 +2216,7 @@ export async function runChildProcess(
         runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
 
         let timedOut = false;
+        let timeoutErrorCode: RunProcessTimeoutErrorCode | null = null;
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
@@ -2212,6 +2232,39 @@ export async function runChildProcess(
           if (terminalCleanupKillTimer) clearTimeout(terminalCleanupKillTimer);
           terminalCleanupTimer = null;
           terminalCleanupKillTimer = null;
+        };
+
+        const silenceTimeoutSec =
+          typeof opts.silenceTimeoutSec === "number" && opts.silenceTimeoutSec > 0
+            ? opts.silenceTimeoutSec
+            : 0;
+        let silenceTimer: NodeJS.Timeout | null = null;
+        let silenceKillTimer: NodeJS.Timeout | null = null;
+
+        const clearSilenceTimers = () => {
+          if (silenceTimer) clearTimeout(silenceTimer);
+          if (silenceKillTimer) clearTimeout(silenceKillTimer);
+          silenceTimer = null;
+          silenceKillTimer = null;
+        };
+
+        const armSilenceTimer = () => {
+          if (silenceTimeoutSec <= 0) return;
+          if (timedOut || terminalCleanupStarted) return;
+          if (silenceTimer) clearTimeout(silenceTimer);
+          silenceTimer = setTimeout(() => {
+            silenceTimer = null;
+            if (timedOut || terminalCleanupStarted) return;
+            timedOut = true;
+            timeoutErrorCode = "stream_silence_timeout";
+            clearTerminalCleanupTimers();
+            if (timeout) clearTimeout(timeout);
+            signalRunningProcess({ child, processGroupId }, "SIGTERM");
+            silenceKillTimer = setTimeout(() => {
+              silenceKillTimer = null;
+              signalRunningProcess({ child, processGroupId }, "SIGKILL");
+            }, Math.max(1, opts.graceSec) * 1000);
+          }, silenceTimeoutSec * 1000);
         };
 
         const maybeArmTerminalResultCleanup = () => {
@@ -2253,7 +2306,9 @@ export async function runChildProcess(
           opts.timeoutSec > 0
             ? setTimeout(() => {
                 timedOut = true;
+                timeoutErrorCode = "timeout";
                 clearTerminalCleanupTimers();
+                clearSilenceTimers();
                 signalRunningProcess({ child, processGroupId }, "SIGTERM");
                 setTimeout(() => {
                   signalRunningProcess({ child, processGroupId }, "SIGKILL");
@@ -2261,12 +2316,15 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
+        armSilenceTimer();
+
         child.stdout?.on("data", (chunk: unknown) => {
           const readable = child.stdout;
           if (!readable) return;
           readable.pause();
           const text = String(chunk);
           stdout = appendWithCap(stdout, text);
+          armSilenceTimer();
           maybeArmTerminalResultCleanup();
           logChain = logChain
             .then(() => opts.onLog("stdout", text))
@@ -2283,6 +2341,7 @@ export async function runChildProcess(
           readable.pause();
           const text = String(chunk);
           stderr = appendWithCap(stderr, text);
+          armSilenceTimer();
           maybeArmTerminalResultCleanup();
           logChain = logChain
             .then(() => opts.onLog("stderr", text))
@@ -2305,6 +2364,7 @@ export async function runChildProcess(
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
+          clearSilenceTimers();
           runningProcesses.delete(runId);
           void target.cleanup?.();
           const errno = (err as NodeJS.ErrnoException).code;
@@ -2323,6 +2383,7 @@ export async function runChildProcess(
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
+          clearSilenceTimers();
           runningProcesses.delete(runId);
           void logChain.finally(() => {
             void Promise.resolve()
@@ -2332,6 +2393,7 @@ export async function runChildProcess(
                 exitCode: code,
                 signal,
                 timedOut,
+                errorCode: timedOut ? timeoutErrorCode : null,
                 stdout,
                 stderr,
                 pid: child.pid ?? null,

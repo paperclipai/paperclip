@@ -599,6 +599,264 @@ describe("runChildProcess", () => {
   });
 });
 
+describe("runChildProcess silenceTimeoutSec watchdog", () => {
+  it.skipIf(process.platform === "win32")("kills a silent child and reports stream_silence_timeout", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "setTimeout(() => process.stdout.write('late'), 5000);"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 0,
+        graceSec: 1,
+        silenceTimeoutSec: 0.3,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.timedOut).toBe(true);
+    expect(result.errorCode).toBe("stream_silence_timeout");
+    expect(result.signal === "SIGTERM" || result.signal === "SIGKILL").toBe(true);
+    expect(result.stdout).toBe("");
+  });
+
+  it("returns normally when the child completes within the silence threshold", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "process.stdout.write('done');"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 0,
+        graceSec: 1,
+        silenceTimeoutSec: 2,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.timedOut).toBe(false);
+    expect(result.errorCode ?? null).toBeNull();
+    expect(result.stdout).toBe("done");
+  });
+
+  it.skipIf(process.platform === "win32")("intermittent output keeps the silence timer alive", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        [
+          "let n = 0;",
+          "const t = setInterval(() => {",
+          "  process.stdout.write('tick\\n');",
+          "  if (++n >= 10) { clearInterval(t); process.exit(0); }",
+          "}, 100);",
+        ].join(" "),
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 0,
+        graceSec: 1,
+        silenceTimeoutSec: 0.3,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.timedOut).toBe(false);
+    expect(result.errorCode ?? null).toBeNull();
+    expect(result.stdout.match(/tick/g)?.length ?? 0).toBeGreaterThanOrEqual(5);
+  });
+
+  it.skipIf(process.platform === "win32")("escalates SIGTERM to SIGKILL when the child traps SIGTERM", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        [
+          "process.on('SIGTERM', () => {});",
+          "setInterval(() => {}, 1000);",
+        ].join(" "),
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 0,
+        graceSec: 1,
+        silenceTimeoutSec: 0.3,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.timedOut).toBe(true);
+    expect(result.errorCode).toBe("stream_silence_timeout");
+    expect(result.signal).toBe("SIGKILL");
+    expect(result.pid != null && !isPidAlive(result.pid)).toBe(true);
+  });
+
+  it.skipIf(process.platform === "win32")("wall-clock timeout wins the race against silence", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "setInterval(() => {}, 5000);"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 0.3,
+        graceSec: 1,
+        silenceTimeoutSec: 2,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.timedOut).toBe(true);
+    expect(result.errorCode).toBe("timeout");
+  });
+
+  it.skipIf(process.platform === "win32")("silence wins the race against wall-clock when child stalls early", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        [
+          "process.stdout.write('hi');",
+          "setInterval(() => {}, 5000);",
+        ].join(" "),
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        silenceTimeoutSec: 0.3,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.timedOut).toBe(true);
+    expect(result.errorCode).toBe("stream_silence_timeout");
+  });
+
+  it.skipIf(process.platform === "win32")("silenceTimeoutSec=0 disables the watchdog", async () => {
+    const runId = randomUUID();
+    const resultPromise = runChildProcess(
+      runId,
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000);"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 0,
+        graceSec: 1,
+        silenceTimeoutSec: 0,
+        onLog: async () => {},
+      },
+    );
+
+    const race = await Promise.race([
+      resultPromise.then(() => "settled" as const),
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 500)),
+    ]);
+    expect(race).toBe("pending");
+
+    const running = runningProcesses.get(runId);
+    if (running?.processGroupId) {
+      process.kill(-running.processGroupId, "SIGKILL");
+    } else {
+      running?.child.kill("SIGKILL");
+    }
+    await resultPromise;
+  });
+
+  it.skipIf(process.platform === "win32")("undefined silenceTimeoutSec disables the watchdog", async () => {
+    const runId = randomUUID();
+    const resultPromise = runChildProcess(
+      runId,
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000);"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 0,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    const race = await Promise.race([
+      resultPromise.then(() => "settled" as const),
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 500)),
+    ]);
+    expect(race).toBe("pending");
+
+    const running = runningProcesses.get(runId);
+    if (running?.processGroupId) {
+      process.kill(-running.processGroupId, "SIGKILL");
+    } else {
+      running?.child.kill("SIGKILL");
+    }
+    await resultPromise;
+  });
+
+  it.skipIf(process.platform === "win32")("terminal-result cleanup wins; silence timer never fires", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        [
+          "process.stdout.write(`${JSON.stringify({ type: 'result', result: 'done' })}\\n`);",
+          "setInterval(() => process.stdout.write(''), 5000);",
+        ].join(" "),
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 0,
+        graceSec: 1,
+        silenceTimeoutSec: 10,
+        onLog: async () => {},
+        terminalResultCleanup: {
+          graceMs: 50,
+          hasTerminalResult: ({ stdout }) => stdout.includes('"type":"result"'),
+        },
+      },
+    );
+
+    expect(result.timedOut).toBe(false);
+    expect(result.errorCode ?? null).toBeNull();
+    expect(result.signal).toBe("SIGTERM");
+    expect(result.stdout).toContain('"type":"result"');
+  });
+
+  it.skipIf(process.platform === "win32")("kills a child that produces zero bytes ever", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "setTimeout(() => process.exit(0), 1000);"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 0,
+        graceSec: 1,
+        silenceTimeoutSec: 0.3,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.timedOut).toBe(true);
+    expect(result.errorCode).toBe("stream_silence_timeout");
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe("");
+  });
+});
+
 describe("renderPaperclipWakePrompt", () => {
   it("keeps the default local-agent prompt action-oriented", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Start actionable work in this heartbeat");
