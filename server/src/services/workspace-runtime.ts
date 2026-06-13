@@ -1116,6 +1116,21 @@ export async function realizeExecutionWorkspace(input: {
     };
   }
 
+  if (input.base.source === "agent_home") {
+    return {
+      ...input.base,
+      strategy: "project_primary",
+      cwd: input.base.baseCwd,
+      branchName: null,
+      worktreePath: null,
+      warnings: [
+        "No project workspace is available for this run; skipping git worktree creation. " +
+        "Configure a project workspace or trigger this run from an issue to enable worktree isolation.",
+      ],
+      created: false,
+    };
+  }
+
   const repoRoot = await resolveGitOwnerRepoRoot(input.base.baseCwd);
   const branchTemplate = asString(rawStrategy.branchTemplate, "{{issue.identifier}}-{{slug}}");
   const renderedBranch = renderWorkspaceTemplate(branchTemplate, {
