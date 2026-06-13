@@ -113,7 +113,7 @@ describe("codex remote execution", () => {
         taskKey: null,
       },
       config: {
-        command: "codex",
+        command: "/opt/homebrew/bin/codex",
         env: {
           CODEX_HOME: codexHomeDir,
         },
@@ -231,7 +231,7 @@ describe("codex remote execution", () => {
         taskKey: null,
       },
       config: {
-        command: "codex",
+        command: "/opt/homebrew/bin/codex",
         env: {
           CODEX_HOME: codexHomeDir,
         },
@@ -302,7 +302,7 @@ describe("codex remote execution", () => {
         taskKey: null,
       },
       config: {
-        command: "codex",
+        command: "/opt/homebrew/bin/codex",
         env: {
           CODEX_HOME: codexHomeDir,
         },
@@ -375,7 +375,7 @@ describe("codex remote execution", () => {
         taskKey: null,
       },
       config: {
-        command: "codex",
+        command: "/opt/homebrew/bin/codex",
         env: {
           CODEX_HOME: codexHomeDir,
         },
