@@ -7795,7 +7795,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })
     ) {
       try {
-        await issuesSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked"], run.id);
+        // TON-2088: source:"heartbeat" so the centralized service emission attributes the
+        // highest-volume in-process auto-checkout path distinctly from API/CLI/MCP 409s.
+        await issuesSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked"], run.id, "heartbeat");
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
       } catch (error) {
         if (!isCheckoutConflictError(error)) throw error;

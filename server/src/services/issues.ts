@@ -68,6 +68,8 @@ import {
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
+// TON-2088: leaf import (NOT via "./index.js" barrel — that re-export is the import-cycle risk).
+import { logActivity } from "./activity-log.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
@@ -5477,7 +5479,9 @@ export function issueService(db: Db) {
         return enriched;
       }),
 
-    checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+    // TON-2088: `source` defaults to "api" so route/CLI/MCP callers are unchanged; the
+    // in-process heartbeat caller passes "heartbeat" (see heartbeat.ts).
+    checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null, source: "api" | "heartbeat" = "api") => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -5665,7 +5669,41 @@ export function issueService(db: Db) {
         return enriched;
       }
 
+      // TON-2088: counted activity event for EVERY production 409 where the issue is
+      // already locked by another run, at the single choke point all callers traverse
+      // (HTTP route, in-process heartbeat, CLI, MCP). Reuses the existing activity log
+      // (no net-new observability surface, TON-2083). Emission sits AFTER the adopt and
+      // self-own short-circuits above, so a run re-acquiring its own issue never emits —
+      // only genuine cross-run lock conflicts do. Uses logActivity (not a raw insert) so
+      // redaction, the Control Room live-events publish, and plugin dispatch all run.
+      // Isolated in its own try/catch so an audit-write failure can never turn a correct
+      // 409 into a 500.
+      try {
+        await logActivity(db, {
+          companyId: issueCompany.companyId,
+          actorType: "agent",
+          actorId: agentId,
+          agentId,
+          runId: checkoutRunId,
+          action: "issue.checkout_blocked",
+          entityType: "issue",
+          entityId: current.id,
+          details: {
+            blockedAgentId: agentId,
+            blockedRunId: checkoutRunId,
+            ownerAgentId: current.assigneeAgentId ?? null,
+            ownerRunId: current.checkoutRunId ?? null,
+            source,
+          },
+        });
+      } catch (logErr) {
+        logger.warn({ err: logErr, issueId: current.id }, "issue.checkout_blocked audit write failed");
+      }
+
       throw conflict("Issue checkout conflict", {
+        // TON-2088: additive, backward-compatible discriminator for any route-level
+        // consumer; counting itself is centralized in the service emission above.
+        code: "issue_checkout_conflict",
         issueId: current.id,
         status: current.status,
         assigneeAgentId: current.assigneeAgentId,

@@ -2918,6 +2918,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(workspaceOperations);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -3455,6 +3456,99 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       ],
       childIssueSummaryTruncated: false,
     });
+  });
+
+  it("emits an issue.checkout_blocked activity event on a cross-run 409 conflict (TON-2088)", async () => {
+    const companyId = randomUUID();
+    const ownerAgentId = randomUUID();
+    const blockedAgentId = randomUUID();
+    const ownerRunId = randomUUID();
+    const blockedRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: ownerAgentId,
+        companyId,
+        name: "Owner",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: blockedAgentId,
+        companyId,
+        name: "Blocked",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    // Both runs must exist (issues.checkout_run_id / execution_run_id FK heartbeat_runs.id).
+    await db.insert(heartbeatRuns).values([
+      { id: ownerRunId, companyId, agentId: ownerAgentId, status: "running", invocationSource: "manual" },
+      { id: blockedRunId, companyId, agentId: blockedAgentId, status: "running", invocationSource: "manual" },
+    ]);
+
+    // Issue already locked in_progress by the owner's run.
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Locked issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: ownerAgentId,
+      checkoutRunId: ownerRunId,
+      executionRunId: ownerRunId,
+    });
+
+    // A different agent/run attempts checkout -> genuine cross-run lock conflict (409).
+    await expect(
+      svc.checkout(issueId, blockedAgentId, ["todo", "in_progress", "blocked"], blockedRunId),
+    ).rejects.toMatchObject({ status: 409, details: { code: "issue_checkout_conflict" } });
+
+    const events = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.checkout_blocked"));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      companyId,
+      actorType: "agent",
+      actorId: blockedAgentId,
+      agentId: blockedAgentId,
+      runId: blockedRunId,
+      entityType: "issue",
+      entityId: issueId,
+    });
+    expect(events[0]?.details).toMatchObject({
+      blockedAgentId,
+      blockedRunId,
+      ownerAgentId,
+      ownerRunId,
+      source: "api",
+    });
+
+    // Negative: the owner re-acquiring its OWN issue/run must NOT emit (self-own short-circuit).
+    await svc.checkout(issueId, ownerAgentId, ["todo", "in_progress", "blocked"], ownerRunId);
+    const afterSelfOwn = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.checkout_blocked"));
+    expect(afterSelfOwn).toHaveLength(1);
   });
 });
 
