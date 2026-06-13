@@ -2124,7 +2124,21 @@ export async function ensureCommandResolvable(
     throw new Error('Command not found in PATH: "ssh"');
   }
   const resolved = await resolveCommandPath(command, cwd, env);
-  if (resolved) return;
+  if (resolved) {
+    // On Windows, .CMD and .BAT files must be executed through cmd.exe
+    // Verify that cmd.exe is available for these file types
+    if (process.platform === "win32" && /\.(cmd|bat)$/i.test(resolved)) {
+      const shell = env.ComSpec || process.env.ComSpec || "cmd.exe";
+      const shellPath = await resolveCommandPath(shell, cwd, env);
+      if (!shellPath) {
+        throw new Error(
+          `Windows requires cmd.exe to execute .CMD/.BAT files, but cmd.exe was not found in PATH. ` +
+          `Command "${command}" resolved to "${resolved}", but cannot be executed without cmd.exe.`
+        );
+      }
+    }
+    return;
+  }
   if (command.includes("/") || command.includes("\\")) {
     const absolute = path.isAbsolute(command) ? command : path.resolve(cwd, command);
     throw new Error(`Command is not executable: "${command}" (resolved: "${absolute}")`);
