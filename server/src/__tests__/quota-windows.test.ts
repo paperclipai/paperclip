@@ -576,6 +576,12 @@ describe("fetchClaudeQuota", () => {
     expect(windows[0]!.usedPercent).toBe(null);
   });
 
+  it("handles utilization as already-percentage (>= 1) instead of fraction", async () => {
+    mockFetch({ five_hour: { utilization: 42, resets_at: null } });
+    const windows = await fetchClaudeQuota("token");
+    expect(windows[0]!.usedPercent).toBe(42);
+  });
+
   it("includes all four windows when all are present", async () => {
     mockFetch({
       five_hour: { utilization: 10.0, resets_at: null },
