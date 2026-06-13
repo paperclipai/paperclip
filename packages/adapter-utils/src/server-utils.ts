@@ -2187,6 +2187,9 @@ export async function runChildProcess(
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
 
+        child.stdout?.setEncoding("utf8");
+        child.stderr?.setEncoding("utf8");
+
         const spawnPersistPromise =
           typeof child.pid === "number" && child.pid > 0 && opts.onSpawn
             ? opts.onSpawn({ pid: child.pid, processGroupId, startedAt }).catch((err) => {

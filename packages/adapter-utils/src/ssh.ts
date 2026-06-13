@@ -221,6 +221,9 @@ async function spawnText(
       stdio: [options.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
     });
 
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+
     const maxBuffer = options.maxBuffer ?? 1024 * 128;
     let stdout = "";
     let stderr = "";
