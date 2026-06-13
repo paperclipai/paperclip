@@ -388,6 +388,42 @@ describe("adapter skill snapshots", () => {
 });
 
 describe("runChildProcess", () => {
+  it("never exposes PAPERCLIP_AGENT_JWT_SECRET or BETTER_AUTH_SECRET to the spawned child", async () => {
+    const previousJwt = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    const previousBetterAuth = process.env.BETTER_AUTH_SECRET;
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "inherited-jwt-should-not-leak";
+    process.env.BETTER_AUTH_SECRET = "inherited-better-auth-should-not-leak";
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        [
+          "-e",
+          "process.stdout.write(JSON.stringify({jwt: process.env.PAPERCLIP_AGENT_JWT_SECRET ?? null, betterAuth: process.env.BETTER_AUTH_SECRET ?? null}));",
+        ],
+        {
+          cwd: process.cwd(),
+          // Also inject via opts.env to prove agent config.env cannot smuggle it in.
+          env: {
+            PAPERCLIP_AGENT_JWT_SECRET: "config-jwt-should-not-leak",
+            BETTER_AUTH_SECRET: "config-better-auth-should-not-leak",
+          },
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ jwt: null, betterAuth: null });
+    } finally {
+      if (previousJwt === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+      else process.env.PAPERCLIP_AGENT_JWT_SECRET = previousJwt;
+      if (previousBetterAuth === undefined) delete process.env.BETTER_AUTH_SECRET;
+      else process.env.BETTER_AUTH_SECRET = previousBetterAuth;
+    }
+  });
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),
