@@ -2461,6 +2461,54 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+registerCurrentRoute({
+  method: "get",
+  path: "/api/instance/settings/data-recovery",
+  tags: ["instance-settings"],
+  summary: "List recoverable archived and soft-removed records",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/instance/settings/data-recovery/{type}/{id}",
+  tags: ["instance-settings"],
+  summary: "Inspect a recoverable archived or soft-removed record",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/instance/settings/data-recovery/{type}/{id}/restore",
+  tags: ["instance-settings"],
+  summary: "Restore a recoverable archived or soft-removed record",
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/instance/settings/data-recovery/agent/{id}/rename",
+  tags: ["instance-settings"],
+  summary: "Rename a terminated agent before restoring it",
+  body: z.object({ name: z.string().trim().min(1) }),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/instance/settings/data-recovery/{type}/{id}",
+  tags: ["instance-settings"],
+  summary: "Permanently delete a recoverable archived or soft-removed record",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
 // ─── Board chat (Conference Room Chat, experimental) ──────────────────────────
 
 registry.registerPath({

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Clock3, Cpu, FlaskConical, Puzzle, Settings, Shield, SlidersHorizontal, UserRoundPen } from "lucide-react";
+import { ArchiveRestore, Clock3, Cpu, FlaskConical, Puzzle, Settings, Shield, SlidersHorizontal, UserRoundPen } from "lucide-react";
 import type { PluginRecord } from "@paperclipai/shared";
 import { NavLink } from "@/lib/router";
 import { pluginsApi } from "@/api/plugins";
@@ -44,6 +44,7 @@ export function InstanceSidebar() {
           <SidebarNavItem to={`${INSTANCE_SETTINGS_PATH_PREFIX}/access`} label="Access" icon={Shield} end />
           <SidebarNavItem to={`${INSTANCE_SETTINGS_PATH_PREFIX}/heartbeats`} label="Heartbeats" icon={Clock3} end />
           <SidebarNavItem to={`${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`} label="Experimental" icon={FlaskConical} />
+          <SidebarNavItem to={`${INSTANCE_SETTINGS_PATH_PREFIX}/data-recovery`} label="Data Recovery" icon={ArchiveRestore} />
           <SidebarNavItem to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`} label="Plugins" icon={Puzzle} />
           {sidebarPlugins.length > 0 ? (
             <div className="ml-4 mt-1 flex flex-col gap-0.5 border-l border-border/70 pl-3">

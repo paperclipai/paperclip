@@ -13,10 +13,18 @@ const mockHeartbeatService = vi.hoisted(() => ({
   buildIssueGraphLivenessAutoRecoveryPreview: vi.fn(),
   reconcileIssueGraphLiveness: vi.fn(),
 }));
+const mockDataRecoveryService = vi.hoisted(() => ({
+  deletePermanent: vi.fn(),
+  details: vi.fn(),
+  list: vi.fn(),
+  renameAgent: vi.fn(),
+  restore: vi.fn(),
+}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
+    dataRecoveryService: () => mockDataRecoveryService,
     heartbeatService: () => mockHeartbeatService,
     instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,
@@ -55,6 +63,11 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockHeartbeatService.buildIssueGraphLivenessAutoRecoveryPreview.mockReset();
     mockHeartbeatService.reconcileIssueGraphLiveness.mockReset();
+    mockDataRecoveryService.list.mockReset();
+    mockDataRecoveryService.details.mockReset();
+    mockDataRecoveryService.restore.mockReset();
+    mockDataRecoveryService.renameAgent.mockReset();
+    mockDataRecoveryService.deletePermanent.mockReset();
     mockLogActivity.mockReset();
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
@@ -113,6 +126,84 @@ describe("instance settings routes", () => {
       skippedAutoRecoveryDisabled: 0,
       skippedOutsideLookback: 0,
       escalationIssueIds: ["issue-2"],
+    });
+    mockDataRecoveryService.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        type: "agent",
+        name: "Recovery Test Agent",
+        state: "terminated",
+        removedAt: "2026-05-15T12:00:00.000Z",
+        companyId: "company-1",
+        companyName: "Paperclip",
+        companyStatus: "active",
+        projectId: null,
+        projectName: null,
+        href: "/PAP/agents/recovery-test-agent",
+        restoreBlockedReason: null,
+      },
+    ]);
+    mockDataRecoveryService.restore.mockResolvedValue({
+      id: "agent-1",
+      type: "agent",
+      name: "Recovery Test Agent",
+      state: "terminated",
+      removedAt: null,
+      companyId: "company-1",
+      companyName: "Paperclip",
+      companyStatus: "active",
+      projectId: null,
+      projectName: null,
+      href: "/PAP/agents/recovery-test-agent",
+      restoreBlockedReason: null,
+    });
+    mockDataRecoveryService.details.mockResolvedValue({
+      item: {
+        id: "agent-1",
+        type: "agent",
+        name: "Recovery Test Agent",
+        state: "terminated",
+        removedAt: "2026-05-15T12:00:00.000Z",
+        companyId: "company-1",
+        companyName: "Paperclip",
+        companyStatus: "active",
+        projectId: null,
+        projectName: null,
+        href: "/PAP/agents/recovery-test-agent",
+        restoreBlockedReason: null,
+      },
+      details: [
+        { label: "ID", value: "agent-1" },
+        { label: "Name", value: "Recovery Test Agent" },
+      ],
+    });
+    mockDataRecoveryService.deletePermanent.mockResolvedValue({
+      id: "agent-1",
+      type: "agent",
+      name: "Recovery Test Agent",
+      state: "terminated",
+      removedAt: "2026-05-15T12:00:00.000Z",
+      companyId: "company-1",
+      companyName: "Paperclip",
+      companyStatus: "active",
+      projectId: null,
+      projectName: null,
+      href: "/PAP/agents/recovery-test-agent",
+      restoreBlockedReason: null,
+    });
+    mockDataRecoveryService.renameAgent.mockResolvedValue({
+      id: "agent-1",
+      type: "agent",
+      name: "Recovery Test Agent agent-1",
+      state: "terminated",
+      removedAt: "2026-05-15T12:00:00.000Z",
+      companyId: "company-1",
+      companyName: "Paperclip",
+      companyStatus: "active",
+      projectId: null,
+      projectName: null,
+      href: "/PAP/agents/recovery-test-agent-agent-1",
+      restoreBlockedReason: null,
     });
   });
 
@@ -228,6 +319,140 @@ describe("instance settings routes", () => {
       lookbackHours: 12,
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
+  });
+
+  it("lists recoverable data for instance admins", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .get("/api/instance/settings/data-recovery")
+      .expect(200);
+
+    expect(res.body.items).toHaveLength(1);
+    expect(res.body.items[0]).toMatchObject({
+      id: "agent-1",
+      type: "agent",
+      state: "terminated",
+    });
+    expect(mockDataRecoveryService.list).toHaveBeenCalledOnce();
+  });
+
+  it("restores recoverable data and logs the action", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .post("/api/instance/settings/data-recovery/agent/agent-1/restore")
+      .send({})
+      .expect(200);
+
+    expect(res.body.item).toMatchObject({ id: "agent-1", type: "agent" });
+    expect(mockDataRecoveryService.restore).toHaveBeenCalledWith("agent", "agent-1");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        action: "instance.data_recovery.restored",
+        entityType: "agent",
+        entityId: "agent-1",
+      }),
+    );
+  });
+
+  it("inspects recoverable data details", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .get("/api/instance/settings/data-recovery/agent/agent-1")
+      .expect(200);
+
+    expect(res.body.details).toContainEqual({ label: "Name", value: "Recovery Test Agent" });
+    expect(mockDataRecoveryService.details).toHaveBeenCalledWith("agent", "agent-1");
+  });
+
+  it("rejects unsupported recoverable data types before calling the service", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .get("/api/instance/settings/data-recovery/workspace/workspace-1")
+      .expect(422);
+
+    expect(res.body.error).toContain("Unsupported recoverable item type");
+    expect(mockDataRecoveryService.details).not.toHaveBeenCalled();
+  });
+
+  it("permanently deletes recoverable data and logs the action", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .delete("/api/instance/settings/data-recovery/agent/agent-1")
+      .expect(200);
+
+    expect(res.body.item).toMatchObject({ id: "agent-1", type: "agent" });
+    expect(mockDataRecoveryService.deletePermanent).toHaveBeenCalledWith("agent", "agent-1");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        action: "instance.data_recovery.deleted",
+        entityType: "agent",
+        entityId: "agent-1",
+      }),
+    );
+  });
+
+  it("renames a recoverable terminated agent and logs the action", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .post("/api/instance/settings/data-recovery/agent/agent-1/rename")
+      .send({ name: "Recovery Test Agent agent-1" })
+      .expect(200);
+
+    expect(res.body.item).toMatchObject({
+      id: "agent-1",
+      name: "Recovery Test Agent agent-1",
+      restoreBlockedReason: null,
+    });
+    expect(mockDataRecoveryService.renameAgent).toHaveBeenCalledWith("agent-1", "Recovery Test Agent agent-1");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        action: "instance.data_recovery.renamed",
+        entityType: "agent",
+        entityId: "agent-1",
+      }),
+    );
   });
 
   it("allows local board users to update environment controls", async () => {
