@@ -950,10 +950,16 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
   );
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
-  const apiUrl =
-    process.env.PAPERCLIP_RUNTIME_API_URL ??
-    process.env.PAPERCLIP_API_URL ??
-    `http://${runtimeHost}:${runtimePort}`;
+  // Always inject the loopback runtime URL into spawned in-process agents.
+  // The server populates `PAPERCLIP_RUNTIME_API_URL` and `PAPERCLIP_API_URL`
+  // from `choosePrimaryRuntimeApiUrl`, which prefers the first
+  // `allowedHostnames` entry (e.g. a Tailscale FQDN) over the bind host.
+  // Local in-process spawn targets cannot resolve that public URL — they
+  // need `runtimeHost:runtimePort` (which already resolves to the bound
+  // listen host). Remote execution targets (sandbox/SSH) override this
+  // value via `executionTarget.paperclipApiUrl` after `buildPaperclipEnv`,
+  // so they continue to receive the public URL.
+  const apiUrl = `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
   return vars;
 }
