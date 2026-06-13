@@ -580,6 +580,10 @@ export async function startServer(): Promise<StartedServer> {
     shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
   const backupSettingsSvc = instanceSettingsService(db);
+  const databaseBackupTimeoutMs = Math.max(
+    60_000,
+    Number(process.env.PAPERCLIP_DATABASE_BACKUP_TIMEOUT_MS ?? 15 * 60 * 1000),
+  );
   let databaseBackupInFlight = false;
   const runServerDatabaseBackup = async (
     trigger: InstanceDatabaseBackupTrigger,
@@ -597,8 +601,16 @@ export async function startServer(): Promise<StartedServer> {
     const startedAt = new Date();
     const startedAtMs = Date.now();
     const label = trigger === "scheduled" ? "Automatic" : "Manual";
+    const backupWatchdog = setTimeout(() => {
+      logger.error(
+        { backupDir: config.databaseBackupDir, trigger, timeoutMs: databaseBackupTimeoutMs },
+        label + " database backup exceeded timeout; exiting process to clear stuck backup state",
+      );
+      process.exit(1);
+    }, databaseBackupTimeoutMs);
+    backupWatchdog.unref?.();
     try {
-      logger.info({ backupDir: config.databaseBackupDir, trigger }, `${label} database backup starting`);
+      logger.info({ backupDir: config.databaseBackupDir, trigger }, label + " database backup starting");
       // Read retention from Instance Settings (DB) so changes take effect without restart.
       const generalSettings = await backupSettingsSvc.getGeneral();
       const retention = generalSettings.backupRetention;
@@ -629,13 +641,14 @@ export async function startServer(): Promise<StartedServer> {
           trigger,
           durationMs: response.durationMs,
         },
-        `${label} database backup complete: ${formatDatabaseBackupResult(result)}`,
+        label + " database backup complete: " + formatDatabaseBackupResult(result),
       );
       return response;
     } catch (err) {
-      logger.error({ err, backupDir: config.databaseBackupDir, trigger }, `${label} database backup failed`);
+      logger.error({ err, backupDir: config.databaseBackupDir, trigger }, label + " database backup failed");
       throw err;
     } finally {
+      clearTimeout(backupWatchdog);
       databaseBackupInFlight = false;
     }
   };
