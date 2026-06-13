@@ -94,6 +94,9 @@ export const ISSUE_LIST_MAX_LIMIT = 1000;
 const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
+const MAX_OPEN_DESCENDANT_SUMMARIES = 20;
+const MAX_DESCENDANT_AUDIT_NODES = 500;
+const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
@@ -395,6 +398,15 @@ export type ChildIssueCompletionSummary = {
   assigneeUserId: string | null;
   updatedAt: Date;
   summary: string | null;
+};
+export type OpenDescendantSummary = {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  priority: string;
+  parentIssueId: string | null;
+  depth: number;
 };
 
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
@@ -4511,12 +4523,64 @@ export function issueService(db: Db) {
           summary: truncateInlineSummary(latestCommentByIssueId.get(child.id)),
         }));
 
+      const openDescendants: OpenDescendantSummary[] = [];
+      let openDescendantTotal = 0;
+      let descendantsAudited = children.length;
+      let frontier: string[] = children.map((child) => child.id);
+      let depth = 1;
+      while (frontier.length > 0 && descendantsAudited < MAX_DESCENDANT_AUDIT_NODES) {
+        depth += 1;
+        const nextFrontier: string[] = [];
+        for (let offset = 0; offset < frontier.length; offset += ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE) {
+          const chunk = frontier.slice(offset, offset + ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE);
+          const rows = await db
+            .select({
+              id: issues.id,
+              identifier: issues.identifier,
+              title: issues.title,
+              status: issues.status,
+              priority: issues.priority,
+              parentId: issues.parentId,
+            })
+            .from(issues)
+            .where(and(eq(issues.companyId, parent.companyId), inArray(issues.parentId, chunk)))
+            .orderBy(asc(issues.issueNumber), asc(issues.createdAt));
+          for (const row of rows) {
+            descendantsAudited += 1;
+            nextFrontier.push(row.id);
+            if (!TERMINAL_ISSUE_STATUSES.has(row.status)) {
+              openDescendantTotal += 1;
+              if (openDescendants.length < MAX_OPEN_DESCENDANT_SUMMARIES) {
+                openDescendants.push({
+                  id: row.id,
+                  identifier: row.identifier,
+                  title: row.title,
+                  status: row.status,
+                  priority: row.priority,
+                  parentIssueId: row.parentId,
+                  depth,
+                });
+              }
+            }
+            if (descendantsAudited >= MAX_DESCENDANT_AUDIT_NODES) break;
+          }
+          if (descendantsAudited >= MAX_DESCENDANT_AUDIT_NODES) break;
+        }
+        frontier = nextFrontier;
+      }
+      const subtreeAuditTruncated = descendantsAudited >= MAX_DESCENDANT_AUDIT_NODES && frontier.length > 0;
+      const openDescendantSummaryTruncated = openDescendantTotal > openDescendants.length;
+
       return {
         id: parent.id,
         assigneeAgentId: parent.assigneeAgentId,
         childIssueIds: children.map((child) => child.id),
         childIssueSummaries,
         childIssueSummaryTruncated: children.length > childIssueSummaries.length,
+        openDescendantSummaries: openDescendants,
+        openDescendantCount: openDescendantTotal,
+        openDescendantSummaryTruncated,
+        subtreeAuditTruncated,
       };
     },
 

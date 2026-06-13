@@ -928,6 +928,102 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Direct child issue summaries:");
     expect(prompt).toContain("PAP-101 Implement helper (done)");
     expect(prompt).toContain("Added the helper route and tests.");
+    expect(prompt).toContain("DIRECT children only");
+    expect(prompt).toContain("Subtree audit: no open descendants detected below the direct children.");
+  });
+
+  it("renders subtree-audit warning when open descendants are present (PRE-865)", () => {
+    const payload = {
+      reason: "issue_children_completed",
+      issue: {
+        id: "parent-2",
+        identifier: "PAP-200",
+        title: "Multi-phase parent",
+        status: "in_progress",
+        priority: "high",
+      },
+      childIssueSummaries: [
+        {
+          id: "child-1",
+          identifier: "PAP-201",
+          title: "Phase 1",
+          status: "done",
+          priority: "high",
+          summary: "Phase 1 closed by agent.",
+        },
+      ],
+      openDescendantSummaries: [
+        {
+          id: "grand-1",
+          identifier: "PAP-301",
+          title: "Grandchild backlog",
+          status: "backlog",
+          priority: "medium",
+          parentIssueId: "child-1",
+          depth: 2,
+        },
+        {
+          id: "great-1",
+          identifier: "PAP-401",
+          title: "Great-grandchild blocked",
+          status: "blocked",
+          priority: "low",
+          parentIssueId: "grand-1",
+          depth: 3,
+        },
+      ],
+      openDescendantCount: 2,
+      openDescendantSummaryTruncated: false,
+      subtreeAuditTruncated: false,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("Direct child issue summaries:");
+    expect(prompt).toContain("PAP-201 Phase 1 (done)");
+    expect(prompt).toContain("DIRECT children only");
+    expect(prompt).toContain("Subtree audit — 2 open descendant issue(s) below the direct children:");
+    expect(prompt).toContain("PAP-301 Grandchild backlog (backlog) depth=2 parent=child-1");
+    expect(prompt).toContain("PAP-401 Great-grandchild blocked (blocked) depth=3 parent=grand-1");
+    expect(prompt).toContain("WARNING: the tree is NOT complete.");
+    expect(prompt).toContain("Do NOT mark the parent issue done");
+    expect(prompt).not.toContain("Subtree audit: no open descendants detected");
+  });
+
+  it("renders subtree-audit caution when audit truncated and no open descendants found in audited portion (PRE-865 iter:2)", () => {
+    const payload = {
+      reason: "issue_children_completed",
+      issue: {
+        id: "parent-3",
+        identifier: "PAP-500",
+        title: "Large parent",
+        status: "in_progress",
+        priority: "high",
+      },
+      childIssueSummaries: [
+        {
+          id: "child-a",
+          identifier: "PAP-501",
+          title: "Phase A",
+          status: "done",
+          priority: "high",
+          summary: "Phase A closed.",
+        },
+      ],
+      openDescendantSummaries: [],
+      openDescendantCount: 0,
+      openDescendantSummaryTruncated: false,
+      subtreeAuditTruncated: true,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("Direct child issue summaries:");
+    expect(prompt).toContain("PAP-501 Phase A (done)");
+    expect(prompt).toContain("Subtree audit INCOMPLETE");
+    expect(prompt).toContain("descendant-audit cap was reached");
+    expect(prompt).toContain("Do NOT close the parent issue");
+    expect(prompt).toContain("Re-check the subtree via the API");
+    expect(prompt).not.toContain("Subtree audit: no open descendants detected");
+    expect(prompt).not.toContain("WARNING: the tree is NOT complete.");
   });
 });
 
