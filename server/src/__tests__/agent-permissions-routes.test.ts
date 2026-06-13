@@ -81,6 +81,11 @@ const mockIssueApprovalService = vi.hoisted(() => ({
 
 const mockIssueService = vi.hoisted(() => ({
   list: vi.fn(),
+  listDependencyReadiness: vi.fn(),
+}));
+
+const mockIssueRecoveryActionService = vi.hoisted(() => ({
+  listActiveForIssues: vi.fn(),
 }));
 
 const mockSecretService = vi.hoisted(() => ({
@@ -159,6 +164,10 @@ function registerModuleMocks() {
     issueService: () => mockIssueService,
   }));
 
+  vi.doMock("../services/issue-recovery-actions.js", () => ({
+    issueRecoveryActionService: () => mockIssueRecoveryActionService,
+  }));
+
   vi.doMock("../services/secrets.js", () => ({
     secretService: () => mockSecretService,
   }));
@@ -195,6 +204,7 @@ function registerModuleMocks() {
     ISSUE_LIST_DEFAULT_LIMIT: 500,
     issueApprovalService: () => mockIssueApprovalService,
     issueService: () => mockIssueService,
+    issueRecoveryActionService: () => mockIssueRecoveryActionService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
@@ -318,6 +328,8 @@ describe.sequential("agent permission routes", () => {
     mockHeartbeatService.cancelRun.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.list.mockReset();
+    mockIssueService.listDependencyReadiness.mockReset();
+    mockIssueRecoveryActionService.listActiveForIssues.mockReset();
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
     mockSecretService.resolveAdapterConfigForRuntime.mockReset();
     mockAgentInstructionsService.materializeManagedBundle.mockReset();
@@ -1438,6 +1450,45 @@ describe.sequential("agent permission routes", () => {
       status: "backlog,todo,in_progress,in_review,blocked,done",
       limit: 500,
     });
+  });
+
+  it("inbox-lite includes in_review issues so assigned review work stays visible", async () => {
+    mockIssueService.list.mockResolvedValue([
+      {
+        id: "issue-review-1",
+        identifier: "GRA-18",
+        title: "Review assigned work",
+        status: "in_review",
+        priority: "high",
+        projectId: null,
+        goalId: null,
+        parentId: null,
+        updatedAt: new Date().toISOString(),
+        activeRun: null,
+      },
+    ]);
+    mockIssueService.listDependencyReadiness.mockResolvedValue(new Map());
+    mockIssueRecoveryActionService.listActiveForIssues.mockResolvedValue(new Map());
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/agents/me/inbox-lite")
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].status).toBe("in_review");
+    expect(mockIssueService.list).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ status: "todo,in_progress,in_review,blocked" })
+    );
   });
 
   it("rejects heartbeat cancellation outside the caller company scope", async () => {
