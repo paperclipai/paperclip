@@ -47,7 +47,7 @@ import { SourceResolvedFoldCallout } from "../components/SourceResolvedFoldCallo
 import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
-import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd, formatRunCostDisplay } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { describeRunRetryState } from "../lib/runRetryState";
 import { Button } from "@/components/ui/button";
@@ -289,11 +289,14 @@ function runMetrics(run: HeartbeatRun) {
     visibleRunCostUsd(usage, result);
   const provider = asNonEmptyString(usage?.provider) ?? null;
   const model = asNonEmptyString(usage?.model) ?? null;
+  const hasTokenUsage = input > 0 || output > 0 || cached > 0;
+  const costDisplay = formatRunCostDisplay({ costUsd: cost, hasTokenUsage, usage, result });
   return {
     input,
     output,
     cached,
     cost,
+    costDisplay,
     totalTokens: input + output,
     provider,
     model,
@@ -1422,12 +1425,7 @@ function CostsSection({
                     <td className="px-3 py-2 font-mono">{run.id.slice(0, 8)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.input)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.output)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {metrics.cost > 0
-                        ? `$${metrics.cost.toFixed(4)}`
-                        : "-"
-                      }
-                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums">{metrics.costDisplay}</td>
                   </tr>
                 );
               })}
@@ -3457,7 +3455,18 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
               </div>
               <div>
                 <div className="text-xs text-muted-foreground">Cost</div>
-                <div className="text-sm font-medium font-mono">{metrics.cost > 0 ? `$${metrics.cost.toFixed(4)}` : "-"}</div>
+                <div
+                  className="text-sm font-medium font-mono"
+                  title={
+                    metrics.costDisplay === "N/A (local)"
+                      ? "Local adapter does not report per-run cost"
+                      : metrics.costDisplay === "Included"
+                        ? "Covered by subscription plan"
+                        : undefined
+                  }
+                >
+                  {metrics.costDisplay}
+                </div>
               </div>
             </div>
           )}
