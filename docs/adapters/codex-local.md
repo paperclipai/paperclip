@@ -14,7 +14,7 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
+| `cwd` | string | No | **Deprecated.** Legacy working directory fallback. New agents must not set this — Paperclip leases an execution workspace per issue. The hire and direct-create endpoints drop this field for new agents (logged for audit); existing agents that still carry it are preserved. |
 | `model` | string | No | Model to use |
 | `promptTemplate` | string | No | Prompt used for all runs |
 | `env` | object | No | Environment variables (supports secret refs) |

@@ -111,7 +111,7 @@ Don't use when:
 - OpenCode CLI is not installed on the machine
 
 Core fields:
-- cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
+- cwd (string, optional, **deprecated**): legacy working directory fallback for the agent process. New agents must not set this — Paperclip leases an execution workspace per issue. The hire and direct-create endpoints drop this field for new agents (logged for audit); existing agents that still carry it are preserved.
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - model (string, required): OpenCode model id in provider/model format (for example anthropic/claude-sonnet-4-5)
 - variant (string, optional): provider-specific reasoning/profile variant passed as --variant (for example minimal|low|medium|high|xhigh|max)

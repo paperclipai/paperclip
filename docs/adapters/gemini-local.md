@@ -14,7 +14,7 @@ The `gemini_local` adapter runs Google's Gemini CLI locally. It supports session
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
+| `cwd` | string | No | **Deprecated.** Legacy working directory fallback. New agents must not set this — Paperclip leases an execution workspace per issue. The hire and direct-create endpoints drop this field for new agents (logged for audit); existing agents that still carry it are preserved. |
 | `model` | string | No | Gemini model to use. Defaults to `auto`. |
 | `promptTemplate` | string | No | Prompt used for all runs |
 | `instructionsFilePath` | string | No | Markdown instructions file prepended to the prompt |

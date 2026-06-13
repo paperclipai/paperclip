@@ -1267,6 +1267,37 @@ export function agentRoutes(
     }
   }
 
+  // Local adapters where `adapterConfig.cwd` is a deprecated legacy fallback.
+  // New agents must not carry it — Paperclip leases an execution workspace per
+  // issue. Existing agents that still have a `cwd` value are preserved by the
+  // PATCH path (see ADAPTER_AGNOSTIC_KEYS); this set only affects create/hire.
+  const ADAPTER_TYPES_WITH_DEPRECATED_CWD: ReadonlySet<string> = new Set([
+    "acpx_local",
+    "claude_local",
+    "codex_local",
+    "cursor_local",
+    "gemini_local",
+    "opencode_local",
+    "pi_local",
+  ]);
+
+  function stripDeprecatedCwdForNewAgent(
+    adapterType: string,
+    adapterConfig: Record<string, unknown>,
+  ): { adapterConfig: Record<string, unknown>; dropped: boolean; droppedValuePresent: boolean } {
+    if (!ADAPTER_TYPES_WITH_DEPRECATED_CWD.has(adapterType)) {
+      return { adapterConfig, dropped: false, droppedValuePresent: false };
+    }
+    if (!Object.prototype.hasOwnProperty.call(adapterConfig, "cwd")) {
+      return { adapterConfig, dropped: false, droppedValuePresent: false };
+    }
+    const value = adapterConfig.cwd;
+    const droppedValuePresent = typeof value === "string" && value.trim().length > 0;
+    const next = { ...adapterConfig };
+    delete next.cwd;
+    return { adapterConfig: next, dropped: true, droppedValuePresent };
+  }
+
   async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
     assertCompanyAccess(req, targetAgent.companyId);
     if (req.actor.type !== "board") {
@@ -2158,9 +2189,13 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
-    const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
+    const hireCwdStrip = stripDeprecatedCwdForNewAgent(
       hireInput.adapterType,
       rawHireAdapterConfig,
+    );
+    const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
+      hireInput.adapterType,
+      hireCwdStrip.adapterConfig,
     );
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
@@ -2266,6 +2301,27 @@ export function agentRoutes(
       }
     }
 
+    if (hireCwdStrip.dropped) {
+      console.warn(
+        `[agents] hire payload included deprecated adapterConfig.cwd; dropped before persistence (agentId=${agent.id}, adapterType=${hireInput.adapterType})`,
+      );
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "agent.hire_dropped_deprecated_field",
+        entityType: "agent",
+        entityId: agent.id,
+        details: {
+          adapterType: hireInput.adapterType,
+          droppedKey: "adapterConfig.cwd",
+          droppedValuePresent: hireCwdStrip.droppedValuePresent,
+        },
+      });
+    }
+
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,
@@ -2344,9 +2400,13 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
-    const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
+    const createCwdStrip = stripDeprecatedCwdForNewAgent(
       createInput.adapterType,
       rawCreateAdapterConfig,
+    );
+    const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
+      createInput.adapterType,
+      createCwdStrip.adapterConfig,
     );
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
@@ -2390,6 +2450,26 @@ export function agentRoutes(
     }
 
     const actor = getActorInfo(req);
+    if (createCwdStrip.dropped) {
+      console.warn(
+        `[agents] direct create payload included deprecated adapterConfig.cwd; dropped before persistence (agentId=${agent.id}, adapterType=${createInput.adapterType})`,
+      );
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "agent.create_dropped_deprecated_field",
+        entityType: "agent",
+        entityId: agent.id,
+        details: {
+          adapterType: createInput.adapterType,
+          droppedKey: "adapterConfig.cwd",
+          droppedValuePresent: createCwdStrip.droppedValuePresent,
+        },
+      });
+    }
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,

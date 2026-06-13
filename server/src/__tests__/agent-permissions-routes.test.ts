@@ -1595,4 +1595,108 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(403);
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
+
+  it("strips deprecated adapterConfig.cwd from claude_local hire payloads and logs the drop", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "ClaudeBuilder",
+        role: "engineer",
+        adapterType: "claude_local",
+        adapterConfig: {
+          cwd: "/Users/example/legacy-clone",
+          model: "claude-sonnet-4-6",
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledTimes(1);
+    const persistedAdapterConfig = mockAgentService.create.mock.calls[0][1].adapterConfig as Record<string, unknown>;
+    expect(persistedAdapterConfig).not.toHaveProperty("cwd");
+    expect(persistedAdapterConfig).toMatchObject({ model: "claude-sonnet-4-6" });
+
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "agent.hire_dropped_deprecated_field",
+        details: expect.objectContaining({
+          adapterType: "claude_local",
+          droppedKey: "adapterConfig.cwd",
+          droppedValuePresent: true,
+        }),
+      }),
+    );
+  });
+
+  it("strips deprecated adapterConfig.cwd from codex_local direct-create payloads and logs the drop", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "CodexBuilder",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {
+          cwd: "/Users/example/legacy-clone",
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledTimes(1);
+    const persistedAdapterConfig = mockAgentService.create.mock.calls[0][1].adapterConfig as Record<string, unknown>;
+    expect(persistedAdapterConfig).not.toHaveProperty("cwd");
+
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "agent.create_dropped_deprecated_field",
+        details: expect.objectContaining({
+          adapterType: "codex_local",
+          droppedKey: "adapterConfig.cwd",
+          droppedValuePresent: true,
+        }),
+      }),
+    );
+  });
+
+  it("does not log a drop when the hire payload has no adapterConfig.cwd", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "ClaudeBuilder",
+        role: "engineer",
+        adapterType: "claude_local",
+        adapterConfig: { model: "claude-sonnet-4-6" },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const dropLogCalls = mockLogActivity.mock.calls.filter(([, payload]) =>
+      payload?.action === "agent.hire_dropped_deprecated_field"
+      || payload?.action === "agent.create_dropped_deprecated_field",
+    );
+    expect(dropLogCalls).toEqual([]);
+  });
 });

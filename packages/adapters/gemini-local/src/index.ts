@@ -46,7 +46,7 @@ Don't use when:
 - Gemini CLI is not installed on the machine that runs Paperclip
 
 Core fields:
-- cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
+- cwd (string, optional, **deprecated**): legacy working directory fallback for the agent process. New agents must not set this — Paperclip leases an execution workspace per issue. The hire and direct-create endpoints drop this field for new agents (logged for audit); existing agents that still carry it are preserved.
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Gemini model id. Defaults to auto.

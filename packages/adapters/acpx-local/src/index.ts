@@ -36,7 +36,7 @@ Core fields:
 - agent (string, optional): claude, codex, or custom. Defaults to claude.
 - agentCommand (string, optional): custom ACP command when agent=custom, or an override for a built-in ACP agent command.
 - mode (string, optional): persistent or oneshot. Defaults to persistent. Paperclip keeps session state persistent and may close the live process between runs.
-- cwd (string, optional): default absolute working directory fallback for the agent process.
+- cwd (string, optional, **deprecated**): legacy working directory fallback for the agent process. New agents must not set this — Paperclip leases an execution workspace per issue. The hire and direct-create endpoints drop this field for new agents (logged for audit); existing agents that still carry it are preserved.
 - permissionMode (string, optional): defaults to approve-all, meaning ACPX permission requests are auto-approved.
 - nonInteractivePermissions (string, optional): fallback behavior when ACPX cannot ask interactively. Supported values are deny and fail.
 - stateDir (string, optional): ACPX state directory. Defaults to a Paperclip-managed company/agent scoped location.
