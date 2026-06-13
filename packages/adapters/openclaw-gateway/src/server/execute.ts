@@ -652,25 +652,35 @@ function isEventFrame(value: unknown): value is GatewayEventFrame {
   return Boolean(record && record.type === "event" && typeof record.event === "string");
 }
 
-class GatewayWsClient {
+export class GatewayWsClient {
   private ws: WebSocket | null = null;
   private pending = new Map<string, PendingRequest>();
-  private challengePromise: Promise<string>;
+  private challengePromise!: Promise<string>;
   private resolveChallenge!: (nonce: string) => void;
   private rejectChallenge!: (err: Error) => void;
+  private challengeState: "pending" | "resolved" | "rejected" = "pending";
+  private intentionalClose = false;
 
   constructor(private readonly opts: GatewayClientOptions) {
+    this.resetChallengeLifecycle();
+    this.challengePromise.catch(() => {});
+  }
+
+  private resetChallengeLifecycle() {
+    this.challengeState = "pending";
     this.challengePromise = new Promise<string>((resolve, reject) => {
       this.resolveChallenge = resolve;
       this.rejectChallenge = reject;
     });
-    this.challengePromise.catch(() => {});
   }
 
   async connect(
     buildConnectParams: (nonce: string) => Record<string, unknown>,
     timeoutMs: number,
   ): Promise<Record<string, unknown> | null> {
+    this.intentionalClose = false;
+    this.resetChallengeLifecycle();
+    this.challengePromise.catch(() => {});
     this.ws = new WebSocket(this.opts.url, {
       headers: this.opts.headers,
       maxPayload: 25 * 1024 * 1024,
@@ -683,10 +693,12 @@ class GatewayWsClient {
     });
 
     ws.on("close", (code, reason) => {
+      this.ws = null;
+      if (this.intentionalClose) return;
       const reasonText = rawDataToString(reason);
       const err = new Error(`gateway closed (${code}): ${reasonText}`);
       this.failPending(err);
-      this.rejectChallenge(err);
+      this.rejectChallengeOnce(err);
     });
 
     ws.on("error", (err) => {
@@ -772,8 +784,12 @@ class GatewayWsClient {
 
   close() {
     if (!this.ws) return;
-    this.ws.close(1000, "paperclip-complete");
+    const ws = this.ws;
+    this.intentionalClose = true;
     this.ws = null;
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+      ws.close(1000, "paperclip-complete");
+    }
   }
 
   private failPending(err: Error) {
@@ -797,7 +813,7 @@ class GatewayWsClient {
         const payload = asRecord(parsed.payload);
         const nonce = nonEmpty(payload?.nonce);
         if (nonce) {
-          this.resolveChallenge(nonce);
+          this.resolveChallengeOnce(nonce);
           return;
         }
       }
@@ -837,6 +853,18 @@ class GatewayWsClient {
     if (code) err.gatewayCode = code;
     if (details) err.gatewayDetails = details;
     pending.reject(err);
+  }
+
+  private resolveChallengeOnce(nonce: string) {
+    if (this.challengeState !== "pending") return;
+    this.challengeState = "resolved";
+    this.resolveChallenge(nonce);
+  }
+
+  private rejectChallengeOnce(err: Error) {
+    if (this.challengeState !== "pending") return;
+    this.challengeState = "rejected";
+    this.rejectChallenge(err);
   }
 }
 
