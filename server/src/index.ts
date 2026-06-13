@@ -57,6 +57,8 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { startHeapDrainMonitor } from "./services/heap-drain.js";
+import { runningProcesses } from "./adapters/index.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -991,7 +993,11 @@ export async function startServer(): Promise<StartedServer> {
       resolveListen();
     });
   });
-  
+
+  if (config.heartbeatSchedulerEnabled) {
+    startHeapDrainMonitor({ getActiveRunCount: () => runningProcesses.size });
+  }
+
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
       const telemetryClient = getTelemetryClient();
