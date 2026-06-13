@@ -7513,7 +7513,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       } else {
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
-
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
         eventType: "lifecycle",
         stream: "system",
@@ -7529,7 +7528,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
-      await finalizeAgentStatus(run.agentId, "failed");
+      // Use "cancelled" outcome so the agent recovers to "idle" instead of
+      // "error" — process_lost is an infrastructure event, not an agent fault.
+      // Note: this means the live-event `agent.status` payload will carry
+      // outcome:"cancelled" even though the run record stores status:"failed" /
+      // errorCode:"process_lost". Consumers that need the accurate failure signal
+      // should read the run record; the live event signals agent availability.
+      await finalizeAgentStatus(run.agentId, "cancelled");
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
