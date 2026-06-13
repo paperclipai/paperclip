@@ -878,7 +878,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
     const poisonedPreviousMessageId = isClaudePoisonedPreviousMessageIdError(parsed);
     const parsedIsError = asBoolean(parsed.is_error, false);
-    const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
+    // A terminal result event with subtype=success and is_error=false is
+    // authoritative: the run completed even if the process later exits
+    // non-zero — e.g. Claude lingers on background tasks after the result and
+    // the terminalResultCleanup SIGTERM makes it exit 143.
+    // Default is_error to true so an absent field is never read as success.
+    const completedSuccessfully =
+      !asBoolean(parsed.is_error, true) && asString(parsed.subtype, "") === "success";
+    const failed = !completedSuccessfully && ((proc.exitCode ?? 0) !== 0 || parsedIsError);
+    const maskedExitCode = completedSuccessfully && (proc.exitCode ?? 0) !== 0;
     // Validate-before-persist guard: never persist a sessionId whose transcript
     // is known-poisoned. The Claude CLI keeps an on-disk JSONL keyed by the
     // session id; if the last entry contains a non-`msg_`-prefixed
@@ -936,6 +944,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const mergedResultJson: Record<string, unknown> = {
       ...parsed,
+      ...(maskedExitCode
+        ? { processExitCode: proc.exitCode, ...(proc.signal ? { processSignal: proc.signal } : {}) }
+        : {}),
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
       ...(failed && poisonedPreviousMessageId ? { stopReason: "claude_poisoned_previous_message_id" } : {}),
       ...(transientUpstream ? { errorFamily: "transient_upstream" } : {}),
@@ -944,8 +955,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     return {
-      exitCode: proc.exitCode,
-      signal: proc.signal,
+      exitCode: maskedExitCode ? 0 : proc.exitCode,
+      signal: maskedExitCode ? null : proc.signal,
       timedOut: false,
       errorMessage,
       errorCode: resolvedErrorCode,
