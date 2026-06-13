@@ -87,6 +87,7 @@ const mockIssueService = vi.hoisted(() => ({
 const mockSecretService = vi.hoisted(() => ({
   normalizeAdapterConfigForPersistence: vi.fn(),
   resolveAdapterConfigForRuntime: vi.fn(),
+  syncEnvBindingsForTarget: vi.fn(),
 }));
 
 const mockAgentInstructionsService = vi.hoisted(() => ({
@@ -321,6 +322,7 @@ describe.sequential("agent permission routes", () => {
     mockIssueService.list.mockReset();
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
     mockSecretService.resolveAdapterConfigForRuntime.mockReset();
+    mockSecretService.syncEnvBindingsForTarget.mockReset();
     mockAgentInstructionsService.materializeManagedBundle.mockReset();
     mockCompanySkillService.listRuntimeSkillEntries.mockReset();
     mockCompanySkillService.resolveRequestedSkillKeys.mockReset();
@@ -389,6 +391,7 @@ describe.sequential("agent permission routes", () => {
     );
     mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => config);
     mockSecretService.resolveAdapterConfigForRuntime.mockImplementation(async (_companyId, config) => ({ config }));
+    mockSecretService.syncEnvBindingsForTarget.mockResolvedValue([]);
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
     });
@@ -1085,6 +1088,44 @@ describe.sequential("agent permission routes", () => {
           },
         },
       }),
+    );
+  });
+
+  it("syncs env secret bindings when a hire is created without approval", async () => {
+    const env = {
+      FOO: {
+        type: "secret_ref",
+        secretId: "33333333-3333-4333-8333-333333333333",
+        version: "latest",
+      },
+    };
+    mockAgentService.create.mockResolvedValue({
+      ...baseAgent,
+      adapterConfig: { env },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "Builder",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: { env },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockSecretService.syncEnvBindingsForTarget).toHaveBeenCalledWith(
+      companyId,
+      { targetType: "agent", targetId: agentId },
+      env,
     );
   });
 
