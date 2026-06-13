@@ -460,12 +460,13 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const company = await svc.remove(companyId);
+    const deleteFiles = parseBooleanQuery(req.query.deleteFiles);
+    const company = await svc.remove(companyId, { deleteFiles });
     if (!company) {
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    res.json({ ok: true });
+    res.json({ ok: true, filesDeleted: deleteFiles });
   });
 
   return router;
