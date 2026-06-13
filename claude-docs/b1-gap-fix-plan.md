@@ -193,8 +193,14 @@ dev_team plan with no manual issue patching; activate echoes its children.
 - **Fix 1 — DONE** (`a3630ac9`): worktree-isolation enforcement + fail-closed guard. 10 unit tests.
 - **Fix 2 — DONE** (re-synced to running agents; source `.agents/` is gitignored): CTO delegate-and-stop + materialized-children awareness; Implementor PR pipeline switched from the forbidden `gh`+`env.GITHUB_TOKEN` path to `paperclipPushBranch`/`paperclipOpenPullRequest`. **Bonus defect found + fixed:** implementor AGENTS.md still carried the A6-superseded env-token flow.
 - **Fix 3 — DONE** (`145162d9`): hard `done`-guard — agent blocked from closing a dev_team issue without PR + passed gates; user override audited. 9 unit tests.
-- **Fix 4 — TODO**: hold auto-heartbeat during setup (operator can use `HEARTBEAT_SCHEDULER_ENABLED=false` / company-pause today).
-- **Fix 5 — TODO**: cleanup foot-guns (`plan create --project`, clean `--json`, activate response).
+- **Fix 4 — DONE** (procedure, no code): the hold mechanism already exists — every
+  heartbeat driver + wake filters `companies.status="active"`. Pause the company
+  during setup (`PATCH /companies/:id {status:"paused"}`), resume before the first
+  wake. Verified: wake under pause → `Company is not active`.
+- **Fix 5 — DONE** (`a16dcd05`): `plan create --project`, activate returns
+  `gateApprovalIds`, CLI create confirmation. Verified live (HIV-10/HIV-11).
+
+Full defect catalog: `claude-docs/bugs-report.md`.
 
 ## Sequencing
 

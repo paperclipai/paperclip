@@ -20,6 +20,20 @@ Branch: `pilot/b1-dogfood`. Overview + setup: `dev-team-factory-overview.md`.
 
 ---
 
+## Setup hold (do this FIRST — Fix 4)
+Pause the company during setup so no auto-heartbeat run fires before you're ready
+(every heartbeat driver + wake is suppressed while a company is not `active`):
+```
+curl -s -X PATCH http://127.0.0.1:3100/api/companies/<companyId> \
+  -H 'content-type: application/json' -d '{"status":"paused"}'
+```
+Build the company/project/agents/plan, activate, then **resume** right before
+waking the CTO:
+```
+curl -s -X PATCH http://127.0.0.1:3100/api/companies/<companyId> \
+  -H 'content-type: application/json' -d '{"status":"active"}'
+```
+
 ## Pre-run prerequisites (interactive — run yourself with `!`)
 1. **Server on this branch** so the git-ops routes + new MCP tools are live:
    `! pnpm dev`  (on `pilot/b1-dogfood`). Sanity: `POST /api/issues/<id>/git/push`
