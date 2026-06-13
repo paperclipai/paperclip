@@ -2735,7 +2735,16 @@ export function agentRoutes(
     res.json(result.bundle);
   });
 
-  router.patch("/agents/:id", validate(updateAgentSchema), async (req, res) => {
+  router.patch("/agents/me", (req, res, next) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId) {
+      res.status(401).json({ error: "Agent authentication required" });
+      return;
+    }
+    req.params.id = req.actor.agentId;
+    next();
+  }, validate(updateAgentSchema), (req, res) => updateAgentHandler(req, res));
+
+  const updateAgentHandler = async (req: Request, res: Response) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) {
@@ -2887,7 +2896,9 @@ export function agentRoutes(
     });
 
     res.json(agent);
-  });
+  };
+
+  router.patch("/agents/:id", validate(updateAgentSchema), (req, res) => updateAgentHandler(req, res));
 
   router.post("/agents/:id/pause", async (req, res) => {
     assertBoard(req);
