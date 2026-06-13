@@ -6819,18 +6819,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    const claimedAt = new Date();
-    const claimed = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "running",
-        startedAt: run.startedAt ?? claimedAt,
-        updatedAt: claimedAt,
-      })
-      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    if (!claimed) return null;
+    const claimResult = await db.transaction(async (tx) => {
+      await tx.execute(sql`select id from agents where id = ${run.agentId} for update`);
+
+      const txAgent = await tx
+        .select()
+        .from(agents)
+        .where(eq(agents.id, run.agentId))
+        .then((rows) => rows[0] ?? null);
+      if (!txAgent) return null;
+
+      const policy = parseHeartbeatPolicy(txAgent);
+      const [{ count }] = await tx
+        .select({ count: sql<string>`count(*)` })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.status, "running")));
+      if (Number(count ?? 0) >= policy.maxConcurrentRuns) return null;
+
+      const claimedAt = new Date();
+      const claimed = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "running",
+          startedAt: run.startedAt ?? claimedAt,
+          updatedAt: claimedAt,
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return claimed ? { claimed, claimedAt } : null;
+    });
+    if (!claimResult) return null;
+    const { claimed, claimedAt } = claimResult;
 
     publishLiveEvent({
       companyId: claimed.companyId,
