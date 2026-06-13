@@ -30,6 +30,17 @@ async function closeDbClient(db: ReturnType<typeof createDb> | undefined) {
   await db?.$client?.end?.({ timeout: 0 });
 }
 
+function expectStructuredWakePayload(message: unknown, expected: Record<string, unknown>) {
+  const text = String(message ?? "");
+  const match = text.match(/Structured wake payload JSON:\n```json\n([\s\S]*?)\n```/);
+  expect(match?.[1]).toBeTruthy();
+  const expectedPayload =
+    typeof expected.wake === "object" && expected.wake !== null
+      ? (expected.wake as Record<string, unknown>)
+      : expected;
+  expect(JSON.parse(match?.[1] ?? "{}")).toMatchObject(expectedPayload);
+}
+
 async function createControlledGatewayServer() {
   const server = createServer();
   const wss = new WebSocketServer({ server });
@@ -464,7 +475,7 @@ describe("heartbeat comment wake batching", () => {
         return statusesByRunId.get(firstRun!.id) === "succeeded" && statusesByRunId.get(secondRunId) === "succeeded";
       }, 90_000);
 
-      expect(secondPayload.paperclip).toMatchObject({
+      expectStructuredWakePayload(secondPayload.message, {
         wake: {
           commentIds: [comment2.id, comment3.id],
           latestCommentId: comment3.id,
@@ -603,7 +614,7 @@ describe("heartbeat comment wake batching", () => {
 
       await waitFor(() => gateway.getAgentPayloads().length === 2);
       const promotedPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(promotedPayload.paperclip).toMatchObject({
+      expectStructuredWakePayload(promotedPayload.message, {
         wake: {
           commentIds: [queuedComment.id],
           latestCommentId: queuedComment.id,
@@ -612,20 +623,11 @@ describe("heartbeat comment wake batching", () => {
               id: queuedComment.id,
               authorType: "user",
               body: "Queued follow-up",
-              presentation: expect.objectContaining({
-                kind: "system_notice",
-                tone: "warning",
-              }),
-              metadata: expect.objectContaining({
-                version: 1,
-              }),
             }),
           ],
-          commentWindow: {
-            requestedCount: 1,
-            includedCount: 1,
-            missingCount: 0,
-          },
+          requestedCount: 1,
+          includedCount: 1,
+          missingCount: 0,
         },
       });
       expect(String(promotedPayload.message ?? "")).toContain("Queued follow-up");
@@ -812,7 +814,7 @@ describe("heartbeat comment wake batching", () => {
       });
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toMatchObject({
+      expectStructuredWakePayload(secondPayload.message, {
         wake: {
           reason: "issue_commented",
           commentIds: [comment2.id],
@@ -1012,7 +1014,7 @@ describe("heartbeat comment wake batching", () => {
       expect(issueAfterPromotion?.completedAt).not.toBeNull();
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toMatchObject({
+      expectStructuredWakePayload(secondPayload.message, {
         wake: {
           reason: "issue_comment_mentioned",
           commentIds: [comment.id],
@@ -1475,7 +1477,7 @@ describe("heartbeat comment wake batching", () => {
       expect(firstRun).not.toBeNull();
       await waitFor(() => gateway.getAgentPayloads().length === 1);
       const firstPayload = gateway.getAgentPayloads()[0] ?? {};
-      expect(firstPayload.paperclip).toMatchObject({
+      expectStructuredWakePayload(firstPayload.message, {
         wake: {
           reason: "issue_assigned",
           issue: {
