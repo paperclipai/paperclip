@@ -100,6 +100,13 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("does not queue for pulse issues that are intentionally permanent", () => {
+    expect(decide({ issue: { ...issue, workMode: "pulse" } as any })).toEqual({
+      kind: "skip",
+      reason: "pulse issue is intentionally permanent",
+    });
+  });
+
   it("does not queue when a successful run records an accepted next-action path", () => {
     expect(decide({ issue: { ...issue, status: "in_review" } as any })).toEqual({
       kind: "skip",
