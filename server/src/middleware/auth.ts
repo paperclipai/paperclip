@@ -22,8 +22,11 @@ interface ActorMiddlewareOptions {
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
   return async (req, _res, next) => {
+    const runIdHeader = req.header("x-paperclip-run-id");
+    const authHeader = req.header("authorization");
+
     req.actor =
-      opts.deploymentMode === "local_trusted"
+      authHeader === undefined && opts.deploymentMode === "local_trusted"
         ? {
             type: "board",
             userId: "local-board",
@@ -34,9 +37,6 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-paperclip-run-id");
-
-    const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
         const cloudTenantActor = await resolveCloudTenantActor(db, req);
