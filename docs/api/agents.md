@@ -67,6 +67,66 @@ POST /api/companies/{companyId}/agents
 }
 ```
 
+## Hire Agent (with Idempotency-Key)
+
+```
+POST /api/companies/{companyId}/agent-hires
+Idempotency-Key: <client-generated UUID v4>
+Content-Type: application/json
+
+{ "name": "Engineer", "role": "engineer", ... }
+```
+
+The `agent-hires` endpoint accepts a client-supplied `Idempotency-Key`
+header to make hire retries safe under network failure. Behavior:
+
+- **Same key, same body, within TTL** → server returns the original
+  2xx response (same status code, same body) and sets
+  `Idempotency-Key-Replay: true` on the response.
+- **Same key, different body** → server returns `422` so callers cannot
+  collapse two distinct hires into one cached result.
+- **Same key after TTL expiry** → treated as a fresh request and runs
+  the handler normally.
+- **No `Idempotency-Key` header** → backward-compatible; no dedup.
+- **Failed (non-2xx) responses** are not cached; the next retry with
+  the same key runs the handler again.
+- **Concurrent retries with the same key**: only the first request
+  executes the handler; later concurrent requests block briefly and
+  replay its response once it completes. If the in-flight request
+  fails, concurrent followers receive `409` and the client should
+  retry with the same key.
+
+**Default TTL:** 10 minutes from the first successful response.
+
+**Key scope:** Each cached response is scoped to
+`(companyId, actorType, actorId, key)`. A different principal that
+re-uses another principal's key sees a cache miss and runs through
+the normal authorization path.
+
+**Header constraints:** the `Idempotency-Key` value must be a
+non-empty string up to 255 characters. Use a UUID v4 in practice.
+
+**Route wiring constraint:** the middleware captures the response
+body by intercepting `res.json(...)`. Any route protected by
+`idempotency(...)` must produce its successful response via
+`res.json`. Routes that bypass `res.json` — for example by streaming,
+calling `res.send(buffer)`, or `res.end(string)` — will not have
+their body cached and concurrent followers will see `409` instead of
+a replay. New mutating endpoints adding `Idempotency-Key` support
+must follow the same pattern.
+
+### Client convention
+
+Clients that may retry a hire (UI, harness, agent skills) SHOULD:
+
+1. Generate a UUID v4 before the first attempt.
+2. Send it as `Idempotency-Key` on the initial request.
+3. On any transient failure (timeout, 5xx, network error), reuse the
+   same key on retry.
+4. Treat `Idempotency-Key-Replay: true` as the canonical result and
+   do not re-submit.
+5. Never reuse a key for a logically different hire.
+
 ## Update Agent
 
 ```

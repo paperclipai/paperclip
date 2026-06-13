@@ -23,6 +23,14 @@ import type {
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { ApiError, api } from "./client";
 
+function generateIdempotencyKey(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  // Fallback for environments without crypto.randomUUID (older browsers / tests).
+  return `pla-idem-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export interface AgentKey {
   id: string;
   name: string;
@@ -134,8 +142,18 @@ export const agentsApi = {
     api.post<Agent>(agentPath(id, companyId, `/config-revisions/${revisionId}/rollback`), {}),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Agent>(`/companies/${companyId}/agents`, data),
-  hire: (companyId: string, data: Record<string, unknown>) =>
-    api.post<AgentHireResponse>(`/companies/${companyId}/agent-hires`, data),
+  hire: (
+    companyId: string,
+    data: Record<string, unknown>,
+    options: { idempotencyKey?: string } = {},
+  ) => {
+    const idempotencyKey = options.idempotencyKey ?? generateIdempotencyKey();
+    return api.post<AgentHireResponse>(
+      `/companies/${companyId}/agent-hires`,
+      data,
+      { headers: { "Idempotency-Key": idempotencyKey } },
+    );
+  },
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
     api.patch<Agent>(agentPath(id, companyId), data),
   updatePermissions: (id: string, data: AgentPermissionUpdate, companyId?: string) =>

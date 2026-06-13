@@ -35,6 +35,11 @@ import {
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import {
+  createInMemoryIdempotencyStore,
+  idempotency,
+  type IdempotencyStore,
+} from "../middleware/idempotency.js";
+import {
   agentService,
   agentInstructionsService,
   accessService,
@@ -129,8 +134,28 @@ function readRunIssueId(context: Record<string, unknown> | null) {
 
 export function agentRoutes(
   db: Db,
-  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    idempotencyStore?: IdempotencyStore;
+  } = {},
 ) {
+  const idempotencyStore = options.idempotencyStore ?? createInMemoryIdempotencyStore();
+  const agentHireIdempotency = idempotency({
+    store: idempotencyStore,
+    namespace: (req) => {
+      const companyId = req.params.companyId;
+      if (typeof companyId !== "string" || companyId.length === 0) return null;
+      const actor = req.actor;
+      const actorType = actor?.type ?? "anonymous";
+      const actorId =
+        actor?.type === "agent"
+          ? actor.agentId ?? "unknown-agent"
+          : actor?.type === "board"
+            ? actor.userId ?? "board"
+            : "anonymous";
+      return `agent-hires:${companyId}:${actorType}:${actorId}`;
+    },
+  });
   // Legacy hardcoded maps — used as fallback when adapter module does not
   // declare capability flags explicitly.
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
@@ -2139,7 +2164,7 @@ export function agentRoutes(
     res.json(state);
   });
 
-  router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
+  router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), agentHireIdempotency, async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanCreateAgentsForCompany(req, companyId);
     const sourceIssueIds = parseSourceIssueIds(req.body);
