@@ -1483,8 +1483,14 @@ export interface PluginAgentsClient {
   pause(agentId: string, companyId: string): Promise<Agent>;
   /** Resume a paused agent (sets status to idle). Throws if terminated, pending_approval, or not found. Requires `agents.resume`. */
   resume(agentId: string, companyId: string): Promise<Agent>;
-  /** Invoke (wake up) an agent with a prompt payload. Throws if paused, terminated, pending_approval, or not found. Requires `agents.invoke`. */
-  invoke(agentId: string, companyId: string, opts: { prompt: string; reason?: string }): Promise<{ runId: string }>;
+  /**
+   * Invoke (wake up) an agent with a prompt payload. Throws if paused, terminated, pending_approval, or not found.
+   * Materializes a backing issue (originKind `plugin:<pluginKey>:invocation`) carrying the prompt as its description so
+   * the agent adapter receives the prompt via `contextSnapshot.issueId`. The backing issue's id is returned so plugins
+   * can update or close it after the run completes.
+   * Requires `agents.invoke`.
+   */
+  invoke(agentId: string, companyId: string, opts: { prompt: string; reason?: string }): Promise<{ runId: string; issueId: string }>;
   /** Resolve and reconcile manifest-declared plugin-managed agents by stable key. Requires `agents.managed`. */
   managed: {
     get(agentKey: string, companyId: string): Promise<PluginManagedAgentResolution>;
@@ -1528,9 +1534,14 @@ export interface AgentSessionEvent {
 
 /**
  * Result of sending a message to a session.
+ *
+ * `issueId` is the id of the backing issue materialized to carry the prompt
+ * to the agent (originKind `plugin:<pluginKey>:session`). Plugins typically
+ * use it to update or close the issue after the run completes.
  */
 export interface AgentSessionSendResult {
   runId: string;
+  issueId: string;
 }
 
 /**
