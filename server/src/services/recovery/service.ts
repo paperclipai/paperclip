@@ -2644,6 +2644,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function reconcileStrandedAssignedIssues() {
+    const experimental = await instanceSettings.getExperimental();
+    if (!experimental.enableStrandedIssueRecovery) {
+      return {
+        assignmentDispatched: 0,
+        dispatchRequeued: 0,
+        continuationRequeued: 0,
+        productiveContinuationObserved: 0,
+        successfulContinuationObserved: 0,
+        orphanBlockersAssigned: 0,
+        successfulRunHandoffEscalated: 0,
+        escalated: 0,
+        skipped: 0,
+        issueIds: [] as string[],
+      };
+    }
+
     const candidates = await db
       .select()
       .from(issues)

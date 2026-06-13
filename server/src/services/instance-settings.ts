@@ -55,6 +55,8 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       issueGraphLivenessAutoRecoveryLookbackHours:
         parsed.data.issueGraphLivenessAutoRecoveryLookbackHours ??
         DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+      enableStrandedIssueRecovery: parsed.data.enableStrandedIssueRecovery ?? true,
+      enableIssueProductivityReview: parsed.data.enableIssueProductivityReview ?? true,
     };
   }
   return {
@@ -69,6 +71,8 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableIssueGraphLivenessAutoRecovery: false,
     issueGraphLivenessAutoRecoveryLookbackHours:
       DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+    enableStrandedIssueRecovery: true,
+    enableIssueProductivityReview: true,
   };
 }
 
