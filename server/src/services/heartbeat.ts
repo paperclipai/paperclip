@@ -4485,6 +4485,41 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
+    const agentConfig = parseObject(agent.adapterConfig);
+    const configuredAgentCwd = readNonEmptyString(agentConfig.cwd);
+    if (configuredAgentCwd) {
+      const configuredAgentCwdExists = await fs
+        .stat(configuredAgentCwd)
+        .then((stats) => stats.isDirectory())
+        .catch(() => false);
+      if (configuredAgentCwdExists) {
+        const warnings: string[] = [];
+        if (sessionCwd) {
+          warnings.push(
+            `Saved session workspace "${sessionCwd}" is not available. Using configured agent cwd "${configuredAgentCwd}" for this run.`,
+          );
+        } else if (resolvedProjectId) {
+          warnings.push(
+            `No project workspace directory is currently available for this issue. Using configured agent cwd "${configuredAgentCwd}" for this run.`,
+          );
+        } else {
+          warnings.push(
+            `No project or prior session workspace was available. Using configured agent cwd "${configuredAgentCwd}" for this run.`,
+          );
+        }
+        return {
+          cwd: configuredAgentCwd,
+          source: "project_primary" as const,
+          projectId: resolvedProjectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+          workspaceHints,
+          warnings,
+        };
+      }
+    }
+
     const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
     await fs.mkdir(cwd, { recursive: true });
     const warnings: string[] = [];
@@ -4499,6 +4534,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else if (resolvedProjectId) {
       warnings.push(
         `No project workspace directory is currently available for this issue. Using fallback workspace "${cwd}" for this run.`,
+      );
+    } else if (configuredAgentCwd) {
+      warnings.push(
+        `Configured agent cwd "${configuredAgentCwd}" is not available. Using fallback workspace "${cwd}" for this run.`,
       );
     } else {
       warnings.push(
