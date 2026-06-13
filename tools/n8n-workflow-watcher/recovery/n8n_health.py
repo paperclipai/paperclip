@@ -2,7 +2,6 @@
 """Read-only n8n-Health-/Env-Diagnose für die Fehlerklassifikation."""
 from __future__ import annotations
 
-import urllib.error
 import urllib.request
 
 _FLAGS = ("N8N_BLOCK_ENV_ACCESS_IN_NODE", "NODE_FUNCTION_ALLOW_BUILTIN")
