@@ -6,6 +6,7 @@ import {
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   type IssueGraphLivenessAutoRecoveryPreview,
   type IssueGraphLivenessAutoRecoveryPreviewItem,
+  type RequestConfirmationPayload,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -864,6 +865,127 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     );
   }
 
+  async function tryForceKillSilentRun(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    runningAgent: typeof agents.$inferSelect;
+  }): Promise<{ kind: "killed" | "not_running" | "failed" | "skipped"; detail?: string }> {
+    if (!SESSIONED_LOCAL_ADAPTERS.has(input.runningAgent.adapterType)) {
+      return { kind: "skipped", detail: "non_local_adapter" };
+    }
+    const running = runningProcesses.get(input.run.id);
+    const pid = running?.child.pid ?? input.run.processPid ?? null;
+    const processGroupId = running?.processGroupId ?? input.run.processGroupId ?? null;
+    if (typeof pid !== "number" && typeof processGroupId !== "number") {
+      return { kind: "not_running", detail: "no_process_metadata" };
+    }
+    const isAlive =
+      (typeof pid === "number" && isPidAlive(pid)) ||
+      (typeof processGroupId === "number" && isProcessGroupAlive(processGroupId));
+    if (!isAlive) {
+      runningProcesses.delete(input.run.id);
+      return { kind: "not_running", detail: "already_dead" };
+    }
+    try {
+      await terminateLocalService(
+        {
+          pid: typeof pid === "number" && Number.isInteger(pid) && pid > 0 ? pid : (processGroupId ?? 0),
+          processGroupId:
+            typeof processGroupId === "number" && Number.isInteger(processGroupId) && processGroupId > 0
+              ? processGroupId
+              : null,
+        },
+        running ? { forceAfterMs: Math.max(1, running.graceSec) * 1000 } : { forceAfterMs: 5_000 },
+      );
+      runningProcesses.delete(input.run.id);
+      logger.info({ runId: input.run.id, pid, processGroupId }, "force-killed silent run at critical threshold");
+      return { kind: "killed" };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      logger.warn({ runId: input.run.id, pid, processGroupId, err: error }, "failed to force-kill silent run");
+      return { kind: "failed", detail };
+    }
+  }
+
+  async function ensureForceKillConfirmationInteraction(input: {
+    evaluationIssue: { id: string; companyId: string; identifier: string | null };
+    run: typeof heartbeatRuns.$inferSelect;
+    killResult: { kind: string; detail?: string };
+    silenceAgeMs: number | null;
+  }): Promise<void> {
+    const idempotencyKey = `force_kill_confirm:${input.run.id}`;
+    const existing = await db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, input.evaluationIssue.companyId),
+          eq(issueThreadInteractions.issueId, input.evaluationIssue.id),
+          eq(issueThreadInteractions.idempotencyKey, idempotencyKey),
+        ),
+      )
+      .limit(1);
+    if (existing.length > 0) return;
+
+    const killLine =
+      input.killResult.kind === "killed"
+        ? "The process group was force-killed by the watchdog."
+        : input.killResult.kind === "not_running"
+          ? "The process was already dead when the kill was attempted."
+          : `Kill attempt made (outcome: \`${input.killResult.kind}\`${input.killResult.detail ? ` — ${input.killResult.detail}` : ""}).`;
+
+    const payload: RequestConfirmationPayload = {
+      version: 1,
+      prompt: `Silent run \`${input.run.id}\` exceeded the critical silence threshold (${formatDuration(input.silenceAgeMs)}) and was force-killed. Acknowledge to allow recovery to proceed.`,
+      acceptLabel: "Acknowledge force-kill",
+      detailsMarkdown: [
+        killLine,
+        "",
+        `- Run: \`${input.run.id}\``,
+        `- Pid: \`${input.run.processPid ?? "unknown"}\``,
+        `- Process group: \`${input.run.processGroupId ?? "unknown"}\``,
+        `- Silent for: ${formatDuration(input.silenceAgeMs)}`,
+      ].join("\n"),
+    };
+
+    await db.insert(issueThreadInteractions).values({
+      companyId: input.evaluationIssue.companyId,
+      issueId: input.evaluationIssue.id,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey,
+      title: "Force-killed hung run — acknowledge to unblock",
+      summary: `Run \`${input.run.id}\` was silent for ${formatDuration(input.silenceAgeMs)} and its process group was force-killed.`,
+      createdByAgentId: null,
+      createdByUserId: null,
+      sourceRunId: input.run.id,
+      payload,
+    });
+
+    await db
+      .update(issues)
+      .set({ updatedAt: new Date() })
+      .where(eq(issues.id, input.evaluationIssue.id));
+
+    await logActivity(db, {
+      companyId: input.evaluationIssue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: input.run.id,
+      action: "heartbeat.force_kill_confirmation_created",
+      entityType: "issue",
+      entityId: input.evaluationIssue.id,
+      details: {
+        source: "recovery.scan_silent_active_runs",
+        runId: input.run.id,
+        killKind: input.killResult.kind,
+        silenceAgeMs: input.silenceAgeMs,
+        idempotencyKey,
+      },
+    });
+  }
+
   function silenceStartedAtForRun(run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">) {
     return run.lastOutputAt ?? run.processStartedAt ?? run.startedAt ?? run.createdAt ?? null;
   }
@@ -894,6 +1016,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const [row] = await db
       .select({
         id: issues.id,
+        companyId: issues.companyId,
         identifier: issues.identifier,
         status: issues.status,
         priority: issues.priority,
@@ -1586,6 +1709,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
     if (sourceIssue && isRecoveryOriginIssue(sourceIssue)) {
+      const silenceAgeMs = silenceAgeMsForRun(input.run, input.now);
+      const isCritical = (silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS;
+
+      // At the critical threshold, force-kill the stuck recovery run instead of spawning
+      // another nested recovery issue, then attach a single confirmation to the existing
+      // evaluation issue so the board can acknowledge the kill.
+      let killResult: Awaited<ReturnType<typeof tryForceKillSilentRun>> | null = null;
+      if (isCritical) {
+        killResult = await tryForceKillSilentRun({ run: input.run, runningAgent });
+        const evaluationIssue =
+          sourceIssue.originKind === STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND ? sourceIssue : existing;
+        if (evaluationIssue) {
+          await ensureForceKillConfirmationInteraction({
+            evaluationIssue: { id: evaluationIssue.id, companyId: evaluationIssue.companyId, identifier: evaluationIssue.identifier },
+            run: input.run,
+            killResult,
+            silenceAgeMs,
+          });
+        }
+      }
+
       await logActivity(db, {
         companyId: input.run.companyId,
         actorType: "system",
@@ -1601,6 +1745,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           sourceIssueIdentifier: sourceIssue.identifier,
           sourceIssueOriginKind: sourceIssue.originKind,
           existingEvaluationIssueId: existing?.id ?? null,
+          forcedKillAtCritical: isCritical,
+          killKind: killResult?.kind ?? null,
         },
       });
       return { kind: "skipped" as const };
@@ -1710,6 +1856,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           evaluationIssue: existing,
           run: input.run,
         });
+        const killResult = await tryForceKillSilentRun({ run: input.run, runningAgent });
+        await ensureForceKillConfirmationInteraction({
+          evaluationIssue: { id: existing.id, companyId: existing.companyId, identifier: existing.identifier },
+          run: input.run,
+          killResult,
+          silenceAgeMs: evidence.silenceAgeMs,
+        });
         return { kind: "escalated" as const, evaluationIssueId: existing.id };
       }
       if (level === "critical") {
@@ -1717,6 +1870,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           sourceIssue,
           evaluationIssue: existing,
           run: input.run,
+        });
+        const killResult = await tryForceKillSilentRun({ run: input.run, runningAgent });
+        await ensureForceKillConfirmationInteraction({
+          evaluationIssue: { id: existing.id, companyId: existing.companyId, identifier: existing.identifier },
+          run: input.run,
+          killResult,
+          silenceAgeMs: evidence.silenceAgeMs,
         });
       }
       return { kind: "existing" as const, evaluationIssueId: existing.id };
@@ -1779,6 +1939,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         sourceIssue,
         evaluationIssue: evaluation,
         run: input.run,
+      });
+      const killResult = await tryForceKillSilentRun({ run: input.run, runningAgent });
+      await ensureForceKillConfirmationInteraction({
+        evaluationIssue: { id: evaluation.id, companyId: evaluation.companyId, identifier: evaluation.identifier },
+        run: input.run,
+        killResult,
+        silenceAgeMs: evidence.silenceAgeMs,
       });
     }
     if (ownerAgentId) {
