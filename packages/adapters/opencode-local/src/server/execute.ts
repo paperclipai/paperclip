@@ -57,6 +57,35 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+const ADAPTER_OUTPUT_KEEPALIVE_INTERVAL_MS = 10 * 60 * 1000;
+const ADAPTER_OUTPUT_KEEPALIVE_MESSAGE =
+  "[paperclip heartbeat keepalive] adapter process is alive and working\n";
+
+function createKeepaliveOnLog(
+  originalOnLog: AdapterExecutionContext["onLog"],
+): { onLog: AdapterExecutionContext["onLog"]; cleanup: () => void } {
+  let lastRealOutput = Date.now();
+  let keepaliveTimer: ReturnType<typeof setInterval> | null = setInterval(() => {
+    if (Date.now() - lastRealOutput >= ADAPTER_OUTPUT_KEEPALIVE_INTERVAL_MS) {
+      originalOnLog("stdout", ADAPTER_OUTPUT_KEEPALIVE_MESSAGE);
+    }
+  }, ADAPTER_OUTPUT_KEEPALIVE_INTERVAL_MS);
+
+  const wrappedOnLog: AdapterExecutionContext["onLog"] = async (stream, message) => {
+    lastRealOutput = Date.now();
+    return originalOnLog(stream, message);
+  };
+
+  const cleanup = () => {
+    if (keepaliveTimer) {
+      clearInterval(keepaliveTimer);
+      keepaliveTimer = null;
+    }
+  };
+
+  return { onLog: wrappedOnLog, cleanup };
+}
+
 function firstNonEmptyLine(text: string): string {
   return (
     text
@@ -594,20 +623,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       }
 
-      const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
-        cwd,
-        env: preparedRuntimeConfig.env,
-        stdin: prompt,
-        timeoutSec,
-        graceSec,
-        onSpawn,
-        onLog,
-      });
-      return {
-        proc,
-        rawStderr: proc.stderr,
-        parsed: parseOpenCodeJsonl(proc.stdout),
-      };
+      const { onLog: keepaliveOnLog, cleanup: keepaliveCleanup } = createKeepaliveOnLog(onLog);
+      try {
+        const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+          cwd,
+          env: preparedRuntimeConfig.env,
+          stdin: prompt,
+          timeoutSec,
+          graceSec,
+          onSpawn,
+          onLog: keepaliveOnLog,
+        });
+        return {
+          proc,
+          rawStderr: proc.stderr,
+          parsed: parseOpenCodeJsonl(proc.stdout),
+        };
+      } finally {
+        keepaliveCleanup();
+      }
     };
 
     const toResult = (
