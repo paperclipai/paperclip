@@ -26,11 +26,9 @@
  */
 import { existsSync } from "node:fs";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
-import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
 import type {
   PaperclipPluginManifestV1,
@@ -49,8 +47,8 @@ import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
+import { runNpm } from "../lib/npm-exec.js";
 
-const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
@@ -892,11 +890,11 @@ export function pluginLoader(
       );
 
       try {
-        // Use execFile (not exec) to avoid shell injection from package name/version.
-        // --ignore-scripts prevents preinstall/install/postinstall hooks from
-        // executing arbitrary code on the host before manifest validation.
-        await execFileAsync(
-          "npm",
+        // runNpm validates/quotes the spec before it can reach a shell on
+        // Windows, preserving the no-shell-injection guarantee from package
+        // name/version. --ignore-scripts prevents preinstall/install/postinstall
+        // hooks from executing arbitrary code before manifest validation.
+        await runNpm(
           ["install", spec, "--prefix", targetInstallDir, "--save", "--ignore-scripts"],
           { timeout: 120_000 }, // 2 minute timeout for npm install
         );
@@ -1530,8 +1528,7 @@ export function pluginLoader(
       const packageJsonPath = path.join(localPluginDir, "package.json");
       if (existsSync(packageJsonPath)) {
         try {
-          await execFileAsync(
-            "npm",
+          await runNpm(
             ["uninstall", plugin.packageName, "--prefix", localPluginDir, "--ignore-scripts"],
             { timeout: 120_000 },
           );
