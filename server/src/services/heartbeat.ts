@@ -8649,6 +8649,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })(),
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
+    const issueModelOverride = (() => {
+      if (!issueContext || issueContext.assigneeAgentId !== agent.id) return null;
+      const raw = parseObject(issueContext.assigneeAdapterOverrides);
+      return typeof raw.model === "string" && raw.model.trim().length > 0 ? raw.model.trim() : null;
+    })();
+    if (issueModelOverride) {
+      context.paperclipModelOverride = issueModelOverride;
+    }
     const runtimeServiceIntents = (() => {
       const runtimeConfig = parseObject(resolvedConfig.workspaceRuntime);
       return Array.isArray(runtimeConfig.services)
