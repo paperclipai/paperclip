@@ -1443,6 +1443,35 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
   return [rows[preferredIndex]!, ...rows.slice(0, preferredIndex), ...rows.slice(preferredIndex + 1)];
 }
 
+/**
+ * PF-3: Build the ResolvedWorkspaceForRun shape for the case where project
+ * workspaces existed for the issue's project but none of their configured
+ * cwds were available on disk. The run uses the agent home fallback dir, so
+ * the source field reports "agent_home" — not "project_primary" — and any
+ * project-scoped metadata that does not apply to the fallback is nulled.
+ *
+ * Extracted as a pure helper so the fallback contract can be unit-tested
+ * directly. workspaceHints (the candidates considered) and warnings (why
+ * fallback was chosen) are still surfaced so operators can audit the path.
+ */
+export function buildProjectWorkspaceUnavailableFallback(input: {
+  fallbackCwd: string;
+  resolvedProjectId: string | null;
+  workspaceHints: ResolvedWorkspaceForRun["workspaceHints"];
+  warnings: string[];
+}): ResolvedWorkspaceForRun {
+  return {
+    cwd: input.fallbackCwd,
+    source: "agent_home",
+    projectId: input.resolvedProjectId,
+    workspaceId: null,
+    repoUrl: null,
+    repoRef: null,
+    workspaceHints: input.workspaceHints,
+    warnings: input.warnings,
+  };
+}
+
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
@@ -4434,16 +4463,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           `Project workspace has no local cwd configured. Using fallback workspace "${fallbackCwd}" for this run.`,
         );
       }
-      return {
-        cwd: fallbackCwd,
-        source: "project_primary" as const,
-        projectId: resolvedProjectId,
-        workspaceId: projectWorkspaceRows[0]?.id ?? null,
-        repoUrl: projectWorkspaceRows[0]?.repoUrl ?? null,
-        repoRef: projectWorkspaceRows[0]?.repoRef ?? null,
+      return buildProjectWorkspaceUnavailableFallback({
+        fallbackCwd,
+        resolvedProjectId,
         workspaceHints,
         warnings,
-      };
+      });
     }
 
     if (workspaceProjectId) {
