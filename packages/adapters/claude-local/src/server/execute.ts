@@ -278,7 +278,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   );
   const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
     executionTarget,
-    asNumber(config.timeoutSec, 0),
+    asNumber(config.timeoutSec, 7200), // default 2h; configurable via timeoutSec in adapter config
   );
   const graceSec = asNumber(config.graceSec, 20);
   await ensureAdapterExecutionTargetRuntimeCommandInstalled({

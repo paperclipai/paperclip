@@ -2324,6 +2324,12 @@ export async function runChildProcess(
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
+          // Kill any surviving descendants in the process group (e.g. claude --tools
+          // subagents still executing a tool call when the main agent exited). Without
+          // this, they are reparented to init and accumulate indefinitely.
+          if (process.platform !== "win32" && processGroupId && processGroupId > 0) {
+            try { process.kill(-processGroupId, "SIGKILL"); } catch { /* group already gone */ }
+          }
           void logChain.finally(() => {
             void Promise.resolve()
               .then(() => target.cleanup?.())
