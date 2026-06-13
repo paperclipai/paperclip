@@ -12,6 +12,7 @@ vi.mock("acpx/runtime", () => ({
 }));
 
 const agentId = "11111111-1111-4111-8111-111111111111";
+const watchdogAgentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const companyId = "22222222-2222-4222-8222-222222222222";
 
 const baseAgent = {
@@ -1594,5 +1595,148 @@ describe.sequential("agent permission routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  describe("agents:recover_from_error permission", () => {
+    const errorAgent = { ...baseAgent, status: "error", pauseReason: null };
+    const pausedErrorAgent = { ...baseAgent, status: "error", pauseReason: "budget_exceeded" };
+    const idleAgent = { ...baseAgent, status: "idle", pauseReason: null };
+
+    it("allows recovery PATCH when target is in error status, has no pauseReason, and body is exactly { status: idle }", async () => {
+      mockAgentService.getById
+        .mockResolvedValueOnce({ ...baseAgent, id: watchdogAgentId, role: "engineer" })
+        .mockResolvedValueOnce(errorAgent);
+      mockAccessService.hasPermission.mockResolvedValue(true);
+      mockAgentService.update.mockResolvedValue({ ...errorAgent, status: "idle" });
+
+      const app = await createApp({
+        type: "agent",
+        agentId: watchdogAgentId,
+        companyId,
+        source: "agent_key",
+        runId: "run-wd-1",
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({ status: "idle" }));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAgentService.update).toHaveBeenCalledWith(
+        agentId,
+        expect.objectContaining({ status: "idle" }),
+        expect.anything(),
+      );
+    });
+
+    it("blocks recovery PATCH with extra body fields even when permission is held", async () => {
+      mockAgentService.getById
+        .mockResolvedValueOnce({ ...baseAgent, id: watchdogAgentId, role: "engineer" })
+        .mockResolvedValueOnce(errorAgent);
+      mockAccessService.hasPermission.mockResolvedValue(true);
+
+      const app = await createApp({
+        type: "agent",
+        agentId: watchdogAgentId,
+        companyId,
+        source: "agent_key",
+        runId: "run-wd-1",
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({ status: "idle", adapterConfig: {} }));
+
+      expect(res.status).toBe(403);
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("blocks recovery PATCH when target has a non-null pauseReason", async () => {
+      mockAgentService.getById
+        .mockResolvedValueOnce({ ...baseAgent, id: watchdogAgentId, role: "engineer" })
+        .mockResolvedValueOnce(pausedErrorAgent);
+      mockAccessService.hasPermission.mockResolvedValue(true);
+
+      const app = await createApp({
+        type: "agent",
+        agentId: watchdogAgentId,
+        companyId,
+        source: "agent_key",
+        runId: "run-wd-1",
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({ status: "idle" }));
+
+      expect(res.status).toBe(403);
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("blocks recovery PATCH when target status is not error", async () => {
+      mockAgentService.getById
+        .mockResolvedValueOnce({ ...baseAgent, id: watchdogAgentId, role: "engineer" })
+        .mockResolvedValueOnce(idleAgent);
+      mockAccessService.hasPermission.mockResolvedValue(true);
+
+      const app = await createApp({
+        type: "agent",
+        agentId: watchdogAgentId,
+        companyId,
+        source: "agent_key",
+        runId: "run-wd-1",
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({ status: "idle" }));
+
+      expect(res.status).toBe(403);
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("blocks PATCH with status active even when recovery permission is held", async () => {
+      mockAgentService.getById
+        .mockResolvedValueOnce({ ...baseAgent, id: watchdogAgentId, role: "engineer" })
+        .mockResolvedValueOnce(errorAgent);
+      mockAccessService.hasPermission.mockResolvedValue(true);
+
+      const app = await createApp({
+        type: "agent",
+        agentId: watchdogAgentId,
+        companyId,
+        source: "agent_key",
+        runId: "run-wd-1",
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({ status: "active" }));
+
+      expect(res.status).toBe(403);
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("blocks recovery when agent does not hold the permission", async () => {
+      mockAgentService.getById
+        .mockResolvedValueOnce({ ...baseAgent, id: watchdogAgentId, role: "engineer" })
+        .mockResolvedValueOnce(errorAgent);
+      mockAccessService.hasPermission.mockResolvedValue(false);
+
+      const app = await createApp({
+        type: "agent",
+        agentId: watchdogAgentId,
+        companyId,
+        source: "agent_key",
+        runId: "run-wd-1",
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({ status: "idle" }));
+
+      expect(res.status).toBe(403);
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
   });
 });

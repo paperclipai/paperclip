@@ -831,6 +831,29 @@ export function agentRoutes(
     throw forbidden(decision.explanation);
   }
 
+  function isExactRecoveryBody(body: Record<string, unknown>): boolean {
+    const keys = Object.keys(body);
+    return keys.length === 1 && body.status === "idle";
+  }
+
+  async function assertCanRecoverFromError(
+    req: Request,
+    targetAgent: { id: string; companyId: string; status: string | null; pauseReason: string | null },
+  ): Promise<boolean> {
+    if (targetAgent.status !== "error" || targetAgent.pauseReason !== null) return false;
+    const body = req.body as Record<string, unknown>;
+    if (!isExactRecoveryBody(body)) return false;
+    if (!req.actor.agentId) return false;
+    const actorAgent = await svc.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== targetAgent.companyId) return false;
+    return access.hasPermission(
+      targetAgent.companyId,
+      "agent",
+      actorAgent.id,
+      "agents:recover_from_error",
+    );
+  }
+
   async function assertCanReadAgent(req: Request, targetAgent: { companyId: string }) {
     assertCompanyAccess(req, targetAgent.companyId);
     if (req.actor.type === "board") {
@@ -2742,7 +2765,10 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    await assertCanUpdateAgent(req, existing);
+    const canRecover = await assertCanRecoverFromError(req, existing);
+    if (!canRecover) {
+      await assertCanUpdateAgent(req, existing);
+    }
 
     if (hasOwn(req.body as object, "permissions")) {
       res.status(422).json({ error: "Use /api/agents/:id/permissions for permission changes" });
