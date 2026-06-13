@@ -70,7 +70,18 @@
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
     },
     "overrides": {
-      "rollup": ">=4.59.0"
+      "rollup": ">=4.59.0",
+      "esbuild": "^0.28.1",
+      "kysely": "^0.28.17",
+      "fast-uri": "^3.1.2",
+      "vite@6": "^6.4.2",
+      "defu": "^6.1.5",
+      "lodash-es": "^4.18.0",
+      "path-to-regexp@8": "^8.4.0",
+      "fast-xml-parser": "^5.5.6",
+      "undici": "^6.24.0",
+      "tar": "^7.5.11",
+      "vitest>vite": "^7.3.2"
     }
   }
 }
