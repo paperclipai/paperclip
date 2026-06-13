@@ -51,6 +51,14 @@ vi.mock("../context/DialogContext", () => ({
   useDialogActions: () => dialogState,
 }));
 
+vi.mock("../context/ToastContext", () => ({
+  useToastActions: () => ({
+    pushToast: vi.fn(() => null),
+    dismissToast: vi.fn(),
+    clearToasts: vi.fn(),
+  }),
+}));
+
 vi.mock("@/lib/router", () => ({
   Link: ({
     children,

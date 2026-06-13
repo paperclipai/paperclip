@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Issue } from "@paperclipai/shared";
-import { buildIssueTree, countDescendants, filterIssueDescendants } from "./issue-tree";
+import { buildIssueTree, buildRenderedIssueOrder, countDescendants, filterIssueDescendants } from "./issue-tree";
 
 function makeIssue(id: string, parentId: string | null = null): Issue {
   return {
@@ -127,6 +127,54 @@ describe("countDescendants", () => {
   it("returns 0 for an id not in the childMap", () => {
     const { childMap } = buildIssueTree([makeIssue("a"), makeIssue("b")]);
     expect(countDescendants("nonexistent", childMap)).toBe(0);
+  });
+});
+
+describe("buildRenderedIssueOrder", () => {
+  it("returns input order verbatim when nesting is disabled", () => {
+    const items = [
+      makeIssue("a"),
+      makeIssue("b", "a"), // would otherwise nest under "a"
+      makeIssue("c"),
+    ];
+    expect(buildRenderedIssueOrder(items, false)).toEqual(["a", "b", "c"]);
+  });
+
+  it("returns input order when nesting is enabled but no parent-child relationships exist", () => {
+    const items = [makeIssue("x"), makeIssue("y"), makeIssue("z")];
+    expect(buildRenderedIssueOrder(items, true)).toEqual(["x", "y", "z"]);
+  });
+
+  it("groups children under their parent in DFS order regardless of input position", () => {
+    // Input order interleaves a child of p1 between p1 and p2 (simulating a sort
+    // by status/priority/updatedAt). The rendered DFS order must place c1
+    // directly after p1, not between p1 and p2 by their flat position.
+    const p1 = makeIssue("p1");
+    const c1 = makeIssue("c1", "p1");
+    const p2 = makeIssue("p2");
+    const c2 = makeIssue("c2", "p2");
+    // Flat (sort) order: p1, p2, c1, c2 — but rendered tree is p1 → c1, p2 → c2
+    expect(buildRenderedIssueOrder([p1, p2, c1, c2], true)).toEqual([
+      "p1",
+      "c1",
+      "p2",
+      "c2",
+    ]);
+  });
+
+  it("renders multi-level nesting DFS-first", () => {
+    const gp = makeIssue("gp");
+    const p = makeIssue("p", "gp");
+    const c = makeIssue("c", "p");
+    const sibling = makeIssue("sibling", "gp");
+    // Out-of-order input: children of gp appear in item-encounter order
+    // (sibling before p), then DFS walks p's descendants under p.
+    expect(buildRenderedIssueOrder([c, sibling, p, gp], true)).toEqual([
+      "gp",
+      "sibling",
+      "p",
+      "c",
+    ]);
   });
 });
 
