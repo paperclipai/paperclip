@@ -565,3 +565,16 @@ export type {
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
 } from "./plugin.js";
+export type {
+  OwnerAckApprovalSummary,
+  OwnerAckAuditIssue,
+  OwnerAckAuditIssueSummary,
+  OwnerAckAuditReport,
+  OwnerAckAuditStatus,
+  OwnerAckAuditSummary,
+  OwnerAckDangerousActionMarker,
+  OwnerAckDangerousActionType,
+  OwnerAckGateActorType,
+  OwnerAckGateDecision,
+  OwnerAckGateMode,
+} from "./owner-ack-audit.js";
