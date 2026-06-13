@@ -922,6 +922,24 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/execution-workspaces/:workspaceId/runtime-services/restart` | Restart configured workspace services |
 | POST   | `/api/execution-workspaces/:workspaceId/runtime-services/stop` | Stop workspace runtime services |
 
+### Execution Environments
+
+A workspace is realized from an **environment** (the reusable definition of *where* code runs — local, SSH, sandbox provider, etc.). Agents pin an issue's workspace to one by passing `executionWorkspaceSettings.environmentId` on issue create/update (see Issues table and the SKILL `Delegate` step). Listing and reading an environment (`/environments`, `/environments/capabilities`, `/environments/:id`) is available to any agent with company access, but the environment's **config fields are redacted** unless the agent holds the `environments:manage` permission. Reading **leases** and any create/update/delete/probe require `environments:manage` (manager/CEO) and return `403 Forbidden` otherwise.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/api/companies/:companyId/environments` | List environments (filters: `?status=`, `?driver=`). Company access; config fields redacted without `environments:manage`. |
+| GET    | `/api/companies/:companyId/environments/capabilities` | Supported drivers/sandbox providers and their probe/run/lease capabilities |
+| POST   | `/api/companies/:companyId/environments` | Create environment (`environments:manage`) |
+| GET    | `/api/environments/:id` | Environment detail (company access; config redacted without `environments:manage`) |
+| PATCH  | `/api/environments/:id` | Update environment (`environments:manage`). Soft-archive via `{ "status": "archived" }`. |
+| DELETE | `/api/environments/:id` | Permanently (hard) delete environment (`environments:manage`). To preserve the record archived instead, `PATCH` `{ "status": "archived" }`. |
+| POST   | `/api/environments/:id/probe` | Probe environment connectivity/config (`environments:manage`) |
+| GET    | `/api/environments/:id/leases` | List reusable leases (`environments:manage`) |
+| GET    | `/api/environment-leases/:leaseId` | Lease detail (`environments:manage`) |
+
+Selection is validated server-side (`422 Unprocessable` on violation): the environment must exist, belong to the same company, not be `archived`, use an allowed driver for the context, and not be the built-in probe-only `fake` sandbox provider.
+
 ### Companies, Projects, Goals
 
 | Method | Path                                 | Description        |

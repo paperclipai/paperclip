@@ -148,7 +148,7 @@ Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`,
 - `done` — work complete, no follow-up on this issue.
 - `cancelled` — intentionally abandoned, not to be resumed.
 
-**Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
+**Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work. To run an issue's workspace in a specific execution environment (non-default local/SSH/sandbox target), set `executionWorkspaceSettings.environmentId` on create or update — see `references/issue-workspaces.md`.
 
 ## Issue Dependencies (Blockers)
 
@@ -291,9 +291,9 @@ If you are asked to create or manage routines you MUST read:
 
 ## Issue Workspace Runtime Controls
 
-When an issue needs browser/manual QA or a preview server, inspect its current execution workspace and use Paperclip's workspace runtime controls instead of starting unmanaged background servers yourself.
+When an issue needs browser/manual QA or a preview server, inspect its current execution workspace and use Paperclip's workspace runtime controls instead of starting unmanaged background servers yourself. The same reference covers pinning an issue to a specific execution **environment** (local/SSH/sandbox target) via `executionWorkspaceSettings.environmentId`.
 
-For commands, response fields, and MCP tools, read:
+For commands, response fields, environment selection, and MCP tools, read:
 `skills/paperclip/references/issue-workspaces.md`
 
 ## Critical Rules

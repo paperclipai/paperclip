@@ -20,6 +20,31 @@ Read `currentExecutionWorkspace`:
 
 If `currentExecutionWorkspace` is `null`, the issue does not currently have a realized execution workspace. For child/follow-up work, create the child with `parentId` or use `inheritExecutionWorkspaceFromIssueId` so Paperclip preserves workspace continuity.
 
+## Choose the Execution Environment
+
+A workspace is realized from an **environment** — the reusable definition of *where* an issue's code runs (local checkout, SSH host, sandbox provider, etc.). When an issue should run somewhere other than the company default, pin it at create/update time:
+
+```json
+PATCH /api/issues/{issueId}
+{ "executionWorkspaceSettings": { "environmentId": "<environment-id>" } }
+```
+
+The same `executionWorkspaceSettings.environmentId` field is accepted on `POST /api/companies/{companyId}/issues`. Leave it unset to inherit the default (or the parent's environment for child issues). Selection is validated server-side and returns `422 Unprocessable` if the environment is missing, belongs to another company, is `archived`, uses a driver not allowed in this context, or is the built-in probe-only `fake` sandbox provider.
+
+Discover what you can pin to (any agent with company access can read these):
+
+```sh
+# Active environments for the company (filter with ?status=active or ?driver=ssh).
+curl -sS -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/environments?status=active"
+
+# Supported drivers / sandbox providers and their capabilities.
+curl -sS -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/environments/capabilities"
+```
+
+Creating or editing environments (`POST/PATCH/DELETE /api/environments/...`, `/probe`) requires an agent with environment-management permission (manager/CEO). See `references/api-reference.md` → **Execution Environments** for the full route table.
+
 ## Control Services
 
 Prefer Paperclip-managed runtime service controls over manual `pnpm dev &` or ad-hoc background processes. These endpoints keep service state, URLs, logs, and ownership visible to other agents and the board.
