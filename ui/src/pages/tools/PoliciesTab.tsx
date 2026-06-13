@@ -354,7 +354,7 @@ function buildPreviewConfig(form: PolicyFormState) {
 }
 
 function sentenceText(sentence: ReturnType<typeof policySentence>) {
-  return `When ${sentence.who} uses ${sentence.uses} -> ${sentence.outcome}`;
+  return `When ${sentence.who} uses ${sentence.uses} → ${sentence.outcome}`;
 }
 
 function OutcomeChip({ type, config }: { type: BuilderPolicyType | ToolPolicyType; config?: Record<string, unknown> | null }) {
@@ -378,7 +378,7 @@ type LookupMaps = {
 function RuleSentence({ sentence }: { sentence: ReturnType<typeof policySentence> }) {
   return (
     <span>
-      When <strong>{sentence.who}</strong> uses <strong>{sentence.uses}</strong> -&gt;{" "}
+      When <strong>{sentence.who}</strong> uses <strong>{sentence.uses}</strong> →{" "}
       <strong>{sentence.outcome}</strong>
     </span>
   );
@@ -983,7 +983,7 @@ export function PoliciesTab({ companyId }: { companyId: string }) {
     <div className="space-y-5">
       <ToolsPageHeader
         title="Rules"
-        description="Rules are checked top to bottom -- the first one that matches decides."
+        description="Rules are checked top to bottom — the first one that matches decides."
         actions={
           <>
             <Button size="sm" variant="outline" onClick={() => setTestOpen(true)}>

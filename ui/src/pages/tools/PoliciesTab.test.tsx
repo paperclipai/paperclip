@@ -190,7 +190,7 @@ describe("PoliciesTab", () => {
     ]);
 
     expect(container.textContent).toContain("Rules are checked top to bottom");
-    expect(container.textContent).toContain("When Fable uses destructive actions -> Ask first");
+    expect(container.textContent).toContain("When Fable uses destructive actions → Ask first");
     expect(container.textContent).toContain("3 times");
     expect(container.textContent).not.toContain("priority 500");
   });
@@ -267,7 +267,7 @@ describe("PoliciesTab", () => {
     await render([]);
 
     expect(container.textContent).toContain("Remembered approvals");
-    expect(container.textContent).toContain("When Fable uses Send email -> Allow");
+    expect(container.textContent).toContain("When Fable uses Send email → Allow");
 
     const forget = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Forget"));
     flushSync(() => forget?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
