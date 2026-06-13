@@ -1,4 +1,4 @@
-import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
+import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck, ClipboardCheck, Building2, ExternalLink, FileText } from "lucide-react";
 import { formatCents } from "../lib/utils";
 
 export const typeLabel: Record<string, string> = {
@@ -6,6 +6,10 @@ export const typeLabel: Record<string, string> = {
   approve_ceo_strategy: "CEO Strategy",
   budget_override_required: "Budget Override",
   request_board_approval: "Board Approval",
+  plan_approval: "Plan Approval",
+  architecture_decision: "Architecture Decision",
+  external_action: "External Action",
+  policy_change: "Policy Change",
 };
 
 function firstNonEmptyString(...values: unknown[]): string | null {
@@ -41,6 +45,10 @@ export const typeIcon: Record<string, typeof UserPlus> = {
   approve_ceo_strategy: Lightbulb,
   budget_override_required: ShieldAlert,
   request_board_approval: ShieldCheck,
+  plan_approval: ClipboardCheck,
+  architecture_decision: Building2,
+  external_action: ExternalLink,
+  policy_change: FileText,
 };
 
 export const defaultTypeIcon = ShieldCheck;
