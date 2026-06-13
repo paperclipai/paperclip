@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { asc, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import {
   activityLog,
@@ -15,12 +15,14 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueComments,
+  issueLabels,
   issueInboxArchives,
   issueDocuments,
   issuePlanDecompositions,
   issueRelations,
   issueThreadInteractions,
   issues,
+  labels,
   projectWorkspaces,
   projects,
   workspaceOperations,
@@ -5425,4 +5427,729 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
     });
   });
 
+});
+describeEmbeddedPostgres("issueService repo-backed terminal-state gate", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  async function seedRepoBackedIssue(args?: {
+    repoUrl?: string;
+    title?: string;
+    description?: string;
+    identifier?: string;
+    originKind?: string | null;
+  }) {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Server",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "primary",
+      sourceType: "git_repo",
+      repoUrl: args?.repoUrl ?? "https://github.com/paperclipai/paperclip.git",
+      repoRef: "origin/main",
+      defaultRef: "origin/main",
+      isPrimary: true,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Koda",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      title: args?.title ?? "Repo-backed issue",
+      description: args?.description ?? "No PR linked here.",
+      status: "todo",
+      priority: "high",
+      identifier: args?.identifier ?? "PAP-9000",
+      originKind: args?.originKind ?? "manual",
+    });
+
+    return { companyId, projectId, workspaceId, issueId, agentId };
+  }
+
+  async function attachIssueDocumentRevision(input: {
+    companyId: string;
+    issueId: string;
+    key: string;
+    revisionNumber: number;
+    body?: string;
+  }) {
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+    const body = input.body ?? "Triage decision";
+    await db.insert(documents).values({
+      id: documentId,
+      companyId: input.companyId,
+      title: input.key,
+      format: "markdown",
+      latestBody: body,
+      latestRevisionId: revisionId,
+      latestRevisionNumber: input.revisionNumber,
+      createdByAgentId: null,
+      updatedByAgentId: null,
+    });
+    await db.insert(documentRevisions).values({
+      id: revisionId,
+      companyId: input.companyId,
+      documentId,
+      revisionNumber: input.revisionNumber,
+      title: input.key,
+      format: "markdown",
+      body,
+      createdByAgentId: null,
+    });
+    await db.insert(issueDocuments).values({
+      companyId: input.companyId,
+      issueId: input.issueId,
+      documentId,
+      key: input.key,
+    });
+  }
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-terminal-gate-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    await db.delete(issueComments);
+    await db.delete(issueDocuments);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("rejects terminal transitions for repo-backed issues without a verified merged PR", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Close without proof",
+      description: "No PR linked here.",
+      identifier: "PAP-9001",
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        missing: "merged_pr",
+      }),
+    });
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("does not reference any PR URL");
+  });
+
+  it("allows terminal transitions after verifying a merged PR in the issue thread", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ merged: true }),
+    } as Response)));
+
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Close with merged PR",
+      description: "Reference: https://github.com/paperclipai/paperclip/pull/3303",
+      identifier: "PAP-9002",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+  });
+
+  it("continues checking later PR references after an earlier lookup fails", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 404 } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ merged: true }),
+      } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Close after stale PR reference",
+      description: [
+        "Earlier attempt: PR #12",
+        "Final merged PR: https://github.com/paperclipai/paperclip/pull/3303",
+      ].join("\n"),
+      identifier: "PAP-9002A0",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("accepts bare PR references against the repo-backed workspace repo", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ merged: true }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Close with bare PR reference",
+      description: "Reference: PR #3303",
+      identifier: "PAP-9002AA",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] ?? [];
+    expect(String(url)).toContain("/repos/paperclipai/paperclip/pulls/3303");
+  });
+
+  it("accepts GitHub SSH-alias repo bindings when verifying a merged PR", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ merged: true }),
+    } as Response)));
+
+    const { issueId } = await seedRepoBackedIssue({
+      repoUrl: "git@github.com-paperclip:paperclipai/paperclip.git",
+      title: "Close with merged PR on aliased host",
+      description: "Reference: https://github.com/paperclipai/paperclip/pull/3303",
+      identifier: "PAP-9002A",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+  });
+
+  it("allows repo-backed decision deliverables when terminalEvidence resolves to a document revision", async () => {
+    const { companyId, issueId } = await seedRepoBackedIssue({
+      title: "Decision-backed close",
+      description: [
+        "deliverable: decision",
+        "subjectRepo: Alchemist-DevAI/wotww-planner",
+        "terminalEvidence: document:edg5792_rescue_triage#rev:1",
+      ].join("\n"),
+      identifier: "PAP-9002B",
+    });
+    await attachIssueDocumentRevision({
+      companyId,
+      issueId,
+      key: "edg5792_rescue_triage",
+      revisionNumber: 1,
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+  });
+
+  it("keeps explicit code deliverables behind merged PR proof", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Explicit code deliverable",
+      description: "deliverable: code",
+      identifier: "PAP-9002C",
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        missing: "merged_pr",
+      }),
+    });
+  });
+
+  it("allows routine_execution terminal closes without PR proof when no code-deliverable signal exists", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Daily health routine",
+      description: "Operational work is complete: daily health sweep ran successfully and found no anomalies.",
+      identifier: "PAP-9002C1",
+      originKind: "routine_execution",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+  });
+
+  it("allows routine_execution terminal closes when an explicit non-code deliverable label overrides template code hints", async () => {
+    const { companyId, issueId } = await seedRepoBackedIssue({
+      title: "[EAB-AUDIT-WEEKLY] Run /gstack-agent-audit",
+      description: [
+        "Weekly agent reliability audit. Run /gstack-agent-audit.",
+        "Run: `node ~/.claude/skills/gstack/agent-audit/audit.cjs`",
+        "- `governance/audits/weekly/{this-week-ISO-date}.json` with full lint + behavioural-rate summary",
+      ].join("\n"),
+      identifier: "PAP-9002C1A",
+      originKind: "routine_execution",
+    });
+    const labelId = randomUUID();
+    await db.insert(labels).values({
+      id: labelId,
+      companyId,
+      name: "deliverable:doc",
+      color: "#2563eb",
+    });
+    await db.insert(issueLabels).values({
+      companyId,
+      issueId,
+      labelId,
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+  });
+
+  it("keeps routine_execution closeouts behind merged PR proof when PR URLs appear with no-eligible-work evidence", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false,
+      status: 404,
+    } as Response)));
+
+    const { companyId, issueId, agentId } = await seedRepoBackedIssue({
+      title: "Koda nightly own-PR rebase",
+      description: "Nightly CRM X canary routine for Koda-owned pull requests.",
+      identifier: "PAP-9002C1D",
+      originKind: "routine_execution",
+    });
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: [
+        "[Orion]: Closeout audit for the 2026-06-10 AEST wake.",
+        "",
+        "Live CRM X PR check:",
+        "- https://github.com/edgeview-finance-business/edgeview-finance-crm/pull/958 links to EDG-1586, which is cancelled and Dan-routed, so it is not Koda-owned rebase work.",
+        "- https://github.com/edgeview-finance-business/edgeview-finance-crm/pull/957 links to EDG-6231, which is todo and assigned to Orion, so it is also not Koda-owned rebase work.",
+        "- https://github.com/paperclipai/paperclip/pull/999999 is the repo-backed implementation PR under verification.",
+        "",
+        "Net result: CRM X currently has zero eligible Koda-owned PRs to rebase.",
+      ].join("\n"),
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        repo: "paperclipai/paperclip",
+        missing: "merged_pr_verification_failed",
+      }),
+    });
+  });
+
+  it("keeps PR-only routine_execution code lanes behind merged PR proof even with no-eligible-work language", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false,
+      status: 404,
+    } as Response)));
+
+    const { companyId, issueId, agentId } = await seedRepoBackedIssue({
+      title: "Koda nightly own-PR rebase",
+      description: [
+        "Nightly CRM X canary routine for Koda-owned pull requests.",
+        "Related implementation PR: https://github.com/edgeview-finance-business/edgeview-finance-crm/pull/958",
+        "Repo-backed implementation PR: https://github.com/paperclipai/paperclip/pull/999999",
+      ].join("\n"),
+      identifier: "PAP-9002C1E",
+      originKind: "routine_execution",
+    });
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: [
+        "[Koda]: The referenced PR above is not eligible rebase work.",
+        "",
+        "Net result: CRM X currently has zero eligible Koda-owned PRs to rebase.",
+      ].join("\n"),
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        repo: "paperclipai/paperclip",
+        missing: "merged_pr_verification_failed",
+      }),
+    });
+  });
+
+  it("keeps routine_execution code lanes behind merged PR proof", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Routine code lane",
+      description: "deliverable: code",
+      identifier: "PAP-9002C2",
+      originKind: "routine_execution",
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        missing: "merged_pr",
+      }),
+    });
+  });
+
+  it("keeps mixed routine_execution code comments behind merged PR proof even with no-eligible-work language", async () => {
+    const { companyId, issueId, agentId } = await seedRepoBackedIssue({
+      title: "Routine code lane with mixed closeout",
+      description: "Routine follow-up touched server/src/services/issues.ts before closeout.",
+      identifier: "PAP-9002C2A",
+      originKind: "routine_execution",
+    });
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: [
+        "[Koda]: Closeout attempt.",
+        "",
+        "Diff summary:",
+        "- server/src/services/issues.ts updated while investigating the lane.",
+        "",
+        "Net result: CRM X currently has zero eligible Koda-owned PRs to rebase.",
+      ].join("\n"),
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        missing: "merged_pr",
+      }),
+    });
+  });
+
+  it("verifies cross-repo code PRs against subjectRepo instead of the workspace repo", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ merged: true }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Cross-repo code deliverable",
+      description: [
+        "deliverable: code",
+        "subjectRepo: Alchemist-DevAI/wotww-planner",
+        "Reference: https://github.com/Alchemist-DevAI/wotww-planner/pull/123",
+      ].join("\n"),
+      identifier: "PAP-9002D",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] ?? [];
+    expect(String(url)).toContain("/repos/Alchemist-DevAI/wotww-planner/pulls/123");
+  });
+
+  it("binds bare cross-repo PR references to subjectRepo instead of the workspace repo", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ merged: true }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Cross-repo bare PR reference",
+      description: [
+        "deliverable: code",
+        "subjectRepo: Alchemist-DevAI/paperclip",
+        "Reference: PR #1",
+      ].join("\n"),
+      identifier: "PAP-9002D1",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] ?? [];
+    expect(String(url)).toContain("/repos/Alchemist-DevAI/paperclip/pulls/1");
+    expect(String(url)).not.toContain("/repos/paperclipai/paperclip/pulls/1");
+  });
+
+  it("verifies explicit PR URLs against their own repo even when the workspace repo differs", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ merged: true }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Fork PR reference",
+      description: "Reference: https://github.com/Alchemist-DevAI/paperclip/pull/950",
+      identifier: "PAP-9002D2",
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] ?? [];
+    expect(String(url)).toContain("/repos/Alchemist-DevAI/paperclip/pulls/950");
+    expect(String(url)).not.toContain("/repos/paperclipai/paperclip/pulls/950");
+  });
+
+  it("auto-closes a repo-backed issue from a merged pull-request work product", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        html_url: "https://github.com/Alchemist-DevAI/paperclip/pull/950",
+        merge_commit_sha: "abc123def456",
+        merged: true,
+        merged_at: "2026-06-09T00:00:00.000Z",
+      }),
+    } as Response)));
+
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Auto-close from merged work product",
+      description: "Waiting for merged fork PR.",
+      identifier: "PAP-9002D3",
+    });
+
+    const result = await svc.autoCloseFromMergedPullRequestWorkProduct({
+      issueId,
+      workProduct: {
+        type: "pull_request",
+        status: "merged",
+        url: "https://github.com/Alchemist-DevAI/paperclip/pull/950",
+      },
+    });
+
+    expect(result?.issue.status).toBe("done");
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+    expect(comments.at(-1)?.body).toContain("auto-closed");
+    expect(comments.at(-1)?.body).toContain("mergedAt: 2026-06-09T00:00:00.000Z");
+    expect(comments.at(-1)?.body).toContain("commit: abc123def456");
+  });
+
+  it("auto-closes a repo-backed issue from a merged PR URL already present in the thread", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        html_url: "https://github.com/Alchemist-DevAI/paperclip/pull/952",
+        merge_commit_sha: "abc123def952",
+        merged: true,
+        merged_at: "2026-06-09T02:00:00.000Z",
+      }),
+    } as Response)));
+
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Auto-close from threaded PR reference",
+      description: "Reference: https://github.com/Alchemist-DevAI/paperclip/pull/952",
+      identifier: "PAP-9002D3A",
+    });
+
+    const result = await svc.reconcileAutoCloseFromMergedPullRequestReference(issueId);
+
+    expect(result?.issue.status).toBe("done");
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+    expect(comments.at(-1)?.body).toContain("auto-closed");
+    expect(comments.at(-1)?.body).toContain("PR: Alchemist-DevAI/paperclip #952");
+    expect(comments.at(-1)?.body).toContain("mergedAt: 2026-06-09T02:00:00.000Z");
+    expect(comments.at(-1)?.body).toContain("commit: abc123def952");
+  });
+
+  it("does not auto-close a thread-only PR reference for non-code deliverables", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        html_url: "https://github.com/Alchemist-DevAI/paperclip/pull/953",
+        merge_commit_sha: "abc123def953",
+        merged: true,
+        merged_at: "2026-06-09T03:00:00.000Z",
+      }),
+    } as Response)));
+
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Diagnostic issue with PR in thread",
+      description: [
+        "deliverable: diagnostic",
+        "Reference: https://github.com/Alchemist-DevAI/paperclip/pull/953",
+      ].join("\n"),
+      identifier: "PAP-9002D3B",
+    });
+
+    const result = await svc.reconcileAutoCloseFromMergedPullRequestReference(issueId);
+
+    expect(result).toBeNull();
+    const issue = await svc.getById(issueId);
+    expect(issue?.status).toBe("todo");
+  });
+
+  it("does not auto-close when a [DAN] thread question remains unanswered", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        html_url: "https://github.com/Alchemist-DevAI/paperclip/pull/951",
+        merge_commit_sha: "abc123def789",
+        merged: true,
+        merged_at: "2026-06-09T01:00:00.000Z",
+      }),
+    } as Response)));
+
+    const { companyId, issueId } = await seedRepoBackedIssue({
+      title: "Blocked by open Dan question",
+      description: "Waiting for answer.",
+      identifier: "PAP-9002D4",
+    });
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorUserId: "local-board",
+      authorType: "user",
+      body: "[DAN] Should this merge wait for a second review?",
+    });
+
+    const result = await svc.autoCloseFromMergedPullRequestWorkProduct({
+      issueId,
+      workProduct: {
+        type: "pull_request",
+        status: "merged",
+        url: "https://github.com/Alchemist-DevAI/paperclip/pull/951",
+      },
+    });
+
+    expect(result).toBeNull();
+    const issue = await svc.getById(issueId);
+    expect(issue?.status).toBe("todo");
+  });
+
+  it("rejects decision-style terminal transitions when terminalEvidence is missing", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Decision without evidence",
+      description: [
+        "deliverable: decision",
+        "subjectRepo: Alchemist-DevAI/wotww-planner",
+      ].join("\n"),
+      identifier: "PAP-9002E",
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        missing: "terminal_evidence",
+      }),
+    });
+  });
+
+  it("accepts prefixed structured non-code signals from the latest agent comment", async () => {
+    const { companyId, issueId, agentId } = await seedRepoBackedIssue({
+      title: "Comment-backed diagnostic close",
+      description: "Investigated the runtime and attached the diagnostic report.",
+      identifier: "PAP-9002E1",
+      originKind: "routine_execution",
+    });
+    await attachIssueDocumentRevision({
+      companyId,
+      issueId,
+      key: "deploy_freshness_run_20260609",
+      revisionNumber: 1,
+    });
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: [
+        "[EAB]: deliverable: diagnostic",
+        "terminalEvidence: document:deploy_freshness_run_20260609#rev:1",
+        "Guard run complete.",
+      ].join("\n"),
+    });
+
+    const updated = await svc.update(issueId, { status: "done" });
+    expect(updated?.status).toBe("done");
+  });
+
+  it("fails closed for title-only triage issues without structured terminal signals", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "[TRIAGE] title-only exemption should fail",
+      description: "Investigated the situation but left no structured signals.",
+      identifier: "PAP-9002F",
+    });
+
+    await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "repo_backed_terminal_state_gate_failed",
+        missing: "merged_pr",
+      }),
+    });
+  });
+
+  it("allows human-authored terminal transitions without repo-backed PR verification", async () => {
+    const { issueId } = await seedRepoBackedIssue({
+      title: "Board can close directly",
+      description: "No PR linked here.",
+      identifier: "PAP-9003",
+    });
+
+    const updated = await svc.update(issueId, { status: "done", actorUserId: "local-board" });
+    expect(updated?.status).toBe("done");
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  });
 });
