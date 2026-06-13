@@ -2295,11 +2295,19 @@ export async function runChildProcess(
 
         const stdin = child.stdin;
         if (opts.stdin != null && stdin) {
-          void spawnPersistPromise.finally(() => {
-            if (child.killed || stdin.destroyed) return;
+          // Write stdin immediately. Do NOT wait for spawnPersistPromise:
+          // adapters like codex_local run `codex exec ... -` and block on stdin.
+          // If onSpawn metadata persistence stalls, deferring the write here
+          // strands the child forever waiting on stdin (see JAC-1941).
+          if (!child.killed && !stdin.destroyed) {
             stdin.write(opts.stdin as string);
             stdin.end();
-          });
+          }
+          // Reference spawnPersistPromise so the linter does not flag the
+          // floating promise above. Errors are already routed through the
+          // .catch on its construction (-> onLogError); this is purely a
+          // marker that we intentionally don't await it on the stdin path.
+          void spawnPersistPromise;
         }
 
         child.on("error", (err: Error) => {
