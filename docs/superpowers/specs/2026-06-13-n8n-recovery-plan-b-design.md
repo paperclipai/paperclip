@@ -53,9 +53,10 @@ Neues kleines Toolkit unter `tools/n8n-workflow-watcher/recovery/`:
   - Fehler (HTTP/Netz) → `N8nApiError`.
 - `n8n_health.py` — read-only Diagnose-Helfer für die Klassifikation:
   - `healthz(base) -> bool` (`GET /healthz`).
-  - `process_env_flags() -> dict` — liest aus dem laufenden n8n-Prozess (`ps eww`) die
+  - `parse_env_flags(ps_output) -> dict` — parst übergebenen `ps eww`-Text nach den
     relevanten Flags (`N8N_BLOCK_ENV_ACCESS_IN_NODE`, `NODE_FUNCTION_ALLOW_BUILTIN`),
-    um `env/restart`-Fälle zu erkennen. Rein lesend.
+    um `env/restart`-Fälle zu erkennen. Rein lesend; `ps` wird vom Aufrufer ausgeführt
+    (Text als Argument → unit-testbar).
 
 Der Agent erhält **Phase-B-Instructions** (Ersatz der read-only-AGENTS.md), die das
 read-only-Verbot **ausschließlich** für die GRÜN-Reaktivierung lockern.
