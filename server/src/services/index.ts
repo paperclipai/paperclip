@@ -75,4 +75,19 @@ export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
+export {
+  createToolDiscoveryLogger,
+  type ToolDiscoveryLogger,
+  type ToolDiscoveryTrace,
+  type ToolDiscoveryResolution,
+  type ToolDiscoveryOptions,
+} from "./tool-discovery-trace.js";
+export {
+  createBranchIsolationGuard,
+  getBranchIsolationGuard,
+  resetBranchIsolationGuard,
+  type BranchIsolationGuard,
+  type BranchLease,
+  type BranchIsolationCheckResult,
+} from "./branch-isolation-guard.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";

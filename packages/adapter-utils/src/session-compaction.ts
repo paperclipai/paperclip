@@ -1,8 +1,24 @@
+/**
+ * Context guard strategy — what to do when a compaction threshold fires.
+ *
+ * - `summarize`: produce a continuation summary, then restart the session fresh.
+ *   The summary is stored as an issue document keyed by
+ *   `"continuation-summary"` so the next run can pick it up.
+ * - `truncate`: drop oldest turns from the session transcript, keeping the
+ *   system prompt and most recent N exchanges.
+ * - `rotate`: end the current session and start a new one with no carry-over.
+ */
+export type ContextGuardStrategy = "summarize" | "truncate" | "rotate";
+
 export interface SessionCompactionPolicy {
   enabled: boolean;
   maxSessionRuns: number;
   maxRawInputTokens: number;
   maxSessionAgeHours: number;
+  /** Per-run token ceiling — fires mid-run if raw input exceeds this. */
+  maxTokensPerRun: number;
+  /** Strategy applied when a compaction threshold is reached. */
+  guardStrategy: ContextGuardStrategy;
 }
 
 export type NativeContextManagement = "confirmed" | "likely" | "unknown" | "none";
@@ -20,20 +36,28 @@ export interface ResolvedSessionCompactionPolicy {
   source: "adapter_default" | "agent_override" | "legacy_fallback";
 }
 
+// ---------------------------------------------------------------------------
+// Defaults — tuned for Kimi / DeepSeek / unknown models that crash from
+// context exhaustion. For adapters with confirmed native context management
+// (Claude, Hermes) thresholds are zero-valued (no host-side rotation).
+// ---------------------------------------------------------------------------
+
 const DEFAULT_SESSION_COMPACTION_POLICY: SessionCompactionPolicy = {
   enabled: true,
-  maxSessionRuns: 200,
-  maxRawInputTokens: 2_000_000,
-  maxSessionAgeHours: 72,
+  maxSessionRuns: 80,
+  maxRawInputTokens: 640_000,
+  maxSessionAgeHours: 48,
+  maxTokensPerRun: 180_000,
+  guardStrategy: "summarize",
 };
 
-// Adapters with native context management still participate in session resume,
-// but Paperclip should not rotate them using threshold-based compaction.
 const ADAPTER_MANAGED_SESSION_POLICY: SessionCompactionPolicy = {
   enabled: true,
   maxSessionRuns: 0,
   maxRawInputTokens: 0,
   maxSessionAgeHours: 0,
+  maxTokensPerRun: 0,
+  guardStrategy: "summarize",
 };
 
 export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
@@ -96,6 +120,10 @@ export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement
   },
 };
 
+// ---------------------------------------------------------------------------
+// Read helpers
+// ---------------------------------------------------------------------------
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -127,6 +155,17 @@ function readNumber(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : undefined;
 }
 
+function readGuardStrategy(value: unknown): ContextGuardStrategy | undefined {
+  if (typeof value !== "string") return undefined;
+  const v = value.trim().toLowerCase();
+  if (v === "summarize" || v === "truncate" || v === "rotate") return v;
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
 export function getAdapterSessionManagement(adapterType: string | null | undefined): AdapterSessionManagement | null {
   if (!adapterType) return null;
   return ADAPTER_SESSION_MANAGEMENT[adapterType] ?? null;
@@ -146,11 +185,15 @@ export function readSessionCompactionOverride(runtimeConfig: unknown): Partial<S
   const maxSessionRuns = readNumber(compaction.maxSessionRuns);
   const maxRawInputTokens = readNumber(compaction.maxRawInputTokens);
   const maxSessionAgeHours = readNumber(compaction.maxSessionAgeHours);
+  const maxTokensPerRun = readNumber(compaction.maxTokensPerRun);
+  const guardStrategy = readGuardStrategy(compaction.guardStrategy);
 
   if (enabled !== undefined) explicit.enabled = enabled;
   if (maxSessionRuns !== undefined) explicit.maxSessionRuns = maxSessionRuns;
   if (maxRawInputTokens !== undefined) explicit.maxRawInputTokens = maxRawInputTokens;
   if (maxSessionAgeHours !== undefined) explicit.maxSessionAgeHours = maxSessionAgeHours;
+  if (maxTokensPerRun !== undefined) explicit.maxTokensPerRun = maxTokensPerRun;
+  if (guardStrategy !== undefined) explicit.guardStrategy = guardStrategy;
 
   return explicit;
 }
@@ -174,6 +217,8 @@ export function resolveSessionCompactionPolicy(
       maxSessionRuns: explicitOverride.maxSessionRuns ?? basePolicy.maxSessionRuns,
       maxRawInputTokens: explicitOverride.maxRawInputTokens ?? basePolicy.maxRawInputTokens,
       maxSessionAgeHours: explicitOverride.maxSessionAgeHours ?? basePolicy.maxSessionAgeHours,
+      maxTokensPerRun: explicitOverride.maxTokensPerRun ?? basePolicy.maxTokensPerRun,
+      guardStrategy: explicitOverride.guardStrategy ?? basePolicy.guardStrategy,
     },
     adapterSessionManagement,
     explicitOverride,
@@ -187,7 +232,22 @@ export function resolveSessionCompactionPolicy(
 
 export function hasSessionCompactionThresholds(policy: Pick<
   SessionCompactionPolicy,
-  "maxSessionRuns" | "maxRawInputTokens" | "maxSessionAgeHours"
+  "maxSessionRuns" | "maxRawInputTokens" | "maxSessionAgeHours" | "maxTokensPerRun"
 >) {
-  return policy.maxSessionRuns > 0 || policy.maxRawInputTokens > 0 || policy.maxSessionAgeHours > 0;
+  return policy.maxSessionRuns > 0 || policy.maxRawInputTokens > 0
+    || policy.maxSessionAgeHours > 0 || policy.maxTokensPerRun > 0;
+}
+
+/**
+ * Check whether a single run's raw input exceeds the per-run token ceiling.
+ * Returns the strategy to apply if the ceiling is breached, or null if OK.
+ */
+export function checkRunTokenCeiling(
+  policy: Pick<SessionCompactionPolicy, "maxTokensPerRun" | "guardStrategy">,
+  rawInputTokens: number,
+): ContextGuardStrategy | null {
+  if (policy.maxTokensPerRun > 0 && rawInputTokens > policy.maxTokensPerRun) {
+    return policy.guardStrategy;
+  }
+  return null;
 }

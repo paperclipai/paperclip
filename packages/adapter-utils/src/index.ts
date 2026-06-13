@@ -41,6 +41,7 @@ export type {
   NativeContextManagement,
   AdapterSessionManagement,
   ResolvedSessionCompactionPolicy,
+  ContextGuardStrategy,
 } from "./session-compaction.js";
 export {
   ADAPTER_SESSION_MANAGEMENT,
@@ -49,6 +50,7 @@ export {
   readSessionCompactionOverride,
   resolveSessionCompactionPolicy,
   hasSessionCompactionThresholds,
+  checkRunTokenCeiling,
 } from "./session-compaction.js";
 export {
   REDACTED_HOME_PATH_USER,

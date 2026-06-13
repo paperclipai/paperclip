@@ -1125,6 +1125,22 @@ export async function realizeExecutionWorkspace(input: {
     repoRef: input.base.repoRef,
   });
   const branchName = sanitizeBranchName(renderedBranch);
+
+  // Branch isolation guard: prevent concurrent agents from editing the same
+  // branch. Enforces feature/KIN-{ticket}-... naming convention.
+  const branchGuard = (await import("./branch-isolation-guard.js")).getBranchIsolationGuard();
+  const branchCheck = branchGuard.acquireBranch(
+    branchName,
+    input.agent.id ?? "unknown",
+    input.agent.id ?? "unknown", // runId fallback = agentId
+    input.issue?.id ?? null,
+  );
+  if (!branchCheck.allowed) {
+    throw new Error(
+      `Branch isolation violation for "${branchName}": ${branchCheck.reason ?? "blocked"}`,
+    );
+  }
+
   const configuredParentDir = asString(rawStrategy.worktreeParentDir, "");
   const worktreeParentDir = configuredParentDir
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
@@ -1565,6 +1581,14 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
         warnings.push(`Could not resolve git repo root to delete branch "${input.workspace.branchName}".`);
       } else {
         try {
+          // Release the branch isolation lease for this branch.
+          const { getBranchIsolationGuard: getGuard } = await import("./branch-isolation-guard.js");
+          const guard = getGuard();
+          const lease = guard.getLeaseForBranch(input.workspace.branchName);
+          if (lease) {
+            guard.releaseBranch(input.workspace.branchName, lease.runId);
+          }
+
           await recordGitOperation(input.recorder, {
             phase: "worktree_cleanup",
             args: ["branch", "-d", input.workspace.branchName],
