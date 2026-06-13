@@ -121,27 +121,92 @@ describe("agent instructions service", () => {
     await expect(fs.readFile(path.join(externalRoot, "docs", "AGENTS.md"), "utf8")).resolves.toBe("# Managed Agent\n");
   });
 
-  it("filters junk files, dependency bundles, and python caches from bundle listings and exports", async () => {
-    const externalRoot = await makeTempDir("paperclip-agent-instructions-ignore-");
-    cleanupDirs.add(externalRoot);
+  it("filters junk files, dependency bundles, and python caches from managed bundle listings and exports", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-ignore-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
 
-    await fs.writeFile(path.join(externalRoot, "AGENTS.md"), "# External Agent\n", "utf8");
-    await fs.writeFile(path.join(externalRoot, ".gitignore"), "node_modules/\n", "utf8");
-    await fs.writeFile(path.join(externalRoot, ".DS_Store"), "junk", "utf8");
-    await fs.mkdir(path.join(externalRoot, "docs"), { recursive: true });
-    await fs.writeFile(path.join(externalRoot, "docs", "TOOLS.md"), "## Tools\n", "utf8");
-    await fs.writeFile(path.join(externalRoot, "docs", "module.pyc"), "compiled", "utf8");
-    await fs.writeFile(path.join(externalRoot, "docs", "._TOOLS.md"), "appledouble", "utf8");
-    await fs.mkdir(path.join(externalRoot, "node_modules", "pkg"), { recursive: true });
-    await fs.writeFile(path.join(externalRoot, "node_modules", "pkg", "index.js"), "export {};\n", "utf8");
-    await fs.mkdir(path.join(externalRoot, "python", "__pycache__"), { recursive: true });
+    const managedRoot = path.join(
+      paperclipHome,
+      "instances",
+      "test-instance",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-1",
+      "instructions",
+    );
+    await fs.mkdir(managedRoot, { recursive: true });
+
+    await fs.writeFile(path.join(managedRoot, "AGENTS.md"), "# External Agent\n", "utf8");
+    await fs.writeFile(path.join(managedRoot, ".gitignore"), "node_modules/\n", "utf8");
+    await fs.writeFile(path.join(managedRoot, ".DS_Store"), "junk", "utf8");
+    await fs.mkdir(path.join(managedRoot, "docs"), { recursive: true });
+    await fs.writeFile(path.join(managedRoot, "docs", "TOOLS.md"), "## Tools\n", "utf8");
+    await fs.writeFile(path.join(managedRoot, "docs", "module.pyc"), "compiled", "utf8");
+    await fs.writeFile(path.join(managedRoot, "docs", "._TOOLS.md"), "appledouble", "utf8");
+    await fs.mkdir(path.join(managedRoot, "node_modules", "pkg"), { recursive: true });
+    await fs.writeFile(path.join(managedRoot, "node_modules", "pkg", "index.js"), "export {};\n", "utf8");
+    await fs.mkdir(path.join(managedRoot, "python", "__pycache__"), { recursive: true });
     await fs.writeFile(
-      path.join(externalRoot, "python", "__pycache__", "module.cpython-313.pyc"),
+      path.join(managedRoot, "python", "__pycache__", "module.cpython-313.pyc"),
       "compiled",
       "utf8",
     );
-    await fs.mkdir(path.join(externalRoot, ".pytest_cache"), { recursive: true });
-    await fs.writeFile(path.join(externalRoot, ".pytest_cache", "README.md"), "cache", "utf8");
+    await fs.mkdir(path.join(managedRoot, ".pytest_cache"), { recursive: true });
+    await fs.writeFile(path.join(managedRoot, ".pytest_cache", "README.md"), "cache", "utf8");
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({
+      instructionsBundleMode: "managed",
+      instructionsRootPath: managedRoot,
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: path.join(managedRoot, "AGENTS.md"),
+    });
+
+    const bundle = await svc.getBundle(agent);
+    const exported = await svc.exportFiles(agent);
+
+    expect(bundle.files.map((file) => file.path)).toEqual([".gitignore", "AGENTS.md", "docs/TOOLS.md"]);
+    expect(Object.keys(exported.files).sort((left, right) => left.localeCompare(right))).toEqual([
+      ".gitignore",
+      "AGENTS.md",
+      "docs/TOOLS.md",
+    ]);
+  });
+
+  it("rejects external instruction roots that look like repository roots before listing files", async () => {
+    const externalRoot = await makeTempDir("paperclip-agent-instructions-repo-root-");
+    cleanupDirs.add(externalRoot);
+
+    await fs.mkdir(path.join(externalRoot, ".git"), { recursive: true });
+    await fs.writeFile(path.join(externalRoot, "package.json"), "{\"private\":true}\n", "utf8");
+    await fs.writeFile(path.join(externalRoot, "AGENTS.md"), "# External Agent\n", "utf8");
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({
+      instructionsBundleMode: "external",
+      instructionsRootPath: externalRoot,
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: path.join(externalRoot, "AGENTS.md"),
+    });
+
+    await expect(svc.getBundle(agent)).rejects.toThrow(
+      "External instructions root is not allowed to point at a repository or application root",
+    );
+    await expect(svc.exportFiles(agent)).rejects.toThrow(
+      "External instructions root is not allowed to point at a repository or application root",
+    );
+  });
+
+  it("keeps narrow external instruction directories working", async () => {
+    const externalRoot = await makeTempDir("paperclip-agent-instructions-narrow-");
+    cleanupDirs.add(externalRoot);
+
+    await fs.writeFile(path.join(externalRoot, "AGENTS.md"), "# External Agent\n", "utf8");
+    await fs.mkdir(path.join(externalRoot, "docs"), { recursive: true });
+    await fs.writeFile(path.join(externalRoot, "docs", "TOOLS.md"), "## Tools\n", "utf8");
 
     const svc = agentInstructionsService();
     const agent = makeAgent({
@@ -154,12 +219,11 @@ describe("agent instructions service", () => {
     const bundle = await svc.getBundle(agent);
     const exported = await svc.exportFiles(agent);
 
-    expect(bundle.files.map((file) => file.path)).toEqual([".gitignore", "AGENTS.md", "docs/TOOLS.md"]);
-    expect(Object.keys(exported.files).sort((left, right) => left.localeCompare(right))).toEqual([
-      ".gitignore",
-      "AGENTS.md",
-      "docs/TOOLS.md",
-    ]);
+    expect(bundle.files.map((file) => file.path)).toEqual(["AGENTS.md", "docs/TOOLS.md"]);
+    expect(exported.files).toEqual({
+      "AGENTS.md": "# External Agent\n",
+      "docs/TOOLS.md": "## Tools\n",
+    });
   });
 
   it("recovers a managed bundle from disk when bundle config metadata is missing", async () => {
