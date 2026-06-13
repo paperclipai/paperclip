@@ -1,7 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "whitestag.brain";
-const PLUGIN_VERSION = "0.1.0";
+const PLUGIN_VERSION = "0.2.0";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -9,35 +9,53 @@ const manifest: PaperclipPluginManifestV1 = {
   version: PLUGIN_VERSION,
   displayName: "Obsidian Brain",
   description:
-    "Exposes Walter's Obsidian vault as a semantically searchable knowledge base. Per-agent ACLs, default-deny, full audit log.",
+    "Exposes one or more Obsidian vaults as a semantically searchable knowledge base, one Brain MCP endpoint per Paperclip company. Per-agent ACLs, default-deny, full audit log.",
   author: "WHITESTAG",
   categories: ["connector"],
   capabilities: ["agent.tools.register", "instance.settings.register"],
   instanceConfigSchema: {
     type: "object",
     properties: {
-      mcpEndpoint: {
-        type: "string",
-        title: "Brain MCP endpoint",
-        description: "URL of the Brain MCP server (default http://localhost:7777)",
-        default: "http://localhost:7777",
-      },
-      bearerToken: {
-        type: "string",
-        title: "Bearer token (paperclip)",
-        description:
-          "Token configured as BRAIN_PAPERCLIP_TOKEN in the Brain MCP launchd plist. Required.",
-      },
-      agentMap: {
+      companies: {
         type: "object",
-        title: "Agent UUID → ACL key",
+        title: "Brain endpoints per company",
         description:
-          "Map Paperclip agent UUIDs to Brain ACL keys (e.g. 'CEO'). Unmapped agents fall back to their UUID.",
-        additionalProperties: { type: "string" },
+          "Map Paperclip companyId → Brain MCP endpoint. Each company can target a different vault / Brain server.",
+        additionalProperties: {
+          type: "object",
+          properties: {
+            mcpEndpoint: {
+              type: "string",
+              title: "Brain MCP endpoint",
+              description: "URL of the Brain MCP server for this company.",
+            },
+            bearerToken: {
+              type: "string",
+              title: "Bearer token (paperclip)",
+              description:
+                "Token configured as BRAIN_PAPERCLIP_TOKEN in this company's Brain MCP launchd plist.",
+            },
+            agentMap: {
+              type: "object",
+              title: "Agent UUID → ACL key",
+              description:
+                "Map Paperclip agent UUIDs to Brain ACL keys (e.g. 'CEO'). Unmapped agents fall back to their UUID.",
+              additionalProperties: { type: "string" },
+              default: {},
+            },
+          },
+          required: ["mcpEndpoint", "bearerToken"],
+        },
         default: {},
       },
+      defaultCompanyId: {
+        type: "string",
+        title: "Default companyId",
+        description:
+          "Fallback companyId to use when a tool call arrives without a runContext.companyId. Optional.",
+      },
     },
-    required: ["bearerToken"],
+    required: ["companies"],
   },
   entrypoints: {
     worker: "./dist/worker.js",
@@ -58,7 +76,7 @@ const manifest: PaperclipPluginManifestV1 = {
       name: "vault.search",
       displayName: "Search vault",
       description:
-        "Semantic search across the Obsidian vault. Returns top hits with score, heading path and excerpt. ACL-enforced per agent.",
+        "Semantic search across the company's Obsidian vault. Returns top hits with score, heading path and excerpt. ACL-enforced per agent.",
       parametersSchema: {
         type: "object",
         properties: {

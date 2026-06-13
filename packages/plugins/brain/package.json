@@ -1,6 +1,6 @@
 {
   "name": "@whitestag/paperclip-plugin-brain",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Exposes Walter's Obsidian vault as a queryable knowledge base via the Brain MCP server.",
   "type": "module",
   "private": true,

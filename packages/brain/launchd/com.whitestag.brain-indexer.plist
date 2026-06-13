@@ -8,16 +8,16 @@
   <key>ProgramArguments</key>
   <array>
     <string>/opt/homebrew/bin/node</string>
-    <string>/Users/walterschoenenbroecher.de/Library/CloudStorage/SynologyDrive-Mac/Claude Code/Paperclip/packages/brain/dist/indexer/index.js</string>
+    <string>/Users/walterschoenenbroecher.de/Library/CloudStorage/SynologyDrive-Mac/Claude Code MAC/Paperclip/packages/brain/dist/indexer/index.js</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/walterschoenenbroecher.de/Library/CloudStorage/SynologyDrive-Mac/Claude Code/Paperclip/packages/brain</string>
+  <string>/Users/walterschoenenbroecher.de/Library/CloudStorage/SynologyDrive-Mac/Claude Code MAC/Paperclip/packages/brain</string>
 
   <key>EnvironmentVariables</key>
   <dict>
     <key>BRAIN_VAULT_PATH</key>
-    <string>/Volumes/WHITESTAG-ARCHIV/Obsidian/WHITESTAG-Vault</string>
+    <string>/Users/walterschoenenbroecher.de/Obsidian/WHITESTAG-Vault</string>
     <key>BRAIN_DATABASE_URL</key>
     <string>postgres://walterschoenenbroecher.de@localhost:5432/paperclip_brain</string>
     <key>BRAIN_LM_STUDIO_URL</key>

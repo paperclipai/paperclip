@@ -1,4 +1,5 @@
 import chokidar from "chokidar";
+import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../shared/config.js";
 import { createBrainDb } from "../db/client.js";
@@ -7,6 +8,23 @@ import { indexFile, removeFile } from "./watcher.js";
 import { fullRescan } from "./rescan.js";
 
 const RESCAN_INTERVAL_MS = 60 * 60 * 1000;
+
+async function waitForVault(vaultRoot: string, retrySeconds: number): Promise<void> {
+  let logged = false;
+  while (true) {
+    try {
+      const st = fs.statSync(vaultRoot);
+      if (st.isDirectory()) return;
+    } catch {
+      // not yet available
+    }
+    if (!logged) {
+      console.log(`[indexer] vault ${vaultRoot} unavailable; retrying every ${retrySeconds}s`);
+      logged = true;
+    }
+    await new Promise((r) => setTimeout(r, retrySeconds * 1000));
+  }
+}
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -18,6 +36,7 @@ async function main(): Promise<void> {
     path.relative(vaultRoot, abs).split(path.sep).join("/");
 
   console.log(`[indexer] vault=${vaultRoot}`);
+  await waitForVault(vaultRoot, cfg.vaultWaitRetrySeconds);
   console.log("[indexer] startup full rescan...");
   const startStats = await fullRescan(handle, embed, vaultRoot, (c, last) => {
     if (c.total > 0 && (c.indexed + c.unchanged + c.skipped + c.errors) % 100 === 0) {
@@ -33,8 +52,13 @@ async function main(): Promise<void> {
     ignored: (p) => /[\\/]\.(obsidian|trash|git)([\\/]|$)/.test(p),
     ignoreInitial: true,
     awaitWriteFinish: { stabilityThreshold: 2000, pollInterval: 250 },
-    usePolling: false,
+    usePolling: cfg.watchUsePolling,
+    interval: cfg.watchPollIntervalMs,
+    binaryInterval: cfg.watchPollIntervalMs,
   });
+  console.log(
+    `[indexer] watch mode: ${cfg.watchUsePolling ? `polling@${cfg.watchPollIntervalMs}ms` : "fsevents"}`,
+  );
 
   watcher.on("add", async (abs) => {
     try {

@@ -8,16 +8,16 @@
   <key>ProgramArguments</key>
   <array>
     <string>/opt/homebrew/bin/node</string>
-    <string>/Users/walterschoenenbroecher.de/Library/CloudStorage/SynologyDrive-Mac/Claude Code/Paperclip/packages/brain/dist/mcp-server/index.js</string>
+    <string>/Users/walterschoenenbroecher.de/Library/CloudStorage/SynologyDrive-Mac/Claude Code MAC/Paperclip/packages/brain/dist/mcp-server/index.js</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/walterschoenenbroecher.de/Library/CloudStorage/SynologyDrive-Mac/Claude Code/Paperclip/packages/brain</string>
+  <string>/Users/walterschoenenbroecher.de/Library/CloudStorage/SynologyDrive-Mac/Claude Code MAC/Paperclip/packages/brain</string>
 
   <key>EnvironmentVariables</key>
   <dict>
     <key>BRAIN_VAULT_PATH</key>
-    <string>/Volumes/WHITESTAG-ARCHIV/Obsidian/WHITESTAG-Vault</string>
+    <string>/Users/walterschoenenbroecher.de/Obsidian/WHITESTAG-Vault</string>
     <key>BRAIN_DATABASE_URL</key>
     <string>postgres://walterschoenenbroecher.de@localhost:5432/paperclip_brain</string>
     <key>BRAIN_LM_STUDIO_URL</key>
@@ -27,11 +27,11 @@
     <key>BRAIN_MCP_PORT</key>
     <string>7777</string>
     <key>BRAIN_PAPERCLIP_TOKEN</key>
-    <string>REPLACE_WITH_PAPERCLIP_TOKEN</string>
+    <string>504f8ca81a785bcf7b062574815a826562090374155e79da439e2c9d0457d991</string>
     <key>BRAIN_PAPERCLIP_ALLOWED_AGENTS</key>
     <string>CEO,CFO,CMO,CTO,CPO,walter</string>
     <key>BRAIN_CLAUDE_CODE_TOKEN</key>
-    <string>REPLACE_WITH_CLAUDE_CODE_TOKEN</string>
+    <string>5bc3675e4fc5e83977107dce675e2fde2038fda0b70b818f24aa99dbf90fe764</string>
   </dict>
 
   <key>RunAtLoad</key>

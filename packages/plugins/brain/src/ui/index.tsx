@@ -17,26 +17,36 @@ export function BrainSettingsPage(_props: PluginWidgetProps) {
         base via three agent tools: <code>vault.search</code>,{" "}
         <code>vault.get_note</code>, <code>vault.list_scope</code>.
       </p>
-      <h3>Configuration (env vars on the worker)</h3>
+      <h3>Configuration (instance config — one entry per company)</h3>
+      <p>
+        Set <code>companies</code> in the plugin's instance config to a map
+        keyed by Paperclip <code>companyId</code>. Each value contains:
+      </p>
       <ul>
         <li>
-          <code>BRAIN_MCP_ENDPOINT</code> — Brain MCP server URL (default{" "}
-          <code>http://localhost:7777</code>)
+          <code>mcpEndpoint</code> — Brain MCP server URL for this company
+          (e.g. <code>http://localhost:7777</code> for WHITESTAG,{" "}
+          <code>http://localhost:7778</code> for Clara Sound)
         </li>
         <li>
-          <code>BRAIN_PAPERCLIP_TOKEN</code> — Bearer token issued by the Brain
-          MCP server
+          <code>bearerToken</code> — Bearer token from this company's Brain MCP
+          launchd plist (<code>BRAIN_PAPERCLIP_TOKEN</code>)
         </li>
         <li>
-          <code>BRAIN_AGENT_MAP</code> — JSON object mapping Paperclip agent
-          UUIDs to ACL keys (e.g. <code>{`{"<uuid>":"CEO"}`}</code>); unmapped
-          agents fall back to their UUID
+          <code>agentMap</code> — JSON object mapping this company's agent
+          UUIDs to Brain ACL keys (e.g. <code>{`{"<uuid>":"CEO"}`}</code>);
+          unmapped agents fall back to their UUID
         </li>
       </ul>
+      <p>
+        Tool calls are routed by <code>runContext.companyId</code>. A
+        <code>defaultCompanyId</code> may be set as fallback.
+      </p>
       <h3>Access control</h3>
       <p>
-        ACLs live in the <code>brain.agent_acl</code> table of the
-        <code>paperclip_brain</code> database. New agents have no scope by
+        ACLs live in the <code>brain.agent_acl</code> table of each Brain
+        database (e.g. <code>paperclip_brain</code>,{" "}
+        <code>paperclip_brain_clara</code>). New agents have no scope by
         default (default-deny). Edit the row to grant folder access.
       </p>
       <h3>Audit</h3>
