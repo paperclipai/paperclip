@@ -21,6 +21,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  issueThreadInteractions,
   projectWorkspaces,
   projects,
   workspaceOperations,
@@ -2913,6 +2914,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueThreadInteractions);
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
@@ -3455,6 +3457,68 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       ],
       childIssueSummaryTruncated: false,
     });
+  });
+
+  it("does not wake a parent that is in_review with a pending interaction", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "TestAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const parentId = randomUUID();
+    const childId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: parentId,
+        companyId,
+        title: "Parent issue waiting for user",
+        status: "in_review",
+        priority: "medium",
+        assigneeAgentId,
+      },
+      {
+        id: childId,
+        companyId,
+        parentId,
+        title: "Productivity review",
+        status: "done",
+        priority: "medium",
+      },
+    ]);
+
+    // With no pending interaction the parent would be wakeable
+    expect(await svc.getWakeableParentAfterChildCompletion(parentId)).toMatchObject({
+      id: parentId,
+      assigneeAgentId,
+    });
+
+    // Now add a pending ask_user_questions interaction on the parent
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: parentId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: { kind: "ask_user_questions", questions: [{ id: "q1", question: "Which approach?" }] },
+    });
+
+    // Parent should no longer be returned as wakeable
+    expect(await svc.getWakeableParentAfterChildCompletion(parentId)).toBeNull();
   });
 });
 

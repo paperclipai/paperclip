@@ -4463,6 +4463,25 @@ export function issueService(db: Db) {
         return null;
       }
 
+      // Don't auto-reactivate a parent that is parked in_review awaiting user input
+      // (e.g. a pending ask_user_questions interaction). The children_completed wakeup
+      // would trigger a checkout that flips the status back to in_progress, overriding
+      // the intentional user-gated pause.
+      if (parent.status === "in_review") {
+        const pendingInteraction = await db
+          .select({ id: issueThreadInteractions.id })
+          .from(issueThreadInteractions)
+          .where(
+            and(
+              eq(issueThreadInteractions.issueId, parentIssueId),
+              eq(issueThreadInteractions.status, "pending"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (pendingInteraction) return null;
+      }
+
       const children = await db
         .select({
           id: issues.id,
