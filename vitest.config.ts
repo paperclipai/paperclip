@@ -14,6 +14,7 @@ export default defineConfig({
       "packages/adapters/cursor-local",
       "packages/adapters/gemini-local",
       "packages/adapters/grok-local",
+      "packages/adapters/kimi-local",
       "packages/adapters/opencode-local",
       "packages/adapters/pi-local",
       "packages/plugins/sdk",
