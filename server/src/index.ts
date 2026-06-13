@@ -61,6 +61,12 @@ import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
 } from "./routes/instance-database-backups.js";
+import { startDatabaseBackupScheduler } from "./database-backup-scheduler.js";
+
+type ServerDatabaseBackupTrigger = InstanceDatabaseBackupTrigger | "startup-catchup";
+type ServerDatabaseBackupRunResult = Omit<InstanceDatabaseBackupRunResult, "trigger"> & {
+  trigger: ServerDatabaseBackupTrigger;
+};
 
 type BetterAuthSessionUser = {
   id: string;
@@ -582,12 +588,19 @@ export async function startServer(): Promise<StartedServer> {
   const backupSettingsSvc = instanceSettingsService(db);
   let databaseBackupInFlight = false;
   const runServerDatabaseBackup = async (
-    trigger: InstanceDatabaseBackupTrigger,
-  ): Promise<InstanceDatabaseBackupRunResult | null> => {
+    trigger: ServerDatabaseBackupTrigger,
+  ): Promise<ServerDatabaseBackupRunResult | null> => {
     if (databaseBackupInFlight) {
       const message = "Database backup already in progress";
       if (trigger === "scheduled") {
         logger.warn("Skipping scheduled database backup because a previous backup is still running");
+        return null;
+      }
+      if (trigger === "startup-catchup") {
+        logger.warn(
+          { backupDir: config.databaseBackupDir },
+          "Skipping startup database backup catch-up because a previous backup is still running",
+        );
         return null;
       }
       throw conflict(message);
@@ -596,9 +609,20 @@ export async function startServer(): Promise<StartedServer> {
     databaseBackupInFlight = true;
     const startedAt = new Date();
     const startedAtMs = Date.now();
-    const label = trigger === "scheduled" ? "Automatic" : "Manual";
+    const startMessage =
+      trigger === "startup-catchup"
+        ? "Startup database backup catch-up starting"
+        : `${trigger === "scheduled" ? "Automatic" : "Manual"} database backup starting`;
+    const completeMessage =
+      trigger === "startup-catchup"
+        ? "Startup database backup catch-up completed"
+        : `${trigger === "scheduled" ? "Automatic" : "Manual"} database backup complete`;
+    const failureMessage =
+      trigger === "startup-catchup"
+        ? "Startup database backup catch-up failed"
+        : `${trigger === "scheduled" ? "Automatic" : "Manual"} database backup failed`;
     try {
-      logger.info({ backupDir: config.databaseBackupDir, trigger }, `${label} database backup starting`);
+      logger.info({ backupDir: config.databaseBackupDir, trigger }, startMessage);
       // Read retention from Instance Settings (DB) so changes take effect without restart.
       const generalSettings = await backupSettingsSvc.getGeneral();
       const retention = generalSettings.backupRetention;
@@ -610,7 +634,7 @@ export async function startServer(): Promise<StartedServer> {
         filenamePrefix: "paperclip",
       });
       const finishedAt = new Date();
-      const response: InstanceDatabaseBackupRunResult = {
+      const response: ServerDatabaseBackupRunResult = {
         ...result,
         trigger,
         backupDir: config.databaseBackupDir,
@@ -629,11 +653,11 @@ export async function startServer(): Promise<StartedServer> {
           trigger,
           durationMs: response.durationMs,
         },
-        `${label} database backup complete: ${formatDatabaseBackupResult(result)}`,
+        `${completeMessage}: ${formatDatabaseBackupResult(result)}`,
       );
       return response;
     } catch (err) {
-      logger.error({ err, backupDir: config.databaseBackupDir, trigger }, `${label} database backup failed`);
+      logger.error({ err, backupDir: config.databaseBackupDir, trigger }, failureMessage);
       throw err;
     } finally {
       databaseBackupInFlight = false;
@@ -647,7 +671,7 @@ export async function startServer(): Promise<StartedServer> {
     feedbackExportService: feedback,
     databaseBackupService: {
       runManualBackup: async () => {
-        const result = await runServerDatabaseBackup("manual");
+        const result = (await runServerDatabaseBackup("manual")) as InstanceDatabaseBackupRunResult | null;
         if (!result) {
           throw conflict("Database backup already in progress");
         }
@@ -896,21 +920,19 @@ export async function startServer(): Promise<StartedServer> {
   }
   
   if (config.databaseBackupEnabled) {
-    const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
-
-    logger.info(
-      {
-        intervalMinutes: config.databaseBackupIntervalMinutes,
-        retentionSource: "instance-settings-db",
-        backupDir: config.databaseBackupDir,
+    startDatabaseBackupScheduler({
+      connectionString: activeDatabaseConnectionString,
+      backupDir: config.databaseBackupDir,
+      intervalMinutes: config.databaseBackupIntervalMinutes,
+      getRetention: async () => {
+        // Read retention from Instance Settings (DB) so changes take effect without restart.
+        const generalSettings = await backupSettingsSvc.getGeneral();
+        return generalSettings.backupRetention;
       },
-      "Automatic database backups enabled",
-    );
-    setInterval(() => {
-      void runServerDatabaseBackup("scheduled").catch(() => {
-        // runServerDatabaseBackup already logs the failure with context.
-      });
-    }, backupIntervalMs);
+      logger,
+      filenamePrefix: "paperclip",
+      runAutomaticBackup: async (trigger) => (await runServerDatabaseBackup(trigger)) !== null,
+    });
   }
   
   // Wait for external adapters to finish loading before accepting requests.

@@ -592,6 +592,11 @@ schemas. Defaults:
 - retain 30 days
 - backup dir: `~/.paperclip/instances/default/data/backups`
 
+On server startup, automatic backups perform a catch-up backup only when the
+configured backup directory has no existing `paperclip-*.sql` / `paperclip-*.sql.gz`
+backup, or when the newest backup is older than the configured interval. Fresh
+backups are skipped so frequent restarts do not force extra backups.
+
 Configure these in:
 
 ```sh
