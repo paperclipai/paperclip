@@ -36,6 +36,7 @@ export const AGENT_ADAPTER_TYPES = [
   "cursor_cloud",
   "gemini_local",
   "opencode_local",
+  "gemini_local",
   "pi_local",
   "cursor",
   "openclaw_gateway",
