@@ -29,8 +29,8 @@ export const ADVANCED_TABS = [
 // The pre-Apps developer surface, kept reachable behind the Advanced door.
 export const DEVELOPER_TABS = [
   { key: "profiles", label: "Profiles", icon: Layers },
-  { key: "policies", label: "Policies", icon: Shield },
-  { key: "runtime", label: "Runtime", icon: Server },
+  { key: "policies", label: "Rules", icon: Shield },
+  { key: "runtime", label: "Health", icon: Server },
   { key: "audit", label: "Audit", icon: ScrollText },
 ] as const;
 
