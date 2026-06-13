@@ -191,6 +191,74 @@ describe("codex execute", () => {
     }
   });
 
+  it("prefers the local runtime API URL for local codex execution when the public API URL is Cloudflare-protected", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-local-api-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipApiUrl = process.env.PAPERCLIP_API_URL;
+    const previousPaperclipRuntimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL;
+    const previousPaperclipListenHost = process.env.PAPERCLIP_LISTEN_HOST;
+    const previousPaperclipListenPort = process.env.PAPERCLIP_LISTEN_PORT;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_API_URL = "https://paperclip.cretu.me";
+    process.env.PAPERCLIP_RUNTIME_API_URL = "https://paperclip.cretu.me";
+    process.env.PAPERCLIP_LISTEN_HOST = "0.0.0.0";
+    process.env.PAPERCLIP_LISTEN_PORT = "3100";
+
+    try {
+      const result = await execute({
+        runId: "run-local-api",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.paperclipApiUrl).toBe("http://localhost:3100");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
+      else process.env.PAPERCLIP_API_URL = previousPaperclipApiUrl;
+      if (previousPaperclipRuntimeApiUrl === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
+      else process.env.PAPERCLIP_RUNTIME_API_URL = previousPaperclipRuntimeApiUrl;
+      if (previousPaperclipListenHost === undefined) delete process.env.PAPERCLIP_LISTEN_HOST;
+      else process.env.PAPERCLIP_LISTEN_HOST = previousPaperclipListenHost;
+      if (previousPaperclipListenPort === undefined) delete process.env.PAPERCLIP_LISTEN_PORT;
+      else process.env.PAPERCLIP_LISTEN_PORT = previousPaperclipListenPort;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("emits a command note that Codex auto-applies repo-scoped AGENTS.md files", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-notes-"));
     const workspace = path.join(root, "workspace");
