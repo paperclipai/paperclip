@@ -521,6 +521,33 @@ describe("openclaw gateway adapter execute", () => {
     expect(result.errorCode).toBe("openclaw_gateway_url_missing");
   });
 
+  it("omits top-level paperclip context when includePaperclipPayload is false", async () => {
+    const gateway = await createMockGatewayServer();
+
+    try {
+      const result = await execute(
+        buildContext({
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          includePaperclipPayload: false,
+          payloadTemplate: {
+            message: "wake now",
+          },
+        }),
+      );
+
+      expect(result.exitCode).toBe(0);
+      const payload = gateway.getAgentPayload();
+      expect(payload).toBeTruthy();
+      expect(String(payload?.message ?? "")).toContain("Paperclip wake event for a cloud adapter.");
+      expect(payload?.paperclip).toBeUndefined();
+    } finally {
+      await gateway.close();
+    }
+  });
+
   it("returns adapter-managed runtime services from gateway result meta", async () => {
     const gateway = await createMockGatewayServer({
       waitPayload: {
