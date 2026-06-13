@@ -28,6 +28,14 @@ class LoadApiKey(unittest.TestCase):
             with mock.patch.dict(os.environ, {}, clear=True):
                 self.assertEqual(r.load_api_key(env_file=p), "quoted-key")
 
+    def test_handles_export_prefix(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, ".whitestag.env")
+            with open(p, "w") as fh:
+                fh.write("export TELEGRAM_BOT_TOKEN=abc\nexport N8N_API_KEY=exp-key\n")
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(r.load_api_key(env_file=p), "exp-key")
+
     def test_missing_returns_empty(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(r.load_api_key(env_file="/no/such/file"), "")

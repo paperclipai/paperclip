@@ -15,7 +15,8 @@ class N8nApiError(RuntimeError):
 
 
 def load_api_key(env_file: str | None = None) -> str:
-    """N8N_API_KEY aus der Umgebung, sonst aus ~/.whitestag.env (Zeile N8N_API_KEY=...)."""
+    """N8N_API_KEY aus der Umgebung, sonst aus ~/.whitestag.env.
+    Akzeptiert sowohl `N8N_API_KEY=...` als auch `export N8N_API_KEY=...`."""
     val = os.environ.get("N8N_API_KEY")
     if val:
         return val
@@ -24,6 +25,8 @@ def load_api_key(env_file: str | None = None) -> str:
         with open(env_file) as fh:
             for line in fh:
                 line = line.strip()
+                if line.startswith("export "):
+                    line = line[len("export "):].lstrip()
                 if line.startswith("N8N_API_KEY="):
                     return line.split("=", 1)[1].strip().strip('"').strip("'")
     except OSError:
