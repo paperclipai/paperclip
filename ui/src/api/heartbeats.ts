@@ -1,6 +1,7 @@
 import type {
   HeartbeatRun,
   HeartbeatRunEvent,
+  InboxDismissal,
   InstanceSchedulerHeartbeatAgent,
   WorkspaceOperation,
 } from "@paperclipai/shared";
@@ -79,6 +80,7 @@ export const heartbeatsApi = {
     return api.get<HeartbeatRun[]>(`/companies/${companyId}/heartbeat-runs${qs ? `?${qs}` : ""}`);
   },
   get: (runId: string) => api.get<HeartbeatRun>(`/heartbeat-runs/${runId}`),
+  resolveFailedRun: (runId: string) => api.post<InboxDismissal>(`/heartbeat-runs/${runId}/resolve`, {}),
   events: (runId: string, afterSeq = 0, limit = 200) =>
     api.get<HeartbeatRunEvent[]>(
       `/heartbeat-runs/${runId}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
