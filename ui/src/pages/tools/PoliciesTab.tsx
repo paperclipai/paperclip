@@ -796,10 +796,6 @@ function RuleBuilder({
               </SelectContent>
             </Select>
           </div>
-          <div className="space-y-1.5 lg:col-span-2">
-            <Label htmlFor="tool-patterns">Wildcard action names</Label>
-            <Input id="tool-patterns" value={form.toolNames} onChange={(e) => setForm({ ...form, usesMode: "actions", toolNames: e.target.value })} placeholder="gmail.*, slack.post_message" />
-          </div>
           <div className="space-y-1.5">
             <Label htmlFor="conditions-json">Conditions JSON</Label>
             <Textarea id="conditions-json" value={form.conditionsJson} onChange={(e) => setForm({ ...form, conditionsJson: e.target.value })} className="min-h-28 font-mono text-xs" />
@@ -828,8 +824,8 @@ function StarterCards({ onStart }: { onStart: (form: PolicyFormState) => void })
       form: emptyPolicyForm({ policyType: "block", usesMode: "capability", riskLevel: "destructive", name: "Block destructive actions everywhere" }),
     },
     {
-      title: "Ask first before anything sends or deletes",
-      form: emptyPolicyForm({ policyType: "require_approval", usesMode: "actions", toolNames: "*send*, *delete*", name: "Ask first before sends or deletes" }),
+      title: "Ask first before selected actions",
+      form: emptyPolicyForm({ policyType: "require_approval", usesMode: "actions", name: "Ask first before selected actions" }),
     },
     {
       title: "Limit a noisy action",

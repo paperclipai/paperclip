@@ -428,6 +428,62 @@ describeEmbeddedPostgres("tool access policy service", () => {
     expect(remainingTrustRules.map((policy) => policy.id)).toEqual([trustRule.id]);
   });
 
+  it("treats glob-looking action-name selectors as exact names", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection, catalogEntry } = await createTool(db, company.id);
+    const profile = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `profile-${randomUUID()}`,
+      name: "Write tools",
+      defaultAction: "allow",
+    }).returning().then((rows) => rows[0]!);
+    await db.insert(toolProfileBindings).values({
+      companyId: company.id,
+      profileId: profile.id,
+      targetType: "agent",
+      targetId: agent.id,
+    });
+    const wildcardPolicy = await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review wildcard-looking sends",
+      policyType: "require_approval",
+      priority: 10,
+      selectors: { toolName: "*send*" },
+    }).returning().then((rows) => rows[0]!);
+
+    const input = {
+      companyId: company.id,
+      actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
+    };
+
+    await expect(toolAccessPolicyService(db).decide(input)).resolves.toMatchObject({
+      allowed: true,
+      decision: "allow",
+      reasonCode: "allow_profile",
+      effectiveProfileIds: [profile.id],
+      matchedPolicyIds: [],
+    });
+
+    const exactPolicy = await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review exact sends",
+      policyType: "require_approval",
+      priority: 5,
+      selectors: { toolName: "send_email" },
+    }).returning().then((rows) => rows[0]!);
+
+    await expect(toolAccessPolicyService(db).decide(input)).resolves.toMatchObject({
+      allowed: false,
+      decision: "require_approval",
+      reasonCode: "requires_approval_policy",
+      effectiveProfileIds: [profile.id],
+      matchedPolicyIds: [exactPolicy.id],
+    });
+    expect(wildcardPolicy.selectors).toEqual({ toolName: "*send*" });
+  });
+
   it("rejects agent-supplied run context that belongs to another agent", async () => {
     const company = await createCompany(db);
     const actorAgent = await createAgent(db, company.id);

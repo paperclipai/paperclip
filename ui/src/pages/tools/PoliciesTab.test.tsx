@@ -195,6 +195,24 @@ describe("PoliciesTab", () => {
     expect(container.textContent).not.toContain("priority 500");
   });
 
+  it("does not advertise or seed wildcard action selectors", async () => {
+    await render([]);
+
+    expect(container.textContent).toContain("Ask first before selected actions");
+    expect(container.textContent).not.toContain("Wildcard action names");
+    expect(container.textContent).not.toContain("*send*");
+    expect(container.textContent).not.toContain("*delete*");
+
+    const starter = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Ask first before selected actions")
+    );
+    flushSync(() => starter?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flushReact();
+
+    expect(container.querySelector("#tool-patterns")).toBeNull();
+    expect([...container.querySelectorAll("input")].map((input) => input.value).join(" ")).not.toContain("*");
+  });
+
   it("wires duplicate, toggle, delete, and reorder actions to the Rules endpoints", async () => {
     await render([
       policy({ id: "rule-1", policyType: "block", selectors: { toolName: "gmail.delete" } }),

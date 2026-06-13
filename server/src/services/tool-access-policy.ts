@@ -262,6 +262,7 @@ function listValues(value: unknown): string[] {
 function selectorMatches(selector: ToolAccessSelector | Record<string, unknown> | null | undefined, ctx: ToolAccessContext): boolean {
   if (!selector || Object.keys(selector).length === 0) return true;
   const s = selector as Record<string, unknown>;
+  // Tool/action names are exact selectors. Glob-looking values are treated as literal names.
   const match = (singleKey: string, pluralKey: string, actual: string | null) => {
     const single = typeof s[singleKey] === "string" ? String(s[singleKey]) : null;
     const many = listValues(s[pluralKey]);
