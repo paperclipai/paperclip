@@ -7,6 +7,7 @@ import {
   configCheck,
   databaseCheck,
   deploymentAuthCheck,
+  embeddedPostgresBinaryCheck,
   llmCheck,
   logCheck,
   portCheck,
@@ -100,6 +101,11 @@ export async function doctor(opts: {
       opts,
     }),
   );
+
+  // 6b. Embedded PostgreSQL binary check
+  const epBinaryResult = embeddedPostgresBinaryCheck(config);
+  results.push(epBinaryResult);
+  printResult(epBinaryResult);
 
   // 7. LLM check
   const llmResult = await llmCheck(config);
