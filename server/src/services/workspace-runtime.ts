@@ -1116,6 +1116,21 @@ export async function realizeExecutionWorkspace(input: {
     };
   }
 
+  if (!await isGitCheckout(input.base.baseCwd)) {
+    return {
+      ...input.base,
+      strategy: "project_primary",
+      cwd: input.base.baseCwd,
+      branchName: null,
+      worktreePath: null,
+      warnings: [
+        `Workspace strategy "git_worktree" was requested but the base directory "${input.base.baseCwd}" is not a git checkout; falling back to "project_primary".`,
+      ],
+      created: false,
+      baseRefSha: null,
+    };
+  }
+
   const repoRoot = await resolveGitOwnerRepoRoot(input.base.baseCwd);
   const branchTemplate = asString(rawStrategy.branchTemplate, "{{issue.identifier}}-{{slug}}");
   const renderedBranch = renderWorkspaceTemplate(branchTemplate, {
@@ -1137,6 +1152,7 @@ export async function realizeExecutionWorkspace(input: {
     ?? await detectDefaultBranch(repoRoot)
     ?? "HEAD";
   const baseRefreshWarnings = await refreshRemoteTrackingBaseRef(repoRoot, baseRef);
+  const provisioningWarnings: string[] = [];
   const currentBaseRefSha = await resolveBaseRefSha(repoRoot, baseRef);
 
   await fs.mkdir(worktreeParentDir, { recursive: true });
@@ -1188,7 +1204,7 @@ export async function realizeExecutionWorkspace(input: {
       cwd: reusablePath,
       branchName,
       worktreePath: reusablePath,
-      warnings: [...baseRefreshWarnings, ...baseDrift.warnings],
+      warnings: [...baseRefreshWarnings, ...provisioningWarnings, ...baseDrift.warnings],
       created: false,
       baseRefSha: baseDrift.branchBaseRefSha ?? baseDrift.currentBaseRefSha,
     };
@@ -1218,8 +1234,23 @@ export async function realizeExecutionWorkspace(input: {
     if (validation?.valid) {
       return await reuseExistingWorktree(registeredBranchWorktree);
     }
+    // The registration is stale (missing directory or broken gitdir link). Prune
+    // the metadata only — never the directory, which may belong to another repo —
+    // and fall through to recreate when the registration clears.
+    await runGit(["worktree", "prune"], repoRoot).catch(() => null);
+    const registeredAfterPrune = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
+    if (registeredAfterPrune) {
+      const revalidation = await validateReusableWorktree(registeredAfterPrune);
+      if (revalidation?.valid) {
+        return await reuseExistingWorktree(registeredAfterPrune);
+      }
+      const reason = revalidation && !revalidation.valid ? ` (${revalidation.reason})` : "";
+      throw new Error(`Registered worktree for branch "${branchName}" at "${registeredAfterPrune}" is not reusable${reason}.`);
+    }
     const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
-    throw new Error(`Registered worktree for branch "${branchName}" at "${registeredBranchWorktree}" is not reusable${reason}.`);
+    provisioningWarnings.push(
+      `Pruned stale git worktree registration for branch "${branchName}" at "${registeredBranchWorktree}"${reason}; re-provisioning the worktree.`,
+    );
   }
 
   try {
@@ -1288,7 +1319,7 @@ export async function realizeExecutionWorkspace(input: {
     cwd: worktreePath,
     branchName,
     worktreePath,
-    warnings: baseRefreshWarnings,
+    warnings: [...baseRefreshWarnings, ...provisioningWarnings],
     created: true,
     baseRefSha: currentBaseRefSha,
   };
