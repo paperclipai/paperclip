@@ -388,6 +388,7 @@ const createIssueBaseSchema = z.object({
   assigneeUserId: z.string().optional().nullable(),
   requestDepth: issueRequestDepthInputSchema.optional().default(0),
   billingCode: z.string().optional().nullable(),
+  idempotencyKey: z.string().trim().max(255).optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
   executionPolicy: issueExecutionPolicySchema.optional().nullable(),
   executionWorkspaceId: z.string().uuid().optional().nullable(),

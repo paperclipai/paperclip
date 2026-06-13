@@ -49,6 +49,7 @@ export const issues = pgTable(
     originFingerprint: text("origin_fingerprint").notNull().default("default"),
     requestDepth: integer("request_depth").notNull().default(0),
     billingCode: text("billing_code"),
+    idempotencyKey: text("idempotency_key"),
     assigneeAdapterOverrides: jsonb("assignee_adapter_overrides").$type<Record<string, unknown>>(),
     executionPolicy: jsonb("execution_policy").$type<Record<string, unknown>>(),
     executionState: jsonb("execution_state").$type<Record<string, unknown>>(),
@@ -90,6 +91,7 @@ export const issues = pgTable(
     dueMonitorIdx: index("issues_company_monitor_due_idx").on(table.companyId, table.monitorNextCheckAt),
     identifierIdx: uniqueIndex("issues_identifier_idx").on(table.identifier),
     titleSearchIdx: index("issues_title_search_idx").using("gin", table.title.op("gin_trgm_ops")),
+    idempotencyKeyIdx: index("issues_company_idempotency_key_idx").on(table.companyId, table.idempotencyKey).where(sql`"issues"."idempotency_key" IS NOT NULL`),
     identifierSearchIdx: index("issues_identifier_search_idx").using("gin", table.identifier.op("gin_trgm_ops")),
     descriptionSearchIdx: index("issues_description_search_idx").using("gin", table.description.op("gin_trgm_ops")),
     openRoutineExecutionIdx: uniqueIndex("issues_open_routine_execution_uq")

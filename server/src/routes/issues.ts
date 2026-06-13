@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, ne, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -137,6 +137,7 @@ import {
   resolveCoreTrustPreset,
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
+import { getRunLogStore } from "../services/run-log-store.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -997,6 +998,40 @@ class AutoApprovalIssueMissingError extends Error {
   constructor() {
     super("Issue not found during auto-approval transaction");
     this.name = "AutoApprovalIssueMissingError";
+  }
+}
+
+async function appendDedupEventToRunLog(
+  db: Db,
+  actor: ReturnType<typeof getActorInfo>,
+  event: { originalIssueId: string; matchedTitle: string; matchedParentId: string },
+) {
+  if (actor.actorType !== "agent" || !actor.agentId || !actor.runId) return;
+  try {
+    const run = await db
+      .select({ logStore: heartbeatRuns.logStore, logRef: heartbeatRuns.logRef })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, actor.runId))
+      .then((rows) => rows[0] ?? null);
+    if (!run?.logStore || !run?.logRef) return;
+    const store = getRunLogStore();
+    await store.append(
+      { store: run.logStore as "local_file", logRef: run.logRef },
+      {
+        stream: "system",
+        chunk: JSON.stringify({
+          event: "issue_dedup",
+          originalIssueId: event.originalIssueId,
+          matchedTitle: event.matchedTitle,
+          matchedParentId: event.matchedParentId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+        }),
+        ts: new Date().toISOString(),
+      },
+    );
+  } catch (err) {
+    logger.warn({ err }, "failed to append issue dedup event to run log");
   }
 }
 
@@ -4372,6 +4407,72 @@ export function issueRoutes(
       actor.actorType,
     );
     await assertCanManageIssueMonitor(access, req, companyId, createBody.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+
+    // 60-second time-window dedup: prevent duplicate child issues from LLM tool-call regeneration.
+    // Only applies when parentId is set (top-level issues with identical titles are legitimately periodic).
+    if (createBody.parentId && actor.agentId) {
+      const sixtySecondsAgo = new Date(Date.now() - 60_000);
+      const [existingIssue] = await db
+        .select()
+        .from(issueRows)
+        .where(
+          and(
+            eq(issueRows.companyId, companyId),
+            eq(issueRows.parentId, createBody.parentId),
+            eq(issueRows.title, createBody.title),
+            eq(issueRows.createdByAgentId, actor.agentId),
+            ne(issueRows.status, "cancelled"),
+            gt(issueRows.createdAt, sixtySecondsAgo),
+          ),
+        )
+        .limit(1);
+
+      if (existingIssue) {
+        void appendDedupEventToRunLog(db, actor, {
+          originalIssueId: existingIssue.id,
+          matchedTitle: createBody.title,
+          matchedParentId: createBody.parentId,
+        });
+        const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(existingIssue.id);
+        res.setHeader("X-Paperclip-Deduplicated", "true");
+        res.status(200).json({
+          ...existingIssue,
+          relatedWork: referenceSummary,
+          referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+        });
+        return;
+      }
+    }
+
+    // Layer 2 — explicit idempotencyKey dedup (24-hour TTL, company-scoped).
+    // Returns 200 + original issue + X-Paperclip-Deduplicated: true on a key hit.
+    if (createBody.idempotencyKey) {
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const [existingByKey] = await db
+        .select()
+        .from(issueRows)
+        .where(
+          and(
+            eq(issueRows.companyId, companyId),
+            eq(issueRows.idempotencyKey, createBody.idempotencyKey),
+            ne(issueRows.status, "cancelled"),
+            gt(issueRows.createdAt, twentyFourHoursAgo),
+          ),
+        )
+        .limit(1);
+
+      if (existingByKey) {
+        const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(existingByKey.id);
+        res.setHeader("X-Paperclip-Deduplicated", "true");
+        res.status(200).json({
+          ...existingByKey,
+          relatedWork: referenceSummary,
+          referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+        });
+        return;
+      }
+    }
+
     const issueId = randomUUID();
     const sourceTrust = await sourceTrustForActorWrite({
       id: issueId,
