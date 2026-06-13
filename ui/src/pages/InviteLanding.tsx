@@ -364,11 +364,16 @@ export function InviteLandingPage() {
         await authApi.signInEmail({ email: email.trim(), password });
         return;
       }
-      await authApi.signUpEmail({
-        name: name.trim(),
-        email: email.trim(),
-        password,
-      });
+      await authApi.signUpEmail(
+        {
+          name: name.trim(),
+          email: email.trim(),
+          password,
+        },
+        // Unlocks sign-up on invite-only instances (TWB-60); the invite token is
+        // already in scope from the invite-landing URL.
+        { inviteToken: token },
+      );
     },
     onSuccess: async () => {
       setAuthFeedback(null);

@@ -2,6 +2,7 @@ import type { Request, RequestHandler } from "express";
 import type { IncomingHttpHeaders } from "node:http";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { toNodeHandler } from "better-auth/node";
 import type { Db } from "@paperclipai/db";
 import {
@@ -12,6 +13,11 @@ import {
 } from "@paperclipai/db";
 import type { Config } from "../config.js";
 import { resolvePaperclipInstanceId } from "../home-paths.js";
+import {
+  INVITE_SIGNUP_TOKEN_HEADER,
+  SIGN_UP_REQUIRES_INVITE_CODE,
+  evaluateSignUpRequest,
+} from "./invite-signup-gate.js";
 
 export type BetterAuthSessionUser = {
   id: string;
@@ -130,6 +136,13 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     publicUrl,
   });
 
+  // `config.authDisableSignUp` now means "invite-only sign-up" rather than Better
+  // Auth's hard global off. We keep Better Auth's `disableSignUp` off so the
+  // `/sign-up/email` endpoint stays reachable, and gate unsolicited sign-ups in a
+  // `before` hook that requires a valid invite token. This closes the
+  // open-registration surface while still letting invited operators sign up
+  // (see auth/invite-signup-gate.ts and TWB-60).
+  const inviteOnlySignUp = config.authDisableSignUp;
   const authConfig = {
     baseURL: baseUrl,
     secret,
@@ -146,7 +159,23 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     emailAndPassword: {
       enabled: true,
       requireEmailVerification: false,
-      disableSignUp: config.authDisableSignUp,
+      disableSignUp: false,
+    },
+    hooks: {
+      before: createAuthMiddleware(async (ctx) => {
+        if (ctx.path !== "/sign-up/email") return;
+        if (!inviteOnlySignUp) return;
+        const headerToken = ctx.headers?.get(INVITE_SIGNUP_TOKEN_HEADER) ?? null;
+        const token = (headerToken ?? "").trim() || null;
+        const decision = await evaluateSignUpRequest(db, { inviteOnly: true, token });
+        if (!decision.allowed) {
+          throw new APIError("FORBIDDEN", {
+            code: SIGN_UP_REQUIRES_INVITE_CODE,
+            message:
+              "Sign-up is invite-only on this instance. A valid invite is required to create an account.",
+          });
+        }
+      }),
     },
     advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
   };
