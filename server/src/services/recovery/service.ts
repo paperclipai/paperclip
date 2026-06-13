@@ -48,6 +48,7 @@ import {
   type SuccessfulRunHandoffNotice,
 } from "./successful-run-handoff.js";
 import {
+  RECOVERY_KEY_PREFIXES,
   RECOVERY_ORIGIN_KINDS,
   buildIssueGraphLivenessLeafKey,
   isStrandedIssueRecoveryOriginKind,
@@ -68,6 +69,7 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "ti
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
+export const LIVENESS_ESCALATION_CLOSED_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
@@ -3185,6 +3187,37 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
+  async function isLivenessEscalationOnCooldown(companyId: string, incidentKey: string): Promise<boolean> {
+    const cooldownCutoff = new Date(Date.now() - LIVENESS_ESCALATION_CLOSED_COOLDOWN_MS);
+    // Match any done escalation for the same source issue, regardless of which liveness state
+    // (state/blocker) the incidentKey encodes. The incidentKey format is
+    // "{prefix}:{companyId}:{issueId}:{state}:{blocker}" so two escalations for the same source
+    // issue but different blocker/state will have different keys. Without this broader match, an
+    // issue state change resets the cooldown and the escalation fires again within minutes.
+    const parsed = parseLivenessIncidentKey(incidentKey);
+    const issuePrefix = parsed
+      ? `${RECOVERY_KEY_PREFIXES.issueGraphLivenessIncident}:${companyId}:${parsed.issueId}:%`
+      : null;
+    const recent = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
+          issuePrefix
+            ? sql`${issues.originId} like ${issuePrefix}`
+            : eq(issues.originId, incidentKey),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+          gt(issues.updatedAt, cooldownCutoff),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return Boolean(recent);
+  }
+
   async function findOpenLivenessRecoveryIssueForLeaf(finding: IssueLivenessFinding) {
     const byFingerprint = await db
       .select()
@@ -3604,6 +3637,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         runId: input.runId ?? null,
       });
       return { kind: "existing" as const, escalationIssueId: existing.id };
+    }
+
+    if (await isLivenessEscalationOnCooldown(issue.companyId, input.finding.incidentKey)) {
+      return { kind: "skipped" as const };
     }
 
     const ownerSelection = await resolveEscalationOwnerAgentId(input.finding, recoveryIssue);
