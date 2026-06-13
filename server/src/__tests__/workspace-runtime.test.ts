@@ -770,6 +770,76 @@ describe("realizeExecutionWorkspace", () => {
     expect(path.basename(realized.cwd)).toBe("PAP-992.hotfix-april-1");
   });
 
+  it("creates unique per-issue worktrees using the {{issue.identifier}} template variable (regression: BRA-129)", async () => {
+    // BRA-129: branchTemplate used {{issueIdentifier}} which does not exist in the render
+    // context — the correct dotted-path form is {{issue.identifier}}. The wrong name silently
+    // rendered to the static prefix only ("fix"), causing all issues to collide on the same path.
+    const repoRoot = await createTempRepo();
+
+    const first = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "fix-{{issue.identifier}}",
+        },
+      },
+      issue: {
+        id: "bra-129",
+        identifier: "BRA-129",
+        title: "First issue",
+      },
+      agent: {
+        id: "agent-builder",
+        name: "Paperclip-Builder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(first.branchName).toBe("fix-BRA-129");
+    expect(path.basename(first.cwd)).toBe("fix-BRA-129");
+    await expect(fs.stat(path.join(first.cwd, ".git"))).resolves.toBeTruthy();
+
+    await execFileAsync("git", ["worktree", "remove", "--force", first.cwd], { cwd: repoRoot });
+
+    const second = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "fix-{{issue.identifier}}",
+        },
+      },
+      issue: {
+        id: "bra-130",
+        identifier: "BRA-130",
+        title: "Second issue",
+      },
+      agent: {
+        id: "agent-builder",
+        name: "Paperclip-Builder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(second.branchName).toBe("fix-BRA-130");
+    expect(second.cwd).not.toBe(first.cwd);
+  });
+
   it("runs a configured provision command inside the derived worktree", async () => {
     const repoRoot = await createTempRepo();
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
