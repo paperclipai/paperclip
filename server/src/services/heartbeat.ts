@@ -197,10 +197,15 @@ import {
 } from "./low-trust-runtime-containment.js";
 import { resolveCoreTrustPreset, type TrustPresetResolution } from "./trust-preset-resolver.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { fetchAllQuotaWindows } from "./quota-windows.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_STRING_CHARS = 16 * 1024;
+
+// Tracks whether the previous tickTimers call was quota-blocked so we can
+// detect the blocked→available transition and fire a recovery sweep.
+let lastTickWasQuotaBlocked = false;
 const MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS = 50;
 
 export function redactDetectedSuccessfulRunProgressSummaryForBoard(
@@ -11486,6 +11491,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let enqueued = 0;
       let skipped = 0;
 
+      // Pre-flight: check provider quota before waking any timer-based agents.
+      // If any Anthropic window is critically exhausted (>=95%), skip all timer
+      // wakes this tick to avoid burning quota on inbox-empty heartbeats.
+      let quotaBlocked = false;
+      let quotaResetAt: string | null = null;
+      try {
+        const quotaResults = await fetchAllQuotaWindows();
+        const anthropicResult = quotaResults.find((r) => r.provider === "anthropic");
+        if (anthropicResult?.ok && anthropicResult.windows.length > 0) {
+          const criticalWindow = anthropicResult.windows.find(
+            (w) => typeof w.usedPercent === "number" && w.usedPercent >= 95,
+          );
+          if (criticalWindow) {
+            quotaBlocked = true;
+            quotaResetAt = criticalWindow.resetsAt ?? null;
+            logger.warn(
+              { window: criticalWindow.label, usedPercent: criticalWindow.usedPercent, resetsAt: quotaResetAt },
+              "heartbeat_timer_quota_blocked: quota critical, skipping all timer wakes this tick",
+            );
+          }
+        }
+      } catch (err) {
+        // Quota check failure must not block agent wakes — log and proceed.
+        logger.warn({ err }, "heartbeat_timer_quota_check_failed: proceeding without quota guard");
+      }
+
+      // Recovery sweep: if quota just recovered (was blocked last tick, now free),
+      // enqueue all eligible agents immediately regardless of their interval timer.
+      // This avoids a long silent gap where agents idle even though work is queued.
+      const quotaJustRecovered = lastTickWasQuotaBlocked && !quotaBlocked;
+      lastTickWasQuotaBlocked = quotaBlocked;
+
+      if (quotaJustRecovered) {
+        logger.info("heartbeat_timer_quota_recovered: quota back below threshold, sweeping all eligible agents");
+      }
+
       for (const agent of allAgents) {
         const invokability = evaluateAgentInvokability(toAgentOrgRow(agent), agentsByCompany.get(agent.companyId) ?? []);
         if (!invokability.invokable) continue;
@@ -11495,17 +11536,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         checked += 1;
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
-        if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        // Normal interval check — bypass only on quota recovery sweep.
+        if (!quotaJustRecovered && elapsedMs < policy.intervalSec * 1000) continue;
+
+        if (quotaBlocked) {
+          skipped += 1;
+          continue;
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
           triggerDetail: "system",
-          reason: "heartbeat_timer",
+          reason: quotaJustRecovered ? "heartbeat_quota_recovery" : "heartbeat_timer",
           requestedByActorType: "system",
           requestedByActorId: "heartbeat_scheduler",
           contextSnapshot: {
             source: "scheduler",
-            reason: "interval_elapsed",
+            reason: quotaJustRecovered ? "quota_recovered" : "interval_elapsed",
             now: now.toISOString(),
           },
         });
