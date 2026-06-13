@@ -35,6 +35,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "events.subscribe",
     "issues.read",
     "agents.read",
+    "projects.read",
     "agent.tools.register",
     "plugin.state.read",
     "plugin.state.write",
@@ -101,6 +102,12 @@ const manifest: PaperclipPluginManifestV1 = {
         default: true,
         description:
           "Wave 2.2: on agent.run.started, fetch a depth-N graph traversal from the issue page and cache it under the run scope for the gbrain_recall_cache tool to read.",
+      },
+      recallEnrichmentFallback: {
+        type: "boolean",
+        default: true,
+        description:
+          "When issue-page traversal is missing, empty, or an island, also traverse known agent/project page hubs and cache the first useful merged graph.",
       },
       recallTraversalDepth: {
         type: "integer",

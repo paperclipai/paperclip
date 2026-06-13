@@ -7,6 +7,7 @@
 export const PAGE_TYPES = {
   ISSUE: "issue",
   AGENT: "agent",
+  PROJECT: "project",
   FACT: "fact",
 } as const;
 
@@ -26,6 +27,13 @@ export function agentSlug(name: string | null | undefined): string | null {
   const seg = normalizeSegment(name);
   if (!seg) return null;
   return `agent-${seg}`;
+}
+
+export function projectSlug(nameOrKey: string | null | undefined): string | null {
+  if (!nameOrKey) return null;
+  const seg = normalizeSegment(nameOrKey);
+  if (!seg) return null;
+  return `project-${seg}`;
 }
 
 export function factSlug(memoryUnitUuid: string): string {

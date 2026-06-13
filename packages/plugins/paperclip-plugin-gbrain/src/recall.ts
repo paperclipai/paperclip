@@ -18,7 +18,7 @@
 // that need current state should call traverse_graph directly.
 
 import type { GbrainCallable } from "./pages.js";
-import { issueSlug } from "./identity.js";
+import { agentSlug, issueSlug, projectSlug } from "./identity.js";
 
 export const RECALL_STATE_KEY = "gbrain-context";
 export const DEFAULT_RECALL_DEPTH = 2;
@@ -26,7 +26,13 @@ export const DEFAULT_RECALL_DEPTH = 2;
 export interface PrefetchInput {
   client: GbrainCallable;
   issueIdentifier: string | null;
+  companyId?: string | null;
+  agentId?: string | null;
+  agentName?: string | null;
+  projectId?: string | null;
+  projectNameOrKey?: string | null;
   depth: number;
+  enrichmentFallback?: boolean;
 }
 
 export interface PrefetchResult {
@@ -34,6 +40,11 @@ export interface PrefetchResult {
   issuePageSlug: string | null;
   graph: unknown | null;
   reason?: string;
+}
+
+interface TraversalCandidate {
+  slug: string;
+  label: string;
 }
 
 export type CachedRecallStatus =
@@ -60,21 +71,127 @@ export async function prefetchRunContext(input: PrefetchInput): Promise<Prefetch
   if (!slug) {
     return { ok: false, issuePageSlug: null, graph: null, reason: "issue identifier did not yield a slug" };
   }
+  const safeDepth = Math.max(1, depth);
   try {
-    const graph = await client.call("traverse_graph", {
-      slug,
-      depth: Math.max(1, depth),
-    });
+    const graph = await traverseGraph(client, slug, safeDepth);
     if (graph === null || graph === undefined) {
       // gbrain returns null for missing pages — first run on a brand-new
       // issue. Not an error; just nothing in the graph yet.
-      return { ok: true, issuePageSlug: slug, graph: null, reason: "issue page does not exist yet" };
+      return await maybeFallback(input, slug, null, "issue page does not exist yet", safeDepth);
     }
-    return { ok: true, issuePageSlug: slug, graph };
+    const classification = classifyGraphShape(graph);
+    if (classification.status === "ok") {
+      return { ok: true, issuePageSlug: slug, graph };
+    }
+    return await maybeFallback(
+      input,
+      slug,
+      graph,
+      classification.note ?? `issue graph classified as ${classification.status}`,
+      safeDepth,
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, issuePageSlug: slug, graph: null, reason: `traverse_graph failed: ${msg}` };
   }
+}
+
+async function traverseGraph(client: GbrainCallable, slug: string, depth: number): Promise<unknown> {
+  return await client.call("traverse_graph", { slug, depth });
+}
+
+async function maybeFallback(
+  input: PrefetchInput,
+  issuePageSlug: string,
+  issueGraph: unknown | null,
+  issueReason: string,
+  depth: number,
+): Promise<PrefetchResult> {
+  if (input.enrichmentFallback === false) {
+    return { ok: true, issuePageSlug, graph: issueGraph, reason: issueReason };
+  }
+
+  for (const candidate of fallbackCandidates(input)) {
+    try {
+      const fallbackGraph = await traverseGraph(input.client, candidate.slug, depth);
+      if (fallbackGraph === null || fallbackGraph === undefined) continue;
+      if (classifyGraphShape(fallbackGraph).status !== "ok") continue;
+      return {
+        ok: true,
+        issuePageSlug,
+        graph: mergeGraphs(issueGraph, fallbackGraph),
+        reason: `${issueReason}; enriched with ${candidate.label} graph ${candidate.slug}`,
+      };
+    } catch {
+      // Fallback enrichment is opportunistic; preserve the original issue-page result.
+    }
+  }
+
+  return { ok: true, issuePageSlug, graph: issueGraph, reason: issueReason };
+}
+
+function fallbackCandidates(input: PrefetchInput): TraversalCandidate[] {
+  const seen = new Set<string>();
+  const candidates: TraversalCandidate[] = [];
+  const add = (slug: string | null | undefined, label: string) => {
+    if (!slug || seen.has(slug)) return;
+    seen.add(slug);
+    candidates.push({ slug, label });
+  };
+
+  add(agentSlug(input.agentName), "agent");
+  if (input.companyId && input.agentId) {
+    add(`paperclip/agents/${input.companyId}/${input.agentId}`, "agent");
+  }
+  add(projectSlug(input.projectNameOrKey), "project");
+  if (input.companyId && input.projectId) {
+    add(`paperclip/projects/${input.companyId}/${input.projectId}`, "project");
+  }
+  return candidates;
+}
+
+function mergeGraphs(primary: unknown | null, fallback: unknown): unknown {
+  if (primary === null || primary === undefined) return fallback;
+  if (Array.isArray(primary) && primary.length === 0) return fallback;
+
+  if (Array.isArray(primary) && Array.isArray(fallback)) {
+    return dedupeByStableString([...primary, ...fallback]);
+  }
+
+  if (isRecord(primary) && isRecord(fallback)) {
+    const primaryNodes = Array.isArray(primary.nodes) ? primary.nodes : [];
+    const fallbackNodes = Array.isArray(fallback.nodes) ? fallback.nodes : [];
+    const primaryEdges = Array.isArray(primary.edges) ? primary.edges : [];
+    const fallbackEdges = Array.isArray(fallback.edges) ? fallback.edges : [];
+    return {
+      ...fallback,
+      ...primary,
+      nodes: dedupeByStableString([...primaryNodes, ...fallbackNodes]),
+      edges: dedupeByStableString([...primaryEdges, ...fallbackEdges]),
+    };
+  }
+
+  return { issueGraph: primary, enrichmentGraph: fallback };
+}
+
+function dedupeByStableString(values: unknown[]): unknown[] {
+  const seen = new Set<string>();
+  const out: unknown[] = [];
+  for (const value of values) {
+    const key = stableString(value);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
+function stableString(value: unknown): string {
+  if (value === undefined) return "undefined";
+  if (!isRecord(value)) return JSON.stringify(value);
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value).sort()) sorted[key] = value[key];
+  return JSON.stringify(sorted);
 }
 
 export interface CachedRecall {
@@ -172,6 +289,6 @@ export function buildCacheEntry(input: {
     depth: input.depth,
     graph: input.result.graph,
     status: classification.status,
-    note: classification.note,
+    note: input.result.reason ?? classification.note,
   };
 }

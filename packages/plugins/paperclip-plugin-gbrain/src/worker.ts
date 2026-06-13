@@ -40,6 +40,7 @@ interface GbrainConfig {
   promoteFactsToPages?: boolean;
   factPromotionDelaySec?: number;
   prefetchRunContext?: boolean;
+  recallEnrichmentFallback?: boolean;
   recallTraversalDepth?: number;
 }
 
@@ -149,12 +150,33 @@ const plugin = definePlugin({
       const depth = config.recallTraversalDepth ?? DEFAULT_RECALL_DEPTH;
 
       let issueIdentifier: string | null = null;
+      let projectId: string | null = null;
+      let projectNameOrKey: string | null = null;
       if (issueId) {
         try {
           const issue = await ctx.issues.get(issueId, event.companyId);
           issueIdentifier = issue?.identifier ?? null;
+          projectId = issue?.projectId ?? null;
+          projectNameOrKey = issue?.project?.urlKey ?? issue?.project?.name ?? null;
         } catch {
           // ignore — prefetch falls through with no identifier
+        }
+      }
+
+      let agentName: string | null = null;
+      try {
+        const agent = await ctx.agents.get(agentId, event.companyId);
+        agentName = agent?.name ?? null;
+      } catch {
+        // ignore — issue-page traversal still works without enrichment labels
+      }
+
+      if (projectId && !projectNameOrKey) {
+        try {
+          const project = await ctx.projects.get(projectId, event.companyId);
+          projectNameOrKey = project?.urlKey ?? project?.name ?? null;
+        } catch {
+          // ignore — ID-based project fallback remains available
         }
       }
 
@@ -162,7 +184,13 @@ const plugin = definePlugin({
       const result = await prefetchRunContext({
         client,
         issueIdentifier,
+        companyId: event.companyId,
+        agentId,
+        agentName,
+        projectId,
+        projectNameOrKey,
         depth,
+        enrichmentFallback: config.recallEnrichmentFallback !== false,
       });
       const entry = buildCacheEntry({ result, depth });
       await ctx.state.set(

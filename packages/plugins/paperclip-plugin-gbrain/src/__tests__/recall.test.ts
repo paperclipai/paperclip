@@ -67,10 +67,103 @@ describe("prefetchRunContext", () => {
       client: client as unknown as GbrainCallable,
       issueIdentifier: "BLO-NEW",
       depth: 2,
+      enrichmentFallback: false,
     });
     expect(out.ok).toBe(true);
     expect(out.graph).toBeNull();
     expect(out.reason).toMatch(/does not exist/i);
+  });
+
+  it("falls back to the agent hub when the issue graph is an island", async () => {
+    const client = {
+      call: vi.fn(async (_tool: string, args: Record<string, unknown>) => {
+        if (args.slug === "issue-blo-1") {
+          return { nodes: [{ slug: "issue-blo-1" }], edges: [] };
+        }
+        if (args.slug === "agent-cto") {
+          return {
+            nodes: [{ slug: "agent-cto" }, { slug: "issue-blo-999" }],
+            edges: [{ from: "agent-cto", to: "issue-blo-999" }],
+          };
+        }
+        return null;
+      }),
+    };
+
+    const out = await prefetchRunContext({
+      client: client as unknown as GbrainCallable,
+      issueIdentifier: "BLO-1",
+      agentName: "CTO",
+      depth: 2,
+    });
+
+    expect(client.call).toHaveBeenCalledWith("traverse_graph", {
+      slug: "agent-cto",
+      depth: 2,
+    });
+    expect(out.reason).toMatch(/enriched with agent graph agent-cto/);
+    expect(out.graph).toEqual({
+      nodes: [{ slug: "issue-blo-1" }, { slug: "agent-cto" }, { slug: "issue-blo-999" }],
+      edges: [{ from: "agent-cto", to: "issue-blo-999" }],
+    });
+  });
+
+  it("tries ID-based agent and project fallbacks after a missing named agent hub", async () => {
+    const client = {
+      call: vi.fn(async (_tool: string, args: Record<string, unknown>) => {
+        if (args.slug === "issue-blo-1" || args.slug === "agent-cto") return [];
+        if (args.slug === "paperclip/agents/c-1/a-1") return null;
+        if (args.slug === "project-rag") {
+          return {
+            nodes: [{ slug: "project-rag" }, { slug: "issue-blo-2" }],
+            edges: [{ from: "project-rag", to: "issue-blo-2" }],
+          };
+        }
+        return null;
+      }),
+    };
+
+    const out = await prefetchRunContext({
+      client: client as unknown as GbrainCallable,
+      issueIdentifier: "BLO-1",
+      companyId: "c-1",
+      agentId: "a-1",
+      agentName: "CTO",
+      projectId: "p-1",
+      projectNameOrKey: "rag",
+      depth: 2,
+    });
+
+    expect(client.call).toHaveBeenCalledWith("traverse_graph", {
+      slug: "paperclip/agents/c-1/a-1",
+      depth: 2,
+    });
+    expect(client.call).toHaveBeenCalledWith("traverse_graph", {
+      slug: "project-rag",
+      depth: 2,
+    });
+    expect(out.reason).toMatch(/enriched with project graph project-rag/);
+    expect(out.graph).toEqual({
+      nodes: [{ slug: "project-rag" }, { slug: "issue-blo-2" }],
+      edges: [{ from: "project-rag", to: "issue-blo-2" }],
+    });
+  });
+
+  it("does not call fallback slugs when enrichment fallback is disabled", async () => {
+    const client = {
+      call: vi.fn(async () => ({ nodes: [{ slug: "issue-blo-1" }], edges: [] })),
+    };
+
+    const out = await prefetchRunContext({
+      client: client as unknown as GbrainCallable,
+      issueIdentifier: "BLO-1",
+      agentName: "CTO",
+      depth: 2,
+      enrichmentFallback: false,
+    });
+
+    expect(client.call).toHaveBeenCalledTimes(1);
+    expect(out.graph).toEqual({ nodes: [{ slug: "issue-blo-1" }], edges: [] });
   });
 
   it("catches MCP errors and returns ok=false with the message", async () => {

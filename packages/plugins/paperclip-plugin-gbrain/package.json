@@ -1,6 +1,6 @@
 {
   "name": "@kkroo/paperclip-plugin-gbrain",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Paperclip plugin that retains agent run output to gbrain (graph brain) as timeline entries on issue pages, identity-tagged with agentId/runId/companyId.",
   "license": "MIT",
   "type": "module",
