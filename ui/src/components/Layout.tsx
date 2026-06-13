@@ -545,7 +545,7 @@ export function Layout() {
               </div>
             ) : null}
           </div>
-          <div className={cn(isMobile ? "block" : "flex flex-1 min-h-0")}>
+          <div className={cn(isMobile ? "block" : "flex flex-1 min-h-0 min-w-0")}>
             <main
               id="main-content"
               ref={mainContentRef}
