@@ -7,6 +7,13 @@ on:
     tags:
       - "v*"
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: docker-${{ github.sha }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   packages: write
@@ -15,9 +22,6 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    concurrency:
-      group: docker-${{ github.ref }}
-      cancel-in-progress: true
     steps:
       - name: Checkout
         uses: actions/checkout@v6
