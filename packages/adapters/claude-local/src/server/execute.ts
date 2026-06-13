@@ -457,10 +457,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
+  let agentSettingsContents: string | null = null;
+  if (agentHome) {
+    const agentSettingsPath = path.join(agentHome, ".claude", "settings.json");
+    agentSettingsContents = await fs.readFile(agentSettingsPath, "utf-8").catch(() => null);
+  }
   const promptBundle = await prepareClaudePromptBundle({
     companyId: agent.companyId,
     skills: claudeSkillEntries.filter((entry) => desiredSkillNames.has(entry.key)),
     instructionsContents: combinedInstructionsContents,
+    settingsContents: agentSettingsContents,
     onLog,
   });
   const useManagedRemoteClaudeConfig =

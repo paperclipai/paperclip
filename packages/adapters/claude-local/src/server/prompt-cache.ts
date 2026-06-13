@@ -88,6 +88,7 @@ async function hashPathContents(
 async function buildClaudePromptBundleKey(input: {
   skills: SkillEntry[];
   instructionsContents: string | null;
+  settingsContents: string | null;
 }): Promise<string> {
   const hash = createHash("sha256");
   hash.update("paperclip-claude-prompt-bundle:v1\n");
@@ -103,6 +104,14 @@ async function buildClaudePromptBundleKey(input: {
   for (const entry of sortedSkills) {
     hash.update(`skill:${entry.key}:${entry.runtimeName}\n`);
     await hashPathContents(entry.source, hash, entry.runtimeName, new Set<string>());
+  }
+
+  if (input.settingsContents) {
+    hash.update("settings\n");
+    hash.update(input.settingsContents);
+    hash.update("\n");
+  } else {
+    hash.update("settings:none\n");
   }
 
   return hash.digest("hex");
@@ -135,12 +144,14 @@ export async function prepareClaudePromptBundle(input: {
   companyId: string;
   skills: SkillEntry[];
   instructionsContents: string | null;
+  settingsContents: string | null;
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<ClaudePromptBundle> {
-  const { companyId, skills, instructionsContents, onLog } = input;
+  const { companyId, skills, instructionsContents, settingsContents, onLog } = input;
   const bundleKey = await buildClaudePromptBundleKey({
     skills,
     instructionsContents,
+    settingsContents,
   });
   const rootDir = path.join(resolveManagedClaudePromptCacheRoot(process.env, companyId), bundleKey);
   const skillsHome = path.join(rootDir, ".claude", "skills");
@@ -163,6 +174,11 @@ export async function prepareClaudePromptBundle(input: {
     : null;
   if (instructionsFilePath && instructionsContents) {
     await ensureReadableFile(instructionsFilePath, instructionsContents);
+  }
+
+  if (settingsContents) {
+    const settingsPath = path.join(rootDir, ".claude", "settings.json");
+    await ensureReadableFile(settingsPath, settingsContents);
   }
 
   return {
