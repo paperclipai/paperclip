@@ -1177,6 +1177,21 @@ const heartbeatRunListResultColumns = {
   resultCostUsdCamel: sql<string | null>`${heartbeatRuns.resultJson} ->> 'costUsd'`.as("resultCostUsdCamel"),
 } as const;
 
+// SQL_ASCII clusters do byte-level (not char-level) `left()` truncation, which can split a
+// multi-byte UTF-8 character mid-sequence and produce bytes that the wire protocol cannot
+// re-encode as UTF-8 (PG raises `invalid byte sequence for encoding "UTF8": 0xe5 0x86`).
+// On those clusters we drop the four narrative text projections; numeric cost fields are
+// digits-only and never trigger the truncation hazard, so they're safe to keep.
+const heartbeatRunListResultSqlAsciiSafeColumns = {
+  resultSummary: sql<string | null>`NULL`.as("resultSummary"),
+  resultResult: sql<string | null>`NULL`.as("resultResult"),
+  resultMessage: sql<string | null>`NULL`.as("resultMessage"),
+  resultError: sql<string | null>`NULL`.as("resultError"),
+  resultTotalCostUsd: sql<string | null>`${heartbeatRuns.resultJson} ->> 'total_cost_usd'`.as("resultTotalCostUsd"),
+  resultCostUsd: sql<string | null>`${heartbeatRuns.resultJson} ->> 'cost_usd'`.as("resultCostUsd"),
+  resultCostUsdCamel: sql<string | null>`${heartbeatRuns.resultJson} ->> 'costUsd'`.as("resultCostUsdCamel"),
+} as const;
+
 const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
   case
     when ${heartbeatRuns.resultJson} is null then null
@@ -4128,13 +4143,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const fetchLimit = Math.max(policy.maxSessionRuns > 0 ? policy.maxSessionRuns + 1 : 0, 4);
+    const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
     const runs = await db
       .select({
         id: heartbeatRuns.id,
         createdAt: heartbeatRuns.createdAt,
         usageJson: heartbeatRuns.usageJson,
-        error: heartbeatRuns.error,
-        ...heartbeatRunListResultColumns,
+        error: safeForLegacyEncoding
+          ? sql<string | null>`NULL`.as("error")
+          : heartbeatRuns.error,
+        ...(safeForLegacyEncoding
+          ? heartbeatRunListResultSqlAsciiSafeColumns
+          : heartbeatRunListResultColumns),
       })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.sessionIdAfter, sessionId)))
