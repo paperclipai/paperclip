@@ -552,7 +552,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
-    const [run, deferredWake] = await Promise.all([
+    const [run, deferredWake, executionRun] = await Promise.all([
       db
         .select({ id: heartbeatRuns.id })
         .from(heartbeatRuns)
@@ -577,9 +577,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         )
         .limit(1)
         .then((rows) => rows[0] ?? null),
+      // Check executionRunId directly on the issue — catches runs whose context snapshot
+      // uses taskId/taskKey instead of issueId, which the snapshot check above misses.
+      db
+        .select({ id: heartbeatRuns.id })
+        .from(issues)
+        .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, issues.executionRunId))
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.id, issueId),
+            inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
     ]);
 
-    return Boolean(run || deferredWake);
+    return Boolean(run || deferredWake || executionRun);
   }
 
   async function hasPendingWakeInteraction(companyId: string, issueId: string) {
@@ -2650,6 +2665,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(
         and(
           isNull(issues.assigneeUserId),
+          isNull(issues.executionRunId),
           inArray(issues.status, ["todo", "in_progress"]),
           sql`${issues.assigneeAgentId} is not null`,
         ),
