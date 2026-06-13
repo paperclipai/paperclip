@@ -1721,6 +1721,7 @@ describe("IssueChatThread", () => {
   });
 
   it("renders historical run transcripts only after the folded run is expanded", async () => {
+    vi.useFakeTimers();
     const root = createRoot(container);
     const transcriptText = "Historical transcript payload that should not mount immediately.";
 
@@ -1766,6 +1767,7 @@ describe("IssueChatThread", () => {
     expect(container.textContent).toContain("Agent 1");
     expect(container.textContent).toContain("worked for 1 minute");
     expect(container.textContent).not.toContain(transcriptText);
+    expect(container.textContent).not.toContain("Loading transcript...");
 
     const toggleButton = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Agent 1"),
@@ -1776,7 +1778,16 @@ describe("IssueChatThread", () => {
       toggleButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
+    expect(container.textContent).toContain("Loading transcript...");
+    expect(container.querySelector('[data-testid="issue-chat-transcript-loading"]')).not.toBeNull();
+    expect(container.textContent).not.toContain(transcriptText);
+
+    await act(async () => {
+      vi.advanceTimersByTime(30);
+    });
+
     expect(container.textContent).toContain(transcriptText);
+    expect(container.textContent).not.toContain("Loading transcript...");
 
     act(() => {
       root.unmount();
