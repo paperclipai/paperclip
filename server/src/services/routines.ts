@@ -1012,6 +1012,38 @@ export function routineService(
       .then((rows) => rows[0]?.issues ?? null);
   }
 
+  // Like findLiveExecutionIssue, but matches any open routine-execution issue
+  // regardless of whether a heartbeat run is currently live. Used to enforce
+  // concurrency_policy semantics (skip_if_active / coalesce_if_active) — those
+  // policies must catch open issues that are between heartbeats, e.g. parked
+  // in `blocked` waiting for HITL approval (BLU-6939).
+  async function findOpenExecutionIssue(
+    routine: typeof routines.$inferSelect,
+    executor: Db = db,
+    dispatchFingerprint?: string | null,
+    origin?: { kind: string; id: string | null },
+  ) {
+    const fingerprintCondition = routineExecutionFingerprintCondition(dispatchFingerprint);
+    const originKind = origin?.kind ?? "routine_execution";
+    const originId = origin?.id ?? routine.id;
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, originKind),
+          eq(issues.originId, originId),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          ...(fingerprintCondition ? [fingerprintCondition] : []),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
     return executor
       .update(routineRuns)
@@ -1271,7 +1303,12 @@ export function routineService(
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+        // Concurrency policy must consider any open routine_execution issue,
+        // not just ones with a currently-live heartbeat. Routines that gate on
+        // HITL approval can leave the prior execution issue parked in `blocked`
+        // between heartbeats; the policy is meant to coalesce/skip against
+        // those too. See BLU-6939.
+        const activeIssue = await findOpenExecutionIssue(input.routine, txDb, dispatchFingerprint, {
           kind: issueOriginKind,
           id: issueOriginId,
         });
@@ -1335,7 +1372,10 @@ export function routineService(
             throw error;
           }
 
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+          // Same broader semantics as the pre-insert check above — match any
+          // open routine_execution issue, including ones with no live heartbeat
+          // (BLU-6939).
+          const existingIssue = await findOpenExecutionIssue(input.routine, txDb, dispatchFingerprint, {
             kind: issueOriginKind,
             id: issueOriginId,
           });
