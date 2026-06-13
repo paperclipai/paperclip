@@ -262,9 +262,11 @@ export function adapterRoutes() {
 
         logger.info({ spec, pluginsDir }, "Installing adapter package via npm");
 
-        await execFileAsync("npm", ["install", "--no-save", spec], {
+        const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+        await execFileAsync(npmCmd, ["install", "--no-save", spec], {
           cwd: pluginsDir,
           timeout: 120_000,
+          shell: process.platform === "win32",
         });
 
         // Read installed version from package.json
@@ -476,9 +478,11 @@ export function adapterRoutes() {
     if (externalRecord.packageName && !externalRecord.localPath) {
       try {
         const pluginsDir = getAdapterPluginsDir();
-        await execFileAsync("npm", ["uninstall", externalRecord.packageName], {
+        const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+        await execFileAsync(npmCmd, ["uninstall", externalRecord.packageName], {
           cwd: pluginsDir,
           timeout: 60_000,
+          shell: process.platform === "win32",
         });
         logger.info(
           { type: adapterType, packageName: externalRecord.packageName },
@@ -589,9 +593,11 @@ export function adapterRoutes() {
 
       logger.info({ type, packageName: record.packageName }, "Reinstalling adapter package via npm");
 
-      await execFileAsync("npm", ["install", "--no-save", record.packageName], {
+      const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+      await execFileAsync(npmCmd, ["install", "--no-save", record.packageName], {
         cwd: pluginsDir,
         timeout: 120_000,
+        shell: process.platform === "win32",
       });
 
       // Reload the freshly installed adapter
