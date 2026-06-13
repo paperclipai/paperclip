@@ -1,0 +1,115 @@
+name: GitHub PR Ingress Smoke
+
+on:
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      plugin_repository:
+        description: "Repository containing the plugin source"
+        type: string
+        default: "keegoidllc/keegoid"
+      plugin_ref:
+        description: "Git ref for the plugin repository"
+        type: string
+        default: "main"
+      plugin_path:
+        description: "Path to the plugin inside the plugin repository"
+        type: string
+        default: "org/paperclip-plugins/keegoid-pi-github-pr-ingress"
+  workflow_call:
+    inputs:
+      paperclip_repository:
+        description: "Paperclip repository to test against"
+        type: string
+        default: "paperclipai/paperclip"
+      paperclip_ref:
+        description: "Paperclip git ref to test against"
+        type: string
+        default: "master"
+      plugin_repository:
+        description: "Repository containing the plugin source"
+        type: string
+        default: "keegoidllc/keegoid"
+      plugin_ref:
+        description: "Git ref for the plugin repository"
+        type: string
+        default: "main"
+      plugin_path:
+        description: "Path to the plugin inside the plugin repository"
+        type: string
+        default: "org/paperclip-plugins/keegoid-pi-github-pr-ingress"
+    secrets:
+      KEEGOID_CHECKOUT_TOKEN:
+        required: false
+
+concurrency:
+  group: github-pr-ingress-smoke-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Paperclip for PR and dispatch runs
+        if: github.event_name != 'workflow_call'
+        uses: actions/checkout@v4
+        with:
+          path: paperclip
+
+      - name: Checkout Paperclip for reusable workflow runs
+        if: github.event_name == 'workflow_call'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.paperclip_repository }}
+          ref: ${{ inputs.paperclip_ref }}
+          path: paperclip
+
+      - name: Checkout default GitHub PR ingress plugin for Paperclip PRs
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          repository: keegoidllc/keegoid
+          ref: main
+          path: keegoid-plugin-source
+          token: ${{ secrets.KEEGOID_CHECKOUT_TOKEN || github.token }}
+
+      - name: Checkout configured GitHub PR ingress plugin
+        if: github.event_name != 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.plugin_repository || 'keegoidllc/keegoid' }}
+          ref: ${{ inputs.plugin_ref || 'main' }}
+          path: keegoid-plugin-source
+          token: ${{ secrets.KEEGOID_CHECKOUT_TOKEN || github.token }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: paperclip/pnpm-lock.yaml
+
+      - name: Install Paperclip dependencies
+        working-directory: paperclip
+        run: pnpm install --frozen-lockfile
+
+      - name: Run default plugin smoke for Paperclip PRs
+        if: github.event_name == 'pull_request'
+        working-directory: paperclip
+        run: pnpm run smoke:github-pr-ingress-plugin -- --plugin-dir "../keegoid-plugin-source/org/paperclip-plugins/keegoid-pi-github-pr-ingress"
+
+      - name: Run configured plugin smoke
+        if: github.event_name != 'pull_request'
+        working-directory: paperclip
+        env:
+          PLUGIN_PATH: ${{ inputs.plugin_path || 'org/paperclip-plugins/keegoid-pi-github-pr-ingress' }}
+        run: pnpm run smoke:github-pr-ingress-plugin -- --plugin-dir "../keegoid-plugin-source/${PLUGIN_PATH}"
