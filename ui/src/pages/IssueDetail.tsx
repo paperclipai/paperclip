@@ -511,16 +511,10 @@ function IssueDetailLoadingState({
               {identifier ? (
                 <span className="text-sm font-mono text-muted-foreground shrink-0">{identifier}</span>
               ) : null}
-              {headerSeed.originKind === "routine_execution" && headerSeed.originId ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400 shrink-0">
-                  <Repeat className="h-3 w-3" />
-                  Routine
-                </span>
-              ) : null}
               {headerSeed.projectId ? (
-                <span className="inline-flex items-center gap-1 text-xs text-muted-foreground rounded px-1 -mx-1 py-0.5 min-w-0">
+                <span className="inline-flex items-center gap-1 text-xs text-muted-foreground rounded px-1 -mx-1 py-0.5 min-w-0 max-w-[12rem]">
                   <Hexagon className="h-3 w-3 shrink-0" />
-                  <span className="truncate">
+                  <span className="truncate min-w-[5ch]">
                     {headerSeed.projectName ?? headerSeed.projectId.slice(0, 8)}
                   </span>
                 </span>
@@ -530,6 +524,12 @@ function IssueDetailLoadingState({
                   No project
                 </span>
               )}
+              {headerSeed.originKind === "routine_execution" && headerSeed.originId ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400 shrink-0">
+                  <Repeat className="h-3 w-3" />
+                  Routine
+                </span>
+              ) : null}
             </>
           ) : (
             <>
@@ -3625,6 +3625,21 @@ export function IssueDetail() {
           />
           <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
 
+          {issue.projectId ? (
+            <Link
+              to={`/projects/${issue.projectId}`}
+              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors rounded px-1 -mx-1 py-0.5 min-w-0 max-w-[12rem]"
+            >
+              <Hexagon className="h-3 w-3 shrink-0" />
+              <span className="truncate min-w-[5ch]">{resolvedProject?.name ?? issue.project?.name ?? issue.projectId.slice(0, 8)}</span>
+            </Link>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground opacity-50 px-1 -mx-1 py-0.5">
+              <Hexagon className="h-3 w-3 shrink-0" />
+              No project
+            </span>
+          )}
+
           {hasLiveRuns && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 shrink-0">
               <span className="relative flex h-1.5 w-1.5">
@@ -3678,21 +3693,6 @@ export function IssueDetail() {
               Blocked by parked work
             </span>
           ) : null}
-
-          {issue.projectId ? (
-            <Link
-              to={`/projects/${issue.projectId}`}
-              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors rounded px-1 -mx-1 py-0.5 min-w-0"
-            >
-              <Hexagon className="h-3 w-3 shrink-0" />
-              <span className="truncate">{resolvedProject?.name ?? issue.project?.name ?? issue.projectId.slice(0, 8)}</span>
-            </Link>
-          ) : (
-            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground opacity-50 px-1 -mx-1 py-0.5">
-              <Hexagon className="h-3 w-3 shrink-0" />
-              No project
-            </span>
-          )}
 
           {(issue.labels ?? []).length > 0 && (
             <div className="hidden sm:flex items-center gap-1">
