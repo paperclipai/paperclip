@@ -2178,6 +2178,93 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(0);
   });
 
+  it("dispatches in_progress sub-issue with no execution history as an initial assignment wake (PAP-4766)", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const parentIssueId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "SubIssueAgent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: parentIssueId,
+        companyId,
+        title: "Parent issue",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: issueId,
+        companyId,
+        parentId: parentIssueId,
+        title: "Sub-issue with no execution history",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+        checkoutRunId: null,
+        executionRunId: null,
+        startedAt: new Date(),
+      },
+    ]);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // Sub-issue should be dispatched fresh, not silently skipped or routed through continuation
+    expect(result.assignmentDispatched).toBeGreaterThanOrEqual(1);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toContain(issueId);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.reason, "issue_assigned")));
+    const subIssueWake = wakeups.find((w) => {
+      const payload = w.payload as Record<string, unknown> | null;
+      return payload?.issueId === issueId;
+    });
+    expect(subIssueWake).toBeDefined();
+    expect(subIssueWake?.source).toBe("assignment");
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const subIssueRun = runs.find((r) => {
+      const ctx = r.contextSnapshot as Record<string, unknown> | null;
+      return ctx?.issueId === issueId;
+    });
+    expect(subIssueRun).toBeDefined();
+    expect((subIssueRun?.contextSnapshot as Record<string, unknown>)?.retryReason).toBeUndefined();
+
+    if (subIssueRun?.id) {
+      await waitForRunToSettle(heartbeat, subIssueRun.id);
+    }
+  });
+
   it("re-enqueues assigned todo work when the last issue run died and no wake remains", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "todo",

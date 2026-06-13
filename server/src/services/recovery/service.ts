@@ -2783,7 +2783,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (!latestRun && !issue.checkoutRunId && !issue.executionRunId) {
-        result.skipped += 1;
+        // Only dispatch if this is a sub-issue (parentId set): it was created programmatically
+        // as in_progress by an agent without ever going through a dispatch run. Standalone
+        // in_progress issues with no run linkage are seeded data and should remain skipped.
+        if (!issue.parentId) {
+          result.skipped += 1;
+          continue;
+        }
+        if (await hasQueuedIssueWake(issue.companyId, issue.id)) {
+          result.skipped += 1;
+          continue;
+        }
+
+        if (await isInvocationBudgetBlocked(issue, agentId)) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const queued = await enqueueInitialAssignedTodoDispatch(issue, agentId);
+        if (queued) {
+          result.assignmentDispatched += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
         continue;
       }
       const handoffEvidence = isExhaustedSuccessfulRunHandoff(latestRun);
