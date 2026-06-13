@@ -93,6 +93,13 @@ describe("successful run handoff decision", () => {
     expect(decision.instruction).toContain("record an explicit continuation path");
   });
 
+  it("does not queue when a [ROUTINE:SILENT] sentinel comment was posted by this run", () => {
+    expect(decide({ hasRoutineSilentComment: true })).toEqual({
+      kind: "skip",
+      reason: "run produced [ROUTINE:SILENT] sentinel — routine scan completed without issue action",
+    });
+  });
+
   it("does not queue when the issue already has a valid disposition", () => {
     expect(decide({ issue: { ...issue, status: "done" } as any })).toEqual({
       kind: "skip",
