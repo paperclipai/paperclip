@@ -19,24 +19,22 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # Adjust the node user's UID/GID if they differ from the runtime request
-# and fix volume ownership only when a remap is needed
-changed=0
-
 if [ "$(id -u node)" -ne "$PUID" ]; then
     echo "Updating node UID to $PUID"
     usermod -o -u "$PUID" node
-    changed=1
 fi
 
 if [ "$(id -g node)" -ne "$PGID" ]; then
     echo "Updating node GID to $PGID"
     groupmod -o -g "$PGID" node
     usermod -g "$PGID" node
-    changed=1
 fi
 
-if [ "$changed" = "1" ]; then
-    chown -R node:node /paperclip
-fi
+# Always ensure /paperclip is owned by node:node.
+# The volume mount may contain directories created at build-time by root
+# (e.g. hermes setup creating ~/.hermes/) that cause EACCES errors when no
+# UID/GID remap is needed. An unconditional chown -R is the simplest correct
+# fix; on very large volumes startup time increases proportionally.
+chown -R node:node /paperclip
 
 exec gosu node "$@"
