@@ -51,7 +51,7 @@
     "postpack": "if [ -f package.dev.json ]; then mv package.dev.json package.json; fi"
   },
   "dependencies": {
-    "@daytonaio/sdk": "^0.171.0"
+    "@daytonaio/sdk": "^0.183.0"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
