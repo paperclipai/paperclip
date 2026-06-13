@@ -48,67 +48,12 @@ class FindFailedWorkflows(unittest.TestCase):
         self.assertEqual(w.find_failed_workflows([]), [])
 
 
-from datetime import date
-
-
-class ShouldSendHeartbeat(unittest.TestCase):
-    MONDAY = date(2026, 6, 15)      # Montag
-    TUESDAY = date(2026, 6, 16)     # Dienstag
-
-    def test_monday_no_findings_overdue_true(self):
-        self.assertTrue(w.should_send_heartbeat(self.MONDAY, "2026-06-08", has_findings=False))
-
-    def test_monday_already_sent_today_false(self):
-        self.assertFalse(w.should_send_heartbeat(self.MONDAY, "2026-06-15", has_findings=False))
-
-    def test_monday_with_findings_false(self):
-        self.assertFalse(w.should_send_heartbeat(self.MONDAY, "2026-06-08", has_findings=True))
-
-    def test_non_monday_false(self):
-        self.assertFalse(w.should_send_heartbeat(self.TUESDAY, "2026-06-01", has_findings=False))
-
-    def test_monday_no_prior_heartbeat_true(self):
-        self.assertTrue(w.should_send_heartbeat(self.MONDAY, None, has_findings=False))
-
-
 class Rendering(unittest.TestCase):
-    FINDINGS = [
-        {"id": "wfA", "name": "Paperclip Daily Digest V12", "mode": "trigger",
-         "exec_id": 455196, "failed_at": "2026-06-12 03:00:00"},
-        {"id": "wfB", "name": "Google-Alert V9 <x>", "mode": "trigger",
-         "exec_id": 455607, "failed_at": "2026-06-12 02:30:00"},
-    ]
-
-    def test_subject_counts_findings(self):
-        self.assertIn("2", w.build_subject(self.FINDINGS))
-
     def test_execution_url(self):
         self.assertEqual(
             w.execution_url("wfA", 455196),
             "http://localhost:5678/workflow/wfA/executions/455196",
         )
-
-    def test_text_lists_each_finding(self):
-        txt = w.render_report_text(self.FINDINGS)
-        self.assertIn("Paperclip Daily Digest V12", txt)
-        self.assertIn("455607", txt)
-
-    def test_html_escapes_names_and_has_links(self):
-        out = w.render_report_html(self.FINDINGS)
-        self.assertIn("Google-Alert V9 &lt;x&gt;", out)        # escaped
-        self.assertIn("/workflow/wfA/executions/455196", out)  # link
-        self.assertIn("<table", out)
-
-    def test_heartbeat_render(self):
-        subject, text, html_body = w.render_heartbeat(14, 23)
-        self.assertIn("Fehler", subject)
-        self.assertIn("14", text)
-        self.assertIn("23", text)
-        self.assertIn("14", html_body)
-        self.assertIn("23", html_body)
-
-
-import tempfile
 
 
 class StateRoundTrip(unittest.TestCase):
@@ -240,22 +185,6 @@ class MainOrchestration(unittest.TestCase):
     def setUp(self):
         _isolate_log(self)
 
-    def test_findings_send_mail_and_persist(self):
-        rows = [("wf1", "Digest", "trigger", "error", 11, "2026-06-12 03:00:00")]
-        with tempfile.TemporaryDirectory() as d:
-            statep = os.path.join(d, "state.json")
-            with mock.patch.object(w, "STATE_PATH", statep), \
-                 mock.patch.object(w, "open_db_ro", return_value=mock.MagicMock()), \
-                 mock.patch.object(w, "fetch_active_workflow_latest", return_value=rows), \
-                 mock.patch.object(w, "count_active", return_value=23), \
-                 mock.patch.object(w, "send_mail", return_value=200) as sm:
-                rc = w.main(["--once"])
-            self.assertEqual(rc, 0)
-            sm.assert_called_once()
-            self.assertIn("1 Workflow", sm.call_args.args[0])     # subject
-            state = w.load_state(statep)
-            self.assertEqual(state["last_reported_ids"], ["wf1"])
-
     def test_findings_dry_run_does_not_send(self):
         rows = [("wf1", "Digest", "trigger", "error", 11, "2026-06-12 03:00:00")]
         with tempfile.TemporaryDirectory() as d:
@@ -264,9 +193,17 @@ class MainOrchestration(unittest.TestCase):
                  mock.patch.object(w, "open_db_ro", return_value=mock.MagicMock()), \
                  mock.patch.object(w, "fetch_active_workflow_latest", return_value=rows), \
                  mock.patch.object(w, "count_active", return_value=23), \
+                 mock.patch.object(w, "read_execution_error",
+                                   return_value={"message": "Boom", "node": "N",
+                                                 "http_code": "", "name": "E",
+                                                 "stack_excerpt": "", "last_node": "N"}), \
+                 mock.patch.object(w, "RECOVERY_AGENT_ID", "agent-9"), \
+                 mock.patch.object(w, "PCP_TOKEN", "tok"), \
+                 mock.patch.object(w.pc, "create_issue", return_value="issue-1") as ci, \
                  mock.patch.object(w, "send_mail", return_value=200) as sm:
                 rc = w.main(["--dry-run"])
         self.assertEqual(rc, 0)
+        ci.assert_not_called()
         sm.assert_not_called()
 
     def test_no_findings_non_monday_silent(self):
@@ -276,26 +213,115 @@ class MainOrchestration(unittest.TestCase):
                  mock.patch.object(w, "open_db_ro", return_value=mock.MagicMock()), \
                  mock.patch.object(w, "fetch_active_workflow_latest", return_value=[]), \
                  mock.patch.object(w, "count_active", return_value=23), \
-                 mock.patch.object(w, "should_send_heartbeat", return_value=False), \
+                 mock.patch.object(w.pc, "create_issue", return_value="issue-1") as ci, \
                  mock.patch.object(w, "send_mail", return_value=200) as sm:
                 rc = w.main(["--once"])
         self.assertEqual(rc, 0)
+        ci.assert_not_called()
         sm.assert_not_called()
 
-    def test_no_findings_heartbeat_due_sends(self):
+
+# --- NEU: Issue-Pfad ---------------------------------------------------------
+class NewFindings(unittest.TestCase):
+    def test_filters_already_reported_exec_ids(self):
+        findings = [
+            {"id": "wf1", "name": "A", "mode": "trigger", "exec_id": 11, "failed_at": "t"},
+            {"id": "wf2", "name": "B", "mode": "trigger", "exec_id": 22, "failed_at": "t"},
+        ]
+        out = w.new_findings(findings, reported_exec_ids=[11])
+        self.assertEqual([f["exec_id"] for f in out], [22])
+
+    def test_all_new_when_state_empty(self):
+        findings = [{"id": "wf1", "name": "A", "mode": "trigger",
+                     "exec_id": 11, "failed_at": "t"}]
+        self.assertEqual(len(w.new_findings(findings, [])), 1)
+
+
+class BuildIssue(unittest.TestCase):
+    FINDING = {"id": "wfA", "name": "Daily Digest V12", "mode": "trigger",
+               "exec_id": 455196, "failed_at": "2026-06-12 03:00:00"}
+    ERR = {"message": "Bad request", "node": "OpenAI Chat Model", "http_code": "400",
+           "name": "NodeApiError", "stack_excerpt": "NodeApiError: Bad request",
+           "last_node": "OpenAI Chat Model"}
+
+    def test_title_has_workflow_name(self):
+        title, _ = w.build_issue(self.FINDING, self.ERR)
+        self.assertIn("Daily Digest V12", title)
+
+    def test_description_has_error_and_link(self):
+        _, desc = w.build_issue(self.FINDING, self.ERR)
+        self.assertIn("Bad request", desc)
+        self.assertIn("OpenAI Chat Model", desc)
+        self.assertIn("455196", desc)
+        self.assertIn("/workflow/wfA/executions/455196", desc)
+
+    def test_handles_empty_error(self):
+        empty = {"message": "", "node": "", "http_code": "", "name": "",
+                 "stack_excerpt": "", "last_node": ""}
+        title, desc = w.build_issue(self.FINDING, empty)
+        self.assertIn("Daily Digest V12", title)
+        self.assertIn("455196", desc)
+
+
+class MainCreatesIssues(unittest.TestCase):
+    def setUp(self):
+        _isolate_log(self)
+
+    def _patches(self, rows, statep):
+        return [
+            mock.patch.object(w, "STATE_PATH", statep),
+            mock.patch.object(w, "open_db_ro", return_value=mock.MagicMock()),
+            mock.patch.object(w, "fetch_active_workflow_latest", return_value=rows),
+            mock.patch.object(w, "count_active", return_value=23),
+            mock.patch.object(w, "read_execution_error",
+                              return_value={"message": "Boom", "node": "N", "http_code": "",
+                                            "name": "E", "stack_excerpt": "", "last_node": "N"}),
+            mock.patch.object(w, "RECOVERY_AGENT_ID", "agent-9"),
+            mock.patch.object(w, "PCP_TOKEN", "tok"),
+        ]
+
+    def test_creates_one_issue_per_new_finding(self):
+        rows = [("wf1", "Digest", "trigger", "error", 11, "2026-06-12 03:00:00")]
         with tempfile.TemporaryDirectory() as d:
             statep = os.path.join(d, "state.json")
-            with mock.patch.object(w, "STATE_PATH", statep), \
-                 mock.patch.object(w, "open_db_ro", return_value=mock.MagicMock()), \
-                 mock.patch.object(w, "fetch_active_workflow_latest", return_value=[]), \
-                 mock.patch.object(w, "count_active", return_value=23), \
-                 mock.patch.object(w, "should_send_heartbeat", return_value=True), \
+            ctx = self._patches(rows, statep)
+            with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], \
+                 mock.patch.object(w.pc, "create_issue", return_value="issue-1") as ci, \
+                 mock.patch.object(w, "send_mail") as sm:
+                rc = w.main(["--once"])
+            self.assertEqual(rc, 0)
+            ci.assert_called_once()
+            self.assertEqual(ci.call_args.kwargs["assignee_agent_id"], "agent-9")
+            sm.assert_not_called()
+            self.assertIn(11, w.load_state(statep)["reported_exec_ids"])
+
+    def test_idempotent_no_duplicate_issue(self):
+        rows = [("wf1", "Digest", "trigger", "error", 11, "2026-06-12 03:00:00")]
+        with tempfile.TemporaryDirectory() as d:
+            statep = os.path.join(d, "state.json")
+            w.save_state({"reported_exec_ids": [11]}, statep)
+            ctx = self._patches(rows, statep)
+            with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], \
+                 mock.patch.object(w.pc, "create_issue", return_value="issue-1") as ci:
+                rc = w.main(["--once"])
+            self.assertEqual(rc, 0)
+            ci.assert_not_called()
+
+    def test_api_failure_triggers_meta_fallback_mail(self):
+        rows = [("wf1", "Digest", "trigger", "error", 11, "2026-06-12 03:00:00")]
+        with tempfile.TemporaryDirectory() as d:
+            statep = os.path.join(d, "state.json")
+            ctx = self._patches(rows, statep)
+            with ctx[0], ctx[1], ctx[2], ctx[3], ctx[4], ctx[5], ctx[6], \
+                 mock.patch.object(w.pc, "create_issue",
+                                   side_effect=w.pc.ApiError("HTTP 500")), \
                  mock.patch.object(w, "send_mail", return_value=200) as sm:
                 rc = w.main(["--once"])
             self.assertEqual(rc, 0)
             sm.assert_called_once()
-            self.assertIn("Fehler", sm.call_args.args[0])
-            self.assertIn("last_heartbeat_date", w.load_state(statep))
+            self.assertIn("Wächter", sm.call_args.args[0])
+            # exec_id NICHT als gemeldet markiert, damit nächster Lauf erneut versucht
+            self.assertNotIn(11, w.load_state(statep).get("reported_exec_ids", []))
 
 
 if __name__ == "__main__":
