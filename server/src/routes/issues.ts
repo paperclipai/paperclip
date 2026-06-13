@@ -5101,6 +5101,47 @@ export function issueRoutes(
       }
     }
 
+    // PR-bearing done guard: block done transition when linked PRs are not merged or have failing CI
+    const effectiveNextStatus = typeof updateFields.status === "string" ? updateFields.status : existing.status;
+    const transitioningToDone = effectiveNextStatus === "done" && existing.status !== "done";
+    if (transitioningToDone && nextExecutionPolicy) {
+      const hasReviewOrApprovalStage = nextExecutionPolicy.stages.some(
+        (stage) => stage.type === "review" || stage.type === "approval",
+      );
+      if (hasReviewOrApprovalStage) {
+        const workProducts = await workProductsSvc.listForIssue(existing.id);
+        const pullRequests = workProducts.filter((wp) => wp.type === "pull_request");
+        const unmergedPRs = pullRequests.filter(
+          (wp) => wp.status !== "merged" && wp.status !== "closed",
+        );
+        if (unmergedPRs.length > 0) {
+          res.status(422).json({
+            error: "Cannot mark issue as done: linked pull request is not merged",
+            blockingWorkProducts: unmergedPRs.map((wp) => ({
+              id: wp.id,
+              title: wp.title,
+              url: wp.url,
+              status: wp.status,
+            })),
+          });
+          return;
+        }
+        const unhealthyPRs = pullRequests.filter((wp) => wp.healthStatus === "unhealthy");
+        if (unhealthyPRs.length > 0) {
+          res.status(422).json({
+            error: "Cannot mark issue as done: linked pull request has failing CI checks",
+            blockingWorkProducts: unhealthyPRs.map((wp) => ({
+              id: wp.id,
+              title: wp.title,
+              url: wp.url,
+              healthStatus: wp.healthStatus,
+            })),
+          });
+          return;
+        }
+      }
+    }
+
     let issue;
     try {
       if (transition.decision && decisionId) {
