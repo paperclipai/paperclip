@@ -1249,7 +1249,7 @@ export async function realizeExecutionWorkspace(input: {
     }
     const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
     provisioningWarnings.push(
-      `Pruned stale git worktree registration for branch "${branchName}" at "${registeredBranchWorktree}"${reason}; recreating the worktree.`,
+      `Pruned stale git worktree registration for branch "${branchName}" at "${registeredBranchWorktree}"${reason}; re-provisioning the worktree.`,
     );
   }
 
