@@ -48,3 +48,16 @@ def _request(method: str, url: str, key: str, payload: dict | None = None) -> di
 
 def get_workflow(base: str, key: str, wf_id: str) -> dict:
     return _request("GET", f"{base}/api/v1/workflows/{wf_id}", key)
+
+
+def activate_workflow(base: str, key: str, wf_id: str) -> dict:
+    return _request("POST", f"{base}/api/v1/workflows/{wf_id}/activate", key, payload={})
+
+
+def deactivate_workflow(base: str, key: str, wf_id: str) -> dict:
+    return _request("POST", f"{base}/api/v1/workflows/{wf_id}/deactivate", key, payload={})
+
+
+def retry_execution(base: str, key: str, exec_id: str, load_workflow: bool = False) -> dict:
+    return _request("POST", f"{base}/api/v1/executions/{exec_id}/retry", key,
+                    payload={"loadWorkflow": load_workflow})

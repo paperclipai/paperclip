@@ -58,5 +58,53 @@ class GetWorkflow(unittest.TestCase):
                 r.get_workflow("http://127.0.0.1:5678", "", "wf1")
 
 
+class Mutations(unittest.TestCase):
+    def _resp(self, payload, status=200):
+        resp = mock.MagicMock()
+        resp.status = status
+        resp.read.return_value = json.dumps(payload).encode()
+        resp.__enter__.return_value = resp
+        return resp
+
+    def test_activate_posts_correct_url(self):
+        resp = self._resp({"id": "wf1", "active": True})
+        with mock.patch.object(r.urllib.request, "urlopen", return_value=resp) as uo:
+            out = r.activate_workflow("http://127.0.0.1:5678", "k", "wf1")
+        self.assertTrue(out["active"])
+        req = uo.call_args.args[0]
+        self.assertEqual(req.full_url, "http://127.0.0.1:5678/api/v1/workflows/wf1/activate")
+        self.assertEqual(req.get_method(), "POST")
+        self.assertEqual(req.get_header("X-n8n-api-key"), "k")
+
+    def test_deactivate_posts_correct_url(self):
+        resp = self._resp({"id": "wf1", "active": False})
+        with mock.patch.object(r.urllib.request, "urlopen", return_value=resp) as uo:
+            out = r.deactivate_workflow("http://127.0.0.1:5678", "k", "wf1")
+        self.assertFalse(out["active"])
+        self.assertEqual(uo.call_args.args[0].full_url,
+                         "http://127.0.0.1:5678/api/v1/workflows/wf1/deactivate")
+
+    def test_retry_posts_url_and_body(self):
+        resp = self._resp({"id": "456558", "finished": True})
+        with mock.patch.object(r.urllib.request, "urlopen", return_value=resp) as uo:
+            r.retry_execution("http://127.0.0.1:5678", "k", "456558", load_workflow=True)
+        req = uo.call_args.args[0]
+        self.assertEqual(req.full_url, "http://127.0.0.1:5678/api/v1/executions/456558/retry")
+        self.assertEqual(req.get_method(), "POST")
+        self.assertEqual(json.loads(req.data.decode())["loadWorkflow"], True)
+
+    def test_retry_default_load_workflow_false(self):
+        resp = self._resp({"id": "1"})
+        with mock.patch.object(r.urllib.request, "urlopen", return_value=resp) as uo:
+            r.retry_execution("http://127.0.0.1:5678", "k", "1")
+        self.assertEqual(json.loads(uo.call_args.args[0].data.decode())["loadWorkflow"], False)
+
+    def test_activate_http_error_raises(self):
+        err = r.urllib.error.HTTPError("u", 500, "boom", {}, None)
+        with mock.patch.object(r.urllib.request, "urlopen", side_effect=err):
+            with self.assertRaises(r.N8nApiError):
+                r.activate_workflow("http://127.0.0.1:5678", "k", "wf1")
+
+
 if __name__ == "__main__":
     unittest.main()
