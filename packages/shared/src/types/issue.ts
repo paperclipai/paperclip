@@ -451,6 +451,12 @@ export interface IssueExecutionPolicy {
   authorizationPolicy?: TrustAuthorizationPolicy;
   /** When true, the harness skips all automatic escalation for this issue. Use for permanent watcher issues that intentionally stay in_progress indefinitely. */
   permanentWatcher?: boolean;
+  /**
+   * When set, explicitly acknowledges that this issue is blocked without a linked blocker issue.
+   * Valid values: "deploy_gate" | "approval_pending" | "external_dependency" | "manual_review"
+   * This suppresses blocked-without-blocker corrective wakes for the issue.
+   */
+  parkedGate?: "deploy_gate" | "approval_pending" | "external_dependency" | "manual_review";
 }
 
 export interface IssueExecutionMonitorState {

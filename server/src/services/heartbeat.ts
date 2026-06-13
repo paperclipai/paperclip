@@ -7566,6 +7566,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.sweepStaleIssueLocks();
   }
 
+  async function triageBlockedWithoutFirstClassBlocker() {
+    return recovery.triageBlockedWithoutFirstClassBlocker();
+  }
+
   function issueIdFromRunContext(contextSnapshot: unknown) {
     const context = parseObject(contextSnapshot);
     return readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
@@ -11465,6 +11469,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reconcileStrandedAssignedIssues,
 
     sweepStaleIssueLocks,
+
+    triageBlockedWithoutFirstClassBlocker,
 
     buildIssueGraphLivenessAutoRecoveryPreview,
 
