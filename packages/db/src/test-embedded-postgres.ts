@@ -34,7 +34,7 @@ export type EmbeddedPostgresTestDatabase = {
 
 let embeddedPostgresSupportPromise: Promise<EmbeddedPostgresTestSupport> | null = null;
 
-const DEFAULT_PAPERCLIP_EMBEDDED_POSTGRES_PORT = 54329;
+const DEFAULT_PAPERCLIP_EMBEDDED_POSTGRES_PORT = 54000;
 
 function getReservedTestPorts(): Set<number> {
   const configuredPorts = [

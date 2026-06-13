@@ -302,7 +302,7 @@ export function loadConfig(): Config {
     embeddedPostgresDataDir: resolveHomeAwarePath(
       fileConfig?.database.embeddedPostgresDataDir ?? resolveDefaultEmbeddedPostgresDir(),
     ),
-    embeddedPostgresPort: fileConfig?.database.embeddedPostgresPort ?? 54329,
+    embeddedPostgresPort: fileConfig?.database.embeddedPostgresPort ?? 54000,
     databaseBackupEnabled,
     databaseBackupIntervalMinutes,
     databaseBackupRetentionDays,

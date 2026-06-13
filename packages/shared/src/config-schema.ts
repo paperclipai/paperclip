@@ -31,7 +31,7 @@ export const databaseConfigSchema = z.object({
   mode: z.enum(["embedded-postgres", "postgres"]).default("embedded-postgres"),
   connectionString: z.string().optional(),
   embeddedPostgresDataDir: z.string().default("~/.paperclip/instances/default/db"),
-  embeddedPostgresPort: z.number().int().min(1).max(65535).default(54329),
+  embeddedPostgresPort: z.number().int().min(1).max(65535).default(54000),
   backup: databaseBackupConfigSchema.default({
     enabled: true,
     intervalMinutes: 60,
