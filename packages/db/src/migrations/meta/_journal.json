@@ -712,8 +712,15 @@
     {
       "idx": 101,
       "version": "7",
+      "when": 1781490000000,
+      "tag": "0101_plugin_company_id_tenant_isolation",
+      "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
       "when": 1778966210569,
-      "tag": "0101_plugin_config_company_scope",
+      "tag": "0102_plugin_config_company_scope",
       "breakpoints": true
     }
   ]
