@@ -1,0 +1,1312 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AIOX — Ship com seu Time de IA | Paperclip</title>
+  <meta name="description" content="Paperclip orquestra. AIOX executa. 10 agentes especializados, QA automático, deploy sem intervenção humana. Ship 3x mais rápido com seu time de IA." />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://paperclip.ing/v2" />
+
+  <!-- OG Tags -->
+  <meta property="og:title" content="AIOX — Ship com seu Time de IA" />
+  <meta property="og:description" content="Paperclip orquestra. AIOX executa. Seu produto cresce." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://paperclip.ing/v2" />
+
+  <!-- Fonts — AIOX Design System (brand.aioxsquad.ai) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <!-- TASA Orbiter Display — AIOX Brand Font -->
+  <link href="https://fonts.cdnfonts.com/css/tasa-orbiter-display" rel="stylesheet" />
+
+  <style>
+    /* === TOKENS — AIOX Design System (Dark Cockpit Edition v1.0) === */
+    /* Source: brand.aioxsquad.ai */
+    :root {
+      /* Brand primitives */
+      --bb-lime: #D1FF00;
+      --bb-dark: #050505;
+      --bb-surface: #0F0F11;
+      --bb-surface-alt: #1C1C1C;
+      --bb-surface-panel: #161618;
+      --bb-cream: rgb(244,244,232);
+      --bb-muted: #C8C8C8;
+      --bb-meta: #AFAFAF;
+      --bb-gray-charcoal: #3D3D3D;
+      --bb-gray-dim: #696969;
+
+      /* Borders */
+      --bb-border: rgba(156,156,156,0.15);
+      --bb-border-soft: rgba(156,156,156,0.10);
+      --bb-border-strong: rgba(156,156,156,0.25);
+
+      /* Glows */
+      --neon: #D1FF00;
+      --neon-dim: rgba(209,255,0,0.15);
+      --neon-glow: rgba(209,255,0,0.40);
+      --lime-glow: rgba(209,255,0,0.25);
+      --lime-glow-soft: rgba(209,255,0,0.10);
+
+      /* Opacity ladder */
+      --bb-accent-10: rgba(209,255,0,0.10);
+      --bb-accent-20: rgba(209,255,0,0.20);
+      --bb-accent-40: rgba(209,255,0,0.40);
+
+      /* Text semantic */
+      --color-text-base: rgb(244,244,232);
+      --color-text-secondary: rgba(244,244,232,0.70);
+      --color-text-tertiary: rgba(244,244,232,0.55);
+      --color-text-muted: rgba(245,244,231,0.40);
+
+      /* Backgrounds semantic */
+      --color-bg-void: #000000;
+      --color-bg-base: #050505;
+      --color-bg-surface: #0F0F11;
+      --color-bg-elevated: #1C1E19;
+
+      /* Fonts — AIOX Design System */
+      --font-bb-display: "TASA Orbiter Display", "TASA Orbiter", "Georgia", serif;
+      --font-bb-sans: "Geist", sans-serif;
+      --font-bb-mono: "Roboto Mono", monospace;
+
+      /* Aliases (backward compat) */
+      --font-sans: var(--font-bb-sans);
+      --font-mono: var(--font-bb-mono);
+      --bg-void: var(--color-bg-void);
+      --bg-base: var(--color-bg-base);
+      --bg-surface: var(--color-bg-surface);
+      --bg-elevated: var(--color-bg-elevated);
+      --text-primary: var(--color-text-base);
+      --text-secondary: var(--color-text-secondary);
+      --text-muted: var(--color-text-muted);
+      --border: var(--bb-border);
+      --border-strong: var(--bb-border-strong);
+
+      /* Spacing scale */
+      --space-1: 4px;  --space-2: 8px;   --space-3: 12px;
+      --space-4: 16px; --space-5: 20px;  --space-6: 24px;
+      --space-8: 32px; --space-10: 40px; --space-12: 48px;
+      --space-16: 64px; --space-20: 80px; --space-24: 96px;
+
+      /* Border radius */
+      --radius: 0.5rem;
+
+      /* Z-index */
+      --layer-nav: 100;
+      --layer-overlay: 400;
+      --layer-modal: 500;
+    }
+
+    /* === RESET === */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: var(--font-sans);
+      background-color: var(--bg-void);
+      color: var(--text-primary);
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+    a { color: inherit; text-decoration: none; }
+    img { max-width: 100%; }
+
+    /* === UTILITIES === */
+    .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+    .lime { color: var(--bb-lime); }
+    .mono { font-family: var(--font-bb-mono); }
+    .section { padding: 96px 0; }
+    .section-label {
+      font-family: var(--font-bb-mono);
+      font-size: 12px;
+      color: var(--bb-lime);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: 16px;
+    }
+    .section-title {
+      font-family: var(--font-bb-display);
+      font-size: clamp(28px, 4vw, 48px);
+      font-weight: 800;
+      line-height: 1.15;
+      margin-bottom: 16px;
+    }
+    .section-subtitle {
+      font-size: 18px;
+      color: var(--text-secondary);
+      max-width: 560px;
+    }
+
+    /* Scroll animations */
+    [data-animate] {
+      opacity: 0;
+      transform: translateY(24px);
+      transition: opacity 0.6s ease, transform 0.6s ease;
+    }
+    [data-animate].visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    [data-animate-delay="1"] { transition-delay: 0.1s; }
+    [data-animate-delay="2"] { transition-delay: 0.2s; }
+    [data-animate-delay="3"] { transition-delay: 0.3s; }
+    [data-animate-delay="4"] { transition-delay: 0.4s; }
+    [data-animate-delay="5"] { transition-delay: 0.5s; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, ::before, ::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+
+    /* === NAVBAR === */
+    .navbar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      height: 64px;
+      border-bottom: 1px solid transparent;
+      transition: background 0.3s, border-color 0.3s, backdrop-filter 0.3s;
+    }
+    .navbar.scrolled {
+      background: rgba(0, 0, 0, 0.85);
+      backdrop-filter: blur(12px);
+      border-color: var(--border);
+    }
+    .navbar__inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 100%;
+    }
+    .navbar__logo {
+      font-family: var(--font-bb-mono);
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+    .navbar__logo span { color: var(--bb-lime); }
+    .navbar__links {
+      display: flex;
+      gap: 32px;
+      list-style: none;
+    }
+    .navbar__links a {
+      font-size: 14px;
+      color: var(--text-secondary);
+      transition: color 0.2s;
+    }
+    .navbar__links a:hover { color: var(--text-primary); }
+    .navbar__cta {
+      background: var(--bb-lime);
+      color: var(--color-bg-void);
+      font-size: 14px;
+      font-weight: 600;
+      padding: 8px 20px;
+      border-radius: var(--radius);
+      transition: opacity 0.2s, transform 0.2s;
+    }
+    .navbar__cta:hover { opacity: 0.9; transform: translateY(-1px); }
+    .navbar__hamburger {
+      display: none;
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      padding: 6px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 18px;
+    }
+    .navbar__mobile-menu {
+      display: none;
+      position: fixed;
+      top: 64px;
+      left: 0;
+      right: 0;
+      background: var(--color-bg-base);
+      border-bottom: 1px solid var(--bb-border);
+      padding: 24px;
+      flex-direction: column;
+      gap: 20px;
+      z-index: 99;
+    }
+    .navbar__mobile-menu.open { display: flex; }
+    .navbar__mobile-menu a {
+      font-size: 16px;
+      color: var(--color-text-secondary);
+      padding: 8px 0;
+      border-bottom: 1px solid var(--bb-border);
+    }
+
+    @media (max-width: 768px) {
+      .navbar__links, .navbar__cta { display: none; }
+      .navbar__hamburger { display: block; }
+    }
+
+    /* === HERO === */
+    .hero {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 120px 24px 80px;
+      position: relative;
+      overflow: hidden;
+    }
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 600px;
+      height: 600px;
+      background: radial-gradient(circle, var(--lime-glow) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .hero__eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--font-bb-mono);
+      font-size: 12px;
+      color: var(--bb-lime);
+      border: 1px solid var(--border-strong);
+      border-radius: 100px;
+      padding: 6px 16px;
+      margin-bottom: 32px;
+      letter-spacing: 0.05em;
+    }
+    .hero__eyebrow::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      background: var(--bb-lime);
+      border-radius: 50%;
+    }
+    .hero__headline {
+      font-family: var(--font-bb-display);
+      font-size: clamp(44px, 7vw, 80px);
+      font-weight: 800;
+      line-height: 1.05;
+      margin-bottom: 24px;
+      max-width: 900px;
+      background: linear-gradient(135deg, var(--color-text-base) 0%, var(--bb-lime) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .hero__subheadline {
+      font-size: 20px;
+      color: var(--text-secondary);
+      max-width: 560px;
+      margin-bottom: 40px;
+      line-height: 1.5;
+    }
+    .hero__ctas {
+      display: flex;
+      gap: 16px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-bottom: 40px;
+    }
+    .btn-primary {
+      background: var(--bb-lime);
+      color: var(--bg-void);
+      font-size: 16px;
+      font-weight: 700;
+      padding: 14px 28px;
+      border-radius: 8px;
+      transition: opacity 0.2s, transform 0.2s, box-shadow 0.2s;
+    }
+    .btn-primary:hover {
+      opacity: 0.92;
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px var(--lime-glow);
+    }
+    .btn-secondary {
+      border: 1px solid var(--border-strong);
+      color: var(--bb-cream);
+      font-size: 16px;
+      padding: 14px 28px;
+      border-radius: 8px;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .btn-secondary:hover {
+      border-color: var(--bb-lime);
+      background: rgba(209, 255, 0, 0.05);
+    }
+    .hero__badges {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-bottom: 56px;
+    }
+    .hero__badge {
+      font-family: var(--font-bb-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 4px 10px;
+    }
+    .hero__terminal {
+      width: 100%;
+      max-width: 640px;
+      background: var(--color-bg-surface);
+      border: 1px solid var(--bb-border);
+      border-radius: calc(var(--radius) * 2);
+      overflow: hidden;
+      text-align: left;
+    }
+    .terminal__header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--bb-border);
+      background: var(--color-bg-elevated);
+    }
+    .terminal__dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+    .terminal__dot--red { background: #ff5f57; }
+    .terminal__dot--yellow { background: #febc2e; }
+    .terminal__dot--green { background: #28c840; }
+    .terminal__title {
+      font-family: var(--font-bb-mono);
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .terminal__body {
+      padding: 20px;
+      font-family: var(--font-bb-mono);
+      font-size: 13px;
+      min-height: 120px;
+    }
+    .terminal__line {
+      margin-bottom: 8px;
+      color: var(--text-secondary);
+    }
+    .terminal__line .cmd { color: var(--bb-lime); }
+    .terminal__line .out { color: var(--text-muted); }
+    .terminal__cursor {
+      display: inline-block;
+      width: 8px;
+      height: 14px;
+      background: var(--bb-lime);
+      animation: blink 1s infinite;
+      vertical-align: text-bottom;
+    }
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+    /* === STATS BAR === */
+    .stats-bar {
+      background: var(--color-bg-surface);
+      border-top: 1px solid var(--bb-border);
+      border-bottom: 1px solid var(--bb-border);
+      padding: 40px 0;
+    }
+    .stats-bar__grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 24px;
+      text-align: center;
+    }
+    .stat__number {
+      font-size: 40px;
+      font-weight: 700;
+      color: var(--bb-lime);
+      line-height: 1;
+      margin-bottom: 8px;
+    }
+    .stat__label {
+      font-family: var(--font-bb-mono);
+      font-size: 12px;
+      color: var(--color-text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    @media (max-width: 768px) {
+      .stats-bar__grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    /* === HOW IT WORKS === */
+    .how-it-works { background: var(--bg-void); }
+    .steps-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0;
+      margin-top: 56px;
+      position: relative;
+    }
+    .steps-grid::before {
+      content: '';
+      position: absolute;
+      top: 32px;
+      left: 12.5%;
+      right: 12.5%;
+      height: 1px;
+      background: var(--border-strong);
+    }
+    .step-card {
+      background: var(--color-bg-surface);
+      border: 1px solid var(--bb-border);
+      border-radius: calc(var(--radius) * 2);
+      padding: 28px 20px;
+      margin: 0 8px;
+      position: relative;
+      transition: border-color 0.2s;
+    }
+    .step-card:hover { border-color: var(--border-strong); }
+    .step-card__number {
+      font-family: var(--font-bb-mono);
+      font-size: 11px;
+      color: var(--bb-lime);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    .step-card__icon { font-size: 28px; margin-bottom: 12px; }
+    .step-card__icon svg, .benefit-card__icon svg { color: var(--bb-lime); display: block; }
+    .step-card__title {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .step-card__desc {
+      font-size: 14px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+    @media (max-width: 768px) {
+      .steps-grid { grid-template-columns: 1fr; }
+      .steps-grid::before { display: none; }
+      .step-card { margin: 0 0 12px 0; }
+    }
+
+    /* === AGENTS === */
+    .agents { background: var(--color-bg-base); }
+    .agents-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+      margin-top: 56px;
+    }
+    .agent-card {
+      background: var(--color-bg-surface);
+      border: 1px solid var(--bb-border);
+      border-left: 3px solid var(--bb-lime);
+      border-radius: calc(var(--radius) * 2);
+      padding: 24px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .agent-card:hover {
+      border-color: var(--bb-lime);
+      box-shadow: 0 0 20px var(--lime-glow);
+    }
+    .agent-card__avatar {
+      width: 48px;
+      height: 48px;
+      background: var(--color-bg-elevated);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-bb-mono);
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--bb-lime);
+      letter-spacing: 0.05em;
+      margin-bottom: 16px;
+    }
+    .agent-card__name {
+      font-family: var(--font-bb-mono);
+      font-size: 13px;
+      color: var(--bb-lime);
+      margin-bottom: 4px;
+    }
+    .agent-card__role {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .agent-card__capability {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+    @media (max-width: 768px) {
+      .agents-grid { grid-template-columns: 1fr; }
+    }
+    @media (min-width: 768px) and (max-width: 1024px) {
+      .agents-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    /* === OUTCOMES === */
+    .outcomes { background: var(--bg-void); }
+    .metrics-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 24px;
+      margin-bottom: 64px;
+      text-align: center;
+    }
+    .metric__number {
+      font-size: 48px;
+      font-weight: 700;
+      color: var(--bb-lime);
+      line-height: 1;
+    }
+    .metric__unit {
+      font-size: 20px;
+      color: var(--bb-lime);
+    }
+    .metric__label {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-top: 8px;
+    }
+    .benefits-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+    }
+    .benefit-card {
+      background: var(--color-bg-surface);
+      border: 1px solid var(--bb-border);
+      border-radius: calc(var(--radius) * 2);
+      padding: 32px 28px;
+      transition: border-color 0.2s;
+    }
+    .benefit-card:hover { border-color: var(--border-strong); }
+    .benefit-card__icon { font-size: 32px; margin-bottom: 16px; }
+    .benefit-card__title {
+      font-size: 20px;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+    .benefit-card__desc {
+      font-size: 15px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+    @media (max-width: 768px) {
+      .metrics-row { grid-template-columns: repeat(2, 1fr); }
+      .benefits-grid { grid-template-columns: 1fr; }
+    }
+
+    /* === FOR WHO === */
+    .for-who { background: var(--color-bg-base); }
+    .personas-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 24px;
+      margin-top: 56px;
+    }
+    .persona-card {
+      background: linear-gradient(135deg, var(--color-bg-surface), var(--color-bg-elevated));
+      border: 1px solid var(--bb-border-strong);
+      border-radius: calc(var(--radius) * 2.5);
+      padding: 36px 32px;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .persona-card:hover {
+      transform: scale(1.01);
+      box-shadow: 0 8px 32px rgba(209, 255, 0, 0.08);
+    }
+    .persona-card__avatar {
+      font-size: 40px;
+      width: 64px;
+      height: 64px;
+      background: var(--lime-glow);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 20px;
+    }
+    .persona-card__badge {
+      font-family: var(--font-bb-mono);
+      font-size: 11px;
+      color: var(--bb-lime);
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      padding: 3px 8px;
+      margin-bottom: 16px;
+      display: inline-block;
+    }
+    .persona-card__title {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 16px;
+    }
+    .persona-card__pain {
+      font-style: italic;
+      font-size: 15px;
+      color: var(--text-secondary);
+      border-left: 3px solid var(--bb-lime);
+      padding-left: 16px;
+      margin-bottom: 20px;
+      line-height: 1.5;
+    }
+    .persona-card__solutions {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .persona-card__solutions li {
+      font-size: 14px;
+      color: var(--text-secondary);
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+    }
+    .persona-card__solutions li::before {
+      content: '+';
+      color: var(--bb-lime);
+      flex-shrink: 0;
+      font-weight: 700;
+    }
+    @media (max-width: 768px) {
+      .personas-grid { grid-template-columns: 1fr; }
+    }
+
+    /* === SOCIAL PROOF === */
+    .social-proof { background: var(--color-bg-surface); border-top: 1px solid var(--bb-border); }
+    .quotes-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+      margin-top: 48px;
+    }
+    .quote-card {
+      background: var(--color-bg-elevated);
+      border: 1px solid var(--bb-border);
+      border-radius: calc(var(--radius) * 2);
+      padding: 28px;
+    }
+    .quote-card__mark {
+      font-size: 40px;
+      color: var(--bb-lime);
+      line-height: 0.8;
+      margin-bottom: 12px;
+    }
+    .quote-card__text {
+      font-size: 15px;
+      line-height: 1.6;
+      color: var(--text-primary);
+      margin-bottom: 20px;
+    }
+    .quote-card__author {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .quote-card__avatar {
+      width: 36px;
+      height: 36px;
+      background: var(--lime-glow);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-bb-mono);
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--bb-lime);
+    }
+    .quote-card__name {
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .quote-card__role {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    @media (max-width: 768px) {
+      .quotes-grid { grid-template-columns: 1fr; }
+    }
+
+    /* === CTA FINAL === */
+    .cta-final {
+      padding: 120px 0;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+    .cta-final::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 800px;
+      height: 400px;
+      background: radial-gradient(ellipse, var(--lime-glow) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .cta-final__title {
+      font-size: clamp(32px, 5vw, 56px);
+      font-weight: 700;
+      margin-bottom: 20px;
+    }
+    .cta-final__sub {
+      font-size: 18px;
+      color: var(--text-secondary);
+      margin-bottom: 40px;
+      max-width: 480px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .cta-final__btn {
+      background: var(--bb-lime);
+      color: var(--color-bg-void);
+      font-size: 18px;
+      font-weight: 700;
+      padding: 18px 40px;
+      border-radius: calc(var(--radius) * 1.5);
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: opacity 0.2s, transform 0.2s, box-shadow 0.2s;
+    }
+    .cta-final__btn:hover {
+      opacity: 0.92;
+      transform: translateY(-3px);
+      box-shadow: 0 12px 32px var(--lime-glow);
+    }
+    .cta-final__secondary {
+      margin-top: 20px;
+      font-size: 15px;
+      color: var(--text-muted);
+    }
+    .cta-final__secondary a { color: var(--bb-lime); }
+
+    /* === FOOTER === */
+    footer {
+      background: var(--color-bg-base);
+      border-top: 1px solid var(--bb-border);
+      padding: 48px 0 32px;
+    }
+    .footer__grid {
+      display: grid;
+      grid-template-columns: 1.5fr 1fr 1fr;
+      gap: 48px;
+      margin-bottom: 40px;
+    }
+    .footer__brand-name {
+      font-family: var(--font-bb-mono);
+      font-size: 15px;
+      font-weight: 500;
+      margin-bottom: 12px;
+    }
+    .footer__brand-name span { color: var(--bb-lime); }
+    .footer__tagline {
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+    .footer__col-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      margin-bottom: 16px;
+    }
+    .footer__links {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .footer__links a {
+      font-size: 14px;
+      color: var(--text-secondary);
+      transition: color 0.2s;
+    }
+    .footer__links a:hover { color: var(--text-primary); }
+    .footer__bottom {
+      border-top: 1px solid var(--bb-border);
+      padding-top: 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+    .footer__built-with { font-family: var(--font-bb-mono); }
+    .footer__built-with span { color: var(--bb-lime); }
+    @media (max-width: 768px) {
+      .footer__grid { grid-template-columns: 1fr; gap: 32px; }
+      .footer__bottom { flex-direction: column; gap: 12px; text-align: center; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- === NAVBAR === -->
+  <nav class="navbar" id="navbar" role="navigation" aria-label="Navegação principal">
+    <div class="container navbar__inner">
+      <a href="/v2" class="navbar__logo">Paperclip <span>×</span> AIOX</a>
+      <ul class="navbar__links">
+        <li><a href="https://docs.paperclip.ing" target="_blank" rel="noopener">Docs</a></li>
+        <li><a href="https://github.com/paperclipai" target="_blank" rel="noopener">GitHub</a></li>
+        <li><a href="https://discord.gg/paperclip" target="_blank" rel="noopener">Discord</a></li>
+      </ul>
+      <a href="https://app.paperclip.ing/signup" class="navbar__cta" target="_blank" rel="noopener">Começar grátis</a>
+      <button class="navbar__hamburger" id="hamburger" aria-label="Abrir menu" aria-expanded="false">menu</button>
+    </div>
+    <div class="navbar__mobile-menu" id="mobile-menu" role="dialog" aria-label="Menu mobile">
+      <a href="https://docs.paperclip.ing" target="_blank" rel="noopener">Docs</a>
+      <a href="https://github.com/paperclipai" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://discord.gg/paperclip" target="_blank" rel="noopener">Discord</a>
+      <a href="https://app.paperclip.ing/signup" class="btn-primary" target="_blank" rel="noopener">Começar grátis</a>
+    </div>
+  </nav>
+
+  <main>
+
+    <!-- === HERO === -->
+    <section class="hero" aria-label="Hero section">
+      <div class="hero__eyebrow" data-animate>Open Source &bull; Claude Code Native &bull; Story-Driven</div>
+      <h1 class="hero__headline" data-animate data-animate-delay="1">
+        Ship 3x mais rápido<br>com seu Time de IA
+      </h1>
+      <p class="hero__subheadline" data-animate data-animate-delay="2">
+        Paperclip orquestra. AIOX executa. Seu produto cresce.
+      </p>
+      <div class="hero__ctas" data-animate data-animate-delay="3">
+        <a href="https://app.paperclip.ing/signup" class="btn-primary" target="_blank" rel="noopener">
+          Começar gratuitamente →
+        </a>
+        <a href="https://github.com/paperclipai" class="btn-secondary" target="_blank" rel="noopener">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:inline-block;vertical-align:middle;margin-right:4px"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> GitHub
+        </a>
+      </div>
+      <div class="hero__badges" data-animate data-animate-delay="4">
+        <span class="hero__badge">story-driven</span>
+        <span class="hero__badge">qa-gate automático</span>
+        <span class="hero__badge">deploy via agente</span>
+        <span class="hero__badge">open source</span>
+      </div>
+      <div class="hero__terminal" data-animate data-animate-delay="5" aria-label="Demo do workflow AIOX">
+        <div class="terminal__header">
+          <span class="terminal__dot terminal__dot--red"></span>
+          <span class="terminal__dot terminal__dot--yellow"></span>
+          <span class="terminal__dot terminal__dot--green"></span>
+          <span class="terminal__title">AIOX Workflow — paperclip.ing</span>
+        </div>
+        <div class="terminal__body" id="terminal-body">
+          <div class="terminal__line" id="terminal-line">
+            <span class="cursor">▊</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- === STATS BAR === -->
+    <section class="stats-bar" aria-label="Estatísticas do projeto">
+      <div class="container">
+        <div class="stats-bar__grid">
+          <div data-animate>
+            <div class="stat__number">10+</div>
+            <div class="stat__label">Agentes especializados</div>
+          </div>
+          <div data-animate data-animate-delay="1">
+            <div class="stat__number">60+</div>
+            <div class="stat__label">Componentes AIOX</div>
+          </div>
+          <div data-animate data-animate-delay="2">
+            <div class="stat__number">5</div>
+            <div class="stat__label">Workflows prontos</div>
+          </div>
+          <div data-animate data-animate-delay="3">
+            <div class="stat__number">100%</div>
+            <div class="stat__label">Story-driven</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- === HOW IT WORKS === -->
+    <section class="section how-it-works" aria-labelledby="how-title">
+      <div class="container">
+        <p class="section-label">Workflow</p>
+        <h2 class="section-title" id="how-title" data-animate>Do backlog ao deploy. Em ciclos.</h2>
+        <p class="section-subtitle" data-animate data-animate-delay="1">Cada feature passa por agentes especializados — do planejamento ao merge — sem overhead de gestão humana.</p>
+        <div class="steps-grid">
+          <div class="step-card" data-animate>
+            <div class="step-card__number">01</div>
+            <div class="step-card__icon" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></div>
+            <h3 class="step-card__title">PM define</h3>
+            <p class="step-card__desc">Morgan cria PRD e épicos a partir dos seus objetivos de negócio.</p>
+          </div>
+          <div class="step-card" data-animate data-animate-delay="1">
+            <div class="step-card__number">02</div>
+            <div class="step-card__icon" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></div>
+            <h3 class="step-card__title">SM cria stories</h3>
+            <p class="step-card__desc">River fragmenta em stories testáveis, prontas para desenvolvimento.</p>
+          </div>
+          <div class="step-card" data-animate data-animate-delay="2">
+            <div class="step-card__number">03</div>
+            <div class="step-card__icon" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></div>
+            <h3 class="step-card__title">Dev implementa</h3>
+            <p class="step-card__desc">Dex implementa story por story com QA automático a cada commit.</p>
+          </div>
+          <div class="step-card" data-animate data-animate-delay="3">
+            <div class="step-card__number">04</div>
+            <div class="step-card__icon" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg></div>
+            <h3 class="step-card__title">DevOps entrega</h3>
+            <p class="step-card__desc">Gage faz push, abre PR e monitora o deploy. Você só aprova.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- === AGENTS === -->
+    <section class="section agents" aria-labelledby="agents-title">
+      <div class="container">
+        <p class="section-label">Time</p>
+        <h2 class="section-title" id="agents-title" data-animate>Seu time especializado.<br>Sem contratar ninguém.</h2>
+        <p class="section-subtitle" data-animate data-animate-delay="1">Cada agente tem escopo exclusivo, memória de projeto e opera dentro de um processo auditável.</p>
+        <div class="agents-grid">
+          <div class="agent-card" data-animate>
+            <div class="agent-card__avatar" aria-hidden="true">PM</div>
+            <div class="agent-card__name">@morgan</div>
+            <div class="agent-card__role">Product Manager</div>
+            <div class="agent-card__capability">Define épicos, escreve PRDs e valida requirements antes do dev começar.</div>
+          </div>
+          <div class="agent-card" data-animate data-animate-delay="1">
+            <div class="agent-card__avatar" aria-hidden="true">SM</div>
+            <div class="agent-card__name">@river</div>
+            <div class="agent-card__role">Scrum Master</div>
+            <div class="agent-card__capability">Cria stories com critérios de aceite claros. Sprint planning sem reuniões.</div>
+          </div>
+          <div class="agent-card" data-animate data-animate-delay="2">
+            <div class="agent-card__avatar" aria-hidden="true">DEV</div>
+            <div class="agent-card__name">@dex</div>
+            <div class="agent-card__role">Developer</div>
+            <div class="agent-card__capability">Implementa código, escreve testes e corrige issues com CodeRabbit auto-healing.</div>
+          </div>
+          <div class="agent-card" data-animate data-animate-delay="1">
+            <div class="agent-card__avatar" aria-hidden="true">QA</div>
+            <div class="agent-card__name">@quinn</div>
+            <div class="agent-card__role">QA Engineer</div>
+            <div class="agent-card__capability">QA Gate com 7 checks. Self-healing loop até 5 iterações antes de qualquer PR.</div>
+          </div>
+          <div class="agent-card" data-animate data-animate-delay="2">
+            <div class="agent-card__avatar" aria-hidden="true">OPS</div>
+            <div class="agent-card__name">@gage</div>
+            <div class="agent-card__role">DevOps</div>
+            <div class="agent-card__capability">Autoridade exclusiva para git push, PR e CI/CD. Sem bypass de processo.</div>
+          </div>
+          <div class="agent-card" data-animate data-animate-delay="3">
+            <div class="agent-card__avatar" aria-hidden="true">ARC</div>
+            <div class="agent-card__name">@aria</div>
+            <div class="agent-card__role">Architect</div>
+            <div class="agent-card__capability">Decisões de sistema, seleção de tecnologia, ADRs documentadas e rastreáveis.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- === OUTCOMES === -->
+    <section class="section outcomes" aria-labelledby="outcomes-title">
+      <div class="container">
+        <p class="section-label">Resultados</p>
+        <h2 class="section-title" id="outcomes-title" data-animate>Números que importam<br>para o seu negócio.</h2>
+        <div class="metrics-row">
+          <div data-animate>
+            <div class="metric__number">3<span class="metric__unit">x</span></div>
+            <div class="metric__label">mais PRs por sprint</div>
+          </div>
+          <div data-animate data-animate-delay="1">
+            <div class="metric__number">0</div>
+            <div class="metric__label">bugs que passam pelo QA Gate</div>
+          </div>
+          <div data-animate data-animate-delay="2">
+            <div class="metric__number">5</div>
+            <div class="metric__label">iterações auto-healing</div>
+          </div>
+          <div data-animate data-animate-delay="3">
+            <div class="metric__number">100<span class="metric__unit">%</span></div>
+            <div class="metric__label">audit trail rastreável</div>
+          </div>
+        </div>
+        <div class="benefits-grid">
+          <div class="benefit-card" data-animate>
+            <div class="benefit-card__icon" aria-hidden="true"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="13 2 13 9 20 9 11 22 11 15 4 15 13 2"/></svg></div>
+            <h3 class="benefit-card__title">Velocidade</h3>
+            <p class="benefit-card__desc">Stories prontas para dev em horas, não dias. Deploy sem esperar um humano liberar o branch. Ciclo completo do backlog ao PR em um heartbeat.</p>
+          </div>
+          <div class="benefit-card" data-animate data-animate-delay="1">
+            <div class="benefit-card__icon" aria-hidden="true"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg></div>
+            <h3 class="benefit-card__title">Qualidade</h3>
+            <p class="benefit-card__desc">QA Gate automático com 7 checks obrigatórios. Loop de correção até 5 iterações antes de qualquer PR ser aberto. Zero bypass de processo.</p>
+          </div>
+          <div class="benefit-card" data-animate data-animate-delay="2">
+            <div class="benefit-card__icon" aria-hidden="true"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></div>
+            <h3 class="benefit-card__title">Previsibilidade</h3>
+            <p class="benefit-card__desc">Run trail completo de cada decisão de agente. Audit log para apresentar ao board. Você sabe exatamente o que foi feito, por quem e por quê.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- === FOR WHO === -->
+    <section class="section for-who" aria-labelledby="forwho-title">
+      <div class="container">
+        <p class="section-label">Para quem é</p>
+        <h2 class="section-title" id="forwho-title" data-animate>Para qualquer líder.<br>Com qualquer perfil.</h2>
+        <div class="personas-grid">
+          <div class="persona-card" data-animate>
+            <div class="persona-card__avatar" aria-hidden="true">CTO</div>
+            <div class="persona-card__badge">CTO / VP Engineering</div>
+            <h3 class="persona-card__title">Líder técnico</h3>
+            <p class="persona-card__pain">"Meu time passa mais tempo em planning do que em coding."</p>
+            <ul class="persona-card__solutions">
+              <li>SDC automatiza sprint planning e handoffs</li>
+              <li>QA Gate elimina revisões manuais repetitivas</li>
+              <li>Run trail completo para apresentar ao board</li>
+            </ul>
+          </div>
+          <div class="persona-card" data-animate data-animate-delay="1">
+            <div class="persona-card__avatar" aria-hidden="true">CEO</div>
+            <div class="persona-card__badge">Founder / CEO</div>
+            <h3 class="persona-card__title">Founder não-técnico</h3>
+            <p class="persona-card__pain">"Não tenho visibilidade do que meu time de dev está fazendo."</p>
+            <ul class="persona-card__solutions">
+              <li>Visibilidade de progresso sem stand-ups diários</li>
+              <li>Features entregues com previsibilidade real</li>
+              <li>Menos dependência de heróis individuais</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- === SOCIAL PROOF === -->
+    <section class="section social-proof" aria-labelledby="social-title">
+      <div class="container">
+        <p class="section-label">Early Adopters</p>
+        <h2 class="section-title" id="social-title" data-animate>O que dizem<br>os primeiros usuários.</h2>
+        <div class="quotes-grid">
+          <div class="quote-card" data-animate>
+            <div class="quote-card__mark" aria-hidden="true">"</div>
+            <p class="quote-card__text">AIOX transformou como pensamos sobre desenvolvimento. Não é mais sobre 'o dev fez', é sobre 'o time fez' — e o time inclui agentes de IA com papéis claros.</p>
+            <div class="quote-card__author">
+              <div class="quote-card__avatar" aria-hidden="true">EA</div>
+              <div>
+                <div class="quote-card__name">Early Adopter</div>
+                <div class="quote-card__role">CTO, Startup Série A</div>
+              </div>
+            </div>
+          </div>
+          <div class="quote-card" data-animate data-animate-delay="1">
+            <div class="quote-card__mark" aria-hidden="true">"</div>
+            <p class="quote-card__text">O QA Gate sozinho valeu o investimento. Paramos de ter bugs críticos em produção. O agente revisando antes de cada PR é como ter um sênior sempre disponível.</p>
+            <div class="quote-card__author">
+              <div class="quote-card__avatar" aria-hidden="true">EA</div>
+              <div>
+                <div class="quote-card__name">Early Adopter</div>
+                <div class="quote-card__role">VP Engineering, SaaS B2B</div>
+              </div>
+            </div>
+          </div>
+          <div class="quote-card" data-animate data-animate-delay="2">
+            <div class="quote-card__mark" aria-hidden="true">"</div>
+            <p class="quote-card__text">Como founder não-técnico, finalmente tenho visibilidade real do que está sendo desenvolvido. O run trail é o melhor relatório de status que já tive.</p>
+            <div class="quote-card__author">
+              <div class="quote-card__avatar" aria-hidden="true">EA</div>
+              <div>
+                <div class="quote-card__name">Early Adopter</div>
+                <div class="quote-card__role">Founder, Startup de produto</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- === CTA FINAL === -->
+    <section class="cta-final" aria-labelledby="cta-title">
+      <div class="container">
+        <h2 class="cta-final__title" id="cta-title" data-animate>
+          Seu time de IA<br>começa hoje.
+        </h2>
+        <p class="cta-final__sub" data-animate data-animate-delay="1">
+          Paperclip + AIOX. Open source. Sem vendor lock-in. Começar grátis.
+        </p>
+        <a href="https://app.paperclip.ing/signup" class="cta-final__btn" data-animate data-animate-delay="2" target="_blank" rel="noopener">
+          Começar gratuitamente →
+        </a>
+        <p class="cta-final__secondary" data-animate data-animate-delay="3">
+          Ou explore o <a href="https://github.com/paperclipai" target="_blank" rel="noopener">GitHub →</a>
+        </p>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- === FOOTER === -->
+  <footer>
+    <div class="container">
+      <div class="footer__grid">
+        <div>
+          <div class="footer__brand-name">Paperclip <span>×</span> AIOX</div>
+          <p class="footer__tagline">A plataforma de engenharia autônoma.<br>10 agentes. 5 workflows. 100% story-driven.</p>
+        </div>
+        <div>
+          <div class="footer__col-title">Links</div>
+          <ul class="footer__links">
+            <li><a href="https://docs.paperclip.ing" target="_blank" rel="noopener">Documentação</a></li>
+            <li><a href="https://github.com/paperclipai" target="_blank" rel="noopener">GitHub</a></li>
+            <li><a href="https://discord.gg/paperclip" target="_blank" rel="noopener">Discord</a></li>
+            <li><a href="https://app.paperclip.ing" target="_blank" rel="noopener">Paperclip App</a></li>
+          </ul>
+        </div>
+        <div>
+          <div class="footer__col-title">Créditos</div>
+          <ul class="footer__links">
+            <li><a href="https://github.com/paperclipai/aiox" target="_blank" rel="noopener">AIOX Framework</a></li>
+            <li><a href="https://claude.ai/code" target="_blank" rel="noopener">Claude Code</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer__bottom">
+        <span>© 2026 Paperclip × AIOX. Todos os direitos reservados.</span>
+        <span class="footer__built-with">Construído com <span>AIOX Framework</span></span>
+      </div>
+    </div>
+  </footer>
+
+  <script defer>
+    // === SCROLL ANIMATIONS ===
+    const animateOnScroll = () => {
+      const observer = new IntersectionObserver(
+        (entries) => entries.forEach(e => {
+          if (e.isIntersecting) {
+            e.target.classList.add('visible');
+            observer.unobserve(e.target);
+          }
+        }),
+        { threshold: 0.1 }
+      );
+      document.querySelectorAll('[data-animate]').forEach(el => observer.observe(el));
+    };
+
+    // === TYPEWRITER TERMINAL ===
+    const typewriter = () => {
+      const lines = [
+        { cmd: '@river *create-story', out: '→ LP2 Story 1.1 criada [Draft]' },
+        { cmd: '@dex *implement', out: '→ 23 arquivos, 0 erros [InProgress]' },
+        { cmd: '@quinn *qa-gate', out: '→ PASS — 7/7 checks [InReview]' },
+        { cmd: '@gage *push', out: '→ PR #42 aberto, deploy ok [Done]' },
+      ];
+      const container = document.getElementById('terminal-body');
+      if (!container) return;
+
+      let lineIdx = 0;
+      let charIdx = 0;
+      let phase = 'typing-cmd'; // typing-cmd | showing-out | clearing
+      let currentLineEl = null;
+      let displayedLines = [];
+
+      const render = () => {
+        container.innerHTML = '';
+        displayedLines.forEach(l => {
+          const el = document.createElement('div');
+          el.className = 'terminal__line';
+          el.innerHTML = `<span class="cmd">$ ${l.cmd}</span>`;
+          if (l.out) el.innerHTML += `<br><span class="out">${l.out}</span>`;
+          container.appendChild(el);
+        });
+        if (phase === 'typing-cmd') {
+          const el = document.createElement('div');
+          el.className = 'terminal__line';
+          el.innerHTML = `<span class="cmd">$ ${lines[lineIdx].cmd.slice(0, charIdx)}</span><span class="terminal__cursor"></span>`;
+          container.appendChild(el);
+        }
+      };
+
+      const tick = () => {
+        if (phase === 'typing-cmd') {
+          charIdx++;
+          if (charIdx > lines[lineIdx].cmd.length) {
+            phase = 'showing-out';
+            setTimeout(tick, 600);
+          } else {
+            render();
+            setTimeout(tick, 50);
+          }
+        } else if (phase === 'showing-out') {
+          displayedLines.push({ cmd: lines[lineIdx].cmd, out: lines[lineIdx].out });
+          lineIdx++;
+          charIdx = 0;
+          if (lineIdx >= lines.length) {
+            render();
+            setTimeout(() => {
+              displayedLines = [];
+              lineIdx = 0;
+              charIdx = 0;
+              phase = 'typing-cmd';
+              render();
+              setTimeout(tick, 300);
+            }, 2000);
+          } else {
+            phase = 'typing-cmd';
+            render();
+            setTimeout(tick, 200);
+          }
+        }
+      };
+
+      render();
+      setTimeout(tick, 1000);
+    };
+
+    // === STICKY NAVBAR ===
+    const stickyNav = () => {
+      const nav = document.getElementById('navbar');
+      if (!nav) return;
+      const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 50);
+      window.addEventListener('scroll', onScroll, { passive: true });
+    };
+
+    // === MOBILE MENU ===
+    const mobileMenu = () => {
+      const btn = document.getElementById('hamburger');
+      const menu = document.getElementById('mobile-menu');
+      if (!btn || !menu) return;
+      btn.addEventListener('click', () => {
+        const isOpen = menu.classList.toggle('open');
+        btn.setAttribute('aria-expanded', isOpen);
+        btn.textContent = isOpen ? 'fechar' : 'menu';
+      });
+    };
+
+    // === INIT ===
+    document.addEventListener('DOMContentLoaded', () => {
+      animateOnScroll();
+      typewriter();
+      stickyNav();
+      mobileMenu();
+    });
+  </script>
+
+</body>
+</html>

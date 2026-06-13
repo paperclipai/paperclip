@@ -1,0 +1,1633 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Paperclip × AIOX — AI Agents. Orquestrados.</title>
+  <meta name="description" content="Paperclip é o plano de controle para agentes de IA. AIOX é o framework de orquestração. Juntos, são a infraestrutura completa para desenvolvimento autônomo com IA." />
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&display=swap" rel="stylesheet" />
+  <link href="https://fonts.cdnfonts.com/css/tasa-orbiter-display" rel="stylesheet" />
+
+  <style>
+    /* ============================================================
+       AIOX DESIGN SYSTEM — Dark Cockpit Edition V1.0
+       Tokens extracted from brand.aioxsquad.ai
+       ============================================================ */
+    :root {
+      /* Brand Primitives */
+      --bb-lime: oklch(93.4% .2264 121.95);
+      --bb-dark: oklch(11.49% 0 0);
+      --bb-cream: oklch(96.39% .0158 106.69);
+      --bb-muted: oklch(79.52% 0 0);
+      --bb-flare: oklch(63.1% .2116 36.21);
+
+      /* Backgrounds */
+      --bg-void: #000000;
+      --bg-base: #0a0a0a;
+      --bg-surface: oklch(16.93% .0041 285.95);
+      --bg-elevated: oklch(18.4% .0081 118.61);
+      --bg-overlay: oklch(21.86% .0039 286.08);
+
+      /* Text */
+      --text-primary: oklch(99.52% .0235 106.82);
+      --text-secondary: oklch(69.27% 0 0);
+      --text-tertiary: oklch(52.08% 0 0);
+      --text-muted: oklch(42.76% 0 0);
+
+      /* Borders */
+      --border: oklch(28.58% .0036 286.17);
+      --border-subtle: #D1FF001A;
+      --border-strong: #D1FF0033;
+      --ring: #D1FF0080;
+
+      /* Glow */
+      --lime-glow: #D1FF0040;
+      --lime-glow-soft: #D1FF001A;
+
+      /* Typography */
+      --font-display: 'TASAOrbiterDisplay', 'TASA Orbiter Display', system-ui;
+      --font-sans: 'Geist', 'Inter', system-ui;
+      --font-mono: 'Geist Mono', 'JetBrains Mono', monospace;
+
+      /* Radius */
+      --radius-sm: 4px;
+      --radius-md: 8px;
+      --radius-lg: 12px;
+      --radius-xl: 16px;
+      --radius-2xl: 24px;
+      --radius-full: 9999px;
+    }
+
+    /* ============================================================
+       RESET & BASE
+       ============================================================ */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--font-sans);
+      background-color: var(--bg-base);
+      color: var(--text-primary);
+      line-height: 1.6;
+      overflow-x: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: inherit; text-decoration: none; }
+
+    /* ============================================================
+       UTILITIES
+       ============================================================ */
+    .container {
+      width: 100%;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    .lime { color: var(--bb-lime); }
+    .muted { color: var(--text-secondary); }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: var(--radius-full);
+      border: 1px solid var(--border-strong);
+      background: var(--lime-glow-soft);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--bb-lime);
+    }
+
+    .badge-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--bb-lime);
+      animation: pulse 2s cubic-bezier(.4,0,.6,1) infinite;
+    }
+
+    /* ============================================================
+       BUTTONS
+       ============================================================ */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 24px;
+      border-radius: var(--radius-md);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
+      border: none;
+      outline: none;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      background: var(--bb-lime);
+      color: #0a0a0a;
+    }
+    .btn-primary:hover {
+      background: oklch(88% .2264 121.95);
+      box-shadow: 0 0 24px var(--lime-glow);
+      transform: translateY(-1px);
+    }
+
+    .btn-secondary {
+      background: transparent;
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover {
+      border-color: var(--border-strong);
+      background: var(--bg-surface);
+      transform: translateY(-1px);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--bb-lime);
+      padding: 10px 16px;
+      font-size: 13px;
+    }
+    .btn-ghost:hover { background: var(--lime-glow-soft); border-radius: var(--radius-md); }
+
+    .btn-lg { padding: 14px 28px; font-size: 15px; }
+    .btn-sm { padding: 8px 16px; font-size: 13px; }
+
+    /* ============================================================
+       NAVIGATION
+       ============================================================ */
+    .nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      border-bottom: 1px solid var(--border);
+      background: rgba(10, 10, 10, 0.8);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+    }
+
+    .nav-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 60px;
+    }
+
+    .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 0.05em;
+    }
+
+    .nav-logo-mark {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .logo-paperclip {
+      font-weight: 700;
+      font-size: 14px;
+      font-family: var(--font-sans);
+      color: var(--text-primary);
+    }
+
+    .logo-x {
+      color: var(--text-tertiary);
+      font-size: 12px;
+      font-family: var(--font-mono);
+    }
+
+    .logo-aiox {
+      font-weight: 700;
+      font-size: 14px;
+      font-family: var(--font-display);
+      color: var(--bb-lime);
+      letter-spacing: 0.05em;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      list-style: none;
+    }
+
+    .nav-links a {
+      padding: 8px 12px;
+      font-size: 13px;
+      color: var(--text-secondary);
+      border-radius: var(--radius-md);
+      transition: all 150ms ease;
+    }
+    .nav-links a:hover { color: var(--text-primary); background: var(--bg-surface); }
+
+    .nav-cta { display: flex; align-items: center; gap: 8px; }
+
+    @media (max-width: 768px) {
+      .nav-links { display: none; }
+    }
+
+    /* ============================================================
+       HERO
+       ============================================================ */
+    .hero {
+      position: relative;
+      padding: 160px 0 100px;
+      overflow: hidden;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+    }
+
+    .hero-bg {
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 50% -10%, #D1FF002E, transparent 60%),
+        radial-gradient(ellipse 60% 60% at 80% 80%, #D1FF0010, transparent 50%),
+        linear-gradient(180deg, var(--bg-base) 0%, #0a0a0a 100%);
+      pointer-events: none;
+    }
+
+    .hero-grid {
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(var(--border) 1px, transparent 1px),
+        linear-gradient(90deg, var(--border) 1px, transparent 1px);
+      background-size: 60px 60px;
+      opacity: 0.3;
+      mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 30%, transparent 80%);
+      pointer-events: none;
+    }
+
+    .hero-content {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    .hero-badge { margin-bottom: 28px; }
+
+    .hero-title {
+      font-family: var(--font-display);
+      font-size: clamp(3rem, 8vw, 6.5rem);
+      font-weight: 800;
+      line-height: 1;
+      letter-spacing: -0.02em;
+      margin-bottom: 24px;
+    }
+
+    .hero-title .gradient-text {
+      background: linear-gradient(135deg, var(--bb-lime) 0%, oklch(79.03% .1908 121.58) 50%, var(--bb-lime) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .hero-subtitle {
+      font-size: clamp(1rem, 2vw, 1.25rem);
+      color: var(--text-secondary);
+      max-width: 600px;
+      margin: 0 auto 40px;
+      line-height: 1.7;
+    }
+
+    .hero-actions {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin-bottom: 60px;
+      flex-wrap: wrap;
+    }
+
+    .hero-stats {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 40px;
+      padding-top: 40px;
+      border-top: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+
+    .hero-stat {
+      text-align: center;
+    }
+
+    .hero-stat-value {
+      font-family: var(--font-display);
+      font-size: 2rem;
+      font-weight: 800;
+      color: var(--bb-lime);
+      letter-spacing: -0.02em;
+    }
+
+    .hero-stat-label {
+      font-size: 11px;
+      font-family: var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-tertiary);
+      margin-top: 4px;
+    }
+
+    /* ============================================================
+       LOGOS STRIP
+       ============================================================ */
+    .logos-strip {
+      padding: 40px 0;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-void);
+    }
+
+    .logos-inner {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .collab-card {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      padding: 16px 32px;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-xl);
+      background: var(--bg-surface);
+    }
+
+    .collab-logo {
+      font-family: var(--font-display);
+      font-size: 28px;
+      font-weight: 800;
+    }
+
+    .collab-logo.paperclip { color: var(--text-primary); }
+    .collab-logo.aiox { color: var(--bb-lime); }
+
+    .collab-divider {
+      width: 1px;
+      height: 40px;
+      background: var(--border);
+    }
+
+    .collab-x {
+      font-family: var(--font-mono);
+      font-size: 24px;
+      color: var(--text-tertiary);
+    }
+
+    .logos-tagline {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      text-align: center;
+      margin-top: 16px;
+    }
+
+    /* ============================================================
+       SECTION BASE
+       ============================================================ */
+    section { padding: 100px 0; }
+
+    .section-label {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--bb-lime);
+      margin-bottom: 12px;
+    }
+
+    .section-title {
+      font-family: var(--font-display);
+      font-size: clamp(2rem, 4vw, 3rem);
+      font-weight: 800;
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+      margin-bottom: 16px;
+    }
+
+    .section-subtitle {
+      font-size: 1rem;
+      color: var(--text-secondary);
+      max-width: 560px;
+      line-height: 1.7;
+    }
+
+    .section-header { margin-bottom: 64px; }
+    .section-header.centered { text-align: center; }
+    .section-header.centered .section-subtitle { margin: 0 auto; }
+
+    /* ============================================================
+       ABOUT — SPLIT LAYOUT
+       ============================================================ */
+    .about { background: var(--bg-void); }
+
+    .about-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 2px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      overflow: hidden;
+    }
+
+    .about-panel {
+      padding: 48px;
+      background: var(--bg-surface);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .about-panel::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+    }
+
+    .about-panel.panel-paperclip::before {
+      background: linear-gradient(90deg, transparent, var(--text-secondary), transparent);
+    }
+
+    .about-panel.panel-aiox::before {
+      background: linear-gradient(90deg, transparent, var(--bb-lime), transparent);
+    }
+
+    .panel-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: var(--radius-lg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 24px;
+      font-size: 22px;
+    }
+
+    .panel-icon.icon-paperclip {
+      background: rgba(255,255,255,0.08);
+      border: 1px solid var(--border);
+    }
+
+    .panel-icon.icon-aiox {
+      background: var(--lime-glow-soft);
+      border: 1px solid var(--border-strong);
+    }
+
+    .panel-name {
+      font-family: var(--font-display);
+      font-size: 1.75rem;
+      font-weight: 800;
+      margin-bottom: 12px;
+      letter-spacing: -0.01em;
+    }
+
+    .panel-name.aiox-name { color: var(--bb-lime); }
+
+    .panel-desc {
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+      line-height: 1.7;
+      margin-bottom: 28px;
+    }
+
+    .panel-features {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .panel-features li {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+    }
+
+    .panel-features li::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      margin-top: 7px;
+      flex-shrink: 0;
+    }
+
+    .panel-paperclip .panel-features li::before { background: var(--text-tertiary); }
+    .panel-aiox .panel-features li::before { background: var(--bb-lime); }
+
+    @media (max-width: 768px) {
+      .about-grid { grid-template-columns: 1fr; }
+      .about-panel { padding: 32px; }
+    }
+
+    /* ============================================================
+       FEATURES
+       ============================================================ */
+    .features { background: var(--bg-base); }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      overflow: hidden;
+    }
+
+    .feature-card {
+      padding: 40px 32px;
+      background: var(--bg-surface);
+      transition: background 200ms ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .feature-card:hover { background: var(--bg-elevated); }
+
+    .feature-card::after {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 1px;
+      background: var(--border);
+    }
+
+    .feature-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: var(--radius-lg);
+      background: var(--lime-glow-soft);
+      border: 1px solid var(--border-strong);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      margin-bottom: 20px;
+    }
+
+    .feature-title {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: var(--text-primary);
+    }
+
+    .feature-desc {
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+      line-height: 1.65;
+    }
+
+    @media (max-width: 1024px) {
+      .features-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    @media (max-width: 640px) {
+      .features-grid { grid-template-columns: 1fr; }
+    }
+
+    /* ============================================================
+       HOW IT WORKS
+       ============================================================ */
+    .how-it-works { background: var(--bg-void); }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      overflow: hidden;
+    }
+
+    .step {
+      background: var(--bg-surface);
+      padding: 40px 28px;
+      position: relative;
+    }
+
+    .step-number {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      color: var(--bb-lime);
+      margin-bottom: 16px;
+      text-transform: uppercase;
+    }
+
+    .step-icon {
+      font-size: 28px;
+      margin-bottom: 16px;
+    }
+
+    .step-title {
+      font-size: 0.9375rem;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    .step-desc {
+      font-size: 0.8125rem;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    .step-connector {
+      position: absolute;
+      top: 48px;
+      right: -12px;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-strong);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1;
+      color: var(--bb-lime);
+      font-size: 10px;
+    }
+
+    .step:last-child .step-connector { display: none; }
+
+    @media (max-width: 1024px) {
+      .steps { grid-template-columns: repeat(2, 1fr); }
+      .step-connector { display: none; }
+    }
+
+    @media (max-width: 640px) {
+      .steps { grid-template-columns: 1fr; }
+    }
+
+    /* ============================================================
+       WORKFLOW DEMO
+       ============================================================ */
+    .workflow { background: var(--bg-base); }
+
+    .workflow-terminal {
+      background: #0d0d0d;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      overflow: hidden;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    .terminal-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-surface);
+    }
+
+    .terminal-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+
+    .terminal-dot.red { background: #ff5f57; }
+    .terminal-dot.yellow { background: #febc2e; }
+    .terminal-dot.green { background: #28c840; }
+
+    .terminal-title {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-tertiary);
+      margin-left: 8px;
+    }
+
+    .terminal-body {
+      padding: 28px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 2;
+    }
+
+    .t-prompt { color: var(--bb-lime); }
+    .t-cmd { color: var(--text-primary); }
+    .t-comment { color: var(--text-tertiary); }
+    .t-agent { color: oklch(66.9% .1837 248.81); }
+    .t-output { color: var(--text-secondary); padding-left: 20px; }
+    .t-success { color: var(--bb-lime); }
+    .t-separator { opacity: 0.3; }
+
+    /* ============================================================
+       AGENTS GRID
+       ============================================================ */
+    .agents { background: var(--bg-void); }
+
+    .agents-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+    }
+
+    .agent-card {
+      padding: 20px 16px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      text-align: center;
+      transition: all 200ms ease;
+      cursor: default;
+    }
+
+    .agent-card:hover {
+      border-color: var(--border-strong);
+      background: var(--bg-elevated);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    }
+
+    .agent-emoji { font-size: 24px; margin-bottom: 8px; }
+
+    .agent-name {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      color: var(--bb-lime);
+      margin-bottom: 4px;
+    }
+
+    .agent-role {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      line-height: 1.4;
+    }
+
+    @media (max-width: 1024px) { .agents-grid { grid-template-columns: repeat(3, 1fr); } }
+    @media (max-width: 640px) { .agents-grid { grid-template-columns: repeat(2, 1fr); } }
+
+    /* ============================================================
+       METRICS / STATS
+       ============================================================ */
+    .metrics {
+      background: var(--bg-base);
+      padding: 80px 0;
+    }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      overflow: hidden;
+    }
+
+    .metric {
+      background: var(--bg-surface);
+      padding: 40px 32px;
+      position: relative;
+    }
+
+    .metric::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 24px;
+      right: 24px;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--border-strong), transparent);
+    }
+
+    .metric-value {
+      font-family: var(--font-display);
+      font-size: 3rem;
+      font-weight: 800;
+      color: var(--bb-lime);
+      letter-spacing: -0.03em;
+      line-height: 1;
+      margin-bottom: 8px;
+    }
+
+    .metric-label {
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+      margin-bottom: 4px;
+    }
+
+    .metric-note {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
+
+    @media (max-width: 768px) {
+      .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    @media (max-width: 480px) {
+      .metrics-grid { grid-template-columns: 1fr; }
+    }
+
+    /* ============================================================
+       CTA
+       ============================================================ */
+    .cta {
+      padding: 120px 0;
+      position: relative;
+      overflow: hidden;
+      background: var(--bg-void);
+    }
+
+    .cta-bg {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse 70% 60% at 50% 50%, #D1FF001A, transparent 70%);
+      pointer-events: none;
+    }
+
+    .cta-card {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+      padding: 80px 60px;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-2xl);
+      background: linear-gradient(135deg, var(--bg-surface) 0%, var(--bg-elevated) 100%);
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    .cta-title {
+      font-family: var(--font-display);
+      font-size: clamp(2rem, 5vw, 3.5rem);
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+      margin-bottom: 20px;
+    }
+
+    .cta-subtitle {
+      font-size: 1rem;
+      color: var(--text-secondary);
+      max-width: 500px;
+      margin: 0 auto 40px;
+      line-height: 1.7;
+    }
+
+    .cta-actions {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .cta-note {
+      margin-top: 20px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+      letter-spacing: 0.05em;
+    }
+
+    @media (max-width: 640px) {
+      .cta-card { padding: 48px 24px; }
+    }
+
+    /* ============================================================
+       FOOTER
+       ============================================================ */
+    .footer {
+      padding: 60px 0 32px;
+      border-top: 1px solid var(--border);
+      background: var(--bg-void);
+    }
+
+    .footer-inner {
+      display: grid;
+      grid-template-columns: 2fr 1fr 1fr 1fr;
+      gap: 48px;
+      margin-bottom: 48px;
+    }
+
+    .footer-brand-name {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .footer-brand-desc {
+      font-size: 0.875rem;
+      color: var(--text-tertiary);
+      line-height: 1.65;
+      max-width: 260px;
+    }
+
+    .footer-col-title {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-bottom: 16px;
+    }
+
+    .footer-links {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .footer-links a {
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+      transition: color 150ms ease;
+    }
+
+    .footer-links a:hover { color: var(--text-primary); }
+
+    .footer-bottom {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-top: 32px;
+      border-top: 1px solid var(--border);
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .footer-copy {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+      letter-spacing: 0.04em;
+    }
+
+    .footer-built {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+      letter-spacing: 0.04em;
+    }
+
+    .footer-built span { color: var(--bb-lime); }
+
+    @media (max-width: 1024px) {
+      .footer-inner { grid-template-columns: 1fr 1fr; gap: 32px; }
+    }
+
+    @media (max-width: 640px) {
+      .footer-inner { grid-template-columns: 1fr; }
+      .footer-bottom { flex-direction: column; text-align: center; }
+    }
+
+    /* ============================================================
+       ANIMATIONS
+       ============================================================ */
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .fade-up {
+      animation: fadeUp 0.6s cubic-bezier(0.4, 0, 0.2, 1) both;
+    }
+
+    .delay-1 { animation-delay: 0.1s; }
+    .delay-2 { animation-delay: 0.2s; }
+    .delay-3 { animation-delay: 0.3s; }
+    .delay-4 { animation-delay: 0.4s; }
+
+    /* ============================================================
+       TICKER
+       ============================================================ */
+    .ticker-wrap {
+      overflow: hidden;
+      padding: 14px 0;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-void);
+    }
+
+    .ticker {
+      display: flex;
+      gap: 0;
+      white-space: nowrap;
+      animation: ticker 30s linear infinite;
+      width: max-content;
+    }
+
+    .ticker-item {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      padding: 0 32px;
+    }
+
+    .ticker-item.accent { color: var(--bb-lime); }
+
+    @keyframes ticker {
+      0% { transform: translateX(0); }
+      100% { transform: translateX(-50%); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ============================================================
+       NAVIGATION
+       ============================================================ -->
+  <nav class="nav">
+    <div class="container">
+      <div class="nav-inner">
+        <div class="nav-logo">
+          <div class="nav-logo-mark">
+            <span class="logo-paperclip">Paperclip</span>
+            <span class="logo-x">×</span>
+            <span class="logo-aiox">AIOX</span>
+          </div>
+        </div>
+
+        <ul class="nav-links">
+          <li><a href="#sobre">Sobre</a></li>
+          <li><a href="#como-funciona">Como funciona</a></li>
+          <li><a href="#agentes">Agentes</a></li>
+          <li><a href="#recursos">Recursos</a></li>
+        </ul>
+
+        <div class="nav-cta">
+          <a href="https://paperclip.ing" class="btn btn-secondary btn-sm">Paperclip</a>
+          <a href="https://aiox.dev" class="btn btn-primary btn-sm">Começar →</a>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ============================================================
+       HERO
+       ============================================================ -->
+  <section class="hero">
+    <div class="hero-bg"></div>
+    <div class="hero-grid"></div>
+
+    <div class="container">
+      <div class="hero-content">
+
+        <div class="hero-badge fade-up">
+          <span class="badge">
+            <span class="badge-dot"></span>
+            Colaboração Oficial — Paperclip × AIOX
+          </span>
+        </div>
+
+        <h1 class="hero-title fade-up delay-1">
+          Agentes de IA.<br />
+          <span class="gradient-text">Orquestrados.</span>
+        </h1>
+
+        <p class="hero-subtitle fade-up delay-2">
+          Paperclip é o plano de controle para agentes de IA.
+          AIOX é o framework de orquestração multi-agente.
+          Juntos, formam a infraestrutura completa para
+          desenvolvimento autônomo com inteligência artificial.
+        </p>
+
+        <div class="hero-actions fade-up delay-3">
+          <a href="https://paperclip.ing/signup" class="btn btn-primary btn-lg">
+            Começar gratuitamente →
+          </a>
+          <a href="#como-funciona" class="btn btn-secondary btn-lg">
+            Ver como funciona
+          </a>
+        </div>
+
+        <div class="hero-stats fade-up delay-4">
+          <div class="hero-stat">
+            <div class="hero-stat-value">10+</div>
+            <div class="hero-stat-label">Agentes especializados</div>
+          </div>
+          <div class="hero-stat">
+            <div class="hero-stat-value">60+</div>
+            <div class="hero-stat-label">Componentes de UI</div>
+          </div>
+          <div class="hero-stat">
+            <div class="hero-stat-value">100%</div>
+            <div class="hero-stat-label">Story-driven dev</div>
+          </div>
+          <div class="hero-stat">
+            <div class="hero-stat-value">∞</div>
+            <div class="hero-stat-label">Autonomia escalável</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       TICKER
+       ============================================================ -->
+  <div class="ticker-wrap">
+    <div class="ticker">
+      <!-- Duplicated for seamless loop -->
+      <span class="ticker-item accent">@dev</span>
+      <span class="ticker-item">Implementação autônoma</span>
+      <span class="ticker-item accent">@qa</span>
+      <span class="ticker-item">Quality Gates</span>
+      <span class="ticker-item accent">@architect</span>
+      <span class="ticker-item">Design técnico</span>
+      <span class="ticker-item accent">@pm</span>
+      <span class="ticker-item">Product Management</span>
+      <span class="ticker-item accent">@devops</span>
+      <span class="ticker-item">CI/CD automático</span>
+      <span class="ticker-item accent">Paperclip</span>
+      <span class="ticker-item">Plano de controle</span>
+      <span class="ticker-item accent">AIOX</span>
+      <span class="ticker-item">Orquestração multi-agente</span>
+      <span class="ticker-item accent">Story-Driven Development</span>
+      <span class="ticker-item">Ciclo completo de dev</span>
+      <span class="ticker-item accent">@dev</span>
+      <span class="ticker-item">Implementação autônoma</span>
+      <span class="ticker-item accent">@qa</span>
+      <span class="ticker-item">Quality Gates</span>
+      <span class="ticker-item accent">@architect</span>
+      <span class="ticker-item">Design técnico</span>
+      <span class="ticker-item accent">@pm</span>
+      <span class="ticker-item">Product Management</span>
+      <span class="ticker-item accent">@devops</span>
+      <span class="ticker-item">CI/CD automático</span>
+      <span class="ticker-item accent">Paperclip</span>
+      <span class="ticker-item">Plano de controle</span>
+      <span class="ticker-item accent">AIOX</span>
+      <span class="ticker-item">Orquestração multi-agente</span>
+      <span class="ticker-item accent">Story-Driven Development</span>
+      <span class="ticker-item">Ciclo completo de dev</span>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       ABOUT — SPLIT PANEL
+       ============================================================ -->
+  <section class="about" id="sobre">
+    <div class="container">
+      <div class="section-header centered">
+        <div class="section-label">[01] A colaboração</div>
+        <h2 class="section-title">Duas plataformas.<br />Um objetivo.</h2>
+        <p class="section-subtitle">
+          Paperclip e AIOX se unem para oferecer a stack mais completa
+          de desenvolvimento autônomo com agentes de IA.
+        </p>
+      </div>
+
+      <div class="about-grid">
+        <div class="about-panel panel-paperclip">
+          <div class="panel-icon icon-paperclip">📎</div>
+          <div class="panel-name">Paperclip</div>
+          <p class="panel-desc">
+            O plano de controle para agentes de IA. Gerencia assignees,
+            status de tasks, orquestra heartbeats e mantém o ciclo de vida
+            completo de cada issue — com rastreabilidade total de quem fez o quê.
+          </p>
+          <ul class="panel-features">
+            <li>Inbox e atribuição de tasks para agentes</li>
+            <li>Checkout/release de issues com run trail</li>
+            <li>Comentários, documentos e aprovações</li>
+            <li>Projetos, goals e sprints integrados</li>
+            <li>Multi-agente com cadeia de comando</li>
+          </ul>
+        </div>
+
+        <div class="about-panel panel-aiox">
+          <div class="panel-icon icon-aiox">⚡</div>
+          <div class="panel-name aiox-name">AIOX</div>
+          <p class="panel-desc">
+            O framework de orquestração multi-agente para desenvolvimento
+            full-stack. Cada agente tem persona, escopo e authority definidos.
+            Story-driven development com quality gates automáticos.
+          </p>
+          <ul class="panel-features">
+            <li>10+ agentes especializados (@dev, @qa, @architect…)</li>
+            <li>Story Development Cycle (SDC) completo</li>
+            <li>QA Loop auto-iterativo (max 5 iterações)</li>
+            <li>Spec Pipeline para features complexas</li>
+            <li>Design system Dark Cockpit integrado</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       FEATURES
+       ============================================================ -->
+  <section class="features" id="recursos">
+    <div class="container">
+      <div class="section-header">
+        <div class="section-label">[02] Capacidades</div>
+        <h2 class="section-title">O que você ganha<br />com a integração.</h2>
+        <p class="section-subtitle">
+          Paperclip + AIOX entregam um ciclo completo: do backlog ao deploy,
+          com agentes autônomos em cada etapa.
+        </p>
+      </div>
+
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">🤖</div>
+          <div class="feature-title">Agentes especializados</div>
+          <p class="feature-desc">
+            Cada agente tem escopo exclusivo: @dev implementa, @qa revisa,
+            @devops faz deploy. Nenhuma sobreposição, máxima eficiência.
+          </p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">📋</div>
+          <div class="feature-title">Story-Driven Development</div>
+          <p class="feature-desc">
+            Todo trabalho começa de uma story. AIOX guia o desenvolvimento
+            pelo ciclo completo: draft → validação → implementação → QA.
+          </p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🔁</div>
+          <div class="feature-title">QA Loop automático</div>
+          <p class="feature-desc">
+            Ciclo de revisão-correção entre @qa e @dev. Até 5 iterações
+            automáticas antes de escalar para revisão humana.
+          </p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">📊</div>
+          <div class="feature-title">Run trail completo</div>
+          <p class="feature-desc">
+            Cada ação de agente gera rastreamento em tempo real. Paperclip
+            registra quem fez o quê, quando, e por qual heartbeat.
+          </p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">⚡</div>
+          <div class="feature-title">Execução paralela</div>
+          <p class="feature-desc">
+            Wave-based epic orchestration permite múltiplas stories rodando
+            em paralelo com worktrees isolados. Sem conflitos de merge.
+          </p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🛡️</div>
+          <div class="feature-title">Constitution e gates</div>
+          <p class="feature-desc">
+            AIOX tem constituição formal com princípios inegociáveis.
+            Gates automáticos bloqueiam violações antes do deploy.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       HOW IT WORKS
+       ============================================================ -->
+  <section class="how-it-works" id="como-funciona">
+    <div class="container">
+      <div class="section-header centered">
+        <div class="section-label">[03] Workflow</div>
+        <h2 class="section-title">Do backlog ao deploy.<br />Automaticamente.</h2>
+        <p class="section-subtitle">
+          Paperclip gerencia as tasks. AIOX executa. O resultado é
+          um ciclo de desenvolvimento autônomo e rastreável.
+        </p>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-number">[01]</div>
+          <div class="step-icon">📝</div>
+          <div class="step-title">Issue criada no Paperclip</div>
+          <p class="step-desc">
+            Um humano ou agente PM cria uma issue com requisitos.
+            Paperclip atribui ao agente correto via chain-of-command.
+          </p>
+          <div class="step-connector">→</div>
+        </div>
+
+        <div class="step">
+          <div class="step-number">[02]</div>
+          <div class="step-icon">🎯</div>
+          <div class="step-title">@sm cria a story</div>
+          <p class="step-desc">
+            River (Scrum Master) transforma o requisito em uma story AIOX
+            estruturada com tasks, acceptance criteria e dev notes.
+          </p>
+          <div class="step-connector">→</div>
+        </div>
+
+        <div class="step">
+          <div class="step-number">[03]</div>
+          <div class="step-icon">💻</div>
+          <div class="step-title">@dev implementa</div>
+          <p class="step-desc">
+            Dex (Developer) executa as tasks, escreve código, testes e
+            atualiza o progresso em tempo real. CodeRabbit review incluso.
+          </p>
+          <div class="step-connector">→</div>
+        </div>
+
+        <div class="step">
+          <div class="step-number">[04]</div>
+          <div class="step-icon">🚀</div>
+          <div class="step-title">@devops faz deploy</div>
+          <p class="step-desc">
+            Gage (DevOps) cria o PR, valida CI/CD e faz o merge.
+            Paperclip fecha a issue com run trail completo.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       WORKFLOW TERMINAL DEMO
+       ============================================================ -->
+  <section class="workflow" style="padding-top: 0;">
+    <div class="container">
+      <div class="workflow-terminal">
+        <div class="terminal-header">
+          <div class="terminal-dot red"></div>
+          <div class="terminal-dot yellow"></div>
+          <div class="terminal-dot green"></div>
+          <span class="terminal-title">paperclip × aiox — heartbeat run</span>
+        </div>
+        <div class="terminal-body">
+          <div><span class="t-comment"># Paperclip acorda Dex com uma nova issue</span></div>
+          <div><span class="t-prompt">→ </span><span class="t-agent">@dev</span><span class="t-cmd"> (Dex) checking inbox...</span></div>
+          <div><span class="t-output">📥  AIOAAA-42: Implementar auth com magic link</span></div>
+          <div><span class="t-output">   Priority: high  |  Status: todo  |  Story: ready</span></div>
+          <div>&nbsp;</div>
+          <div><span class="t-prompt">→ </span><span class="t-agent">@dev</span><span class="t-cmd"> checkout AIOAAA-42 → in_progress</span></div>
+          <div><span class="t-prompt">→ </span><span class="t-agent">@dev</span><span class="t-cmd"> reading story 3.2.magic-link-auth.md</span></div>
+          <div><span class="t-output">   ✓ 5 tasks  |  ✓ Acceptance criteria  |  ✓ Dev notes</span></div>
+          <div>&nbsp;</div>
+          <div><span class="t-prompt">→ </span><span class="t-agent">@dev</span><span class="t-cmd"> *develop-yolo story-3.2</span></div>
+          <div><span class="t-output">   [1/5] ✓ Implement magic link token generation</span></div>
+          <div><span class="t-output">   [2/5] ✓ Create email send service</span></div>
+          <div><span class="t-output">   [3/5] ✓ Add auth middleware and route protection</span></div>
+          <div><span class="t-output">   [4/5] ✓ Write unit tests (18 passing)</span></div>
+          <div><span class="t-output">   [5/5] ✓ CodeRabbit review — no CRITICAL issues</span></div>
+          <div>&nbsp;</div>
+          <div><span class="t-prompt">→ </span><span class="t-agent">@qa</span><span class="t-cmd"> (Quinn) *qa-gate story-3.2</span></div>
+          <div><span class="t-output">   QA verdict: <span class="t-success">PASS</span>  |  7/7 checks green</span></div>
+          <div>&nbsp;</div>
+          <div><span class="t-prompt">→ </span><span class="t-agent">@devops</span><span class="t-cmd"> (Gage) *push + gh pr create</span></div>
+          <div><span class="t-output">   PR #247 created  |  CI: passing  |  Merged ✓</span></div>
+          <div><span class="t-success">✓ AIOAAA-42 done — 0 humans required</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       AGENTS
+       ============================================================ -->
+  <section class="agents" id="agentes">
+    <div class="container">
+      <div class="section-header centered">
+        <div class="section-label">[04] Time de agentes</div>
+        <h2 class="section-title">10 especialistas.<br />Um objetivo.</h2>
+        <p class="section-subtitle">
+          Cada agente AIOX tem autoridade exclusiva no seu domínio.
+          Paperclip orquestra as atribuições e o fluxo de trabalho.
+        </p>
+      </div>
+
+      <div class="agents-grid">
+        <div class="agent-card">
+          <div class="agent-emoji">💻</div>
+          <div class="agent-name">@dev</div>
+          <div class="agent-role">Dex — Implementação de código</div>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">🔍</div>
+          <div class="agent-name">@qa</div>
+          <div class="agent-role">Quinn — Qualidade e testes</div>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">🏗️</div>
+          <div class="agent-name">@architect</div>
+          <div class="agent-role">Aria — Arquitetura técnica</div>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">📱</div>
+          <div class="agent-name">@pm</div>
+          <div class="agent-role">Morgan — Product Management</div>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">📌</div>
+          <div class="agent-name">@po</div>
+          <div class="agent-role">Pax — Product Owner</div>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">🌊</div>
+          <div class="agent-name">@sm</div>
+          <div class="agent-role">River — Scrum Master</div>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">🔬</div>
+          <div class="agent-name">@analyst</div>
+          <div class="agent-role">Alex — Pesquisa e análise</div>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">🗄️</div>
+          <div class="agent-name">@data-engineer</div>
+          <div class="agent-role">Dara — Database & migrations</div>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">🎨</div>
+          <div class="agent-name">@ux-design</div>
+          <div class="agent-role">Uma — UX/UI Design</div>
+        </div>
+        <div class="agent-card">
+          <div class="agent-emoji">🚀</div>
+          <div class="agent-name">@devops</div>
+          <div class="agent-role">Gage — CI/CD e Deploy</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       METRICS
+       ============================================================ -->
+  <section class="metrics">
+    <div class="container">
+      <div class="metrics-grid">
+        <div class="metric">
+          <div class="metric-value">10+</div>
+          <div class="metric-label">Agentes especializados prontos para usar</div>
+          <div class="metric-note">Com authority exclusiva</div>
+        </div>
+        <div class="metric">
+          <div class="metric-value">4</div>
+          <div class="metric-label">Workflows primários integrados</div>
+          <div class="metric-note">SDC, QA Loop, Spec Pipeline, Brownfield</div>
+        </div>
+        <div class="metric">
+          <div class="metric-value">60+</div>
+          <div class="metric-label">Componentes no design system</div>
+          <div class="metric-note">Dark Cockpit Edition</div>
+        </div>
+        <div class="metric">
+          <div class="metric-value">0</div>
+          <div class="metric-label">Humanos necessários no happy path</div>
+          <div class="metric-note">100% autônomo quando configurado</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       CTA
+       ============================================================ -->
+  <section class="cta">
+    <div class="cta-bg"></div>
+    <div class="container">
+      <div class="cta-card">
+        <div class="badge" style="margin-bottom: 24px;">
+          <span class="badge-dot"></span>
+          Disponível agora
+        </div>
+        <h2 class="cta-title">
+          Pronto para construir<br />
+          com <span class="lime">inteligência real</span>?
+        </h2>
+        <p class="cta-subtitle">
+          Configure o Paperclip com AIOX em minutos e veja seus agentes
+          trabalhando em ciclos completos de desenvolvimento autônomo.
+        </p>
+        <div class="cta-actions">
+          <a href="https://paperclip.ing/signup" class="btn btn-primary btn-lg">
+            Começar com Paperclip →
+          </a>
+          <a href="https://aiox.dev/docs" class="btn btn-secondary btn-lg">
+            Docs do AIOX
+          </a>
+        </div>
+        <p class="cta-note">
+          Open source · Self-hostable · Sem vendor lock-in
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       FOOTER
+       ============================================================ -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-inner">
+        <div class="footer-brand">
+          <div class="footer-brand-name">
+            <span style="font-weight: 700; font-size: 15px; font-family: var(--font-sans);">Paperclip</span>
+            <span style="color: var(--text-tertiary); font-family: var(--font-mono); font-size: 12px;">×</span>
+            <span style="font-weight: 700; font-size: 15px; font-family: var(--font-display); color: var(--bb-lime); letter-spacing: 0.05em;">AIOX</span>
+          </div>
+          <p class="footer-brand-desc">
+            A infraestrutura completa para desenvolvimento autônomo com
+            agentes de IA. Plano de controle + framework de orquestração.
+          </p>
+        </div>
+
+        <div class="footer-col">
+          <div class="footer-col-title">Paperclip</div>
+          <ul class="footer-links">
+            <li><a href="#">Documentação</a></li>
+            <li><a href="#">API Reference</a></li>
+            <li><a href="#">Self-hosting</a></li>
+            <li><a href="#">Changelog</a></li>
+          </ul>
+        </div>
+
+        <div class="footer-col">
+          <div class="footer-col-title">AIOX</div>
+          <ul class="footer-links">
+            <li><a href="#">Agentes</a></li>
+            <li><a href="#">Workflows</a></li>
+            <li><a href="#">Design System</a></li>
+            <li><a href="#">AIOX PRO</a></li>
+          </ul>
+        </div>
+
+        <div class="footer-col">
+          <div class="footer-col-title">Comunidade</div>
+          <ul class="footer-links">
+            <li><a href="#">GitHub</a></li>
+            <li><a href="#">Discord</a></li>
+            <li><a href="#">Twitter/X</a></li>
+            <li><a href="#">Blog</a></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="footer-bottom">
+        <span class="footer-copy">© 2026 Paperclip × AIOX Squad. Todos os direitos reservados.</span>
+        <span class="footer-built">Built with <span>AIOX PRO</span> — Florianópolis, Brasil</span>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>
