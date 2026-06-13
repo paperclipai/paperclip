@@ -1027,6 +1027,81 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.checkoutRunId).toBeNull();
   });
 
+  it("reaps a leaked in-memory handle when the recorded pid is already dead", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({
+      processPid: 999_999_999,
+    });
+    // Simulate the leak: in-memory handle is still present even though the OS
+    // pid is gone. This is the failure mode UNC-11 reproduces — the child
+    // exited without firing the close listener (orphaned grandchildren keeping
+    // stdio open, lost SIGCHLD, etc.).
+    runningProcesses.set(runId, {
+      child: { pid: 999_999_999 } as unknown as ChildProcess,
+      graceSec: 5,
+      processGroupId: null,
+    });
+    expect(runningProcesses.has(runId)).toBe(true);
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    expect(runningProcesses.has(runId)).toBe(false);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const failedRun = runs.find((row) => row.id === runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+
+    const leakEvent = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId))
+      .then((rows) => rows.find((row) => {
+        const payload = (row.payload ?? {}) as Record<string, unknown>;
+        return payload.leakedHandle === true;
+      }));
+    expect(leakEvent).toBeTruthy();
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.checkoutRunId).toBe(runId);
+  });
+
+  it("preserves the in-memory handle when the recorded pid is still alive", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      includeIssue: false,
+    });
+    runningProcesses.set(runId, {
+      child: child as ChildProcess,
+      graceSec: 5,
+      processGroupId: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+    expect(runningProcesses.has(runId)).toBe(true);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    // Handle present + pid alive is the happy path; the detached-process
+    // branch should NOT fire because we never lost the handle.
+    expect(run?.errorCode).toBeNull();
+  });
+
   it("releases active environment leases when an orphaned run is reaped", async () => {
     const { runId, issueId, companyId } = await seedRunFixture({
       processPid: 999_999_999,
