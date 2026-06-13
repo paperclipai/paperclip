@@ -23,8 +23,37 @@ import "./index.css";
 initPluginBridge(React, ReactDOM);
 
 if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js");
+  window.addEventListener("load", async () => {
+    let reloading = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (reloading) return;
+      reloading = true;
+      window.location.reload();
+    });
+
+    try {
+      const registration = await navigator.serviceWorker.register("/sw.js");
+
+      const promoteWaiting = (worker: ServiceWorker | null) => {
+        if (worker && worker.state === "installed" && navigator.serviceWorker.controller) {
+          worker.postMessage({ type: "SKIP_WAITING" });
+        }
+      };
+
+      promoteWaiting(registration.waiting);
+
+      registration.addEventListener("updatefound", () => {
+        const newWorker = registration.installing;
+        if (!newWorker) return;
+        newWorker.addEventListener("statechange", () => promoteWaiting(newWorker));
+      });
+
+      setInterval(() => {
+        registration.update().catch(() => {});
+      }, 60 * 60 * 1000);
+    } catch {
+      // SW registration failed — app works fine without it
+    }
   });
 }
 
