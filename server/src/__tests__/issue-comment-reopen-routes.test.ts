@@ -2805,4 +2805,118 @@ describe.sequential("issue comment reopen routes", () => {
       }),
     ));
   });
+
+  describe("POST /issues/:id/comments body author validation (ZERA-565)", () => {
+    const SELF_AGENT_ID = "22222222-2222-4222-8222-222222222222";
+    const OTHER_AGENT_ID = "80241e51-1c75-46f0-93f0-bea4506d51ff";
+    const OTHER_USER_ID = "9b646ead-f82b-430c-9536-f2bb661341b6";
+
+    it("returns 422 when body authorAgentId does not match the authenticated agent", async () => {
+      const app = await installActor(createApp(), agentActor(SELF_AGENT_ID));
+      mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+
+      const res = await request(app)
+        .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+        .send({ body: "impersonation probe", authorAgentId: OTHER_AGENT_ID });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toMatch(/authorAgentId.*authenticated agent principal/);
+      expect(res.body.details).toEqual({ field: "authorAgentId" });
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    });
+
+    it("returns 422 when body authorAgentId is sent by a board user", async () => {
+      const app = await installActor(createApp());
+      mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+
+      const res = await request(app)
+        .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+        .send({ body: "board impersonating agent", authorAgentId: OTHER_AGENT_ID });
+
+      expect(res.status).toBe(422);
+      expect(res.body.details).toEqual({ field: "authorAgentId" });
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    });
+
+    it("returns 422 when body authorUserId does not match the authenticated board user", async () => {
+      const app = await installActor(createApp());
+      mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+
+      const res = await request(app)
+        .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+        .send({ body: "user impersonation probe", authorUserId: OTHER_USER_ID });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toMatch(/authorUserId.*authenticated user principal/);
+      expect(res.body.details).toEqual({ field: "authorUserId" });
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    });
+
+    it("returns 422 when body authorUserId is sent by an agent principal", async () => {
+      const app = await installActor(createApp(), agentActor(SELF_AGENT_ID));
+      mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+
+      const res = await request(app)
+        .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+        .send({ body: "agent impersonating user", authorUserId: OTHER_USER_ID });
+
+      expect(res.status).toBe(422);
+      expect(res.body.details).toEqual({ field: "authorUserId" });
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    });
+
+    it("rejects non-UUID body authorAgentId at the schema layer", async () => {
+      const app = await installActor(createApp(), agentActor(SELF_AGENT_ID));
+      mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+
+      const res = await request(app)
+        .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+        .send({ body: "bad uuid", authorAgentId: "not-a-uuid" });
+
+      expect(res.status).toBe(400);
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    });
+
+    it("accepts body authorAgentId that matches the authenticated agent", async () => {
+      const app = await installActor(createApp(), agentActor(SELF_AGENT_ID));
+      mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+
+      const res = await request(app)
+        .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+        .send({ body: "hello", authorAgentId: SELF_AGENT_ID });
+
+      expect(res.status).toBe(201);
+      expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    });
+
+    it("accepts body authorUserId that matches the authenticated board user", async () => {
+      const app = await installActor(createApp(), {
+        type: "board",
+        userId: OTHER_USER_ID,
+        companyIds: ["company-1"],
+        source: "local_implicit",
+        isInstanceAdmin: false,
+      });
+      mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+
+      const res = await request(app)
+        .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+        .send({ body: "hello", authorUserId: OTHER_USER_ID });
+
+      expect(res.status).toBe(201);
+      expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    });
+
+    it("baseline: omitting body author fields still posts a comment as before", async () => {
+      const app = await installActor(createApp(), agentActor(SELF_AGENT_ID));
+      mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+
+      const res = await request(app)
+        .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+        .send({ body: "no override" });
+
+      expect(res.status).toBe(201);
+      expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    });
+  });
 });

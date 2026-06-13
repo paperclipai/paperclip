@@ -181,6 +181,26 @@ describe("issue validators", () => {
     expect(parsed.success).toBe(false);
   });
 
+  it("accepts optional uuid authorAgentId / authorUserId hints on issue comments", () => {
+    const parsed = addIssueCommentSchema.parse({
+      body: "hello",
+      authorAgentId: "11111111-1111-4111-8111-111111111111",
+      authorUserId: "22222222-2222-4222-8222-222222222222",
+    });
+
+    expect(parsed.authorAgentId).toBe("11111111-1111-4111-8111-111111111111");
+    expect(parsed.authorUserId).toBe("22222222-2222-4222-8222-222222222222");
+  });
+
+  it("rejects non-uuid authorAgentId / authorUserId on issue comments", () => {
+    expect(
+      addIssueCommentSchema.safeParse({ body: "hi", authorAgentId: "not-a-uuid" }).success,
+    ).toBe(false);
+    expect(
+      addIssueCommentSchema.safeParse({ body: "hi", authorUserId: "not-a-uuid" }).success,
+    ).toBe(false);
+  });
+
   it("normalizes escaped line breaks in generated task drafts", () => {
     const parsed = suggestedTaskDraftSchema.parse({
       clientKey: "task-1",

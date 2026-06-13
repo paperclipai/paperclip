@@ -539,6 +539,8 @@ export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
 export const addIssueCommentSchema = z.object({
   body: multilineTextSchema.pipe(z.string().min(1)),
   authorType: issueCommentAuthorTypeSchema.optional(),
+  authorAgentId: z.string().uuid().optional(),
+  authorUserId: z.string().uuid().optional(),
   presentation: issueCommentPresentationSchema.nullable().optional(),
   metadata: issueCommentMetadataSchema.nullable().optional(),
   reopen: z.boolean().optional(),

@@ -2070,6 +2070,43 @@ export function issueRoutes(
     return false;
   }
 
+  // Defense-in-depth: the stored comment author is always derived from the
+  // authenticated principal. If a client also sends `authorAgentId` or
+  // `authorUserId` in the body, treat any mismatch with the principal as a
+  // misconfigured request and reject loudly rather than silently overriding.
+  function assertCommentAuthorMatchesPrincipal(
+    req: Request,
+    res: Response,
+    input: { authorAgentId?: string; authorUserId?: string },
+  ) {
+    const { authorAgentId, authorUserId } = input;
+    if (authorAgentId === undefined && authorUserId === undefined) return true;
+
+    if (authorAgentId !== undefined) {
+      if (req.actor.type !== "agent" || req.actor.agentId !== authorAgentId) {
+        res.status(422).json({
+          error:
+            "Body `authorAgentId` must match the authenticated agent principal. Omit the field; the author is derived from the request principal.",
+          details: { field: "authorAgentId" },
+        });
+        return false;
+      }
+    }
+
+    if (authorUserId !== undefined) {
+      if (req.actor.type !== "board" || req.actor.userId !== authorUserId) {
+        res.status(422).json({
+          error:
+            "Body `authorUserId` must match the authenticated user principal. Omit the field; the author is derived from the request principal.",
+          details: { field: "authorUserId" },
+        });
+        return false;
+      }
+    }
+
+    return true;
+  }
+
   async function assertExplicitResumeIntentAllowed(
     req: Request,
     res: Response,
@@ -6628,6 +6665,10 @@ export function issueRoutes(
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
+    })) return;
+    if (!assertCommentAuthorMatchesPrincipal(req, res, {
+      authorAgentId: req.body.authorAgentId,
+      authorUserId: req.body.authorUserId,
     })) return;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
     if (closedExecutionWorkspace) {
