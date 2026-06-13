@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { WebSocketServer } from "ws";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -1556,6 +1556,138 @@ describe("heartbeat comment wake batching", () => {
         retryReason: "missing_issue_comment",
         modelProfile: "cheap",
       });
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 20_000);
+
+  it("does not queue a missing-comment retry after the issue becomes blocked before run completion", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Gateway Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Blocked issue comment retry suppression",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+        },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      });
+
+      expect(firstRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      await db
+        .update(issues)
+        .set({
+          status: "blocked",
+        })
+        .where(eq(issues.id, issueId));
+
+      gateway.releaseFirstWait();
+
+      await waitFor(async () => {
+        const run = await db
+          .select({
+            status: heartbeatRuns.status,
+            issueCommentStatus: heartbeatRuns.issueCommentStatus,
+          })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, firstRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded" && run.issueCommentStatus === "not_applicable";
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId))
+        .orderBy(asc(heartbeatRuns.createdAt));
+      expect(runs).toHaveLength(1);
+      expect(runs[0]?.issueCommentStatus).toBe("not_applicable");
+
+      const issue = await db
+        .select({
+          status: issues.status,
+          executionRunId: issues.executionRunId,
+          executionLockedAt: issues.executionLockedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue).toMatchObject({
+        status: "blocked",
+        executionRunId: null,
+        executionLockedAt: null,
+      });
+
+      const payloads = gateway.getAgentPayloads();
+      expect(payloads).toHaveLength(1);
+
+      const retryWakeups = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.reason, "missing_issue_comment"),
+          ),
+        )
+        .then((rows) => rows[0]?.count ?? 0);
+      expect(retryWakeups).toBe(0);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();

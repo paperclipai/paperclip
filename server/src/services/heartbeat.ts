@@ -233,6 +233,9 @@ const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+// Issue execution locks should only point at runs that are actually live on the
+// execution path (and therefore show up as `activeRun` in issue payloads).
+const ISSUE_EXECUTION_LOCK_RUN_STATUSES = ["queued", "running"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
@@ -2061,6 +2064,15 @@ function shouldRequireIssueCommentForWake(
   );
 }
 
+function isIssueCommentRetryRunnableStatus(status: string | null | undefined) {
+  return (
+    status === "backlog" ||
+    status === "todo" ||
+    status === "in_review" ||
+    status === "in_progress"
+  );
+}
+
 function allowsIssueInteractionWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
@@ -2233,6 +2245,10 @@ function shouldAutoCheckoutIssueForWake(input: {
 
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   if (!wakeReason) return false;
+  // Comment-driven interaction wakes are allowed to run against blocked issues for
+  // triage/response, but they must not implicitly take the issue out of `blocked`
+  // via auto-checkout (which transitions to `in_progress` + stamps locks).
+  if (issueStatus === "blocked" && ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason)) return false;
   if (wakeReason === "issue_comment_mentioned") return false;
   if (wakeReason === "source_scoped_recovery_action") return false;
   if (wakeReason.startsWith("execution_")) return false;
@@ -5507,6 +5523,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return { outcome: "not_applicable" as const, queuedRun: null };
     }
 
+    const currentIssue = await db
+      .select({
+        status: issues.status,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId), eq(issues.executionRunId, run.id)))
+      .then((rows) => rows[0] ?? null);
+    if (currentIssue && !isIssueCommentRetryRunnableStatus(currentIssue.status)) {
+      if (run.issueCommentStatus !== "not_applicable") {
+        await patchRunIssueCommentStatus(run.id, {
+          issueCommentStatus: "not_applicable",
+          issueCommentSatisfiedByCommentId: null,
+          issueCommentRetryQueuedAt: null,
+        });
+      }
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "Run ended without an issue comment after issue left runnable state; no follow-up comment wake queued",
+        payload: {
+          issueId,
+          issueStatus: currentIssue.status,
+        },
+      });
+      return { outcome: "not_applicable" as const, queuedRun: null };
+    }
+
     if (await hasDeferredIssueCommentWake(run.companyId, issueId, run.agentId)) {
       await patchRunIssueCommentStatus(run.id, {
         issueCommentStatus: "not_applicable",
@@ -5785,22 +5829,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    if (
-      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON &&
-      input.enforceIssueExecutionLock &&
-      issue.executionRunId !== run.id
-    ) {
-      return {
-        allowed: false,
-        reason: "Scheduled max-turn continuation suppressed because the issue execution lock belongs to a different run",
-        errorCode: "issue_execution_lock_changed",
-        issueId,
-        details: {
+    if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON && input.enforceIssueExecutionLock) {
+      const conflicting = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, run.companyId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+            sql`${heartbeatRuns.id} <> ${run.id}`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (conflicting) {
+        return {
+          allowed: false,
+          reason:
+            "Scheduled max-turn continuation suppressed because the issue already has a live queued/running execution run",
+          errorCode: "issue_execution_lock_changed",
           issueId,
-          expectedExecutionRunId: run.id,
-          currentExecutionRunId: issue.executionRunId,
-        },
-      };
+          details: {
+            issueId,
+            conflictingRunId: conflicting.id,
+            conflictingRunStatus: conflicting.status,
+          },
+        };
+      }
     }
 
     if (issue.status === "in_review") {
@@ -6008,6 +6064,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .returning()
       .then((rows) => rows[0] ?? null);
     if (!promoted) return { outcome: "not_promoted", run: null };
+
+    const promotedIssueId = readNonEmptyString(contextSnapshot.issueId);
+    if (promotedIssueId) {
+      await db
+        .update(issues)
+        .set({
+          executionRunId: promoted.id,
+          executionAgentNameKey: normalizeAgentNameKey(agent.name),
+          executionLockedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issues.companyId, promoted.companyId),
+            eq(issues.id, promotedIssueId),
+            eq(issues.assigneeAgentId, promoted.agentId),
+            or(isNull(issues.executionRunId), eq(issues.executionRunId, promoted.id)),
+          ),
+        );
+    }
 
     await appendRunEvent(promoted, await nextRunEventSeq(promoted.id), {
       eventType: "lifecycle",
@@ -6382,9 +6458,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await tx
           .update(issues)
           .set({
-            executionRunId: scheduledRun.id,
-            executionAgentNameKey: normalizeAgentNameKey(agent.name),
-            executionLockedAt: now,
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
             updatedAt: now,
           })
           .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
@@ -10431,8 +10507,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
         if (
           activeExecutionRun &&
-          !EXECUTION_PATH_HEARTBEAT_RUN_STATUSES.includes(
-            activeExecutionRun.status as (typeof EXECUTION_PATH_HEARTBEAT_RUN_STATUSES)[number],
+          !ISSUE_EXECUTION_LOCK_RUN_STATUSES.includes(
+            activeExecutionRun.status as (typeof ISSUE_EXECUTION_LOCK_RUN_STATUSES)[number],
           )
         ) {
           activeExecutionRun = null;
@@ -10507,14 +10583,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .where(eq(issues.id, issue.id));
         }
 
-        if (!activeExecutionRun) {
+        if (!activeExecutionRun && issue.status === "in_progress") {
           const legacyRun = await tx
             .select()
             .from(heartbeatRuns)
             .where(
               and(
                 eq(heartbeatRuns.companyId, issue.companyId),
-                inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+                inArray(heartbeatRuns.status, [...ISSUE_EXECUTION_LOCK_RUN_STATUSES]),
                 sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
               ),
             )
