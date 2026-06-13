@@ -514,7 +514,9 @@ export async function startServer(): Promise<StartedServer> {
 
   const requestedListenPort = config.port;
   const listenPort = await detectPort(requestedListenPort);
-  if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
+  // Explicit mode: the operator set the exact public URL — do not rewrite it.
+  // Only rewrite derived/implicit URLs when detectPort bumped the listen port.
+  if (config.authBaseUrlMode !== "explicit" && config.authPublicBaseUrl && listenPort !== requestedListenPort) {
     config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
   }
   
