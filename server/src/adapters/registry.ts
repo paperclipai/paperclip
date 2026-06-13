@@ -457,8 +457,8 @@ const hermesLocalAdapter: ServerAdapterModule = {
         : "";
     const authGuardPrompt = [
       "Paperclip API safety rule:",
-      "Use Authorization: Bearer $PAPERCLIP_API_KEY on every Paperclip API request.",
-      "Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every Paperclip API request that writes or mutates data, including comments and issue updates.",
+      "Prefer the Paperclip MCP tools when they are available in your tool list (names start with `paperclip`, e.g. `paperclipAddComment`, `paperclipUpdateIssue`, `paperclipListComments`, `paperclipGetIssue`, `paperclipInboxLite`). They call Paperclip natively without a shell, are guaranteed structured, and bypass shell-execution scanners.",
+      "Only fall back to direct HTTP calls when the Paperclip MCP tools are NOT in your tool list. In that fallback case: use Authorization: Bearer $PAPERCLIP_API_KEY on every Paperclip API request, and use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every request that writes or mutates data, including comments and issue updates.",
       "Never use a board, browser, or local-board session for Paperclip API writes.",
     ].join("\n");
 
