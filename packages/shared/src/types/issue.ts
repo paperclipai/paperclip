@@ -449,6 +449,8 @@ export interface IssueExecutionPolicy {
   monitor?: IssueExecutionMonitorPolicy | null;
   reviewPreset?: LowTrustReviewPresetPolicy;
   authorizationPolicy?: TrustAuthorizationPolicy;
+  /** When true, the harness skips all automatic escalation for this issue. Use for permanent watcher issues that intentionally stay in_progress indefinitely. */
+  permanentWatcher?: boolean;
 }
 
 export interface IssueExecutionMonitorState {
