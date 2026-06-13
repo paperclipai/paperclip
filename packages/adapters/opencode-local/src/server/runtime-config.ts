@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
+import JSON5 from "json5";
 
 type PreparedOpenCodeRuntimeConfig = {
   env: Record<string, string>;
@@ -84,13 +85,42 @@ function parseProviderConfig(
   return Object.keys(providers).length > 0 ? providers : null;
 }
 
-async function readJsonObject(filepath: string): Promise<Record<string, unknown>> {
+type RuntimeConfigRead =
+  | { status: "parsed"; config: Record<string, unknown> }
+  | { status: "missing" }
+  | { status: "unparseable" };
+
+// OpenCode's `opencode.json` is JSONC: it tolerates `//` / `/* */` comments and
+// trailing commas. We copy the user's config into a temp runtime dir and then
+// re-read it here to merge in `permission.external_directory: "allow"`. Re-reading
+// with strict `JSON.parse` throws on any JSONC, which previously collapsed the
+// config to `{}` and overwrote the runtime file with a permission-only stub --
+// silently deleting every custom provider the user had defined.
+//
+// JSON5 is a strict superset of JSONC, so any valid OpenCode config round-trips.
+// Critically, unlike a hand-rolled `//` comment stripper, it never mangles
+// in-string values such as `"baseURL": "http://host:11434/v1"` because `//`
+// inside a string literal is not a comment.
+async function readRuntimeConfigObject(filepath: string): Promise<RuntimeConfigRead> {
+  let raw: string;
   try {
-    const raw = await fs.readFile(filepath, "utf8");
-    const parsed = JSON.parse(raw);
-    return isPlainObject(parsed) ? parsed : {};
+    raw = await fs.readFile(filepath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | null)?.code === "ENOENT") {
+      return { status: "missing" };
+    }
+    // The file exists but is unreadable -- treat it like an unparseable config so
+    // we fail open (preserve it) instead of clobbering it below.
+    return { status: "unparseable" };
+  }
+  if (raw.trim().length === 0) {
+    return { status: "parsed", config: {} };
+  }
+  try {
+    const parsed = JSON5.parse(raw);
+    return { status: "parsed", config: isPlainObject(parsed) ? parsed : {} };
   } catch {
-    return {};
+    return { status: "unparseable" };
   }
 }
 
@@ -140,7 +170,31 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     }
   }
 
-  const existingConfig = await readJsonObject(runtimeConfigPath);
+  const configRead = await readRuntimeConfigObject(runtimeConfigPath);
+
+  // Defensive fail-open: a copied config exists but could not be parsed even as
+  // JSONC/JSON5. Overwriting it with a permission-only stub would delete the
+  // user's custom providers, so instead leave the copied file untouched (OpenCode
+  // parses it itself) and skip permission injection for this run. "Providers
+  // preserved, permission maybe not injected" is a strictly safer failure than
+  // "providers deleted".
+  if (configRead.status === "unparseable") {
+    return {
+      env: {
+        ...input.env,
+        XDG_CONFIG_HOME: runtimeConfigHome,
+      },
+      notes: [
+        "Copied opencode.json could not be parsed as JSON or JSONC; left it intact and skipped permission.external_directory injection to preserve custom providers.",
+      ],
+      cleanup: async () => {
+        await fs.rm(runtimeConfigHome, { recursive: true, force: true });
+      },
+    };
+  }
+
+  const existingConfig: Record<string, unknown> =
+    configRead.status === "parsed" ? configRead.config : {};
   const existingPermission = isPlainObject(existingConfig.permission)
     ? existingConfig.permission
     : {};
