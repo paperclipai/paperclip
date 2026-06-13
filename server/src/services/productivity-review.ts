@@ -7,6 +7,7 @@ import {
   costEvents,
   heartbeatRuns,
   issueComments,
+  issueThreadInteractions,
   issues,
   projects,
 } from "@paperclipai/db";
@@ -30,6 +31,15 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS = 3;
 export const DEFAULT_PRODUCTIVITY_REVIEW_CREATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 3;
+// Freshness window for the long_active_duration suppression check, expressed as
+// a multiple of the long_active threshold. A pending wake_assignee
+// request_confirmation older than this is treated as stale and no longer
+// suppresses the heuristic, so a forgotten interaction cannot silently disable
+// productivity review on an issue forever. With the default 6h threshold this
+// yields a 24h window — wide enough to cover overnight / weekend decision
+// delays on a board that responds within a day, while still bounded enough that
+// a wake_assignee left pending for multiple days no longer hides the issue.
+export const PRODUCTIVITY_REVIEW_LONG_ACTIVE_SUPPRESSION_MULTIPLIER = 4;
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -346,6 +356,28 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     return comment;
   }
 
+  async function hasFreshPendingWakeAssigneeConfirmation(
+    companyId: string,
+    issueId: string,
+    freshnessCutoff: Date,
+  ): Promise<boolean> {
+    const rows = await db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.issueId, issueId),
+          eq(issueThreadInteractions.kind, "request_confirmation"),
+          eq(issueThreadInteractions.status, "pending"),
+          eq(issueThreadInteractions.continuationPolicy, "wake_assignee"),
+          sql`${issueThreadInteractions.createdAt} >= ${freshnessCutoff.toISOString()}::timestamptz`,
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
   async function countIssueRunsSince(companyId: string, agentId: string, issueId: string, since: Date) {
     return db
       .select({ count: sql<number>`count(*)::int` })
@@ -429,6 +461,15 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       noCommentStreak += 1;
     }
 
+    const activeStartedAt = sourceIssue.startedAt ?? sourceIssue.executionLockedAt ?? null;
+    const elapsedMs = sourceIssue.status === "in_progress" && activeStartedAt
+      ? Math.max(0, now.getTime() - activeStartedAt.getTime())
+      : null;
+    const longActiveCandidate = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+    const longActiveSuppressionCutoff = longActiveCandidate
+      ? new Date(now.getTime() - thresholds.longActiveMs * PRODUCTIVITY_REVIEW_LONG_ACTIVE_SUPPRESSION_MULTIPLIER)
+      : null;
+
     const [
       runCountLastHour,
       runCountLastSixHours,
@@ -437,6 +478,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       assigneeRunCommentCountLastSixHours,
       latestComments,
       costRow,
+      longActiveSuppressed,
     ] = await Promise.all([
       countIssueRunsSince(sourceIssue.companyId, sourceAgent.id, sourceIssue.id, oneHourAgo),
       countIssueRunsSince(sourceIssue.companyId, sourceAgent.id, sourceIssue.id, sixHoursAgo),
@@ -465,18 +507,17 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         .from(costEvents)
         .where(and(eq(costEvents.companyId, sourceIssue.companyId), eq(costEvents.issueId, sourceIssue.id)))
         .then((rows) => rows[0] ?? { costCents: 0 }),
+      longActiveSuppressionCutoff
+        ? hasFreshPendingWakeAssigneeConfirmation(sourceIssue.companyId, sourceIssue.id, longActiveSuppressionCutoff)
+        : Promise.resolve(false),
     ]);
 
     const activeRunCount = latestRuns.filter((run) =>
       ACTIVE_RUN_STATUSES.includes(run.status as (typeof ACTIVE_RUN_STATUSES)[number]),
     ).length;
-    const activeStartedAt = sourceIssue.startedAt ?? sourceIssue.executionLockedAt ?? null;
-    const elapsedMs = sourceIssue.status === "in_progress" && activeStartedAt
-      ? Math.max(0, now.getTime() - activeStartedAt.getTime())
-      : null;
 
     const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
-    const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+    const longActive = longActiveCandidate && !longActiveSuppressed;
     const highChurn =
       runCountLastHour >= thresholds.highChurnHourly ||
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
