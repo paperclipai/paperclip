@@ -46,6 +46,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Sparkles,
+  Globe,
   Check,
   Loader2,
   ChevronDown,
@@ -252,7 +253,7 @@ export function OnboardingWizard() {
   // External/plugin adapters automatically appear with generic defaults, and
   // server-disabled types are filtered out.
   const { recommendedAdapters, moreAdapters } = useMemo(() => {
-    const SYSTEM_ADAPTER_TYPES = new Set(["process", "http"]);
+    const SYSTEM_ADAPTER_TYPES = new Set(["process"]);
     const all = listUIAdapters()
       .filter((a) =>
         !SYSTEM_ADAPTER_TYPES.has(a.type) &&
@@ -699,7 +700,7 @@ export function OnboardingWizard() {
               step === 1 || step === 2 ? "md:w-1/2" : "md:w-full"
             )}
           >
-            <div className="w-full max-w-md mx-auto my-auto px-8 py-12 shrink-0">
+            <div className="w-full max-w-md mx-auto px-8 py-12">
               {/* 5-segment progress bar (brand .wsteps/.wstep) — segment N
                   filled once step ≥ N. Completed segments jump back. */}
               <div className="flex items-center gap-1.5 mb-8">
@@ -722,6 +723,7 @@ export function OnboardingWizard() {
                     />
                   );
                 })}
+
               </div>
 
               {/* Persistent evolving capsule (steps 3–5): a single AgentCapsule
