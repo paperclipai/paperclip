@@ -479,7 +479,9 @@ export function authorizationService(db: Db) {
 
     if (
       !(await scopeAllows(db, input.companyId, grant.scope, input.scope, {
-        requireStructuredScope: input.permissionKey === "tasks:assign_scope",
+        requireStructuredScope:
+          input.permissionKey === "tasks:assign_scope" ||
+          input.permissionKey === "tasks:fallback_reassign",
       }))
     ) {
       return deny({
