@@ -551,6 +551,13 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
   "or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
 
+const INVALID_AGENT_IN_PROGRESS_DISPOSITION_MESSAGE =
+  "invalid_issue_disposition: Agent-authored transitions into in_progress must bind the issue to an execution workspace. " +
+  "This prevents the 'happy-agent send → declared in_progress with no worktree/PR' anti-pattern. " +
+  "Either include executionWorkspaceId, or include executionWorkspaceSettings/executionWorkspacePreference, " +
+  "or pre-realize the workspace via POST /execution-workspaces and PATCH the resulting executionWorkspaceId before transitioning. " +
+  "Issues without a project (projectId is null) are exempt because they have no repo to bind a worktree to.";
+
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
   right: ParsedExecutionState["currentParticipant"] | null,
@@ -1642,6 +1649,58 @@ export function issueRoutes(
         "human_assignee_user_id",
         "typed_execution_state_current_participant",
         "scheduled_issue_monitor",
+      ],
+    });
+  }
+
+  function assertAgentInProgressWorktreeBinding(input: {
+    existing: {
+      status: string;
+      projectId: string | null;
+      executionWorkspaceId: string | null;
+      executionWorkspaceSettings?: unknown;
+      executionWorkspacePreference?: unknown;
+    };
+    updateFields: Record<string, unknown>;
+    actorType: string;
+  }) {
+    // Only enforce on agent-authored transitions *into* in_progress.
+    // Board users (humans) are exempt — they may legitimately set in_progress for triage.
+    // Once the issue is already in_progress, subsequent agent updates pass through.
+    // in_review → in_progress (changes_requested workflow) is also exempt: the workspace
+    // was already bound for the prior in_progress phase and the policy patch drives the transition.
+    const nextStatus =
+      typeof input.updateFields.status === "string" ? input.updateFields.status : input.existing.status;
+    if (input.actorType !== "agent") return;
+    if (input.existing.status === "in_progress" || nextStatus !== "in_progress") return;
+    if (input.existing.status === "in_review") return;
+
+    // No-repo issues are exempt: there is nothing to bind a worktree to.
+    if (input.existing.projectId === null) return;
+
+    // Already bound to a workspace — pass.
+    if (input.existing.executionWorkspaceId) return;
+
+    // This PATCH binds a workspace explicitly.
+    if (typeof input.updateFields.executionWorkspaceId === "string" && input.updateFields.executionWorkspaceId.length > 0) return;
+
+    // This PATCH provides workspace settings or preference (worker will realize on next checkout).
+    if (input.updateFields.executionWorkspaceSettings !== undefined && input.updateFields.executionWorkspaceSettings !== null) return;
+    if (input.updateFields.executionWorkspacePreference !== undefined && input.updateFields.executionWorkspacePreference !== null) return;
+
+    // Existing settings/preference on the issue itself — also pass (operator pre-configured).
+    if (input.existing.executionWorkspaceSettings) return;
+    if (input.existing.executionWorkspacePreference) return;
+
+    throw unprocessable(INVALID_AGENT_IN_PROGRESS_DISPOSITION_MESSAGE, {
+      code: "invalid_issue_disposition",
+      missing: "worktree_binding",
+      validBindings: [
+        "existing_execution_workspace_id",
+        "patch_execution_workspace_id",
+        "patch_execution_workspace_settings",
+        "patch_execution_workspace_preference",
+        "no_project_issue",
       ],
     });
   }
@@ -5059,6 +5118,12 @@ export function issueRoutes(
     }
 
     await assertAgentInReviewReviewPath({
+      existing,
+      updateFields,
+      actorType: req.actor.type,
+    });
+
+    assertAgentInProgressWorktreeBinding({
       existing,
       updateFields,
       actorType: req.actor.type,
