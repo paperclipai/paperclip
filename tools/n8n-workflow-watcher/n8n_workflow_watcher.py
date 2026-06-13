@@ -214,8 +214,6 @@ def main(argv=None):
 
     findings = find_failed_workflows(rows)
     state = load_state(STATE_PATH)
-    today = datetime.now().date()
-    today_iso = today.isoformat()
     reported = state.get("reported_exec_ids", [])
 
     fresh = new_findings(findings, reported)
