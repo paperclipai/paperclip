@@ -93,6 +93,11 @@ import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
+  evaluatePreflightAcceptanceGuard,
+  evaluatePostflightProofGuard,
+  readEnforcementWindowFromEnv,
+} from "../services/definition-of-done.js";
+import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
@@ -4826,6 +4831,39 @@ export function issueRoutes(
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
+
+    {
+      const transitioningToDone =
+        updateFields.status === "done" && existing.status !== "done";
+      if (transitioningToDone && existing.assigneeAgentId) {
+        const enforcement = readEnforcementWindowFromEnv();
+        const recentComments = await svc.listComments(existing.id, {
+          order: "desc",
+          limit: 1,
+        });
+        const latest = recentComments[0] ?? null;
+        const proof = evaluatePostflightProofGuard({
+          existingAssigneeAgentId: existing.assigneeAgentId,
+          existingCreatedAt: existing.createdAt ?? null,
+          transitioningToDone: true,
+          latestAssigneeComment: latest
+            ? {
+                body: latest.body ?? null,
+                authorAgentId: latest.authorAgentId ?? null,
+                derivedAuthorAgentId:
+                  (latest as { derivedAuthorAgentId?: string | null })
+                    .derivedAuthorAgentId ?? null,
+              }
+            : null,
+          enforcement,
+        });
+        if (!proof.allowed) {
+          res.status(proof.status).json({ error: proof.error });
+          return;
+        }
+      }
+    }
+
     if (resumeRequested === true && !commentBody) {
       res.status(400).json({ error: "Follow-up intent requires a comment" });
       return;
@@ -5098,6 +5136,32 @@ export function issueRoutes(
           assigneeAgentId: nextAssigneeAgentId,
           assigneeUserId: nextAssigneeUserId,
         });
+      }
+    }
+
+    {
+      const preflight = evaluatePreflightAcceptanceGuard({
+        existing: {
+          description: existing.description ?? null,
+          assigneeAgentId: existing.assigneeAgentId ?? null,
+          assigneeUserId: existing.assigneeUserId ?? null,
+          createdByAgentId: existing.createdByAgentId ?? null,
+          createdByUserId: existing.createdByUserId ?? null,
+        },
+        requestedAssigneeAgentId: normalizedAssigneeAgentId,
+        requestedDescription:
+          req.body.description === undefined
+            ? undefined
+            : (req.body.description as string | null),
+        actor: {
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+        },
+      });
+      if (!preflight.allowed) {
+        res.status(preflight.status).json({ error: preflight.error });
+        return;
       }
     }
 
