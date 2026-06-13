@@ -487,6 +487,78 @@ if (_logFlushInterval.unref) _logFlushInterval.unref();
 /** Maximum time (ms) to keep a session event subscription alive before forcing cleanup. */
 const SESSION_EVENT_SUBSCRIPTION_TIMEOUT_MS = 30 * 60 * 1_000; // 30 minutes
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function extractTextParts(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return "";
+  return value
+    .map((part) => {
+      if (!isRecord(part)) return "";
+      const type = stringValue(part.type);
+      if (type === "text" || type === "output_text") return stringValue(part.text);
+      return "";
+    })
+    .filter(Boolean)
+    .join("");
+}
+
+function extractAssistantTextFromJsonEvent(event: Record<string, unknown>): string {
+  const type = stringValue(event.type);
+
+  if (type === "message_update") {
+    const assistantEvent = isRecord(event.assistantMessageEvent) ? event.assistantMessageEvent : null;
+    if (assistantEvent && assistantEvent.type === "text_delta") {
+      return stringValue(assistantEvent.delta);
+    }
+  }
+
+  if (type === "assistant") {
+    const message = isRecord(event.message) ? event.message : null;
+    return extractTextParts(message?.content);
+  }
+
+  if (type === "turn_end") {
+    const message = isRecord(event.message) ? event.message : null;
+    if (message && message.role === "assistant") return extractTextParts(message.content);
+  }
+
+  if (type === "result") return stringValue(event.result);
+
+  if (type === "item.completed") {
+    const item = isRecord(event.item) ? event.item : null;
+    const itemType = stringValue(item?.type);
+    if (item && (itemType === "message" || itemType === "assistant_message")) {
+      return extractTextParts(item.content) || stringValue(item.text);
+    }
+  }
+
+  return "";
+}
+
+function extractAssistantTextFromLogChunk(chunk: string): string {
+  const parts: string[] = [];
+  for (const line of chunk.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (!isRecord(parsed)) continue;
+      const text = extractAssistantTextFromJsonEvent(parsed);
+      if (text) parts.push(text);
+    } catch {
+      // Ignore non-JSON log lines. Raw run logs are not user-facing answer text.
+    }
+  }
+  return parts.join("");
+}
+
 export function buildHostServices(
   db: Db,
   pluginId: string,
@@ -2654,15 +2726,31 @@ export function buildHostServices(
             const payload = event.payload as Record<string, unknown> | undefined;
             if (!payload || payload.runId !== run.id) return;
 
-            if (event.type === "heartbeat.run.log" || event.type === "heartbeat.run.event") {
+            if (event.type === "heartbeat.run.log") {
+              const message = typeof payload.chunk === "string"
+                ? extractAssistantTextFromLogChunk(payload.chunk)
+                : "";
+              if (!message) return;
               notifyWorker("agents.sessions.event", {
                 sessionId: params.sessionId,
                 runId: run.id,
                 seq: (payload.seq as number) ?? 0,
                 eventType: "chunk",
+                stream: "stdout",
+                message,
+                payload,
+              });
+            } else if (event.type === "heartbeat.run.event") {
+              const eventType = typeof payload.eventType === "string" ? payload.eventType : "event";
+              if (eventType === "lifecycle" || eventType === "adapter.invoke") return;
+              notifyWorker("agents.sessions.event", {
+                sessionId: params.sessionId,
+                runId: run.id,
+                seq: (payload.seq as number) ?? 0,
+                eventType,
                 stream: (payload.stream as string) ?? null,
-                message: (payload.chunk as string) ?? (payload.message as string) ?? null,
-                payload: payload,
+                message: (payload.message as string) ?? null,
+                payload,
               });
             } else if (event.type === "heartbeat.run.status") {
               const status = payload.status as string;
