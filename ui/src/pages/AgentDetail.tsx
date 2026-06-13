@@ -1383,15 +1383,25 @@ function CostsSection({
         <div className="border border-border rounded-lg p-4">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 tabular-nums">
             <div>
-              <span className="text-xs text-muted-foreground block">Input tokens</span>
+              <span
+                className="text-xs text-muted-foreground block"
+                title="Fresh input tokens sent to the model (cache miss)"
+              >
+                New input
+              </span>
               <span className="text-lg font-semibold">{formatTokens(runtimeState.totalInputTokens)}</span>
             </div>
             <div>
-              <span className="text-xs text-muted-foreground block">Output tokens</span>
+              <span className="text-xs text-muted-foreground block">Output</span>
               <span className="text-lg font-semibold">{formatTokens(runtimeState.totalOutputTokens)}</span>
             </div>
             <div>
-              <span className="text-xs text-muted-foreground block">Cached tokens</span>
+              <span
+                className="text-xs text-muted-foreground block"
+                title="Input tokens served from the prompt cache (cache hit)"
+              >
+                Cached input
+              </span>
               <span className="text-lg font-semibold">{formatTokens(runtimeState.totalCachedInputTokens)}</span>
             </div>
             <div>
@@ -1408,7 +1418,18 @@ function CostsSection({
               <tr className="border-b border-border bg-accent/20">
                 <th className="text-left px-3 py-2 font-medium text-muted-foreground">Date</th>
                 <th className="text-left px-3 py-2 font-medium text-muted-foreground">Run</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Input</th>
+                <th
+                  className="text-right px-3 py-2 font-medium text-muted-foreground"
+                  title="Fresh input tokens sent to the model (cache miss)"
+                >
+                  New input
+                </th>
+                <th
+                  className="text-right px-3 py-2 font-medium text-muted-foreground"
+                  title="Input tokens served from the prompt cache (cache hit)"
+                >
+                  Cached input
+                </th>
                 <th className="text-right px-3 py-2 font-medium text-muted-foreground">Output</th>
                 <th className="text-right px-3 py-2 font-medium text-muted-foreground">Cost</th>
               </tr>
@@ -1421,6 +1442,7 @@ function CostsSection({
                     <td className="px-3 py-2">{formatDate(run.createdAt)}</td>
                     <td className="px-3 py-2 font-mono">{run.id.slice(0, 8)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.input)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.cached)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.output)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">
                       {metrics.cost > 0
@@ -3444,7 +3466,12 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
           {hasMetrics && (
             <div className="border-t sm:border-t-0 sm:border-l border-border p-4 grid grid-cols-2 gap-x-4 sm:gap-x-8 gap-y-3 content-center tabular-nums">
               <div>
-                <div className="text-xs text-muted-foreground">Input</div>
+                <div
+                  className="text-xs text-muted-foreground"
+                  title="Fresh input tokens sent to the model (cache miss)"
+                >
+                  New input
+                </div>
                 <div className="text-sm font-medium font-mono">{formatTokens(metrics.input)}</div>
               </div>
               <div>
@@ -3452,7 +3479,12 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 <div className="text-sm font-medium font-mono">{formatTokens(metrics.output)}</div>
               </div>
               <div>
-                <div className="text-xs text-muted-foreground">Cached</div>
+                <div
+                  className="text-xs text-muted-foreground"
+                  title="Input tokens served from the prompt cache (cache hit)"
+                >
+                  Cached input
+                </div>
                 <div className="text-sm font-medium font-mono">{formatTokens(metrics.cached)}</div>
               </div>
               <div>
