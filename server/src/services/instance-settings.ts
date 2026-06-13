@@ -1,4 +1,4 @@
-import type { Db } from "@paperclipai/db";
+import type { QueryableDb } from "@paperclipai/db";
 import { companies, instanceSettings } from "@paperclipai/db";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
@@ -82,7 +82,7 @@ function toInstanceSettings(row: typeof instanceSettings.$inferSelect): Instance
   };
 }
 
-export function instanceSettingsService(db: Db) {
+export function instanceSettingsService(db: QueryableDb) {
   async function getOrCreateRow() {
     const existing = await db
       .select()
