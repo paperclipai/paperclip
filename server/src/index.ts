@@ -5,6 +5,7 @@
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
+import { statfs } from "node:fs/promises";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -78,6 +79,22 @@ type EmbeddedPostgresInstance = {
   start(): Promise<void>;
   stop(): Promise<void>;
 };
+
+/**
+ * Minimum free space required on the backup filesystem before a scheduled
+ * backup is allowed to begin writing. Sized generously above typical Paperclip
+ * backup sizes (low tens of MB) so a half-written dump can't tip the host
+ * filesystem into ENOSPC and cascade into an unhandled rejection. Configurable
+ * via PAPERCLIP_DB_BACKUP_FREE_SPACE_THRESHOLD_BYTES for hosts with tight disks.
+ */
+const DEFAULT_DATABASE_BACKUP_FREE_SPACE_THRESHOLD_BYTES = 500 * 1024 * 1024;
+const DATABASE_BACKUP_FREE_SPACE_THRESHOLD_BYTES = (() => {
+  const raw = process.env.PAPERCLIP_DB_BACKUP_FREE_SPACE_THRESHOLD_BYTES;
+  if (!raw) return DEFAULT_DATABASE_BACKUP_FREE_SPACE_THRESHOLD_BYTES;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_DATABASE_BACKUP_FREE_SPACE_THRESHOLD_BYTES;
+  return Math.trunc(parsed);
+})();
 
 type EmbeddedPostgresCtor = new (opts: {
   databaseDir: string;
@@ -603,6 +620,50 @@ export async function startServer(): Promise<StartedServer> {
       const generalSettings = await backupSettingsSvc.getGeneral();
       const retention = generalSettings.backupRetention;
 
+      // Top-of-loop free-space guard: refuse to start a backup write if the target
+      // filesystem is below the safety threshold. Skipping the write is preferable
+      // to triggering ENOSPC mid-stream, which previously surfaced as an unhandled
+      // rejection that could terminate the server process. Scheduled backups
+      // skip silently; manual runs surface a 409 so the operator sees the cause.
+      let freeBytes: number | null = null;
+      try {
+        const fsStats = await statfs(config.databaseBackupDir, { bigint: true });
+        const availableBytes = fsStats.bavail * fsStats.bsize;
+        freeBytes = availableBytes > BigInt(Number.MAX_SAFE_INTEGER)
+          ? Number.MAX_SAFE_INTEGER
+          : Number(availableBytes);
+      } catch (statErr) {
+        // statfs not supported or path missing — log and continue. The backup
+        // itself still has its own error handling for filesystem failures.
+        logger.warn(
+          { err: statErr, backupDir: config.databaseBackupDir },
+          "Could not stat backup filesystem; proceeding without free-space precheck",
+        );
+      }
+      // Threshold compare lives outside the statfs try/catch so a manual-trigger
+      // conflict() throw is NOT swallowed by `catch (statErr)`; review found this
+      // silently defeated the 409 path on a full disk.
+      if (
+        freeBytes !== null &&
+        Number.isFinite(freeBytes) &&
+        freeBytes > 0 &&
+        freeBytes < DATABASE_BACKUP_FREE_SPACE_THRESHOLD_BYTES
+      ) {
+        logger.error(
+          {
+            freeBytes,
+            thresholdBytes: DATABASE_BACKUP_FREE_SPACE_THRESHOLD_BYTES,
+            backupDir: config.databaseBackupDir,
+            trigger,
+          },
+          `${label} database backup skipped: free disk below safety threshold`,
+        );
+        if (trigger === "scheduled") {
+          return null;
+        }
+        throw conflict("Database backup skipped: free disk below safety threshold");
+      }
+
       const result = await runDatabaseBackup({
         connectionString: activeDatabaseConnectionString,
         backupDir: config.databaseBackupDir,
@@ -624,6 +685,7 @@ export async function startServer(): Promise<StartedServer> {
           backupFile: result.backupFile,
           sizeBytes: result.sizeBytes,
           prunedCount: result.prunedCount,
+          keptCount: result.keptCount,
           backupDir: config.databaseBackupDir,
           retention,
           trigger,

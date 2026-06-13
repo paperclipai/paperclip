@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import { createBufferedTextFileWriter, pruneOldBackups, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -70,6 +70,159 @@ describe("createBufferedTextFileWriter", () => {
     await writer.close();
 
     expect(fs.readFileSync(outputPath, "utf8")).toBe(lines.join("\n"));
+  });
+
+  it("surfaces openFile rejections via drain/close instead of leaking unhandledRejection", async () => {
+    const missingDir = path.join(os.tmpdir(), `paperclip-buffered-writer-missing-${process.pid}-${Date.now()}`);
+    const outputPath = path.join(missingDir, "nope", "backup.sql");
+    const writer = createBufferedTextFileWriter(outputPath, 16);
+
+    writer.emit("BEGIN;");
+    await expect(writer.drain()).rejects.toBeInstanceOf(Error);
+    // abort() must always be safe to call after a failed write — it must not throw.
+    await writer.abort();
+  });
+});
+
+describe("pruneOldBackups", () => {
+  function makeBackup(dir: string, name: string, mtimeMs: number, sizeBytes = 1024): void {
+    const fullPath = path.join(dir, name);
+    fs.writeFileSync(fullPath, Buffer.alloc(sizeBytes));
+    fs.utimesSync(fullPath, new Date(mtimeMs), new Date(mtimeMs));
+  }
+
+  function generateHourlyFixture(dir: string, hours: number, anchorMs: number): string[] {
+    const names: string[] = [];
+    for (let i = 0; i < hours; i += 1) {
+      const ts = anchorMs - i * 60 * 60 * 1000;
+      const d = new Date(ts);
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const name = `paperclip-${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}-${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}.sql.gz`;
+      makeBackup(dir, name, ts);
+      names.push(name);
+    }
+    return names;
+  }
+
+  it("collapses 168 hourly backups into hourly window + per-day daily entries", () => {
+    const dir = createTempDir("paperclip-prune-168-");
+    const anchorMs = Date.UTC(2026, 4, 12, 12, 0, 0); // 2026-05-12 12:00:00 UTC
+    generateHourlyFixture(dir, 168, anchorMs);
+
+    const result = pruneOldBackups(
+      dir,
+      { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1, hourlyHours: 24 },
+      "paperclip",
+      () => anchorMs,
+    );
+
+    // 24 within the hourly window + 7 prior days (one each) - 1 for the day
+    // that's already represented inside the hourly window = 6 daily entries.
+    // Some hourly-window slots may share a calendar day with the daily tier
+    // boundary; the invariant is that we collapse from 168 to roughly 24 + days.
+    expect(result.kept).toBeGreaterThan(20);
+    expect(result.kept).toBeLessThanOrEqual(32);
+    expect(result.kept + result.pruned).toBe(168);
+
+    const remaining = fs.readdirSync(dir).filter((name) => name.endsWith(".sql.gz"));
+    expect(remaining.length).toBe(result.kept);
+  });
+
+  it("keeps every backup inside the hourly window untouched", () => {
+    const dir = createTempDir("paperclip-prune-hourly-only-");
+    const anchorMs = Date.UTC(2026, 4, 12, 12, 0, 0);
+    generateHourlyFixture(dir, 12, anchorMs); // all within 24h window
+
+    const result = pruneOldBackups(
+      dir,
+      { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1, hourlyHours: 24 },
+      "paperclip",
+      () => anchorMs,
+    );
+
+    expect(result.pruned).toBe(0);
+    expect(result.kept).toBe(12);
+  });
+
+  it("falls back to a 24h hourly window when hourlyHours is omitted (forward compat)", () => {
+    const dir = createTempDir("paperclip-prune-default-hourly-");
+    const anchorMs = Date.UTC(2026, 4, 12, 12, 0, 0);
+    generateHourlyFixture(dir, 30, anchorMs);
+
+    const result = pruneOldBackups(
+      dir,
+      // hourlyHours intentionally omitted — exercises the legacy shared
+      // BackupRetentionPolicy shape (day/week/month only).
+      { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      "paperclip",
+      () => anchorMs,
+    );
+
+    // 24h hourly + per-day daily for the older portion — total well under 30.
+    expect(result.kept).toBeGreaterThanOrEqual(24);
+    expect(result.kept).toBeLessThan(30);
+    expect(result.kept + result.pruned).toBe(30);
+  });
+
+  it("only counts successful unlinks in the returned pruned total", () => {
+    const dir = createTempDir("paperclip-prune-unlink-fail-");
+    const anchorMs = Date.UTC(2026, 4, 12, 12, 0, 0);
+    // 30 hourly entries means several files older than the 24h hourly window
+    // are scheduled for deletion after per-day coalescing in the daily tier.
+    generateHourlyFixture(dir, 30, anchorMs);
+
+    // Remove write permission on the directory so unlinkSync throws EACCES /
+    // EPERM for every scheduled deletion. The prune should still complete
+    // without crashing and the returned `pruned` count must reflect the zero
+    // actual deletions rather than the scheduled-intent count.
+    const originalMode = fs.statSync(dir).mode;
+    fs.chmodSync(dir, 0o555);
+    cleanups.push(() => {
+      try {
+        fs.chmodSync(dir, originalMode);
+      } catch {
+        // best-effort cleanup; the parent afterEach rmSync handles the rest
+      }
+    });
+
+    let result: { kept: number; pruned: number };
+    try {
+      result = pruneOldBackups(
+        dir,
+        { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1, hourlyHours: 24 },
+        "paperclip",
+        () => anchorMs,
+      );
+    } finally {
+      fs.chmodSync(dir, originalMode);
+    }
+
+    // Every file should still be on disk because unlinkSync failed for all of them.
+    const remaining = fs.readdirSync(dir).filter((name) => name.endsWith(".sql.gz"));
+    expect(remaining.length).toBe(30);
+    // Pruned must reflect actual deletions, not scheduled intent.
+    expect(result.pruned).toBe(0);
+    // kept reflects the retention plan (unchanged by unlink failures).
+    expect(result.kept).toBeGreaterThan(0);
+  });
+
+  it("ignores files that do not match the filename prefix", () => {
+    const dir = createTempDir("paperclip-prune-prefix-");
+    const anchorMs = Date.UTC(2026, 4, 12, 12, 0, 0);
+    generateHourlyFixture(dir, 5, anchorMs);
+    makeBackup(dir, "unrelated.sql.gz", anchorMs - 10 * 24 * 60 * 60 * 1000);
+    makeBackup(dir, "paperclip-old.txt", anchorMs - 10 * 24 * 60 * 60 * 1000);
+
+    const result = pruneOldBackups(
+      dir,
+      { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1, hourlyHours: 24 },
+      "paperclip",
+      () => anchorMs,
+    );
+
+    expect(result.pruned).toBe(0);
+    expect(fs.existsSync(path.join(dir, "unrelated.sql.gz"))).toBe(true);
+    expect(fs.existsSync(path.join(dir, "paperclip-old.txt"))).toBe(true);
   });
 });
 
