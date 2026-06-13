@@ -509,7 +509,8 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
       s.start("Validating API key...");
       try {
         if (llm.provider === "claude") {
-          const res = await fetch("https://api.anthropic.com/v1/messages", {
+          const anthropicBaseUrl = process.env.ANTHROPIC_BASE_URL?.replace(/\/$/, "") ?? "https://api.anthropic.com";
+          const res = await fetch(`${anthropicBaseUrl}/v1/messages`, {
             method: "POST",
             headers: {
               "x-api-key": llm.apiKey,
