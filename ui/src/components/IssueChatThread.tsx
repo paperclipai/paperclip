@@ -50,6 +50,7 @@ import {
   deriveIssueChatTranscriptParts,
   formatDurationWords,
   stabilizeThreadMessages,
+  type AssistantTranscriptDerivation,
   type IssueChatComment,
   type IssueChatLinkedRun,
   type IssueChatMessageBuildCache,
@@ -395,6 +396,12 @@ type IssueChatErrorBoundaryProps = {
 
 type IssueChatErrorBoundaryState = {
   hasError: boolean;
+};
+
+type LazyTranscriptRenderState = {
+  key: string;
+  status: "loading" | "ready";
+  derivation: AssistantTranscriptDerivation | null;
 };
 
 class IssueChatErrorBoundary extends Component<IssueChatErrorBoundaryProps, IssueChatErrorBoundaryState> {
@@ -1484,15 +1491,53 @@ function IssueChatAssistantMessage({
   const [folded, setFolded] = useState(isFoldable);
   const [prevFoldKey, setPrevFoldKey] = useState({ messageId: message.id, isFoldable });
   const [copied, setCopied] = useState(false);
-  const lazyTranscriptDerivation = useMemo(() => {
-    if (!isLazyHistoricalTranscript || folded || !runId) return null;
-    const transcript = getTranscriptForRun?.(runId) ?? [];
-    return deriveIssueChatTranscriptParts({
-      cache: messageBuildCache,
-      runKey: `historical:${runId}`,
-      transcript,
-    });
-  }, [folded, getTranscriptForRun, isLazyHistoricalTranscript, messageBuildCache, runId]);
+  const lazyTranscriptKey = isLazyHistoricalTranscript && runId
+    ? `${runId}:${transcriptEntryCount ?? "unknown"}`
+    : null;
+  const lazyTranscriptLoadedKeyRef = useRef<string | null>(null);
+  const [lazyTranscriptRenderState, setLazyTranscriptRenderState] = useState<LazyTranscriptRenderState | null>(null);
+  useEffect(() => {
+    if (!lazyTranscriptKey || !runId) {
+      lazyTranscriptLoadedKeyRef.current = null;
+      setLazyTranscriptRenderState((current) => current === null ? current : null);
+      return;
+    }
+    if (folded) {
+      setLazyTranscriptRenderState((current) =>
+        current?.key === lazyTranscriptKey && current.status === "loading"
+          ? null
+          : current,
+      );
+      return;
+    }
+    if (lazyTranscriptLoadedKeyRef.current === lazyTranscriptKey) return;
+
+    let cancelled = false;
+    lazyTranscriptLoadedKeyRef.current = null;
+    setLazyTranscriptRenderState({ key: lazyTranscriptKey, status: "loading", derivation: null });
+    const timer = window.setTimeout(() => {
+      const transcript = getTranscriptForRun?.(runId) ?? [];
+      const derivation = deriveIssueChatTranscriptParts({
+        cache: messageBuildCache,
+        runKey: `historical:${runId}`,
+        transcript,
+      });
+      if (cancelled) return;
+      lazyTranscriptLoadedKeyRef.current = lazyTranscriptKey;
+      setLazyTranscriptRenderState({ key: lazyTranscriptKey, status: "ready", derivation });
+    }, 30);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [folded, getTranscriptForRun, lazyTranscriptKey, messageBuildCache, runId]);
+  const lazyTranscriptDerivation =
+    lazyTranscriptRenderState?.key === lazyTranscriptKey && lazyTranscriptRenderState.status === "ready"
+      ? lazyTranscriptRenderState.derivation
+      : null;
+  const isLazyTranscriptLoading =
+    lazyTranscriptRenderState?.key === lazyTranscriptKey && lazyTranscriptRenderState.status === "loading";
   const displayMessage = useMemo(() => {
     if (!lazyTranscriptDerivation) return message;
     return {
@@ -1592,6 +1637,15 @@ function IssueChatAssistantMessage({
             <>
               <div className="space-y-3">
                 <IssueChatAssistantParts message={displayMessage} hasCoT={hasCoT} />
+                {isLazyTranscriptLoading ? (
+                  <div
+                    className="flex items-center gap-2.5 rounded-lg border border-border/60 bg-accent/20 px-3 py-2 text-sm text-muted-foreground"
+                    data-testid="issue-chat-transcript-loading"
+                  >
+                    <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+                    <span className="shimmer-text">Loading transcript...</span>
+                  </div>
+                ) : null}
                 {displayMessage.content.length === 0 && waitingText ? (
                   <div className="flex items-center gap-2.5 rounded-lg px-1 py-2">
                     <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
@@ -1606,6 +1660,7 @@ function IssueChatAssistantMessage({
                 ) : null}
                 {isLazyHistoricalTranscript
                   && displayMessage.content.length === 0
+                  && !isLazyTranscriptLoading
                   && !waitingText
                   && transcriptEntryCount !== null ? (
                   <div className="rounded-lg border border-border/60 bg-accent/20 px-3 py-2 text-xs leading-5 text-muted-foreground">
