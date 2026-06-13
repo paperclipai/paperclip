@@ -1,0 +1,49 @@
+name: Live Trader Replay Gate
+
+# Pre-deploy gate: every PR or push that touches the live trader must
+# pass the golden-fixture replay tests. Adding a new fixture for any
+# future production bug is a hard step in the bug-fix workflow (see
+# docs/superpowers/specs/2026-04-25-live-trader-data-reliability-design.md).
+#
+# Security note: this workflow does NOT consume any untrusted user input
+# (issue titles, PR bodies, commit messages, etc.) in `run:` steps, so
+# command-injection vectors don't apply.
+
+on:
+  pull_request:
+    paths:
+      - 'deploy-live/**'
+      - '.github/workflows/replay-gate.yml'
+  push:
+    branches:
+      - master
+    paths:
+      - 'deploy-live/**'
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: deploy-live/requirements.txt
+
+      - name: Install dependencies
+        working-directory: deploy-live
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run golden-fixture replay tests
+        working-directory: deploy-live
+        run: pytest tests/test_replay.py -v
+
+      - name: Run full data-reliability test suite
+        working-directory: deploy-live
+        run: pytest tests/ -v
