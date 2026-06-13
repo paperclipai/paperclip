@@ -193,6 +193,119 @@ describe("agent instructions service", () => {
     expect(exported.files).toEqual({ "AGENTS.md": "# Recovered Agent\n" });
   });
 
+  it("heals legacy AGENT_HOME companion references in managed AGENTS.md without touching other files", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-heal-managed-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+
+    const managedRoot = path.join(
+      paperclipHome,
+      "instances",
+      "test-instance",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-1",
+      "instructions",
+    );
+    await fs.mkdir(managedRoot, { recursive: true });
+    await fs.writeFile(
+      path.join(managedRoot, "AGENTS.md"),
+      [
+        "# Agent",
+        "",
+        "- `$AGENT_HOME/HEARTBEAT.md`",
+        "- `$AGENT_HOME/SOUL.md`",
+        "- `$AGENT_HOME/TOOLS.md`",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(managedRoot, "TOOLS.md"),
+      "Keep `$AGENT_HOME/TOOLS.md` as-is in non-entry files.\n",
+      "utf8",
+    );
+
+    const svc = agentInstructionsService();
+    const bundle = await svc.getBundle(makeAgent({}));
+    const exported = await svc.exportFiles(makeAgent({}));
+
+    expect(bundle.mode).toBe("managed");
+    expect(bundle.files.map((file) => file.path)).toEqual(["AGENTS.md", "TOOLS.md"]);
+    expect(exported.files["AGENTS.md"]).toContain("`./HEARTBEAT.md`");
+    expect(exported.files["AGENTS.md"]).toContain("`./SOUL.md`");
+    expect(exported.files["AGENTS.md"]).toContain("`./TOOLS.md`");
+    expect(exported.files["AGENTS.md"]).not.toContain("$AGENT_HOME/HEARTBEAT.md");
+    await expect(fs.readFile(path.join(managedRoot, "AGENTS.md"), "utf8")).resolves.toContain("`./HEARTBEAT.md`");
+    await expect(fs.readFile(path.join(managedRoot, "TOOLS.md"), "utf8")).resolves.toBe(
+      "Keep `$AGENT_HOME/TOOLS.md` as-is in non-entry files.\n",
+    );
+  });
+
+  it("does not rewrite legacy AGENT_HOME references for external bundles", async () => {
+    const externalRoot = await makeTempDir("paperclip-agent-instructions-external-legacy-");
+    cleanupDirs.add(externalRoot);
+
+    const agentsBody = [
+      "# External Agent",
+      "",
+      "- `$AGENT_HOME/HEARTBEAT.md`",
+      "",
+    ].join("\n");
+    await fs.writeFile(path.join(externalRoot, "AGENTS.md"), agentsBody, "utf8");
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({
+      instructionsBundleMode: "external",
+      instructionsRootPath: externalRoot,
+      instructionsEntryFile: "AGENTS.md",
+      instructionsFilePath: path.join(externalRoot, "AGENTS.md"),
+    });
+
+    const bundle = await svc.getBundle(agent);
+    const exported = await svc.exportFiles(agent);
+
+    expect(bundle.mode).toBe("external");
+    expect(exported.files["AGENTS.md"]).toContain("$AGENT_HOME/HEARTBEAT.md");
+    await expect(fs.readFile(path.join(externalRoot, "AGENTS.md"), "utf8")).resolves.toBe(agentsBody);
+  });
+
+  it("leaves already-normalized managed AGENTS.md content unchanged", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-heal-idempotent-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+
+    const managedRoot = path.join(
+      paperclipHome,
+      "instances",
+      "test-instance",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-1",
+      "instructions",
+    );
+    const agentsBody = [
+      "# Agent",
+      "",
+      "- `./HEARTBEAT.md`",
+      "- `./SOUL.md`",
+      "- `./TOOLS.md`",
+      "",
+    ].join("\n");
+    await fs.mkdir(managedRoot, { recursive: true });
+    await fs.writeFile(path.join(managedRoot, "AGENTS.md"), agentsBody, "utf8");
+
+    const svc = agentInstructionsService();
+    const exported = await svc.exportFiles(makeAgent({}));
+
+    expect(exported.files["AGENTS.md"]).toBe(agentsBody);
+    await expect(fs.readFile(path.join(managedRoot, "AGENTS.md"), "utf8")).resolves.toBe(agentsBody);
+  });
+
   it("prefers the managed bundle on disk when managed metadata points at a stale root", async () => {
     const paperclipHome = await makeTempDir("paperclip-agent-instructions-stale-managed-");
     const staleRoot = await makeTempDir("paperclip-agent-instructions-stale-root-");
