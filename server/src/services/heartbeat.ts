@@ -4659,30 +4659,82 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? "agent.run.cancelled"
               : null;
     if (!eventType) return;
-    publishPluginDomainEvent({
-      eventId: randomUUID(),
-      eventType,
-      occurredAt: new Date().toISOString(),
-      actorId: run.agentId,
-      actorType: "agent",
-      entityId: run.id,
-      entityType: "heartbeat_run",
-      companyId: run.companyId,
-      payload: {
-        runId: run.id,
-        agentId: run.agentId,
-        status: run.status,
-        invocationSource: run.invocationSource,
-        triggerDetail: run.triggerDetail,
-        error: run.error ?? null,
-        errorCode: run.errorCode ?? null,
-        issueId: typeof run.contextSnapshot === "object" && run.contextSnapshot !== null
-          ? (run.contextSnapshot as Record<string, unknown>).issueId ?? null
-          : null,
-        startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
-        finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
-      },
-    });
+    // Enrich payload with issueTitle / issueDescription / result so plugins
+    // (e.g. hindsight-paperclip) that expect these canonical fields can build
+    // queries on `agent.run.started` and store content on `agent.run.finished`
+    // without making a follow-up HTTP call. Looked up asynchronously so the
+    // main state transition path is not slowed down — the emit is fire-and-
+    // forget by design.
+    const ctxSnapshot =
+      typeof run.contextSnapshot === "object" && run.contextSnapshot !== null
+        ? (run.contextSnapshot as Record<string, unknown>)
+        : {};
+    const issueIdRaw = ctxSnapshot.issueId;
+    const issueId = typeof issueIdRaw === "string" && issueIdRaw.length > 0 ? issueIdRaw : null;
+    const resultJson = (run as unknown as { resultJson?: unknown }).resultJson;
+    const resultObj =
+      typeof resultJson === "object" && resultJson !== null
+        ? (resultJson as Record<string, unknown>)
+        : {};
+    const maybeString = (v: unknown): string | undefined =>
+      typeof v === "string" && v.length > 0 ? v : undefined;
+    const directResult =
+      maybeString(resultObj.output) ??
+      maybeString(resultObj.result) ??
+      maybeString(resultObj.summary) ??
+      (typeof resultJson === "string" && resultJson.length > 0
+        ? (resultJson as string)
+        : undefined);
+
+    void (async () => {
+      let issueTitle: string | null = null;
+      let issueDescription: string | null = null;
+      if (issueId) {
+        try {
+          const row = await db
+            .select({
+              title: issues.title,
+              description: issues.description,
+            })
+            .from(issues)
+            .where(eq(issues.id, issueId))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (row) {
+            issueTitle = row.title ?? null;
+            issueDescription = row.description ?? null;
+          }
+        } catch {
+          // Non-fatal — emit the event even if the enrichment lookup fails.
+        }
+      }
+      publishPluginDomainEvent({
+        eventId: randomUUID(),
+        eventType,
+        occurredAt: new Date().toISOString(),
+        actorId: run.agentId,
+        actorType: "agent",
+        entityId: run.id,
+        entityType: "heartbeat_run",
+        companyId: run.companyId,
+        payload: {
+          runId: run.id,
+          agentId: run.agentId,
+          status: run.status,
+          invocationSource: run.invocationSource,
+          triggerDetail: run.triggerDetail,
+          error: run.error ?? null,
+          errorCode: run.errorCode ?? null,
+          issueId,
+          issueTitle,
+          issueDescription,
+          result: directResult ?? null,
+          output: directResult ?? null,
+          startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
+          finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
+        },
+      });
+    })().catch(() => {});
   }
 
   async function setWakeupStatus(
