@@ -225,11 +225,10 @@ export function syncExternalAdapters(
     if (builtinTypes.has(type)) continue; // handled above
 
     const existing = adaptersByType.get(type);
-
-    // If this type already has an externally-loaded dynamic parser, skip —
-    // it was loaded from disk on a previous sync. Only re-trigger loading
-    // when the server returns a new external adapter that hasn't been loaded yet.
-    if (existing && existing !== processUIAdapter) continue;
+    if (existing && existing !== processUIAdapter) {
+      existing.label = label;
+      continue;
+    }
 
     let loadStarted = false;
     // Use the existing built-in parser as fallback (if any) so we don't

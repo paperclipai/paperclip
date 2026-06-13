@@ -403,9 +403,11 @@ export interface ServerAdapterModule {
   //
   // These allow adapter plugins to declare what "local" capabilities they
   // support, replacing hardcoded type lists in the server and UI.
-  // All flags are optional — when undefined, the server falls back to
-  // legacy hardcoded lists for built-in adapters.
-  // ---------------------------------------------------------------------------
+  /**
+   * Optional: human-friendly label for the adapter (e.g. "OpenRouter").
+   * When omitted, the server uses the 'type' identifier as the label.
+   */
+  label?: string;
 
   /**
    * Adapter supports managed instructions bundle (AGENTS.md files).
