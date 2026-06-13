@@ -610,10 +610,26 @@ export function agentService(db: Db) {
       });
     },
 
-    activatePendingApproval: async (id: string) => {
+    activatePendingApproval: async (id: string, overrides?: {
+      role?: string;
+      title?: string | null;
+      reportsTo?: string | null;
+      capabilities?: string | null;
+      adapterType?: string;
+      adapterConfig?: Record<string, unknown>;
+    }) => {
+      const patch: Record<string, unknown> = { status: "idle", updatedAt: new Date() };
+      if (overrides) {
+        if (overrides.role !== undefined) patch.role = overrides.role;
+        if (overrides.title !== undefined) patch.title = overrides.title;
+        if (overrides.reportsTo !== undefined) patch.reportsTo = overrides.reportsTo;
+        if (overrides.capabilities !== undefined) patch.capabilities = overrides.capabilities;
+        if (overrides.adapterType !== undefined) patch.adapterType = overrides.adapterType;
+        if (overrides.adapterConfig !== undefined) patch.adapterConfig = overrides.adapterConfig;
+      }
       const updated = await db
         .update(agents)
-        .set({ status: "idle", updatedAt: new Date() })
+        .set(patch)
         .where(and(eq(agents.id, id), eq(agents.status, "pending_approval")))
         .returning()
         .then((rows) => rows[0] ?? null);

@@ -113,7 +113,17 @@ export function approvalService(db: Db) {
         const payload = updated.payload as Record<string, unknown>;
         const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
         if (payloadAgentId) {
-          await agentsSvc.activatePendingApproval(payloadAgentId);
+          await agentsSvc.activatePendingApproval(payloadAgentId, {
+            role: typeof payload.role === "string" ? payload.role : undefined,
+            title: typeof payload.title === "string" ? payload.title : undefined,
+            reportsTo: typeof payload.reportsTo === "string" ? payload.reportsTo : undefined,
+            capabilities: typeof payload.capabilities === "string" ? payload.capabilities : undefined,
+            adapterType: typeof payload.adapterType === "string" ? payload.adapterType : undefined,
+            adapterConfig:
+              typeof payload.adapterConfig === "object" && payload.adapterConfig !== null
+                ? (payload.adapterConfig as Record<string, unknown>)
+                : undefined,
+          });
           hireApprovedAgentId = payloadAgentId;
         } else {
           const created = await agentsSvc.create(updated.companyId, {
