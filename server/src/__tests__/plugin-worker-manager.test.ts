@@ -417,4 +417,47 @@ describe("plugin-worker-manager stderr failure context", () => {
       await handle.stop().catch(() => undefined);
     }
   });
+
+  it("allows whitelisted methods (like http.fetch) without an invocation id even while a company invocation is active", async () => {
+    const httpFetch = vi.fn(async () => ({ status: 200 }));
+    const hostHandlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["http.outbound"],
+      services: {
+        http: {
+          fetch: httpFetch,
+        },
+      } as unknown as HostServices,
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers,
+    });
+
+    try {
+      await handle.start();
+
+      // This will call getData, which triggers a nested host request using mode: "http.fetch".
+      // The fixture omits paperclipInvocationId, but it should succeed because it's whitelisted.
+      await expect(handle.call("getData", {
+        key: "probe",
+        companyId: "company-1",
+        params: {
+          mode: "http.fetch",
+          requestedCompanyId: "company-2",
+        },
+      } as HostToWorkerMethods["getData"][0])).resolves.toEqual({ status: 200 });
+
+      expect(httpFetch).toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
 });
