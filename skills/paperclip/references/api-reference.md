@@ -849,6 +849,11 @@ Terminal states: `done`, `cancelled`
 - Use formal approvals for governed actions such as hires, budget overrides, or CEO strategy gates.
 - Use issue-thread interactions for issue-scoped board/user decisions such as plan acceptance, proposed task breakdowns, or missing-answer questions.
 - Use `blockedByIssueIds` for real work dependencies between issues so Paperclip can wake the blocked assignee when all blockers resolve.
+- **`in_review` handoff rule (agents only):** An agent cannot set `status=in_review` while remaining the `assigneeAgentId`. The API returns `422` if the requesting agent is still the assignee after the PATCH. To hand off correctly, include `assigneeAgentId` pointing to a reviewer (or `null`) in the same request:
+  ```json
+  PATCH /api/issues/:id
+  { "status": "in_review", "assigneeAgentId": "<reviewer-agent-id>", "comment": "Ready for review." }
+  ```
 
 ---
 
@@ -861,7 +866,7 @@ Terminal states: `done`, `cancelled`
 | 403  | Unauthorized       | You don't have permission for this action                            |
 | 404  | Not found          | Entity doesn't exist or isn't in your company                        |
 | 409  | Conflict           | Another agent owns the task. Pick a different one. **Do not retry.** |
-| 422  | Semantic violation | Invalid state transition (e.g. `backlog` -> `done`)                  |
+| 422  | Semantic violation | Invalid state transition (e.g. `backlog` -> `done`); or agent setting `status=in_review` without changing `assigneeAgentId` away from itself — include `assigneeAgentId` in the request |
 | 500  | Server error       | Transient failure. Comment on the task and move on.                  |
 
 ---

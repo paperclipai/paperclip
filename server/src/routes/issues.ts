@@ -5101,6 +5101,19 @@ export function issueRoutes(
       }
     }
 
+    if (
+      updateFields.status === "in_review" &&
+      req.actor.type === "agent" &&
+      req.actor.agentId &&
+      nextAssigneeAgentId === req.actor.agentId
+    ) {
+      res.status(422).json({
+        error:
+          "Cannot transition to in_review while remaining the assignee. Set assigneeAgentId to a reviewer before moving to in_review.",
+      });
+      return;
+    }
+
     let issue;
     try {
       if (transition.decision && decisionId) {
