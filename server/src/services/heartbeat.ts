@@ -217,6 +217,16 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+// Open/actionable issue statuses — an agent assigned at least one issue in this
+// set has standing work, so a timer-driven heartbeat is "real" rather than idle.
+// Mirrors the open-status set used by the issues partial indexes in the schema.
+const HEARTBEAT_ACTIONABLE_ISSUE_STATUSES = [
+  "backlog",
+  "todo",
+  "in_progress",
+  "in_review",
+  "blocked",
+] as const;
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -2042,7 +2052,10 @@ export function shouldResetTaskSessionForWake(
     // session toward the 64k compaction threshold (observed in CEO run
     // 292a5fd1, where timer wakes repeatedly bloated a long-lived manager
     // session). Reset on every timer wake so each interval starts fresh.
-    wakeReason === "heartbeat_timer"
+    // heartbeat_idle (gh#8015) is an even-more-exploratory timer wake with no
+    // standing work, so it gets the same fresh-session treatment.
+    wakeReason === "heartbeat_timer" ||
+    wakeReason === "heartbeat_idle"
   ) {
     return true;
   }
@@ -2151,6 +2164,7 @@ export function describeSessionResetReason(
   // PF-4: paired with shouldResetTaskSessionForWake — keep the reason wording
   // explicit so run logs make session reuse/reset behavior legible.
   if (wakeReason === "heartbeat_timer") return "wake reason is heartbeat_timer (timer-driven wake starts fresh)";
+  if (wakeReason === "heartbeat_idle") return "wake reason is heartbeat_idle (idle timer wake with no standing work starts fresh)";
   return null;
 }
 
@@ -11497,15 +11511,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
 
+        // Distinguish a timer wake with no standing work (gh#8015). When the
+        // agent has zero assigned issues in an actionable status, the run still
+        // fires (idle wakes may be a product requirement) but advertises a
+        // distinct reason so adapters/skills can treat it as an idle tick
+        // instead of "continue your work". Only runs for agents past the
+        // interval gate, so it adds at most one cheap indexed lookup per
+        // actually-due agent per tick.
+        const [actionableIssue] = await db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.assigneeAgentId, agent.id),
+              inArray(issues.status, [...HEARTBEAT_ACTIONABLE_ISSUE_STATUSES]),
+              isNull(issues.hiddenAt),
+            ),
+          )
+          .limit(1);
+        const isIdle = !actionableIssue;
+
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
           triggerDetail: "system",
-          reason: "heartbeat_timer",
+          reason: isIdle ? "heartbeat_idle" : "heartbeat_timer",
           requestedByActorType: "system",
           requestedByActorId: "heartbeat_scheduler",
           contextSnapshot: {
             source: "scheduler",
-            reason: "interval_elapsed",
+            reason: isIdle ? "interval_elapsed_idle" : "interval_elapsed",
+            idle: isIdle,
             now: now.toISOString(),
           },
         });
