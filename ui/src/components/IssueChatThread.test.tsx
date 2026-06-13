@@ -3116,4 +3116,77 @@ describe("IssueChatThread", () => {
       avatarUrl: "/avatars/alice.png",
     });
   });
+
+  it("treats a viewer-authored comment as the current user while the session is still resolving", () => {
+    // Regression guard: when currentUserId is undefined (the session query
+    // has not resolved yet), an authorUserId-bearing comment must not flip
+    // to the wrong side. Previously this returned isCurrentUser=false,
+    // causing the viewer's own bubbles to render on the left until the
+    // session loaded a moment later — the visible "color flicker".
+    expect(resolveIssueChatHumanAuthor({
+      authorName: null,
+      authorUserId: "user-1",
+      currentUserId: undefined,
+    })).toMatchObject({ isCurrentUser: true });
+  });
+
+  it("does not treat an authorless comment as the current user while the session is resolving", () => {
+    expect(resolveIssueChatHumanAuthor({
+      authorName: null,
+      authorUserId: null,
+      currentUserId: undefined,
+    })).toMatchObject({ isCurrentUser: false });
+  });
+
+  it("treats null currentUserId as resolved-anonymous, not loading", () => {
+    // When the session resolves and the viewer is genuinely anonymous, we
+    // must not classify any human-authored comment as the current user.
+    expect(resolveIssueChatHumanAuthor({
+      authorName: "Alice",
+      authorUserId: "user-2",
+      currentUserId: null,
+    })).toMatchObject({ isCurrentUser: false });
+  });
+
+  it("renders a viewer-authored comment on the right side while the session is still resolving", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[{
+              id: "comment-1",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-1",
+              body: "My own comment.",
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+            }]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            currentUserId={undefined}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    // The viewer's own comment row should already use the right-side
+    // layout (justify-end) before the session query resolves, so the
+    // bubble does not visibly snap across the page.
+    const rightAlignedRows = container.querySelectorAll(
+      'div.flex.items-start.gap-2\\.5.justify-end',
+    );
+    expect(rightAlignedRows.length).toBe(1);
+
+    act(() => {
+      root.unmount();
+    });
+  });
 });

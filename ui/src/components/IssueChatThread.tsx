@@ -785,7 +785,15 @@ export function resolveIssueChatHumanAuthor(args: {
 }) {
   const { authorName, authorUserId, currentUserId, userProfileMap } = args;
   const profile = authorUserId ? userProfileMap?.get(authorUserId) ?? null : null;
-  const isCurrentUser = Boolean(authorUserId && currentUserId && authorUserId === currentUserId);
+  // currentUserId === undefined means the session query has not resolved yet.
+  // In that window we optimistically treat any human-authored comment as the
+  // viewer's own; otherwise the viewer's own bubbles flip to the wrong side
+  // until the session loads, producing a visible color/layout flicker.
+  // currentUserId === null means the session resolved and the viewer is
+  // anonymous, so the strict equality check applies.
+  const isCurrentUser = currentUserId === undefined
+    ? Boolean(authorUserId)
+    : Boolean(authorUserId && currentUserId && authorUserId === currentUserId);
   const resolvedAuthorName = profile?.label?.trim()
     || authorName?.trim()
     || (authorUserId === "local-board" ? "Board" : (isCurrentUser ? "You" : "User"));
