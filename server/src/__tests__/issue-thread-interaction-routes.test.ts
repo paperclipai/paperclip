@@ -869,6 +869,44 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
+  it("allows an agent to respond to ask_user_questions without board access", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/respond")
+      .send({
+        answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.answerQuestions).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "interaction-2",
+      expect.objectContaining({ answers: [{ questionId: "scope", optionIds: ["phase-1"] }] }),
+      expect.objectContaining({ agentId: CREATED_AGENT_ID, userId: null }),
+    );
+  });
+
+  it("blocks a non-board unauthenticated actor from responding", async () => {
+    const app = await createApp({
+      type: "none",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/respond")
+      .send({
+        answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+      });
+
+    expect(res.status).toBe(401);
+    expect(mockInteractionService.answerQuestions).not.toHaveBeenCalled();
+  });
+
   it("allows agent-authored interaction creation and stamps the active run id", async () => {
     const app = await createApp({
       type: "agent",
