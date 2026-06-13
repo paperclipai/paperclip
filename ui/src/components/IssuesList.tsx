@@ -78,6 +78,7 @@ import { ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@pap
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
 const ISSUE_BOARD_COLUMN_RESULT_LIMIT = 200;
+const ISSUE_LIST_STATUS_RESULT_LIMIT = 200;
 const INITIAL_ISSUE_ROW_RENDER_LIMIT = 100;
 const ISSUE_ROW_RENDER_BATCH_SIZE = 150;
 const ISSUE_SCROLL_LOAD_THRESHOLD_PX = 320;
@@ -746,6 +747,49 @@ export function IssuesList({
       placeholderData: (previousData: Issue[] | undefined) => previousData,
     })),
   });
+  // When the list view has an active status filter (e.g. the "Active" quick-filter preset),
+  // re-fetch issues per status from the server so that low-priority or older issues that
+  // fall outside the default 500-item server cap are still surfaced. This mirrors the
+  // per-status fetching pattern used by the board view.
+  // Skip per-status fetches when a remote search is active — `filtered` uses
+  // `searchedIssues` in that case and would discard these results.
+  const listStatusFilterValues = useMemo(
+    () =>
+      viewState.viewMode === "list"
+      && !searchWithinLoadedIssues
+      && normalizedIssueSearch.length === 0
+      && viewState.statuses.length > 0
+        ? viewState.statuses
+        : [],
+    [normalizedIssueSearch, searchWithinLoadedIssues, viewState.statuses, viewState.viewMode],
+  );
+  const listStatusIssueQueries = useQueries({
+    queries: listStatusFilterValues.map((status) => ({
+      queryKey: [
+        ...queryKeys.issues.list(selectedCompanyId ?? "__no-company__"),
+        "list-status",
+        status,
+        projectId ?? "__all-projects__",
+        searchFilters ?? {},
+        ISSUE_LIST_STATUS_RESULT_LIMIT,
+        enableRoutineVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
+      ],
+      queryFn: () =>
+        issuesApi.list(selectedCompanyId!, {
+          ...searchFilters,
+          projectId,
+          status,
+          limit: ISSUE_LIST_STATUS_RESULT_LIMIT,
+          ...(enableRoutineVisibilityFilter ? { includeRoutineExecutions: true } : {}),
+        }),
+      enabled:
+        !!selectedCompanyId
+        && viewState.viewMode === "list"
+        && !searchWithinLoadedIssues
+        && normalizedIssueSearch.length === 0,
+      placeholderData: (previousData: Issue[] | undefined) => previousData,
+    })),
+  });
   const { data: executionWorkspaces = [] } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
@@ -961,10 +1005,31 @@ export function IssuesList({
       boardIssueQueries.some((query) => (query.data?.length ?? 0) === ISSUE_BOARD_COLUMN_RESULT_LIMIT),
     [boardIssueQueries, searchWithinLoadedIssues, viewState.viewMode],
   );
+  const listStatusIssues = useMemo(() => {
+    if (listStatusFilterValues.length === 0) return null;
+    const merged = new Map<string, Issue>();
+    let isPending = false;
+    for (const query of listStatusIssueQueries) {
+      isPending ||= query.isPending;
+      for (const issue of query.data ?? []) {
+        merged.set(issue.id, issue);
+      }
+    }
+    if (merged.size > 0) return [...merged.values()];
+    return isPending ? null : [];
+  }, [listStatusFilterValues, listStatusIssueQueries]);
+  const listStatusLimitReached = useMemo(
+    () =>
+      listStatusFilterValues.length > 0 &&
+      listStatusIssueQueries.some((query) => (query.data?.length ?? 0) === ISSUE_LIST_STATUS_RESULT_LIMIT),
+    [listStatusFilterValues, listStatusIssueQueries],
+  );
 
   const filtered = useMemo(() => {
     const useRemoteSearch = normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues;
-    const sourceIssues = boardIssues ?? (useRemoteSearch ? searchedIssues : issues);
+    const sourceIssues =
+      boardIssues
+      ?? (useRemoteSearch ? searchedIssues : (listStatusIssues ?? issues));
     const searchScopedIssues = normalizedIssueSearch.length > 0 && searchWithinLoadedIssues
       ? sourceIssues.filter((issue) => issueMatchesLocalSearch(issue, normalizedIssueSearch))
       : sourceIssues;
@@ -980,6 +1045,7 @@ export function IssuesList({
   }, [
     boardIssues,
     issues,
+    listStatusIssues,
     searchedIssues,
     searchWithinLoadedIssues,
     viewState,
@@ -1570,6 +1636,11 @@ export function IssuesList({
       {boardColumnLimitReached && (
         <p className="text-xs text-muted-foreground">
           Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} tasks. Refine filters or search to reveal the rest.
+        </p>
+      )}
+      {listStatusLimitReached && (
+        <p className="text-xs text-muted-foreground">
+          Some statuses are showing up to {ISSUE_LIST_STATUS_RESULT_LIMIT} issues. Refine filters or search to reveal the rest.
         </p>
       )}
       {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
