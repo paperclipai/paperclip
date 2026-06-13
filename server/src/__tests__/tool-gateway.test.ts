@@ -16,7 +16,9 @@ import {
   projects,
   toolAccessAuditEvents,
   toolActionRequests,
+  toolApplications,
   toolCallEvents,
+  toolConnections,
   toolGatewaySessions,
   toolInvocations,
   toolPolicies,
@@ -184,6 +186,8 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     await db.delete(toolProfileEntries);
     await db.delete(toolProfileBindings);
     await db.delete(toolProfiles);
+    await db.delete(toolConnections);
+    await db.delete(toolApplications);
     await db.delete(issueThreadInteractions);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
@@ -496,12 +500,149 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       .get("/api/tool-gateway/audit")
       .query({ companyId: company.id, limit: 20 });
     expect(audit.status).toBe(200);
-    expect(audit.body).toEqual(expect.arrayContaining([
+    expect(audit.body.events).toEqual(expect.arrayContaining([
       expect.objectContaining({
         companyId: company.id,
         action: expect.stringMatching(/^tool_gateway\./),
       }),
     ]));
+    expect(audit.body).toHaveProperty("nextCursor");
+  });
+
+  it("filters, paginates, and enriches tool gateway audit events server-side", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const otherAgent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      name: "Plugin: acme.plugin-mail",
+      type: "mcp_stdio",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      name: "Plugin: acme.plugin-mail",
+      transport: "local_stdio",
+      status: "active",
+      enabled: true,
+    }).returning();
+    const [newerInvocation, olderInvocation, otherInvocation] = await db.insert(toolInvocations).values([
+      {
+        companyId: company.id,
+        actorType: "agent",
+        actorId: agent.id,
+        agentId: agent.id,
+        runId: run.id,
+        applicationId: application!.id,
+        connectionId: connection!.id,
+        toolName: "mail:send_email",
+      },
+      {
+        companyId: company.id,
+        actorType: "agent",
+        actorId: agent.id,
+        agentId: agent.id,
+        runId: run.id,
+        applicationId: application!.id,
+        connectionId: connection!.id,
+        toolName: "mail:read_email",
+      },
+      {
+        companyId: company.id,
+        actorType: "agent",
+        actorId: otherAgent.id,
+        agentId: otherAgent.id,
+        runId: run.id,
+        toolName: "other:delete_everything",
+      },
+    ]).returning();
+    const now = Date.now();
+    await db.insert(activityLog).values([
+      {
+        companyId: company.id,
+        actorType: "agent",
+        actorId: agent.id,
+        action: "tool_gateway.call_completed",
+        entityType: "issue",
+        entityId: run.id,
+        agentId: agent.id,
+        runId: run.id,
+        details: { invocationId: newerInvocation!.id, decision: "allow", reasonCode: "tool_completed", tool: "mail:send_email" },
+        createdAt: new Date(now - 1_000),
+      },
+      {
+        companyId: company.id,
+        actorType: "agent",
+        actorId: agent.id,
+        action: "tool_gateway.call_allowed",
+        entityType: "issue",
+        entityId: run.id,
+        agentId: agent.id,
+        runId: run.id,
+        details: { invocationId: olderInvocation!.id, decision: "allow", reasonCode: "profile_allows_tool", tool: "mail:read_email" },
+        createdAt: new Date(now - 2_000),
+      },
+      {
+        companyId: company.id,
+        actorType: "agent",
+        actorId: otherAgent.id,
+        action: "tool_gateway.call_denied",
+        entityType: "issue",
+        entityId: run.id,
+        agentId: otherAgent.id,
+        runId: run.id,
+        details: { invocationId: otherInvocation!.id, decision: "deny", reasonCode: "deny_policy_block", tool: "other:delete_everything" },
+        createdAt: new Date(now - 500),
+      },
+    ]);
+
+    const app = createGatewayRouteApp(db, createTestToolGatewayService(db), {
+      type: "board",
+      userId: "instance-admin",
+      source: "session",
+      companyIds: [company.id],
+      memberships: [{ companyId: company.id, membershipRole: "owner", status: "active" }],
+      isInstanceAdmin: true,
+    });
+
+    const firstPage = await request(app)
+      .get("/api/tool-gateway/audit")
+      .query({ companyId: company.id, app: connection!.id, agent: agent.id, outcome: "allowed", window: "24h", limit: 1 });
+    expect(firstPage.status).toBe(200);
+    expect(firstPage.body.events).toEqual([
+      expect.objectContaining({
+        action: "tool_gateway.call_completed",
+        agentId: agent.id,
+        agentDisplayName: agent.name,
+        applicationId: application!.id,
+        connectionId: connection!.id,
+        appDisplayName: "Mail",
+        toolDisplayName: "Send Email",
+        normalizedOutcome: "allowed",
+      }),
+    ]);
+    expect(typeof firstPage.body.nextCursor).toBe("string");
+
+    const secondPage = await request(app)
+      .get("/api/tool-gateway/audit")
+      .query({
+        companyId: company.id,
+        app: connection!.id,
+        agent: agent.id,
+        outcome: "allowed",
+        window: "24h",
+        limit: 1,
+        cursor: firstPage.body.nextCursor,
+      });
+    expect(secondPage.status).toBe(200);
+    expect(secondPage.body.events).toEqual([
+      expect.objectContaining({
+        action: "tool_gateway.call_allowed",
+        toolDisplayName: "Read Email",
+      }),
+    ]);
+    expect(secondPage.body.nextCursor).toBeNull();
   });
 
   it("rejects durable sessions after the heartbeat run is no longer active", async () => {

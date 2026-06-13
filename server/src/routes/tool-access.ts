@@ -14,6 +14,7 @@ import {
   createToolProfileEntryForProfileSchema,
   createToolProfileWithEntriesSchema,
   deleteToolProfileSchema,
+  duplicateToolPolicySchema,
   disableToolStdioCommandTemplateSchema,
   duplicateToolProfileSchema,
   finishToolAppSchema,
@@ -22,6 +23,7 @@ import {
   createToolTrustRuleFromActionRequestSchema,
   importMcpJsonSchema,
   revokeToolTrustRuleSchema,
+  reorderToolPoliciesSchema,
   toolPolicyTestRequestSchema,
   unbindToolProfileBindingSchema,
   updateToolApplicationSchema,
@@ -774,6 +776,28 @@ export function toolAccessRoutes(
     res.json({ policies: await policySvc.listPolicies(companyId) });
   });
 
+  // Rules UI sentence slots map exactly onto policy selectors:
+  // capability -> riskLevel, app -> applicationId, actions -> toolNames.
+  router.post("/companies/:companyId/tools/policies/reorder", validate(reorderToolPoliciesSchema), async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const policies = await policySvc.reorderPolicies(companyId, req.body);
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "tool_policy.reordered",
+      entityType: "tool_policy",
+      entityId: companyId,
+      details: {
+        policyIds: req.body.policyIds,
+        priorityStep: 100,
+      },
+    });
+    res.json({ policies });
+  });
+
   router.post("/companies/:companyId/tools/policies", validate(createToolPolicySchema), async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;
@@ -788,6 +812,37 @@ export function toolAccessRoutes(
         entityType: "tool_policy",
         entityId: policy.id,
         details: { name: policy.name, policyType: policy.policyType, priority: policy.priority },
+      });
+      res.status(201).json(policy);
+    } catch (error) {
+      policySvc.ensureNoDuplicatePolicyNameError(error);
+    }
+  });
+
+  router.post("/companies/:companyId/tools/policies/:policyId/duplicate", validate(duplicateToolPolicySchema), async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    try {
+      const policy = await policySvc.duplicatePolicy({
+        companyId,
+        policyId: req.params.policyId as string,
+        body: req.body,
+        actor: { userId: req.actor.userId ?? null },
+      });
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "tool_policy.duplicated",
+        entityType: "tool_policy",
+        entityId: policy.id,
+        details: {
+          sourcePolicyId: req.params.policyId,
+          name: policy.name,
+          enabled: policy.enabled,
+          priority: policy.priority,
+        },
       });
       res.status(201).json(policy);
     } catch (error) {

@@ -139,11 +139,13 @@ import {
   reconnectToolAppSchema,
   updateToolConnectionSchema,
   createToolPolicySchema,
+  duplicateToolPolicySchema,
   createToolProfileBindingForProfileSchema,
   createToolProfileEntryForProfileSchema,
   createToolProfileWithEntriesSchema,
   deleteToolProfileSchema,
   duplicateToolProfileSchema,
+  reorderToolPoliciesSchema,
   reviewToolProfileNewToolsSchema,
   updateToolPolicySchema,
   updateToolProfileEntrySchema,
@@ -647,7 +649,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/companies/{companyId}/tools/runs/{runId}/decisions",
   "GET /api/companies/{companyId}/tools/trust-rules",
   "GET /api/companies/{companyId}/tools/policies",
+  "POST /api/companies/{companyId}/tools/policies/reorder",
   "POST /api/companies/{companyId}/tools/policies",
+  "POST /api/companies/{companyId}/tools/policies/{policyId}/duplicate",
   "PATCH /api/companies/{companyId}/tools/policies/{policyId}",
   "DELETE /api/companies/{companyId}/tools/policies/{policyId}",
   "POST /api/companies/{companyId}/tools/action-requests/{actionRequestId}/trust-rule",
@@ -4862,10 +4866,27 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "post",
+  path: "/api/companies/{companyId}/tools/policies/reorder",
+  tags: ["tool-access"],
+  summary: "Reorder tool policies",
+  body: reorderToolPoliciesSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
   path: "/api/companies/{companyId}/tools/policies",
   tags: ["tool-access"],
   summary: "Create a tool policy",
   body: createToolPolicySchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/policies/{policyId}/duplicate",
+  tags: ["tool-access"],
+  summary: "Duplicate a tool policy",
+  body: duplicateToolPolicySchema,
   responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 409: r.conflict },
 });
 

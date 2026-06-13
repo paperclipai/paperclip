@@ -36,6 +36,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { classifyRisk, toolAccessService } from "../services/tool-access.js";
+import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -839,6 +840,110 @@ describeEmbeddedPostgres("tool access service", () => {
     const auditRows = await db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.companyId, company.id));
     expect(auditRows.some((row) => row.action === "tool_access.policy_decision" && row.reasonCode === "allow_profile")).toBe(true);
     expect(auditRows.some((row) => row.action === "tool_access.policy_decision" && row.reasonCode === "deny_default")).toBe(true);
+  });
+
+  it("evaluates enabled tool policies by priority with first-match wins", async () => {
+    const company = await createCompany(db);
+    const policyService = toolAccessPolicyService(db);
+    const [allowPolicy, blockPolicy] = await db.insert(toolPolicies).values([
+      {
+        companyId: company.id,
+        name: `Allow first ${randomUUID()}`,
+        policyType: "allow",
+        priority: 100,
+        selectors: { toolName: "fixture:dangerous_action" },
+      },
+      {
+        companyId: company.id,
+        name: `Block second ${randomUUID()}`,
+        policyType: "block",
+        priority: 200,
+        selectors: { toolName: "fixture:dangerous_action" },
+      },
+    ]).returning();
+
+    const allowDecision = await policyService.decide({
+      companyId: company.id,
+      actor: { actorType: "user", actorId: "board-user" },
+      request: { toolName: "fixture:dangerous_action", arguments: {} },
+    });
+    expect(allowDecision).toMatchObject({
+      decision: "allow",
+      reasonCode: "allow_policy",
+      matchedPolicyIds: [allowPolicy!.id],
+    });
+
+    await policyService.reorderPolicies(company.id, { policyIds: [blockPolicy!.id, allowPolicy!.id] });
+    const blockDecision = await policyService.decide({
+      companyId: company.id,
+      actor: { actorType: "user", actorId: "board-user" },
+      request: { toolName: "fixture:dangerous_action", arguments: {} },
+    });
+    expect(blockDecision).toMatchObject({
+      decision: "deny",
+      reasonCode: "deny_policy_block",
+      matchedPolicyIds: [blockPolicy!.id],
+    });
+  });
+
+  it("reorders and duplicates policies through board routes", async () => {
+    const company = await createCompany(db);
+    const [first, second] = await db.insert(toolPolicies).values([
+      {
+        companyId: company.id,
+        name: `First policy ${randomUUID()}`,
+        policyType: "allow",
+        priority: 100,
+        selectors: { toolName: "read_notes" },
+      },
+      {
+        companyId: company.id,
+        name: `Second policy ${randomUUID()}`,
+        policyType: "block",
+        priority: 200,
+        selectors: { toolName: "delete_notes" },
+      },
+    ]).returning();
+    const app = createRouteApp(db);
+
+    const reorder = await request(app)
+      .post(`/api/companies/${company.id}/tools/policies/reorder`)
+      .send({ policyIds: [second!.id, first!.id] });
+    expect(reorder.status).toBe(200);
+    expect(reorder.body.policies.map((policy: { id: string; priority: number }) => [policy.id, policy.priority])).toEqual([
+      [second!.id, 100],
+      [first!.id, 200],
+    ]);
+
+    const duplicate = await request(app)
+      .post(`/api/companies/${company.id}/tools/policies/${first!.id}/duplicate`)
+      .send({});
+    expect(duplicate.status).toBe(201);
+    expect(duplicate.body).toMatchObject({
+      name: `${first!.name} copy`,
+      policyType: first!.policyType,
+      enabled: false,
+      selectors: first!.selectors,
+    });
+
+    const otherCompany = await createCompany(db);
+    const [foreignPolicy] = await db.insert(toolPolicies).values({
+      companyId: otherCompany.id,
+      name: `Foreign policy ${randomUUID()}`,
+      policyType: "allow",
+      priority: 100,
+      selectors: {},
+    }).returning();
+    await request(app)
+      .post(`/api/companies/${company.id}/tools/policies/reorder`)
+      .send({ policyIds: [second!.id, first!.id, foreignPolicy!.id] })
+      .expect(422);
+
+    const auditRows = await db.select().from(activityLog).where(eq(activityLog.companyId, company.id));
+    expect(auditRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "tool_policy.reordered" }),
+      expect.objectContaining({ action: "tool_policy.duplicated" }),
+    ]));
   });
 
   it("serves the app gallery manifest through the board route", async () => {

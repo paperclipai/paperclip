@@ -346,6 +346,18 @@ export const updateToolPolicySchema = createToolPolicySchema.partial().refine(
 
 export type UpdateToolPolicy = z.infer<typeof updateToolPolicySchema>;
 
+export const reorderToolPoliciesSchema = z.object({
+  policyIds: z.array(z.string().uuid()).min(1).max(500),
+});
+
+export type ReorderToolPolicies = z.infer<typeof reorderToolPoliciesSchema>;
+
+export const duplicateToolPolicySchema = z.object({
+  name: z.string().trim().min(1).max(160).optional(),
+});
+
+export type DuplicateToolPolicy = z.infer<typeof duplicateToolPolicySchema>;
+
 export const createToolInvocationSchema = z.object({
   idempotencyKey: z.string().trim().min(1).max(300).optional().nullable(),
   issueId: z.string().uuid().optional().nullable(),

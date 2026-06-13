@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -28,7 +28,9 @@ import type {
   ToolAccessSelector,
   ToolAuditEventType,
   CreateToolPolicy,
+  DuplicateToolPolicy,
   CreateToolTrustRuleFromActionRequest,
+  ReorderToolPolicies,
   RevokeToolTrustRule,
   ToolPolicyDecision,
   UpdateToolPolicy,
@@ -370,6 +372,89 @@ export function toolAccessPolicyService(db: Db) {
       .from(toolPolicies)
       .where(and(eq(toolPolicies.companyId, companyId), ne(toolPolicies.policyType, "trust_rule")))
       .orderBy(asc(toolPolicies.priority), desc(toolPolicies.updatedAt));
+  }
+
+  async function reorderPolicies(companyId: string, body: ReorderToolPolicies) {
+    const uniquePolicyIds = [...new Set(body.policyIds)];
+    if (uniquePolicyIds.length !== body.policyIds.length) {
+      throw badRequest("policyIds must not contain duplicates");
+    }
+
+    return db.transaction(async (tx) => {
+      const rows = await tx
+        .update(toolPolicies)
+        .set({ updatedAt: sql`${toolPolicies.updatedAt}` })
+        .where(and(
+          eq(toolPolicies.companyId, companyId),
+          ne(toolPolicies.policyType, "trust_rule"),
+        ))
+        .returning();
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      const missingIds = uniquePolicyIds.filter((id) => !byId.has(id));
+      if (missingIds.length > 0) {
+        throw unprocessable("All reordered policies must belong to the company", { missingPolicyIds: missingIds });
+      }
+      if (uniquePolicyIds.length !== rows.length) {
+        throw unprocessable("Reorder must include every non-trust policy for the company", {
+          expectedPolicyCount: rows.length,
+          receivedPolicyCount: uniquePolicyIds.length,
+        });
+      }
+
+      const now = new Date();
+      for (const [index, policyId] of uniquePolicyIds.entries()) {
+        await tx
+          .update(toolPolicies)
+          .set({ priority: (index + 1) * 100, updatedAt: now })
+          .where(eq(toolPolicies.id, policyId));
+      }
+      return tx
+        .select()
+        .from(toolPolicies)
+        .where(and(eq(toolPolicies.companyId, companyId), ne(toolPolicies.policyType, "trust_rule")))
+        .orderBy(asc(toolPolicies.priority), desc(toolPolicies.updatedAt));
+    });
+  }
+
+  async function duplicatePolicy(input: {
+    companyId: string;
+    policyId: string;
+    body: DuplicateToolPolicy;
+    actor?: { agentId?: string | null; userId?: string | null };
+  }) {
+    const existing = await getGenericPolicyRow(db, input.companyId, input.policyId);
+    const rows = await db
+      .select({ name: toolPolicies.name })
+      .from(toolPolicies)
+      .where(eq(toolPolicies.companyId, input.companyId));
+    const names = new Set(rows.map((row) => row.name));
+    let name = input.body.name?.trim() || `${existing.name} copy`;
+    if (names.has(name)) {
+      const baseName = name;
+      let suffix = 2;
+      while (names.has(`${baseName} ${suffix}`)) suffix += 1;
+      name = `${baseName} ${suffix}`;
+    }
+    const now = new Date();
+    const [policy] = await db
+      .insert(toolPolicies)
+      .values({
+        companyId: existing.companyId,
+        name,
+        description: existing.description,
+        policyType: existing.policyType,
+        priority: existing.priority + 1,
+        enabled: false,
+        selectors: existing.selectors ?? {},
+        conditions: existing.conditions ?? null,
+        config: existing.config ?? null,
+        createdByAgentId: input.actor?.agentId ?? null,
+        createdByUserId: input.actor?.userId ?? null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+    return policy;
   }
 
   async function createPolicy(
@@ -716,45 +801,42 @@ export function toolAccessPolicyService(db: Db) {
     const effectiveProfileIds = profileState.profiles.map((profile) => profile.id);
     const policies = await db.select().from(toolPolicies).where(and(eq(toolPolicies.companyId, ctx.companyId), eq(toolPolicies.enabled, true))).orderBy(asc(toolPolicies.priority), asc(toolPolicies.createdAt));
     const matchingPolicies = policies.filter((policy) => selectorMatches(policy.selectors, ctx));
-    const block = matchingPolicies.find((policy) => policy.policyType === "block");
-    if (block) {
-      return decision("deny", "deny_policy_block", block.description ?? "Tool access is blocked by policy.", effectiveProfileIds, [block.id], { redactionPlan: redaction.redactionPlan });
-    }
-    for (const policy of matchingPolicies.filter((item) => item.policyType === "rate_limit")) {
-      const state = await enforceRateLimit(policy, ctx, input.consumeRateLimit === true);
-      if (state?.limited) {
-        return decision("rate_limited", "rate_limited", "Tool access rate limit exceeded.", effectiveProfileIds, [policy.id], { rateLimitState: state, redactionPlan: redaction.redactionPlan });
+    for (const policy of matchingPolicies) {
+      if (policy.policyType === "block") {
+        return decision("deny", "deny_policy_block", policy.description ?? "Tool access is blocked by policy.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan });
       }
-    }
-
-    for (const policy of matchingPolicies.filter((item) => item.policyType === "trust_rule")) {
-      const rule = trustRuleConfig(policy);
-      if (!rule || !trustRuleIsActive(policy)) continue;
-      if (!argumentFiltersMatch(rule.argumentFilters, ctx)) continue;
-      if (trustRuleNeedsReview(policy, ctx)) {
-        return decision(
-          "require_approval",
-          "requires_review_changed_tool",
-          "Tool definition changed or was quarantined after this trust rule was created; review is required.",
-          effectiveProfileIds,
-          [policy.id],
-          { redactionPlan: redaction.redactionPlan },
-        );
+      if (policy.policyType === "rate_limit") {
+        const state = await enforceRateLimit(policy, ctx, input.consumeRateLimit === true);
+        if (state?.limited) {
+          return decision("rate_limited", "rate_limited", "Tool access rate limit exceeded.", effectiveProfileIds, [policy.id], { rateLimitState: state, redactionPlan: redaction.redactionPlan });
+        }
+        continue;
       }
-      if (input.consumeRateLimit === true) {
-        await recordTrustRuleHit(policy, ctx, redaction);
+      if (policy.policyType === "trust_rule") {
+        const rule = trustRuleConfig(policy);
+        if (!rule || !trustRuleIsActive(policy)) continue;
+        if (!argumentFiltersMatch(rule.argumentFilters, ctx)) continue;
+        if (trustRuleNeedsReview(policy, ctx)) {
+          return decision(
+            "require_approval",
+            "requires_review_changed_tool",
+            "Tool definition changed or was quarantined after this trust rule was created; review is required.",
+            effectiveProfileIds,
+            [policy.id],
+            { redactionPlan: redaction.redactionPlan },
+          );
+        }
+        if (input.consumeRateLimit === true) {
+          await recordTrustRuleHit(policy, ctx, redaction);
+        }
+        return decision("allow", "allow_trust_rule", policy.description ?? "Tool access allowed by trust rule.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan });
       }
-      return decision("allow", "allow_trust_rule", policy.description ?? "Tool access allowed by trust rule.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan });
-    }
-
-    const approval = matchingPolicies.find((policy) => policy.policyType === "require_approval");
-    if (approval) {
-      return decision("require_approval", "requires_approval_policy", approval.description ?? "Tool access requires approval.", effectiveProfileIds, [approval.id], { redactionPlan: redaction.redactionPlan });
-    }
-
-    const policyAllow = matchingPolicies.find((policy) => policy.policyType === "allow");
-    if (policyAllow) {
-      return decision("allow", "allow_policy", "Tool access allowed by policy.", effectiveProfileIds, [policyAllow.id], { redactionPlan: redaction.redactionPlan });
+      if (policy.policyType === "require_approval") {
+        return decision("require_approval", "requires_approval_policy", policy.description ?? "Tool access requires approval.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan });
+      }
+      if (policy.policyType === "allow") {
+        return decision("allow", "allow_policy", "Tool access allowed by policy.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan });
+      }
     }
     if (await explicitGrant(ctx)) {
       return decision("allow", "allow_explicit_grant", "Tool access allowed by explicit grant.", effectiveProfileIds, [], { redactionPlan: redaction.redactionPlan });
@@ -1203,7 +1285,9 @@ export function toolAccessPolicyService(db: Db) {
     recordInvocation,
     summarizeAndRedact,
     listPolicies,
+    reorderPolicies,
     createPolicy,
+    duplicatePolicy,
     updatePolicy,
     deletePolicy,
     createTrustRuleFromActionRequest,
