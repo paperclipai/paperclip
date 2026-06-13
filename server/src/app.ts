@@ -52,6 +52,7 @@ import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
 import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
+import { publishGlobalLiveEvent } from "./services/live-events.js";
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
@@ -203,7 +204,20 @@ export async function createApp(
   app.use(llmRoutes(db));
 
   const hostServicesDisposers = new Map<string, () => void>();
-  const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
+  const workerManager =
+    opts.pluginWorkerManager ??
+    createPluginWorkerManager({
+      onWorkerEvent: (e) =>
+        publishGlobalLiveEvent({
+          type: e.type,
+          payload: {
+            pluginId: e.pluginId,
+            code: e.code ?? null,
+            signal: e.signal ?? null,
+            willRestart: e.willRestart ?? false,
+          },
+        }),
+    });
 
   // Mount API routes
   const api = Router();
