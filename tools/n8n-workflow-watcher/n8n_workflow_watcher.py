@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """n8n-workflow-watcher.py — Nächtlicher Wächter über aktive n8n-Workflows.
 
-Prüft pro Workflow mit active=1 den jüngsten Lauf im 14-Tage-Fenster und meldet
-Walter per mailhub-Mail, wenn dieser Lauf fehlgeschlagen ist (status error/crashed).
-Nur-bei-Befund + wöchentliches OK (Montag). Liest ~/.n8n/database.sqlite read-only.
+Prüft pro Workflow mit active=1 den jüngsten Lauf im 14-Tage-Fenster. Steht dieser
+Lauf auf Fehler (status error/crashed), wird pro NEUER Execution (noch nicht in
+state["reported_exec_ids"]) ein angereichertes Paperclip-Issue erstellt (idempotent),
+zugewiesen an N8N_RECOVERY_AGENT_ID. Schlägt die API fehl, geht EINE Meta-Fallback-Mail
+an Walter. Liest ~/.n8n/database.sqlite read-only.
 """
 from __future__ import annotations
 
 import argparse
-import html
 import json
 import os
 import sqlite3
@@ -16,6 +17,9 @@ import sys
 import urllib.error
 import urllib.request
 from datetime import datetime
+
+import paperclip_client as pc
+from n8n_execution_error import read_execution_error
 
 HOME = os.path.expanduser("~")
 
@@ -32,6 +36,12 @@ FROM_ADDR = "office@whitestag.ai"
 
 STATE_PATH = os.path.join(HOME, ".paperclip/instances/default/state/n8n-workflow-watcher.json")
 LOG_PATH = os.path.join(HOME, ".paperclip/instances/default/logs/n8n-workflow-watcher.log")
+
+COMPANY_ID = "9cebf3cf-efe8-4597-a400-f06488900a87"
+RECOVERY_AGENT_ID = os.environ.get("N8N_RECOVERY_AGENT_ID", "")
+PCP_BASE = os.environ.get("PCP_API", pc.DEFAULT_BASE)
+PCP_TOKEN = os.environ.get("PCP_TOKEN", "") or pc.load_token()
+REPORTED_CAP = 500  # reported_exec_ids-Liste begrenzen
 
 
 # --- Detektion (reine Funktion) ----------------------------------------------
@@ -51,64 +61,38 @@ def find_failed_workflows(rows):
     return findings
 
 
-def should_send_heartbeat(today, last_heartbeat_date, has_findings):
-    """today: datetime.date. Montag(0) + kein Befund + Heartbeat heute noch nicht
-    gesendet → True."""
-    if has_findings:
-        return False
-    if today.weekday() != 0:  # 0 = Montag
-        return False
-    return last_heartbeat_date != today.isoformat()
-
-
-def build_subject(findings):
-    return f"⚠️ n8n-Wächter: {len(findings)} Workflow(s) stehen auf Fehler"
-
-
 def execution_url(wf_id, exec_id, base=N8N_BASE):
     return f"{base}/workflow/{wf_id}/executions/{exec_id}"
 
 
-def render_report_text(findings, base=N8N_BASE):
-    lines = ["Folgende aktive n8n-Workflows stehen auf Fehler "
-             "(jüngster Lauf fehlgeschlagen):", ""]
-    for f in findings:
-        lines.append(
-            f"- {f['name']}  |  {f['failed_at']}  |  {f['mode']}  |  "
-            f"{execution_url(f['id'], f['exec_id'], base)}"
-        )
-    return "\n".join(lines)
+def new_findings(findings, reported_exec_ids):
+    seen = set(reported_exec_ids or [])
+    return [f for f in findings if f["exec_id"] not in seen]
 
 
-def render_report_html(findings, base=N8N_BASE):
-    body_rows = "".join(
-        "<tr>"
-        f"<td>{html.escape(str(f['name']))}</td>"
-        f"<td>{html.escape(str(f['failed_at']))}</td>"
-        f"<td>{html.escape(str(f['mode']))}</td>"
-        f"<td><a href=\"{execution_url(f['id'], f['exec_id'], base)}\">"
-        f"Execution {f['exec_id']}</a></td>"
-        "</tr>"
-        for f in findings
-    )
-    return (
-        "<h2>n8n-Wächter</h2>"
-        f"<p>{len(findings)} aktive Workflow(s) stehen auf Fehler "
-        "(jüngster Lauf fehlgeschlagen):</p>"
-        "<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\">"
-        "<tr><th>Workflow</th><th>Letzter Fehler</th><th>Modus</th><th>Execution</th></tr>"
-        f"{body_rows}</table>"
-    )
-
-
-def render_heartbeat(evaluated_count, active_count):
-    subject = "✅ n8n-Wächter: kein aktiver Workflow steht auf Fehler"
-    detail = (f"Geprüft: {evaluated_count} von {active_count} aktiven "
-              "(übrige hatten keinen Lauf im 14-Tage-Fenster).")
-    text = f"Kein aktiver Workflow steht auf Fehler. {detail} Wächter läuft."
-    html_body = (f"<h2>✅ n8n-Wächter</h2><p>Kein aktiver Workflow steht auf Fehler. "
-                 f"{detail} Wächter läuft.</p>")
-    return subject, text, html_body
+def build_issue(finding, error_info):
+    title = f"n8n-Fehler: {finding['name']} (Execution {finding['exec_id']})"
+    url = execution_url(finding["id"], finding["exec_id"])
+    msg = error_info.get("message") or "(keine Fehlermeldung in execution_data gefunden)"
+    node = error_info.get("last_node") or error_info.get("node") or "?"
+    http = error_info.get("http_code")
+    lines = [
+        f"**Workflow:** {finding['name']}  (`{finding['id']}`)",
+        f"**Execution:** {finding['exec_id']}  —  **Modus:** {finding['mode']}",
+        f"**Fehlgeschlagen:** {finding['failed_at']}",
+        f"**Fehlerhafter Node:** {node}" + (f"  (HTTP {http})" if http else ""),
+        "",
+        "**Fehlermeldung:**",
+        "```",
+        msg,
+        "```",
+        "",
+        f"Execution-Link: {url}",
+        "",
+        "_Automatisch erstellt vom n8n-Detektor. Diagnose/Klassifikation folgt durch "
+        "den Diagnose-Agenten._",
+    ]
+    return title, "\n".join(lines)
 
 
 def load_state(path=STATE_PATH):
@@ -226,7 +210,6 @@ def main(argv=None):
         return 1
     try:
         rows = _dedup_latest(fetch_active_workflow_latest(conn))
-        active_count = count_active(conn)
     finally:
         conn.close()
 
@@ -234,49 +217,59 @@ def main(argv=None):
     state = load_state(STATE_PATH)
     today = datetime.now().date()
     today_iso = today.isoformat()
+    reported = state.get("reported_exec_ids", [])
 
-    if findings:
-        ids = sorted(f["id"] for f in findings)
-        dup = (state.get("last_run_date") == today_iso
-               and state.get("last_reported_ids") == ids)
-        if dup and not args.force:
-            log("INFO", "findings already reported today; skipping")
-            return 0
-        subject = build_subject(findings)
-        text = render_report_text(findings)
-        html_body = render_report_html(findings)
-        if args.dry_run:
-            log("INFO", f"[dry-run] would send: {subject}")
-            print(subject)
-            print(text)
-            return 0
-        status = send_mail(subject, text, html_body, [])
-        if 200 <= status < 300:
-            state["last_run_date"] = today_iso
-            state["last_reported_ids"] = ids
-            save_state(state, STATE_PATH)
-            log("INFO", f"findings mail sent ({len(findings)})")
-        else:
-            log("ERROR", f"findings mail failed http={status}")
+    fresh = new_findings(findings, reported)
+    if not fresh:
+        log("INFO", "keine neuen Fehler-Executions")
         return 0
 
-    # keine Findings → ggf. wöchentlicher Heartbeat
-    if should_send_heartbeat(today, state.get("last_heartbeat_date"), False):
-        subject, text, html_body = render_heartbeat(len(rows), active_count)
-        if args.dry_run:
-            log("INFO", f"[dry-run] would send heartbeat: {subject}")
-            print(subject)
-            print(text)
-            return 0
-        status = send_mail(subject, text, html_body, [])
-        if 200 <= status < 300:
-            state["last_heartbeat_date"] = today_iso
-            save_state(state, STATE_PATH)
-            log("INFO", "heartbeat sent")
-        else:
-            log("ERROR", f"heartbeat failed http={status}")
-    else:
-        log("INFO", "no findings, no heartbeat due")
+    # execution_data je fresh-Finding lesen (eigene RO-Verbindung)
+    conn2 = open_db_ro()
+    try:
+        for f in fresh:
+            f["_error"] = read_execution_error(conn2, f["exec_id"])
+    finally:
+        conn2.close()
+
+    if args.dry_run:
+        for f in fresh:
+            title, desc = build_issue(f, f["_error"])
+            log("INFO", f"[dry-run] would create issue: {title}")
+            print(title)
+        return 0
+
+    created, failed = [], 0
+    for f in fresh:
+        title, desc = build_issue(f, f["_error"])
+        try:
+            issue_id = pc.create_issue(
+                PCP_BASE, PCP_TOKEN, COMPANY_ID,
+                title=title, description=desc,
+                assignee_agent_id=RECOVERY_AGENT_ID or None,
+                priority="high")
+        except pc.ApiError as e:
+            failed += 1
+            log("ERROR", f"issue-create fehlgeschlagen exec {f['exec_id']}: {e}")
+            continue
+        if not issue_id:
+            failed += 1
+            log("ERROR", f"issue-create lieferte keine id für exec {f['exec_id']}")
+            continue
+        created.append(f["exec_id"])
+        log("INFO", f"issue {issue_id} erstellt für exec {f['exec_id']}")
+
+    if created:
+        merged = (reported + created)[-REPORTED_CAP:]
+        state["reported_exec_ids"] = merged
+        state["last_run_date"] = today_iso
+        save_state(state, STATE_PATH)
+
+    if failed:
+        subject = "⚠️ n8n-Wächter: Issue-Erstellung fehlgeschlagen (API?)"
+        body = (f"{failed} von {len(fresh)} Fehler-Issue(s) konnten nicht in Paperclip "
+                f"angelegt werden. Bitte Control-Plane (:3100) prüfen.")
+        send_mail(subject, body, "", [])
     return 0
 
 
