@@ -159,6 +159,7 @@ import {
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
+import { withClaudeLocalAdmissionLock } from "./claude-local-admission-lock.js";
 import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
@@ -301,6 +302,21 @@ function resolveCodexTransientFallbackMode(attempt: number): CodexTransientFallb
   if (attempt === 2) return "safer_invocation";
   if (attempt === 3) return "fresh_session";
   return "fresh_session_safer_invocation";
+}
+
+// Instance-wide cap on concurrent claude_local heartbeat runs per company.
+// Used to prevent N agents from stacking onto a single-slot local LLM serve
+// (llama.cpp with MTP doesn't support --parallel > 1; queueing at the
+// scheduler is far cheaper than queueing at the inference layer).
+// Read once per call (cheap, cached implicitly by Node), so operators can
+// flip this without a restart on a process-manager that re-reads env.
+// Default 0 = unlimited (current behavior preserved).
+function readClaudeLocalInflightCap(): number {
+  const raw = process.env.PAPERCLIP_MAX_CLAUDE_LOCAL_INFLIGHT;
+  if (!raw) return 0;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return parsed;
 }
 
 function readHeartbeatRunErrorFamily(
@@ -6741,6 +6757,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  // Count concurrent claude_local heartbeat runs for a company. Used by the
+  // single-slot-LLM admission control gate — see PAPERCLIP_MAX_CLAUDE_LOCAL_INFLIGHT.
+  // The join keeps this aware of adapter type even though heartbeat_runs doesn't
+  // carry it directly.
+  async function countRunningClaudeLocalRunsForCompany(companyId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.status, "running"),
+          eq(agents.adapterType, "claude_local"),
+        ),
+      );
+    return Number(count ?? 0);
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -7674,12 +7709,53 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         return [];
       }
-      const policy = parseHeartbeatPolicy(agent);
-      const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
-      if (availableSlots <= 0) return [];
 
-      const queuedRuns = await db
+      // Instance-wide admission control for claude_local backend. When the
+      // operator points the whole fleet at a single-slot llama.cpp/MTP serve
+      // (where --parallel > 1 isn't supported), letting N agents claim N
+      // concurrent runs just serializes them at the inference layer with
+      // worse tail latency and stacked timeouts. Cap company-wide claude_local
+      // inflight via env. Default 0 = unlimited (current behavior preserved).
+      //
+      // The gate check (count) + claim must be atomic to avoid TOCTOU:
+      // without a serializing lock, multiple agents reading inflight=0
+      // would each pass and silently breach the cap. Wrap the whole
+      // gate-check-through-claim body in a company-scoped admission lock
+      // when the cap is engaged for this agent.
+      const claudeLocalInflightCap = readClaudeLocalInflightCap();
+      const needsAdmissionLock = claudeLocalInflightCap > 0 && agent.adapterType === "claude_local";
+
+      const claimBody = async () => {
+        const policy = parseHeartbeatPolicy(agent);
+        const runningCount = await countRunningRunsForAgent(agentId);
+        const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+        if (availableSlots <= 0) return [];
+
+        if (needsAdmissionLock) {
+          const inflight = await countRunningClaudeLocalRunsForCompany(agent.companyId);
+          if (inflight >= claudeLocalInflightCap) {
+            // Leave the queued runs queued; another agent's completion or the
+            // periodic scheduler tick will re-invoke this function and the cap
+            // will reopen naturally.
+            return [];
+          }
+        }
+
+        return doClaim(agent, availableSlots, agentId);
+      };
+
+      return needsAdmissionLock
+        ? withClaudeLocalAdmissionLock(agent.companyId, claimBody)
+        : claimBody();
+    });
+  }
+
+  async function doClaim(
+    agent: typeof agents.$inferSelect,
+    availableSlots: number,
+    agentId: string,
+  ): Promise<Array<typeof heartbeatRuns.$inferSelect>> {
+    const queuedRuns = await db
         .select()
         .from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
@@ -7738,7 +7814,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       }
       return claimedRuns;
-    });
   }
 
   async function executeRun(runId: string) {
