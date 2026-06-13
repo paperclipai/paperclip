@@ -6912,6 +6912,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await db
       .update(issues)
       .set({
+        // Clear checkoutRunId when it matches the cancelled run, mirroring the
+        // executionRunId clear so no ghost lock blocks the next checkout.
+        checkoutRunId: sql`case when ${issues.checkoutRunId} = ${run.id} then null else ${issues.checkoutRunId} end`,
         executionRunId: null,
         executionAgentNameKey: null,
         executionLockedAt: null,
@@ -10317,6 +10320,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             assigneeAgentId: issues.assigneeAgentId,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
+            checkoutRunId: issues.checkoutRunId,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
@@ -10496,9 +10500,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
 
         if (!activeExecutionRun && issue.executionRunId) {
+          // Also clear checkoutRunId when it matches the stale executionRunId so a
+          // new run's checkout isn't blocked by a ghost lock on the same dead run.
+          const staleCheckoutMatchesExecution = issue.checkoutRunId === issue.executionRunId;
           await tx
             .update(issues)
             .set({
+              ...(staleCheckoutMatchesExecution ? { checkoutRunId: null } : {}),
               executionRunId: null,
               executionAgentNameKey: null,
               executionLockedAt: null,

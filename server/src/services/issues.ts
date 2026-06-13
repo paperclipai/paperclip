@@ -3839,7 +3839,7 @@ export function issueService(db: Db) {
         sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
       );
       const issue = await tx
-        .select({ executionRunId: issues.executionRunId })
+        .select({ executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId })
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
@@ -3855,9 +3855,14 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
 
+      // Also clear checkoutRunId when it points to the same terminal run, so a
+      // new assignee run isn't blocked by adoptStaleCheckoutRun returning null
+      // for a run that clearExecutionRunIfTerminal already decided is gone.
+      const checkoutRunMatchesTerminal = issue.checkoutRunId === issue.executionRunId;
       const updated = await tx
         .update(issues)
         .set({
+          ...(checkoutRunMatchesTerminal ? { checkoutRunId: null } : {}),
           executionRunId: null,
           executionAgentNameKey: null,
           executionLockedAt: null,
