@@ -618,6 +618,18 @@ export function executionWorkspaceRoutes(db: Db) {
         return;
       }
     } else {
+      if (
+        req.body.status !== undefined &&
+        req.body.status !== "archived" &&
+        req.body.status !== "cleanup_failed" &&
+        (existing.status === "archived" || existing.status === "cleanup_failed")
+      ) {
+        if (existing.closedAt != null) {
+          patch.closedAt = null;
+        }
+        patch.cleanupReason = null;
+        patch.cleanupEligibleAt = null;
+      }
       const updatedWorkspace = await svc.update(id, patch);
       if (!updatedWorkspace) {
         res.status(404).json({ error: "Execution workspace not found" });
