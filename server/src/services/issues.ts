@@ -27,6 +27,7 @@ import {
   issueReadStates,
   issueThreadInteractions,
   issues,
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
   labels,
   projectWorkspaces,
   projects,
@@ -3126,7 +3127,11 @@ export function issueService(db: Db) {
       .from(issues)
       .where(eq(issues.id, id))
       .then((rows) => rows[0] ?? null);
+    const pluginProperties = await pluginWorkerManager.resolveProperties(row.companyId, row.id);
+    enriched.properties = { ...enriched.properties, ...pluginProperties };
     if (!row) return null;
+    const pluginProperties = await pluginWorkerManager.resolveProperties(row.companyId, row.id);
+    enriched.properties = { ...enriched.properties, ...pluginProperties };
     const [enriched] = await withIssueLabels(db, [row]);
     return enriched;
   }

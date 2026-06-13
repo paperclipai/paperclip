@@ -17,6 +17,7 @@ import {
   issues as issueRows,
   issueWorkProducts,
   projectWorkspaces,
+import { pluginHost } from "../services/plugin-host";
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
@@ -3153,6 +3154,22 @@ export function issueRoutes(
   router.get("/issues/:id/documents/:key", async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
+    // Merge plugin-registered properties into issue.properties
+    if (typeof pluginHost !== 'undefined' && pluginHost.getPropertyResolvers) {
+      const propertyResolvers = pluginHost.getPropertyResolvers();
+      const pluginProperties: Record<string, any> = {};
+      for (const resolver of propertyResolvers) {
+        try {
+          const result = await resolver(issue);
+          if (result && typeof result === 'object') {
+            Object.assign(pluginProperties, result);
+          }
+        } catch (error) {
+          console.warn(`Error in plugin property resolver for issue ${issue.id}:`, error);
+        }
+      }
+      issue.properties = { ...issue.properties, ...pluginProperties };
+    }
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
@@ -4510,61 +4527,71 @@ export function issueRoutes(
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
     });
 
-    await logActivity(db, {
-      companyId: parent.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "issue.child_created",
-      entityType: "issue",
-      entityId: issue.id,
-      details: {
-        parentId: parent.id,
-        identifier: issue.identifier,
-        title: issue.title,
-        ...buildCreateIssueActivityStatusDetails(issue, res),
-        inheritedExecutionWorkspaceFromIssueId: parent.id,
-        ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
-        ...(parentBlockerAdded ? { parentBlockerAdded: true } : {}),
-      },
-    });
-
-    if (executionPolicy?.monitor) {
-      await logActivity(db, {
-        companyId: parent.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: "issue.monitor_scheduled",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          identifier: issue.identifier,
-          parentId: parent.id,
-          nextCheckAt: executionPolicy.monitor.nextCheckAt,
-          notes: executionPolicy.monitor.notes,
-          scheduledBy: executionPolicy.monitor.scheduledBy,
-          serviceName: executionPolicy.monitor.serviceName ?? null,
-          timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
-          maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
-          recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
-        },
-      });
-    }
-
-    void queueIssueAssignmentWakeup({
-      heartbeat,
-      issue,
-      reason: "issue_assigned",
-      mutation: "create",
-      contextSource: "issue.child_create",
-      requestedByActorType: actor.actorType,
-      requestedByActorId: actor.actorId,
-    });
-
+    // Return 201 before post-insert side-effects (activity logging, wakeup
+    // queue). If either throws the row is already committed, so a 500 here
+    // would falsely signal failure and trigger duplicate-create retries
+    // (GH#6737). Respond first; log and wake in a trailing promise.
     res.status(201).json(issue);
+
+    void Promise.resolve()
+      .then(async () => {
+        await logActivity(db, {
+          companyId: parent.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.child_created",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            parentId: parent.id,
+            identifier: issue.identifier,
+            title: issue.title,
+            ...buildCreateIssueActivityStatusDetails(issue, res),
+            inheritedExecutionWorkspaceFromIssueId: parent.id,
+            ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
+            ...(parentBlockerAdded ? { parentBlockerAdded: true } : {}),
+          },
+        });
+
+        if (executionPolicy?.monitor) {
+          await logActivity(db, {
+            companyId: parent.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.monitor_scheduled",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              identifier: issue.identifier,
+              parentId: parent.id,
+              nextCheckAt: executionPolicy.monitor.nextCheckAt,
+              notes: executionPolicy.monitor.notes,
+              scheduledBy: executionPolicy.monitor.scheduledBy,
+              serviceName: executionPolicy.monitor.serviceName ?? null,
+              timeoutAt: executionPolicy.monitor.timeoutAt ?? null,
+              maxAttempts: executionPolicy.monitor.maxAttempts ?? null,
+              recoveryPolicy: executionPolicy.monitor.recoveryPolicy ?? null,
+            },
+          });
+        }
+
+        void queueIssueAssignmentWakeup({
+          heartbeat,
+          issue,
+          reason: "issue_assigned",
+          mutation: "create",
+          contextSource: "issue.child_create",
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+        });
+      })
+      .catch((err: unknown) => {
+        console.error({ err, issueId: issue.id }, "post-insert side-effect failed after child issue created");
+      });
   });
 
   router.get("/issues/:id/accepted-plan-decompositions", async (req, res) => {

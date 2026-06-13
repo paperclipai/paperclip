@@ -901,3 +901,5 @@ export interface IssueAttachment {
   openPath?: string;
   downloadPath?: string;
 }
+  /** Custom fields registered by plugins via ctx.properties.register */
+  properties?: Record<string, any>;

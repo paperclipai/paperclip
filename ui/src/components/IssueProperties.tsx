@@ -2218,6 +2218,18 @@ export function IssueProperties({
         <PropertyRow label="Created">
           <span className="text-sm">{formatDateTime(issue.createdAt)}</span>
         </PropertyRow>
+      {Object.keys(issue.properties || {}).length > 0 && (
+        <>
+          <Separator />
+          <div className="space-y-1">
+            {Object.entries(issue.properties || {}).map(([key, value]) => (
+              <PropertyRow key={key} label={key}>
+                <span className="text-sm">{String(value)}</span>
+              </PropertyRow>
+            ))}
+          </div>
+        </>
+      )}
         <PropertyRow label="Updated">
           <span className="text-sm">{timeAgo(issue.updatedAt)}</span>
         </PropertyRow>
