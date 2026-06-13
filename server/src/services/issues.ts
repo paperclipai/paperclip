@@ -5915,6 +5915,57 @@ export function issueService(db: Db) {
         };
       }),
 
+    /**
+     * Clear execution lock fields on an issue only when the given heartbeat run
+     * currently owns the issue (i.e. its id matches checkoutRunId OR
+     * executionRunId). Called automatically by the environment run orchestrator
+     * when a run exits, so a crashed or abandoned run cannot leave a stale lock
+     * that blocks every future checkout.
+     *
+     * Returns the updated issue row on success, or null when the issue was not
+     * found or the run no longer owns it (safe to ignore either way).
+     */
+    releaseFromRunIfOwned: (issueId: string, heartbeatRunId: string) =>
+      db.transaction(async (tx) => {
+        // Row-level lock prevents TOCTOU between the ownership check and the update.
+        await tx.execute(
+          sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
+        );
+        const row = await tx
+          .select({
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((r) => r[0] ?? null);
+        if (!row) return null;
+        const owned =
+          row.checkoutRunId === heartbeatRunId ||
+          row.executionRunId === heartbeatRunId;
+        if (!owned) return null;
+        return tx
+          .update(issues)
+          .set({
+            checkoutRunId: null,
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(issues.id, issueId),
+              or(
+                eq(issues.checkoutRunId, heartbeatRunId),
+                eq(issues.executionRunId, heartbeatRunId),
+              ),
+            ),
+          )
+          .returning()
+          .then((r) => r[0] ?? null);
+      }),
+
     listLabels: (companyId: string) =>
       db.select().from(labels).where(eq(labels.companyId, companyId)).orderBy(asc(labels.name), asc(labels.id)),
 

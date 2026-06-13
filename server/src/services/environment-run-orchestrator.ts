@@ -25,6 +25,7 @@ import type {
   ExecutionWorkspaceConfig,
 } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
+import { issueService } from "./issues.js";
 import {
   environmentRuntimeService,
   buildEnvironmentLeaseContext,
@@ -43,6 +44,7 @@ import {
 import { buildWorkspaceRealizationRequest } from "./workspace-realization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
+import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import type { RealizedExecutionWorkspace } from "./workspace-runtime.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
@@ -153,6 +155,7 @@ export function environmentRunOrchestrator(
   } = {},
 ) {
   const environmentsSvc = environmentService(db);
+  const issuesSvc = issueService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const environmentRuntime = options.environmentRuntime ?? environmentRuntimeService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
@@ -554,6 +557,41 @@ export function environmentRunOrchestrator(
         });
       } catch {
         // Activity logging failure should not block lease release
+      }
+      if (released.lease.issueId) {
+        try {
+          const autoReleased = await issuesSvc.releaseFromRunIfOwned(
+            released.lease.issueId,
+            input.heartbeatRunId,
+          );
+          if (autoReleased) {
+            await logActivity(db, {
+              companyId: input.companyId,
+              actorType: "agent",
+              actorId: input.agentId,
+              agentId: input.agentId,
+              runId: input.heartbeatRunId,
+              action: "issue.auto_released_on_run_exit",
+              entityType: "issue",
+              entityId: released.lease.issueId,
+              details: {
+                heartbeatRunId: input.heartbeatRunId,
+                leaseId: released.lease.id,
+              },
+            });
+          }
+        } catch (err) {
+          // Issue checkout auto-release must never prevent the environment lease
+          // release from completing. Log and continue.
+          logger.warn(
+            {
+              err,
+              issueId: released.lease.issueId,
+              heartbeatRunId: input.heartbeatRunId,
+            },
+            "failed to auto-release issue checkout on run exit",
+          );
+        }
       }
       result.released.push(released);
     }
