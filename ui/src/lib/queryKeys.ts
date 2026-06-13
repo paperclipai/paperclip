@@ -29,6 +29,20 @@ export const queryKeys = {
     policies: (companyId: string) => ["tools", companyId, "policies"] as const,
     trustRules: (companyId: string) => ["tools", companyId, "trust-rules"] as const,
     audit: (companyId: string, limit: number) => ["tools", companyId, "audit", limit] as const,
+    activity: (
+      companyId: string,
+      filters: { app?: string; agent?: string; outcome?: string; window?: string; search?: string },
+    ) =>
+      [
+        "tools",
+        companyId,
+        "activity",
+        filters.app ?? "__all",
+        filters.agent ?? "__all",
+        filters.outcome ?? "__all",
+        filters.window ?? "24h",
+        filters.search ?? "",
+      ] as const,
   },
   companySkills: {
     list: (companyId: string) => ["company-skills", companyId] as const,

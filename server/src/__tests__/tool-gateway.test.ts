@@ -643,6 +643,24 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       }),
     ]);
     expect(secondPage.body.nextCursor).toBeNull();
+
+    // Free-text search resolves against the raw tool name server-side.
+    const byToolName = await request(app)
+      .get("/api/tool-gateway/audit")
+      .query({ companyId: company.id, window: "24h", search: "delete_everything" });
+    expect(byToolName.status).toBe(200);
+    expect(byToolName.body.events).toEqual([
+      expect.objectContaining({ action: "tool_gateway.call_denied", toolDisplayName: "Delete Everything" }),
+    ]);
+
+    // ...and against the humanized agent name (resolved to the agent's events).
+    const byAgentName = await request(app)
+      .get("/api/tool-gateway/audit")
+      .query({ companyId: company.id, window: "24h", search: otherAgent.name });
+    expect(byAgentName.status).toBe(200);
+    expect(byAgentName.body.events).toEqual([
+      expect.objectContaining({ agentId: otherAgent.id }),
+    ]);
   });
 
   it("rejects durable sessions after the heartbeat run is no longer active", async () => {

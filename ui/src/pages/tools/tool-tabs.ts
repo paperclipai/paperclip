@@ -31,7 +31,7 @@ export const DEVELOPER_TABS = [
   { key: "profiles", label: "Profiles", icon: Layers },
   { key: "policies", label: "Rules", icon: Shield },
   { key: "runtime", label: "Health", icon: Server },
-  { key: "audit", label: "Audit", icon: ScrollText },
+  { key: "audit", label: "Activity", icon: ScrollText },
 ] as const;
 
 export const TOOL_TABS = [...ADVANCED_TABS, ...DEVELOPER_TABS] as const;

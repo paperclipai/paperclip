@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, desc, eq, gte, inArray, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, inArray, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, toolApplications, toolConnections, toolInvocations } from "@paperclipai/db";
 import { humanizeConnectionDisplayName, type PermissionKey } from "@paperclipai/shared";
@@ -352,6 +352,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
       const agentFilter = typeof req.query.agent === "string" ? req.query.agent.trim() : null;
       const outcomeFilter = typeof req.query.outcome === "string" ? req.query.outcome.trim() : null;
       const windowFilter = typeof req.query.window === "string" ? req.query.window.trim() : "24h";
+      const searchRaw = typeof req.query.search === "string" ? req.query.search.trim() : null;
       const cursorRaw = typeof req.query.cursor === "string" ? req.query.cursor.trim() : null;
       if (appFilter && !uuidPattern.test(appFilter)) {
         res.status(400).json({ error: "app must be an applicationId or connectionId UUID" });
@@ -399,6 +400,45 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
       }
       const outcomeWhere = outcomeFilter ? outcomeCondition(outcomeFilter) : null;
       if (outcomeWhere) conditions.push(outcomeWhere);
+
+      // Free-text search runs server-side: resolve the term against agent / app /
+      // connection names first, then OR those matched IDs with direct matches on
+      // the action name, tool name, and reason code so paginating stays honest.
+      if (searchRaw) {
+        const like = `%${searchRaw.replace(/[%_\\]/g, (ch) => `\\${ch}`)}%`;
+        const [matchAgents, matchApps, matchConnections] = await Promise.all([
+          db.select({ id: agents.id }).from(agents)
+            .where(and(eq(agents.companyId, companyId), ilike(agents.name, like))),
+          db.select({ id: toolApplications.id }).from(toolApplications)
+            .where(and(eq(toolApplications.companyId, companyId), ilike(toolApplications.name, like))),
+          db.select({ id: toolConnections.id }).from(toolConnections)
+            .where(and(eq(toolConnections.companyId, companyId), ilike(toolConnections.name, like))),
+        ]);
+        const matchedAgentIds = matchAgents.map((r) => r.id);
+        const matchedAppIds = matchApps.map((r) => r.id);
+        const matchedConnectionIds = matchConnections.map((r) => r.id);
+        const searchClauses = [
+          ilike(activityLog.action, like),
+          ilike(toolInvocations.toolName, like),
+          sql`${activityLog.details}->>'tool' ilike ${like}`,
+          sql`${activityLog.details}->>'toolName' ilike ${like}`,
+          sql`${activityLog.details}->>'reasonCode' ilike ${like}`,
+        ];
+        if (matchedAgentIds.length > 0) {
+          searchClauses.push(inArray(activityLog.agentId, matchedAgentIds));
+          searchClauses.push(inArray(toolInvocations.agentId, matchedAgentIds));
+          for (const id of matchedAgentIds) searchClauses.push(sql`${activityLog.details}->>'agentId' = ${id}`);
+        }
+        if (matchedAppIds.length > 0) {
+          searchClauses.push(inArray(toolInvocations.applicationId, matchedAppIds));
+          for (const id of matchedAppIds) searchClauses.push(sql`${activityLog.details}->>'applicationId' = ${id}`);
+        }
+        if (matchedConnectionIds.length > 0) {
+          searchClauses.push(inArray(toolInvocations.connectionId, matchedConnectionIds));
+          for (const id of matchedConnectionIds) searchClauses.push(sql`${activityLog.details}->>'connectionId' = ${id}`);
+        }
+        conditions.push(or(...searchClauses)!);
+      }
 
       const page = await db
         .select({

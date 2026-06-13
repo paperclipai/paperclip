@@ -165,6 +165,49 @@ export interface ToolGatewayAuditRow {
   createdAt: string;
 }
 
+/** Normalized outcome for the humanized Activity feed. */
+export type ToolAuditOutcome =
+  | "allowed"
+  | "blocked"
+  | "asked_first"
+  | "waiting"
+  | "failed"
+  | "unknown";
+
+/**
+ * Audit row enriched server-side with humanized display names and a normalized
+ * outcome — the shape returned by `GET /tool-gateway/audit`.
+ */
+export interface ToolGatewayActivityEvent extends ToolGatewayAuditRow {
+  agentId: string | null;
+  runId: string | null;
+  applicationId: string | null;
+  connectionId: string | null;
+  agentDisplayName: string | null;
+  appDisplayName: string | null;
+  applicationDisplayName: string | null;
+  connectionDisplayName: string | null;
+  toolDisplayName: string | null;
+  normalizedOutcome: ToolAuditOutcome;
+}
+
+export type ToolGatewayActivityResponse = {
+  events: ToolGatewayActivityEvent[];
+  nextCursor: string | null;
+};
+
+export type ToolAuditWindow = "1h" | "24h" | "7d" | "30d";
+
+export interface ListActivityParams {
+  app?: string | null;
+  agent?: string | null;
+  outcome?: string | null;
+  window?: ToolAuditWindow;
+  search?: string | null;
+  limit?: number;
+  cursor?: string | null;
+}
+
 export type ToolPolicyTestResponse = {
   decision: ToolAccessDecision;
   auditEvent: unknown | null;
@@ -331,9 +374,27 @@ export const toolsApi = {
       input,
     ),
 
-  // --- Audit ---
+  // --- Audit / Activity ---
+  /**
+   * Humanized Activity feed with server-side filters and cursor pagination.
+   * Returns `{ events, nextCursor }`.
+   */
+  listActivity: (companyId: string, params: ListActivityParams = {}) => {
+    const search = new URLSearchParams({ companyId });
+    if (params.app) search.set("app", params.app);
+    if (params.agent) search.set("agent", params.agent);
+    if (params.outcome) search.set("outcome", params.outcome);
+    if (params.window) search.set("window", params.window);
+    if (params.search) search.set("search", params.search);
+    if (params.cursor) search.set("cursor", params.cursor);
+    search.set("limit", String(params.limit ?? 50));
+    return api.get<ToolGatewayActivityResponse>(`/tool-gateway/audit?${search.toString()}`);
+  },
+  /** Flat audit sample (no pagination) — used by derived counters/banners. */
   listAudit: (companyId: string, limit = 100) =>
-    api.get<ToolGatewayAuditRow[]>(
-      `/tool-gateway/audit?companyId=${encodeURIComponent(companyId)}&limit=${limit}`,
-    ),
+    api
+      .get<ToolGatewayActivityResponse>(
+        `/tool-gateway/audit?companyId=${encodeURIComponent(companyId)}&window=30d&limit=${Math.min(limit, 100)}`,
+      )
+      .then((res) => res.events),
 };

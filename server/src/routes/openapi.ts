@@ -5064,6 +5064,12 @@ registerCurrentRoute({
   query: z.object({
     companyId: z.string().optional(),
     limit: z.number().int().positive().optional(),
+    app: z.string().optional(),
+    agent: z.string().optional(),
+    outcome: z.string().optional(),
+    window: z.enum(["1h", "24h", "7d", "30d"]).optional(),
+    search: z.string().optional(),
+    cursor: z.string().optional(),
   }),
 });
 
