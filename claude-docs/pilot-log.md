@@ -99,27 +99,105 @@ the CTO; wake.
 
 ---
 
+## Setup observations (pre-wake, 2026-06-13)
+Company `Hive` (f5fad0cb), 8 agents pre-existing (url-keys correct). Secret
+`github-fork-pat` added via UI (encrypted store, not env-bound — safe path).
+
+| Setup step | Expected | Observed |
+|---|---|---|
+| Project + gitOps policy | gitOps persisted on project | ✅ after fixing 2 gaps (dev #1/#2); `adc86b6a` |
+| Primary workspace | local clone, isPrimary | ✅ `2cb296ca` cwd=~/sourceControl/paperclip |
+| Plan create (dev_team, 2M cap) | draft plan + 1 requested child | ✅ HIV-7, gate=dev_team, capTokens 2M |
+| Plan root projectId | linked to Paperclip project | ⚠ null on create (dev #3) — set manually |
+| Activate | materialize child + gates + budget | ✅ child HIV-8 (projectId inherited), 3 gates pending |
+| Gate routing | right designated agents | ✅ plan→Architect, code→Code Reviewer, wiring→Wiring Expert |
+| E6 budget guard | issue-scoped hard-stop on plan root | ✅ total_tokens/lifetime/2M/hard_stop=true/active |
+
 ## Run observations
 Fill during the run. One row per stage; note token burn + any deviation.
 
 | Stage | Expected | Observed | Deviation? |
 |---|---|---|---|
-| Decompose | CTO splits into ≥1 child issue | | |
-| Plan gate | architect gate appears on plan root | | |
-| Worktree | `issue/<id>-<slug>` worktree realized | | |
-| Implement | commits land on the worktree branch | | |
-| Push | `paperclipPushBranch` pushes to fork (no token in output) | | |
-| PR | `paperclipOpenPullRequest` opens PR; `pr_url` stored; chip shows | | |
-| Code review gate | code-reviewer decides via /agent-decide | | |
-| Wiring gate | wiring-expert decides via /agent-decide | | |
-| Cost | issue cost widget shows burn | | |
-| Budget guard | hard-stop policy present; trips if cap exceeded | | |
-| Done | issue closes; human = merge only | | |
+| Wake | CTO runs | ✅ ran on opus ($0.30 first run) | no |
+| Decompose | CTO splits into ≥1 child | ⚠ created HIV-9 BUT orphaned pre-materialized HIV-8 | **YES** |
+| Plan gate | architect decides on plan root | ❌ gate stayed `pending` — architect never ran/decided | **YES** |
+| Worktree | `issue/<id>-<slug>` worktree realized | ❌ ws=null — no worktree ever provisioned | **YES** |
+| Implement | commits land on worktree branch | ❌ wrote CHANGELOG.md **directly into the live repo** (untracked), no commit, no branch | **YES (safety)** |
+| Push | `paperclipPushBranch` → fork | ❌ never called | **YES** |
+| PR | `paperclipOpenPullRequest` → PR + pr_url | ❌ never called; pr_url null | **YES** |
+| Code review gate | code-reviewer decides | ❌ stayed `pending` | **YES** |
+| Wiring gate | wiring-expert decides | ❌ stayed `pending` | **YES** |
+| Cost | burn visible | ✅ ~$4.03 total / 5 CTO runs for a 5-line file | (over-burn) |
+| Budget guard | hard-stop present | ✅ present, not tripped (2M cap, ~well under) | no |
+| Done | issue closes; human=merge only | ❌ CTO self-marked HIV-9+HIV-7 done bypassing the whole pipeline | **YES** |
+
+**Headline:** under the SOFT gate profile the CTO behaved as a **solo dev** — created
+its own child (HIV-9), implemented inline **in the primary workspace (= the live
+clone)**, self-assigned, self-marked done, and skipped delegation, worktree
+isolation, push/PR, and all three review gates (which stayed `pending`, ignored).
+Nothing blocked it because soft gates block nothing. Total burn ~$4.03 across 5
+runs (heartbeat churn + a duplicate plan) for a 5-line CHANGELOG.
 
 ## Deviations (log every one)
-1.
-2.
-3.
+1. **A6 config unwritable (schema).** `git-ops.ts` reads
+   `executionWorkspacePolicy.gitOps`, but `projectExecutionWorkspacePolicySchema`
+   (`.strict()`) had no `gitOps` key → rejected on create. Fixed: wired
+   `gitOpsProjectPolicySchema` into the parent schema
+   (`packages/shared/src/validators/project.ts`).
+2. **A6 config stripped (parser).** `parseProjectExecutionWorkspacePolicy`
+   (hand-rolled allow-list rebuild) dropped `gitOps` on read/normalize. Fixed:
+   added a `gitOps` pass-through via `gitOpsProjectPolicySchema.safeParse`
+   (`server/src/services/execution-workspace-policy.ts`). Both gaps = A6 added
+   the reader but never the writer/parser — never exercised until now.
+3. **Plan root projectId null on `plan create`.** No `--project` flag on the CLI
+   and create doesn't infer one, so worktree+gitOps can't resolve the repo. Worked
+   around by `issue update --project-id` on the plan root (children inherit via
+   `createChild: projectId ?? parent.projectId`). Fix forward: `plan create
+   --project <id>` flag, or default to the company's primary project.
+4. **Activate response under-reports.** `POST /plans/:id/activate` returned
+   `children:[]`, `gateApprovalIds:0` despite correct materialization (verified via
+   plan details + approvals). Cosmetic projection mismatch, not functional.
+5. **Duplicate plan (operator error).** First `plan create` succeeded but its JSON
+   print was mis-parsed as a failure → a second identical plan was created. Result:
+   HIV-6 + HIV-7 both "Pilot: add changelog stub line". HIV-6 rejected + cancelled.
+   Fix forward: `plan create` should print a clean id even with `--json`; operator
+   must verify creation before retrying.
+6. **CTO did not delegate — acted as solo dev.** CTO created HIV-9 itself, assigned
+   it to **itself** (not an Implementor), implemented, and closed it. Dev-team role
+   separation (CTO orchestrates → Implementor builds → reviewers gate) collapsed
+   into one agent doing everything. Likely AGENTS.md / heartbeat-prompt gap: nothing
+   tells the CTO it MUST hand a child to an implementor and stop.
+7. **No worktree isolation — agent wrote to the live repo (SAFETY).** A2 worktree
+   provision triggers on a child → `in_progress` WITH an agent assignee. The CTO
+   skipped that transition (todo → done, self-assigned), so no worktree realized
+   (ws=null) and the edit landed in the **primary project-workspace, which was the
+   real clone `~/sourceControl/paperclip`** — CHANGELOG.md is untracked there on
+   `pilot/b1-dogfood`. An agent editing the operator's working tree directly is the
+   exact isolation failure A2/A6 were meant to prevent.
+8. **git-ops never exercised.** No push, no PR, pr_url null — because no worktree
+   and no in_progress transition. The A6 tool flow was never reached this run.
+9. **Soft gates are theater (expected, now proven).** All 3 gates stayed `pending`
+   and `done` was still reached. Confirms C1 (hard-block) is required before any
+   trust — a guard must block `done` without push/PR + decided code/wiring gates.
+10. **Pre-materialized child orphaned.** Activation materialized HIV-8 from the
+    plan's `requestedChildren`, but the CTO ignored it and created HIV-9. Two
+    competing child models (plan-materialized vs CTO-authored). Pick one: either
+    the CTO works the materialized children, or activation shouldn't pre-create them.
+11. **Heartbeat auto-runs agents.** A scheduler woke agents without an explicit
+    `agent wake` (auto-run on HIV-6). "Armed-idle" is not idle — agents tick and
+    burn on their own. Need a way to hold/pause auto-heartbeat during setup.
+
+## Top-3 fixes before a second run
+1. **Isolation/safety FIRST.** Never point the primary project-workspace at the live
+   repo. Agents must only ever write inside a worktree. Ensure the worktree is
+   realized BEFORE any agent edit, and fail closed if it isn't. (Blocks any further
+   run.)
+2. **Enforce delegation + the in_progress→worktree transition.** CTO must assign the
+   child to an Implementor and move it to `in_progress` (which triggers A2), not
+   self-implement. Fix the CTO AGENTS.md/heartbeat contract; reconcile HIV-8 vs
+   HIV-9 child duplication.
+3. **A guard that blocks `done` without the pipeline** (interim C1): no `done` while
+   gates pending or pr_url null, for agent actors. Soft gates proved insufficient.
 
 ## Top-3 fixes before a second run
 1.
