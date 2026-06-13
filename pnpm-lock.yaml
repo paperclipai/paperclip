@@ -772,6 +772,9 @@ importers:
       cross-env:
         specifier: ^10.1.0
         version: 10.1.0
+      postgres:
+        specifier: ^3.4.8
+        version: 3.4.8
       supertest:
         specifier: ^7.0.0
         version: 7.2.2
