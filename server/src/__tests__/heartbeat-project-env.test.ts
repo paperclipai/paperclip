@@ -300,6 +300,17 @@ describe("extractMentionedSkillIdsFromSources", () => {
       ]),
     ).toEqual([validSkillId]);
   });
+
+  it("returns slug-style ids verbatim (filtering is done by the caller)", () => {
+    // skill:// URLs may contain slug-style IDs (e.g. "plane-pc") instead of UUIDs.
+    // extractMentionedSkillIdsFromSources returns them as-is; callers like
+    // resolveRunScopedMentionedSkillKeys must filter via isUuidLike before querying.
+    const slugHref = buildSkillMentionHref("plane-pc", "plane-pc");
+
+    expect(
+      extractMentionedSkillIdsFromSources([`Use [/plane-pc](${slugHref})`]),
+    ).toEqual(["plane-pc"]);
+  });
 });
 
 describe("applyRunScopedMentionedSkillKeys", () => {

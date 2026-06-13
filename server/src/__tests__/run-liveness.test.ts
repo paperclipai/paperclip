@@ -207,4 +207,52 @@ describe("run liveness classifier", () => {
     expect(classification.actionability).toBe("unknown");
     expect(classification.nextAction).toBeNull();
   });
+
+  describe("proxy empty-body fault reclassification", () => {
+    it("reclassifies adapter_failed with empty-or-malformed-response error as empty_response", () => {
+      const classification = classifyRunLiveness({
+        ...baseInput,
+        runStatus: "failed",
+        errorCode: "adapter_failed",
+        error: "API returned an empty or malformed response (HTTP 200) — check for a proxy or gateway intercepting the request",
+      });
+
+      expect(classification.livenessState).toBe("empty_response");
+      expect(classification.livenessReason).toMatch(/transient proxy fault/);
+    });
+
+    it("reclassifies adapter_failed with malformed response in stderrExcerpt as empty_response", () => {
+      const classification = classifyRunLiveness({
+        ...baseInput,
+        runStatus: "failed",
+        errorCode: "adapter_failed",
+        error: "Adapter failed",
+        stderrExcerpt: "anthropic.APIError: malformed response received from upstream",
+      });
+
+      expect(classification.livenessState).toBe("empty_response");
+    });
+
+    it("does not reclassify plain adapter_failed (non-proxy) as empty_response", () => {
+      const classification = classifyRunLiveness({
+        ...baseInput,
+        runStatus: "failed",
+        errorCode: "adapter_failed",
+        error: "Claude Code exited with code 1",
+      });
+
+      expect(classification.livenessState).toBe("failed");
+    });
+
+    it("does not reclassify non-adapter_failed error codes as empty_response", () => {
+      const classification = classifyRunLiveness({
+        ...baseInput,
+        runStatus: "failed",
+        errorCode: "process_lost",
+        error: "API returned an empty or malformed response (HTTP 200)",
+      });
+
+      expect(classification.livenessState).toBe("failed");
+    });
+  });
 });
