@@ -196,7 +196,6 @@ def _parse_args(argv):
     p.add_argument("--once", action="store_true",
                    help="Ein Durchlauf (Default-Verhalten; nur Parität zum Sibling)")
     p.add_argument("--dry-run", action="store_true", help="Rendern + loggen, nicht senden")
-    p.add_argument("--force", action="store_true", help="Tages-Dedup ignorieren")
     return p.parse_args(argv)
 
 
@@ -262,7 +261,6 @@ def main(argv=None):
     if created:
         merged = (reported + created)[-REPORTED_CAP:]
         state["reported_exec_ids"] = merged
-        state["last_run_date"] = today_iso
         save_state(state, STATE_PATH)
 
     if failed:
