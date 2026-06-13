@@ -295,6 +295,38 @@ describe("Inbox toolbar", () => {
     });
   });
 
+  it("hides workspace grouping when isolated workspaces are disabled", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: false });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+
+    const groupButton = container.querySelector<HTMLButtonElement>('button[title="Group"]');
+    expect(groupButton).not.toBeNull();
+
+    await act(async () => {
+      groupButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const groupOptions = Array.from(document.body.querySelectorAll("button")).map((button) => button.textContent);
+    expect(groupOptions).not.toContain("Workspace");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("syncs hover with j/k selection on inbox rows", async () => {
     routerMock.location.pathname = "/inbox/mine";
     const issueA = createIssue({ id: "issue-a", identifier: "PAP-1001", title: "First inbox row" });
@@ -313,12 +345,11 @@ describe("Inbox toolbar", () => {
         </QueryClientProvider>,
       );
     });
-    await act(async () => {
-      await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(container.querySelectorAll("[data-inbox-item]").length).toBeGreaterThanOrEqual(2);
     });
 
     const rows = container.querySelectorAll("[data-inbox-item]");
-    expect(rows.length).toBeGreaterThanOrEqual(2);
 
     const linkOf = (row: Element): HTMLAnchorElement | null =>
       row.querySelector("a[data-inbox-issue-link]");

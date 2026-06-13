@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Project, ResourceMemberships } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarProjects } from "./SidebarProjects";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 const mockProjectsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -25,7 +26,7 @@ const mockOpenNewProject = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
 const mockPersistOrder = vi.hoisted(() => vi.fn());
-const mockSidebarState = vi.hoisted(() => ({ isMobile: false }));
+const mockSidebarState = vi.hoisted(() => ({ isMobile: false, collapsed: false, peeking: false }));
 const mockPointerState = vi.hoisted(() => ({ fine: true }));
 
 vi.mock("@/lib/router", () => ({
@@ -73,6 +74,8 @@ vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({
     isMobile: mockSidebarState.isMobile,
     setSidebarOpen: mockSetSidebarOpen,
+    collapsed: mockSidebarState.collapsed,
+    peeking: mockSidebarState.peeking,
   }),
 }));
 
@@ -145,6 +148,7 @@ function makeProject(overrides: Partial<Project>): Project {
     leadAgentId: null,
     targetDate: null,
     color: "#ef4444",
+    icon: null,
     env: null,
     pauseReason: null,
     pausedAt: null,
@@ -231,6 +235,8 @@ describe("SidebarProjects", () => {
     });
     localStorage.clear();
     mockSidebarState.isMobile = false;
+    mockSidebarState.collapsed = false;
+    mockSidebarState.peeking = false;
     mockPointerState.fine = true;
     Object.defineProperty(window, "matchMedia", {
       writable: true,
@@ -324,6 +330,40 @@ describe("SidebarProjects", () => {
     });
     await flushReact();
   }
+
+  async function renderRailSidebarProjects() {
+    mockSidebarState.collapsed = true;
+    const currentRoot = createRoot(container);
+    root = currentRoot;
+
+    await act(async () => {
+      currentRoot.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <SidebarProjects />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+  }
+
+  it("renders icon-only project rows with tooltips and no row actions in the rail", async () => {
+    await renderRailSidebarProjects();
+
+    // Project names stay in the a11y tree but kept in flow (zero-width, clipped)
+    // so rows stay 1:1 tall with the expanded state (PAP-10676); rows become
+    // tooltip triggers and the per-row actions dropdown is dropped.
+    const nameSpan = Array.from(container.querySelectorAll("span")).find((el) => el.textContent === "Bravo");
+    expect(nameSpan?.className).not.toContain("sr-only");
+    expect(nameSpan?.className).toContain("w-0");
+    expect(nameSpan?.className).toContain("overflow-hidden");
+    const projectLink = container.querySelector('a[href^="/projects/"]');
+    expect(projectLink?.parentElement?.getAttribute("data-slot")).toBe("tooltip-trigger");
+    expect(container.querySelector('button[aria-label="Open actions for Bravo"]')).toBeNull();
+    // The section header collapses to a divider (no section menu trigger).
+    expect(container.querySelector('button[aria-label="Projects section actions"]')).toBeNull();
+  });
 
   it("keeps top mode in curated order and renders plugin project slots", async () => {
     await renderSidebarProjects();

@@ -2,6 +2,7 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
+import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 
 vi.mock("acpx/runtime", () => ({
   createAcpRuntime: vi.fn(),
@@ -400,6 +401,11 @@ describe.sequential("agent permission routes", () => {
 
   it("redacts agent detail for authenticated company members without agent admin permission", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "agent:read",
+      reason: input.action === "agent:read" ? "allow_test_read" : "deny_missing_grant",
+      explanation: input.action === "agent:read" ? "Allowed by test read grant." : "Missing test grant.",
+    }));
 
     const app = await createApp({
       type: "board",
@@ -416,8 +422,54 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.runtimeConfig).toEqual({});
   }, 20_000);
 
+  it("keeps board agent detail unredacted for low-trust agents", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      permissions: {
+        ...baseAgent.permissions,
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+      },
+      adapterConfig: {
+        command: "pnpm agent:run",
+        env: { PAPERCLIP_API_KEY: "secret-test-key" },
+      },
+      runtimeConfig: {
+        modelProfiles: {
+          default: { enabled: true, adapterConfig: { model: "openai/gpt-5.4-mini" } },
+        },
+      },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig).toMatchObject({
+      command: "pnpm agent:run",
+      env: { PAPERCLIP_API_KEY: "secret-test-key" },
+    });
+    expect(res.body.runtimeConfig).toMatchObject({
+      modelProfiles: {
+        default: { enabled: true, adapterConfig: { model: "openai/gpt-5.4-mini" } },
+      },
+    });
+    expect(res.body.permissions).toMatchObject({ trustPreset: LOW_TRUST_REVIEW_PRESET });
+  }, 20_000);
+
   it("redacts company agent list for authenticated company members without agent admin permission", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "agent:read",
+      reason: input.action === "agent:read" ? "allow_test_read" : "deny_missing_grant",
+      explanation: input.action === "agent:read" ? "Allowed by test read grant." : "Missing test grant.",
+    }));
 
     const app = await createApp({
       type: "board",
@@ -1441,6 +1493,88 @@ describe.sequential("agent permission routes", () => {
       inboxArchivedByUserId: "board-user",
       status: "backlog,todo,in_progress,in_review,blocked,done",
       limit: 500,
+    });
+  });
+
+  describe("agent configuration read gate", () => {
+    it("allows a board member without agents:create to read agent configuration", async () => {
+      // Board (human) users with company membership but no agents:create
+      // grant should still be able to view agent configuration — this is
+      // the read-only permission loosening introduced by this PR.
+      mockAccessService.canUser.mockResolvedValue(false);
+      mockAccessService.hasPermission.mockResolvedValue(false);
+
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "session",
+        isInstanceAdmin: false,
+        companyIds: [companyId],
+      });
+
+      const res = await request(app).get(`/api/agents/${agentId}/configuration`);
+
+      expect(res.status).toBe(200);
+    });
+
+    it("denies an agent actor without agents:create when reading peer config", async () => {
+      // Agent actors must still pass the agents:create gate (explicit
+      // grant OR canCreateAgents permission on the agent record). A peer
+      // agent in the same company without that permission must not be
+      // able to read another agent's configuration.
+      const peerAgentId = "33333333-3333-4333-8333-333333333333";
+      const peerAgent = { ...baseAgent, id: peerAgentId };
+      mockAgentService.getById.mockImplementation(async (id: string) => {
+        if (id === peerAgentId) return peerAgent;
+        if (id === agentId) {
+          return { ...baseAgent, permissions: { canCreateAgents: false } };
+        }
+        return null;
+      });
+      mockAccessService.hasPermission.mockResolvedValue(false);
+
+      const app = await createApp({
+        type: "agent",
+        agentId,
+        companyId,
+        runId: "run-1",
+        source: "agent_key",
+      });
+
+      const res = await request(app).get(`/api/agents/${peerAgentId}/configuration`);
+
+      expect(res.status).toBe(403);
+    });
+
+    it("allows an agent actor with agents:create grant to read peer config", async () => {
+      // When an agent actor has an explicit agents:create grant in the
+      // access service, the read gate must let them through.
+      const peerAgentId = "44444444-4444-4444-8444-444444444444";
+      const peerAgent = { ...baseAgent, id: peerAgentId };
+      mockAgentService.getById.mockImplementation(async (id: string) => {
+        if (id === peerAgentId) return peerAgent;
+        if (id === agentId) {
+          return { ...baseAgent, permissions: { canCreateAgents: false } };
+        }
+        return null;
+      });
+      mockAccessService.hasPermission.mockImplementation(
+        async (_companyId: string, _principalType: string, principalId: string, key: string) => {
+          return principalId === agentId && key === "agents:create";
+        },
+      );
+
+      const app = await createApp({
+        type: "agent",
+        agentId,
+        companyId,
+        runId: "run-1",
+        source: "agent_key",
+      });
+
+      const res = await request(app).get(`/api/agents/${peerAgentId}/configuration`);
+
+      expect(res.status).toBe(200);
     });
   });
 

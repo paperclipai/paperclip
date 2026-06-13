@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { useNavigate } from "@/lib/router";
+import { useLocation, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -7,6 +7,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import {
   CommandDialog,
@@ -27,6 +28,7 @@ import {
   DollarSign,
   History,
   SquarePen,
+  FileCode2,
   Plus,
   Search,
 } from "lucide-react";
@@ -40,14 +42,28 @@ export function buildFullSearchPath(query: string) {
   return trimmed.length === 0 ? "/search" : `/search?q=${encodeURIComponent(trimmed)}`;
 }
 
+const ISSUE_DETAIL_PATH_RE = /\/issues\/[^/?#]+(?:$|\?|#|\/)/;
+
+function isOnIssueDetail(pathname: string): boolean {
+  return ISSUE_DETAIL_PATH_RE.test(pathname);
+}
+
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const navigate = useNavigate();
+  const location = useLocation();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue, openNewAgent } = useDialogActions();
   const { isMobile, setSidebarOpen } = useSidebar();
   const searchQuery = query.trim();
+  const onIssueDetail = isOnIssueDetail(location.pathname);
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: false,
+  });
+  const fileViewerEnabled = experimentalSettings?.enableExperimentalFileViewer === true;
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -121,7 +137,7 @@ export function CommandPalette() {
         if (v && isMobile) setSidebarOpen(false);
       }}>
       <CommandInput
-        placeholder="Search issues, agents, projects..."
+        placeholder="Search tasks, agents, projects..."
         value={query}
         onValueChange={setQuery}
         onKeyDown={(event) => {
@@ -135,7 +151,7 @@ export function CommandPalette() {
         <CommandEmpty>
           {showSearchAll ? (
             <span>
-              No quick issue matches. Press{" "}
+              No quick task matches. Press{" "}
               <kbd className="rounded border border-border bg-muted px-1 py-0.5 text-[10px]">↵</kbd>{" "}
               to <span className="font-medium">search all</span> or keep typing to refine.
             </span>
@@ -174,9 +190,21 @@ export function CommandPalette() {
             }}
           >
             <SquarePen className="mr-2 h-4 w-4" />
-            Create new issue
+            Create new task
             <span className="ml-auto text-xs text-muted-foreground">C</span>
           </CommandItem>
+          {onIssueDetail && fileViewerEnabled && (
+            <CommandItem
+              onSelect={() => {
+                setOpen(false);
+                window.dispatchEvent(new CustomEvent("paperclip:open-file-viewer"));
+              }}
+            >
+              <FileCode2 className="mr-2 h-4 w-4" />
+              Open file in this issue...
+              <span className="ml-auto text-xs text-muted-foreground">g f</span>
+            </CommandItem>
+          )}
           <CommandItem
             onSelect={() => {
               setOpen(false);
@@ -205,7 +233,7 @@ export function CommandPalette() {
           </CommandItem>
           <CommandItem onSelect={() => go("/issues")}>
             <CircleDot className="mr-2 h-4 w-4" />
-            Issues
+            Tasks
           </CommandItem>
           <CommandItem onSelect={() => go("/projects")}>
             <Hexagon className="mr-2 h-4 w-4" />
@@ -232,7 +260,7 @@ export function CommandPalette() {
         {visibleIssues.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Issues">
+            <CommandGroup heading="Tasks">
               {visibleIssues.slice(0, 10).map((issue) => (
                 <CommandItem
                   key={issue.id}

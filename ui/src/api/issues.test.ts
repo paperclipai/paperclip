@@ -63,6 +63,14 @@ describe("issuesApi.list", () => {
     );
   });
 
+  it("passes plan document filters through to the company issues endpoint", async () => {
+    await issuesApi.list("company-1", { hasPlanDocument: false, limit: 25 });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/issues?hasPlanDocument=false&limit=25",
+    );
+  });
+
   it("posts recovery action resolution to the source issue endpoint", async () => {
     await issuesApi.resolveRecoveryAction("issue-1", {
       actionId: "00000000-0000-0000-0000-0000000000aa",

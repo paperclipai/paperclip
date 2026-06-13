@@ -58,6 +58,7 @@ export const issuesApi = {
       includeRoutineExecutions?: boolean;
       includeBlockedBy?: boolean;
       includeBlockedInboxAttention?: boolean;
+      hasPlanDocument?: boolean;
       q?: string;
       limit?: number;
       offset?: number;
@@ -86,6 +87,9 @@ export const issuesApi = {
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
     if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
     if (filters?.includeBlockedInboxAttention) params.set("includeBlockedInboxAttention", "true");
+    if (filters?.hasPlanDocument !== undefined) {
+      params.set("hasPlanDocument", filters.hasPlanDocument ? "true" : "false");
+    }
     if (filters?.q) params.set("q", filters.q);
     if (filters?.limit) params.set("limit", String(filters.limit));
     if (filters?.offset !== undefined) params.set("offset", String(filters.offset));
@@ -209,7 +213,7 @@ export const issuesApi = {
   acceptInteraction: (
     id: string,
     interactionId: string,
-    data?: { selectedClientKeys?: string[] },
+    data?: { selectedClientKeys?: string[]; selectedOptionIds?: string[] },
   ) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/accept`, data ?? {}),
   rejectInteraction: (id: string, interactionId: string, reason?: string) =>
@@ -258,6 +262,8 @@ export const issuesApi = {
       },
     ),
   cancelComment: (id: string, commentId: string) =>
+    api.delete<IssueComment>(`/issues/${id}/comments/${commentId}?mode=cancel`),
+  deleteComment: (id: string, commentId: string) =>
     api.delete<IssueComment>(`/issues/${id}/comments/${commentId}`),
   listDocuments: (id: string, options?: { includeSystem?: boolean }) =>
     api.get<IssueDocument[]>(
