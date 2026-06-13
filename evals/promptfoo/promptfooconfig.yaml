@@ -27,6 +27,8 @@ providers:
     label: codex-5.4
   - id: openrouter:google/gemini-2.5-pro
     label: gemini-2.5-pro
+  - id: file://providers/claude-cli.cjs
+    label: claude-code-cli
 
 defaultTest:
   options:
