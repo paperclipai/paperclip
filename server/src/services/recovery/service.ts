@@ -345,6 +345,21 @@ function isStrandedIssueRecoveryIssue(issue: Pick<typeof issues.$inferSelect, "o
   return isStrandedIssueRecoveryOriginKind(issue.originKind);
 }
 
+/**
+ * Returns true when an issue description contains an explicit signal that
+ * disposition sweeps should not create recovery issues for it.  Recognises two
+ * patterns authored by agents managing long-running campaign or window issues:
+ *   - "No-op rule:"  (prefixes a block that explains the intended steady state)
+ *   - "Disposition sweeps are false positives"  (unambiguous escape hatch)
+ */
+export function hasExplicitNoOpRule(description: string | null | undefined): boolean {
+  if (!description) return false;
+  return (
+    description.includes("No-op rule:") ||
+    description.includes("Disposition sweeps are false positives")
+  );
+}
+
 function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {
   return Boolean(
     latestRun &&
@@ -2693,6 +2708,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (hasExplicitNoOpRule(issue.description)) {
         result.skipped += 1;
         continue;
       }
