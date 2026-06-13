@@ -36,7 +36,7 @@ except ImportError:
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_TEMPLATE = SCRIPT_DIR / "templates" / "frontmatter-template.yaml"
-DEFAULT_VAULT = Path("/Volumes/WHITESTAG-ARCHIV/Obsidian/WHITESTAG-Vault")
+DEFAULT_VAULT = Path("/Users/walterschoenenbroecher.de/Obsidian/WHITESTAG-Vault")
 PENDING_TAGS_FILE = SCRIPT_DIR / "pending_tags.yaml"
 LOG_FILE = SCRIPT_DIR / "tagger.log"
 
@@ -346,7 +346,12 @@ def main() -> int:
     ap.add_argument("--list", action="store_true", help="Nur Dateien auflisten, kein LLM-Call")
     ap.add_argument("--report", action="store_true", help="Markdown-Report in <vault>/Paperclip/_Meta/Vault-Tagger-Reports/ schreiben")
     ap.add_argument("--report-dir", type=Path, default=None, help="Override für Report-Verzeichnis")
+    ap.add_argument("--pending-file", type=Path, default=None, help="Override für pending_tags.yaml (default: neben tagger.py). Bei mehreren Vaults je Vault eigene Datei verwenden, damit Vorschläge nicht vermischt werden.")
     args = ap.parse_args()
+
+    global PENDING_TAGS_FILE
+    if args.pending_file:
+        PENDING_TAGS_FILE = args.pending_file
 
     if not args.template.exists():
         log(f"FEHLER: Template fehlt: {args.template}")

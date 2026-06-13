@@ -1,0 +1,172 @@
+# =====================================================================
+# Obsidian Frontmatter-Template — Clara-Vault (Clara Sound)
+# =====================================================================
+# Domain: Musik-Produktion, Live-Booking, Songtexte/Lyrik, Marketing,
+# Privates der Künstlerin. Vault-Root: smb://WHITESTAG-NAS/homes/cw/
+# Obsidian/Clara-Vault, lokal gemountet unter /Volumes/homes/cw/Obsidian/
+# Clara-Vault.
+#
+# Konventionen wie im WHITESTAG-Template:
+#   - Sprache:      Deutsch (snake_case-Felder, deutsche Werte)
+#   - Casing:       Feldnamen klein, tags Sentence-Case
+#   - Listen:       YAML-Block-Liste (- foo)
+#   - Datumsfelder: ISO YYYY-MM-DD
+# =====================================================================
+
+basis:
+  title:
+  datum:
+  erstellt:
+  aktualisiert:
+  tags:            # Liste, MIN 2, MAX 6 aus Taxonomie unten
+  typ:
+  status:          # Entwurf | In Bearbeitung | Abgeschlossen | Archiviert
+  zusammenfassung:
+  quelle:
+
+typen:
+  Notiz:        {}
+  Doku:         {}
+  Songtext:
+    titel:
+    album:        # optional
+    sprache:      # de | en | ...
+    coautor:      # Liste
+  Songidee:
+    motiv:
+    instrumente:
+  Album:
+    arbeitstitel:
+    releaseplan:
+    tracklist:
+  Konzert:
+    veranstaltungsort:
+    stadt:
+    uhrzeit:
+    gage:
+    veranstalter:
+  Booking-Anfrage:
+    venue:
+    stadt:
+    wunschdatum:
+    status_anfrage: # offen | bestaetigt | abgelehnt
+  Meeting:
+    teilnehmer:
+    projekt:
+  Email:
+    von:
+    an:
+    betreff:
+    ordner:
+    ordner_tag:
+    anhaenge:
+  Kontakt:
+    name:
+    rolle:           # Veranstalter | Musiker | Label | Presse | Privat
+    telefon:
+    email:
+    organisation:
+  Pressemitteilung: {}
+  Social-Post:
+    plattform:       # Instagram | TikTok | Facebook | YouTube | ...
+    geplant_fuer:
+  Marketing-Asset:
+    asset_typ:       # Banner | Cover | Video | Foto | Pressefoto
+    kampagne:
+  Rechnung:
+    rechnungsnummer:
+    rechnungsadressat:
+    rechnungsempfaenger:
+    betrag:
+  Vertrag:
+    vertragspartner:
+    laufzeit:
+    wert:
+  Gesundheit:        {}  # Privates; minimaler Scope
+  Tagesprotokoll:    {}
+
+# ---------------------------------------------------------------------
+# Tag-Taxonomie — kontrolliertes Vokabular für `tags:`
+# Neue Vorschläge landen in pending_tags-clara.yaml zur Sichtung.
+# ---------------------------------------------------------------------
+tag_taxonomie:
+  musik:
+    - Songidee
+    - Songtext
+    - Lyrik
+    - Komposition
+    - Demo
+    - Aufnahme
+    - Studio
+    - Album
+    - EP
+    - Single
+  live:
+    - Konzert
+    - Tour
+    - Booking
+    - Venue
+    - Festival
+    - Soundcheck
+    - Setlist
+  organisation:
+    - Termin
+    - Kontakt
+    - Vertrag
+    - Rechnung
+    - Planung
+    - Reise
+  marketing:
+    - PR
+    - Pressemitteilung
+    - Social-Media
+    - Newsletter
+    - Kampagne
+    - Branding
+    - Foto
+    - Video
+  digital:
+    - Streaming
+    - Spotify
+    - YouTube
+    - Webseite
+    - Distribution
+  kommunikation:
+    - Email
+    - Meeting
+    - Anfrage
+    - Interview
+  privat:
+    - Privat
+    - Familie
+    - Gesundheit
+
+ignoriere:
+  pfade:
+    - .obsidian/
+    - .obsidian-tagger-backup/
+    - .trash/
+    - attachments/
+    - _templates/
+    - _Meta/
+  pattern:
+    - "*.base"
+    - "_*.md"
+  min_zeichen: 50
+
+llm:
+  modell: "mistral-small-3.2-24b-instruct-2506"
+  endpoint: "http://127.0.0.1:1234/v1/chat/completions"
+  temperatur: 0.2
+  max_input_chars: 8000
+  json_schema_strict: true
+
+modi:
+  fehlend:
+  unvollstaendig:
+  vereinheitlichen:
+
+sicherheit:
+  dry_run_default: true
+  backup_dir: ".obsidian-tagger-backup/"
+  max_dateien_pro_lauf: 100

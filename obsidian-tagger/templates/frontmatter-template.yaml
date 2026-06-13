@@ -126,7 +126,7 @@ ignoriere:
 # 5) LLM-VERHALTEN
 # ---------------------------------------------------------------------
 llm:
-  modell: "mistral-small-3.2-24b-instruct-2506"
+  modell: "qwen3.6-35b-a3b-mlx"
   # Begründung: bestes Verhältnis Qualität/Speed für strukturierte
   # Extraktion auf Deutsch; folgt JSON-Schemas zuverlässig.
   # Alternativen falls zu langsam:
