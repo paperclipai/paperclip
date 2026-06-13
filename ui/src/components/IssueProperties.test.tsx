@@ -1059,6 +1059,10 @@ describe("IssueProperties", () => {
     expect(container.textContent).toContain("Custom · gpt-5.4 · high");
     expect(container.textContent).toContain("Model lane");
 
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("GPT-5.5");
+    });
+
     const modelButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("GPT-5.5"));
     expect(modelButton).not.toBeUndefined();
