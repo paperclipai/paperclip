@@ -4,6 +4,7 @@ import { GOAL_STATUSES, GOAL_LEVELS } from "@paperclipai/shared";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { goalsApi } from "../api/goals";
+import { agentsApi } from "../api/agents";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import {
@@ -21,10 +22,12 @@ import {
   Minimize2,
   Target,
   Layers,
+  User,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
+import { AgentIcon } from "./AgentIconPicker";
 
 const levelLabels: Record<string, string> = {
   company: "Company",
@@ -41,11 +44,13 @@ export function NewGoalDialog() {
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState("planned");
   const [level, setLevel] = useState("task");
+  const [ownerAgentId, setOwnerAgentId] = useState("");
   const [parentId, setParentId] = useState("");
   const [expanded, setExpanded] = useState(false);
 
   const [statusOpen, setStatusOpen] = useState(false);
   const [levelOpen, setLevelOpen] = useState(false);
+  const [ownerOpen, setOwnerOpen] = useState(false);
   const [parentOpen, setParentOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
 
@@ -55,6 +60,12 @@ export function NewGoalDialog() {
   const { data: goals } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
     queryFn: () => goalsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && newGoalOpen,
+  });
+
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && newGoalOpen,
   });
 
@@ -80,6 +91,7 @@ export function NewGoalDialog() {
     setDescription("");
     setStatus("planned");
     setLevel("task");
+    setOwnerAgentId("");
     setParentId("");
     setExpanded(false);
   }
@@ -91,6 +103,7 @@ export function NewGoalDialog() {
       description: description.trim() || undefined,
       status,
       level,
+      ...(ownerAgentId ? { ownerAgentId } : {}),
       ...(appliedParentId ? { parentId: appliedParentId } : {}),
     });
   }
@@ -103,6 +116,8 @@ export function NewGoalDialog() {
   }
 
   const currentParent = (goals ?? []).find((g) => g.id === appliedParentId);
+  const ownerOptions = (agents ?? []).filter((agent) => agent.status !== "terminated");
+  const currentOwner = ownerAgentId ? ownerOptions.find((agent) => agent.id === ownerAgentId) ?? null : null;
 
   return (
     <Dialog
@@ -227,6 +242,49 @@ export function NewGoalDialog() {
                   onClick={() => { setLevel(l); setLevelOpen(false); }}
                 >
                   {levelLabels[l] ?? l}
+                </button>
+              ))}
+            </PopoverContent>
+          </Popover>
+
+          {/* Owner */}
+          <Popover open={ownerOpen} onOpenChange={setOwnerOpen}>
+            <PopoverTrigger asChild>
+              <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
+                {currentOwner ? (
+                  <>
+                    <AgentIcon icon={currentOwner.icon} className="h-3 w-3 text-muted-foreground" />
+                    {currentOwner.name}
+                  </>
+                ) : (
+                  <>
+                    <User className="h-3 w-3 text-muted-foreground" />
+                    Owner
+                  </>
+                )}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-48 p-1" align="start">
+              <button
+                className={cn(
+                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                  !ownerAgentId && "bg-accent"
+                )}
+                onClick={() => { setOwnerAgentId(""); setOwnerOpen(false); }}
+              >
+                No owner
+              </button>
+              {ownerOptions.map((agent) => (
+                <button
+                  key={agent.id}
+                  className={cn(
+                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 truncate",
+                    agent.id === ownerAgentId && "bg-accent"
+                  )}
+                  onClick={() => { setOwnerAgentId(agent.id); setOwnerOpen(false); }}
+                >
+                  <AgentIcon icon={agent.icon} className="h-3 w-3 shrink-0 text-muted-foreground" />
+                  <span className="truncate">{agent.name}</span>
                 </button>
               ))}
             </PopoverContent>
