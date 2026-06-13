@@ -2676,6 +2676,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      if ((issue.executionPolicy as Record<string, unknown> | null)?.permanentWatcher === true) {
+        result.skipped += 1;
+        continue;
+      }
+
       const agent = await getAgent(agentId);
       if (!agent || agent.companyId !== issue.companyId || !(await isAgentInvokable(agent))) {
         result.skipped += 1;
@@ -3921,6 +3926,98 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return result;
   }
 
+  /**
+   * Scans blocked issues that have no first-class blocker (blockedByIssueIds) and no explicit
+   * parkedGate or permanentWatcher exemption, and enqueues a corrective wake asking the assignee
+   * to either resolve the issue, create a first-class blocker issue, or set executionPolicy.parkedGate.
+   *
+   * Only considers issues that have not had any agent activity in the last STALE_BLOCKED_WINDOW_MS
+   * to avoid false positives on actively-managed issues.
+   */
+  async function triageBlockedWithoutFirstClassBlocker(): Promise<{
+    woken: number;
+    skipped: number;
+    issueIds: string[];
+  }> {
+    const STALE_BLOCKED_WINDOW_MS = 6 * 60 * 60 * 1000; // 6 hours
+    const since = new Date(Date.now() - STALE_BLOCKED_WINDOW_MS);
+
+    // Find blocked agent-assigned issues that have no blocker relation
+    const candidates = await db
+      .select({ id: issues.id, companyId: issues.companyId, assigneeAgentId: issues.assigneeAgentId, executionPolicy: issues.executionPolicy, updatedAt: issues.updatedAt })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.status, "blocked"),
+          isNull(issues.assigneeUserId),
+          sql`${issues.assigneeAgentId} is not null`,
+          sql`not exists (
+            select 1 from issue_relations ir
+            where ir.company_id = ${issues.companyId}
+              and ir.related_issue_id = ${issues.id}
+              and ir.type = 'blocks'
+          )`,
+        ),
+      );
+
+    const result = { woken: 0, skipped: 0, issueIds: [] as string[] };
+
+    for (const issue of candidates) {
+      const agentId = issue.assigneeAgentId;
+      if (!agentId) { result.skipped += 1; continue; }
+
+      const policy = issue.executionPolicy as Record<string, unknown> | null;
+      if (policy?.permanentWatcher === true) { result.skipped += 1; continue; }
+      if (policy?.parkedGate) { result.skipped += 1; continue; }
+
+      if (await hasActiveExecutionPath(issue.companyId, issue.id)) { result.skipped += 1; continue; }
+      if (await hasPendingWakeInteraction(issue.companyId, issue.id)) { result.skipped += 1; continue; }
+      if (await hasQueuedIssueWake(issue.companyId, issue.id)) { result.skipped += 1; continue; }
+
+      // Skip recently active issues — agent is likely mid-flight
+      const recentActivity = await hasRecentVisibleProgress(issue.companyId, issue.id, agentId, STALE_BLOCKED_WINDOW_MS);
+      if (recentActivity) { result.skipped += 1; continue; }
+
+      if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const queued = await deps.enqueueWakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "blocked_without_first_class_blocker",
+        idempotencyKey: `blocked_without_blocker:${issue.id}:${since.toISOString().slice(0, 13)}`,
+        payload: {
+          issueId: issue.id,
+          wakeReason: "blocked_without_first_class_blocker",
+          instruction: `Issue is status=blocked but has no linked blocker issue and no explicit parkedGate. Required action: (1) move to done/in_review if the blocking condition is resolved, (2) create a first-class blocker issue and link it via blockedByIssueIds, or (3) set executionPolicy.parkedGate to one of: deploy_gate | approval_pending | external_dependency | manual_review.`,
+        },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: {
+          issueId: issue.id,
+          taskId: issue.id,
+          wakeReason: "blocked_without_first_class_blocker",
+          source: "blocked_without_blocker_triage",
+        },
+      });
+
+      if (queued) {
+        result.woken += 1;
+        result.issueIds.push(issue.id);
+      } else {
+        result.skipped += 1;
+      }
+    }
+
+    logger.info(
+      { woken: result.woken, skipped: result.skipped, issueIds: result.issueIds },
+      "triageBlockedWithoutFirstClassBlocker complete",
+    );
+    return result;
+  }
+
   return {
     buildRunOutputSilence,
     escalateStrandedRecoveryIssueInPlace,
@@ -3932,5 +4029,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileIssueGraphLiveness,
     readRecoveryTimerIntervalMs,
+    triageBlockedWithoutFirstClassBlocker,
   };
 }
