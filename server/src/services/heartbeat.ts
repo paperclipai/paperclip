@@ -1496,12 +1496,21 @@ export function resolveModelProfileApplication(input: {
 }): ModelProfileApplication {
   const issueModelProfile = input.issueModelProfile ?? null;
   const contextModelProfile = readContextModelProfile(input.contextSnapshot);
-  const requested = issueModelProfile ?? contextModelProfile;
+  const runtimeConfig = parseObject(input.agentRuntimeConfig);
+  const useLightweightMode = asBoolean(runtimeConfig.useLightweightMode, false);
+
+  // Apply lightweight mode default if enabled and no explicit profile requested
+  const lightweightDefault: ModelProfileKey | null =
+    useLightweightMode && !issueModelProfile && !contextModelProfile ? "cheap" : null;
+
+  const requested = issueModelProfile ?? contextModelProfile ?? lightweightDefault;
   const requestedBy: ModelProfileRequestSource | null = issueModelProfile
     ? "issue_override"
     : contextModelProfile
       ? "wake_context"
-      : null;
+      : lightweightDefault
+        ? "agent_runtime"
+        : null;
 
   if (!requested) {
     return {
