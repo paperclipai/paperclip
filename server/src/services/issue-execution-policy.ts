@@ -65,6 +65,10 @@ const MONITOR_INVALID_MESSAGE = "Monitor can only be scheduled on issues assigne
 const MONITOR_BOUNDS_EXHAUSTED_MESSAGE = "Monitor bounds are already exhausted";
 export const REDACTED_ISSUE_MONITOR_EXTERNAL_REF = "[redacted]";
 
+function isBoardActor(actor: ActorLike) {
+  return Boolean(actor.userId) && !actor.agentId;
+}
+
 function normalizeMonitorNotes(notes: string | null | undefined) {
   if (typeof notes !== "string") return null;
   const trimmed = notes.trim();
@@ -695,7 +699,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       };
     }
 
-    if (principalsEqual(currentParticipant, actor)) {
+    if ((actor && principalsEqual(currentParticipant, actor)) || isBoardActor(input.actor)) {
       if (requestedStatus === "done") {
         if (!input.commentBody?.trim()) {
           throw unprocessable("Approving a review or approval stage requires a comment");
