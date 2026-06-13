@@ -449,7 +449,8 @@ export type TranscriptEntry =
   | { kind: "stderr"; ts: string; text: string }
   | { kind: "system"; ts: string; text: string }
   | { kind: "stdout"; ts: string; text: string }
-  | { kind: "diff"; ts: string; changeType: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation"; text: string };
+  | { kind: "diff"; ts: string; changeType: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation"; text: string }
+  | { kind: "skill_injection"; ts: string; text: string };
 
 export type StdoutLineParser = (line: string, ts: string) => TranscriptEntry[];
 

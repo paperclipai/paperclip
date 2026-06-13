@@ -3588,6 +3588,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   const [isFollowing, setIsFollowing] = useState(false);
   const [isStreamingConnected, setIsStreamingConnected] = useState(false);
   const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("nice");
+  const [invocationOpen, setInvocationOpen] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
   const pendingLogLineRef = useRef("");
   const scrollContainerRef = useRef<ScrollContainer | null>(null);

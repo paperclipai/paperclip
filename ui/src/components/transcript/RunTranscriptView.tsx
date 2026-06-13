@@ -57,6 +57,7 @@ type TranscriptBlock =
       result?: string;
       isError?: boolean;
       status: "running" | "completed" | "error";
+      skillContext?: string;
     }
   | {
       type: "activity";
@@ -521,6 +522,23 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
       continue;
     }
 
+    if (entry.kind === "skill_injection") {
+      // Attach to the most recent Skill tool block so it renders inside the card
+      const newContext = entry.text.replace(/^Base directory for this skill:[^\n]*\n+/, "").trim();
+      const skillToolBlock = [...blocks].reverse().find(
+        (b): b is Extract<TranscriptBlock, { type: "tool" }> => b.type === "tool" && b.name === "Skill",
+      );
+      if (skillToolBlock) {
+        skillToolBlock.skillContext = skillToolBlock.skillContext
+          ? `${skillToolBlock.skillContext}\n\n${newContext}`
+          : newContext;
+      } else {
+        // Fallback: render as a plain user message so content isn't silently dropped
+        blocks.push({ type: "message", role: "user", ts: entry.ts, text: entry.text, streaming: false });
+      }
+      continue;
+    }
+
     if (entry.kind === "stderr") {
       if (shouldHideNiceModeStderr(entry.text)) {
         continue;
@@ -790,7 +808,39 @@ function TranscriptToolCard({
                 </pre>
               </div>
             </div>
+            {block.skillContext && (
+              <SkillContextSection content={block.skillContext} compact={compact} />
+            )}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SkillContextSection({ content, compact }: { content: string; compact: boolean }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div>
+      <button
+        className="flex w-full items-center gap-2 py-0.5 text-left hover:opacity-80 transition-opacity"
+        onClick={() => setOpen(o => !o)}
+      >
+        <span className={cn(
+          "font-semibold uppercase tracking-[0.18em] text-muted-foreground",
+          compact ? "text-[9px]" : "text-[10px]",
+        )}>
+          Skill context
+        </span>
+        <span className="ml-auto">
+          {open
+            ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground/50" />
+            : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/50" />}
+        </span>
+      </button>
+      {open && (
+        <div className="mt-2 text-sm text-foreground/80">
+          <MarkdownBody>{content}</MarkdownBody>
         </div>
       )}
     </div>

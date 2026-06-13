@@ -62,7 +62,8 @@ export interface IssueChatTranscriptEntry {
     | "stderr"
     | "system"
     | "stdout"
-    | "diff";
+    | "diff"
+    | "skill_injection";
   ts: string;
   text?: string;
   delta?: boolean;
