@@ -3390,6 +3390,140 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ).rejects.toMatchObject({ status: 422 });
   });
 
+  it("rejects terminal parent transitions while direct children remain open", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const parentId = randomUUID();
+    const openChildId = randomUUID();
+    const doneChildId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: parentId,
+        companyId,
+        identifier: "PAP-200",
+        title: "Parent issue",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: openChildId,
+        companyId,
+        parentId,
+        identifier: "PAP-201",
+        title: "Open child",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: doneChildId,
+        companyId,
+        parentId,
+        identifier: "PAP-202",
+        title: "Done child",
+        status: "done",
+        priority: "medium",
+      },
+    ]);
+
+    await expect(
+      svc.update(parentId, { status: "done" }),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: "Cannot mark parent issue done while child issues remain open: PAP-201",
+      details: expect.objectContaining({
+        code: "parent_has_open_children",
+        requestedStatus: "done",
+        blockingChildIssueIds: [openChildId],
+        blockingChildIdentifiers: ["PAP-201"],
+      }),
+    });
+
+    await expect(
+      svc.update(parentId, { status: "cancelled" }),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: "Cannot mark parent issue cancelled while child issues remain open: PAP-201",
+      details: expect.objectContaining({
+        code: "parent_has_open_children",
+        requestedStatus: "cancelled",
+        blockingChildIssueIds: [openChildId],
+        blockingChildIdentifiers: ["PAP-201"],
+      }),
+    });
+  });
+
+  it("allows terminal parent transitions once all direct children are terminal", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const parentId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: parentId,
+        companyId,
+        title: "Parent issue",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        parentId,
+        title: "Done child",
+        status: "done",
+        priority: "medium",
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        parentId,
+        title: "Cancelled child",
+        status: "cancelled",
+        priority: "medium",
+      },
+    ]);
+
+    await expect(svc.update(parentId, { status: "done" })).resolves.toMatchObject({
+      id: parentId,
+      status: "done",
+    });
+  });
+
+  it("allows terminal transitions for childless issues", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Standalone issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(svc.update(issueId, { status: "cancelled" })).resolves.toMatchObject({
+      id: issueId,
+      status: "cancelled",
+    });
+  });
+
   it("wakes parents only when all direct children are terminal", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
