@@ -692,9 +692,17 @@ export async function startServer(): Promise<StartedServer> {
     bindHost: runtimeListenHost,
     port: listenPort,
   });
+  // For local_trusted deployments, agents run on the same machine as the server.
+  // Always use the loopback URL (http://127.0.0.1:port) for PAPERCLIP_RUNTIME_API_URL
+  // so agent runs stay connected even when the public tunnel is down or changes.
+  // The public URL (authPublicBaseUrl) is preserved separately for OAuth/external access.
+  const agentRuntimeApiUrl =
+    config.deploymentMode === "local_trusted"
+      ? `http://${runtimeListenHost.includes(":") ? `[${runtimeListenHost}]` : runtimeListenHost}:${listenPort}`
+      : runtimeApiUrl;
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
-  process.env.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
+  process.env.PAPERCLIP_RUNTIME_API_URL = agentRuntimeApiUrl;
   process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
   
