@@ -97,6 +97,15 @@ describe("matchesContentType", () => {
     expect(matchesContentType("text/plain", patterns)).toBe(true);
     expect(matchesContentType("application/zip", patterns)).toBe(true);
   });
+
+  it("handles */* as allow-all wildcard (HTTP Accept syntax)", () => {
+    const patterns = ["*/*"];
+    expect(matchesContentType("image/png", patterns)).toBe(true);
+    expect(matchesContentType("image/jpeg", patterns)).toBe(true);
+    expect(matchesContentType("application/pdf", patterns)).toBe(true);
+    expect(matchesContentType("application/zip", patterns)).toBe(true);
+    expect(matchesContentType("text/plain", patterns)).toBe(true);
+  });
 });
 
 describe("normalizeContentType", () => {
