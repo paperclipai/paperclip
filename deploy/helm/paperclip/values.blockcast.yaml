@@ -154,6 +154,23 @@ env:
     # repo+pr+reason so burst events don't queue redundant reviews.
     - name: PAPERCLIP_PR_REVIEWER_AGENT_ID
       value: "e0a5011d-5c94-4801-be52-64c14f98ac26"
+    # Designated Dependabot remediation agent (Release Engineer). The
+    # github-webhook route wakes this agent on `dependabot_alert`
+    # created/reintroduced/reopened events at or above the severity floor
+    # below, with the advisory (package, manifest path, GHSA/CVE, vulnerable
+    # range, first patched version) unpacked into the wake contextSnapshot.
+    # The agent bumps the dependency and shepherds the fix through CI. The
+    # repo webhook (Blockcast/paperclip hook 623235645) is subscribed to
+    # `dependabot_alert`; events are 200-ignored until the routing image is
+    # live, then routed here.
+    - name: PAPERCLIP_DEPENDABOT_AGENT_ID
+      value: "c0bccc75-a449-4ece-a789-ce40bdd8e785"
+    # Severity floor for dependabot wakes (low|medium|high|critical). high
+    # keeps a batch advisory drop of moderate/low findings from fanning out
+    # into dozens of agent runs; the standing backlog of moderate/low alerts
+    # can be swept manually or by lowering this temporarily.
+    - name: PAPERCLIP_DEPENDABOT_MIN_SEVERITY
+      value: "high"
     # Put Paperclip-seeded GitHub wrappers before the system binaries. The
     # wrappers read the mounted `paperclip-github-mcp-token` Secret file at
     # command startup, so long-running server/agent pods stop snapshotting the
