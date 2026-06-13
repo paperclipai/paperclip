@@ -52,7 +52,7 @@
   "dependencies": {
     "@paperclipai/adapter-utils": "workspace:*",
     "picocolors": "^1.1.1",
-    "ws": "^8.19.0"
+    "ws": "^8.20.1"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",

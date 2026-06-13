@@ -79,7 +79,16 @@
       "path-to-regexp@8": "^8.4.0",
       "fast-xml-parser": "^5.5.6",
       "tar": "^7.5.11",
-      "vitest>vite": "^7.3.2"
+      "vitest>vite": "^7.3.2",
+      "hono": "^4.12.21",
+      "qs": "^6.15.2",
+      "postcss": "^8.5.10",
+      "uuid": "^11.1.1",
+      "ip-address": "^10.1.1",
+      "picomatch": "^4.0.4",
+      "@anthropic-ai/sdk": ">=0.91.1",
+      "brace-expansion@5": "^5.0.6",
+      "@tootallnate/once": "^2.0.1"
     }
   }
 }
