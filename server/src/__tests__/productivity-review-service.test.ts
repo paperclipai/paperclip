@@ -120,6 +120,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     count: number;
     now: Date;
     withRunComments?: boolean;
+    resultJson?: Record<string, unknown>;
   }) {
     const runs: Array<typeof heartbeatRuns.$inferInsert> = [];
     for (let index = 0; index < input.count; index += 1) {
@@ -135,6 +136,7 @@ describeEmbeddedPostgres("productivity review service", () => {
         startedAt: createdAt,
         finishedAt: new Date(createdAt.getTime() + 30_000),
         contextSnapshot: { issueId: input.issueId, taskId: input.issueId },
+        resultJson: input.resultJson ?? null,
         livenessState: "advanced",
         nextAction: "Continue processing the next batch.",
         createdAt,
@@ -407,6 +409,77 @@ describeEmbeddedPostgres("productivity review service", () => {
         authorAgentId: seeded.managerId,
         createdByRunId: run.id,
         body: `Manager note ${index}`,
+        createdAt: run.createdAt as Date,
+        updatedAt: run.createdAt as Date,
+      })),
+    );
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("excludes deduplicated blocked-relay runs and comments from high-churn thresholds", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    const runs = await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 10,
+      now,
+      resultJson: { blockedRelayCommentDeduped: true },
+    });
+    await db.insert(issueComments).values(
+      runs.map((run, index) => ({
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        authorAgentId: seeded.coderId,
+        createdByRunId: run.id,
+        body: `Blocked relay ${index}`,
+        createdAt: run.createdAt as Date,
+        updatedAt: run.createdAt as Date,
+      })),
+    );
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("does not let deduplicated runs push high-churn counts over threshold", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    const countedRuns = await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 9,
+      now,
+    });
+    const dedupedRuns = await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 1,
+      now,
+      resultJson: { blockedRelayCommentDeduped: true },
+    });
+    await db.insert(issueComments).values(
+      [...countedRuns, ...dedupedRuns].map((run, index) => ({
+        companyId: seeded.companyId,
+        issueId: seeded.issueId,
+        authorAgentId: seeded.coderId,
+        createdByRunId: run.id,
+        body: `Mixed churn ${index}`,
         createdAt: run.createdAt as Date,
         updatedAt: run.createdAt as Date,
       })),

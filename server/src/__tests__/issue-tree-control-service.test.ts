@@ -264,6 +264,64 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
     expect(released.members).toHaveLength(1);
   });
 
+  it("normalizes hold members when stale-run cleanup nulls activeRunId", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const rootIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Runner",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "running",
+      contextSnapshot: { issueId: rootIssueId },
+    });
+    await db.insert(issues).values({
+      id: rootIssueId,
+      companyId,
+      title: "Root",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      executionRunId: runId,
+    });
+
+    const svc = issueTreeControlService(db);
+    const created = await svc.createHold(companyId, rootIssueId, {
+      mode: "pause",
+      actor: { actorType: "system", actorId: "system" },
+    });
+
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+
+    const hold = await svc.getHold(companyId, created.hold.id);
+    expect(hold).not.toBeNull();
+    expect(hold?.members).toHaveLength(1);
+    expect(hold?.members?.[0]).toMatchObject({
+      activeRunId: null,
+      activeRunStatus: null,
+    });
+  });
+
   it("cancels non-terminal issue statuses and restores from the cancel snapshot", async () => {
     const companyId = randomUUID();
     const rootIssueId = randomUUID();

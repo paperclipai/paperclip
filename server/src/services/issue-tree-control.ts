@@ -275,6 +275,8 @@ function toHold(row: HoldRow, members?: HoldMemberRow[]): IssueTreeHold {
 }
 
 function toHoldMember(row: HoldMemberRow): IssueTreeHoldMember {
+  const activeRunId = row.activeRunId;
+  const activeRunStatus = activeRunId ? row.activeRunStatus : null;
   return {
     id: row.id,
     companyId: row.companyId,
@@ -287,8 +289,8 @@ function toHoldMember(row: HoldMemberRow): IssueTreeHoldMember {
     issueStatus: coerceIssueStatus(row.issueStatus),
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
-    activeRunId: row.activeRunId,
-    activeRunStatus: row.activeRunStatus,
+    activeRunId,
+    activeRunStatus,
     skipped: row.skipped,
     skipReason: row.skipReason,
     createdAt: row.createdAt,
