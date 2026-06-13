@@ -188,6 +188,14 @@ dev_team plan with no manual issue patching; activate echoes its children.
 
 ---
 
+## Status (2026-06-13)
+
+- **Fix 1 — DONE** (`a3630ac9`): worktree-isolation enforcement + fail-closed guard. 10 unit tests.
+- **Fix 2 — DONE** (re-synced to running agents; source `.agents/` is gitignored): CTO delegate-and-stop + materialized-children awareness; Implementor PR pipeline switched from the forbidden `gh`+`env.GITHUB_TOKEN` path to `paperclipPushBranch`/`paperclipOpenPullRequest`. **Bonus defect found + fixed:** implementor AGENTS.md still carried the A6-superseded env-token flow.
+- **Fix 3 — DONE** (`145162d9`): hard `done`-guard — agent blocked from closing a dev_team issue without PR + passed gates; user override audited. 9 unit tests.
+- **Fix 4 — TODO**: hold auto-heartbeat during setup (operator can use `HEARTBEAT_SCHEDULER_ENABLED=false` / company-pause today).
+- **Fix 5 — TODO**: cleanup foot-guns (`plan create --project`, clean `--json`, activate response).
+
 ## Sequencing
 
 ```
