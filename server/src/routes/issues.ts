@@ -4826,6 +4826,38 @@ export function issueRoutes(
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
+
+    // PF-2: Reject stale completion attempts. If an agent re-PATCHes an
+    // already-terminal issue with another terminal status (and isn't explicitly
+    // reopening or resuming), short-circuit with a no-op response instead of
+    // re-marking the issue and posting a duplicate completion comment.
+    if (
+      req.actor.type === "agent" &&
+      isClosed &&
+      typeof updateFields.status === "string" &&
+      isClosedIssueStatus(updateFields.status) &&
+      resumeRequested !== true &&
+      reopenRequested !== true
+    ) {
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.terminal_status_noop",
+        entityType: "issue",
+        entityId: existing.id,
+        details: {
+          currentStatus: existing.status,
+          attemptedStatus: updateFields.status,
+          hadComment: Boolean(commentBody),
+        },
+      });
+      res.json(existing);
+      return;
+    }
+
     if (resumeRequested === true && !commentBody) {
       res.status(400).json({ error: "Follow-up intent requires a comment" });
       return;
