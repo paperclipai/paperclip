@@ -1911,6 +1911,116 @@ describe("heartbeat comment wake batching", () => {
       await gateway.close();
     }
   }, 120_000);
+  it("does not include comments from other issues in the wake payload even when their ids appear in context", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueAId = randomUUID();
+    const issueBId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Gateway Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: { "x-openclaw-token": "gateway-token" },
+          payloadTemplate: { message: "wake now" },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values([
+        {
+          id: issueAId,
+          companyId,
+          title: "Unrelated issue A",
+          status: "done",
+          priority: "low",
+          issueNumber: 1,
+          identifier: `${issuePrefix}-1`,
+        },
+        {
+          id: issueBId,
+          companyId,
+          title: "Active issue B",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: agentId,
+          issueNumber: 2,
+          identifier: `${issuePrefix}-2`,
+        },
+      ]);
+
+      // A board comment is posted on issue A (the unrelated issue).
+      const commentOnIssueA = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId: issueAId,
+          authorUserId: "board-user",
+          body: "LEAKED: this comment belongs to issue A and must never appear in issue B's wake payload",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      // Wake agent for issue B with the issue A comment ID in the context snapshot.
+      // This replicates the reported bug: a board comment ID from one issue
+      // ends up referenced in the context snapshot of a different issue.
+      const run = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: issueBId, commentId: commentOnIssueA.id },
+        contextSnapshot: {
+          issueId: issueBId,
+          taskId: issueBId,
+          commentId: commentOnIssueA.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "board-user",
+      });
+
+      expect(run).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      const payload = gateway.getAgentPayloads()[0] ?? {};
+      const wake = (payload.paperclip as Record<string, unknown> | undefined)?.wake as
+        | Record<string, unknown>
+        | undefined;
+
+      // The comment ID is still listed (it was requested) …
+      expect(wake?.commentIds).toContain(commentOnIssueA.id);
+      // … but the comment body is absent because it belongs to issue A, not issue B.
+      const inlineComments = (wake?.comments as Array<Record<string, unknown>> | undefined) ?? [];
+      expect(inlineComments.find((c) => c.id === commentOnIssueA.id)).toBeUndefined();
+      expect(String(payload.message ?? "")).not.toContain("LEAKED:");
+      // The server signals that it could not resolve the comment so the agent
+      // knows to fall back to the API.
+      expect((wake?.commentWindow as Record<string, unknown> | undefined)?.missingCount).toBe(1);
+      expect(wake?.fallbackFetchNeeded).toBe(true);
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 30_000);
+
   it("treats the automatic run summary as fallback-only when the run already posted a comment", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
