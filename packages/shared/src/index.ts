@@ -308,6 +308,8 @@ export {
   validateConfiguredBindMode,
 } from "./network-bind.js";
 
+export { DEFAULT_PLACEHOLDER_PATTERNS, isPlaceholderCommentBody } from "./placeholder.js";
+
 export type {
   Company,
   Environment,
