@@ -45,8 +45,26 @@ export function isIdempotentFinishSuccessfulRunHandoffWakeStatus(status: string)
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type IssueRow = Pick<
   typeof issues.$inferSelect,
-  "id" | "companyId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId" | "executionState"
+  | "id"
+  | "companyId"
+  | "identifier"
+  | "title"
+  | "status"
+  | "assigneeAgentId"
+  | "assigneeUserId"
+  | "executionState"
+  | "originKind"
 >;
+
+const ROUTINE_EXECUTION_ORIGIN_KIND = "routine_execution";
+
+export interface SuccessfulRunHandoffEvidenceInput {
+  ownIssueCommentsCreated: number;
+  otherIssueCommentsCreated: number;
+  documentRevisionsCreated: number;
+  workProductsCreated: number;
+  toolOrActionEventsCreated: number;
+}
 type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
 type NoticeIssue = Pick<typeof issues.$inferSelect, "id" | "identifier" | "title" | "status">;
 type NoticeRun = Pick<typeof heartbeatRuns.$inferSelect, "id" | "status">;
@@ -303,6 +321,23 @@ function isProductiveSuccessfulRun(input: {
   return Boolean(input.detectedProgressSummary);
 }
 
+function isRoutineExecutionIssue(issue: IssueRow): boolean {
+  return issue.originKind === ROUTINE_EXECUTION_ORIGIN_KIND;
+}
+
+function onlyEvidenceIsOwnIssueComment(
+  evidence: SuccessfulRunHandoffEvidenceInput | null | undefined,
+): boolean {
+  if (!evidence) return false;
+  if (evidence.ownIssueCommentsCreated <= 0) return false;
+  return (
+    evidence.otherIssueCommentsCreated === 0 &&
+    evidence.documentRevisionsCreated === 0 &&
+    evidence.workProductsCreated === 0 &&
+    evidence.toolOrActionEventsCreated === 0
+  );
+}
+
 export function buildSuccessfulRunHandoffInstruction(input: {
   issueIdentifier: string | null;
   sourceRunId: string;
@@ -336,6 +371,7 @@ export function decideSuccessfulRunHandoff(input: {
   livenessState: RunLivenessState | null;
   detectedProgressSummary: string | null;
   taskKey: string | null;
+  runEvidence?: SuccessfulRunHandoffEvidenceInput | null;
   hasActiveExecutionPath: boolean;
   hasQueuedWake: boolean;
   hasPendingInteractionOrApproval: boolean;
@@ -366,6 +402,12 @@ export function decideSuccessfulRunHandoff(input: {
   if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
   if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
     return { kind: "skip", reason: `agent status ${agent.status} is not invokable` };
+  }
+  if (isRoutineExecutionIssue(issue) && onlyEvidenceIsOwnIssueComment(input.runEvidence)) {
+    return {
+      kind: "skip",
+      reason: "routine pickup own-issue comment is not productive evidence",
+    };
   }
   if (!isProductiveSuccessfulRun(input)) {
     return { kind: "skip", reason: "successful run did not produce handoff-relevant progress" };
