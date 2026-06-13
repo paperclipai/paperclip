@@ -515,6 +515,40 @@ describe("openclaw gateway adapter execute", () => {
     }
   });
 
+  it("injects auth token into wake text when provided by the server", async () => {
+    const gateway = await createMockGatewayServer();
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            payloadTemplate: {
+              message: "wake now",
+            },
+            waitTimeoutMs: 2000,
+          },
+          {
+            authToken: "pcp_jwt_token_for_run_123",
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(0);
+
+      const payload = gateway.getAgentPayload();
+      expect(payload).toBeTruthy();
+      expect(String(payload?.message ?? "")).toContain("PAPERCLIP_API_KEY=pcp_jwt_token_for_run_123");
+      expect(String(payload?.message ?? "")).toContain("server-issued JWT for this run");
+      expect(String(payload?.message ?? "")).not.toContain("Load PAPERCLIP_API_KEY from");
+    } finally {
+      await gateway.close();
+    }
+  });
+
   it("fails fast when url is missing", async () => {
     const result = await execute(buildContext({}));
     expect(result.exitCode).toBe(1);

@@ -369,6 +369,7 @@ function buildWakeText(
   payload: WakePayload,
   paperclipEnv: Record<string, string>,
   structuredWakePrompt: string,
+  authToken?: string,
 ): string {
   const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
   const orderedKeys = [
@@ -391,6 +392,18 @@ function buildWakeText(
     envLines.push(`${key}=${value}`);
   }
 
+  const apiKeyLines: string[] = authToken
+    ? [
+        `PAPERCLIP_API_KEY=${authToken}`,
+        "",
+        "PAPERCLIP_API_KEY is provided above (server-issued JWT for this run).",
+      ]
+    : [
+        `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
+        "",
+        `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
+      ];
+
   const issueIdHint = payload.taskId ?? payload.issueId ?? "";
   const apiBaseHint = paperclipEnv.PAPERCLIP_API_URL ?? "<set PAPERCLIP_API_URL>";
 
@@ -401,9 +414,7 @@ function buildWakeText(
     "",
     "Set these values in your run context:",
     ...envLines,
-    `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
-    "",
-    `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
+    ...apiKeyLines,
     "",
     `api_base=${apiBaseHint}`,
     `task_id=${payload.taskId ?? ""}`,
@@ -1120,6 +1131,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     structuredWakeJson
       ? joinWakePayloadSections(structuredWakePrompt, structuredWakeJson)
       : structuredWakePrompt,
+    ctx.authToken,
   );
 
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
