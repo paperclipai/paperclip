@@ -8,6 +8,9 @@ const routineId = "33333333-3333-4333-8333-333333333333";
 const projectId = "44444444-4444-4444-8444-444444444444";
 const otherAgentId = "55555555-5555-4555-8555-555555555555";
 const revisionId = "77777777-7777-4777-8777-777777777777";
+const managerAgentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const subordinateAgentId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const peerAgentId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 const routine = {
   id: routineId,
@@ -119,6 +122,11 @@ const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
 }));
 
+const mockAgentService = vi.hoisted(() => ({
+  getById: vi.fn(),
+  list: vi.fn(),
+}));
+
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockTrackRoutineCreated = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
@@ -149,6 +157,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
+    agentService: () => mockAgentService,
     logActivity: mockLogActivity,
     routineService: () => mockRoutineService,
   }));
@@ -204,6 +213,7 @@ describe("routine routes", () => {
       status: "issue_created",
     });
     mockAccessService.canUser.mockResolvedValue(false);
+    mockAgentService.getById.mockResolvedValue(null);
     mockLogActivity.mockResolvedValue(undefined);
   });
 
@@ -466,5 +476,142 @@ describe("routine routes", () => {
       runId: null,
     });
     expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
+  });
+
+  describe("manager agent chain-of-command routine access", () => {
+    const subordinateRoutine = {
+      id: routineId,
+      companyId,
+      projectId,
+      goalId: null,
+      parentIssueId: null,
+      title: "Subordinate routine",
+      description: null,
+      assigneeAgentId: subordinateAgentId,
+      priority: "medium",
+      status: "active",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+      variables: [],
+      latestRevisionId: revisionId,
+      latestRevisionNumber: 1,
+      createdByAgentId: null,
+      createdByUserId: null,
+      updatedByAgentId: null,
+      updatedByUserId: null,
+      lastTriggeredAt: null,
+      lastEnqueuedAt: null,
+      createdAt: new Date("2026-03-20T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-20T00:00:00.000Z"),
+    };
+
+    function setupManagerChain() {
+      // subordinateAgentId.reportsTo = managerAgentId
+      mockAgentService.getById.mockImplementation(async (id: string) => {
+        if (id === subordinateAgentId) return { id: subordinateAgentId, reportsTo: managerAgentId };
+        if (id === managerAgentId) return { id: managerAgentId, reportsTo: null };
+        if (id === peerAgentId) return { id: peerAgentId, reportsTo: null };
+        return null;
+      });
+    }
+
+    it("allows a manager to create a routine for a direct subordinate", async () => {
+      setupManagerChain();
+      const app = await createApp({ type: "agent", agentId: managerAgentId, companyId });
+
+      const res = await request(app)
+        .post(`/api/companies/${companyId}/routines`)
+        .send({ projectId, title: "Subordinate daily routine", assigneeAgentId: subordinateAgentId });
+
+      expect(res.status).toBe(201);
+      expect(mockRoutineService.create).toHaveBeenCalled();
+    });
+
+    it("blocks a non-manager agent from creating a routine for another agent", async () => {
+      setupManagerChain();
+      const app = await createApp({ type: "agent", agentId: peerAgentId, companyId });
+
+      const res = await request(app)
+        .post(`/api/companies/${companyId}/routines`)
+        .send({ projectId, title: "Peer routine", assigneeAgentId: subordinateAgentId });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toMatch(/subordinates/);
+      expect(mockRoutineService.create).not.toHaveBeenCalled();
+    });
+
+    it("allows a manager to update a subordinate's routine", async () => {
+      setupManagerChain();
+      mockRoutineService.get.mockResolvedValue(subordinateRoutine);
+      mockRoutineService.update.mockResolvedValue({ ...subordinateRoutine, title: "Updated" });
+      const app = await createApp({ type: "agent", agentId: managerAgentId, companyId });
+
+      const res = await request(app)
+        .patch(`/api/routines/${routineId}`)
+        .send({ title: "Updated" });
+
+      expect(res.status).toBe(200);
+      expect(mockRoutineService.update).toHaveBeenCalled();
+    });
+
+    it("blocks a peer agent from updating another agent's routine", async () => {
+      setupManagerChain();
+      mockRoutineService.get.mockResolvedValue(subordinateRoutine);
+      const app = await createApp({ type: "agent", agentId: peerAgentId, companyId });
+
+      const res = await request(app)
+        .patch(`/api/routines/${routineId}`)
+        .send({ title: "Hijacked" });
+
+      expect(res.status).toBe(403);
+      expect(mockRoutineService.update).not.toHaveBeenCalled();
+    });
+
+    it("allows a manager to reassign a subordinate's routine to another subordinate", async () => {
+      setupManagerChain();
+      mockRoutineService.get.mockResolvedValue(subordinateRoutine);
+      mockAgentService.getById.mockImplementation(async (id: string) => {
+        if (id === subordinateAgentId) return { id: subordinateAgentId, reportsTo: managerAgentId };
+        if (id === otherAgentId) return { id: otherAgentId, reportsTo: managerAgentId };
+        if (id === managerAgentId) return { id: managerAgentId, reportsTo: null };
+        return null;
+      });
+      mockRoutineService.update.mockResolvedValue({ ...subordinateRoutine, assigneeAgentId: otherAgentId });
+      const app = await createApp({ type: "agent", agentId: managerAgentId, companyId });
+
+      const res = await request(app)
+        .patch(`/api/routines/${routineId}`)
+        .send({ assigneeAgentId: otherAgentId });
+
+      expect(res.status).toBe(200);
+      expect(mockRoutineService.update).toHaveBeenCalled();
+    });
+
+    it("blocks a manager from reassigning a subordinate's routine to a non-subordinate", async () => {
+      setupManagerChain();
+      mockRoutineService.get.mockResolvedValue(subordinateRoutine);
+      const app = await createApp({ type: "agent", agentId: managerAgentId, companyId });
+
+      const res = await request(app)
+        .patch(`/api/routines/${routineId}`)
+        .send({ assigneeAgentId: peerAgentId });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toMatch(/subordinates/);
+      expect(mockRoutineService.update).not.toHaveBeenCalled();
+    });
+
+    it("allows a manager to delete a trigger on a subordinate's routine", async () => {
+      setupManagerChain();
+      mockRoutineService.get.mockResolvedValue(subordinateRoutine);
+      mockRoutineService.getTrigger.mockResolvedValue({ ...trigger, routineId });
+      mockRoutineService.deleteTrigger.mockResolvedValue({ trigger, revision: null });
+      const app = await createApp({ type: "agent", agentId: managerAgentId, companyId });
+
+      const res = await request(app).delete(`/api/routine-triggers/${trigger.id}`);
+
+      expect(res.status).toBe(204);
+      expect(mockRoutineService.deleteTrigger).toHaveBeenCalled();
+    });
   });
 });
