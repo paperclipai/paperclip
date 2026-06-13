@@ -300,6 +300,100 @@ describe("issue execution policy routes", () => {
     );
   });
 
+  it("rejects an agent-authored in_review transition with only a non-review pending interaction", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1006",
+      title: "Pending non-review interaction",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([
+/* @ts-ignore - test fixture wider than narrowed type */
+      { id: "interaction-1", kind: "background_liveness", status: "pending" },
+    ]);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.details).toMatchObject({
+      code: "invalid_issue_disposition",
+      missing: "review_path",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows a non-PR issue with prior checklist evidence to return to in_review for pending confirmation", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1007",
+      title: "Runbook evidence confirmation",
+      description:
+        "## Acceptance criteria\n- Runbook evidence is ready\n\n## Verifying signal\n- Pending confirmation accepts the runbook evidence",
+      executionPolicy: null,
+      executionState: null,
+      labels: [],
+      lastEvidenceVerdict: {
+        verdict: "pass",
+        missing: [],
+        evidenceFound: ["checklist:done-when"],
+        unlabeledFallback: true,
+        evaluatedAt: "2026-06-12T00:00:00.000Z",
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([
+/* @ts-ignore - test fixture wider than narrowed type */
+      {
+        id: "94bcd166-0000-4000-8000-000000000000",
+        kind: "request_confirmation",
+        status: "pending",
+      },
+    ]);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({ status: "in_review" }),
+    );
+    expect(res.body.lastEvidenceVerdict).toMatchObject({
+      verdict: "pass",
+      evidenceFound: ["checklist:done-when"],
+    });
+  });
+
   it("allows an agent-authored in_review transition with a typed execution participant", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
