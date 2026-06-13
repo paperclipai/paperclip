@@ -197,6 +197,7 @@ import {
 } from "./low-trust-runtime-containment.js";
 import { resolveCoreTrustPreset, type TrustPresetResolution } from "./trust-preset-resolver.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { fetchAllQuotaWindows } from "./quota-windows.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -11486,6 +11487,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let enqueued = 0;
       let skipped = 0;
 
+      // Pre-flight: check provider quota before waking any timer-based agents.
+      // If the 5-hour or Sonnet 7-day window is critically exhausted (>=95%),
+      // skip all timer wakes this tick and log when quota resets.
+      let quotaBlocked = false;
+      let quotaResetAt: string | null = null;
+      try {
+        const quotaResults = await fetchAllQuotaWindows();
+        const anthropicResult = quotaResults.find((r) => r.provider === "anthropic");
+        if (anthropicResult?.ok && anthropicResult.windows.length > 0) {
+          const criticalWindow = anthropicResult.windows.find(
+            (w) => typeof w.usedPercent === "number" && w.usedPercent >= 95,
+          );
+          if (criticalWindow) {
+            quotaBlocked = true;
+            quotaResetAt = criticalWindow.resetsAt ?? null;
+            logger.warn(
+              { window: criticalWindow.label, usedPercent: criticalWindow.usedPercent, resetsAt: quotaResetAt },
+              "heartbeat_timer_quota_blocked: quota critical, skipping all timer wakes this tick",
+            );
+          }
+        }
+      } catch (err) {
+        // Quota check failure must not block agent wakes — log and proceed.
+        logger.warn({ err }, "heartbeat_timer_quota_check_failed: proceeding without quota guard");
+      }
+
       for (const agent of allAgents) {
         const invokability = evaluateAgentInvokability(toAgentOrgRow(agent), agentsByCompany.get(agent.companyId) ?? []);
         if (!invokability.invokable) continue;
@@ -11496,6 +11523,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        if (quotaBlocked) {
+          skipped += 1;
+          continue;
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
@@ -11519,6 +11551,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         checked: checked + issueMonitors.checked,
         enqueued: enqueued + issueMonitors.triggered,
         skipped: skipped + issueMonitors.skipped,
+        quotaBlocked,
+        quotaResetAt,
       };
     },
 

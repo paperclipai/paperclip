@@ -37,7 +37,7 @@ function writeTestConfig(configPath: string, tempRoot: string, connectionString:
       mode: "postgres" as const,
       connectionString,
       embeddedPostgresDataDir: path.join(tempRoot, "embedded-db"),
-      embeddedPostgresPort: 54329,
+      embeddedPostgresPort: 54000,
       backup: {
         enabled: false,
         intervalMinutes: 60,

@@ -979,7 +979,7 @@ describe("realizeExecutionWorkspace", () => {
           database: {
             mode: "embedded-postgres",
             embeddedPostgresDataDir: path.join(sharedConfigDir, "db"),
-            embeddedPostgresPort: 54329,
+            embeddedPostgresPort: 54000,
             backup: {
               enabled: true,
               intervalMinutes: 60,

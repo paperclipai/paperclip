@@ -111,7 +111,9 @@ If you are blocked at any point, you MUST update the issue to `blocked` before e
 
 Before ending any heartbeat, apply this final-disposition checklist:
 
-- `done`: the requested work is complete, verification is recorded, and no follow-up remains on this issue.
+- `done`: the requested work is complete, verification is recorded, no follow-up remains on this issue, **and any worktrees created for this issue are removed**:
+  - AutoBot worktree: `git worktree remove --force /home/martins/AutoBot-Ai/AutoBot-AI/.worktrees/<branch>/`
+  - Paperclip dev clone: `rm -rf /home/martins/paperclip-<issue>/` + `rm -rf ~/.paperclip-worktrees/instances/paperclip-<issue>/`
 - `in_review`: a real reviewer path exists, such as a typed execution participant, board/user owner, linked approval, pending interaction, or an explicit monitor that will wake the assignee later. Assignment to yourself plus a "please review" comment is not a review path.
 - `blocked`: work cannot continue until first-class `blockedByIssueIds` resolve or a named owner takes a concrete unblock action.
 - Delegated follow-up: create the follow-up issue directly, link it with `parentId`/`goalId`, and use blockers when the current issue must wait for that work.
@@ -295,6 +297,65 @@ When an issue needs browser/manual QA or a preview server, inspect its current e
 
 For commands, response fields, and MCP tools, read:
 `skills/paperclip/references/issue-workspaces.md`
+
+## Orphaned Work
+
+**Orphaned work** is any git artifact (branch, PR, worktree, commit) or GitHub change that is either not linked to a Paperclip issue, or linked to an issue whose status doesn't reflect the actual state of the work.
+
+### Mandatory: link every GitHub artifact to the issue immediately
+
+Never exit a heartbeat with unlisted GitHub work. Whenever you create a branch, open a PR, or push commits, post a comment on the Paperclip issue in this format:
+
+```
+## Work artifact — <type>
+
+- **PR**: <url> (or "none yet")
+- **Branch**: `<branch-name>`
+- **Commits**: <sha list or "pending">
+- **Status**: <awaiting CI / awaiting review / merged / etc.>
+```
+
+### Mandatory: log every fix attempt outcome
+
+Whether a fix attempt succeeded or failed, record it before exiting the heartbeat:
+
+**On failure:**
+```
+## Fix attempt N/MAX — ❌ FAILED
+
+**Approach**: <what was tried>
+**Error** (last ~20 lines):
+<trimmed error output>
+**Reverted**: <files or "all production changes reverted, test retained">
+**Next**: <next approach or "exhausted — posting failure report">
+```
+
+**On success:**
+```
+## Fix attempt N/MAX — ✅ PASSED
+
+**PR**: <url>
+**What changed**: <summary of files edited>
+**Tests**: <N passed, regressions: none>
+```
+
+### Detecting orphaned work (CEO periodic sweep)
+
+Run this check when woken without specific assignments, or as part of any sprint review:
+
+1. **Unlinked open PRs** — `gh pr list -R mrveiss/AutoBot-AI --state open --json number,title,headRefName` — any PR whose branch matches `issue-NNNN` but has no `in_progress` or `in_review` Paperclip issue with that number is orphaned.
+
+2. **Stale worktrees** — `git -C /home/martins/AutoBot-Ai/AutoBot-AI worktree list` — any `issue-NNNN` worktree whose issue is `done`, `cancelled`, or non-existent is orphaned.
+
+3. **Dead in_review with merged/closed PR** — an issue stuck in `in_review` whose linked PR is already merged should be moved to `done`; if the PR was closed without merge, move to `todo` with a comment explaining the revert.
+
+### Recovering orphaned artifacts
+
+For each orphaned artifact, in priority order:
+
+- **Matching Paperclip issue exists** → comment on it with the artifact's current state, update the issue status to reflect reality, and reassign if needed.
+- **No matching issue** → create a new Paperclip issue (title: `orphaned work: <PR title or branch name>`), link the artifact, set status `todo`, assign to CEO for triage.
+- **Stale worktree, no live issue** → remove it: `git worktree remove --force /home/martins/AutoBot-Ai/AutoBot-AI/.worktrees/<name>` and delete the branch.
 
 ## Critical Rules
 

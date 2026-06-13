@@ -18,7 +18,7 @@ function makeConfigPath(root: string, enabled: boolean): string {
     database: {
       mode: "embedded-postgres",
       embeddedPostgresDataDir: path.join(root, "runtime", "db"),
-      embeddedPostgresPort: 54329,
+      embeddedPostgresPort: 54000,
       backup: {
         enabled: true,
         intervalMinutes: 60,

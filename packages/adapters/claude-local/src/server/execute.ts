@@ -378,7 +378,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
-  const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+  // In Paperclip context, always skip permissions since interactive prompts can't be answered.
+  // This ensures subagents (spawned by Agent tool) inherit Bash and other permissions from parent.
+  const isPaperclipContext =
+    typeof context.paperclipWorkspace === "object" ||
+    (typeof context === "object" && context !== null && "paperclipWorkspace" in context);
+  const dangerouslySkipPermissions = isPaperclipContext
+    ? true
+    : asBoolean(config.dangerouslySkipPermissions, true);
   const configEnv = parseObject(config.env);
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");

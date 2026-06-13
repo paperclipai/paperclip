@@ -34,7 +34,7 @@ function buildLegacyConfig(sharedRoot: string, publicBaseUrl = "http://127.0.0.1
     database: {
       mode: "embedded-postgres" as const,
       embeddedPostgresDataDir: path.join(sharedRoot, "db"),
-      embeddedPostgresPort: 54329,
+      embeddedPostgresPort: 54000,
       backup: {
         enabled: true,
         intervalMinutes: 60,
@@ -207,7 +207,7 @@ describe("worktree config repair", () => {
 
     expect(result.repairedConfig).toBe(true);
     expect(repairedConfig.server.port).toBe(3102);
-    expect(repairedConfig.database.embeddedPostgresPort).toBe(54331);
+    expect(repairedConfig.database.embeddedPostgresPort).toBe(54001);
   });
 
   it("ignores stale migrated env paths when the dev runner resolved the local config", async () => {
