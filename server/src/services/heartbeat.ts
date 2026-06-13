@@ -11483,9 +11483,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(eq(companies.status, "active"));
       const agentsByCompany = groupAgentOrgRowsByCompany(allAgents.map(toAgentOrgRow));
       let checked = 0;
-      let enqueued = 0;
-      let skipped = 0;
 
+      // Filter agents that need to be woken due to timer elapsed
+      const agentsToWake = [];
       for (const agent of allAgents) {
         const invokability = evaluateAgentInvokability(toAgentOrgRow(agent), agentsByCompany.get(agent.companyId) ?? []);
         if (!invokability.invokable) continue;
@@ -11497,20 +11497,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
 
-        const run = await enqueueWakeup(agent.id, {
-          source: "timer",
-          triggerDetail: "system",
-          reason: "heartbeat_timer",
-          requestedByActorType: "system",
-          requestedByActorId: "heartbeat_scheduler",
-          contextSnapshot: {
-            source: "scheduler",
-            reason: "interval_elapsed",
-            now: now.toISOString(),
-          },
-        });
-        if (run) enqueued += 1;
-        else skipped += 1;
+        agentsToWake.push(agent);
+      }
+
+      // Parallelize enqueueWakeup calls to avoid missed ticks with many agents
+      const results = await Promise.allSettled(
+        agentsToWake.map((agent) =>
+          enqueueWakeup(agent.id, {
+            source: "timer",
+            triggerDetail: "system",
+            reason: "heartbeat_timer",
+            requestedByActorType: "system",
+            requestedByActorId: "heartbeat_scheduler",
+            contextSnapshot: {
+              source: "scheduler",
+              reason: "interval_elapsed",
+              now: now.toISOString(),
+            },
+          })
+        )
+      );
+
+      let enqueued = 0;
+      let skipped = 0;
+      for (const result of results) {
+        if (result.status === "fulfilled") {
+          if (result.value) enqueued += 1;
+          else skipped += 1;
+        } else {
+          // Log errors but don't fail the entire tick
+          logger.warn({ err: result.reason }, "timer tick enqueueWakeup failed");
+          skipped += 1;
+        }
       }
 
       const issueMonitors = await tickDueIssueMonitors(now);
