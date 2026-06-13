@@ -772,7 +772,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       returnOwnerAgentId: input.agentId,
       cause: input.cause ?? "stranded_assigned_issue",
       attemptCount: 1,
-      maxAttempts: null,
+      maxAttempts: input.kind === "missing_disposition" ? 3 : null,
     });
     expect(action.evidence).toMatchObject({
       sourceIssueId: input.issueId,
@@ -1874,6 +1874,96 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       latestRunStatus: "succeeded",
       missingDisposition: "clear_next_step",
     });
+  });
+
+  it("auto-resolves a missing_disposition recovery that has hit maxAttempts and wakes previousOwnerAgentId", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "adapter_failed",
+      runError: "stuck",
+    });
+    const sourceRunId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "finish_successful_run_handoff",
+          sourceRunId,
+          resumeFromRunId: sourceRunId,
+          handoffRequired: true,
+          handoffReason: "successful_run_missing_state",
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    // Pre-seed an active missing_disposition action that has already reached
+    // its bounded retry limit. The next reconcile should auto-escalate it
+    // instead of firing a fourth attempt against the same recovery owner.
+    const existingActionId = randomUUID();
+    await db.insert(issueRecoveryActions).values({
+      id: existingActionId,
+      companyId,
+      sourceIssueId: issueId,
+      recoveryIssueId: null,
+      kind: "missing_disposition",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      ownerUserId: null,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      cause: "successful_run_missing_state",
+      fingerprint: ["source_scoped_recovery", companyId, issueId, "successful_run_missing_state"].join(":"),
+      evidence: { sourceIssueId: issueId, recoveryCause: "successful_run_missing_state" },
+      nextAction: "Choose and record a valid issue disposition without copying transcript content.",
+      wakePolicy: { type: "wake_owner", reason: "source_scoped_recovery_action", ownerAgentId: agentId },
+      monitorPolicy: null,
+      attemptCount: 3,
+      maxAttempts: 3,
+      timeoutAt: null,
+      lastAttemptAt: new Date(),
+    });
+
+    const wakeupsBefore = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows.length);
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.reconcileStrandedAssignedIssues();
+
+    const resolved = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, existingActionId))
+      .then((rows) => rows[0] ?? null);
+    expect(resolved?.status).toBe("resolved");
+    expect(resolved?.outcome).toBe("escalated");
+    expect(resolved?.attemptCount).toBe(3);
+    expect(resolved?.resolutionNote).toContain("maxAttempts=3");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    const exhaustionComment = comments.find((row) => (row.body ?? "").includes("bounded retry limit"));
+    expect(exhaustionComment).toBeTruthy();
+    expect(exhaustionComment?.body).toContain(existingActionId);
+
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(activity.some((event) => event.action === "issue.missing_disposition_recovery_exhausted")).toBe(true);
+
+    const wakeupsAfter = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    const exhaustionWake = wakeupsAfter.find((wakeup) => wakeup.reason === "missing_disposition_recovery_exhausted");
+    expect(exhaustionWake).toBeTruthy();
+    expect(wakeupsAfter.length).toBeGreaterThan(wakeupsBefore);
   });
 
   it("clears the detached warning when the run reports activity again", async () => {

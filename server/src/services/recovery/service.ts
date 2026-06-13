@@ -72,6 +72,15 @@ const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+export const DEFAULT_MISSING_DISPOSITION_RECOVERY_MAX_ATTEMPTS = 3;
+
+function resolveMissingDispositionRecoveryMaxAttempts(): number {
+  const raw = process.env.PAPERCLIP_MISSING_DISPOSITION_RECOVERY_MAX_ATTEMPTS;
+  if (!raw) return DEFAULT_MISSING_DISPOSITION_RECOVERY_MAX_ATTEMPTS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return DEFAULT_MISSING_DISPOSITION_RECOVERY_MAX_ATTEMPTS;
+  return parsed;
+}
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -2324,7 +2333,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           reason: "no_invokable_recovery_owner",
         },
       monitorPolicy: null,
-      maxAttempts: null,
+      maxAttempts: recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
+        ? resolveMissingDispositionRecoveryMaxAttempts()
+        : null,
       lastAttemptAt: now,
     });
 
@@ -2475,6 +2486,106 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
+  async function autoEscalateExhaustedMissingDispositionRecovery(input: {
+    issue: typeof issues.$inferSelect;
+    previousStatus: "todo" | "in_progress";
+    latestRun: LatestIssueRun;
+    recoveryAction: NonNullable<Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>>>;
+  }) {
+    const { recoveryAction } = input;
+    const resolutionNote =
+      `Auto-escalated after reaching maxAttempts=${recoveryAction.maxAttempts} for missing_disposition recovery.`;
+
+    await recoveryActionsSvc.resolveActiveForIssue({
+      companyId: input.issue.companyId,
+      sourceIssueId: input.issue.id,
+      actionId: recoveryAction.id,
+      status: "resolved",
+      outcome: "escalated",
+      resolutionNote,
+    });
+
+    const prefix = await getCompanyIssuePrefix(input.issue.companyId);
+    const previousOwner = recoveryAction.previousOwnerAgentId
+      ? await getAgent(recoveryAction.previousOwnerAgentId)
+      : null;
+    const recoveryOwner = recoveryAction.ownerAgentId ? await getAgent(recoveryAction.ownerAgentId) : null;
+
+    const commentBody = [
+      "Paperclip stopped retrying `missing_disposition` recovery for this issue after reaching the bounded retry limit.",
+      "",
+      `- Recovery action: \`${recoveryAction.id}\``,
+      `- Attempts: ${recoveryAction.attemptCount}/${recoveryAction.maxAttempts}`,
+      `- Recovery owner: ${agentUiLink(recoveryOwner, prefix)}`,
+      `- Previous owner: ${agentUiLink(previousOwner, prefix)}`,
+      "- Outcome: `escalated` — automatic recovery will not fire again for this loop.",
+      "",
+      "Next action: the previous owner should record the correct disposition or open a follow-up issue. Tune `PAPERCLIP_MISSING_DISPOSITION_RECOVERY_MAX_ATTEMPTS` if a higher bound is needed.",
+    ].join("\n");
+
+    await issuesSvc.addComment(input.issue.id, commentBody, {}, {
+      authorType: "system",
+    });
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.missing_disposition_recovery_exhausted",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        previousStatus: input.previousStatus,
+        source: "recovery.missing_disposition_max_attempts_reached",
+        recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        latestRunId: input.latestRun?.id ?? null,
+        latestRunStatus: input.latestRun?.status ?? null,
+        latestRunErrorCode: input.latestRun?.errorCode ?? null,
+        recoveryActionId: recoveryAction.id,
+        recoveryOwnerAgentId: recoveryAction.ownerAgentId,
+        previousOwnerAgentId: recoveryAction.previousOwnerAgentId,
+        returnOwnerAgentId: recoveryAction.returnOwnerAgentId,
+        attemptCount: recoveryAction.attemptCount,
+        maxAttempts: recoveryAction.maxAttempts,
+        outcome: "escalated",
+      },
+    });
+
+    if (recoveryAction.previousOwnerAgentId && previousOwner && isAgentInvokable(previousOwner)) {
+      await deps.enqueueWakeup(recoveryAction.previousOwnerAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "missing_disposition_recovery_exhausted",
+        idempotencyKey: `missing_disposition_recovery_exhausted:${recoveryAction.id}`,
+        payload: withRecoveryModelProfileHint({
+          issueId: input.issue.id,
+          sourceIssueId: input.issue.id,
+          recoveryActionId: recoveryAction.id,
+          recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+          attemptCount: recoveryAction.attemptCount,
+          maxAttempts: recoveryAction.maxAttempts,
+        }, "status_only"),
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: withRecoveryModelProfileHint({
+          issueId: input.issue.id,
+          taskId: input.issue.id,
+          wakeReason: "missing_disposition_recovery_exhausted",
+          skipIssueComment: true,
+          source: "issue_recovery_action",
+          recoveryActionId: recoveryAction.id,
+          sourceIssueId: input.issue.id,
+          recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        }, "status_only"),
+      });
+    }
+
+    return input.issue;
+  }
+
   async function escalateStrandedAssignedIssue(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: "todo" | "in_progress";
@@ -2492,6 +2603,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
+
+    if (recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON) {
+      const existing = await recoveryActionsSvc.getActiveForIssue(input.issue.companyId, input.issue.id);
+      if (
+        existing &&
+        existing.kind === "missing_disposition" &&
+        existing.maxAttempts != null &&
+        existing.attemptCount >= existing.maxAttempts
+      ) {
+        return autoEscalateExhaustedMissingDispositionRecovery({
+          issue: input.issue,
+          previousStatus: input.previousStatus,
+          latestRun: input.latestRun,
+          recoveryAction: existing,
+        });
+      }
+    }
+
     const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
       issue: input.issue,
       previousStatus: input.previousStatus,
