@@ -35,6 +35,7 @@ export interface CreatePlanInput {
   budgetCapTokens?: number | null;
   gateProfile?: PlanGateProfile | null;
   assigneeAgentId?: string | null;
+  projectId?: string | null;
   createdByUserId?: string | null;
   createdByAgentId?: string | null;
 }
@@ -188,6 +189,7 @@ export function planService(db: Db) {
         workMode: "planning",
         status: "backlog",
         assigneeAgentId: input.assigneeAgentId ?? null,
+        projectId: input.projectId ?? null,
         createdByUserId: input.createdByUserId ?? null,
         createdByAgentId: input.createdByAgentId ?? null,
       });

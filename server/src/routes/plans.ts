@@ -26,6 +26,7 @@ const createPlanSchema = z.object({
   budgetCapTokens: z.number().int().nonnegative().nullish(),
   gateProfile: z.enum(["none", "dev_team"]).optional(),
   assigneeAgentId: z.string().uuid().nullish(),
+  projectId: z.string().uuid().nullish(),
 });
 
 const updateTiersSchema = z.object({
@@ -69,6 +70,7 @@ export function planRoutes(
       budgetCapTokens: body.budgetCapTokens ?? null,
       gateProfile: body.gateProfile ?? "none",
       assigneeAgentId: body.assigneeAgentId ?? null,
+      projectId: body.projectId ?? null,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
       createdByAgentId: actor.agentId,
     });
@@ -204,7 +206,7 @@ export function planRoutes(
       },
     });
 
-    res.json({ planDetails, childIssueIds: createdChildren.map((c) => c.id) });
+    res.json({ planDetails, childIssueIds: createdChildren.map((c) => c.id), gateApprovalIds });
   });
 
   // Stop a plan: cancel the whole subtree (runs + wakeups + statuses) and mark
