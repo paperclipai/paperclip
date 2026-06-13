@@ -5477,7 +5477,13 @@ export function issueService(db: Db) {
         return enriched;
       }),
 
-    checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+    checkout: async (
+      id: string,
+      agentId: string,
+      expectedStatuses: string[],
+      checkoutRunId: string | null,
+      triageOnly?: boolean,
+    ) => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -5504,10 +5510,12 @@ export function issueService(db: Db) {
       await clearExecutionRunIfTerminal(id);
       await clearCheckoutRunIfTerminal(id);
 
-      const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
-      const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
-      if (unresolvedBlockerIssueIds.length > 0) {
-        throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+      if (!triageOnly) {
+        const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
+        const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
+        if (unresolvedBlockerIssueIds.length > 0) {
+          throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+        }
       }
 
       const sameRunAssigneeCondition = checkoutRunId
@@ -5519,17 +5527,28 @@ export function issueService(db: Db) {
       const executionLockCondition = checkoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
-      const updated = await db
-        .update(issues)
-        .set({
+
+      const setFields = triageOnly
+        ? {
           assigneeAgentId: agentId,
           assigneeUserId: null,
           checkoutRunId,
           executionRunId: checkoutRunId,
-          status: "in_progress",
+          updatedAt: now,
+        }
+        : {
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          checkoutRunId,
+          executionRunId: checkoutRunId,
+          status: "in_progress" as const,
           startedAt: now,
           updatedAt: now,
-        })
+        };
+
+      const updated = await db
+        .update(issues)
+        .set(setFields)
         .where(
           and(
             eq(issues.id, id),

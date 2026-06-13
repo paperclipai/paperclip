@@ -5887,7 +5887,7 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
-    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId, req.body.triageOnly);
     const actor = getActorInfo(req);
 
     await logActivity(db, {
