@@ -1088,6 +1088,121 @@ describe.sequential("agent permission routes", () => {
     );
   });
 
+  it("forces approval when an agent-actor with canCreateAgents but role!=ceo files an agent-hire", async () => {
+    const nonCeoActorAgent = {
+      ...baseAgent,
+      role: "manager",
+      permissions: { canCreateAgents: true },
+    };
+    const pendingHired = {
+      ...baseAgent,
+      status: "pending_approval",
+    };
+    mockAgentService.getById.mockResolvedValue(nonCeoActorAgent);
+    mockAgentService.create.mockResolvedValue(pendingHired);
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-1",
+      type: "hire_agent",
+      status: "pending",
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "Hired",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {},
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.agent.status).toBe("pending_approval");
+    expect(res.body.approval).toEqual(
+      expect.objectContaining({ type: "hire_agent", status: "pending" }),
+    );
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ status: "pending_approval" }),
+    );
+    expect(mockApprovalService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        type: "hire_agent",
+        status: "pending",
+        requestedByAgentId: agentId,
+      }),
+    );
+  });
+
+  it("keeps the direct-create path when a CEO-role agent-actor files an agent-hire", async () => {
+    const ceoActorAgent = {
+      ...baseAgent,
+      role: "ceo",
+      permissions: { canCreateAgents: true },
+    };
+    mockAgentService.getById.mockResolvedValue(ceoActorAgent);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "Direct Hire",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {},
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.approval).toBeNull();
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ status: "idle" }),
+    );
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
+  it("keeps the direct-create path when a board user-actor files an agent-hire", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "Board Hire",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {},
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.approval).toBeNull();
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ status: "idle" }),
+    );
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
   it("allows board users to directly approve pending agents", async () => {
     const pendingAgent = {
       ...baseAgent,

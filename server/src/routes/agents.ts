@@ -2141,7 +2141,7 @@ export function agentRoutes(
 
   router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    await assertCanCreateAgentsForCompany(req, companyId);
+    const actorAgent = await assertCanCreateAgentsForCompany(req, companyId);
     const sourceIssueIds = parseSourceIssueIds(req.body);
     const {
       desiredSkills: requestedDesiredSkills,
@@ -2195,7 +2195,8 @@ export function agentRoutes(
       return;
     }
 
-    const requiresApproval = company.requireBoardApprovalForNewAgents;
+    const nonCeoAgentActor = actorAgent !== null && actorAgent.role !== "ceo";
+    const requiresApproval = company.requireBoardApprovalForNewAgents || nonCeoAgentActor;
     const status = requiresApproval ? "pending_approval" : "idle";
     const createdAgent = await svc.create(companyId, {
       ...normalizedHireInput,
