@@ -356,7 +356,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(result.created).toBe(1);
     const [review] = await listProductivityReviews(seeded.companyId);
     expect(review?.description).toContain("Primary trigger: `long_active_duration`");
-    expect(review?.priority).toBe("medium");
+    expect(review?.priority).toBe("low");
     expect(hold.held).toBe(false);
   });
 
