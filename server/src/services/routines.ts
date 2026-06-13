@@ -1449,10 +1449,13 @@ export function routineService(
 
     list: async (
       companyId: string,
-      filters?: { projectId?: string | null },
+      filters?: { projectId?: string | null; assigneeAgentId?: string | null },
     ): Promise<RoutineListItem[]> => {
       const conditions = [eq(routines.companyId, companyId)];
       if (filters?.projectId) conditions.push(eq(routines.projectId, filters.projectId));
+      if (filters?.assigneeAgentId) {
+        conditions.push(eq(routines.assigneeAgentId, filters.assigneeAgentId));
+      }
 
       const rows = await db
         .select()
