@@ -2,6 +2,7 @@ import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzl
 import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
 import {
+  activityLog,
   agents,
   companies,
   costEvents,
@@ -26,6 +27,8 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS = 6;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_HOURLY = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_SIX_HOURS = 30;
 export const DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS = 6 * 60 * 60 * 1000;
+/** After a long-active productivity review is closed done, suppress further long-active reviews for this source for this window (standing sinks stay in_progress). */
+export const DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_RESOLVED_SNOOZE_MS = 30 * 24 * 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS = 3;
 export const DEFAULT_PRODUCTIVITY_REVIEW_CREATION_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -49,6 +52,7 @@ type ProductivityReviewThresholds = {
   highChurnHourly: number;
   highChurnSixHours: number;
   resolvedSnoozeMs: number;
+  longActiveResolvedSnoozeMs: number;
   refreshIntervalMs: number;
   maxRefreshComments: number;
   creationWindowMs: number;
@@ -159,6 +163,10 @@ function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): Pro
     resolvedSnoozeMs: readPositiveInteger(
       overrides?.resolvedSnoozeMs ?? DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS,
       DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS,
+    ),
+    longActiveResolvedSnoozeMs: readPositiveInteger(
+      overrides?.longActiveResolvedSnoozeMs ?? DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_RESOLVED_SNOOZE_MS,
+      DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_RESOLVED_SNOOZE_MS,
     ),
     refreshIntervalMs: readPositiveInteger(
       overrides?.refreshIntervalMs ?? DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
@@ -276,6 +284,59 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           eq(issues.originId, sourceIssueId),
           eq(issues.status, "done"),
           gt(issues.updatedAt, cutoff),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  /**
+   * Long-lived in_progress issues can satisfy long_active_duration forever. After a manager closes a
+   * long-active productivity review as productive, avoid spawning another long-active review for
+   * the same source until this window elapses (uses creation activity log rows for trigger fidelity).
+   */
+  async function findRecentDoneLongActiveProductivityReview(
+    companyId: string,
+    sourceIssueId: string,
+    longActiveSnoozeMs: number,
+    now: Date,
+  ) {
+    const cutoff = new Date(now.getTime() - longActiveSnoozeMs);
+    const fromActivityLog = await db
+      .select({ id: issues.id })
+      .from(activityLog)
+      .innerJoin(issues, sql`${issues.id}::text = ${activityLog.entityId}`)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.action, "issue.productivity_review_created"),
+          sql`${activityLog.details}->>'sourceIssueId' = ${sourceIssueId}`,
+          sql`${activityLog.details}->>'trigger' = 'long_active_duration'`,
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
+          eq(issues.originId, sourceIssueId),
+          eq(issues.status, "done"),
+          gt(issues.updatedAt, cutoff),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (fromActivityLog) return fromActivityLog;
+
+    const descriptionFallbackPattern = "%Primary trigger: `long_active_duration`%";
+    return db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
+          eq(issues.originId, sourceIssueId),
+          eq(issues.status, "done"),
+          gt(issues.updatedAt, cutoff),
+          sql`${issues.description} like ${descriptionFallbackPattern}`,
         ),
       )
       .orderBy(desc(issues.updatedAt))
@@ -599,6 +660,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       `- Long active duration: ${msToHuman(evidence.thresholds.longActiveMs)}`,
       `- High churn: ${evidence.thresholds.highChurnHourly}/1h or ${evidence.thresholds.highChurnSixHours}/6h runs/assignee-run comments`,
       `- Resolved-review snooze: ${msToHuman(evidence.thresholds.resolvedSnoozeMs)}`,
+      `- Long-active resolved snooze: ${msToHuman(evidence.thresholds.longActiveResolvedSnoozeMs)} (suppresses repeat long-active reviews after a done long-active review)`,
       "",
       "## Latest Runs",
       "",
@@ -816,6 +878,18 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       const evidence = await collectEvidence(candidate, sourceAgent, thresholds, now);
       if (!evidence) {
         result.skipped += 1;
+        continue;
+      }
+      if (
+        evidence.trigger === "long_active_duration" &&
+        (await findRecentDoneLongActiveProductivityReview(
+          candidate.companyId,
+          candidate.id,
+          thresholds.longActiveResolvedSnoozeMs,
+          now,
+        ))
+      ) {
+        result.snoozed += 1;
         continue;
       }
       let prefix = prefixCache.get(candidate.companyId);
