@@ -702,6 +702,12 @@ export function CompanyImport() {
     const ceo = companyAgents.find((a) => a.role === "ceo");
     return ceo?.adapterType ?? "claude_local";
   }, [companyAgents]);
+  const ceoAdapterModel = useMemo(() => {
+    if (!companyAgents) return "";
+    const ceo = companyAgents.find((a) => a.role === "ceo");
+    const model = ceo?.adapterConfig?.model;
+    return typeof model === "string" ? model : "";
+  }, [companyAgents]);
 
   const localZipHelpText =
     "Upload a .zip exported directly from Paperclip. Re-zipped archives created by Finder, Explorer, or other zip tools may not import correctly.";
@@ -761,14 +767,25 @@ export function CompanyImport() {
       setSkippedSlugs(new Set());
       setConfirmedSlugs(new Set());
 
-      // Initialize adapter overrides — default all agents to the CEO's adapter type
+      // Initialize adapter overrides — default all agents to the CEO's adapter type.
+      // Also seed adapterConfigValues with the CEO's model so opencode_local
+      // (which requires adapterConfig.model) doesn't fail server-side validation
+      // when the user accepts defaults without expanding "configure adapter".
       const defaultAdapters: Record<string, string> = {};
+      const defaultConfigs: Record<string, CreateConfigValues> = {};
       for (const agent of result.manifest.agents) {
         defaultAdapters[agent.slug] = ceoAdapterType;
+        if (ceoAdapterModel) {
+          defaultConfigs[agent.slug] = {
+            ...defaultCreateValues,
+            adapterType: ceoAdapterType,
+            model: ceoAdapterModel,
+          };
+        }
       }
       setAdapterOverrides(defaultAdapters);
       setAdapterExpandedSlugs(new Set());
-      setAdapterConfigValues({});
+      setAdapterConfigValues(defaultConfigs);
 
       // Check all files by default, then uncheck COMPANY.md for existing company
       const allFiles = new Set(Object.keys(result.files));
