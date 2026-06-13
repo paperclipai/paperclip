@@ -172,6 +172,154 @@ async function createMockGatewayServer(options?: {
   };
 }
 
+async function createMockGatewayServerWithPartialStream(options?: {
+  partialDeltas?: string[];
+  emitErrorEvent?: boolean;
+  closeAfterMs?: number;
+}) {
+  const server = createServer();
+  const wss = new WebSocketServer({ server });
+  const partialDeltas = options?.partialDeltas ?? ["<", "final"];
+  const emitErrorEvent = options?.emitErrorEvent ?? true;
+
+  wss.on("connection", (socket) => {
+    socket.send(
+      JSON.stringify({
+        type: "event",
+        event: "connect.challenge",
+        payload: { nonce: "nonce-123" },
+      }),
+    );
+
+    socket.on("message", (raw) => {
+      const text = Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw);
+      const frame = JSON.parse(text) as {
+        type: string;
+        id: string;
+        method: string;
+        params?: Record<string, unknown>;
+      };
+
+      if (frame.type !== "req") return;
+
+      if (frame.method === "connect") {
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              type: "hello-ok",
+              protocol: 3,
+              server: { version: "test", connId: "conn-1" },
+              features: { methods: ["connect", "agent", "agent.wait"], events: ["agent"] },
+              snapshot: { version: 1, ts: Date.now() },
+              policy: { maxPayload: 1_000_000, maxBufferedBytes: 1_000_000, tickIntervalMs: 30_000 },
+            },
+          }),
+        );
+        return;
+      }
+
+      if (frame.method === "agent") {
+        const runId =
+          typeof frame.params?.idempotencyKey === "string"
+            ? frame.params.idempotencyKey
+            : "run-123";
+
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              runId,
+              status: "accepted",
+              acceptedAt: Date.now(),
+            },
+          }),
+        );
+
+        partialDeltas.forEach((delta, index) => {
+          socket.send(
+            JSON.stringify({
+              type: "event",
+              event: "agent",
+              payload: {
+                runId,
+                seq: index + 1,
+                stream: "assistant",
+                ts: Date.now(),
+                data: { delta },
+              },
+            }),
+          );
+        });
+
+        if (emitErrorEvent) {
+          socket.send(
+            JSON.stringify({
+              type: "event",
+              event: "agent",
+              payload: {
+                runId,
+                seq: partialDeltas.length + 1,
+                stream: "error",
+                ts: Date.now(),
+                data: { error: "model upstream quota exhausted" },
+              },
+            }),
+          );
+        }
+
+        return;
+      }
+
+      if (frame.method === "agent.wait") {
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              runId: frame.params?.runId,
+              status: "ok",
+              startedAt: 1,
+              endedAt: 2,
+            },
+          }),
+        );
+
+        const closeDelay = options?.closeAfterMs ?? 5;
+        setTimeout(() => {
+          try {
+            socket.close(1000, "paperclip-complete");
+          } catch {
+            // ignore
+          }
+        }, closeDelay);
+      }
+    });
+  });
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Failed to resolve test server address");
+  }
+
+  return {
+    url: `ws://127.0.0.1:${address.port}`,
+    close: async () => {
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
 async function createMockGatewayServerWithPairing() {
   const server = createServer();
   const wss = new WebSocketServer({ server });
@@ -564,6 +712,60 @@ describe("openclaw gateway adapter execute", () => {
           status: "running",
         }),
       ]);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("drops partial assistant frames when the gateway emits an error mid-stream", async () => {
+    const gateway = await createMockGatewayServerWithPartialStream({
+      partialDeltas: ["<", "final"],
+      emitErrorEvent: true,
+    });
+    const logs: string[] = [];
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            headers: { "x-openclaw-token": "gateway-token" },
+            payloadTemplate: { message: "wake now" },
+            waitTimeoutMs: 2000,
+          },
+          {
+            onLog: async (_stream, chunk) => {
+              logs.push(chunk);
+            },
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.summary).toBeUndefined();
+      expect(logs.some((entry) => entry.includes("dropping ") && entry.includes("partial assistant stream"))).toBe(true);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("drops partial frames after a websocket close mid-stream with no final result", async () => {
+    const gateway = await createMockGatewayServerWithPartialStream({
+      partialDeltas: ["<finalThe task remains awaiting Bruno's response"],
+      emitErrorEvent: true,
+    });
+
+    try {
+      const result = await execute(
+        buildContext({
+          url: gateway.url,
+          headers: { "x-openclaw-token": "gateway-token" },
+          waitTimeoutMs: 2000,
+        }),
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.summary).toBeUndefined();
     } finally {
       await gateway.close();
     }
