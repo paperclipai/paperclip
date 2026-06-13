@@ -266,19 +266,24 @@ function findCoTSegmentIndex(
   messageParts: ReadonlyArray<{ type: string }>,
   cotParts: ReadonlyArray<{ type: string }>,
 ): number {
-  if (cotParts.length === 0) return -1;
-  const firstPart = cotParts[0];
-  let segIdx = -1;
-  let inCoT = false;
-  for (const part of messageParts) {
-    if (part.type === "reasoning" || part.type === "tool-call") {
-      if (!inCoT) { segIdx++; inCoT = true; }
-      if (part === firstPart) return segIdx;
-    } else {
-      inCoT = false;
+  try {
+    if (!Array.isArray(messageParts) || !Array.isArray(cotParts) || cotParts.length === 0) return -1;
+    const firstPart = cotParts[0];
+    let segIdx = -1;
+    let inCoT = false;
+    for (const part of messageParts) {
+      const type = (part as { type?: unknown } | null)?.type;
+      if (type === "reasoning" || type === "tool-call") {
+        if (!inCoT) { segIdx++; inCoT = true; }
+        if (part === firstPart) return segIdx;
+      } else {
+        inCoT = false;
+      }
     }
+    return -1;
+  } catch {
+    return -1;
   }
-  return -1;
 }
 
 function useLiveElapsed(startMs: number | null | undefined, active: boolean): string | null {
@@ -518,17 +523,31 @@ function fallbackAuthorLabel(message: ThreadMessage) {
   return "System";
 }
 
+const FALLBACK_TOOL_BODY_MAX = 400;
+
+function truncateForFallback(value: string): string {
+  if (value.length <= FALLBACK_TOOL_BODY_MAX) return value;
+  return `${value.slice(0, FALLBACK_TOOL_BODY_MAX)}\n\n… truncated (${value.length - FALLBACK_TOOL_BODY_MAX} more chars). Open the raw run for full detail.`;
+}
+
 function fallbackTextParts(message: ThreadMessage) {
   const contentLines: string[] = [];
-  for (const part of message.content) {
+  const parts = Array.isArray(message.content) ? message.content : [];
+  for (const part of parts) {
+    if (!part || typeof part !== "object") continue;
     if (part.type === "text" || part.type === "reasoning") {
-      if (part.text.trim().length > 0) contentLines.push(part.text);
+      const text = typeof part.text === "string" ? part.text : "";
+      if (text.trim().length > 0) contentLines.push(text);
       continue;
     }
     if (part.type === "tool-call") {
-      const lines = [`Tool: ${part.toolName}`];
-      if (part.argsText?.trim()) lines.push(`Args:\n${part.argsText}`);
-      if (typeof part.result === "string" && part.result.trim()) lines.push(`Result:\n${part.result}`);
+      const toolName = typeof part.toolName === "string" && part.toolName.length > 0 ? part.toolName : "tool";
+      const lines = [`_Fallback render — open raw run for full detail._`, `**Tool:** ${toolName}`];
+      const argsText = typeof part.argsText === "string" ? part.argsText : "";
+      if (argsText.trim()) lines.push(`Args:\n\n\`\`\`\n${truncateForFallback(argsText)}\n\`\`\``);
+      if (typeof part.result === "string" && part.result.trim()) {
+        lines.push(`Result:\n\n\`\`\`\n${truncateForFallback(part.result)}\n\`\`\``);
+      }
       contentLines.push(lines.join("\n\n"));
     }
   }
@@ -843,12 +862,16 @@ function IssueChatChainOfThought({
   );
 
   const allReasoningText = cotParts
-    .filter((p): p is { type: "reasoning"; text: string } => p.type === "reasoning" && !!p.text)
+    .filter((p): p is { type: "reasoning"; text: string } => p.type === "reasoning" && typeof p.text === "string" && p.text.length > 0)
     .map((p) => p.text)
     .join("\n");
-  const toolParts = cotParts.filter(
-    (p): p is ToolCallMessagePart => p.type === "tool-call",
-  );
+  const toolParts = cotParts
+    .filter((p): p is ToolCallMessagePart => p.type === "tool-call")
+    .map((p): ToolCallMessagePart => ({
+      ...p,
+      toolName: typeof p.toolName === "string" && p.toolName.length > 0 ? p.toolName : "tool",
+      argsText: typeof p.argsText === "string" ? p.argsText : "",
+    }));
 
   const isActive = isMessageRunning;
   const [expanded, setExpanded] = useState(isActive);

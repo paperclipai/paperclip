@@ -1080,4 +1080,19 @@ describe("stabilizeThreadMessages", () => {
 
     expect(secondStable.messages).toBe(firstStable.messages);
   });
+
+  it("does not throw when a message contains a non-serializable value", () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const message = {
+      id: "comment-bad",
+      role: "user" as const,
+      content: [{ type: "text" as const, text: "hello" }],
+      createdAt: new Date("2026-04-06T12:00:00.000Z"),
+      metadata: { custom: { circular } },
+    };
+    expect(() =>
+      stabilizeThreadMessages([message as never], [], new Map()),
+    ).not.toThrow();
+  });
 });

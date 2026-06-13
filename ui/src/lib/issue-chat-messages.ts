@@ -110,7 +110,16 @@ function toTimestamp(value: Date | string | null | undefined) {
 }
 
 function fingerprintThreadMessage(message: ThreadMessage) {
-  return JSON.stringify(message);
+  try {
+    return JSON.stringify(message);
+  } catch {
+    const partsLength = Array.isArray(message.content) ? message.content.length : 0;
+    const createdAt = message.createdAt instanceof Date
+      ? message.createdAt.getTime()
+      : message.createdAt ?? "";
+    const status = message.status?.type ?? "";
+    return `fallback:${message.id}:${message.role}:${partsLength}:${createdAt}:${status}`;
+  }
 }
 
 export function stabilizeThreadMessages(
