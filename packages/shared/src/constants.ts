@@ -557,6 +557,7 @@ export const BILLING_TYPES = [
   "subscription_overage",
   "credits",
   "fixed",
+  "estimated_cost",
   "unknown",
 ] as const;
 export type BillingType = (typeof BILLING_TYPES)[number];
