@@ -226,6 +226,7 @@ const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const DETACHED_PROCESS_KILL_GRACE_MS = 5 * 60 * 1000;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -7441,6 +7442,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      let killedDetachedMainPid = false;
       if (processPidAlive) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
@@ -7459,12 +7461,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
+          continue;
         }
-        continue;
+        // Already flagged process_detached on a prior tick. clearDetachedRunWarning
+        // would have unset the errorCode if the child checked back in, so getting
+        // here means the child is wedged. Give it a grace window for a recovering
+        // server to re-attach, then kill it and let the existing process-loss
+        // finalization path take over below.
+        const detachedSinceMs = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+        const detachedMs = now.getTime() - detachedSinceMs;
+        if (detachedMs < DETACHED_PROCESS_KILL_GRACE_MS) {
+          continue;
+        }
+        logger.warn(
+          { runId: run.id, processPid: run.processPid, processGroupId: run.processGroupId, detachedMs },
+          "killing detached child process after grace window",
+        );
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
+        killedDetachedMainPid = true;
       }
 
       let descendantOnlyCleanup = false;
-      if (processGroupAlive) {
+      if (!killedDetachedMainPid && processGroupAlive) {
         descendantOnlyCleanup = true;
         await terminateHeartbeatRunProcess({
           pid: run.processPid,

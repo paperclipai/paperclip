@@ -971,6 +971,72 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
+  it("respects the detached grace window before killing an already-flagged detached pid", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { runId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      includeIssue: false,
+      runErrorCode: "process_detached",
+      runError: `Lost in-memory process handle, but child pid ${child.pid} is still alive`,
+    });
+
+    // Pretend the detached flag was set ~1 minute ago (well inside the 5-minute grace window).
+    await db
+      .update(heartbeatRuns)
+      .set({ updatedAt: new Date(Date.now() - 60_000) })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+    expect(isPidAlive(child.pid ?? -1)).toBe(true);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBe("process_detached");
+  });
+
+  it.skipIf(process.platform === "win32")("kills a detached child after the grace window expires and queues a retry", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { agentId, runId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      runErrorCode: "process_detached",
+      runError: `Lost in-memory process handle, but child pid ${child.pid} is still alive`,
+    });
+
+    // Push updatedAt past the 5-minute kill grace window.
+    await db
+      .update(heartbeatRuns)
+      .set({ updatedAt: new Date(Date.now() - 6 * 60_000) })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    expect(await waitForPidExit(child.pid ?? -1, 2_000)).toBe(true);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const failedRun = runs.find((row) => row.id === runId);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+    expect(retryRun?.status).toBe("queued");
+    expect(retryRun?.retryOfRunId).toBe(runId);
+  });
+
   it("queues exactly one retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",
