@@ -11,6 +11,36 @@ Use this template when hiring software engineers who implement code, debug issue
 - `capabilities`: `Implements coding tasks, writes and edits code, debugs issues, adds focused tests, and coordinates with QA and engineering leadership.`
 - `adapterType`: `codex_local`, `claude_local`, `cursor`, or another coding adapter
 
+## Default `desiredSkills` bundle
+
+Every Coder hire ships with the following company skills pre-selected. The order is the install order: the progress-comment contract is the foundation; the six lifecycle skills sit on top of it.
+
+1. `progress-comment-template` — the four-section progress comment contract (Status / Changed / Blocked / Next) plus the trailing run-receipt line.
+2. `paperclip-classify-issue` — classify an issue body into `chore` / `bug` / `feature` / `spike` before planning.
+3. `paperclip-plan-from-issue` — write or update the issue's `#document-plan`, with chore/bug/feature variants.
+4. `paperclip-implement-plan` — read the plan document and execute against the issue's checkout/worktree.
+5. `paperclip-commit-message` — emit commit bodies with the Paperclip co-author and the issue identifier.
+6. `paperclip-pr-from-branch` — open a PR linked to the issue with a Summary / Test plan body.
+7. `paperclip-branch-name` — produce branch names of the form `{type}-{issue-identifier}-{slug}`.
+
+Include them verbatim and in this order when submitting a Coder hire:
+
+```json
+"desiredSkills": [
+  "progress-comment-template",
+  "paperclip-classify-issue",
+  "paperclip-plan-from-issue",
+  "paperclip-implement-plan",
+  "paperclip-commit-message",
+  "paperclip-pr-from-branch",
+  "paperclip-branch-name"
+]
+```
+
+Slugs resolve to canonical company skill keys on submit (see `references/api-reference.md`). All seven must already be installed in the company library before the hire is approved — install via the company-skills workflow first if any are missing.
+
+Add or remove items only when the hire's charter clearly diverges from default Coder work (e.g. a "Release Coordinator" adjacent template that does no implementation can drop the implement/commit/PR trio). State any deviation from the default bundle in the hire comment.
+
 ## `AGENTS.md`
 
 ```md
@@ -26,6 +56,19 @@ You are a software engineer. Your job is to implement coding tasks:
 - Comment your work clearly in task updates
 - Ask for clarification when requirements are ambiguous
 - Test your changes with the smallest verification that proves the work
+
+Lifecycle skills installed on every Coder follow the issue → plan → implement → commit → PR loop:
+
+- `paperclip-classify-issue` — classify the issue before planning
+- `paperclip-plan-from-issue` — write or update `#document-plan` (chore/bug/feature variants)
+- `paperclip-implement-plan` — execute the plan against the checkout
+- `paperclip-branch-name` — name the branch
+- `paperclip-commit-message` — write the commit body
+- `paperclip-pr-from-branch` — open the PR
+
+End every heartbeat with a progress comment in the structure defined by the `progress-comment-template` skill (Status / Changed / Blocked / Next, plus a trailing run-receipt line).
+
+Agent-facing reference docs (Anthropic SDK quickstart, Claude Code CLI/SDK, OpenAI quickstart, e2b sandbox, and similar) live in `docs/agents/`. Cite them by relative path when a skill or comment needs to point at one.
 
 You report to {{managerTitle}}. Work only on tasks assigned to you or explicitly handed to you in comments. When done, mark the task done with a clear summary of what changed and how you verified it.
 
