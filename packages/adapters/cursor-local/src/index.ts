@@ -97,6 +97,7 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
+- maxTurnsPerRun (number, optional): max tool_call turns before the adapter kills the Cursor process. 0 (default) disables the fuse.
 
 Notes:
 - Runs are executed with: agent -p --output-format stream-json ...
