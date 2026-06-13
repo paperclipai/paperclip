@@ -333,7 +333,7 @@ export const createToolPolicySchema = z.object({
   priority: z.number().int().min(0).max(10000).default(100),
   enabled: z.boolean().default(true),
   selectors: z.record(z.string(), z.unknown()).default({}),
-  conditions: z.record(z.string(), z.unknown()).optional().nullable(),
+  conditions: z.null().optional(),
   config: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 

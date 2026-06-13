@@ -813,8 +813,6 @@ export const TOOL_POLICY_TYPES = [
   "require_approval",
   "trust_rule",
   "rate_limit",
-  "redact",
-  "validate",
 ] as const;
 export type ToolPolicyType = (typeof TOOL_POLICY_TYPES)[number];
 

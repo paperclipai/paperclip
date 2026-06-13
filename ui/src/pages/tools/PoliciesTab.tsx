@@ -61,7 +61,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { Textarea } from "@/components/ui/textarea";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useToast } from "@/context/ToastContext";
 import { EmptyState } from "@/components/EmptyState";
@@ -94,8 +93,8 @@ const OUTCOMES: Array<{ value: BuilderPolicyType; label: string }> = [
   { value: "block", label: "Block" },
   { value: "require_approval", label: "Ask first" },
   { value: "rate_limit", label: "Limit" },
-  { value: "redact", label: "Hide sensitive details" },
 ];
+const SUPPORTED_BUILDER_POLICY_TYPES = new Set<string>(OUTCOMES.map((outcome) => outcome.value));
 
 type PolicyFormState = {
   id: string | null;
@@ -116,9 +115,6 @@ type PolicyFormState = {
   rateLimitLimit: string;
   rateLimitWindowSeconds: string;
   rateLimitKeyBy: RateLimitKeyBy[];
-  redactFields: string;
-  conditionsJson: string;
-  configJson: string;
 };
 
 type ConfirmState =
@@ -146,9 +142,6 @@ function emptyPolicyForm(template?: Partial<PolicyFormState>): PolicyFormState {
     rateLimitLimit: "50",
     rateLimitWindowSeconds: "3600",
     rateLimitKeyBy: ["agent", "tool"],
-    redactFields: "",
-    conditionsJson: "",
-    configJson: "",
     ...template,
   };
 }
@@ -175,17 +168,6 @@ function selectValue(selectors: Record<string, unknown>, key: string) {
   return typeof value === "string" && value.trim() ? value : ANY_VALUE;
 }
 
-function formatJson(value: unknown) {
-  return isRecord(value) && Object.keys(value).length > 0 ? JSON.stringify(value, null, 2) : "";
-}
-
-function parseJsonObject(value: string, label: string): Record<string, unknown> | null {
-  if (!value.trim()) return null;
-  const parsed = JSON.parse(value);
-  if (!isRecord(parsed)) throw new Error(`${label} must be a JSON object`);
-  return parsed;
-}
-
 function policyToForm(policy: ToolPolicy): PolicyFormState {
   const selectors = policy.selectors ?? {};
   const toolNames = [
@@ -194,12 +176,9 @@ function policyToForm(policy: ToolPolicy): PolicyFormState {
   ].join(", ");
   const config = isRecord(policy.config) ? { ...policy.config } : {};
   const rawRateLimit = isRecord(config.rateLimit) ? config.rateLimit : config;
-  const rawRedact = isRecord(config.redact) ? config.redact : {};
   const rateLimitKeyBy = stringList(rawRateLimit.keyBy).filter((item): item is RateLimitKeyBy =>
     RATE_LIMIT_KEY_FIELDS.includes(item as RateLimitKeyBy),
   );
-  if (policy.policyType === "rate_limit") delete config.rateLimit;
-  if (policy.policyType === "redact") delete config.redact;
   const agentId = selectValue(selectors, "agentId");
   const projectId = selectValue(selectors, "projectId");
   const applicationId = selectValue(selectors, "applicationId");
@@ -210,7 +189,7 @@ function policyToForm(policy: ToolPolicy): PolicyFormState {
     id: policy.id,
     name: policy.name,
     description: policy.description ?? "",
-    policyType: policy.policyType as BuilderPolicyType,
+    policyType: SUPPORTED_BUILDER_POLICY_TYPES.has(String(policy.policyType)) ? (policy.policyType as BuilderPolicyType) : "block",
     priority: String(policy.priority),
     enabled: policy.enabled,
     whenMode: agentId !== ANY_VALUE ? "agent" : projectId !== ANY_VALUE ? "project" : "everyone",
@@ -232,9 +211,6 @@ function policyToForm(policy: ToolPolicy): PolicyFormState {
     rateLimitLimit: String(rawRateLimit.limit ?? "50"),
     rateLimitWindowSeconds: String(rawRateLimit.windowSeconds ?? "3600"),
     rateLimitKeyBy: rateLimitKeyBy.length > 0 ? rateLimitKeyBy : ["agent", "tool"],
-    redactFields: stringList(rawRedact.fields).join(", "),
-    conditionsJson: formatJson(policy.conditions),
-    configJson: formatJson(config),
   };
 }
 
@@ -254,8 +230,7 @@ function buildPolicyPayload(form: PolicyFormState) {
   if (toolNames.length === 1) selectors.toolName = toolNames[0];
   if (toolNames.length > 1) selectors.toolNames = toolNames;
 
-  const conditions = parseJsonObject(form.conditionsJson, "Conditions JSON");
-  const config = parseJsonObject(form.configJson, "Config JSON") ?? {};
+  let config: Record<string, unknown> | null = null;
   if (form.policyType === "rate_limit") {
     const limit = Number(form.rateLimitLimit);
     const windowSeconds = Number(form.rateLimitWindowSeconds);
@@ -263,11 +238,7 @@ function buildPolicyPayload(form: PolicyFormState) {
     if (!Number.isInteger(windowSeconds) || windowSeconds <= 0) {
       throw new Error("Window must be a positive number of seconds");
     }
-    config.rateLimit = { limit, windowSeconds, keyBy: form.rateLimitKeyBy };
-  }
-  if (form.policyType === "redact") {
-    const fields = parseList(form.redactFields);
-    if (fields.length > 0) config.redact = { fields };
+    config = { rateLimit: { limit, windowSeconds, keyBy: form.rateLimitKeyBy } };
   }
 
   return {
@@ -277,8 +248,8 @@ function buildPolicyPayload(form: PolicyFormState) {
     priority,
     enabled: form.enabled,
     selectors,
-    conditions,
-    config: Object.keys(config).length > 0 ? config : null,
+    conditions: null,
+    config,
   };
 }
 
@@ -291,13 +262,13 @@ function windowLabel(seconds: string | number | null | undefined) {
 }
 
 function outcomeLabel(policy: Pick<ToolPolicy, "policyType" | "config"> | PolicyFormState) {
-  const policyType = policy.policyType;
+  const policyType = String(policy.policyType);
   if (policyType === "allow") return "Allow";
   if (policyType === "block") return "Block";
   if (policyType === "require_approval") return "Ask first";
-  if (policyType === "redact") return "Hide sensitive details";
+  if (policyType === "redact") return "Unsupported: redact";
   if (policyType === "trust_rule") return "Allow";
-  if (policyType === "validate") return "Custom check";
+  if (policyType === "validate") return "Unsupported: custom check";
   const config = "config" in policy && isRecord(policy.config) ? policy.config : {};
   const rateLimit = isRecord(config.rateLimit) ? config.rateLimit : config;
   const limit = "rateLimitLimit" in policy ? policy.rateLimitLimit : rateLimit.limit;
@@ -751,12 +722,6 @@ function RuleBuilder({
               </div>
             </div>
           ) : null}
-          {form.policyType === "redact" ? (
-            <div className="space-y-1.5">
-              <Label htmlFor="redact-fields">Details to hide</Label>
-              <Input id="redact-fields" value={form.redactFields} onChange={(e) => setForm({ ...form, redactFields: e.target.value })} placeholder="email, phone, apiKey" />
-            </div>
-          ) : null}
         </section>
       </div>
 
@@ -775,18 +740,6 @@ function RuleBuilder({
             <Input id="rule-priority" inputMode="numeric" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })} />
           </div>
           <div className="space-y-1.5">
-            <Label>Custom check</Label>
-            <Button
-              type="button"
-              variant={form.policyType === "validate" ? "secondary" : "outline"}
-              size="sm"
-              className="w-full justify-start"
-              onClick={() => setForm({ ...form, policyType: "validate" })}
-            >
-              Use a custom check
-            </Button>
-          </div>
-          <div className="space-y-1.5">
             <Label>Raw connection</Label>
             <Select value={form.connectionId} onValueChange={(connectionId) => setForm({ ...form, connectionId })}>
               <SelectTrigger><SelectValue /></SelectTrigger>
@@ -795,14 +748,6 @@ function RuleBuilder({
                 {[...maps.connection.entries()].map(([id, name]) => <SelectItem key={id} value={id}>{name}</SelectItem>)}
               </SelectContent>
             </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="conditions-json">Conditions JSON</Label>
-            <Textarea id="conditions-json" value={form.conditionsJson} onChange={(e) => setForm({ ...form, conditionsJson: e.target.value })} className="min-h-28 font-mono text-xs" />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="config-json">Config JSON</Label>
-            <Textarea id="config-json" value={form.configJson} onChange={(e) => setForm({ ...form, configJson: e.target.value })} className="min-h-28 font-mono text-xs" />
           </div>
           <div className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 lg:col-span-2">
             <div>

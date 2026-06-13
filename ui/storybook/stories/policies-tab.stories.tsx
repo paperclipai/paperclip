@@ -165,11 +165,10 @@ const POLICIES: ToolPolicy[] = [
   }),
   rule({
     id: "p5",
-    name: "Hide sensitive fields in payloads",
-    policyType: "redact",
+    name: "Block critical actions",
+    policyType: "block",
     priority: 300,
-    selectors: {},
-    config: { redact: { fields: ["email", "phone"] } },
+    selectors: { riskLevel: "critical" },
   }),
 ];
 

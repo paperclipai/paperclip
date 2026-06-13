@@ -319,6 +319,43 @@ function assertGenericPolicyType(policyType: string) {
   if (policyType === "trust_rule") {
     throw unprocessable("Trust rules are managed through the trust-rule promotion and revoke endpoints");
   }
+  if (policyType === "redact" || policyType === "validate") {
+    throw unprocessable(`Tool policy type '${policyType}' is not supported at runtime`);
+  }
+}
+
+function assertNoUnsupportedPolicyConditions(conditions: Record<string, unknown> | null | undefined) {
+  if (conditions && Object.keys(conditions).length > 0) {
+    throw unprocessable("Tool policy conditions are not supported at runtime");
+  }
+}
+
+function unsupportedRuntimePolicyType(policyType: string) {
+  return policyType === "redact" || policyType === "validate";
+}
+
+function hasConfig(config: Record<string, unknown> | null | undefined) {
+  return Boolean(config && Object.keys(config).length > 0);
+}
+
+function assertSupportedGenericPolicyShape(
+  policyType: string,
+  conditions: Record<string, unknown> | null | undefined,
+  config: Record<string, unknown> | null | undefined,
+) {
+  assertGenericPolicyType(policyType);
+  assertNoUnsupportedPolicyConditions(conditions);
+  if (policyType !== "rate_limit" && hasConfig(config)) {
+    throw unprocessable(`Tool policy type '${policyType}' does not support config`);
+  }
+  if (policyType === "rate_limit") {
+    const raw = isRecord(config?.rateLimit) ? config.rateLimit : config;
+    const limit = isRecord(raw) && typeof raw.limit === "number" ? raw.limit : null;
+    const windowSeconds = isRecord(raw) && typeof raw.windowSeconds === "number" ? raw.windowSeconds : null;
+    if (!limit || !windowSeconds || limit <= 0 || windowSeconds <= 0) {
+      throw unprocessable("Rate-limit policy config requires positive numeric limit and windowSeconds");
+    }
+  }
 }
 
 async function getGenericPolicyRow(db: Db, companyId: string, policyId: string) {
@@ -424,6 +461,7 @@ export function toolAccessPolicyService(db: Db) {
     actor?: { agentId?: string | null; userId?: string | null };
   }) {
     const existing = await getGenericPolicyRow(db, input.companyId, input.policyId);
+    assertSupportedGenericPolicyShape(existing.policyType, existing.conditions ?? null, existing.config ?? null);
     const rows = await db
       .select({ name: toolPolicies.name })
       .from(toolPolicies)
@@ -463,7 +501,7 @@ export function toolAccessPolicyService(db: Db) {
     body: CreateToolPolicy,
     actor?: { agentId?: string | null; userId?: string | null },
   ) {
-    assertGenericPolicyType(body.policyType);
+    assertSupportedGenericPolicyShape(body.policyType, body.conditions ?? null, body.config ?? null);
     const now = new Date();
     const [policy] = await db
       .insert(toolPolicies)
@@ -491,8 +529,11 @@ export function toolAccessPolicyService(db: Db) {
     policyId: string;
     body: UpdateToolPolicy;
   }) {
-    if (input.body.policyType) assertGenericPolicyType(input.body.policyType);
     const existing = await getGenericPolicyRow(db, input.companyId, input.policyId);
+    const nextPolicyType = input.body.policyType ?? existing.policyType;
+    const nextConditions = input.body.conditions !== undefined ? input.body.conditions ?? null : existing.conditions ?? null;
+    const nextConfig = input.body.config !== undefined ? input.body.config ?? null : existing.config ?? null;
+    assertSupportedGenericPolicyShape(nextPolicyType, nextConditions, nextConfig);
     const now = new Date();
     const [policy] = await db
       .update(toolPolicies)
@@ -803,10 +844,30 @@ export function toolAccessPolicyService(db: Db) {
     const policies = await db.select().from(toolPolicies).where(and(eq(toolPolicies.companyId, ctx.companyId), eq(toolPolicies.enabled, true))).orderBy(asc(toolPolicies.priority), asc(toolPolicies.createdAt));
     const matchingPolicies = policies.filter((policy) => selectorMatches(policy.selectors, ctx));
     for (const policy of matchingPolicies) {
+      if (unsupportedRuntimePolicyType(policy.policyType) || Object.keys(policy.conditions ?? {}).length > 0) {
+        return decision(
+          "deny",
+          "deny_policy_block",
+          "Tool access denied because a matching policy uses unsupported runtime semantics.",
+          effectiveProfileIds,
+          [policy.id],
+          { redactionPlan: redaction.redactionPlan },
+        );
+      }
       if (policy.policyType === "block") {
         return decision("deny", "deny_policy_block", policy.description ?? "Tool access is blocked by policy.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan });
       }
       if (policy.policyType === "rate_limit") {
+        if (!rateLimitRule(policy)) {
+          return decision(
+            "deny",
+            "deny_policy_block",
+            "Tool access denied because a matching rate-limit policy has invalid runtime config.",
+            effectiveProfileIds,
+            [policy.id],
+            { redactionPlan: redaction.redactionPlan },
+          );
+        }
         const state = await enforceRateLimit(policy, ctx, input.consumeRateLimit === true);
         if (state?.limited) {
           return decision("rate_limited", "rate_limited", "Tool access rate limit exceeded.", effectiveProfileIds, [policy.id], { rateLimitState: state, redactionPlan: redaction.redactionPlan });

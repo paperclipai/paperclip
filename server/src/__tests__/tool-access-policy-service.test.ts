@@ -715,6 +715,189 @@ describeEmbeddedPostgres("tool access policy service", () => {
     });
   });
 
+  it("rejects unsupported policy semantics at create and update time", async () => {
+    const company = await createCompany(db);
+    const svc = toolAccessPolicyService(db);
+    const policy = await svc.createPolicy(company.id, {
+      name: "Require review",
+      policyType: "require_approval",
+      selectors: { toolName: "send_email" },
+    });
+
+    await expect(svc.createPolicy(company.id, {
+      name: "Dead redact policy",
+      policyType: "redact" as never,
+      selectors: { toolName: "send_email" },
+      config: { redact: { fields: ["to", "body"] } },
+    })).rejects.toThrow("Tool policy type 'redact' is not supported at runtime");
+    await expect(svc.createPolicy(company.id, {
+      name: "Dead custom check",
+      policyType: "validate" as never,
+      selectors: { toolName: "send_email" },
+      config: { schema: { required: ["body"] } },
+    })).rejects.toThrow("Tool policy type 'validate' is not supported at runtime");
+    await expect(svc.createPolicy(company.id, {
+      name: "Conditional policy",
+      policyType: "allow",
+      selectors: { toolName: "send_email" },
+      conditions: { args: { body: "safe" } } as never,
+    })).rejects.toThrow("Tool policy conditions are not supported at runtime");
+    await expect(svc.createPolicy(company.id, {
+      name: "Ignored approval config",
+      policyType: "require_approval",
+      selectors: { toolName: "send_email" },
+      config: { validate: { required: ["body"] } },
+    })).rejects.toThrow("Tool policy type 'require_approval' does not support config");
+    await expect(svc.createPolicy(company.id, {
+      name: "Invalid rate limit",
+      policyType: "rate_limit",
+      selectors: { toolName: "send_email" },
+      config: { rateLimit: { limit: 0, windowSeconds: 60 } },
+    })).rejects.toThrow("Rate-limit policy config requires positive numeric limit and windowSeconds");
+    await expect(svc.updatePolicy({
+      companyId: company.id,
+      policyId: policy.id,
+      body: { conditions: { args: { body: "safe" } } as never },
+    })).rejects.toThrow("Tool policy conditions are not supported at runtime");
+  });
+
+  it("fails closed for legacy unsupported redact and validate policies", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection, catalogEntry } = await createTool(db, company.id);
+    const profile = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `profile-${randomUUID()}`,
+      name: "Fallback allow",
+      defaultAction: "allow",
+    }).returning().then((rows) => rows[0]!);
+    await db.insert(toolProfileBindings).values({
+      companyId: company.id,
+      profileId: profile.id,
+      targetType: "agent",
+      targetId: agent.id,
+    });
+    const [redactPolicy] = await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Legacy redact",
+      policyType: "redact" as never,
+      selectors: { toolName: "send_email" },
+      config: { redact: { fields: ["to", "body"] } },
+      priority: 1,
+    }).returning();
+    const [validatePolicy] = await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Legacy validate",
+      policyType: "validate" as never,
+      selectors: { toolName: "send_email" },
+      config: { schema: { required: ["body"] } },
+      priority: 2,
+    }).returning();
+
+    const redactDecision = await toolAccessPolicyService(db).decide({
+      companyId: company.id,
+      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
+      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
+    });
+    await db.update(toolPolicies).set({ enabled: false }).where(eq(toolPolicies.id, redactPolicy!.id));
+    const validateDecision = await toolAccessPolicyService(db).decide({
+      companyId: company.id,
+      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
+      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
+    });
+
+    expect(redactDecision).toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_policy_block",
+      matchedPolicyIds: [redactPolicy!.id],
+    });
+    expect(validateDecision).toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_policy_block",
+      matchedPolicyIds: [validatePolicy!.id],
+    });
+  });
+
+  it("fails closed for legacy condition-bearing policies", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection, catalogEntry } = await createTool(db, company.id);
+    const profile = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `profile-${randomUUID()}`,
+      name: "Fallback allow",
+      defaultAction: "allow",
+    }).returning().then((rows) => rows[0]!);
+    await db.insert(toolProfileBindings).values({
+      companyId: company.id,
+      profileId: profile.id,
+      targetType: "agent",
+      targetId: agent.id,
+    });
+    const [policy] = await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Legacy conditional allow",
+      policyType: "allow",
+      selectors: { toolName: "send_email" },
+      conditions: { args: { body: "safe" } },
+      priority: 1,
+    }).returning();
+
+    const result = await toolAccessPolicyService(db).decide({
+      companyId: company.id,
+      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
+      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
+    });
+
+    expect(result).toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_policy_block",
+      matchedPolicyIds: [policy!.id],
+    });
+  });
+
+  it("fails closed for legacy rate-limit policies with invalid config", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection, catalogEntry } = await createTool(db, company.id);
+    const profile = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `profile-${randomUUID()}`,
+      name: "Fallback allow",
+      defaultAction: "allow",
+    }).returning().then((rows) => rows[0]!);
+    await db.insert(toolProfileBindings).values({
+      companyId: company.id,
+      profileId: profile.id,
+      targetType: "agent",
+      targetId: agent.id,
+    });
+    const [policy] = await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Broken rate limit",
+      policyType: "rate_limit",
+      selectors: { toolName: "send_email" },
+      config: { rateLimit: { limit: 0, windowSeconds: 60 } },
+      priority: 1,
+    }).returning();
+
+    const result = await toolAccessPolicyService(db).decide({
+      companyId: company.id,
+      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
+      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
+    });
+
+    expect(result).toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_policy_block",
+      matchedPolicyIds: [policy!.id],
+    });
+  });
+
   it("promotes repeated approved actions into a scoped trust rule with audited hits", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);

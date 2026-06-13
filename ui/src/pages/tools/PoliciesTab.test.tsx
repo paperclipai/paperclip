@@ -202,6 +202,8 @@ describe("PoliciesTab", () => {
     expect(container.textContent).not.toContain("Wildcard action names");
     expect(container.textContent).not.toContain("*send*");
     expect(container.textContent).not.toContain("*delete*");
+    expect(container.textContent).not.toContain("Hide sensitive details");
+    expect(container.textContent).not.toContain("Custom check");
 
     const starter = [...container.querySelectorAll("button")].find((button) =>
       button.textContent?.includes("Ask first before selected actions")
@@ -210,6 +212,8 @@ describe("PoliciesTab", () => {
     await flushReact();
 
     expect(container.querySelector("#tool-patterns")).toBeNull();
+    expect(container.querySelector("#conditions-json")).toBeNull();
+    expect(container.querySelector("#config-json")).toBeNull();
     expect([...container.querySelectorAll("input")].map((input) => input.value).join(" ")).not.toContain("*");
   });
 
