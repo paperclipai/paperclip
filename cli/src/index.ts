@@ -9,6 +9,7 @@ import { runCommand } from "./commands/run.js";
 import { bootstrapCeoInvite } from "./commands/auth-bootstrap-ceo.js";
 import { dbBackupCommand } from "./commands/db-backup.js";
 import { registerEnvLabCommands } from "./commands/env-lab.js";
+import { emitFlagHintsFromArgv } from "./commands/client/common.js";
 import { registerContextCommands } from "./commands/client/context.js";
 import { registerCompanyCommands } from "./commands/client/company.js";
 import { registerIssueCommands } from "./commands/client/issue.js";
@@ -50,7 +51,10 @@ const DATA_DIR_OPTION_HELP =
 program
   .name("paperclipai")
   .description("Paperclip CLI — setup, diagnose, and configure your instance")
-  .version(cliVersion);
+  .version(cliVersion)
+  .showHelpAfterError(
+    "(run the command with --help to see supported flags; flag support varies per subcommand — see `issue --help` / `issue create --help` / `issue update --help`)",
+  );
 
 program.hook("preAction", (_thisCommand, actionCommand) => {
   const options = actionCommand.optsWithGlobals() as DataDirOptionLike;
@@ -201,6 +205,10 @@ auth
 registerClientAuthCommands(auth);
 
 async function main(): Promise<void> {
+  // Pre-parse sweep: print actionable hints for well-known wrong flags BEFORE
+  // commander's generic "unknown option" error. Does not change exit code.
+  emitFlagHintsFromArgv(process.argv.slice(2));
+
   let failed = false;
   try {
     await program.parseAsync();
