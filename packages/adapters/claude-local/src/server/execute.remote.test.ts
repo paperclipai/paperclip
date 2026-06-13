@@ -328,4 +328,107 @@ describe("claude remote execution", () => {
     expect(call?.[2]).toContain("12345678-1234-4abc-9def-123456789012");
   });
 
+  it("retries with a fresh session when resume hits the thinking-block mutation 400", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-thinking-block-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-thinking-block/workspace";
+    await mkdir(workspaceDir, { recursive: true });
+
+    const resumeFailureStdout = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "session-123", model: "claude-sonnet" }),
+      JSON.stringify({
+        type: "result",
+        subtype: "error_during_execution",
+        session_id: "session-123",
+        is_error: true,
+        result:
+          "API Error: 400 messages.12: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified. These blocks must remain in their original sequence and content.",
+      }),
+    ].join("\n");
+    const freshSessionStdout = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "session-456", model: "claude-sonnet" }),
+      JSON.stringify({ type: "assistant", session_id: "session-456", message: { content: [{ type: "text", text: "recovered" }] } }),
+      JSON.stringify({ type: "result", session_id: "session-456", result: "recovered", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }),
+    ].join("\n");
+
+    runChildProcess
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: resumeFailureStdout,
+        stderr: "",
+        pid: 123,
+        startedAt: new Date().toISOString(),
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: freshSessionStdout,
+        stderr: "",
+        pid: 124,
+        startedAt: new Date().toISOString(),
+      });
+
+    const result = await execute({
+      runId: "run-thinking-block",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "session-123",
+        sessionParams: {
+          sessionId: "session-123",
+          cwd: managedRemoteWorkspace,
+          remoteExecution: {
+            transport: "ssh",
+            host: "127.0.0.1",
+            port: 2222,
+            username: "fixture",
+            remoteCwd: managedRemoteWorkspace,
+          },
+        },
+        sessionDisplayId: "session-123",
+        taskKey: null,
+      },
+      config: {
+        command: "claude",
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(runChildProcess).toHaveBeenCalledTimes(2);
+    const firstCall = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    const secondCall = runChildProcess.mock.calls[1] as unknown as [string, string, string[]] | undefined;
+    expect(firstCall?.[2]).toContain("--resume");
+    expect(secondCall?.[2]).not.toContain("--resume");
+    expect(result.exitCode).toBe(0);
+    expect(result.errorMessage ?? null).toBeNull();
+    expect(result.sessionId).toBe("session-456");
+  });
+
 });

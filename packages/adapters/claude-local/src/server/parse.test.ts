@@ -1,11 +1,64 @@
 import { describe, expect, it } from "vitest";
 import {
   extractClaudeRetryNotBefore,
+  isClaudeThinkingBlockMutationError,
   isClaudeTransientUpstreamError,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
 } from "./parse.js";
+
+describe("isClaudeThinkingBlockMutationError", () => {
+  it("classifies the latest-assistant thinking-block mutation 400", () => {
+    expect(
+      isClaudeThinkingBlockMutationError({
+        is_error: true,
+        result:
+          "API Error: 400 messages.12: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified. These blocks must remain in their original sequence and content.",
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeThinkingBlockMutationError({
+        is_error: true,
+        errors: [
+          {
+            type: "invalid_request_error",
+            message:
+              "messages.4: thinking or redacted_thinking blocks in the latest assistant message cannot be modified.",
+          },
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it("classifies the interleaved-thinking ordering 400 on resume", () => {
+    expect(
+      isClaudeThinkingBlockMutationError({
+        is_error: true,
+        result:
+          "API Error: 400 Expected `thinking` or `redacted_thinking`, but found `text`. When `thinking` is enabled, a final `assistant` message must start with a thinking block.",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not classify unrelated failures", () => {
+    expect(
+      isClaudeThinkingBlockMutationError({
+        result: "No conversation found with session id abc-123",
+      }),
+    ).toBe(false);
+    expect(
+      isClaudeThinkingBlockMutationError({
+        result: "Maximum turns reached.",
+      }),
+    ).toBe(false);
+    expect(
+      isClaudeThinkingBlockMutationError({
+        errors: [{ message: "Invalid request_error: Unknown parameter 'foo'." }],
+      }),
+    ).toBe(false);
+  });
+});
 
 describe("isClaudeTransientUpstreamError", () => {
   it("classifies the 'out of extra usage' subscription window failure as transient", () => {
