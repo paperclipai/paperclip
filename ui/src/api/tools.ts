@@ -11,6 +11,7 @@ import type {
   ToolAccessDecision,
   ToolAccessDecisionInput,
   CreateToolPolicy,
+  DuplicateToolPolicy,
   McpJsonImportPreview,
   ToolRuntimeHealthSummary,
   ToolRunDecisionLookup,
@@ -30,6 +31,7 @@ import type {
   ToolProfileNewToolsReviewResult,
   ToolRiskLevel,
   UpdateToolPolicy,
+  ReorderToolPolicies,
   AppGalleryEntry,
   ToolAppsAttentionResponse,
   ToolConnectionActivityResponse,
@@ -293,6 +295,10 @@ export const toolsApi = {
     api.get<ToolPoliciesResponse>(`/companies/${companyId}/tools/policies`),
   createPolicy: (companyId: string, input: CreateToolPolicy) =>
     api.post<ToolPolicy>(`/companies/${companyId}/tools/policies`, input),
+  reorderPolicies: (companyId: string, input: ReorderToolPolicies) =>
+    api.post<ToolPoliciesResponse>(`/companies/${companyId}/tools/policies/reorder`, input),
+  duplicatePolicy: (companyId: string, policyId: string, input: DuplicateToolPolicy = {}) =>
+    api.post<ToolPolicy>(`/companies/${companyId}/tools/policies/${policyId}/duplicate`, input),
   updatePolicy: (companyId: string, policyId: string, input: UpdateToolPolicy) =>
     api.patch<ToolPolicy>(`/companies/${companyId}/tools/policies/${policyId}`, input),
   deletePolicy: (companyId: string, policyId: string) =>
