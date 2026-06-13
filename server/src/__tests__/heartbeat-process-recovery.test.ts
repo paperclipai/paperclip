@@ -3543,4 +3543,61 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  it("clears agent error status to idle when subprocess exits 0 even if run was pre-terminated as failed by recovery", async () => {
+    // Scenario: process-loss recovery marks a run "failed" before the subprocess
+    // exits. The subprocess then exits cleanly (exit code 0). Without the fix,
+    // the latestRun.status === "failed" check causes outcome="failed" and the
+    // agent stays stuck in "error". With the fix, subprocessExitCode=0 overrides
+    // the transition to "idle".
+    const { companyId, agentId, runId } = await seedQueuedIssueRunFixture();
+
+    // Put the agent into "error" to simulate a previous failure.
+    await db
+      .update(agents)
+      .set({ status: "error", updatedAt: new Date() })
+      .where(eq(agents.id, agentId));
+
+    // Mock: simulate process-loss recovery pre-terminating the run as "failed"
+    // while the subprocess is still executing, then returning exit code 0.
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      await db
+        .update(heartbeatRuns)
+        .set({
+          status: "failed",
+          error: "process_lost: pid not alive (simulated recovery)",
+          errorCode: "process_lost",
+          finishedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(heartbeatRuns.id, ctx.runId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Subprocess exited cleanly despite run pre-termination.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    // executeRun fires via  (fire-and-forget), so waitForHeartbeatIdle may
+    // return before finalizeAgentStatus completes. Poll until the agent leaves
+    // "running" to avoid a race between the DB query and the async finalization.
+    const agent = await waitForValue(async () => {
+      const row = await db
+        .select({ status: agents.status })
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .then((rows) => rows[0] ?? null);
+      return row && row.status !== "running" ? row : null;
+    }, 5_000);
+    expect(agent?.status).toBe("idle");
+  });
 });

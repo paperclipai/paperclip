@@ -615,19 +615,60 @@ async function resolveRunScopedMentionedSkillKeys(input: {
   ]);
   if (mentionedSkillIds.length === 0) return [];
 
-  const skillRows = await input.db
-    .select({
-      id: companySkillsTable.id,
-      key: companySkillsTable.key,
-    })
-    .from(companySkillsTable)
-    .where(
-      and(
-        eq(companySkillsTable.companyId, input.companyId),
-        inArray(companySkillsTable.id, mentionedSkillIds),
-      ),
-    );
-  const skillKeyById = new Map(skillRows.map((row) => [row.id, row.key]));
+  // Skill mention links are expected to embed the skill UUID, but legacy or
+  // manually-authored mentions may use the skill slug instead. Separate the
+  // two so we never pass a non-UUID string into the UUID-typed id column.
+  const uuidIds = mentionedSkillIds.filter((id) => isUuidLike(id));
+  const slugIds = mentionedSkillIds.filter((id) => !isUuidLike(id));
+
+  const skillKeyById = new Map<string, string>();
+
+  if (uuidIds.length > 0) {
+    const rows = await input.db
+      .select({
+        id: companySkillsTable.id,
+        key: companySkillsTable.key,
+      })
+      .from(companySkillsTable)
+      .where(
+        and(
+          eq(companySkillsTable.companyId, input.companyId),
+          inArray(companySkillsTable.id, uuidIds),
+        ),
+      );
+    for (const row of rows) {
+      skillKeyById.set(row.id, row.key);
+    }
+  }
+
+  if (slugIds.length > 0) {
+    // Fall back to slug lookup for non-UUID mentions. Only use unambiguous
+    // matches (exactly one skill with that slug in the company).
+    const rows = await input.db
+      .select({
+        slug: companySkillsTable.slug,
+        key: companySkillsTable.key,
+      })
+      .from(companySkillsTable)
+      .where(
+        and(
+          eq(companySkillsTable.companyId, input.companyId),
+          inArray(companySkillsTable.slug, slugIds),
+        ),
+      );
+    const keysBySlug = new Map<string, string[]>();
+    for (const row of rows) {
+      const keys = keysBySlug.get(row.slug) ?? [];
+      keys.push(row.key);
+      keysBySlug.set(row.slug, keys);
+    }
+    for (const [slug, keys] of keysBySlug.entries()) {
+      if (keys.length === 1) {
+        skillKeyById.set(slug, keys[0]!);
+      }
+    }
+  }
+
   return mentionedSkillIds
     .map((skillId) => skillKeyById.get(skillId) ?? null)
     .filter((skillKey): skillKey is string => Boolean(skillKey));
@@ -7145,6 +7186,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    opts?: { subprocessExitCode?: number | null },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -7156,12 +7198,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const isFirstHeartbeat = !existing.lastHeartbeatAt;
 
     const runningCount = await countRunningRunsForAgent(agentId);
-    const nextStatus =
+    let nextStatus: "running" | "idle" | "error" =
       runningCount > 0
         ? "running"
         : outcome === "succeeded" || outcome === "cancelled"
           ? "idle"
           : "error";
+
+    // If the subprocess exited cleanly (exit code 0) but the run was pre-terminated
+    // as "failed" by process-loss recovery before the subprocess finished, still
+    // transition the agent to "idle" so the successful work is recognised.
+    // Scoped to outcome === "failed" so timed-out runs are not affected.
+    // No agent-status guard here: the agent is "running" (not "error") at this
+    // point because the run start already transitioned it; only the exit code
+    // tells us whether the subprocess actually succeeded.
+    if (
+      (nextStatus === "error" || nextStatus === "running") &&
+      outcome === "failed" &&
+      opts?.subprocessExitCode === 0
+    ) {
+      nextStatus = "idle";
+    }
 
     const updated = await db
       .update(agents)
@@ -9369,7 +9426,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(agent.id, outcome, { subprocessExitCode: adapterResult.exitCode ?? null });
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
