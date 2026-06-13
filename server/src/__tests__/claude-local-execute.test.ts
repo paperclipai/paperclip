@@ -503,6 +503,53 @@ describe("claude execute", () => {
     }
   });
 
+  it("logs subprocess diagnostics when Claude exits with empty stdout", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-empty-stdout-"));
+    const { workspace, commandPath, restore } = await setupExecuteEnv(root, {
+      commandWriter: (commandPath) =>
+        writeTextFailingClaudeCommand(commandPath, {
+          stderr: "first-run config missing\n",
+          exitCode: 0,
+        }),
+    });
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+
+    try {
+      const result = await execute({
+        runId: "run-empty-stdout",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toContain("Failed to parse claude JSON output");
+      expect(result.errorMessage).toContain("Claude exited 0 with empty stdout");
+
+      const stderrLog = logs
+        .filter((entry) => entry.stream === "stderr")
+        .map((entry) => entry.chunk)
+        .join("");
+      expect(stderrLog).toContain("[paperclip] Claude exited 0 with empty stdout");
+      expect(stderrLog).toContain(`cwd=${workspace}`);
+      expect(stderrLog).toContain(`HOME=${root}`);
+      expect(stderrLog).toContain("stderr:");
+      expect(stderrLog).toContain("first-run config missing");
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("logs HOME, CLAUDE_CONFIG_DIR, and the resolved executable path in invocation metadata", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-meta-"));
     const workspace = path.join(root, "workspace");

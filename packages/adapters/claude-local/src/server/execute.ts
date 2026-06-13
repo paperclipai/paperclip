@@ -702,6 +702,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return args;
   };
 
+  const describeEmptyStdoutInvocation = (proc: RunProcessResult) => {
+    const exitCode = proc.exitCode ?? "unknown";
+    const home = loggedEnv.HOME ?? env.HOME ?? process.env.HOME ?? "";
+    return `Claude exited ${exitCode} with empty stdout (cwd=${effectiveExecutionCwd}, HOME=${home})`;
+  };
+
+  const formatEmptyStdoutDiagnostic = (proc: RunProcessResult) => {
+    const stderr = proc.stderr.trim();
+    const stderrPreview =
+      stderr.length > 4_000
+        ? `${stderr.slice(0, 4_000)}\n[truncated ${stderr.length - 4_000} chars]`
+        : stderr;
+
+    return [
+      `[paperclip] ${describeEmptyStdoutInvocation(proc)}; unable to parse JSON output.`,
+      `resolvedCommand=${resolvedCommand}`,
+      `CLAUDE_CONFIG_DIR=${loggedEnv.CLAUDE_CONFIG_DIR ?? env.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR ?? ""}`,
+      `signal=${proc.signal ?? ""}`,
+      `timedOut=${proc.timedOut ? "true" : "false"}`,
+      stderrPreview ? `stderr:\n${stderrPreview}` : "stderr: <empty>",
+    ].join("\n") + "\n";
+  };
+
   const parseFallbackErrorMessage = (proc: RunProcessResult) => {
     const stderrLine =
       proc.stderr
@@ -710,6 +733,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         .find(Boolean) ?? "";
 
     if ((proc.exitCode ?? 0) === 0) {
+      if (proc.stdout.trim().length === 0) {
+        return `Failed to parse claude JSON output: ${describeEmptyStdoutInvocation(proc)}`;
+      }
       return "Failed to parse claude JSON output";
     }
 
@@ -765,6 +791,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const parsedStream = parseClaudeStreamJson(proc.stdout);
     const parsed = parsedStream.resultJson ?? parseJson(proc.stdout);
+    if (!parsed && proc.stdout.trim().length === 0) {
+      await onLog("stderr", formatEmptyStdoutDiagnostic(proc));
+    }
     return { proc, parsedStream, parsed };
   };
 
