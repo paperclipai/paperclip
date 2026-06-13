@@ -772,6 +772,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         and(
           opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
           isNull(issues.hiddenAt),
+          // Board-pace ≠ agent-stall: skip any human-assignee or in_review issue (ZDA-1318).
           isNull(issues.assigneeUserId),
           inArray(issues.status, ["todo", "in_progress"]),
           sql`${issues.assigneeAgentId} is not null`,
@@ -797,6 +798,11 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     const prefixCache = new Map<string, string>();
     for (const candidate of candidates) {
       if (!candidate.assigneeAgentId) {
+        result.skipped += 1;
+        continue;
+      }
+      // Defense-in-depth: never review a board-pending issue, even if SQL filters drift (ZDA-1318).
+      if (candidate.assigneeUserId !== null || candidate.status === "in_review") {
         result.skipped += 1;
         continue;
       }
