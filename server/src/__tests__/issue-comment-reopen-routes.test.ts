@@ -522,7 +522,10 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
-  it("rejects non-assignee agent POST comments on closed issues", async () => {
+  // AIM-57 / AIM-55: a non-assignee same-company agent may post a plain comment on a closed
+  // issue (append-only communication). It must NOT implicitly reopen the issue (only human
+  // comments reopen) and must not wake the assignee for a closed-issue comment.
+  it("allows non-assignee agent POST comments on closed issues without reopening", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
@@ -545,10 +548,9 @@ describe.sequential("issue comment reopen routes", () => {
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "hello" });
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
-    expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
