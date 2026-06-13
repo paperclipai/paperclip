@@ -565,3 +565,17 @@ export type {
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
 } from "./plugin.js";
+export type {
+  PluginHookIssueContext,
+  WakePayloadTransformerContext,
+  SkillResolverTransformerContext,
+  WakePayload,
+  WakePayloadTransformer,
+  SkillResolverResult,
+  SkillResolverTransformer,
+  WhenPredicate,
+  PluginHookManifestEntry,
+  PluginHooksDeclaration,
+  PluginHookKind,
+  PluginHookHandlerMap,
+} from "./plugin-hooks.js";
