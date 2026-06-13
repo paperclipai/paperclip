@@ -106,7 +106,10 @@ import {
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
-import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
+import {
+  executionWorkspaceService as executionWorkspaceServiceDirect,
+  inspectExecutionWorkspaceDirtyForDoneTransition,
+} from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { readAcceptedPlanConfirmationTarget } from "../services/issues.js";
@@ -2317,6 +2320,54 @@ export function issueRoutes(
       error: getClosedIsolatedExecutionWorkspaceMessage(workspace),
       executionWorkspace: workspace,
     });
+  }
+
+  function issueHasNoCodeLabel(issue: { labels?: Array<{ name: string }> | null }) {
+    const labels = issue.labels;
+    if (!Array.isArray(labels)) return false;
+    return labels.some((label) => typeof label?.name === "string" && label.name.trim().toLowerCase() === "no-code");
+  }
+
+  async function assertExecutionWorkspaceCleanForAgentDone(
+    req: Request,
+    res: Response,
+    existing: {
+      id: string;
+      status: string;
+      executionWorkspaceId?: string | null;
+      labels?: Array<{ name: string }> | null;
+    },
+    requestedStatus: unknown,
+  ): Promise<boolean> {
+    if (req.actor.type !== "agent") return true;
+    if (requestedStatus !== "done") return true;
+    if (existing.status === "done") return true;
+    if (!existing.executionWorkspaceId) return true;
+    if (issueHasNoCodeLabel(existing)) return true;
+
+    const workspace = await executionWorkspacesSvc.getById(existing.executionWorkspaceId);
+    if (!workspace) return true;
+
+    const inspection = await inspectExecutionWorkspaceDirtyForDoneTransition(workspace);
+    if (inspection.status !== "dirty") return true;
+
+    res.status(422).json({
+      error: "Cannot mark issue done while execution workspace has uncommitted changes",
+      code: "execution_workspace_dirty",
+      details: {
+        issueId: existing.id,
+        executionWorkspaceId: workspace.id,
+        workspacePath: inspection.workspacePath,
+        totalRelevantEntries: inspection.totalRelevantEntries,
+        dirtyEntries: inspection.dirtyEntries,
+        untrackedEntries: inspection.untrackedEntries,
+        bypassHints: [
+          "Commit (or revert) the changes in the execution workspace, then retry the done transition.",
+          "If this issue is intentionally a no-code task, add the 'no-code' label and retry.",
+        ],
+      },
+    });
+    return false;
   }
 
   async function resolveIssueRouteId(rawId: string): Promise<string> {
@@ -4922,6 +4973,8 @@ export function issueRoutes(
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
       return;
     }
+
+    if (!(await assertExecutionWorkspaceCleanForAgentDone(req, res, existing, updateFields.status))) return;
 
     if (interruptRequested) {
       if (!commentBody) {
