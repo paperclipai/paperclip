@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import express from "express";
+import request from "supertest";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -26,6 +28,8 @@ import {
 } from "../services/heartbeat.ts";
 import { recoveryService } from "../services/recovery/service.ts";
 import { getRunLogStore } from "../services/run-log-store.ts";
+import { errorHandler } from "../middleware/error-handler.ts";
+import { agentRoutes } from "../routes/agents.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -255,6 +259,18 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     return { companyId, managerId, coderId, issueId, runId, issuePrefix };
   }
 
+  function createAgentRouteApp(actor: Record<string, unknown>) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = actor as typeof req.actor;
+      next();
+    });
+    app.use("/api", agentRoutes(db));
+    app.use(errorHandler);
+    return app;
+  }
+
   it("creates one medium-priority evaluation issue for a suspicious silent run", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const { companyId, managerId, runId } = await seedRunningRun({
@@ -285,6 +301,35 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     });
     expect(evaluations[0]?.description).toContain("Decision Checklist");
     expect(evaluations[0]?.description).not.toContain("sk-test-secret-value");
+  });
+
+  it("guides assigned agents to watchdog-decisions and routes cancel through the board", async () => {
+    // LEV-243: agent-facing recovery tickets must not recommend a direct cancel
+    // call. POST /api/heartbeat-runs/:runId/cancel is board-only (assertBoard);
+    // the assigned agent owns `snooze`, `continue`, and `dismissed_false_positive`
+    // through /watchdog-decisions, and any urgent cancel should escalate to the
+    // board.
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    const description = evaluation?.description ?? "";
+
+    expect(description).not.toContain("Cancel or recover through the explicit run recovery controls when authorized.");
+    expect(description).toContain(`/api/heartbeat-runs/${runId}/watchdog-decisions`);
+    expect(description).toContain("`decision` of `continue`, `snooze`, or `dismissed_false_positive`");
+    expect(description).toContain("Paperclip infers this evaluation issue");
+    expect(description).toContain("board-only");
+    expect(description).toContain(`@board cancel runId=${runId}`);
   });
 
   it("redacts sensitive values from actual run-log evidence", async () => {
@@ -739,6 +784,48 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       level: "snoozed",
       snoozedUntil,
       evaluationIssueId,
+    });
+  });
+
+  it("lets the assigned recovery owner post watchdog decisions without evaluationIssueId", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, managerId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const scan = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    const evaluationIssueId = scan.evaluationIssueIds[0];
+    expect(evaluationIssueId).toBeTruthy();
+
+    const app = createAgentRouteApp({
+      type: "agent",
+      agentId: managerId,
+      companyId,
+    });
+    const res = await request(app)
+      .post(`/api/heartbeat-runs/${runId}/watchdog-decisions`)
+      .send({
+        decision: "continue",
+        reason: "Current evidence is acceptable; keep watching.",
+      })
+      .expect(200);
+
+    expect(res.body).toMatchObject({
+      runId,
+      evaluationIssueId,
+      decision: "continue",
+      createdByAgentId: managerId,
+    });
+
+    const [decision] = await db
+      .select()
+      .from(heartbeatRunWatchdogDecisions)
+      .where(and(eq(heartbeatRunWatchdogDecisions.runId, runId), eq(heartbeatRunWatchdogDecisions.decision, "continue")));
+    expect(decision).toMatchObject({
+      evaluationIssueId,
+      createdByAgentId: managerId,
     });
   });
 
