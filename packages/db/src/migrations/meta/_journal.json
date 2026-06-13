@@ -687,6 +687,13 @@
     "when": 1780040470886,
     "tag": "0097_giant_green_goblin",
     "breakpoints": true
+  },
+  {
+    "idx": 98,
+    "version": "7",
+    "when": 1781654400000,
+    "tag": "0099_heartbeat_runs_context_snapshot_idx",
+    "breakpoints": true
   }
   ]
 }
