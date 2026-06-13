@@ -482,7 +482,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
   const commandNotes = (() => {
-    const notes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
+    const notes: string[] = [
+      "Prompt is streamed to Gemini via stdin to avoid Windows cmd.exe argv limits. No --prompt flag is passed: Gemini CLI 0.38.2 enters non-interactive (headless) mode automatically when stdin is piped, and rejects --prompt when stdin also has bytes ('Cannot use both a positional prompt and the --prompt (-p) flag together').",
+    ];
     notes.push("Added --approval-mode yolo for unattended execution.");
     if (executionTargetIsRemote) {
       notes.push("Set GEMINI_CLI_TRUST_WORKSPACE=true for remote headless execution.");
@@ -540,6 +542,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     heartbeatPromptChars: renderedPrompt.length,
   };
 
+  // Gemini CLI: in 0.38.2 non-interactive (headless) mode is triggered
+  // automatically when stdin is piped — no --prompt flag is needed, and in
+  // fact passing --prompt while stdin has bytes is rejected by yargs with
+  // "Cannot use both a positional prompt and the --prompt (-p) flag together".
+  // We stream the entire prompt via stdin to keep argv small (Windows cmd.exe
+  // wrappers cap the full command line at 8,191 chars). Mirrors claude-local's
+  // `--print -` + stdin pattern, just without an explicit headless trigger.
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["--output-format", "stream-json"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
@@ -551,7 +560,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--sandbox=none");
     }
     if (extraArgs.length > 0) args.push(...extraArgs);
-    args.push("--prompt", prompt);
     return args;
   };
 
@@ -563,9 +571,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         command: resolvedCommand,
         cwd: effectiveExecutionCwd,
         commandNotes,
-        commandArgs: args.map((value, index) => (
-          index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
-        )),
+        commandArgs: args,
         env: loggedEnv,
         prompt,
         promptMetrics,
@@ -576,6 +582,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
       cwd,
       env,
+      stdin: prompt,
       timeoutSec,
       graceSec,
       onSpawn,
