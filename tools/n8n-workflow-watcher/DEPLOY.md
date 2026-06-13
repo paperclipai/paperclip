@@ -61,3 +61,31 @@ Täglich 03:30 (`StartCalendarInterval`), `RunAtLoad false`. Pro neuem Fehler-Ex
 (jüngster Lauf eines aktiven Workflows = `error`/`crashed`, 14-Tage-Fenster) wird **ein**
 Issue angelegt; Idempotenz über `reported_exec_ids` verhindert Duplikate. Mail nur als
 Meta-Fallback bei API-Ausfall.
+
+## Recovery-Toolkit (Plan B)
+
+Der Diagnose-Agent `n8n-Betriebsingenieur` (claude_local, gestufte Recovery) nutzt ein
+REST-Toolkit. Deployment:
+
+```bash
+# aus der Repo-Wurzel
+mkdir -p ~/.paperclip/scripts/recovery
+cp tools/n8n-workflow-watcher/recovery/n8n_rest.py \
+   tools/n8n-workflow-watcher/recovery/n8n_health.py \
+   tools/n8n-workflow-watcher/recovery/__init__.py ~/.paperclip/scripts/recovery/
+```
+
+- **API-Key:** `N8N_API_KEY` muss in `~/.whitestag.env` stehen (`export N8N_API_KEY=...`;
+  `n8n_rest.load_api_key()` akzeptiert mit/ohne `export`-Präfix). In der n8n-UI unter
+  **Settings → n8n API** erzeugen (kein Neustart). Der launchd-Detektor braucht ihn NICHT —
+  nur der Agent.
+- **Agent-Instructions (Phase B):** Quelle `tools/n8n-workflow-watcher/agent/AGENTS.md`; live
+  als managed-Bundle unter `…/agents/dfa8d0e2…/instructions/AGENTS.md`. Bei Änderungen die
+  Datei dort **direkt** aktualisieren (PATCH des Bundles schreibt die managed-Disk-Datei nicht
+  zuverlässig neu) — der Adapter liest sie pro Heartbeat frisch. Agent ist via `EXCLUDE_NAMES`
+  vom Nacht-Generator ausgenommen.
+- **Stufen:** 🟢 GRÜN = Workflow reaktivieren (deactivate→activate-Zyklus; nötig, da plain
+  `activate` auf bereits aktivem Workflow den Trigger nicht neu registriert — live verifiziert).
+  🟡 GELB = Retry (`retry_execution`) — Werkzeug vorhanden, aber nur vom Menschen ausgelöst
+  (Doppel-Seiteneffekt-Risiko). 🔴 ROT (Neustart/Credential/JSON-Edit) = Empfehlung,
+  menschliche Ausführung.
