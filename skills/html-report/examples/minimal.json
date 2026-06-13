@@ -1,0 +1,43 @@
+{
+  "title": "Minimal Report",
+  "subtitle": "Smallest valid input",
+  "lang": "en",
+  "author": "smoke test",
+  "date": "2026-04-10",
+  "executive_summary": {
+    "text": "A one-paragraph summary that renders as a single <p> inside the summary card."
+  },
+  "sections": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Overview",
+      "anchor": true
+    },
+    {
+      "type": "text",
+      "text": "Plain paragraph of prose. Nothing fancy. No spans, no styling, no images."
+    },
+    {
+      "type": "text",
+      "spans": [
+        { "kind": "text",   "text": "A span-based paragraph with " },
+        { "kind": "strong", "text": "bold" },
+        { "kind": "text",   "text": ", " },
+        { "kind": "em",     "text": "italic" },
+        { "kind": "text",   "text": " and " },
+        { "kind": "code",   "text": "inline_code()" },
+        { "kind": "text",   "text": " pieces." }
+      ]
+    },
+    {
+      "type": "list",
+      "style": "ul",
+      "items": [
+        "First bullet",
+        "Second bullet",
+        "Third bullet"
+      ]
+    }
+  ]
+}

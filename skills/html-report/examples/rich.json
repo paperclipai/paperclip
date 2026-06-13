@@ -1,0 +1,155 @@
+{
+  "title": "Q1 2026 Платформенный обзор",
+  "subtitle": "Надёжность, стоимость и направления на следующий квартал",
+  "lang": "ru",
+  "author": "Infra Team",
+  "date": "2026-04-10",
+  "issue_ref": "INF-318",
+  "executive_summary": {
+    "blocks": [
+      {
+        "type": "text",
+        "text": "За Q1 2026 команда платформы стабилизировала p99 API-латентность, сократила месячные расходы на хранилище и закрыла три инцидента с базой данных. Ниже — конкретные цифры и план на Q2."
+      },
+      {
+        "type": "list",
+        "style": "ul",
+        "items": [
+          [
+            { "kind": "strong", "text": "p99 latency" },
+            { "kind": "text",   "text": ": 188 → 142 ms (−24%)" }
+          ],
+          [
+            { "kind": "strong", "text": "Storage spend" },
+            { "kind": "text",   "text": ": $12 400 → $8 200 / mo" }
+          ],
+          [
+            { "kind": "strong", "text": "Incidents" },
+            { "kind": "text",   "text": ": 5 → 2 (−60%)" }
+          ]
+        ]
+      }
+    ]
+  },
+  "sections": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Обзор",
+      "anchor": true
+    },
+    {
+      "type": "text",
+      "text": "Quarter started with a regional failover drill and ended with a successful PostgreSQL 16 upgrade. Мы выдержали два пиковых дня без деградации SLA."
+    },
+    {
+      "type": "text",
+      "spans": [
+        { "kind": "text",   "text": "Главный прогресс — p99 упал до " },
+        { "kind": "code",   "text": "142ms" },
+        { "kind": "text",   "text": " после миграции реплики. См. " },
+        { "kind": "link",   "text": "runbook", "href": "https://example.com/runbooks/failover" },
+        { "kind": "text",   "text": " для деталей." }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Metrics",
+      "anchor": true
+    },
+    {
+      "type": "table",
+      "caption": "Региональная задержка API, p50 / p99 (ms)",
+      "head": [["Регион", "p50", "p99", "Δ p99"]],
+      "rows": [
+        ["us-east", "30",  "142", "−24%"],
+        ["eu-west", "42",  "188", "−18%"],
+        ["ap-south","68",  "264", "−9%"]
+      ]
+    },
+    {
+      "type": "callout",
+      "variant": "warn",
+      "title": "Heads up",
+      "body": [
+        {
+          "type": "text",
+          "text": "Окно бэкапа БД (02:00–04:00 UTC) пересекается с пиковым трафиком в ap-south. В Q2 необходимо сдвинуть его на 00:00 UTC."
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "variant": "good",
+      "title": "Win",
+      "body": "PostgreSQL 16 upgrade прошёл без simpатического downtime благодаря logical replication."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Deployment playbook",
+      "anchor": true
+    },
+    {
+      "type": "text",
+      "text": "Стандартный сценарий деплоя для новой версии сервиса:"
+    },
+    {
+      "type": "code_block",
+      "language": "bash",
+      "code": "docker compose build api\ndocker compose up -d --no-deps api\ncurl -fsS http://localhost:3100/health"
+    },
+    {
+      "type": "details",
+      "summary": "Сырые цифры p99 по дням (раскрыть)",
+      "body": [
+        {
+          "type": "table",
+          "head": [["Дата", "p99 ms"]],
+          "rows": [
+            ["2026-01-01", "188"],
+            ["2026-01-15", "176"],
+            ["2026-02-01", "162"],
+            ["2026-02-15", "155"],
+            ["2026-03-01", "149"],
+            ["2026-03-15", "144"],
+            ["2026-04-01", "142"]
+          ]
+        }
+      ]
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Diagram",
+      "anchor": true
+    },
+    {
+      "type": "figure",
+      "image": {
+        "data_uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNgAAIAAAUAAen63NgAAAAASUVORK5CYII=",
+        "alt": "1x1 transparent pixel placeholder",
+        "width": 64
+      },
+      "caption": "Placeholder diagram — в реальном отчёте заменить на pre-rendered PNG трендов."
+    }
+  ],
+  "references": [
+    {
+      "label": "PostgreSQL 16 release notes",
+      "url": "https://www.postgresql.org/docs/16/release-16.html"
+    },
+    {
+      "label": "Internal runbook: Regional failover",
+      "text": "ops/runbooks/regional-failover.md"
+    }
+  ],
+  "metadata": {
+    "generated_by": "smoke-test",
+    "report_version": "rich-v1"
+  }
+}
