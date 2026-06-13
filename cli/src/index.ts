@@ -130,6 +130,8 @@ const run = program
   .option("--bind <mode>", "On first run, use onboarding reachability preset (loopback, lan, tailnet)")
   .option("--repair", "Attempt automatic repairs during doctor", true)
   .option("--no-repair", "Disable automatic repairs during doctor")
+  .option("--auto-migrate", "Auto-apply pending DB migrations on start", true)
+  .option("--no-auto-migrate", "Refuse to start when DB migrations are pending")
   .action(runCommand);
 
 registerRunCommands(run);
