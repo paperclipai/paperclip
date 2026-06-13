@@ -273,6 +273,14 @@ const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
 const MAX_TURN_CONTINUATION_MAX_DELAY_MS = 5 * 60 * 1000;
 const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = ["scheduled_retry", "queued", "running"] as const;
+
+// How long an agent must sit in `status: "error"` before the periodic recovery
+// sweep flips it back to `idle`. Two hours comfortably outruns any single
+// upstream quota window (Anthropic shared-subscription resets daily) while
+// still being long enough that real (non-quota) failures stay visible.
+export const STICKY_ERROR_RECOVERY_MIN_AGE_MS = 2 * 60 * 60 * 1000;
+const STICKY_ERROR_RECOVERY_DEFAULT_BATCH_LIMIT = 50;
+const STICKY_ERROR_RECOVERY_ACTOR_ID = "sticky_error_recovery";
 type CodexTransientFallbackMode =
   | "same_session"
   | "safer_invocation"
@@ -11474,6 +11482,85 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reconcileProductivityReviews,
 
     buildRunOutputSilence,
+
+    recoverErroredAgents: async (
+      now: Date = new Date(),
+      opts: { minAgeMs?: number; limit?: number } = {},
+    ) => {
+      const minAgeMs = Math.max(0, opts.minAgeMs ?? STICKY_ERROR_RECOVERY_MIN_AGE_MS);
+      const limit = Math.max(1, Math.min(opts.limit ?? STICKY_ERROR_RECOVERY_DEFAULT_BATCH_LIMIT, 500));
+      const cutoff = new Date(now.getTime() - minAgeMs);
+
+      const candidates = await db
+        .select({
+          id: agents.id,
+          companyId: agents.companyId,
+          lastHeartbeatAt: agents.lastHeartbeatAt,
+          updatedAt: agents.updatedAt,
+        })
+        .from(agents)
+        .where(
+          and(
+            eq(agents.status, "error"),
+            // Use lastHeartbeatAt as the staleness baseline; fall back to
+            // updatedAt for agents that errored before ever heartbeating.
+            sql`coalesce(${agents.lastHeartbeatAt}, ${agents.updatedAt}) <= ${cutoff.toISOString()}::timestamptz`,
+          ),
+        )
+        .limit(limit);
+
+      let recovered = 0;
+      for (const candidate of candidates) {
+        const [updated] = await db
+          .update(agents)
+          .set({
+            status: "idle",
+            pauseReason: null,
+            pausedAt: null,
+            updatedAt: now,
+          })
+          // Recheck status in the WHERE clause so a concurrent /resume or
+          // reverse-quota-window heartbeat can't be clobbered by this sweep.
+          .where(and(eq(agents.id, candidate.id), eq(agents.status, "error")))
+          .returning();
+        if (!updated) continue;
+        recovered += 1;
+
+        await logActivity(db, {
+          companyId: updated.companyId,
+          actorType: "system",
+          actorId: STICKY_ERROR_RECOVERY_ACTOR_ID,
+          agentId: updated.id,
+          runId: null,
+          action: "agent.recovered_from_error",
+          entityType: "agent",
+          entityId: updated.id,
+          details: {
+            source: "heartbeat.recoverErroredAgents",
+            minAgeMs,
+            cutoffIso: cutoff.toISOString(),
+            previousLastHeartbeatAt: candidate.lastHeartbeatAt
+              ? new Date(candidate.lastHeartbeatAt).toISOString()
+              : null,
+          },
+        });
+
+        publishLiveEvent({
+          companyId: updated.companyId,
+          type: "agent.status",
+          payload: {
+            agentId: updated.id,
+            status: updated.status,
+            lastHeartbeatAt: updated.lastHeartbeatAt
+              ? new Date(updated.lastHeartbeatAt).toISOString()
+              : null,
+            outcome: "sticky_error_recovered",
+          },
+        });
+      }
+
+      return { candidates: candidates.length, recovered };
+    },
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db

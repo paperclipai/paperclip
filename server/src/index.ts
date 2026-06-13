@@ -892,6 +892,24 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
+
+      // Un-stick agents that flipped to `status: "error"` (typically on an
+      // upstream quota window) and have not been touched for at least the
+      // recovery floor. Runs independently of the run/issue-driven chain
+      // above so a slow reaper can't starve quota-recovered agents.
+      void heartbeat
+        .recoverErroredAgents(new Date())
+        .then((result) => {
+          if (result.recovered > 0) {
+            logger.warn(
+              { ...result },
+              "periodic sticky-error recovery flipped agents back to idle",
+            );
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "periodic sticky-error recovery failed");
+        });
     }, config.heartbeatSchedulerIntervalMs);
   }
   
