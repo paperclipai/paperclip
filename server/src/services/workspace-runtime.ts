@@ -741,10 +741,11 @@ async function listLinkedGitWorktreePaths(repoRoot: string): Promise<Set<string>
   return paths;
 }
 
+const PROTECTED_MAINLINE_BRANCHES = new Set(["main", "master"]);
+
 async function validateLinkedGitWorktree(input: {
   repoRoot: string;
   worktreePath: string;
-  expectedBranchName: string | null;
 }): Promise<{ valid: true } | { valid: false; reason: string }> {
   const resolvedWorktreePath = path.resolve(input.worktreePath);
   const listedWorktrees = await listLinkedGitWorktreePaths(input.repoRoot);
@@ -763,17 +764,20 @@ async function validateLinkedGitWorktree(input: {
     };
   }
 
-  if (input.expectedBranchName) {
-    const currentBranch = await runGit(
-      ["symbolic-ref", "--quiet", "--short", "HEAD"],
-      resolvedWorktreePath,
-    ).catch(() => null);
-    if (currentBranch !== input.expectedBranchName) {
-      return {
-        valid: false,
-        reason: `worktree HEAD is on "${currentBranch ?? "<detached>"}" instead of "${input.expectedBranchName}"`,
-      };
-    }
+  const currentBranch = await runGit(
+    ["symbolic-ref", "--quiet", "--short", "HEAD"],
+    resolvedWorktreePath,
+  ).catch(() => null);
+
+  if (!currentBranch) {
+    return { valid: false, reason: "worktree HEAD is detached" };
+  }
+
+  if (PROTECTED_MAINLINE_BRANCHES.has(currentBranch)) {
+    return {
+      valid: false,
+      reason: `worktree HEAD is on protected mainline branch "${currentBranch}"`,
+    };
   }
 
   return { valid: true };
@@ -1198,7 +1202,6 @@ export async function realizeExecutionWorkspace(input: {
     return await validateLinkedGitWorktree({
       repoRoot,
       worktreePath: reusablePath,
-      expectedBranchName: branchName,
     }).catch(() => null);
   }
 

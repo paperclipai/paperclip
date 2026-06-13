@@ -585,7 +585,7 @@ describe("realizeExecutionWorkspace", () => {
     await expect(fs.realpath(realized.worktreePath ?? "")).resolves.toBe(expectedWorktreePath);
   });
 
-  it("rejects reusing a linked worktree whose branch drifted from the expected issue branch", async () => {
+  it("reuses a linked worktree whose branch drifted to another feature branch", async () => {
     const repoRoot = await createTempRepo();
 
     const initial = await realizeExecutionWorkspace({
@@ -615,7 +615,70 @@ describe("realizeExecutionWorkspace", () => {
       },
     });
 
-    await runGit(initial.cwd, ["checkout", "-b", "unexpected-branch"]);
+    await runGit(initial.cwd, ["checkout", "-b", "feature-drifted-branch"]);
+
+    const reused = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-447",
+        title: "Add Worktree Support",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(reused.created).toBe(false);
+    await expect(fs.realpath(reused.cwd)).resolves.toBe(await fs.realpath(initial.cwd));
+  });
+
+  it("rejects reusing a linked worktree whose HEAD is detached", async () => {
+    const repoRoot = await createTempRepo();
+
+    const initial = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-447",
+        title: "Add Worktree Support",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    await runGit(initial.cwd, ["checkout", "--detach", "HEAD"]);
 
     await expect(
       realizeExecutionWorkspace({
@@ -644,7 +707,87 @@ describe("realizeExecutionWorkspace", () => {
           companyId: "company-1",
         },
       }),
-    ).rejects.toThrow(/not a reusable git worktree \(worktree HEAD is on "unexpected-branch" instead of "PAP-447-add-worktree-support"\)\./);
+    ).rejects.toThrow(/not a reusable git worktree \(worktree HEAD is detached\)\./);
+  });
+
+  it("rejects reusing a linked worktree on the protected mainline branch 'main'", async () => {
+    // Use a non-main default so 'main' is free to check out in a linked worktree.
+    const repoRoot = await createTempRepo("develop");
+    await runGit(repoRoot, ["branch", "main"]);
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", "PAP-448-main-guard");
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["worktree", "add", "-b", "PAP-448-main-guard", worktreePath, "HEAD"]);
+    await runGit(worktreePath, ["checkout", "main"]);
+
+    await expect(
+      realizeExecutionWorkspace({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        config: {
+          workspaceStrategy: {
+            type: "git_worktree",
+            branchTemplate: "{{issue.identifier}}-{{slug}}",
+            worktreeParentDir: ".paperclip/worktrees",
+          },
+        },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-448",
+          title: "main guard",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+      }),
+    ).rejects.toThrow(/not a reusable git worktree \(worktree HEAD is on protected mainline branch "main"\)\./);
+  });
+
+  it("rejects reusing a linked worktree on the protected mainline branch 'master'", async () => {
+    // git init creates 'master' by default; switch the primary worktree to 'develop'
+    // so 'master' is free to check out in a linked worktree.
+    const repoRoot = await createTempRepo("develop");
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", "PAP-449-master-guard");
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["worktree", "add", "-b", "PAP-449-master-guard", worktreePath, "HEAD"]);
+    await runGit(worktreePath, ["checkout", "master"]);
+
+    await expect(
+      realizeExecutionWorkspace({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        config: {
+          workspaceStrategy: {
+            type: "git_worktree",
+            branchTemplate: "{{issue.identifier}}-{{slug}}",
+            worktreeParentDir: ".paperclip/worktrees",
+          },
+        },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-449",
+          title: "master guard",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+      }),
+    ).rejects.toThrow(/not a reusable git worktree \(worktree HEAD is on protected mainline branch "master"\)\./);
   });
 
   it("reuses an already checked out branch from git worktree metadata even when the target path differs", async () => {
