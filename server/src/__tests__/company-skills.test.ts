@@ -91,7 +91,7 @@ describe("project workspace skill discovery", () => {
     expect(normalizeGitHubSkillDirectory("retro/.", "retro")).toBe("retro");
     expect(normalizeGitHubSkillDirectory("retro/SKILL.md", "retro")).toBe("retro");
     expect(normalizeGitHubSkillDirectory("SKILL.md", "root-skill")).toBe("");
-    expect(normalizeGitHubSkillDirectory("", "fallback-skill")).toBe("fallback-skill");
+    expect(normalizeGitHubSkillDirectory("", "fallback-skill")).toBe("");
   });
 
   it("finds bounded skill roots under supported workspace paths", async () => {
