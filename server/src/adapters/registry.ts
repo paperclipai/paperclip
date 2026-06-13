@@ -462,6 +462,28 @@ const hermesLocalAdapter: ServerAdapterModule = {
       "Never use a board, browser, or local-board session for Paperclip API writes.",
     ].join("\n");
 
+    // Paperclip enforces a strict per-issue state machine: any assignee run that
+    // finishes without writing a disposition is auto-flagged
+    // `successful_run_missing_state` and surfaces a RECOVERY NEEDED card on the
+    // issue (see server/src/services/recovery/successful-run-handoff.ts). The
+    // platform requires every adapter to teach its agent this contract; this
+    // injection makes the contract part of the system prompt regardless of what
+    // the agent author put in their custom promptTemplate or AGENTS.md.
+    const dispositionGuardPrompt = [
+      "Paperclip disposition rule (non-negotiable):",
+      "Every assignee run MUST end with a disposition write to the issue.",
+      "Without one, Paperclip auto-flags the issue as MISSING DISPOSITION and surfaces a RECOVERY NEEDED card.",
+      "Valid dispositions (PATCH $PAPERCLIP_API_URL/issues/{issueId} with the two headers above; $PAPERCLIP_API_URL is set in your environment and points at the active Paperclip instance):",
+      "  - done                  : work complete                              → {\"status\":\"done\"}",
+      "  - cancelled             : will not do (obsolete / out of scope)      → {\"status\":\"cancelled\"} + comment with reason",
+      "  - in_review             : needs human/board review before close      → {\"status\":\"in_review\"}",
+      "  - blocked               : real Paperclip-issue blocker must resolve  → {\"status\":\"blocked\",\"blockedByIssueIds\":[\"<id>\",...]} + comment naming blocker",
+      "  - delegated             : handed off to another agent                → {\"assigneeAgentId\":\"<agent-id>\"} + comment naming agent + reason",
+      "  - explicit_continuation : partial completion; another wake needed    → status unchanged + comment ending `Continuation needed: <reason>`",
+      "Idle-wake exception: if your last comment is unanswered AND no new operator comment AND no new edits to any interview file, exit with one log line `Idle: awaiting operator reply.` — this is the only legitimate exit without a disposition write.",
+      "Before exiting any run, verify you have completed: (1) all task-specific actions required by the issue body, (2) any required comments per the agent's playbook (e.g. 'what's next' recommendation on done issues), (3) the disposition write. Skipping any item = non-compliant run.",
+    ].join("\n");
+
     const patchedConfig: Record<string, unknown> = {
       ...existingConfig,
       env: {
@@ -471,11 +493,12 @@ const hermesLocalAdapter: ServerAdapterModule = {
       },
     };
 
-    // Only inject the auth guard into promptTemplate when a custom template already exists.
-    // When no custom template is set, Hermes uses its built-in default heartbeat/task prompt —
-    // overwriting it with only the auth guard text would strip the assigned issue/workflow instructions.
+    // Only inject the platform guards into promptTemplate when a custom template
+    // already exists. When no custom template is set, Hermes uses its built-in
+    // default heartbeat/task prompt — overwriting it with only the guard text
+    // would strip the assigned issue/workflow instructions.
     if (promptTemplate) {
-      patchedConfig.promptTemplate = `${authGuardPrompt}\n\n${promptTemplate}`;
+      patchedConfig.promptTemplate = `${authGuardPrompt}\n\n${dispositionGuardPrompt}\n\n${promptTemplate}`;
     }
 
     const patchedCtx = {
