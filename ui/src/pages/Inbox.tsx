@@ -1555,6 +1555,9 @@ export function Inbox() {
     onSuccess: () => {
       invalidateInboxIssueQueries();
     },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to mark as read");
+    },
     onSettled: (_data, _error, id) => {
       setTimeout(() => {
         setFadingOutIssues((prev) => {
@@ -1595,6 +1598,9 @@ export function Inbox() {
     mutationFn: (id: string) => issuesApi.markUnread(id),
     onSuccess: () => {
       invalidateInboxIssueQueries();
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to mark as unread");
     },
   });
 
