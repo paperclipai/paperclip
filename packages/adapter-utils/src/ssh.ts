@@ -359,6 +359,44 @@ async function withTempFile(
   };
 }
 
+// Windows OpenSSH ControlMaster is broken (REI-510), so we cannot collapse
+// repeated dials onto one TCP+SSH session on win32. To stay under the IONOS
+// per-IP rate limit that REI-503 originally fixed, we instead serialize SSH
+// spawns through this FIFO chain and wait a short pacing window after each
+// command completes before releasing the next. The factory shape exists so
+// unit tests can construct an isolated queue with deterministic settings.
+const SSH_DIAL_PACING_MS = 300;
+
+export function _createSshDialPacingQueueForTests(options: {
+  isWindows: boolean;
+  pacingMs: number;
+}): <T>(task: () => Promise<T>) => Promise<T> {
+  let chain: Promise<void> = Promise.resolve();
+  return async function withSshDialPacing<T>(task: () => Promise<T>): Promise<T> {
+    if (!options.isWindows) {
+      return await task();
+    }
+    const previous = chain;
+    let releaseNext!: () => void;
+    const released = new Promise<void>((resolve) => {
+      releaseNext = resolve;
+    });
+    chain = previous.then(() => released).catch(() => undefined);
+    try {
+      await previous.catch(() => undefined);
+      return await task();
+    } finally {
+      const timer = setTimeout(releaseNext, options.pacingMs);
+      timer.unref?.();
+    }
+  };
+}
+
+const withSshDialPacing = _createSshDialPacingQueueForTests({
+  isWindows: process.platform === "win32",
+  pacingMs: SSH_DIAL_PACING_MS,
+});
+
 async function createSshAuthArgs(
   config: Pick<SshConnectionConfig, "privateKey" | "knownHosts" | "strictHostKeyChecking">,
 ): Promise<{ args: string[]; cleanup: () => Promise<void> }> {
@@ -371,6 +409,25 @@ async function createSshAuthArgs(
     "-o",
     `StrictHostKeyChecking=${config.strictHostKeyChecking ? "yes" : "no"}`,
   ];
+
+  // ControlMaster collapses repeated dials onto one TCP+SSH session, which is
+  // what keeps hardened sshd hosts from rate-limiting the 6th call in a burst.
+  // Windows OpenSSH 9.5p2 ships a broken ControlMaster on AF_UNIX-on-Windows
+  // (every connect returns `getsockname failed: Not a socket`), so on win32 we
+  // skip the multiplexing flags and rely on the dial-pacing queue below to
+  // keep the burst under the rate-limit threshold instead. See REI-510.
+  if (process.platform !== "win32") {
+    sshArgs.push(
+      // %C hashes host/port/user so concurrent runs against different targets
+      // don't collide on the control socket path.
+      "-o",
+      "ControlMaster=auto",
+      "-o",
+      `ControlPath=${path.join(os.tmpdir(), "paperclip-ssh-cm-%C")}`,
+      "-o",
+      "ControlPersist=60s",
+    );
+  }
 
   if (config.strictHostKeyChecking) {
     if (config.knownHosts) {
@@ -503,7 +560,7 @@ async function streamLocalFileToSsh(input: {
     `sh -c ${shellQuote(input.remoteScript)}`,
   ];
 
-  await new Promise<void>((resolve, reject) => {
+  await withSshDialPacing(() => new Promise<void>((resolve, reject) => {
     const source = createReadStream(input.localFile);
     const ssh = spawn("ssh", sshArgs, {
       stdio: ["pipe", "ignore", "pipe"],
@@ -535,7 +592,7 @@ async function streamLocalFileToSsh(input: {
       }
       resolve();
     });
-  }).finally(auth.cleanup);
+  })).finally(auth.cleanup);
 }
 
 async function streamSshToLocalFile(input: {
@@ -552,7 +609,7 @@ async function streamSshToLocalFile(input: {
     `sh -c ${shellQuote(input.remoteScript)}`,
   ];
 
-  await new Promise<void>((resolve, reject) => {
+  await withSshDialPacing(() => new Promise<void>((resolve, reject) => {
     const ssh = spawn("ssh", sshArgs, {
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -586,7 +643,7 @@ async function streamSshToLocalFile(input: {
         resolve();
       });
     });
-  }).finally(auth.cleanup);
+  })).finally(auth.cleanup);
 }
 
 async function importGitWorkspaceToSsh(input: {
@@ -961,16 +1018,18 @@ export async function runSshCommand(
       `sh -c ${shellQuote(remoteScript)}`,
     );
 
-    return options.stdin != null
-      ? await spawnText("ssh", sshArgs, {
-          stdin: options.stdin,
-          timeout: options.timeoutMs ?? 15_000,
-          maxBuffer: options.maxBuffer ?? 1024 * 128,
-        })
-      : await execFileText("ssh", sshArgs, {
-          timeout: options.timeoutMs ?? 15_000,
-          maxBuffer: options.maxBuffer ?? 1024 * 128,
-        });
+    return await withSshDialPacing(() =>
+      options.stdin != null
+        ? spawnText("ssh", sshArgs, {
+            stdin: options.stdin,
+            timeout: options.timeoutMs ?? 15_000,
+            maxBuffer: options.maxBuffer ?? 1024 * 128,
+          })
+        : execFileText("ssh", sshArgs, {
+            timeout: options.timeoutMs ?? 15_000,
+            maxBuffer: options.maxBuffer ?? 1024 * 128,
+          }),
+    );
   } finally {
     await cleanup();
   }
@@ -1039,7 +1098,7 @@ export async function syncDirectoryToSsh(input: {
     `sh -c ${shellQuote(`mkdir -p ${shellQuote(input.remoteDir)} && tar -xf - -C ${shellQuote(input.remoteDir)}`)}`,
   ];
 
-  await new Promise<void>((resolve, reject) => {
+  await withSshDialPacing(() => new Promise<void>((resolve, reject) => {
     const tarArgs = [
       ...(input.followSymlinks ? ["-h"] : []),
       "-C",
@@ -1111,7 +1170,7 @@ export async function syncDirectoryToSsh(input: {
       sshExitCode = code;
       maybeFinish();
     });
-  }).finally(auth.cleanup);
+  })).finally(auth.cleanup);
 }
 
 export async function syncDirectoryFromSsh(input: {
@@ -1136,7 +1195,7 @@ export async function syncDirectoryFromSsh(input: {
   ];
 
   try {
-    await new Promise<void>((resolve, reject) => {
+    await withSshDialPacing(() => new Promise<void>((resolve, reject) => {
       const ssh = spawn("ssh", sshArgs, {
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -1195,7 +1254,7 @@ export async function syncDirectoryFromSsh(input: {
         tarExitCode = code;
         maybeFinish();
       });
-    });
+    }));
 
     await clearLocalDirectory(input.localDir, input.preserveLocalEntries);
     await copyDirectoryContents(stagingDir, input.localDir);
