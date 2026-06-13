@@ -16,6 +16,9 @@
  *  - no-op `in_review` -> `in_review`,
  *  - human actors (only agent transitions are gated),
  *  - a `pass` verdict (every required evidence shape detected),
+ *  - a `warn` verdict (unlabeled fallback — the gate is intentionally lenient
+ *    for unlabeled / doc-only work; see DEFAULT_UNLABELED_REQUIRED in
+ *    evidence-shapes.ts),
  *  - a missing verdict (gate evaluation failed; a broken evaluator must not
  *    freeze the board — parity with the evaluation try/catch in issues.ts).
  *
@@ -42,5 +45,5 @@ export function shouldBlockUnreviewableInReview(input: InReviewGateInput): boole
   if (input.fromStatus === "in_review") return false;
   if (!input.isAgentActor) return false;
   if (input.verdict == null) return false;
-  return input.verdict.verdict !== "pass";
+  return input.verdict.verdict === "block";
 }

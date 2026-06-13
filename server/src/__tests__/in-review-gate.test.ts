@@ -9,8 +9,8 @@ describe("shouldBlockUnreviewableInReview", () => {
     verdict: { verdict: "warn" } as { verdict: string } | null,
   };
 
-  it("blocks an agent moving to in_review on a warn verdict (nothing reviewable)", () => {
-    expect(shouldBlockUnreviewableInReview(base)).toBe(true);
+  it("allows an agent moving to in_review on a warn verdict (unlabeled fallback — gate is lenient)", () => {
+    expect(shouldBlockUnreviewableInReview(base)).toBe(false);
   });
 
   it("blocks an agent moving to in_review on a block verdict", () => {
