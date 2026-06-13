@@ -117,6 +117,32 @@ something, the operator couldn't see it or couldn't act on it in one click*.
 - Objective: one button seeding mock issues across every attention state.
 - Why: accelerates UI iteration; only worth it after more UI features land.
 
+**C5. Non-bindable secrets — env-bind guardrail (deferred, post-pilot)**
+- Context: Paperclip has two ways a secret reaches a workload — (1) the
+  encrypted store, read server-side by name (safe; how A6 git-ops consumes the
+  fork PAT), and (2) an **env binding** (`env.X = {secret_ref}`) that injects
+  the decrypted value into an agent's process env. Path (2) is legitimate and
+  necessary for credentials an agent's own shell tools must read (registry
+  tokens, test API keys), but it is the wrong delivery for a **capability token
+  you want gated** — once in the process env a `skip-permissions` agent can
+  `echo`/exfiltrate it. Today nothing stops someone binding the fork PAT (or any
+  high-value secret) to an agent env by mistake, re-opening the exact hole A6
+  closed.
+- Objective: a per-secret `bindable` flag (default true). When false, the secret
+  resolves **server-side only** (tools/proxies like git-ops) and any attempt to
+  create an `env.*` binding for it — at agent/project/environment scope, via
+  env-json or the bindings API — is rejected with a clear error. Surface the flag
+  in the secret create/update UI + CLI; default the fork PAT and any future
+  capability token to `bindable:false`.
+- Why: turns "don't bind this" from operator discipline into an enforced
+  invariant — defense-in-depth so the A6 protection can't be undone by a
+  fat-fingered env binding once agents run unattended.
+- Scope notes: enforcement point is `normalizeEnvBindingsForPersistence` / the
+  binding-create path in `secrets.ts` (reject a `secret_ref` to a non-bindable
+  secret); add the column + validator; the server-internal `resolveSecretValue`
+  (no-context) path git-ops uses is unchanged.
+- Sequence: after B1 proves the loop; pairs naturally with C1 hardening.
+
 ### Track E — Token economics (cross-cutting; burn is the factory's COGS)
 
 > Full rationale in `vision.md` layer 6. At 24/7 scale tokens dominate
