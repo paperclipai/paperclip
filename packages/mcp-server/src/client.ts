@@ -25,6 +25,11 @@ export class PaperclipApiError extends Error {
 export interface JsonRequestOptions {
   body?: unknown;
   includeRunId?: boolean;
+  // Per-call override for X-Paperclip-Run-Id. When set, takes precedence over
+  // the config-level runId (which is fixed at server startup). Lets long-lived
+  // MCP servers attribute writes to the caller's current run id even though
+  // PAPERCLIP_RUN_ID env vars are not re-injected per request.
+  runIdOverride?: string | null;
 }
 
 function isWriteMethod(method: string): boolean {
@@ -88,8 +93,14 @@ export class PaperclipApiClient {
     if (options.body !== undefined) {
       headers["Content-Type"] = "application/json";
     }
-    if ((options.includeRunId ?? isWriteMethod(method)) && this.config.runId) {
-      headers["X-Paperclip-Run-Id"] = this.config.runId;
+    if (options.includeRunId ?? isWriteMethod(method)) {
+      const effectiveRunId =
+        (typeof options.runIdOverride === "string" && options.runIdOverride.trim().length > 0
+          ? options.runIdOverride.trim()
+          : null) ?? this.config.runId;
+      if (effectiveRunId) {
+        headers["X-Paperclip-Run-Id"] = effectiveRunId;
+      }
     }
 
     const response = await fetch(url, {
