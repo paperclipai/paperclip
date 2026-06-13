@@ -36,6 +36,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
+  truncateWorktreeDirName,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
 import { readLocalServicePortOwner, writeLocalServiceRegistryRecord } from "../services/local-service-supervisor.ts";
@@ -186,6 +187,36 @@ afterEach(async () => {
   delete process.env.PAPERCLIP_WORKTREES_DIR;
   delete process.env.DATABASE_URL;
   await resetRuntimeServicesForTests();
+});
+
+describe("truncateWorktreeDirName", () => {
+  it("returns the branch name unchanged when it fits in maxDirNameLen", () => {
+    const parentDirLen = 60;
+    expect(truncateWorktreeDirName("short-branch", parentDirLen)).toBe("short-branch");
+  });
+
+  it("truncates and appends a hash when the branch is too long", () => {
+    const parentDirLen = 180; // leaves only 20 chars for the dir name
+    const longBranch = "a".repeat(80);
+    const result = truncateWorktreeDirName(longBranch, parentDirLen);
+    expect(result.length).toBeLessThanOrEqual(20);
+    expect(result).toMatch(/-[0-9a-f]{7}$/);
+  });
+
+  it("produces distinct dir names for branches sharing a long common prefix", () => {
+    const parentDirLen = 180; // forces aggressive truncation
+    const branchA = `${"x".repeat(80)}-part-a`;
+    const branchB = `${"x".repeat(80)}-part-b`;
+    const dirA = truncateWorktreeDirName(branchA, parentDirLen);
+    const dirB = truncateWorktreeDirName(branchB, parentDirLen);
+    expect(dirA).not.toBe(dirB);
+  });
+
+  it("never produces a dir name longer than the configured cap", () => {
+    const parentDirLen = 195; // worst case: max is clamped to 20
+    const result = truncateWorktreeDirName("z".repeat(120), parentDirLen);
+    expect(result.length).toBeLessThanOrEqual(20);
+  });
 });
 
 describe("sanitizeRuntimeServiceBaseEnv", () => {
@@ -697,6 +728,61 @@ describe("realizeExecutionWorkspace", () => {
       reused: true,
       worktreePath: expectedWorktreePath,
     });
+  });
+
+  it("reuses a worktree when the branch is checked out at a different directory path", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-999-branch-in-different-dir";
+
+    // Create a worktree at a path that does NOT match the sanitized branch name.
+    // This simulates a worktree created by an older version with different
+    // directory naming, which is the root cause of OCT-412's failure.
+    const shortWorktreeDir = path.join(repoRoot, ".paperclip", "worktrees", "PAP-999-short-name");
+    await fs.mkdir(path.dirname(shortWorktreeDir), { recursive: true });
+    await runGit(repoRoot, ["worktree", "add", "-b", branchName, shortWorktreeDir, "HEAD"]);
+
+    // Add a commit on the branch inside the worktree so we can verify it's preserved.
+    await fs.writeFile(path.join(shortWorktreeDir, "work.txt"), "keep this\n", "utf8");
+    await runGit(shortWorktreeDir, ["add", "work.txt"]);
+    await runGit(shortWorktreeDir, ["commit", "-m", "Work in progress"]);
+    const expectedHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: shortWorktreeDir })).stdout.trim();
+
+    // Now realize the workspace — it will try to create a worktree at the
+    // canonical path (PAP-999-branch-in-different-dir) but the branch is
+    // already checked out at the shorter path. It should find and reuse it.
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-999",
+        title: "Branch in different dir",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(workspace.branchName).toBe(branchName);
+    await expect(fs.realpath(workspace.cwd)).resolves.toBe(await fs.realpath(shortWorktreeDir));
+    expect(workspace.created).toBe(false);
+    await expect(fs.readFile(path.join(workspace.cwd, "work.txt"), "utf8")).resolves.toBe("keep this\n");
+    const actualHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: workspace.cwd })).stdout.trim();
+    expect(actualHead).toBe(expectedHead);
   });
 
   it("slugifies unsafe issue titles for branch names and worktree folders", async () => {
