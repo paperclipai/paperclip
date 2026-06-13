@@ -6686,6 +6686,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      skipIfNoActionableAssignments: asBoolean(heartbeat.skipIfNoActionableAssignments, false),
     };
   }
 
@@ -10249,6 +10250,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
+    }
+
+    if (source === "timer" && policy.skipIfNoActionableAssignments) {
+      const assignedCount = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, agent.companyId),
+            eq(issues.assigneeAgentId, agentId),
+            inArray(issues.status, ["todo", "backlog"]),
+          ),
+        )
+        .then(([row]) => Number(row?.count ?? 0));
+      if (assignedCount === 0) {
+        await writeSkippedRequest("heartbeat.skipIfNoActionableAssignments");
+        await db
+          .update(agents)
+          .set({ lastHeartbeatAt: new Date() })
+          .where(eq(agents.id, agentId));
+        return null;
+      }
     }
 
     if (issueId) {
