@@ -171,23 +171,23 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 export function openUrl(url: string): boolean {
   const platform = process.platform;
-  try {
-    if (platform === "darwin") {
-      const child = spawn("open", [url], { detached: true, stdio: "ignore" });
+  const launch = (cmd: string, args: string[]): boolean => {
+    try {
+      const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
+      // Absorb async spawn errors (e.g. ENOENT when xdg-open is missing on
+      // headless hosts). Without this listener, Node emits 'error' as an
+      // unhandled event and crashes the CLI before the approval poll loop
+      // can run, even though the printed URL is still valid.
+      child.on("error", () => {});
       child.unref();
       return true;
+    } catch {
+      return false;
     }
-    if (platform === "win32") {
-      const child = spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" });
-      child.unref();
-      return true;
-    }
-    const child = spawn("xdg-open", [url], { detached: true, stdio: "ignore" });
-    child.unref();
-    return true;
-  } catch {
-    return false;
-  }
+  };
+  if (platform === "darwin") return launch("open", [url]);
+  if (platform === "win32") return launch("cmd", ["/c", "start", "", url]);
+  return launch("xdg-open", [url]);
 }
 
 export async function loginBoardCli(params: {
