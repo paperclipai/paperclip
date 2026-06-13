@@ -11,8 +11,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import type { ServerAdapterModule } from "./types.js";
 import { logger } from "../middleware/logger.js";
+import { loadConfig } from "../config.js";
 
 import {
   listAdapterPlugins,
@@ -26,6 +28,7 @@ import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 // ---------------------------------------------------------------------------
 
 const uiParserCache = new Map<string, string>();
+const runtimeDiscoveredAdapterRecords = new Map<string, AdapterPluginRecord>();
 
 export function getUiParserSource(adapterType: string): string | undefined {
   return uiParserCache.get(adapterType);
@@ -54,6 +57,10 @@ export function getOrExtractUiParserSource(adapterType: string): string | undefi
   return source;
 }
 
+export function listRuntimeDiscoveredAdapterRecords(): AdapterPluginRecord[] {
+  return Array.from(runtimeDiscoveredAdapterRecords.values());
+}
+
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
@@ -73,6 +80,79 @@ function resolvePackageEntryPoint(packageDir: string): string {
     return typeof exp === "string" ? exp : (exp.import ?? exp.default ?? "index.js");
   }
   return pkg.main ?? "index.js";
+}
+
+interface DirectoryAdapterCandidate {
+  packageName: string;
+  localPath: string;
+  version?: string;
+}
+
+function resolveConfiguredAdapterPluginsDir(): string | undefined {
+  return loadConfig().adapterPluginsDir;
+}
+
+function isPackageDirectory(candidateDir: string): boolean {
+  return fs.existsSync(path.join(candidateDir, "package.json"));
+}
+
+function readPackageMetadata(packageDir: string): { packageName: string; version?: string } | null {
+  try {
+    const pkgRaw = fs.readFileSync(path.join(packageDir, "package.json"), "utf-8");
+    const pkg = JSON.parse(pkgRaw) as { name?: string; version?: string };
+    return {
+      packageName: typeof pkg.name === "string" && pkg.name.trim().length > 0
+        ? pkg.name.trim()
+        : path.basename(packageDir),
+      version: typeof pkg.version === "string" && pkg.version.trim().length > 0
+        ? pkg.version.trim()
+        : undefined,
+    };
+  } catch (err) {
+    logger.warn({ err, packageDir }, "Failed to read adapter package metadata");
+    return null;
+  }
+}
+
+function listConfiguredDirectoryAdapterCandidates(): DirectoryAdapterCandidate[] {
+  const configuredDir = resolveConfiguredAdapterPluginsDir();
+  if (!configuredDir) return [];
+  if (!fs.existsSync(configuredDir)) {
+    logger.warn({ configuredDir }, "Configured adapter plugins directory does not exist");
+    return [];
+  }
+
+  const candidates: DirectoryAdapterCandidate[] = [];
+
+  const addCandidate = (packageDir: string) => {
+    const metadata = readPackageMetadata(packageDir);
+    if (!metadata) return;
+    candidates.push({
+      packageName: metadata.packageName,
+      localPath: packageDir,
+      version: metadata.version,
+    });
+  };
+
+  if (isPackageDirectory(configuredDir)) {
+    addCandidate(configuredDir);
+    return candidates;
+  }
+
+  for (const entry of fs.readdirSync(configuredDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) {
+      continue;
+    }
+
+    const packageDir = path.join(configuredDir, entry.name);
+    if (!isPackageDirectory(packageDir)) {
+      continue;
+    }
+
+    addCandidate(packageDir);
+  }
+
+  return candidates;
 }
 
 // ---------------------------------------------------------------------------
@@ -177,7 +257,7 @@ export async function loadExternalAdapterPackage(
 
   logger.info({ packageName, packageDir, entryPoint, modulePath, hasUiParser: !!uiParserSource }, "Loading external adapter package");
 
-  const mod = await import(modulePath);
+  const mod = await import(pathToFileURL(modulePath).href);
   const adapterModule = validateAdapterModule(mod, packageName);
 
   if (uiParserSource) {
@@ -257,12 +337,40 @@ export async function reloadExternalAdapter(
  */
 export async function buildExternalAdapters(): Promise<ServerAdapterModule[]> {
   const results: ServerAdapterModule[] = [];
+  runtimeDiscoveredAdapterRecords.clear();
+  const seenPackageDirs = new Set<string>();
 
   const storeRecords = listAdapterPlugins();
   for (const record of storeRecords) {
+    seenPackageDirs.add(resolvePackageDir(record));
     const adapter = await loadFromRecord(record);
     if (adapter) {
       results.push(adapter);
+    }
+  }
+
+  for (const candidate of listConfiguredDirectoryAdapterCandidates()) {
+    const resolvedPackageDir = path.resolve(candidate.localPath);
+    if (seenPackageDirs.has(resolvedPackageDir)) {
+      continue;
+    }
+
+    try {
+      const adapter = await loadExternalAdapterPackage(candidate.packageName, candidate.localPath);
+      results.push(adapter);
+      runtimeDiscoveredAdapterRecords.set(adapter.type, {
+        packageName: candidate.packageName,
+        localPath: candidate.localPath,
+        version: candidate.version,
+        type: adapter.type,
+        installedAt: new Date(0).toISOString(),
+      });
+      seenPackageDirs.add(resolvedPackageDir);
+    } catch (err) {
+      logger.warn(
+        { err, packageName: candidate.packageName, localPath: candidate.localPath },
+        "Failed to dynamically load adapter from configured discovery directory; skipping",
+      );
     }
   }
 
