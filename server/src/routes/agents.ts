@@ -76,6 +76,7 @@ import {
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
+import { resolveCallback, type CallbackPayload } from "../adapters/http/callback.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
@@ -3491,6 +3492,28 @@ export function agentRoutes(
     }
 
     res.json(run);
+  });
+
+  router.post("/heartbeat-runs/:runId/callback", async (req, res) => {
+    assertBoard(req);
+    const runId = req.params.runId as string;
+    const run = await heartbeat.getRun(runId);
+    if (!run) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    assertCompanyAccess(req, run.companyId);
+    const payload: CallbackPayload = {
+      status: typeof req.body?.status === "string" ? req.body.status : "failed",
+      result: typeof req.body?.result === "string" ? req.body.result : null,
+      errorMessage: typeof req.body?.errorMessage === "string" ? req.body.errorMessage : null,
+    };
+    const resolved = resolveCallback(runId, payload);
+    if (!resolved) {
+      res.status(409).json({ error: "No pending async run for this runId" });
+      return;
+    }
+    res.json({ ok: true });
   });
 
   router.post("/heartbeat-runs/:runId/watchdog-decisions", async (req, res) => {

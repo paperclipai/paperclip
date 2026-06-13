@@ -10,6 +10,7 @@ import {
   Bot,
   Code,
   Gem,
+  Globe,
   MousePointer2,
   Sparkles,
   Terminal,
@@ -123,10 +124,14 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     comingSoon: true,
   },
   http: {
-    label: "HTTP",
-    description: "Internal HTTP adapter",
-    icon: Cpu,
-    comingSoon: true,
+    label: "HTTP Webhook",
+    description: "Invoke an external agent via HTTP webhook",
+    icon: Globe,
+  },
+  picoclaw_local: {
+    label: "PicoClaw",
+    description: "Run PicoClaw as a local agent",
+    icon: Terminal,
   },
 };
 

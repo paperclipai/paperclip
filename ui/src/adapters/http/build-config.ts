@@ -5,5 +5,6 @@ export function buildHttpConfig(v: CreateConfigValues): Record<string, unknown> 
   if (v.url) ac.url = v.url;
   ac.method = "POST";
   ac.timeoutMs = 15000;
+  ac.callbackTimeoutMs = 310000;
   return ac;
 }

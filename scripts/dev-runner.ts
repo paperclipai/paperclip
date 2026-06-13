@@ -74,6 +74,8 @@ const ignoredDirectoryNames = new Set([
 const ignoredRelativePaths = new Set([
   ".paperclip/dev-server-restart-request.json",
   ".paperclip/dev-server-status.json",
+  // Standalone sidecar — not imported by the server, has its own tsx watch process
+  "packages/adapters/picoclaw-bridge",
 ]);
 
 const tailscaleAuthFlagNames = new Set([
