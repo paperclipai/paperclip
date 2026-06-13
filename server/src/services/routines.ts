@@ -2490,5 +2490,14 @@ export function routineService(
       }
       return null;
     },
+
+    deleteWithCascade: async (id: string): Promise<boolean> =>
+      db.transaction(async (tx) => {
+        const routine = await tx.select({ id: routines.id }).from(routines).where(eq(routines.id, id)).then(r => r[0] ?? null);
+        if (!routine) return false;
+        // DB cascades: routineTriggers, routineRevisions, routineRuns all have onDelete: "cascade"
+        await tx.delete(routines).where(eq(routines.id, id));
+        return true;
+      }),
   };
 }

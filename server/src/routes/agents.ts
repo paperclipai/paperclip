@@ -3086,7 +3086,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json({ ok: true });
+    res.status(204).send();
   });
 
   router.get("/agents/:id/keys", async (req, res) => {

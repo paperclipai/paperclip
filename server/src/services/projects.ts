@@ -1,6 +1,9 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  costEvents,
+  financeEvents,
+  issues,
   projects,
   projectGoals,
   goals,
@@ -866,6 +869,22 @@ export function projectService(db: Db) {
           if (!row) return null;
           return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
         }),
+
+    deleteWithCascade: async (id: string): Promise<boolean> =>
+      db.transaction(async (tx) => {
+        const project = await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, id)).then(r => r[0] ?? null);
+        if (!project) return false;
+
+        // Null out FK references that don't have onDelete configured
+        await tx.update(issues).set({ projectId: null, updatedAt: new Date() }).where(eq(issues.projectId, id));
+        await tx.update(costEvents).set({ projectId: null }).where(eq(costEvents.projectId, id));
+        await tx.update(financeEvents).set({ projectId: null }).where(eq(financeEvents.projectId, id));
+
+        // DB cascades handle: project_goals, project_workspaces, routines.projectId,
+        // execution_workspaces, workspace_runtime_services, issue_work_products, feedback_exports
+        await tx.delete(projects).where(eq(projects.id, id));
+        return true;
+      }),
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {
       const rows = await db

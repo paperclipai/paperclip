@@ -6516,5 +6516,24 @@ export function issueService(db: Db) {
         goal: a.goalId ? goalMap.get(a.goalId) ?? null : null,
       }));
     },
+
+    deleteWithCascade: async (issueId: string): Promise<boolean> => {
+      return db.transaction(async (tx) => {
+        const issue = await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issueId)).then(r => r[0] ?? null);
+        if (!issue) return false;
+
+        // Null out parentId on child issues so they survive at top level
+        await tx.update(issues).set({ parentId: null, updatedAt: new Date() }).where(eq(issues.parentId, issueId));
+
+        // Tables without cascade FK: delete manually
+        await tx.delete(issueComments).where(eq(issueComments.issueId, issueId));
+        await tx.delete(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId));
+
+        // Delete issue — DB cascades handle: issueApprovals, issueAttachments, issueDocuments,
+        // issueLabels, issueRelations, issueExecutionDecisions, issueWorkProducts, etc.
+        await tx.delete(issues).where(eq(issues.id, issueId));
+        return true;
+      });
+    },
   };
 }

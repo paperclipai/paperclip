@@ -682,24 +682,26 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    const project = await svc.remove(id);
-    if (!project) {
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    const deleted = await svc.deleteWithCascade(id);
+    if (!deleted) {
       res.status(404).json({ error: "Project not found" });
       return;
     }
-
     const actor = getActorInfo(req);
     await logActivity(db, {
-      companyId: project.companyId,
+      companyId: existing.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
       action: "project.deleted",
       entityType: "project",
-      entityId: project.id,
+      entityId: existing.id,
     });
-
-    res.json(project);
+    res.status(204).send();
   });
 
   return router;

@@ -88,24 +88,26 @@ export function goalRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    const goal = await svc.remove(id);
-    if (!goal) {
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    const deleted = await svc.deleteWithCascade(id);
+    if (!deleted) {
       res.status(404).json({ error: "Goal not found" });
       return;
     }
-
     const actor = getActorInfo(req);
     await logActivity(db, {
-      companyId: goal.companyId,
+      companyId: existing.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
       action: "goal.deleted",
       entityType: "goal",
-      entityId: goal.id,
+      entityId: existing.id,
     });
-
-    res.json(goal);
+    res.status(204).send();
   });
 
   return router;

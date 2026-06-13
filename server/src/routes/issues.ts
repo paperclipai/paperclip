@@ -7476,5 +7476,36 @@ export function issueRoutes(
     res.json({ ok: true });
   });
 
+  router.delete("/issues/:id", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    const deleted = await svc.deleteWithCascade(id);
+    if (!deleted) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.deleted",
+      entityType: "issue",
+      entityId: issue.id,
+    });
+    res.status(204).send();
+  });
+
   return router;
 }

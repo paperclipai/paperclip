@@ -15,6 +15,7 @@ import {
   issueExecutionDecisions,
   issues,
   issueComments,
+  routines,
 } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -596,7 +597,10 @@ export function agentService(db: Db) {
           ),
         );
         await tx.delete(issueExecutionDecisions).where(eq(issueExecutionDecisions.actorAgentId, id));
-        await tx.delete(issueComments).where(eq(issueComments.authorAgentId, id));
+        // Null out comment author so work history survives
+        await tx.update(issueComments).set({ authorAgentId: null }).where(eq(issueComments.authorAgentId, id));
+        // Cascade delete routines assigned to this agent (triggers/executions cascade via FK)
+        await tx.delete(routines).where(eq(routines.assigneeAgentId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
