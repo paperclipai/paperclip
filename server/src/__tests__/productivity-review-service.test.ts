@@ -21,6 +21,7 @@ import {
   DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
   PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+  TRACKER_OPEN_CHILDREN_THRESHOLD,
   productivityReviewService,
 } from "../services/productivity-review.ts";
 
@@ -535,6 +536,145 @@ describeEmbeddedPostgres("productivity review service", () => {
       .where(eq(activityLog.action, "issue.productivity_review_continuation_held"));
     expect(activities).toHaveLength(1);
     expect(activities[0]?.entityId).toBe(seeded.issueId);
+  });
+
+  async function insertChildren(input: {
+    companyId: string;
+    parentId: string;
+    parentIssuePrefix: string;
+    statuses: Array<"todo" | "in_progress" | "done" | "blocked" | "cancelled">;
+    assigneeAgentId: string;
+    startIssueNumber: number;
+  }) {
+    const rows = input.statuses.map((status, index) => {
+      const issueNumber = input.startIssueNumber + index;
+      return {
+        id: randomUUID(),
+        companyId: input.companyId,
+        title: `Child ${issueNumber}`,
+        status,
+        priority: "medium" as const,
+        assigneeAgentId: input.assigneeAgentId,
+        parentId: input.parentId,
+        originKind: "manual",
+        issueNumber,
+        identifier: `${input.parentIssuePrefix}-${issueNumber}`,
+      };
+    });
+    await db.insert(issues).values(rows);
+    return rows;
+  }
+
+  it("skips long_active_duration reviews for tracker parents with enough open children", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await insertChildren({
+      companyId: seeded.companyId,
+      parentId: seeded.issueId,
+      parentIssuePrefix: seeded.issuePrefix,
+      statuses: ["todo", "in_progress", "in_progress"],
+      assigneeAgentId: seeded.coderId,
+      startIssueNumber: 100,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("still creates long_active_duration reviews when open children are below the tracker threshold", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await insertChildren({
+      companyId: seeded.companyId,
+      parentId: seeded.issueId,
+      parentIssuePrefix: seeded.issuePrefix,
+      statuses: ["todo", "in_progress"],
+      assigneeAgentId: seeded.coderId,
+      startIssueNumber: 200,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
+  });
+
+  it("creates high-churn reviews for tracker parents even when long_active_duration is suppressed", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await insertChildren({
+      companyId: seeded.companyId,
+      parentId: seeded.issueId,
+      parentIssuePrefix: seeded.issuePrefix,
+      statuses: ["todo", "in_progress", "in_progress"],
+      assigneeAgentId: seeded.coderId,
+      startIssueNumber: 300,
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 10,
+      now,
+      withRunComments: true,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `high_churn`");
+  });
+
+  it("does not treat parents as trackers when all children are done", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await insertChildren({
+      companyId: seeded.companyId,
+      parentId: seeded.issueId,
+      parentIssuePrefix: seeded.issuePrefix,
+      statuses: ["done", "done", "done"],
+      assigneeAgentId: seeded.coderId,
+      startIssueNumber: 400,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
+  });
+
+  it("uses TRACKER_OPEN_CHILDREN_THRESHOLD constant of 3", () => {
+    expect(TRACKER_OPEN_CHILDREN_THRESHOLD).toBe(3);
   });
 
   it("clamps poisoned requestDepth metadata instead of aborting productivity reconciliation", async () => {
