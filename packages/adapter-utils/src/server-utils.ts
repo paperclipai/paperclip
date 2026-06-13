@@ -58,7 +58,8 @@ function resolveProcessGroupId(child: ChildProcess) {
   return typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
 }
 
-function signalRunningProcess(
+// @internal — exported for unit testing only
+export function signalRunningProcess(
   running: Pick<RunningProcess, "child" | "processGroupId">,
   signal: NodeJS.Signals,
 ) {
@@ -66,12 +67,26 @@ function signalRunningProcess(
     try {
       process.kill(-running.processGroupId, signal);
       return;
-    } catch {
+    } catch (groupKillError) {
       // Fall back to the direct child signal if group signaling fails.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[paperclip] Process group kill failed (pgid=${running.processGroupId}, signal=${signal}), ` +
+        `falling back to direct child kill: ${groupKillError instanceof Error ? groupKillError.message : String(groupKillError)}`,
+      );
     }
   }
   if (!running.child.killed) {
-    running.child.kill(signal);
+    const killed = running.child.kill(signal);
+    if (!killed) {
+      // Both group kill and direct kill failed — the process is orphaned.
+      // eslint-disable-next-line no-console
+      console.error(
+        `[paperclip] orphaned-process-kill-failure: Both process group kill and direct child kill failed ` +
+        `(pid=${running.child.pid ?? "unknown"}, pgid=${running.processGroupId ?? "none"}, signal=${signal}). ` +
+        `Process may be orphaned.`,
+      );
+    }
   }
 }
 

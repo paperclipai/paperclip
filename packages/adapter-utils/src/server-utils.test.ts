@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
@@ -18,6 +18,7 @@ import {
   sanitizeSshRemoteEnv,
   shapePaperclipWorkspaceEnvForExecution,
   rewriteWorkspaceCwdEnvVarsForExecution,
+  signalRunningProcess,
   stringifyPaperclipWakePayload,
 } from "./server-utils.js";
 
@@ -1159,5 +1160,27 @@ describe("appendWithByteCap", () => {
     expect(output).not.toContain("\uFFFD");
     expect(Buffer.from(output, "utf8").toString("utf8")).toBe(output);
     expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(7);
+  });
+});
+
+describe("signalRunningProcess kill-failure logging", () => {
+  it("logs a warning when process group kill fails and falls back to direct child kill", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const child = { killed: false, pid: 99999, kill: vi.fn().mockReturnValue(true) };
+    const running = { child, processGroupId: -1 };
+    signalRunningProcess(running, "SIGTERM");
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Process group kill failed"));
+    warnSpy.mockRestore();
+  });
+
+  it("logs an error when both process group kill and direct child kill fail", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const child = { killed: false, pid: 99999, kill: vi.fn().mockReturnValue(false) };
+    const running = { child, processGroupId: -1 };
+    signalRunningProcess(running, "SIGTERM");
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("orphaned-process-kill-failure"));
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 });
