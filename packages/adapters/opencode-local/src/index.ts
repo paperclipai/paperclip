@@ -131,8 +131,9 @@ Notes:
 - Paperclip requires an explicit \`model\` value for \`opencode_local\` agents.
 - Runs are executed with: opencode run --format json ...
 - Sessions are resumed with --session when stored session cwd matches current cwd.
-- The adapter sets OPENCODE_DISABLE_PROJECT_CONFIG=true to prevent OpenCode from \
-  writing an opencode.json config file into the project working directory. Model \
+- The adapter sets OPENCODE_DISABLE_PROJECT_CONFIG=true by default to prevent OpenCode from \
+  writing an opencode.json config file into the project working directory. Override by \
+  setting env.OPENCODE_DISABLE_PROJECT_CONFIG=false in adapterConfig. Model \
   selection is passed via the --model CLI flag instead.
 - When \`dangerouslySkipPermissions\` is enabled, Paperclip injects a temporary \
   runtime config with \`permission.external_directory=allow\` so headless runs do \

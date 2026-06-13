@@ -302,10 +302,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     executionCwd: effectiveExecutionCwd,
   });
   // Prevent OpenCode from writing an opencode.json config file into the
-  // project working directory (which would pollute the git repo).  Model
-  // selection is already handled via the --model CLI flag.  Set after the
-  // envConfig loop so user overrides cannot disable this guard.
-  env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
+  // project working directory (which would pollute the git repo). Only
+  // apply the default when the operator has not explicitly overridden it
+  // via adapterConfig.env (GH#7290).
+  if (!("OPENCODE_DISABLE_PROJECT_CONFIG" in envConfig)) {
+    env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
+  }
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
