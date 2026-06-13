@@ -463,6 +463,8 @@ describe("issue update comment wakeups", () => {
           wakeCommentId: "comment-2",
           wakeReason: "issue_commented",
           source: "issue.comment",
+          forceFreshSession: true,
+          commentWakeFreshnessGuard: true,
         }),
       }),
     );
