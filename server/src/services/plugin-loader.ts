@@ -26,11 +26,9 @@
  */
 import { existsSync } from "node:fs";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
-import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
 import { PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import type {
@@ -51,8 +49,8 @@ import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
 import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
+import { runNpm } from "../lib/npm-exec.js";
 
-const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(__dirname, "../../..");
 export const BUNDLED_LOCAL_PLUGIN_ROOT = path.join(REPO_ROOT, "packages", "plugins");
@@ -1233,14 +1231,13 @@ export function pluginLoader(
       );
 
       try {
-        // Use execFile (not exec) to avoid shell injection from package name/version.
-        // --ignore-scripts prevents preinstall/install/postinstall hooks from
-        // executing arbitrary code on the host before manifest validation.
-        const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-        await execFileAsync(
-          npmCmd,
+        // runNpm validates/quotes the spec before it can reach a shell on
+        // Windows, preserving the no-shell-injection guarantee from package
+        // name/version. --ignore-scripts prevents preinstall/install/postinstall
+        // hooks from executing arbitrary code before manifest validation.
+        await runNpm(
           ["install", spec, "--prefix", targetInstallDir, "--save", "--ignore-scripts"],
-          { timeout: 120_000, shell: process.platform === "win32"}, // 2 minute timeout for npm install
+          { timeout: 120_000 }, // 2 minute timeout for npm install
         );
       } catch (err) {
         throw new Error(`npm install failed for ${spec}: ${String(err)}`);
@@ -1879,11 +1876,9 @@ export function pluginLoader(
       const packageJsonPath = path.join(localPluginDir, "package.json");
       if (existsSync(packageJsonPath)) {
         try {
-          const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-          await execFileAsync(
-            npmCmd,
+          await runNpm(
             ["uninstall", plugin.packageName, "--prefix", localPluginDir, "--ignore-scripts"],
-            { timeout: 120_000, shell: process.platform === "win32" },
+            { timeout: 120_000 },
           );
         } catch (err) {
           log.warn(
