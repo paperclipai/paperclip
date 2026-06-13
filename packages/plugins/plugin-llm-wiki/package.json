@@ -2,7 +2,6 @@
   "name": "@paperclipai/plugin-llm-wiki",
   "version": "0.1.0",
   "type": "module",
-  "private": true,
   "description": "Local-file LLM Wiki plugin for source ingestion, wiki browsing, query, lint, and maintenance workflows.",
   "files": [
     "agents",

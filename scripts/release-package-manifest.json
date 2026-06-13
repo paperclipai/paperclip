@@ -125,6 +125,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/plugins/plugin-llm-wiki",
+    "name": "@paperclipai/plugin-llm-wiki",
+    "publishFromCi": true
+  },
+  {
     "dir": "packages/plugins/sandbox-providers/modal",
     "name": "@paperclipai/plugin-modal",
     "publishFromCi": true
