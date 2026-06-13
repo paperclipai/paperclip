@@ -68,9 +68,13 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "ti
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
+export const STALE_HEARTBEAT_RUN_THRESHOLD_ENV = "PAPERCLIP_STALE_HEARTBEAT_RUN_THRESHOLD_MINUTES";
+export const DEFAULT_STALE_HEARTBEAT_RUN_THRESHOLD_MS = 30 * 60 * 1000;
+const STALE_HEARTBEAT_RUN_ALERT_DEDUPE_MS = 60 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
+const STALE_HEARTBEAT_RUN_AGENT_ORIGIN_KIND = "stale_heartbeat_run_agent";
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
@@ -133,6 +137,17 @@ type WatchdogDecisionActor =
   | { type: "board"; userId?: string | null; runId?: string | null }
   | { type: "agent"; agentId?: string | null; runId?: string | null }
   | { type: "none" };
+
+export type StaleHeartbeatRunAgentMetric = {
+  companyId: string;
+  agentId: string;
+  agentName: string;
+  agentTitle: string | null;
+  lastHeartbeatAt: Date | null;
+  staleRunCount: number;
+  oldestRunCreatedAt: Date | null;
+  newestRunCreatedAt: Date | null;
+};
 
 export type RunOutputSilenceSummary = {
   lastOutputAt: Date | null;
@@ -291,6 +306,17 @@ function formatDuration(ms: number | null) {
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
   return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
+
+function formatIsoDate(value: Date | string | null | undefined) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+export function readStaleHeartbeatRunThresholdMs(raw = process.env[STALE_HEARTBEAT_RUN_THRESHOLD_ENV]) {
+  const minutes = asNumber(raw, DEFAULT_STALE_HEARTBEAT_RUN_THRESHOLD_MS / 60_000);
+  return Math.max(60_000, Math.min(24 * 60 * 60 * 1000, Math.floor(minutes * 60_000)));
 }
 
 function formatIssueLinksForComment(relations: Array<{ identifier?: string | null }>) {
@@ -1846,6 +1872,222 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       else result.skipped += 1;
       if ("evaluationIssueId" in outcome && outcome.evaluationIssueId) {
         result.evaluationIssueIds.push(outcome.evaluationIssueId);
+      }
+    }
+
+    return result;
+  }
+
+  async function listStaleHeartbeatRunAgentMetrics(opts?: {
+    now?: Date;
+    companyId?: string;
+    thresholdMs?: number;
+  }): Promise<StaleHeartbeatRunAgentMetric[]> {
+    const now = opts?.now ?? new Date();
+    const thresholdMs = opts?.thresholdMs ?? readStaleHeartbeatRunThresholdMs();
+    const staleBefore = new Date(now.getTime() - thresholdMs);
+    const rows = await db
+      .select({
+        companyId: heartbeatRuns.companyId,
+        agentId: agents.id,
+        agentName: agents.name,
+        agentTitle: agents.title,
+        lastHeartbeatAt: agents.lastHeartbeatAt,
+        staleRunCount: sql<number>`count(${heartbeatRuns.id})::double precision`,
+        oldestRunCreatedAt: sql<Date | null>`min(${heartbeatRuns.createdAt})`,
+        newestRunCreatedAt: sql<Date | null>`max(${heartbeatRuns.createdAt})`,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(
+        and(
+          opts?.companyId ? eq(heartbeatRuns.companyId, opts.companyId) : undefined,
+          eq(heartbeatRuns.status, "running"),
+          isNull(heartbeatRuns.finishedAt),
+          sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${staleBefore.toISOString()}::timestamptz`,
+          sql`(${heartbeatRuns.lastOutputAt} is null or ${heartbeatRuns.lastOutputAt} <= ${staleBefore.toISOString()}::timestamptz)`,
+        ),
+      )
+      .groupBy(heartbeatRuns.companyId, agents.id, agents.name, agents.title, agents.lastHeartbeatAt)
+      .orderBy(desc(sql`count(${heartbeatRuns.id})`), asc(agents.name));
+
+    return rows.map((row) => ({
+      companyId: row.companyId,
+      agentId: row.agentId,
+      agentName: row.agentName,
+      agentTitle: row.agentTitle,
+      lastHeartbeatAt: row.lastHeartbeatAt,
+      staleRunCount: Number(row.staleRunCount),
+      oldestRunCreatedAt: row.oldestRunCreatedAt,
+      newestRunCreatedAt: row.newestRunCreatedAt,
+    }));
+  }
+
+  function staleHeartbeatRunAgentFingerprint(input: { companyId: string; agentId: string; now: Date }) {
+    const bucket = Math.floor(input.now.getTime() / STALE_HEARTBEAT_RUN_ALERT_DEDUPE_MS);
+    return `stale_heartbeat_run_agent:${input.companyId}:${input.agentId}:${bucket}`;
+  }
+
+  async function findExistingStaleHeartbeatRunAgentAlert(companyId: string, fingerprint: string) {
+    const [row] = await db
+      .select({ id: issues.id, identifier: issues.identifier, status: issues.status })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_HEARTBEAT_RUN_AGENT_ORIGIN_KIND),
+          eq(issues.originFingerprint, fingerprint),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  async function resolveInfrastructureRecoveryOwnerAgentId(companyId: string) {
+    const candidates = await db
+      .select()
+      .from(agents)
+      .where(
+        and(
+          eq(agents.companyId, companyId),
+          sql`(
+            lower(coalesce(${agents.title}, '')) like '%infrastructure%release%'
+            or lower(coalesce(${agents.capabilities}, '')) like '%deployment%'
+            or lower(coalesce(${agents.capabilities}, '')) like '%runtime health%'
+          )`,
+        ),
+      )
+      .orderBy(asc(agents.createdAt));
+
+    let best: { agentId: string; load: number } | null = null;
+    for (const candidate of candidates) {
+      if (!isAgentInvokable(candidate)) continue;
+      const budgetBlock = await budgets.getInvocationBlock(companyId, candidate.id, {});
+      if (budgetBlock) continue;
+      const [{ count }] = await db
+        .select({ count: sql<number>`count(*)::double precision` })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.assigneeAgentId, candidate.id),
+            inArray(issues.status, ["todo", "in_progress"]),
+          ),
+        );
+      const load = Number(count);
+      if (!best || load < best.load) best = { agentId: candidate.id, load };
+    }
+    return best?.agentId ?? null;
+  }
+
+  function buildStaleHeartbeatRunAgentDescription(input: {
+    companyId: string;
+    prefix: string;
+    metric: StaleHeartbeatRunAgentMetric;
+    thresholdMs: number;
+    now: Date;
+  }) {
+    return [
+      "Paperclip detected an agent with active heartbeat runs but no recent agent heartbeat timestamp.",
+      "",
+      "## Metric",
+      "",
+      `- Agent: ${input.metric.agentName} (${input.metric.agentTitle ?? "untitled"})`,
+      `- Agent id: \`${input.metric.agentId}\``,
+      `- Stale active run count: ${input.metric.staleRunCount}`,
+      `- Last heartbeat at: ${formatIsoDate(input.metric.lastHeartbeatAt) ?? "none recorded"}`,
+      `- Oldest active run created at: ${formatIsoDate(input.metric.oldestRunCreatedAt) ?? "unknown"}`,
+      `- Newest active run created at: ${formatIsoDate(input.metric.newestRunCreatedAt) ?? "unknown"}`,
+      `- Threshold: ${formatDuration(input.thresholdMs)} (${STALE_HEARTBEAT_RUN_THRESHOLD_ENV})`,
+      `- Checked at: ${input.now.toISOString()}`,
+      "",
+      "## Expected Infra Action",
+      "",
+      "- Inspect the agent run page and run log before restarting anything.",
+      "- Confirm whether the underlying process is still alive and producing useful work.",
+      "- Prefer scoped recovery or cancellation with preserved artifacts over broad service restarts.",
+      "- Close this issue as duplicate/no-op if a newer hourly alert already owns the incident.",
+    ].join("\n");
+  }
+
+  async function scanStaleHeartbeatRunAgents(opts?: { now?: Date; companyId?: string; thresholdMs?: number }) {
+    const now = opts?.now ?? new Date();
+    const thresholdMs = opts?.thresholdMs ?? readStaleHeartbeatRunThresholdMs();
+    const metrics = await listStaleHeartbeatRunAgentMetrics({ ...opts, now, thresholdMs });
+    const result = {
+      scannedAgents: metrics.length,
+      created: 0,
+      existing: 0,
+      skipped: 0,
+      issueIds: [] as string[],
+      thresholdMs,
+      staleAgents: metrics,
+    };
+
+    for (const metric of metrics) {
+      const companyId = metric.companyId;
+      const fingerprint = staleHeartbeatRunAgentFingerprint({ companyId, agentId: metric.agentId, now });
+      const existing = await findExistingStaleHeartbeatRunAgentAlert(companyId, fingerprint);
+      if (existing) {
+        result.existing += 1;
+        result.issueIds.push(existing.id);
+        continue;
+      }
+
+      const [prefix, ownerAgentId] = await Promise.all([
+        getCompanyIssuePrefix(companyId),
+        resolveInfrastructureRecoveryOwnerAgentId(companyId),
+      ]);
+      const issue = await issuesSvc.create(companyId, {
+        title: `Investigate stale heartbeat runs for ${metric.agentName}`,
+        description: buildStaleHeartbeatRunAgentDescription({ companyId, prefix, metric, thresholdMs, now }),
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: ownerAgentId,
+        originKind: STALE_HEARTBEAT_RUN_AGENT_ORIGIN_KIND,
+        originId: metric.agentId,
+        originFingerprint: fingerprint,
+      });
+      result.created += 1;
+      result.issueIds.push(issue.id);
+
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: ownerAgentId,
+        action: "heartbeat.stale_agent_runs_detected",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          source: "recovery.scan_stale_heartbeat_run_agents",
+          staleAgentId: metric.agentId,
+          staleRunCount: metric.staleRunCount,
+          thresholdMs,
+          fingerprint,
+        },
+      });
+      if (ownerAgentId) {
+        await deps.enqueueWakeup(ownerAgentId, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "issue_assigned",
+          payload: {
+            issueId: issue.id,
+            staleAgentId: metric.agentId,
+            staleRunCount: metric.staleRunCount,
+          },
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          contextSnapshot: {
+            issueId: issue.id,
+            taskId: issue.id,
+            wakeReason: "issue_assigned",
+            source: STALE_HEARTBEAT_RUN_AGENT_ORIGIN_KIND,
+            staleAgentId: metric.agentId,
+          },
+        });
       }
     }
 
@@ -3927,6 +4169,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     escalateStrandedAssignedIssue,
     recordWatchdogDecision,
     scanSilentActiveRuns,
+    listStaleHeartbeatRunAgentMetrics,
+    scanStaleHeartbeatRunAgents,
     reconcileStrandedAssignedIssues,
     sweepStaleIssueLocks,
     buildIssueGraphLivenessAutoRecoveryPreview,
