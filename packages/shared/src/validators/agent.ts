@@ -132,6 +132,7 @@ export const wakeAgentSchema = z.object({
   reason: z.string().optional().nullable(),
   payload: z.record(z.string(), z.unknown()).optional().nullable(),
   idempotencyKey: z.string().optional().nullable(),
+  issueId: z.string().uuid().optional().nullable(),
   forceFreshSession: z.preprocess(
     (value) => (value === null ? undefined : value),
     z.boolean().optional().default(false),
