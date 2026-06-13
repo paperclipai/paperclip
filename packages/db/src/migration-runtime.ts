@@ -66,15 +66,23 @@ async function isPortInUse(port: number): Promise<boolean> {
   });
 }
 
+export function formatEmbeddedPostgresPortUnavailableError(startPort: number, maxLookahead: number): string {
+  const endPort = startPort + maxLookahead - 1;
+  return [
+    `Embedded PostgreSQL could not find a free port from ${startPort} to ${endPort}.`,
+    "On Windows/WSL2 hosts this can be caused by Hyper-V reserved port ranges rather than a listening process.",
+    "Check Windows reserved ranges with: netsh interface ipv4 show excludedportrange protocol=tcp",
+    "Fix by setting database.embeddedPostgresPort in your Paperclip config to a port outside the excluded range.",
+  ].join("\n");
+}
+
 async function findAvailablePort(startPort: number): Promise<number> {
   const maxLookahead = 20;
   let port = startPort;
   for (let i = 0; i < maxLookahead; i += 1, port += 1) {
     if (!(await isPortInUse(port))) return port;
   }
-  throw new Error(
-    `Embedded PostgreSQL could not find a free port from ${startPort} to ${startPort + maxLookahead - 1}`,
-  );
+  throw new Error(formatEmbeddedPostgresPortUnavailableError(startPort, maxLookahead));
 }
 
 async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
