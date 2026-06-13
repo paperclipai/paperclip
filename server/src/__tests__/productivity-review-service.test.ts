@@ -21,6 +21,7 @@ import {
   DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
   PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+  PROVIDER_RATE_LIMIT_ERROR_CODES,
   productivityReviewService,
 } from "../services/productivity-review.ts";
 
@@ -157,6 +158,39 @@ describeEmbeddedPostgres("productivity review service", () => {
       );
     }
 
+    return runs;
+  }
+
+  async function insertRateLimitRuns(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    count: number;
+    now: Date;
+    errorCode?: (typeof PROVIDER_RATE_LIMIT_ERROR_CODES)[number];
+  }) {
+    const runs: Array<typeof heartbeatRuns.$inferInsert> = [];
+    for (let index = 0; index < input.count; index += 1) {
+      const runId = randomUUID();
+      const createdAt = new Date(input.now.getTime() - index * 60_000);
+      runs.push({
+        id: runId,
+        companyId: input.companyId,
+        agentId: input.agentId,
+        status: "failed",
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        startedAt: createdAt,
+        finishedAt: new Date(createdAt.getTime() + 2_000),
+        contextSnapshot: { issueId: input.issueId, taskId: input.issueId },
+        livenessState: "failed",
+        errorCode: input.errorCode ?? "claude_transient_upstream",
+        error: "You've hit your limit",
+        createdAt,
+        updatedAt: createdAt,
+      });
+    }
+    await db.insert(heartbeatRuns).values(runs);
     return runs;
   }
 
@@ -535,6 +569,79 @@ describeEmbeddedPostgres("productivity review service", () => {
       .where(eq(activityLog.action, "issue.productivity_review_continuation_held"));
     expect(activities).toHaveLength(1);
     expect(activities[0]?.entityId).toBe(seeded.issueId);
+  });
+
+  it("does not trigger no-comment streak when all terminal runs are provider rate-limit failures", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRateLimitRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 9,
+      now,
+      errorCode: "claude_transient_upstream",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("does not trigger no-comment streak for codex_transient_upstream rate-limit failures", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRateLimitRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 9,
+      now,
+      errorCode: "codex_transient_upstream",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("still triggers no-comment streak when real runs follow rate-limit runs without comments", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRateLimitRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 5,
+      now,
+      errorCode: "claude_transient_upstream",
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now: new Date(now.getTime() - 10 * 60_000),
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `no_comment_streak`");
   });
 
   it("clamps poisoned requestDepth metadata instead of aborting productivity reconciliation", async () => {
