@@ -197,6 +197,9 @@ import {
 } from "./low-trust-runtime-containment.js";
 import { resolveCoreTrustPreset, type TrustPresetResolution } from "./trust-preset-resolver.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { createCcrotateTierGate, createDefaultCcrotateSwitcher, readDefaultCcrotateTierCache, type CcrotateTierGate } from "./ccrotate-tier-gate.js";
+import { createCcrotateServeVerifier } from "./ccrotate-serve-verifier.js";
+import { captureQuotaBurnIntoCcrotateTierCache } from "./ccrotate-quota-writeback.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -252,6 +255,9 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+export const CCROTATE_CAPACITY_DEFAULT_RETRY_DELAY_MS = 5 * 60 * 1000;
+export const CCROTATE_CAPACITY_RETRY_REASON = "ccrotate_capacity";
+export const CCROTATE_CAPACITY_MAX_RETRY_ATTEMPTS = 24;
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 // Keep this in sync with local adapters that require a git workspace before launch.
@@ -3095,6 +3101,10 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  /** Optional override for the ccrotate tier-gate. Defaults to reading ~/.ccrotate/tier-cache.json. Tests inject a deterministic stub. */
+  ccrotateGate?: CcrotateTierGate;
+  /** When true, startNextQueuedRunForAgent is a no-op. Prevents background executeRun races in tests. */
+  skipQueuedRunDispatch?: boolean;
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
@@ -3130,6 +3140,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
+  const ccrotateServeBaseUrl =
+    process.env.CCROTATE_SERVE_BASE_URL ??
+    (process.env.CCROTATE_SERVE_SERVICE_HOST && process.env.CCROTATE_SERVE_SERVICE_PORT_SERVE
+      ? `http://${process.env.CCROTATE_SERVE_SERVICE_HOST}:${process.env.CCROTATE_SERVE_SERVICE_PORT_SERVE}`
+      : undefined);
+  const ccrotateServeToken = process.env.CCROTATE_SERVE_TOKEN;
+  const ccrotateVerifier = ccrotateServeBaseUrl && ccrotateServeToken
+    ? createCcrotateServeVerifier({
+        baseUrl: ccrotateServeBaseUrl,
+        token: ccrotateServeToken,
+        timeoutMs: 3_000,
+        retries: 1,
+        circuitBreakerThreshold: 3,
+        circuitBreakerCooldownMs: 30_000,
+        memoTtlMs: 30_000,
+        log: {
+          info: (payload, msg) => logger.info(payload, msg),
+          warn: (payload, msg) => logger.warn(payload, msg),
+          error: (payload, msg) => logger.warn(payload, msg),
+        },
+      })
+    : undefined;
+  if (ccrotateVerifier) {
+    logger.info({ baseUrl: ccrotateServeBaseUrl }, "ccrotate.verifier_enabled");
+  } else {
+    logger.warn({}, "ccrotate.verifier_disabled — set CCROTATE_SERVE_BASE_URL + CCROTATE_SERVE_TOKEN to enable");
+  }
+  const ccrotateGate: CcrotateTierGate = options.ccrotateGate ?? createCcrotateTierGate({
+    readCache: readDefaultCcrotateTierCache,
+    switcher: createDefaultCcrotateSwitcher(),
+    log: {
+      info: (payload, msg) => logger.info(payload, msg),
+      warn: (payload, msg) => logger.warn(payload, msg),
+    },
+    verifier: ccrotateVerifier,
+  });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
   async function releaseEnvironmentLeasesForRun(input: {
@@ -5992,6 +6038,96 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
+    // A ccrotate capacity defer must re-check the gate at promotion time: if the
+    // pool is still exhausted, re-defer instead of promoting a run that would 429.
+    if (dueRun.scheduledRetryReason === CCROTATE_CAPACITY_RETRY_REASON) {
+      const capacity = await ccrotateGate.checkAdapter({
+        adapterType: agent.adapterType,
+        agentId: dueRun.agentId,
+        now,
+      });
+      if (!capacity.allow) {
+        const nextAttempt = (dueRun.scheduledRetryAttempt ?? 0) + 1;
+        if (nextAttempt > CCROTATE_CAPACITY_MAX_RETRY_ATTEMPTS) {
+          const exhausted = await db
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: `ccrotate capacity retry exhausted after ${dueRun.scheduledRetryAttempt ?? 0} attempts; pool did not recover`,
+              errorCode: "rate_limit_exhausted",
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(heartbeatRuns.id, dueRun.id),
+                eq(heartbeatRuns.status, "scheduled_retry"),
+                lte(heartbeatRuns.scheduledRetryAt, now),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (exhausted) {
+            await appendRunEvent(exhausted, await nextRunEventSeq(exhausted.id), {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "warn",
+              message: "ccrotate capacity retry exhausted; pool did not recover within the retry budget",
+              payload: {
+                scheduledRetryAttempt: dueRun.scheduledRetryAttempt ?? 0,
+                maxAttempts: CCROTATE_CAPACITY_MAX_RETRY_ATTEMPTS,
+                ccrotateTarget: capacity.target,
+              },
+            });
+            try {
+              await recovery.escalateCcrotateCapacityExhausted({
+                companyId: dueRun.companyId,
+                ccrotateTarget: capacity.target,
+                agentId: dueRun.agentId,
+                agentName: agent.name ?? null,
+                runId: exhausted.id,
+                attempts: dueRun.scheduledRetryAttempt ?? 0,
+              });
+            } catch (escalationError) {
+              logger.warn(
+                { err: escalationError, runId: exhausted.id, ccrotateTarget: capacity.target },
+                "ccrotate capacity exhaustion escalation failed",
+              );
+            }
+          }
+          return { outcome: "not_promoted", run: exhausted };
+        }
+        const nextDueAt =
+          capacity.resumeAt ?? new Date(now.getTime() + CCROTATE_CAPACITY_DEFAULT_RETRY_DELAY_MS);
+        const rescheduled = await db
+          .update(heartbeatRuns)
+          .set({ scheduledRetryAttempt: nextAttempt, scheduledRetryAt: nextDueAt, updatedAt: now })
+          .where(
+            and(
+              eq(heartbeatRuns.id, dueRun.id),
+              eq(heartbeatRuns.status, "scheduled_retry"),
+              lte(heartbeatRuns.scheduledRetryAt, now),
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (rescheduled) {
+          await appendRunEvent(rescheduled, await nextRunEventSeq(rescheduled.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "info",
+            message: "ccrotate capacity still exhausted at promotion; re-deferred with backoff",
+            payload: {
+              scheduledRetryAttempt: nextAttempt,
+              scheduledRetryAt: nextDueAt.toISOString(),
+              ccrotateTarget: capacity.target,
+            },
+          });
+        }
+        return { outcome: "not_promoted", run: rescheduled };
+      }
+    }
+
     const promoted = await db
       .update(heartbeatRuns)
       .set({
@@ -7664,6 +7800,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function startNextQueuedRunForAgent(agentId: string) {
+    if (options.skipQueuedRunDispatch) return [];
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
@@ -10249,6 +10386,52 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
       return null;
+    }
+
+    // Ccrotate capacity preflight: if the pool is exhausted for this adapter,
+    // persist as a scheduled_retry rather than starting a doomed pod. Timer,
+    // automation, and assignment wakes go through the gate; manual/on_demand
+    // are user-initiated and pass through unconditionally.
+    const gateAppliesToWake =
+      source === "timer" ||
+      source === "automation" ||
+      source === "assignment";
+    if (gateAppliesToWake) {
+      const gateResult = await ccrotateGate.checkAdapter({
+        adapterType: agent.adapterType,
+        agentId,
+        now: new Date(),
+      });
+      if (!gateResult.allow) {
+        const resumeAtIso = gateResult.resumeAt ? gateResult.resumeAt.toISOString() : null;
+        const scheduledRetryAt =
+          gateResult.resumeAt ?? new Date(Date.now() + CCROTATE_CAPACITY_DEFAULT_RETRY_DELAY_MS);
+        await db.insert(heartbeatRuns).values({
+          companyId: agent.companyId,
+          agentId,
+          invocationSource: source,
+          triggerDetail,
+          status: "scheduled_retry",
+          scheduledRetryAt,
+          scheduledRetryReason: CCROTATE_CAPACITY_RETRY_REASON,
+          scheduledRetryAttempt: 0,
+          errorCode: "rate_limit_exhausted",
+          resultJson: {
+            errorFamily: "rate_limit_exhausted",
+            ...(resumeAtIso ? { retryNotBefore: resumeAtIso, transientRetryNotBefore: resumeAtIso } : {}),
+            ccrotateTarget: gateResult.target,
+            ccrotateReason: gateResult.reason,
+          },
+          contextSnapshot: {
+            ...enrichedContextSnapshot,
+            wakeSource: source,
+            wakeTriggerDetail: triggerDetail,
+            ccrotateTarget: gateResult.target,
+            ...(resumeAtIso ? { ccrotateResumeAt: resumeAtIso } : {}),
+          },
+        });
+        return null;
+      }
     }
 
     if (issueId) {
