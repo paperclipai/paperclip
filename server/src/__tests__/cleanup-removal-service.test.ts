@@ -65,6 +65,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
+    const otherAgentId = randomUUID();
     const runId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
@@ -79,6 +80,18 @@ describeEmbeddedPostgres("cleanup removal services", () => {
       id: agentId,
       companyId,
       name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "Live Agent",
       role: "engineer",
       status: "active",
       adapterType: "codex_local",
@@ -106,11 +119,14 @@ describeEmbeddedPostgres("cleanup removal services", () => {
       contextSnapshot: { issueId },
     });
 
-    return { agentId, companyId, issueId, runId };
+    return { agentId, companyId, issueId, otherAgentId, runId };
   }
 
-  it("removes agent-owned issue comments and run-linked activity before deleting the agent", async () => {
-    const { agentId, companyId, issueId, runId } = await seedFixture();
+  it("preserves agent-authored comments and run-linked activity while clearing agent FKs", async () => {
+    const { agentId, companyId, issueId, otherAgentId, runId } = await seedFixture();
+    const agentActivityId = randomUUID();
+    const mixedActivityId = randomUUID();
+    const decisionId = randomUUID();
 
     await db.insert(issueComments).values({
       id: randomUUID(),
@@ -121,19 +137,33 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     });
 
     await db.insert(activityLog).values({
-      id: randomUUID(),
+      id: agentActivityId,
       companyId,
       actorType: "agent",
       actorId: agentId,
       action: "heartbeat.completed",
       entityType: "issue",
       entityId: issueId,
+      agentId,
+      runId,
+      details: {},
+    });
+
+    await db.insert(activityLog).values({
+      id: mixedActivityId,
+      companyId,
+      actorType: "agent",
+      actorId: otherAgentId,
+      action: "heartbeat.observed",
+      entityType: "issue",
+      entityId: issueId,
+      agentId: otherAgentId,
       runId,
       details: {},
     });
 
     await db.insert(issueExecutionDecisions).values({
-      id: randomUUID(),
+      id: decisionId,
       companyId,
       issueId,
       stageId: randomUUID(),
@@ -149,8 +179,24 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     expect(removed?.id).toBe(agentId);
     await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toHaveLength(0);
     await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
-    await expect(db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).resolves.toHaveLength(0);
-    await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.authorAgentId).toBeNull();
+
+    const activityRows = await db.select().from(activityLog).where(eq(activityLog.companyId, companyId));
+    expect(activityRows).toHaveLength(2);
+    const agentActivity = activityRows.find((row) => row.id === agentActivityId);
+    expect(agentActivity?.agentId).toBeNull();
+    expect(agentActivity?.runId).toBeNull();
+    const mixedActivity = activityRows.find((row) => row.id === mixedActivityId);
+    expect(mixedActivity?.agentId).toBe(otherAgentId);
+    expect(mixedActivity?.runId).toBeNull();
+
+    const decisions = await db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.id, decisionId));
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]?.actorAgentId).toBeNull();
+    expect(decisions[0]?.createdByRunId).toBeNull();
   });
 
   it("removes issue read states and activity rows before deleting the company", async () => {
