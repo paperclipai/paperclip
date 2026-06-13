@@ -95,6 +95,59 @@ describe("secret routes", () => {
     expect(mockSecretService.create).not.toHaveBeenCalled();
   });
 
+  it("defaults secret key from name for local-board secret creation", async () => {
+    const createdAt = new Date("2026-05-19T00:00:00.000Z");
+    mockSecretService.create.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      name: "QBO_COMPANY_ID",
+      key: "QBO_COMPANY_ID",
+      provider: "local_encrypted",
+      providerConfigId: null,
+      managedMode: "paperclip_managed",
+      status: "active",
+      externalRef: "local://QBO_COMPANY_ID",
+      providerMetadata: null,
+      latestVersion: 1,
+      description: "diagnostic",
+      createdByAgentId: null,
+      createdByUserId: "local-board",
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    const res = await request(createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local-board",
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: "admin" }],
+    })).post("/api/companies/company-1/secrets").send({
+      name: "QBO_COMPANY_ID",
+      provider: "local_encrypted",
+      value: "not-a-real-secret",
+      description: "diagnostic",
+    });
+
+    expect(res.status).toBe(201);
+    expect(mockSecretService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        name: "QBO_COMPANY_ID",
+        key: "QBO_COMPANY_ID",
+        provider: "local_encrypted",
+        value: "not-a-real-secret",
+        description: "diagnostic",
+      }),
+      { userId: "local-board", agentId: null },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      actorId: "local-board",
+      action: "secret.created",
+      details: { name: "QBO_COMPANY_ID", provider: "local_encrypted" },
+    }));
+  });
+
   it("rejects provider vault routes for non-board actors", async () => {
     const res = await request(createApp({
       type: "agent",
