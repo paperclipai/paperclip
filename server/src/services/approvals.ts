@@ -1,6 +1,7 @@
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
+import { isUuidLike } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
@@ -85,12 +86,14 @@ export function approvalService(db: Db) {
       return db.select().from(approvals).where(and(...conditions));
     },
 
-    getById: (id: string) =>
-      db
+    getById: (id: string) => {
+      if (!isUuidLike(id)) return Promise.resolve(null);
+      return db
         .select()
         .from(approvals)
         .where(eq(approvals.id, id))
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => rows[0] ?? null);
+    },
 
     create: (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) =>
       db

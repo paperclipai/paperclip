@@ -576,6 +576,7 @@ export function projectService(db: Db) {
   };
 
   const getProjectById = async (id: string): Promise<ProjectWithGoals | null> => {
+    if (!isUuidLike(id)) return null;
     const row = await db
       .select()
       .from(projects)

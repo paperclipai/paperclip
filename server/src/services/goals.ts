@@ -1,6 +1,7 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { goals } from "@paperclipai/db";
+import { isUuidLike } from "@paperclipai/shared";
 
 type GoalReader = Pick<Db, "select">;
 
@@ -46,12 +47,14 @@ export function goalService(db: Db) {
   return {
     list: (companyId: string) => db.select().from(goals).where(eq(goals.companyId, companyId)),
 
-    getById: (id: string) =>
-      db
+    getById: (id: string) => {
+      if (!isUuidLike(id)) return Promise.resolve(null);
+      return db
         .select()
         .from(goals)
         .where(eq(goals.id, id))
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => rows[0] ?? null);
+    },
 
     getDefaultCompanyGoal: (companyId: string) => getDefaultCompanyGoal(db, companyId),
 
