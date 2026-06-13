@@ -1,0 +1,2 @@
+symbol,exchange_a,exchange_b,side_a,side_b,size_usd_a,size_usd_b,entry_spread_pct,exit_spread_pct,opened_at_ms,closed_at_ms,realized_pnl_usd
+WIFUSDT,OKX,MEXC,buy,sell,25.0,25.0,0.011,0.001,1699999000000,1699999600000,0.30
