@@ -27,7 +27,8 @@
  */
 import { Router } from "express";
 import crypto from "node:crypto";
-import { type Db, issues } from "@paperclipai/db";
+import { type Db, agentWakeupRequests, issues } from "@paperclipai/db";
+import { and, eq, inArray } from "drizzle-orm";
 import { heartbeatService, type HeartbeatServiceOptions } from "../services/heartbeat.js";
 import { logger } from "../middleware/logger.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -57,6 +58,21 @@ export interface GithubWebhookConfig {
    */
   prReviewerAgentId?: string | null;
   /**
+   * Agent ID that receives a wake for new/reintroduced/reopened Dependabot
+   * alerts (`dependabot_alert` events) at or above `dependabotMinSeverity`.
+   * The designated remediation agent bumps the dependency (or shepherds the
+   * Dependabot PR) and shepherds the fix through CI. When null, dependabot
+   * events are acked and ignored.
+   */
+  dependabotAgentId?: string | null;
+  /**
+   * Severity floor for dependabot wakes (GitHub severity scale). Alerts
+   * below the floor are acked without a wake. Defaults to "high" so a batch
+   * advisory drop of moderate/low findings doesn't fan out into dozens of
+   * agent runs.
+   */
+  dependabotMinSeverity?: "low" | "medium" | "high" | "critical";
+  /**
    * Test/service override for heartbeat dispatch behavior. Production callers
    * normally leave this unset so queued webhook wakes dispatch immediately.
    */
@@ -72,6 +88,7 @@ export interface GithubWebhookConfig {
 const WAKE_DRIVING_EVENTS = new Set([
   "check_run",
   "check_suite",
+  "dependabot_alert",
   "issue_comment",
   "workflow_run",
   "pull_request_review",
@@ -413,6 +430,66 @@ function resolveEventContext(
   }
 }
 
+// Dependabot remediation wake. GitHub severity scale, weakest -> strongest.
+const DEPENDABOT_SEVERITY_RANK: Record<string, number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  critical: 3,
+};
+
+type DependabotAlertContext = {
+  action: "created" | "reintroduced" | "reopened";
+  alertNumber: number;
+  severity: string;
+  packageName: string | null;
+  ecosystem: string | null;
+  manifestPath: string | null;
+  ghsaId: string | null;
+  cveId: string | null;
+  summary: string | null;
+  vulnerableRange: string | null;
+  patchedVersion: string | null;
+  alertUrl: string | null;
+};
+
+function resolveDependabotAlertContext(
+  payload: Record<string, unknown>,
+): DependabotAlertContext | null {
+  const action = payload.action as string | undefined;
+  // created: brand-new advisory match; reintroduced: a previously-fixed alert
+  // came back (regression); reopened: a human reversed a dismissal. The
+  // terminal actions (fixed / dismissed / auto_dismissed) need no work.
+  if (action !== "created" && action !== "reintroduced" && action !== "reopened") return null;
+  const alert = payload.alert as Record<string, unknown> | undefined;
+  if (!alert || typeof alert.number !== "number") return null;
+  const advisory = alert.security_advisory as Record<string, unknown> | undefined;
+  const vulnerability = alert.security_vulnerability as Record<string, unknown> | undefined;
+  const dependency = alert.dependency as Record<string, unknown> | undefined;
+  const pkg = (vulnerability?.package ?? dependency?.package) as Record<string, unknown> | undefined;
+  const firstPatched = vulnerability?.first_patched_version as Record<string, unknown> | undefined;
+  const severity =
+    typeof vulnerability?.severity === "string"
+      ? vulnerability.severity
+      : typeof advisory?.severity === "string"
+        ? advisory.severity
+        : "unknown";
+  return {
+    action,
+    alertNumber: alert.number as number,
+    severity,
+    packageName: (pkg?.name as string | undefined) ?? null,
+    ecosystem: (pkg?.ecosystem as string | undefined) ?? null,
+    manifestPath: (dependency?.manifest_path as string | undefined) ?? null,
+    ghsaId: (advisory?.ghsa_id as string | undefined) ?? null,
+    cveId: (advisory?.cve_id as string | undefined) ?? null,
+    summary: (advisory?.summary as string | undefined) ?? null,
+    vulnerableRange: (vulnerability?.vulnerable_version_range as string | undefined) ?? null,
+    patchedVersion: (firstPatched?.identifier as string | undefined) ?? null,
+    alertUrl: (alert.html_url as string | undefined) ?? null,
+  };
+}
+
 function shouldFirePrReviewerWake(context: ResolvedEventContext | null): context is ResolvedEventContext & { prNumber: number } {
   if (!context || !context.wakeReason || !context.prNumber) return false;
   return new Set([
@@ -574,11 +651,113 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
       }
     })();
 
+    // Dependabot remediation wake. Like the reviewer wake, this targets a
+    // dedicated agent and fires independently of paperclip identifiers (a
+    // security advisory never references one). One wake per alert: `created`
+    // is keyed on the alert alone, while `reintroduced`/`reopened` are scoped
+    // to the delivery so a recurring regression can wake the agent again.
+    const dependabotWakeFired = await (async () => {
+      if (eventName !== "dependabot_alert" || !config.dependabotAgentId) return false;
+      const alert = resolveDependabotAlertContext(payload);
+      if (!alert) return false;
+      const floor =
+        DEPENDABOT_SEVERITY_RANK[config.dependabotMinSeverity ?? "high"] ?? DEPENDABOT_SEVERITY_RANK.high;
+      if ((DEPENDABOT_SEVERITY_RANK[alert.severity] ?? -1) < floor) return false;
+      const repository = payload.repository as Record<string, unknown> | undefined;
+      const alertRepoFullName = (repository?.full_name as string | undefined) ?? null;
+      const taskKey = `github-dependabot:${alertRepoFullName ?? "unknown"}#${alert.alertNumber}`;
+      const idempotencyKey =
+        alert.action === "created"
+          ? `${taskKey}:created`
+          : `${taskKey}:${alert.action}:${deliveryId ?? "no-delivery"}`;
+      try {
+        // enqueueWakeup stores the idempotency key but does not enforce it, so
+        // we pre-check like the run-liveness continuation path does. A prior
+        // non-terminal wake for this exact alert+action means remediation is
+        // already in flight — skip rather than spawn a duplicate run. (GitHub
+        // 200-acks mean it won't retry, but manual replays or a re-scan can
+        // redeliver the same alert.)
+        const existingWake = await db
+          .select({ id: agentWakeupRequests.id })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.agentId, config.dependabotAgentId),
+              eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+              inArray(agentWakeupRequests.status, [
+                "queued",
+                "running",
+                "deferred_issue_execution",
+                "coalesced",
+                "completed",
+              ]),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (existingWake) return false;
+
+        const heartbeat = heartbeatService(db, {
+          pluginWorkerManager: config.pluginWorkerManager,
+          ...config.heartbeatOptions,
+        });
+        await heartbeat.wakeup(config.dependabotAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "github_dependabot_alert",
+          payload: {
+            taskKey,
+            source: "github",
+            event: eventName,
+            deliveryId,
+            repoFullName: alertRepoFullName,
+            dependabotAlert: alert,
+          },
+          contextSnapshot: {
+            taskKey,
+            wakeReason: "github_dependabot_alert",
+            wakeSource: "automation",
+            wakeTriggerDetail: "system",
+            githubEvent: eventName,
+            githubDeliveryId: deliveryId,
+            githubRepoFullName: alertRepoFullName,
+            dependabotAlertNumber: alert.alertNumber,
+            dependabotAction: alert.action,
+            dependabotSeverity: alert.severity,
+            dependabotPackage: alert.packageName,
+            dependabotEcosystem: alert.ecosystem,
+            dependabotManifestPath: alert.manifestPath,
+            dependabotGhsaId: alert.ghsaId,
+            dependabotCveId: alert.cveId,
+            dependabotSummary: alert.summary,
+            dependabotVulnerableRange: alert.vulnerableRange,
+            dependabotPatchedVersion: alert.patchedVersion,
+            dependabotAlertUrl: alert.alertUrl,
+          },
+          idempotencyKey,
+        });
+        return true;
+      } catch (err) {
+        logger.error(
+          {
+            err,
+            agentId: config.dependabotAgentId,
+            event: eventName,
+            alertNumber: alert.alertNumber,
+            repoFullName: alertRepoFullName,
+          },
+          "github webhook dependabot wake failed",
+        );
+        return false;
+      }
+    })();
+
     if (!context || context.identifiers.length === 0) {
       res.status(200).json({
         ok: true,
         ignored: "no_paperclip_identifier",
         reviewerWakeFired,
+        dependabotWakeFired,
       });
       return;
     }
@@ -766,3 +945,4 @@ export const __test_resolveEventContext = resolveEventContext;
 export const __test_shouldFirePrReviewerWake = shouldFirePrReviewerWake;
 export const __test_buildPrReviewerWakeIdempotencyKey = buildPrReviewerWakeIdempotencyKey;
 export const __test_buildPrReviewerTaskKey = buildPrReviewerTaskKey;
+export const __test_resolveDependabotAlertContext = resolveDependabotAlertContext;
