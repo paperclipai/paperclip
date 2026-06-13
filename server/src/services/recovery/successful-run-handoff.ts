@@ -1,8 +1,16 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@paperclipai/db";
-import type { IssueCommentMetadata, IssueCommentPresentation, RunLivenessState } from "@paperclipai/shared";
+import { activityLog, agentWakeupRequests, agents, heartbeatRuns, issues } from "@paperclipai/db";
+import type {
+  IssueCommentMetadata,
+  IssueCommentPresentation,
+  RunLivenessState,
+  SuccessfulRunDisposition,
+} from "@paperclipai/shared";
+import { logActivity } from "../activity-log.js";
 import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
+
+export const SUCCESSFUL_RUN_HANDOFF_RESOLVED_ACTION = "issue.successful_run_handoff_resolved";
 
 export const FINISH_SUCCESSFUL_RUN_HANDOFF_REASON = "finish_successful_run_handoff";
 export const SUCCESSFUL_RUN_MISSING_STATE_REASON = "successful_run_missing_state";
@@ -288,6 +296,37 @@ function isCorrectiveHandoffRun(run: HeartbeatRunRow) {
     readString(context.wakeReason) === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON;
 }
 
+/**
+ * When `run` is a corrective `finish_successful_run_handoff` wake, return the
+ * original source run id that the handoff was opened for (so its attention can
+ * be cleared). Returns null for any non-corrective run.
+ */
+export function readFinishHandoffSourceRunId(run: HeartbeatRunRow): string | null {
+  if (!isCorrectiveHandoffRun(run)) return null;
+  const context = readRecord(run.contextSnapshot);
+  return (
+    readString(context.sourceRunId)
+    ?? readString(context.resumeFromRunId)
+    ?? null
+  );
+}
+
+/** Map a resulting issue status to the disposition recorded when clearing the handoff flag. */
+export function dispositionForIssueStatus(status: string): SuccessfulRunDisposition {
+  switch (status) {
+    case "done":
+      return "done";
+    case "cancelled":
+      return "cancelled";
+    case "in_review":
+      return "review_pending_input";
+    case "blocked":
+      return "blocked_with_owner";
+    default:
+      return "continued";
+  }
+}
+
 function isIssueMonitorMaintenanceRun(run: HeartbeatRunRow) {
   const context = readRecord(run.contextSnapshot);
   const wakeReason = readString(context.wakeReason);
@@ -420,4 +459,100 @@ export function decideSuccessfulRunHandoff(input: {
       livenessState: input.livenessState,
     }, "status_only"),
   };
+}
+
+export type RecordSuccessfulRunDispositionActor = {
+  actorType: "agent" | "user" | "system";
+  actorId: string;
+  agentId?: string | null;
+  runId?: string | null;
+};
+
+export type RecordSuccessfulRunDispositionInput = {
+  companyId: string;
+  issueId: string;
+  issueIdentifier?: string | null;
+  /** The source run whose successful-run handoff attention should be cleared. */
+  runId: string;
+  disposition: SuccessfulRunDisposition;
+  note?: string | null;
+  actor: RecordSuccessfulRunDispositionActor;
+};
+
+export type RecordSuccessfulRunDispositionResult = {
+  alreadyDispositioned: boolean;
+  resolvedRunId: string;
+};
+
+function dispositionAlreadyRecorded(
+  rows: Array<{ runId: string | null; details: Record<string, unknown> | null }>,
+  sourceRunId: string,
+): boolean {
+  for (const row of rows) {
+    const details = row.details ?? {};
+    // Only match on the dispositioned *source* run recorded in details. Do NOT
+    // fall back to row.runId: that column stores the *actor* run that cleared the
+    // disposition, so matching it would falsely report a later disposition of the
+    // actor's own run as already-recorded. Every row written by
+    // recordSuccessfulRunDisposition always sets details.sourceRunId, so no
+    // fallback is needed for correctness.
+    const detailRunId =
+      (typeof details.sourceRunId === "string" ? details.sourceRunId : null)
+      ?? (typeof details.source_run_id === "string" ? (details.source_run_id as string) : null)
+      ?? (typeof details.resumeFromRunId === "string" ? (details.resumeFromRunId as string) : null)
+      ?? null;
+    if (detailRunId === sourceRunId) return true;
+  }
+  return false;
+}
+
+/**
+ * Clear the `missing_successful_run_disposition` blocked-inbox attention for a
+ * given source run by writing a more-recent `issue.successful_run_handoff_resolved`
+ * activity row. Idempotent: a second call for the same source run is a no-op.
+ *
+ * This does NOT change issue status or the recovery decision machinery — it only
+ * records that the run was dispositioned so the attention map stops matching
+ * `handoff.required || handoff.state === "escalated"`.
+ */
+export async function recordSuccessfulRunDisposition(
+  db: Db,
+  input: RecordSuccessfulRunDispositionInput,
+): Promise<RecordSuccessfulRunDispositionResult> {
+  const existingResolved = await db
+    .select({ runId: activityLog.runId, details: activityLog.details })
+    .from(activityLog)
+    .where(
+      and(
+        eq(activityLog.companyId, input.companyId),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, input.issueId),
+        eq(activityLog.action, SUCCESSFUL_RUN_HANDOFF_RESOLVED_ACTION),
+      ),
+    )
+    .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
+
+  if (dispositionAlreadyRecorded(existingResolved, input.runId)) {
+    return { alreadyDispositioned: true, resolvedRunId: input.runId };
+  }
+
+  await logActivity(db, {
+    companyId: input.companyId,
+    actorType: input.actor.actorType,
+    actorId: input.actor.actorId,
+    action: SUCCESSFUL_RUN_HANDOFF_RESOLVED_ACTION,
+    entityType: "issue",
+    entityId: input.issueId,
+    agentId: input.actor.agentId ?? null,
+    runId: input.actor.runId ?? null,
+    details: {
+      identifier: input.issueIdentifier ?? null,
+      sourceRunId: input.runId,
+      disposition: input.disposition,
+      resolvedByDisposition: true,
+      note: input.note ?? null,
+    },
+  });
+
+  return { alreadyDispositioned: false, resolvedRunId: input.runId };
 }

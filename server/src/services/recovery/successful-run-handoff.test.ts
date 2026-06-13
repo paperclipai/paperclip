@@ -8,9 +8,11 @@ import {
   buildSuccessfulRunHandoffExhaustedNotice,
   buildSuccessfulRunHandoffRequiredNotice,
   decideSuccessfulRunHandoff,
+  dispositionForIssueStatus,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
   isSuccessfulRunHandoffRequiredNoticeBody,
   noticeMetadataReferencesRecoveryAction,
+  readFinishHandoffSourceRunId,
 } from "./successful-run-handoff.js";
 
 const run = {
@@ -303,5 +305,44 @@ describe("successful run handoff decision", () => {
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## Successful run missing issue disposition\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## This issue still needs a next step\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("Unrelated comment")).toBe(false);
+  });
+
+  it("reads the source run id from a corrective finish-handoff run", () => {
+    expect(
+      readFinishHandoffSourceRunId({
+        ...run,
+        id: "corrective-run",
+        contextSnapshot: {
+          issueId: "issue-1",
+          wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+          sourceRunId: "original-run",
+        },
+      } as any),
+    ).toBe("original-run");
+
+    expect(
+      readFinishHandoffSourceRunId({
+        ...run,
+        id: "corrective-run",
+        contextSnapshot: {
+          issueId: "issue-1",
+          handoffRequired: true,
+          resumeFromRunId: "resume-run",
+        },
+      } as any),
+    ).toBe("resume-run");
+  });
+
+  it("returns null for a non-corrective run", () => {
+    expect(readFinishHandoffSourceRunId(run)).toBeNull();
+  });
+
+  it("maps issue status to a disposition", () => {
+    expect(dispositionForIssueStatus("done")).toBe("done");
+    expect(dispositionForIssueStatus("cancelled")).toBe("cancelled");
+    expect(dispositionForIssueStatus("in_review")).toBe("review_pending_input");
+    expect(dispositionForIssueStatus("blocked")).toBe("blocked_with_owner");
+    expect(dispositionForIssueStatus("in_progress")).toBe("continued");
+    expect(dispositionForIssueStatus("todo")).toBe("continued");
   });
 });

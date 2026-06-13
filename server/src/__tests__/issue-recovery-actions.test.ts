@@ -1177,4 +1177,140 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .where(eq(issueRecoveryActions.id, action.id));
     expect(actionRow?.status).toBe("active");
   });
+
+  async function seedMissingDispositionHandoff(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    sourceRunId: string;
+  }) {
+    await seedHeartbeatRun({
+      companyId: input.companyId,
+      agentId: input.agentId,
+      runId: input.sourceRunId,
+      issueId: input.issueId,
+      status: "succeeded",
+    });
+    await db.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "issue.successful_run_handoff_required",
+      entityType: "issue",
+      entityId: input.issueId,
+      agentId: input.agentId,
+      runId: input.sourceRunId,
+      details: { sourceRunId: input.sourceRunId, detectedProgressSummary: "Progress was made" },
+    });
+  }
+
+  async function resolvedHandoffRows(issueId: string) {
+    const rows = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.entityId, issueId),
+          eq(activityLog.action, "issue.successful_run_handoff_resolved"),
+        ),
+      );
+    return rows;
+  }
+
+  it("clears the missing disposition flag for a board POST and is idempotent", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const sourceRunId = randomUUID();
+    await seedMissingDispositionHandoff({ companyId, agentId: coderId, issueId: sourceIssueId, sourceRunId });
+    const app = createApp();
+
+    const first = await request(app)
+      .post(`/api/issues/${sourceIssueId}/disposition`)
+      .send({ runId: sourceRunId, disposition: "done", note: "Verified complete." })
+      .expect(200);
+    expect(first.body).toMatchObject({
+      issueId: sourceIssueId,
+      runId: sourceRunId,
+      disposition: "done",
+      alreadyDispositioned: false,
+    });
+    expect(await resolvedHandoffRows(sourceIssueId)).toHaveLength(1);
+
+    const second = await request(app)
+      .post(`/api/issues/${sourceIssueId}/disposition`)
+      .send({ runId: sourceRunId, disposition: "done" })
+      .expect(200);
+    expect(second.body.alreadyDispositioned).toBe(true);
+    expect(await resolvedHandoffRows(sourceIssueId)).toHaveLength(1);
+  });
+
+  it("allows the assignee agent to disposition its own issue", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    // The disposition flag can outlive in_progress; use a terminal status so the
+    // assignee mutation check does not require an active checkout for this case.
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
+    const sourceRunId = randomUUID();
+    await seedMissingDispositionHandoff({ companyId, agentId: coderId, issueId: sourceIssueId, sourceRunId });
+    const actorRunId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId: actorRunId, issueId: sourceIssueId, status: "running" });
+    const app = createApp({
+      type: "agent",
+      agentId: coderId,
+      companyId,
+      runId: actorRunId,
+      source: "agent_jwt",
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${sourceIssueId}/disposition`)
+      .send({ runId: sourceRunId, disposition: "continued" })
+      .expect(200);
+    expect(res.body.alreadyDispositioned).toBe(false);
+    expect(await resolvedHandoffRows(sourceIssueId)).toHaveLength(1);
+  });
+
+  it("rejects a sibling agent dispositioning another agent's in-progress issue", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    // A true peer (sibling engineer, no management override over the assignee).
+    const siblingId = randomUUID();
+    await db.insert(agents).values({
+      id: siblingId,
+      companyId,
+      name: "Sibling Coder",
+      role: "engineer",
+      status: "idle",
+      reportsTo: managerId,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const sourceRunId = randomUUID();
+    await seedMissingDispositionHandoff({ companyId, agentId: coderId, issueId: sourceIssueId, sourceRunId });
+    const app = createApp({
+      type: "agent",
+      agentId: siblingId,
+      companyId,
+      runId: randomUUID(),
+      source: "agent_jwt",
+    });
+
+    // in_progress issue assigned to a different agent => checked out by another (409).
+    await request(app)
+      .post(`/api/issues/${sourceIssueId}/disposition`)
+      .send({ runId: sourceRunId, disposition: "done" })
+      .expect(409);
+    expect(await resolvedHandoffRows(sourceIssueId)).toHaveLength(0);
+  });
+
+  it("rejects an invalid disposition value", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const sourceRunId = randomUUID();
+    await seedMissingDispositionHandoff({ companyId, agentId: coderId, issueId: sourceIssueId, sourceRunId });
+    const app = createApp();
+
+    await request(app)
+      .post(`/api/issues/${sourceIssueId}/disposition`)
+      .send({ runId: sourceRunId, disposition: "not_a_real_disposition" })
+      .expect(400);
+  });
 });
