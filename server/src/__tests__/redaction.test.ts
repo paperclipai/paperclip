@@ -44,6 +44,42 @@ describe("redaction", () => {
     });
   });
 
+  it("redacts database and Openbrain runtime secret-shaped keys without hiding safe keys", () => {
+    const input = {
+      env: {
+        OPENBRAIN_DATABASE_URL: "postgres://runtime-user:runtime-password@db.internal/openbrain",
+        OPENBRAIN_DB_DSN: {
+          type: "plain",
+          value: "postgres://runtime-user:runtime-dsn-password@db.internal/openbrain",
+        },
+        DATABASE_URL: "postgres://portal-user:portal-password@db.internal/portal",
+        POSTGRES_PWD: "postgres-password",
+        connection_string: "Server=db.internal;User Id=runtime-user;Password=runtime-password;",
+        PWD: "/home/runner/work/paperclip",
+        OLDPWD: "/home/runner/work",
+        PAPERCLIP_API_URL: "http://localhost:3100",
+        DATABASE_NAME: "paperclip",
+      },
+    };
+
+    const result = sanitizeRecord(input);
+
+    expect(result.env).toEqual({
+      OPENBRAIN_DATABASE_URL: REDACTED_EVENT_VALUE,
+      OPENBRAIN_DB_DSN: {
+        type: "plain",
+        value: REDACTED_EVENT_VALUE,
+      },
+      DATABASE_URL: REDACTED_EVENT_VALUE,
+      POSTGRES_PWD: REDACTED_EVENT_VALUE,
+      connection_string: REDACTED_EVENT_VALUE,
+      PWD: "/home/runner/work/paperclip",
+      OLDPWD: "/home/runner/work",
+      PAPERCLIP_API_URL: "http://localhost:3100",
+      DATABASE_NAME: "paperclip",
+    });
+  });
+
   it("redacts jwt-looking values even when key name is not sensitive", () => {
     const input = {
       session: "aaa.bbb.ccc",
@@ -87,6 +123,23 @@ describe("redaction", () => {
     expect(result).not.toContain("paperclip-shell-secret");
     expect(result).not.toContain(githubToken);
     expect(result).not.toContain(jwt);
+  });
+
+  it("redacts database and Openbrain runtime values from unstructured log text", () => {
+    const input = [
+      `runtime {"OPENBRAIN_DATABASE_URL":"postgres://runtime-user:runtime-password@db.internal/openbrain"}`,
+      `escaped {\\"connection_string\\":\\"Server=db.internal;User Id=runtime-user;Password=runtime-password;\\"}`,
+      "OPENBRAIN_DATABASE_URL=postgres://runtime-user:runtime-env-password@db.internal/openbrain",
+      "DATABASE_URL=postgres://portal-user:portal-env-password@db.internal/portal",
+    ].join("\n");
+
+    const result = redactSensitiveText(input);
+
+    expect(result).toContain(REDACTED_EVENT_VALUE);
+    expect(result).not.toContain("runtime-password");
+    expect(result).not.toContain("runtime-env-password");
+    expect(result).not.toContain("portal-env-password");
+    expect(result).not.toContain("Server=db.internal;User Id=runtime-user;Password=runtime-password");
   });
 
   it("redacts inline secrets from command metadata without hiding safe command text", () => {
