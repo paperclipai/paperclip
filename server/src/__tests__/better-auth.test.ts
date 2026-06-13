@@ -167,20 +167,24 @@ describe("Better Auth cookie scoping", () => {
     ]));
   });
 
-  it("prefers an explicit resolved listen port over the configured port", () => {
+  it("includes both the resolved listen port AND the configured port when they differ", () => {
+    // detectPort may fall back to a free port if the configured one is busy,
+    // but users can still reach the install on the configured port via a
+    // reverse proxy, Tailscale funnel, container port mapping, or Cloudflare
+    // tunnel. Both ports must be trusted so neither path 403s on "Invalid origin".
     const trustedOrigins = deriveAuthTrustedOrigins({
       deploymentMode: "authenticated",
       authBaseUrlMode: "auto",
       authPublicBaseUrl: undefined,
       allowedHostnames: ["board.example.test"],
-      port: 3100,
-    } as Parameters<typeof deriveAuthTrustedOrigins>[0], { listenPort: 3101 });
+      port: 3101,
+    } as Parameters<typeof deriveAuthTrustedOrigins>[0], { listenPort: 3102 });
 
     expect(trustedOrigins).toEqual(expect.arrayContaining([
       "https://board.example.test:3101",
       "http://board.example.test:3101",
+      "https://board.example.test:3102",
+      "http://board.example.test:3102",
     ]));
-    expect(trustedOrigins).not.toContain("https://board.example.test:3100");
-    expect(trustedOrigins).not.toContain("http://board.example.test:3100");
   });
 });

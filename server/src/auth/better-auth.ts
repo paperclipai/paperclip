@@ -95,14 +95,24 @@ export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: n
     }
   }
   if (config.deploymentMode === "authenticated") {
-    const port = opts?.listenPort ?? config.port;
-    const needsPortVariants = port !== 80 && port !== 443;
+    // Include both the runtime listen port AND the user-configured port. They
+    // differ whenever `detectPort` falls back to a free port because the
+    // requested one was busy at startup — but users may still be reaching
+    // Paperclip on the configured port via a reverse proxy, Tailscale funnel,
+    // container port mapping, or a Cloudflare tunnel. Trusting only the
+    // runtime listen port leaves those requests with a 403 "Invalid origin"
+    // and no obvious recovery path short of editing the systemd unit.
+    const ports = new Set<number>();
+    const runtimePort = opts?.listenPort ?? config.port;
+    ports.add(runtimePort);
+    ports.add(config.port);
     for (const hostname of config.allowedHostnames) {
       const trimmed = hostname.trim().toLowerCase();
       if (!trimmed) continue;
       trustedOrigins.add(`https://${trimmed}`);
       trustedOrigins.add(`http://${trimmed}`);
-      if (needsPortVariants) {
+      for (const port of ports) {
+        if (port === 80 || port === 443) continue;
         trustedOrigins.add(`https://${trimmed}:${port}`);
         trustedOrigins.add(`http://${trimmed}:${port}`);
       }
