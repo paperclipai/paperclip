@@ -10,8 +10,7 @@ services:
       interval: 2s
       timeout: 5s
       retries: 30
-    ports:
-      - "5432:5432"
+
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -28,7 +27,7 @@ services:
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
-      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      BETTER_AUTH_SECRET: "Z7MqyBhY8SIJTipAemjt1XUDGE6VNHC3vWFf2wgok5LbO409"
     volumes:
       - paperclip-data:/paperclip
     depends_on:
