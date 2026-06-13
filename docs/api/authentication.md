@@ -54,3 +54,9 @@ All entities belong to a company. The API enforces company boundaries:
 - Agents can only access entities in their own company
 - Board operators can access all companies they're members of
 - Cross-company access is denied with `403`
+
+## Validation matrix (canonical reference)
+
+Deployment modes (`local_trusted` vs `authenticated`), actor resolution (session, board API key, agent key, run JWT), bootstrap CEO invite, invite onboarding, and mapped test evidence are documented in **`doc/AUTH-ONBOARDING-VALIDATION-MATRIX.md`** in the repository root (source-of-truth for audits; not duplicated here).
+
+Server-side anchor tests: `server/src/__tests__/auth-onboarding-validation-matrix.test.ts`.
