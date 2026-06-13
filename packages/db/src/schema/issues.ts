@@ -93,6 +93,10 @@ export const issues = pgTable(
       unlabeledFallback: boolean;
       evaluatedAt: string;
     }>(),
+    // Materialized from lastEvidenceVerdict.evaluatedAt when the evidence gate
+    // writes a verdict. Keeps dashboard scorecard review-window queries on a
+    // normal timestamp column instead of scanning JSONB across the company.
+    lastEvidenceVerdictEvaluatedAt: timestamp("last_evidence_verdict_evaluated_at", { withTimezone: true }),
   },
   (table) => ({
     companyStatusIdx: index("issues_company_status_idx").on(table.companyId, table.status),
@@ -116,6 +120,10 @@ export const issues = pgTable(
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
     dueMonitorIdx: index("issues_company_monitor_due_idx").on(table.companyId, table.monitorNextCheckAt),
+    evidenceVerdictEvaluatedIdx: index("issues_company_evidence_verdict_evaluated_idx").on(
+      table.companyId,
+      table.lastEvidenceVerdictEvaluatedAt,
+    ),
     identifierIdx: uniqueIndex("issues_identifier_idx").on(table.identifier),
     titleSearchIdx: index("issues_title_search_idx").using("gin", table.title.op("gin_trgm_ops")),
     identifierSearchIdx: index("issues_identifier_search_idx").using("gin", table.identifier.op("gin_trgm_ops")),

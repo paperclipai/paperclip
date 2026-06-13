@@ -2358,6 +2358,18 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/agent-scorecards",
+  tags: ["dashboard"],
+  summary: "Get agent scorecards for the staffing routine",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ windowDays: z.string().optional() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 
 registry.registerPath({

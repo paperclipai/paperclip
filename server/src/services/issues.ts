@@ -2193,6 +2193,7 @@ const issueListSelect = {
   // in the list view — useful for sorting/filtering issues that have a
   // recorded verdict.
   lastEvidenceVerdict: issues.lastEvidenceVerdict,
+  lastEvidenceVerdictEvaluatedAt: issues.lastEvidenceVerdictEvaluatedAt,
 };
 
 function withActiveRuns(
@@ -5985,6 +5986,7 @@ export function issueService(db: Db) {
       };
       if (doneTransitionEvidenceVerdict) {
         patch.lastEvidenceVerdict = doneTransitionEvidenceVerdict;
+        patch.lastEvidenceVerdictEvaluatedAt = new Date(doneTransitionEvidenceVerdict.evaluatedAt);
       }
       if (issueData.requestDepth !== undefined) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
@@ -6082,6 +6084,7 @@ export function issueService(db: Db) {
           );
           inReviewVerdict = verdict;
           patch.lastEvidenceVerdict = verdict;
+          patch.lastEvidenceVerdictEvaluatedAt = new Date(verdict.evaluatedAt);
           logger.info(
             {
               issueId: id,

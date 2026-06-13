@@ -12,6 +12,10 @@ import { ThemeProvider } from "@/context/ThemeContext";
 import { ToastProvider } from "@/context/ToastContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
+  storybookAgentScorecards,
+  storybookAgentScorecardsEmpty,
+} from "../fixtures/agentScorecards";
+import {
   storybookAgents,
   storybookApprovals,
   storybookAuthSession,
@@ -238,6 +242,13 @@ function installStorybookApiFixtures() {
       }
       if (resource === "heartbeat-runs") {
         return Response.json([]);
+      }
+      if (resource === "agent-scorecards") {
+        return Response.json(
+          companyId === "company-empty"
+            ? storybookAgentScorecardsEmpty
+            : storybookAgentScorecards,
+        );
       }
       if (resource === "live-runs") {
         return Response.json(companyId === "company-storybook" ? storybookLiveRuns : []);
