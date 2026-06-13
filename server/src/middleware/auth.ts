@@ -10,8 +10,16 @@ import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
+}
+
+function parseRunIdHeader(value: string | undefined) {
+  if (!value) return undefined;
+  const normalized = value.trim();
+  return UUID_RE.test(normalized) ? normalized : undefined;
 }
 
 interface ActorMiddlewareOptions {
@@ -34,7 +42,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    const runIdHeader = parseRunIdHeader(req.header("x-paperclip-run-id") ?? undefined);
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
