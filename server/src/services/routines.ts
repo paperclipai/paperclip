@@ -952,6 +952,34 @@ export function routineService(
     );
   }
 
+  function extractGithubIssueRef(title: string): string | null {
+    const match = title.match(/\[[^\]\/]+\/[^\]\/]+#\d+\]/);
+    return match ? match[0] : null;
+  }
+
+  async function findExistingMirrorIssue(
+    companyId: string,
+    title: string,
+    executor: Db = db,
+  ) {
+    const ref = extractGithubIssueRef(title);
+    if (!ref) return null;
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          sql`${issues.title} LIKE ${`%${ref}%`}`,
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function findLiveExecutionIssue(
     routine: typeof routines.$inferSelect,
     executor: Db = db,
@@ -1302,6 +1330,34 @@ export function routineService(
           return updated ?? createdRun;
         }
 
+        const mirrorIssue = await findExistingMirrorIssue(input.routine.companyId, title, txDb);
+        if (mirrorIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
+          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+          if (manualRunnerUserId) {
+            await touchIssueForUserInbox(txDb, {
+              companyId: input.routine.companyId,
+              issueId: mirrorIssue.id,
+              userId: manualRunnerUserId,
+              touchedAt: triggeredAt,
+            });
+          }
+          const updated = await finalizeRun(createdRun.id, {
+            status,
+            linkedIssueId: mirrorIssue.id,
+            coalescedIntoRunId: mirrorIssue.originRunId,
+            completedAt: triggeredAt,
+          }, txDb);
+          await updateRoutineTouchedState({
+            routineId: input.routine.id,
+            triggerId: input.trigger?.id ?? null,
+            triggeredAt,
+            status,
+            issueId: mirrorIssue.id,
+            nextRunAt,
+          }, txDb);
+          return updated ?? createdRun;
+        }
+
         try {
           createdIssue = await issueSvc.create(input.routine.companyId, {
             projectId,
@@ -1339,7 +1395,34 @@ export function routineService(
             kind: issueOriginKind,
             id: issueOriginId,
           });
-          if (!existingIssue) throw error;
+          if (!existingIssue) {
+            const mirrorIssue = await findExistingMirrorIssue(input.routine.companyId, title, txDb);
+            if (!mirrorIssue) throw error;
+            const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+            if (manualRunnerUserId) {
+              await touchIssueForUserInbox(txDb, {
+                companyId: input.routine.companyId,
+                issueId: mirrorIssue.id,
+                userId: manualRunnerUserId,
+                touchedAt: triggeredAt,
+              });
+            }
+            const updated = await finalizeRun(createdRun.id, {
+              status,
+              linkedIssueId: mirrorIssue.id,
+              coalescedIntoRunId: mirrorIssue.originRunId,
+              completedAt: triggeredAt,
+            }, txDb);
+            await updateRoutineTouchedState({
+              routineId: input.routine.id,
+              triggerId: input.trigger?.id ?? null,
+              triggeredAt,
+              status,
+              issueId: mirrorIssue.id,
+              nextRunAt,
+            }, txDb);
+            return updated ?? createdRun;
+          }
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           if (manualRunnerUserId) {
             await touchIssueForUserInbox(txDb, {
