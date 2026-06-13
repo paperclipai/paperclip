@@ -5864,6 +5864,25 @@ export function issueRoutes(
       }
     }
 
+    // Hard checkout lock (§3.5 Option A): walk ancestor chain and return 423 if any
+    // ancestor has a pending plan request_confirmation awaiting board approval.
+    const ancestors = await svc.getAncestors(issue.id);
+    if (ancestors.length > 0) {
+      const ancestorIds = ancestors.map((a) => a.id);
+      const planLock = await issueThreadInteractionService(db).hasPendingPlanConfirmationOnAnyIssue(
+        ancestorIds,
+        issue.companyId,
+      );
+      if (planLock) {
+        res.status(423).json({
+          error: "Checkout locked: an ancestor issue has a pending plan confirmation awaiting approval",
+          lockedByIssueId: planLock.issueId,
+          interactionId: planLock.id,
+        });
+        return;
+      }
+    }
+
     if (req.actor.type === "agent" && req.actor.agentId !== req.body.agentId) {
       res.status(403).json({ error: "Agent can only checkout as itself" });
       return;

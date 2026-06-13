@@ -1449,5 +1449,49 @@ export function issueThreadInteractionService(db: Db) {
       await touchIssue(db, issue.id);
       return hydrateInteraction(updated);
     },
+
+    /**
+     * Returns the first pending plan `request_confirmation` found on any of the given issues,
+     * or null if none exists. Used by the checkout lock to block execution while a plan
+     * awaits approval on an ancestor issue.
+     */
+    hasPendingPlanConfirmationOnAnyIssue: async (
+      issueIds: string[],
+      companyId: string,
+    ): Promise<{ id: string; issueId: string } | null> => {
+      if (issueIds.length === 0) return null;
+
+      // Chunk to stay within DB IN-clause limits
+      const chunkSize = 100;
+      for (let i = 0; i < issueIds.length; i += chunkSize) {
+        const chunk = issueIds.slice(i, i + chunkSize);
+        const rows = await db
+          .select({
+            id: issueThreadInteractions.id,
+            issueId: issueThreadInteractions.issueId,
+            payload: issueThreadInteractions.payload,
+          })
+          .from(issueThreadInteractions)
+          .where(
+            and(
+              eq(issueThreadInteractions.companyId, companyId),
+              inArray(issueThreadInteractions.issueId, chunk),
+              eq(issueThreadInteractions.kind, "request_confirmation"),
+              eq(issueThreadInteractions.status, "pending"),
+            ),
+          );
+
+        const hit = rows.find((row) => {
+          const payload = requestConfirmationPayloadSchema.parse(row.payload) as {
+            target?: { type?: string; key?: string } | null;
+          };
+          return payload.target?.type === "issue_document" && payload.target?.key === "plan";
+        });
+
+        if (hit) return { id: hit.id, issueId: hit.issueId };
+      }
+
+      return null;
+    },
   };
 }
