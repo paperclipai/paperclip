@@ -929,6 +929,101 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("PAP-101 Implement helper (done)");
     expect(prompt).toContain("Added the helper route and tests.");
   });
+
+  it("filters out local-board noise comments from the wake payload", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "AGE-10976",
+        title: "Filter noise comments",
+        status: "in_progress",
+      },
+      commentWindow: {
+        requestedCount: 3,
+        includedCount: 3,
+        missingCount: 0,
+      },
+      comments: [
+        { id: "c1", body: "Retry: run dispatch", author: { type: "user", id: "local-board" }, createdAt: "2026-04-28T10:00:00.000Z" },
+        { id: "c2", body: "Plan posted. Requesting promotion.", author: { type: "user", id: "local-board" }, createdAt: "2026-04-28T11:00:00.000Z" },
+        { id: "c3", body: "Implementing the filter now.", author: { type: "agent", id: "agent-1" }, createdAt: "2026-04-28T12:00:00.000Z" },
+      ],
+      fallbackFetchNeeded: false,
+    });
+
+    // local-board comments should be filtered out
+    expect(prompt).not.toContain("Retry: run dispatch");
+    expect(prompt).not.toContain("Plan posted. Requesting promotion.");
+    expect(prompt).toContain("Implementing the filter now.");
+    // 2 noise comments filtered → missingCount = 2
+    expect(prompt).toContain("omitted comments: 2");
+  });
+
+  it("filters out comments older than 24 hours", () => {
+    const now = new Date();
+    const twoDaysAgo = new Date(now.getTime() - 48 * 60 * 60 * 1000).toISOString();
+    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+
+    const payload = {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "AGE-10976",
+        title: "Filter noise comments",
+        status: "in_progress",
+      },
+      commentWindow: {
+        requestedCount: 2,
+        includedCount: 2,
+        missingCount: 0,
+      },
+      comments: [
+        { id: "c1", body: "Old comment", author: { type: "agent", id: "agent-1" }, createdAt: twoDaysAgo },
+        { id: "c2", body: "Recent comment", author: { type: "agent", id: "agent-1" }, createdAt: oneHourAgo },
+      ],
+      fallbackFetchNeeded: false,
+    };
+
+    const result = JSON.parse(stringifyPaperclipWakePayload(payload)!);
+    expect(result.comments).toHaveLength(1);
+    expect(result.comments[0].id).toBe("c2");
+  });
+
+  it("keeps only the 5 most recent comments", () => {
+    const comments = Array.from({ length: 8 }, (_, i) => ({
+      id: `c-${i}`,
+      body: `Agent comment ${i}`,
+      author: { type: "agent", id: "agent-1" },
+      createdAt: `2026-04-28T${10 + i}:00:00.000Z`,
+    }));
+
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "AGE-10976",
+        title: "Filter noise comments",
+        status: "in_progress",
+      },
+      commentWindow: {
+        requestedCount: 8,
+        includedCount: 8,
+        missingCount: 0,
+      },
+      comments,
+      fallbackFetchNeeded: false,
+    });
+
+    // Only the last 5 should appear (Agent comment 3 through 7)
+    expect(prompt).not.toContain("Agent comment 0");
+    expect(prompt).not.toContain("Agent comment 1");
+    expect(prompt).not.toContain("Agent comment 2");
+    expect(prompt).toContain("Agent comment 3");
+    expect(prompt).toContain("Agent comment 7");
+    // 3 filtered (8 - 5)
+    expect(prompt).toContain("omitted comments: 3");
+  });
 });
 
 describe("applyPaperclipWorkspaceEnv", () => {

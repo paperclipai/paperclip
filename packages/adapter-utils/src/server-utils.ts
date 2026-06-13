@@ -598,13 +598,52 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
   };
 }
 
+/**
+ * Filter noise comments from the wake payload to reduce token waste.
+ *
+ * Rules (applied in order):
+ * 1. Remove comments from the board/system actor (authorType="user", authorId="local-board").
+ * 2. Remove comments older than 24 hours.
+ * 3. Keep only the most recent MAX_WAKE_COMMENTS comments.
+ *
+ * The commentWindow counts are recalculated to reflect the filtered set.
+ */
+const MAX_WAKE_COMMENTS = 5;
+const NOISE_AUTHOR_IDS = new Set(["local-board"]);
+const WAKE_COMMENT_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function filterNoiseComments(
+  comments: PaperclipWakeComment[],
+  now: Date = new Date(),
+): PaperclipWakeComment[] {
+  const cutoff = now.getTime() - WAKE_COMMENT_AGE_MS;
+
+  // 1. Remove board/system noise comments
+  let filtered = comments.filter(
+    (c) => !(c.authorType === "user" && c.authorId != null && NOISE_AUTHOR_IDS.has(c.authorId)),
+  );
+
+  // 2. Remove comments older than 24 hours (if createdAt is parseable)
+  filtered = filtered.filter((c) => {
+    if (!c.createdAt) return true; // keep comments without timestamps
+    const ts = Date.parse(c.createdAt);
+    return !Number.isNaN(ts) && ts >= cutoff;
+  });
+
+  // 3. Keep only the most recent MAX_WAKE_COMMENTS
+  filtered = filtered.slice(-MAX_WAKE_COMMENTS);
+
+  return filtered;
+}
+
 export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayload | null {
   const payload = parseObject(value);
-  const comments = Array.isArray(payload.comments)
+  const rawComments = Array.isArray(payload.comments)
     ? payload.comments
         .map((entry) => normalizePaperclipWakeComment(entry))
         .filter((entry): entry is PaperclipWakeComment => Boolean(entry))
     : [];
+  const comments = filterNoiseComments(rawComments);
   const commentWindow = parseObject(payload.commentWindow);
   const commentIds = Array.isArray(payload.commentIds)
     ? payload.commentIds
@@ -654,9 +693,9 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     commentIds,
     latestCommentId: asString(payload.latestCommentId, "").trim() || null,
     comments,
-    requestedCount: asNumber(commentWindow.requestedCount, comments.length || commentIds.length),
-    includedCount: asNumber(commentWindow.includedCount, comments.length),
-    missingCount: asNumber(commentWindow.missingCount, 0),
+    requestedCount: asNumber(commentWindow.requestedCount, rawComments.length || commentIds.length),
+    includedCount: comments.length,
+    missingCount: rawComments.length - comments.length + asNumber(commentWindow.missingCount, 0),
     truncated: asBoolean(payload.truncated, false),
     fallbackFetchNeeded: asBoolean(payload.fallbackFetchNeeded, false),
   };
@@ -778,7 +817,7 @@ export function renderPaperclipWakePrompt(
     }
   }
   if (normalized.missingCount > 0) {
-    lines.push(`- omitted comments: ${normalized.missingCount}`);
+    lines.push(`- omitted comments: ${normalized.missingCount} (noise-filtered: board/system comments, comments older than 24h, and comments beyond the most recent 5 are excluded)`);
   }
 
   if (executionStage) {
