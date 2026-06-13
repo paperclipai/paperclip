@@ -127,6 +127,29 @@ function isBedrockAuth(env: Record<string, string>): boolean {
   );
 }
 
+// Anthropic-proprietary server-side tools (web_search_*, web_fetch_*) are only
+// honoured by api.anthropic.com. When ANTHROPIC_BASE_URL points at a third-party
+// Anthropic-compatible gateway (e.g. kimi/minimax/glm shims), upstream rejects
+// those tool types with code 20033 "invalid model". Detect non-Anthropic
+// gateways so we can deny those tools at the CLI layer per-run.
+export function isThirdPartyAnthropicGateway(env: Record<string, string>): boolean {
+  if (isBedrockAuth(env)) return false;
+  const raw = env.ANTHROPIC_BASE_URL;
+  if (typeof raw !== "string") return false;
+  const trimmed = raw.trim();
+  if (!trimmed) return false;
+  let host: string;
+  try {
+    host = new URL(trimmed).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (!host) return false;
+  return host !== "anthropic.com" && !host.endsWith(".anthropic.com");
+}
+
+const ANTHROPIC_PROPRIETARY_SERVER_TOOLS = ["WebSearch", "WebFetch"] as const;
+
 function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" | "metered_api" {
   if (isBedrockAuth(env)) return "metered_api";
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
@@ -710,6 +733,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
+    if (isThirdPartyAnthropicGateway(effectiveEnv)) {
+      args.push("--disallowedTools", ANTHROPIC_PROPRIETARY_SERVER_TOOLS.join(","));
+    }
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
