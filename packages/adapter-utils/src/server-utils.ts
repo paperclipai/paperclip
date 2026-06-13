@@ -1184,7 +1184,7 @@ export function defaultPathForPlatform() {
 }
 
 function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
-  return (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean);
+  return (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM;.PS1").split(";").filter(Boolean);
 }
 
 async function pathExists(candidate: string) {
@@ -1257,6 +1257,11 @@ function resolveWindowsCmdShell(env: NodeJS.ProcessEnv): string {
   return path.join(fallbackRoot, "System32", "cmd.exe");
 }
 
+function resolveWindowsPowerShell(env: NodeJS.ProcessEnv): string {
+  const fallbackRoot = env.SystemRoot || process.env.SystemRoot || "C:\\Windows";
+  return path.join(fallbackRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+}
+
 async function resolveSpawnTarget(
   command: string,
   args: string[],
@@ -1304,6 +1309,16 @@ async function resolveSpawnTarget(
     return {
       command: shell,
       args: ["/d", "/s", "/c", commandLine],
+    };
+  }
+
+  if (/\.ps1$/i.test(executable)) {
+    // Run PowerShell scripts via powershell.exe with bypass policy.
+    // Use an absolute path to the shell because PATH may be restricted.
+    const shell = resolveWindowsPowerShell(env);
+    return {
+      command: shell,
+      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", executable, ...args],
     };
   }
 
