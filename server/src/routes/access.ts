@@ -1110,7 +1110,7 @@ async function resolveActorHumanRole(
   return normalizeHumanRole(membership.membershipRole, "operator");
 }
 
-async function getProtectedMemberReason(
+export async function getProtectedMemberReason(
   req: Request,
   access: ReturnType<typeof accessService>,
   companyId: string,
@@ -1123,7 +1123,18 @@ async function getProtectedMemberReason(
 ): Promise<string | null> {
   if (member.principalType !== "user") return "Only human company members can be removed.";
   if (req.actor.type !== "board") return "Board access is required to remove members.";
-  if (member.principalId === req.actor.userId) return "You cannot remove yourself.";
+  // Self-protection only fires for archive (removal). For non-archive updates
+  // (role change, status toggle, permission edit) the actor is the same person
+  // as the target, so the downstream isInstanceAdmin / archive-role / role-rank
+  // checks would all misfire on themselves (e.g. "You can only remove users
+  // below your company role" thrown against yourself). Let the route-level
+  // invariants take over — they already enforce "cannot remove the last
+  // active owner" via a SELECT … FOR UPDATE lock, which is the real safety
+  // net we care about. Without this gate, ANY self-update returned the
+  // misleading "You cannot remove yourself." error.
+  if (member.principalId === req.actor.userId) {
+    return opts?.operation === "archive" ? "You cannot remove yourself." : null;
+  }
   const isTargetInstanceAdmin = opts?.instanceAdminUserIds
     ? opts.instanceAdminUserIds.has(member.principalId)
     : await access.isInstanceAdmin(member.principalId);
