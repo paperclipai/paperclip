@@ -433,9 +433,20 @@ function truncateByCodePoint(value: string, maxChars: number): string {
   return Array.from(value).slice(0, maxChars).join("");
 }
 
+// ASCII control characters (excluding TAB, LF, CR) and DEL. Terminal capture
+// artifacts can leave these bytes in stored text; strict JSON parsers like jq
+// reject raw control characters in string values, so we strip them at the
+// list-serialization boundary.
+const JSON_UNSAFE_ASCII_CONTROL_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
+
+function stripJsonUnsafeAscii(value: string): string {
+  return value.replace(JSON_UNSAFE_ASCII_CONTROL_RE, "");
+}
+
 function decodeDatabaseTextPreview(value: string | null | undefined, maxChars: number): string | null {
   if (value == null) return null;
-  return truncateByCodePoint(Buffer.from(value, "base64").toString("utf8"), maxChars);
+  const decoded = Buffer.from(value, "base64").toString("utf8");
+  return truncateByCodePoint(stripJsonUnsafeAscii(decoded), maxChars);
 }
 
 function appendAcceptanceCriteriaToDescription(description: string | null | undefined, acceptanceCriteria: string[] | undefined) {
