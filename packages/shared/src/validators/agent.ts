@@ -37,13 +37,31 @@ export type UpsertAgentInstructionsFile = z.infer<typeof upsertAgentInstructions
 
 const adapterConfigSchema = z.record(z.string(), z.unknown()).superRefine((value, ctx) => {
   const envValue = value.env;
-  if (envValue === undefined) return;
-  const parsed = envConfigSchema.safeParse(envValue);
-  if (!parsed.success) {
+  if (envValue !== undefined) {
+    const parsed = envConfigSchema.safeParse(envValue);
+    if (!parsed.success) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "adapterConfig.env must be a map of valid env bindings",
+        path: ["env"],
+      });
+    }
+  }
+
+  const hasCwd = typeof value.cwd === "string" && value.cwd.trim().length > 0;
+  const wsStrategy = value.workspaceStrategy;
+  if (
+    hasCwd &&
+    wsStrategy !== null &&
+    typeof wsStrategy === "object" &&
+    !Array.isArray(wsStrategy) &&
+    (wsStrategy as Record<string, unknown>).type === "git_worktree"
+  ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "adapterConfig.env must be a map of valid env bindings",
-      path: ["env"],
+      message:
+        "adapterConfig.cwd cannot be used with workspaceStrategy.type \"git_worktree\" — the worktree resolver derives the working directory from the project workspace",
+      path: ["cwd"],
     });
   }
 });
