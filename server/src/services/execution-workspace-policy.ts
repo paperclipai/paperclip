@@ -8,7 +8,7 @@ import type {
 import { gitOpsProjectPolicySchema } from "@paperclipai/shared";
 import { asString, parseObject } from "../adapters/utils.js";
 
-type ParsedExecutionWorkspaceMode = Exclude<ExecutionWorkspaceMode, "inherit" | "reuse_existing">;
+export type ParsedExecutionWorkspaceMode = Exclude<ExecutionWorkspaceMode, "inherit" | "reuse_existing">;
 
 function cloneRecord(value: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
   if (!value) return null;
@@ -299,6 +299,64 @@ export function resolveExecutionWorkspaceMode(input: {
     return "agent_default";
   }
   return "shared_workspace";
+}
+
+// True when the project policy declares git_worktree as its workspace strategy —
+// i.e. the operator's explicit intent is per-issue worktree isolation. Used to
+// keep non-isolated runs off the shared project clone (B1 gap-fix Fix 1).
+export function policyMandatesWorktreeIsolation(
+  policy: ProjectExecutionWorkspacePolicy | null,
+): boolean {
+  return policy?.workspaceStrategy?.type === "git_worktree";
+}
+
+// Whether a run may resolve to the shared project-workspace clone as its cwd.
+// agent_default never uses the clone. Under a worktree-isolation policy, ONLY an
+// isolated_workspace run may take the clone (realization turns it into a per-issue
+// worktree); any other mode is routed to the agent scratch dir instead, so an
+// orchestration/plan-root run can never write the operator's real clone.
+export function shouldUseProjectWorkspaceForRun(input: {
+  requestedMode: ParsedExecutionWorkspaceMode;
+  policyMandatesWorktree: boolean;
+}): boolean {
+  if (input.requestedMode === "agent_default") return false;
+  if (input.policyMandatesWorktree && input.requestedMode !== "isolated_workspace") return false;
+  return true;
+}
+
+// Thrown when a run would execute in a shared/primary workspace despite the
+// project policy mandating git_worktree isolation. Caught by the heartbeat
+// setup error handler, which fails the run closed (never spawns the adapter).
+export class WorkspaceIsolationError extends Error {
+  readonly code = "workspace_isolation_violation";
+  readonly cwd: string;
+  constructor(detail: { cwd: string; reason: string }) {
+    super(
+      `Refusing to run agent in a non-isolated workspace under a git_worktree policy: ` +
+        `${detail.reason} (cwd=${detail.cwd})`,
+    );
+    this.name = "WorkspaceIsolationError";
+    this.cwd = detail.cwd;
+  }
+}
+
+// Fail-closed backstop: if the policy mandates worktree isolation, the realized
+// workspace must be either an actual git_worktree or the agent scratch dir.
+// Anything else (notably a configured project clone returned as project_primary)
+// throws — the run never reaches the adapter.
+export function assertRunWorkspaceIsolation(input: {
+  policyMandatesWorktree: boolean;
+  realizedStrategy: "project_primary" | "git_worktree";
+  realizedCwd: string;
+  scratchCwd: string;
+}): void {
+  if (!input.policyMandatesWorktree) return;
+  if (input.realizedStrategy === "git_worktree") return;
+  if (input.realizedCwd === input.scratchCwd) return;
+  throw new WorkspaceIsolationError({
+    cwd: input.realizedCwd,
+    reason: "policy mandates git_worktree isolation but the run resolved to a shared project workspace",
+  });
 }
 
 export function buildExecutionWorkspaceAdapterConfig(input: {

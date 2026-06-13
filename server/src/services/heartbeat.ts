@@ -130,6 +130,9 @@ import {
   parseProjectExecutionWorkspacePolicy,
   resolveExecutionWorkspaceEnvironmentId,
   resolveExecutionWorkspaceMode,
+  policyMandatesWorktreeIsolation,
+  shouldUseProjectWorkspaceForRun,
+  assertRunWorkspaceIsolation,
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import {
@@ -7831,6 +7834,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       trustPreset.kind === "low_trust_review" && resolvedExecutionWorkspaceMode === "shared_workspace"
         ? "isolated_workspace"
         : resolvedExecutionWorkspaceMode;
+    // Fix 1 (B1 gap-fix): when the project policy mandates git_worktree isolation,
+    // keep non-isolated runs off the shared clone and fail closed if a run ever
+    // resolves to it. See execution-workspace-policy.ts.
+    const policyMandatesWorktree = policyMandatesWorktreeIsolation(projectExecutionWorkspacePolicy);
     const issueRef = issueContext
       ? {
           id: issueContext.id,
@@ -8014,7 +8021,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           agent,
           context,
           previousSessionParams,
-          { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
+          {
+            useProjectWorkspace: shouldUseProjectWorkspaceForRun({
+              requestedMode: requestedExecutionWorkspaceMode,
+              policyMandatesWorktree,
+            }),
+          },
         ),
     });
     const workspaceManagedConfig = shouldReuseExisting
@@ -8165,6 +8177,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           recorder: workspaceOperationRecorder,
         });
+    // Fix 1 (B1 gap-fix) fail-closed backstop: under a git_worktree-isolation
+    // policy the realized workspace must be a real worktree or the agent scratch
+    // dir — never a shared project clone. A violation throws here, before the
+    // adapter is spawned; the outer setup catch marks the run failed.
+    assertRunWorkspaceIsolation({
+      policyMandatesWorktree,
+      realizedStrategy: executionWorkspace.strategy,
+      realizedCwd: executionWorkspace.cwd,
+      scratchCwd: resolveDefaultAgentWorkspaceDir(agent.id),
+    });
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
     let persistedExecutionWorkspace = null;
