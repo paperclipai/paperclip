@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, not, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -580,6 +580,41 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ]);
 
     return Boolean(run || deferredWake);
+  }
+
+  // Returns true when another issue (typically a child reset/recovery run) currently
+  // holds an active executionRunId on the same execution workspace as `issueId`.
+  // This guards against retrying the parent/source issue while a child run still owns
+  // the worktree — the race described in FUL-11071 where FUL-11070 held the workspace
+  // while FUL-11055's recovery tried to re-enter and got adapter_failed in a loop.
+  async function hasActiveRunOnSharedExecutionWorkspace(
+    companyId: string,
+    excludeIssueId: string,
+    executionWorkspaceId: string,
+  ): Promise<{ held: boolean; byIssueId?: string; byRunId?: string }> {
+    const row = await db
+      .select({ issueId: issues.id, runId: heartbeatRuns.id })
+      .from(issues)
+      .innerJoin(
+        heartbeatRuns,
+        and(
+          eq(heartbeatRuns.id, issues.executionRunId),
+          eq(heartbeatRuns.companyId, issues.companyId),
+        ),
+      )
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.executionWorkspaceId, executionWorkspaceId),
+          isNull(issues.hiddenAt),
+          not(eq(issues.id, excludeIssueId)),
+          inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!row) return { held: false };
+    return { held: true, byIssueId: row.issueId, byRunId: row.runId };
   }
 
   async function hasPendingWakeInteraction(companyId: string, issueId: string) {
@@ -1378,7 +1413,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     prefix: string;
     now: Date;
   }) {
-    const [tail, recentEvents, childIssues, blockers] = await Promise.all([
+    const [tail, recentEvents, childIssues, blockers, adapterInvokeEvent] = await Promise.all([
       readRunLogTailForEvidence(input.run),
       db
         .select({
@@ -1413,10 +1448,32 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           )
           .limit(8)
         : Promise.resolve([]),
+      db
+        .select({ createdAt: heartbeatRunEvents.createdAt })
+        .from(heartbeatRunEvents)
+        .where(
+          and(
+            eq(heartbeatRunEvents.companyId, input.run.companyId),
+            eq(heartbeatRunEvents.runId, input.run.id),
+            eq(heartbeatRunEvents.eventType, "adapter.invoke"),
+          ),
+        )
+        .orderBy(asc(heartbeatRunEvents.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
     ]);
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
     const safeTail = truncateEvidenceText(redactWatchdogEvidenceText(tail, currentUserRedactionOptions));
     const silenceAgeMs = silenceAgeMsForRun(input.run, input.now);
+
+    // Classify the run's phase relative to adapter invocation so evaluators can
+    // distinguish a stuck pre-launch from a stalled adapter session.
+    const phase: "pre_adapter" | "post_adapter_silent" | "post_adapter_active" = adapterInvokeEvent
+      ? (input.run.lastOutputAt && input.run.lastOutputAt >= adapterInvokeEvent.createdAt
+        ? "post_adapter_active"
+        : "post_adapter_silent")
+      : "pre_adapter";
+
     return {
       safeTail,
       silenceAgeMs,
@@ -1428,6 +1485,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       })),
       childIssues,
       blockers,
+      adapterInvokedAt: adapterInvokeEvent?.createdAt.toISOString() ?? null,
+      phase,
     };
   }
 
@@ -1458,6 +1517,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         `- ${issueUiLink({ identifier: issue.identifier, id: issue.id }, input.prefix)} \`${issue.status}\`: ${issue.title}`,
       ).join("\n")
       : "- none detected";
+    const phaseLines = (() => {
+      const { phase, adapterInvokedAt } = input.evidence;
+      if (phase === "pre_adapter") {
+        return [
+          `- Phase: \`pre_adapter\` — adapter has not yet been invoked`,
+          `- Adapter invoked at: not yet`,
+          "- Output after adapter invocation: n/a",
+          "- Assessment: process may not have launched or is stuck before the invoke phase; check process metadata and adapter launch logs",
+        ];
+      }
+      if (phase === "post_adapter_silent") {
+        return [
+          `- Phase: \`post_adapter_silent\` — adapter was invoked but no output recorded since`,
+          `- Adapter invoked at: ${adapterInvokedAt ?? "unknown"}`,
+          "- Output after adapter invocation: none",
+          "- Assessment: likely adapter stall, long-running tool, or API timeout; verify adapter process is alive and inspect run events for last known activity",
+        ];
+      }
+      return [
+        `- Phase: \`post_adapter_active\` — output recorded after adapter invocation`,
+        `- Adapter invoked at: ${adapterInvokedAt ?? "unknown"}`,
+        `- Output after adapter invocation: yes (last at ${input.run.lastOutputAt?.toISOString() ?? "unknown"})`,
+        "- Assessment: run appears active; current silence may reflect a quiet processing phase (compilation, large file I/O, waiting on external API)",
+      ];
+    })();
     return [
       `Paperclip detected ${input.level} output silence on an active heartbeat run.`,
       "",
@@ -1474,6 +1558,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       `- Silent for: ${formatDuration(input.evidence.silenceAgeMs)}`,
       `- Thresholds: suspicious after ${formatDuration(ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS)}, critical after ${formatDuration(ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS)}`,
       `- Process metadata: pid \`${input.run.processPid ?? "unknown"}\`, process group \`${input.run.processGroupId ?? "unknown"}\`, in-memory handle \`${runningProcesses.has(input.run.id) ? "yes" : "no"}\``,
+      "",
+      "## Phase",
+      "",
+      ...phaseLines,
       "",
       "## Last Output Excerpt",
       "",
@@ -2492,6 +2580,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
+
+    // Re-read the issue status to guard against concurrent controller PATCHes
+    // that set `blocked` (+ fresh first-class blockers) between the reconciler's
+    // snapshot query and this escalation point. Without this guard the reconciler
+    // would overwrite a freshly-set controller state.
+    const freshStatus = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)))
+      .then((rows) => rows[0]?.status ?? null);
+    if (!freshStatus || freshStatus !== input.previousStatus) {
+      return null;
+    }
+
     const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
       issue: input.issue,
       previousStatus: input.previousStatus,
@@ -2499,10 +2601,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryCause,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
+    // Read existing unresolved blockers for the activity log audit trail only.
+    // Do NOT pass blockedByIssueIds to issuesSvc.update() — that call is a
+    // full-replace (delete-then-insert) and would race with concurrent controller
+    // PATCHes that set fresh first-class blockers just after the fresh-status
+    // check above.
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
-      blockedByIssueIds: blockerIds,
       assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
     });
     if (!updated) return null;
@@ -2685,6 +2791,38 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
         result.skipped += 1;
         continue;
+      }
+
+      // Defer retry when a child/reset run still holds the shared execution workspace.
+      // Retrying the parent while the child owns the worktree produces an
+      // adapter_failed loop (FUL-11071). Skip for now; the reconciler will re-evaluate
+      // on the next cycle once the child run releases its executionRunId.
+      if (issue.executionWorkspaceId) {
+        const workspaceHold = await hasActiveRunOnSharedExecutionWorkspace(
+          issue.companyId,
+          issue.id,
+          issue.executionWorkspaceId,
+        );
+        if (workspaceHold.held) {
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: null,
+            runId: null,
+            action: "issue.recovery.stranded_workspace_held_skip",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              identifier: issue.identifier,
+              executionWorkspaceId: issue.executionWorkspaceId,
+              heldByIssueId: workspaceHold.byIssueId,
+              heldByRunId: workspaceHold.byRunId,
+            },
+          });
+          result.skipped += 1;
+          continue;
+        }
       }
 
       if (await hasPendingWakeInteraction(issue.companyId, issue.id)) {
@@ -3906,7 +4044,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           source: "recovery.sweep_stale_issue_locks",
           clearedCheckoutRunId: issue.checkoutRunId,
           clearedExecutionRunId: issue.executionRunId,
-          referencedRunStatuses: Object.fromEntries(runStatusById),
+          // Scope to this issue's run IDs only; the full runStatusById map spans
+          // all companies and must not be written into a per-company activity log
+          // row (cross-tenant data leak).
+          referencedRunStatuses: {
+            ...(issue.checkoutRunId
+              ? { [issue.checkoutRunId]: runStatusById.get(issue.checkoutRunId) ?? "missing" }
+              : {}),
+            ...(issue.executionRunId
+              ? { [issue.executionRunId]: runStatusById.get(issue.executionRunId) ?? "missing" }
+              : {}),
+          },
         },
       });
     }

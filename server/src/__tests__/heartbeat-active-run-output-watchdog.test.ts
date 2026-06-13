@@ -1010,4 +1010,83 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     });
     expect(decision.createdByRunId).toBe(managerRunId);
   });
+
+  it("surfaces long-running no-output run as post_adapter_silent when adapter.invoke event exists but no output follows", async () => {
+    // Acceptance criterion: tests cover a no-output running run after adapter invocation.
+    // A run with an adapter.invoke event in heartbeatRunEvents but no subsequent output
+    // should fire the watchdog and classify as post_adapter_silent so evaluators can
+    // distinguish a stalled adapter session from a pre-launch hang.
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, coderId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+
+    const adapterInvokedAt = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS);
+    await db.insert(heartbeatRunEvents).values({
+      companyId,
+      runId,
+      agentId: coderId,
+      seq: 1,
+      eventType: "adapter.invoke",
+      stream: "system",
+      level: "info",
+      message: "adapter invocation",
+      payload: { model: "test-model", provider: "test" },
+      createdAt: adapterInvokedAt,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.created).toBe(1);
+
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation?.description).toContain("post_adapter_silent");
+    expect(evaluation?.description).toContain("adapter invocation");
+    expect(evaluation?.description).toContain("adapter stall");
+    // Evidence must not expose raw log secrets
+    expect(evaluation?.description).not.toContain("sk-test-secret-value");
+  });
+
+  it("classifies long-running no-output run as pre_adapter when no adapter.invoke event exists", async () => {
+    // Acceptance criterion: controller can see whether a run is pre-launch vs adapter stalled.
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.created).toBe(1);
+
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation?.description).toContain("pre_adapter");
+    expect(evaluation?.description).toContain("process may not have launched");
+  });
+
+  it("does not flag a run with recent output as silent (normal progress case)", async () => {
+    // Acceptance criterion: tests cover a normal progress case — run with recent output
+    // must not trigger the watchdog even if the run is old.
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+      withOutput: true, // lastOutputAt = now - 5 minutes, inside silence window
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.scanned).toBe(0);
+    expect(result.created).toBe(0);
+  });
 });
