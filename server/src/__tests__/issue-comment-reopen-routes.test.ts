@@ -195,7 +195,7 @@ async function normalizePolicy(input: {
   return normalizeIssueExecutionPolicy(input);
 }
 
-function makeIssue(status: "todo" | "done" | "blocked" | "cancelled" | "in_progress") {
+function makeIssue(status: "todo" | "done" | "blocked" | "cancelled" | "in_progress", extra: Record<string, unknown> = {}) {
   return {
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "company-1",
@@ -205,6 +205,7 @@ function makeIssue(status: "todo" | "done" | "blocked" | "cancelled" | "in_progr
     createdByUserId: "local-board",
     identifier: "PAP-580",
     title: "Comment reopen default",
+    ...extra,
   };
 }
 
@@ -520,6 +521,88 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     ));
+  });
+
+  it("does not implicitly reopen closed routine execution issues via POST comments", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done", { originKind: "routine_execution" }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done", { originKind: "routine_execution" }),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "historical note" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ reason: "issue_reopened_via_comment" }),
+    );
+  });
+
+  it("does not explicitly resume closed routine execution issues via POST comments", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done", { originKind: "routine_execution" }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done", { originKind: "routine_execution" }),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "please resume this run", resume: true });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ reason: "issue_reopened_via_comment" }),
+    );
+  });
+
+  it("does not explicitly reopen closed routine execution issues via the PATCH comment path", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done", { originKind: "routine_execution" }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done", { originKind: "routine_execution" }),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        comment: "historical note",
+        reopen: true,
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.not.objectContaining({ status: "todo" }),
+    );
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({ reopened: true }),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ reason: "issue_reopened_via_comment" }),
+    );
+    expect(mockRoutineService.syncRunStatusForIssue).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+    );
   });
 
   it("rejects non-assignee agent POST comments on closed issues", async () => {

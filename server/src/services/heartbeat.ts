@@ -9769,7 +9769,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           };
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
+        const deferredCommentWakeId = deriveCommentId(deferredContextSeed, deferredPayload);
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
+        if (
+          deferredCommentWakeId &&
+          issue.originKind === "routine_execution" &&
+          (issue.status === "done" || issue.status === "cancelled")
+        ) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: new Date(),
+              error: "Deferred comment wake suppressed because routine execution issue is terminal",
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
         // Local-CLI agents post comments under user auth, so a self-comment from
         // the run that is now ending would otherwise look like a real human
         // comment and trigger a reopen on the very issue this run just closed.

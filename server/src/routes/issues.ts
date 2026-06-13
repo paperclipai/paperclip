@@ -743,6 +743,13 @@ function isClosedIssueStatus(status: string | null | undefined): status is "done
   return status === "done" || status === "cancelled";
 }
 
+function isTerminalRoutineExecutionIssue(issue: {
+  status: string | null | undefined;
+  originKind?: string | null;
+}) {
+  return issue.originKind === "routine_execution" && isClosedIssueStatus(issue.status);
+}
+
 function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
@@ -4889,6 +4896,7 @@ export function issueRoutes(
       actorId: actor.actorId,
     });
     const effectiveMoveToTodoRequested =
+      !isTerminalRoutineExecutionIssue(existing) &&
       !assigneeSelfCommentOnTerminal &&
       (explicitMoveToTodoRequested ||
         (!!commentBody &&
@@ -6667,6 +6675,7 @@ export function issueRoutes(
       actorId: actor.actorId,
     });
     const effectiveMoveToTodoRequested =
+      !isTerminalRoutineExecutionIssue(issue) &&
       !assigneeSelfCommentOnTerminal &&
       (explicitMoveToTodoRequested ||
         shouldImplicitlyMoveCommentedIssueToTodo({

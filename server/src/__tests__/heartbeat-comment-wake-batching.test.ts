@@ -30,6 +30,18 @@ async function closeDbClient(db: ReturnType<typeof createDb> | undefined) {
   await db?.$client?.end?.({ timeout: 0 });
 }
 
+async function waitForAgentIdle(db: ReturnType<typeof createDb>, agentId: string) {
+  await waitFor(async () => {
+    const agent = await db
+      .select({ status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    return agent?.status !== "running";
+  });
+  await new Promise((resolve) => setTimeout(resolve, 25));
+}
+
 async function createControlledGatewayServer() {
   const server = createServer();
   const wss = new WebSocketServer({ server });
@@ -348,6 +360,7 @@ describe("heartbeat comment wake batching", () => {
           taskId: issueId,
           commentId: comment1.id,
           wakeReason: "issue_commented",
+          skipIssueComment: true,
         },
         requestedByActorType: "user",
         requestedByActorId: "user-1",
@@ -395,6 +408,7 @@ describe("heartbeat comment wake batching", () => {
           taskId: issueId,
           commentId: comment2.id,
           wakeReason: "issue_commented",
+          skipIssueComment: true,
         },
         requestedByActorType: "user",
         requestedByActorId: "user-1",
@@ -409,6 +423,7 @@ describe("heartbeat comment wake batching", () => {
           taskId: issueId,
           commentId: comment3.id,
           wakeReason: "issue_commented",
+          skipIssueComment: true,
         },
         requestedByActorType: "user",
         requestedByActorId: "user-1",
@@ -463,6 +478,7 @@ describe("heartbeat comment wake batching", () => {
         const statusesByRunId = new Map(runs.map((run) => [run.id, run.status]));
         return statusesByRunId.get(firstRun!.id) === "succeeded" && statusesByRunId.get(secondRunId) === "succeeded";
       }, 90_000);
+      await waitForAgentIdle(db, agentId);
 
       expect(secondPayload.paperclip).toMatchObject({
         wake: {
@@ -547,6 +563,7 @@ describe("heartbeat comment wake batching", () => {
           taskId: issueId,
           commentId: comment1.id,
           wakeReason: "issue_commented",
+          skipIssueComment: true,
         },
         requestedByActorType: "user",
         requestedByActorId: "user-1",
@@ -592,6 +609,7 @@ describe("heartbeat comment wake batching", () => {
           taskId: issueId,
           commentId: queuedComment.id,
           wakeReason: "issue_commented",
+          skipIssueComment: true,
         },
         requestedByActorType: "user",
         requestedByActorId: "user-1",
@@ -629,12 +647,18 @@ describe("heartbeat comment wake batching", () => {
         },
       });
       expect(String(promotedPayload.message ?? "")).toContain("Queued follow-up");
+      const promotedRunId = typeof promotedPayload.idempotencyKey === "string" ? promotedPayload.idempotencyKey : null;
+      if (!promotedRunId) {
+        throw new Error("Expected promoted gateway payload to include an idempotencyKey run id");
+      }
 
       gateway.releaseFirstWait();
       await waitFor(async () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => ["cancelled", "succeeded"].includes(run.status));
+        const statusesByRunId = new Map(runs.map((run) => [run.id, run.status]));
+        return statusesByRunId.get(firstRun!.id) === "cancelled" && statusesByRunId.get(promotedRunId) === "succeeded";
       }, 90_000);
+      await waitForAgentIdle(db, agentId);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
@@ -710,6 +734,7 @@ describe("heartbeat comment wake batching", () => {
           taskId: issueId,
           commentId: comment1.id,
           wakeReason: "issue_commented",
+          skipIssueComment: true,
         },
         requestedByActorType: "user",
         requestedByActorId: "user-1",
@@ -746,6 +771,7 @@ describe("heartbeat comment wake batching", () => {
           taskId: issueId,
           commentId: comment2.id,
           wakeReason: "issue_commented",
+          skipIssueComment: true,
         },
         requestedByActorType: "user",
         requestedByActorId: "user-1",
@@ -827,6 +853,186 @@ describe("heartbeat comment wake batching", () => {
         },
       });
       expect(String(secondPayload.message ?? "")).toContain("Please handle this follow-up after you finish");
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
+  it("suppresses deferred comment wakes for terminal routine execution issues", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Gateway Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Routine execution should stay terminal",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+        originKind: "routine_execution",
+      });
+
+      const comment1 = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId,
+          authorUserId: "user-1",
+          body: "First routine comment",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId, commentId: comment1.id },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          commentId: comment1.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(firstRun).not.toBeNull();
+      await waitFor(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, firstRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "running";
+      });
+
+      const comment2 = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId,
+          authorUserId: "user-1",
+          body: "This should stay history-only",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const deferredRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId, commentId: comment2.id },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          commentId: comment2.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(deferredRun).toBeNull();
+
+      await db
+        .update(issues)
+        .set({
+          status: "done",
+          completedAt: new Date(),
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, issueId));
+
+      gateway.releaseFirstWait();
+
+      await waitFor(async () => {
+        const deferred = await db
+          .select({
+            status: agentWakeupRequests.status,
+            error: agentWakeupRequests.error,
+          })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.agentId, agentId),
+            ),
+          )
+          .orderBy(asc(agentWakeupRequests.requestedAt))
+          .then((rows) =>
+            rows.find((row) => row.error?.includes("routine execution issue is terminal")) ?? null,
+          );
+        return deferred?.status === "cancelled" && deferred.error?.includes("routine execution issue is terminal");
+      });
+      await waitFor(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, firstRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded";
+      });
+      await waitForAgentIdle(db, agentId);
+
+      const issue = await db
+        .select({
+          status: issues.status,
+          completedAt: issues.completedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue?.status).toBe("done");
+      expect(issue?.completedAt).not.toBeNull();
+
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId))
+        .orderBy(asc(heartbeatRuns.createdAt));
+      expect(runs).toHaveLength(1);
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
