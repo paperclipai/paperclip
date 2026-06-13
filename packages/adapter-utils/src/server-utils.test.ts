@@ -388,6 +388,111 @@ describe("adapter skill snapshots", () => {
 });
 
 describe("runChildProcess", () => {
+  async function captureChildRuntimeLoaderEnv() {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        "process.stdout.write(JSON.stringify({LD_LIBRARY_PATH:process.env.LD_LIBRARY_PATH||null,LD_PRELOAD:process.env.LD_PRELOAD||null,DYLD_LIBRARY_PATH:process.env.DYLD_LIBRARY_PATH||null}))",
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    return JSON.parse(result.stdout) as {
+      LD_LIBRARY_PATH: string | null;
+      LD_PRELOAD: string | null;
+      DYLD_LIBRARY_PATH: string | null;
+    };
+  }
+
+  it.skipIf(process.platform === "win32")("scrubs embedded-postgres loader env from spawned children", async () => {
+    const previousLdLibraryPath = process.env.LD_LIBRARY_PATH;
+    const previousLdPreload = process.env.LD_PRELOAD;
+    const previousDyldLibraryPath = process.env.DYLD_LIBRARY_PATH;
+
+    try {
+      process.env.LD_LIBRARY_PATH = [
+        "/tmp/@embedded-postgres/linux-x64/native/lib",
+        "/home/agent/.local/lib",
+      ].join(path.delimiter);
+      process.env.LD_PRELOAD = [
+        "/tmp/@embedded-postgres/linux-x64/native/lib/libcrypto.so.1.1",
+        "/opt/agent/libcustom.so",
+      ].join(" ");
+      process.env.DYLD_LIBRARY_PATH = "/tmp/@embedded-postgres/darwin-arm64/native/lib";
+
+      expect(await captureChildRuntimeLoaderEnv()).toEqual({
+        LD_LIBRARY_PATH: "/home/agent/.local/lib",
+        LD_PRELOAD: "/opt/agent/libcustom.so",
+        DYLD_LIBRARY_PATH: null,
+      });
+    } finally {
+      if (previousLdLibraryPath === undefined) delete process.env.LD_LIBRARY_PATH;
+      else process.env.LD_LIBRARY_PATH = previousLdLibraryPath;
+      if (previousLdPreload === undefined) delete process.env.LD_PRELOAD;
+      else process.env.LD_PRELOAD = previousLdPreload;
+      if (previousDyldLibraryPath === undefined) delete process.env.DYLD_LIBRARY_PATH;
+      else process.env.DYLD_LIBRARY_PATH = previousDyldLibraryPath;
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("scrubs colon-separated LD_PRELOAD values", async () => {
+    const previousLdPreload = process.env.LD_PRELOAD;
+
+    try {
+      process.env.LD_PRELOAD = [
+        "/tmp/@embedded-postgres/linux-x64/native/lib/libcrypto.so.1.1",
+        "/opt/agent/libcustom.so",
+      ].join(":");
+
+      expect(await captureChildRuntimeLoaderEnv()).toMatchObject({
+        LD_PRELOAD: "/opt/agent/libcustom.so",
+      });
+    } finally {
+      if (previousLdPreload === undefined) delete process.env.LD_PRELOAD;
+      else process.env.LD_PRELOAD = previousLdPreload;
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("preserves clean runtime loader env values", async () => {
+    const previousLdLibraryPath = process.env.LD_LIBRARY_PATH;
+    const previousLdPreload = process.env.LD_PRELOAD;
+    const previousDyldLibraryPath = process.env.DYLD_LIBRARY_PATH;
+
+    try {
+      process.env.LD_LIBRARY_PATH = [
+        "/home/agent/.local/lib",
+        "/opt/agent/lib",
+      ].join(path.delimiter);
+      process.env.LD_PRELOAD = "/opt/agent/libcustom.so";
+      process.env.DYLD_LIBRARY_PATH = "/opt/agent/dyld";
+
+      expect(await captureChildRuntimeLoaderEnv()).toEqual({
+        LD_LIBRARY_PATH: [
+          "/home/agent/.local/lib",
+          "/opt/agent/lib",
+        ].join(path.delimiter),
+        LD_PRELOAD: "/opt/agent/libcustom.so",
+        DYLD_LIBRARY_PATH: "/opt/agent/dyld",
+      });
+    } finally {
+      if (previousLdLibraryPath === undefined) delete process.env.LD_LIBRARY_PATH;
+      else process.env.LD_LIBRARY_PATH = previousLdLibraryPath;
+      if (previousLdPreload === undefined) delete process.env.LD_PRELOAD;
+      else process.env.LD_PRELOAD = previousLdPreload;
+      if (previousDyldLibraryPath === undefined) delete process.env.DYLD_LIBRARY_PATH;
+      else process.env.DYLD_LIBRARY_PATH = previousDyldLibraryPath;
+    }
+  });
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),

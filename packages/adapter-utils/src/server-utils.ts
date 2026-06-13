@@ -83,6 +83,11 @@ const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
 const PATH_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
 const REDACTED_LOG_VALUE = "***REDACTED***";
+const EMBEDDED_POSTGRES_RUNTIME_ENV_KEYS = [
+  "LD_LIBRARY_PATH",
+  "LD_PRELOAD",
+  "DYLD_LIBRARY_PATH",
+] as const;
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
@@ -1176,6 +1181,35 @@ export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJ
   return env;
 }
 
+function isEmbeddedPostgresRuntimePathSegment(value: string): boolean {
+  return value.includes("@embedded-postgres/");
+}
+
+function splitRuntimeLoaderEnv(key: string, value: string): string[] {
+  if (key === "LD_PRELOAD") return value.split(/[\s:]+/).filter(Boolean);
+  return value.split(path.delimiter).filter(Boolean);
+}
+
+function joinRuntimeLoaderEnv(key: string, values: string[]): string {
+  return values.join(key === "LD_PRELOAD" ? " " : path.delimiter);
+}
+
+function scrubEmbeddedPostgresRuntimeEnv(env: NodeJS.ProcessEnv): void {
+  for (const key of EMBEDDED_POSTGRES_RUNTIME_ENV_KEYS) {
+    const raw = env[key];
+    if (typeof raw !== "string" || raw.length === 0) continue;
+
+    const kept = splitRuntimeLoaderEnv(key, raw).filter(
+      (part) => !isEmbeddedPostgresRuntimePathSegment(part),
+    );
+    if (kept.length === 0) {
+      delete env[key];
+      continue;
+    }
+    env[key] = joinRuntimeLoaderEnv(key, kept);
+  }
+}
+
 export function defaultPathForPlatform() {
   if (process.platform === "win32") {
     return "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem";
@@ -2170,6 +2204,8 @@ export async function runChildProcess(
     for (const key of CLAUDE_CODE_NESTING_VARS) {
       delete rawMerged[key];
     }
+
+    scrubEmbeddedPostgresRuntimeEnv(rawMerged);
 
     const mergedEnv = ensurePathInEnv(rawMerged);
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv, {
