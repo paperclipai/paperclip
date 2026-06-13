@@ -2676,6 +2676,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      if ((issue.executionPolicy as Record<string, unknown> | null)?.permanentWatcher === true) {
+        result.skipped += 1;
+        continue;
+      }
+
       const agent = await getAgent(agentId);
       if (!agent || agent.companyId !== issue.companyId || !(await isAgentInvokable(agent))) {
         result.skipped += 1;
