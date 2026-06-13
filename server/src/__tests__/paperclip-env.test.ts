@@ -1,5 +1,7 @@
+import os from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildPaperclipEnv } from "../adapters/utils.js";
+import { ensurePathInEnv } from "@paperclipai/adapter-utils/server-utils";
 
 const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
@@ -74,3 +76,16 @@ describe("buildPaperclipEnv", () => {
     expect(env.PAPERCLIP_API_URL).toBe("http://[::1]:3101");
   });
 });
+
+describe("ensurePathInEnv", () => {
+  it("supplements an existing PATH with common user-local binary directories", () => {
+    const env = ensurePathInEnv({ PATH: "/usr/bin:/bin" });
+
+    expect(env.PATH).toContain("/usr/bin");
+    expect(env.PATH).toContain(pathJoinHome(".local/bin"));
+  });
+});
+
+function pathJoinHome(relativePath: string) {
+  return `${os.homedir()}/${relativePath}`;
+}

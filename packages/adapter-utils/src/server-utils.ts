@@ -1183,6 +1183,33 @@ export function defaultPathForPlatform() {
   return "/usr/local/bin:/opt/homebrew/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin";
 }
 
+function supplementalPathEntriesForPlatform(): string[] {
+  if (process.platform === "win32") return [];
+  const home = os.homedir();
+  return [
+    path.join(home, ".local", "bin"),
+    path.join(home, "Library", "pnpm"),
+    path.join(home, ".bun", "bin"),
+    path.join(home, "bin"),
+  ];
+}
+
+function mergePathEntries(values: string[], delimiter: string): string {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    const key = process.platform === "win32" ? trimmed.toLowerCase() : trimmed;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(trimmed);
+  }
+
+  return merged.join(delimiter);
+}
+
 function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
   return (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean);
 }
@@ -1311,9 +1338,30 @@ async function resolveSpawnTarget(
 }
 
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
-  if (typeof env.Path === "string" && env.Path.length > 0) return env;
-  return { ...env, PATH: defaultPathForPlatform() };
+  const delimiter = process.platform === "win32" ? ";" : ":";
+  const pathKey =
+    typeof env.PATH === "string"
+      ? "PATH"
+      : typeof env.Path === "string"
+        ? "Path"
+        : "PATH";
+  const currentValue =
+    pathKey === "PATH"
+      ? (typeof env.PATH === "string" ? env.PATH : "")
+      : (typeof env.Path === "string" ? env.Path : "");
+  const systemEntries = defaultPathForPlatform().split(delimiter);
+  const supplementalEntries = supplementalPathEntriesForPlatform();
+  const mergedPath = mergePathEntries(
+    [
+      ...currentValue.split(delimiter),
+      ...supplementalEntries,
+      ...systemEntries,
+    ],
+    delimiter,
+  );
+
+  if (currentValue === mergedPath) return env;
+  return { ...env, [pathKey]: mergedPath };
 }
 
 export async function ensureAbsoluteDirectory(
