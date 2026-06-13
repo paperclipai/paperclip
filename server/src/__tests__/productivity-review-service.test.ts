@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -204,6 +204,9 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews[0]?.assigneeAdapterOverrides).toEqual({ modelProfile: "cheap" });
     expect(reviews[0]?.originId).toBe(seeded.issueId);
     expect(reviews[0]?.originFingerprint).toBe(`productivity-review:${seeded.issueId}`);
+    expect(reviews[0]?.description).toMatch(/^Expected output: technical_audit/);
+    expect(reviews[0]?.description).toContain("## Owner Notes");
+    expect(reviews[0]?.description).toContain("## Owner Action");
     expect(reviews[0]?.description).toContain("Primary trigger: `no_comment_streak`");
     expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
 
@@ -250,9 +253,141 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(firstRefresh.updated).toBe(1);
     expect(tooSoonRefresh.updated).toBe(0);
     expect(tooSoonRefresh.existing).toBe(1);
-    expect(cappedRefresh.updated).toBe(0);
-    expect(cappedRefresh.existing).toBe(1);
+    expect(cappedRefresh.updated).toBe(1);
+    expect(cappedRefresh.existing).toBe(0);
+    const [refreshedReview] = await listProductivityReviews(seeded.companyId);
+    expect(refreshedReview?.description).toContain(
+      `Generated at: ${new Date(firstRefreshAt.getTime() + 3 * DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS).toISOString()}`,
+    );
     expect(await listRefreshComments(review!.id)).toHaveLength(DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS);
+  });
+
+  it("refreshes evidence on schedule without discarding owner notes or using unrelated issue touches", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const service = productivityReviewService(db);
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [review] = await listProductivityReviews(seeded.companyId);
+    const ownerNote = "Manager note: preserve this diagnosis.";
+    await db
+      .update(issues)
+      .set({
+        description: `${review!.description}\n\n${ownerNote}`,
+        updatedAt: new Date(now.getTime() + 30 * 60 * 1000),
+      })
+      .where(eq(issues.id, review!.id));
+
+    const refreshAt = new Date(now.getTime() + DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS);
+    const refreshed = await service.reconcileProductivityReviews({
+      now: refreshAt,
+      companyId: seeded.companyId,
+    });
+    const [refreshedReview] = await listProductivityReviews(seeded.companyId);
+
+    expect(refreshed.updated).toBe(1);
+    expect(refreshedReview?.description).toContain(`Generated at: ${refreshAt.toISOString()}`);
+    expect(refreshedReview?.description).toContain("## Owner Notes");
+    expect(refreshedReview?.description).toContain(ownerNote);
+    expect(await listRefreshComments(review!.id)).toHaveLength(1);
+  });
+
+  it("cancels an open productivity review when the source issue resolves", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const resolvedAt = new Date("2026-04-28T12:10:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const reviewRunId = randomUUID();
+    const cancelRun = vi.fn(async () => null);
+    const service = productivityReviewService(db, { cancelRun });
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.status).toBe("todo");
+    await db.insert(heartbeatRuns).values({
+      id: reviewRunId,
+      companyId: seeded.companyId,
+      agentId: seeded.managerId,
+      status: "running",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      startedAt: resolvedAt,
+      contextSnapshot: { issueId: review!.id, taskId: review!.id },
+      createdAt: resolvedAt,
+      updatedAt: resolvedAt,
+    });
+    await db
+      .update(issues)
+      .set({
+        status: "in_progress",
+        executionRunId: reviewRunId,
+        checkoutRunId: reviewRunId,
+        executionLockedAt: resolvedAt,
+        updatedAt: resolvedAt,
+      })
+      .where(eq(issues.id, review!.id));
+
+    await db
+      .update(issues)
+      .set({ status: "done", completedAt: resolvedAt, updatedAt: resolvedAt })
+      .where(eq(issues.id, seeded.issueId));
+
+    const result = await service.reconcileProductivityReviews({
+      now: resolvedAt,
+      companyId: seeded.companyId,
+    });
+    const [resolvedReview] = await listProductivityReviews(seeded.companyId);
+
+    expect(result.resolved).toBe(1);
+    expect(cancelRun).toHaveBeenCalledWith(reviewRunId, "Cancelled because productivity review source issue is no longer actionable");
+    expect(resolvedReview?.status).toBe("cancelled");
+    expect(resolvedReview?.cancelledAt?.toISOString()).toBe(resolvedAt.toISOString());
+    expect(resolvedReview?.description).toContain("Disposition: cancelled diagnostic review.");
+    expect(resolvedReview?.description).toContain("Source issue");
+    expect(await listRefreshComments(review!.id)).toHaveLength(0);
+  });
+
+  it("cancels an open productivity review when the source issue loses its agent owner", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const unassignedAt = new Date("2026-04-28T12:20:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const service = productivityReviewService(db);
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    await db
+      .update(issues)
+      .set({ assigneeAgentId: null, updatedAt: unassignedAt })
+      .where(eq(issues.id, seeded.issueId));
+
+    const result = await service.reconcileProductivityReviews({
+      now: unassignedAt,
+      companyId: seeded.companyId,
+    });
+    const [resolvedReview] = await listProductivityReviews(seeded.companyId);
+
+    expect(result.resolved).toBe(1);
+    expect(resolvedReview?.status).toBe("cancelled");
+    expect(resolvedReview?.description).toContain("Source issue state: `in_progress`");
   });
 
   it("caps productivity review creation per source issue in the rolling creation window", async () => {
