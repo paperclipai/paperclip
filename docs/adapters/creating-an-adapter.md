@@ -216,6 +216,14 @@ Adapters can declare what "local" capabilities they support by setting optional 
 
 These flags are exposed via `GET /api/adapters` in a `capabilities` object, along with a derived `supportsSkills` flag (true when `listSkills` or `syncSkills` is defined).
 
+### Local Agent JWT and Auth
+
+When `supportsLocalAgentJwt=true`, the Paperclip heartbeat generates a run-scoped local agent JWT and exposes it to the adapter process as the `PAPERCLIP_API_KEY` environment variable, with `PAPERCLIP_RUN_ID` identifying the current run. Local adapters that mutate Paperclip data (comments, issue updates, etc.) must send `Authorization: Bearer $PAPERCLIP_API_KEY` and `X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID` on every write request. Token values must never be logged.
+
+Issue-scoped local runs keep the issue assigned to the executing agent; Paperclip automatically cancels stale queued runs when the issue assignment changes.
+
+When `supportsInstructionsBundle=false`, Paperclip will not manage an AGENTS.md or instructions bundle for that adapter. Instead, instructions should be passed via adapter-specific config, prompt, or file path (e.g. the `instructionsPathKey` field in adapter config).
+
 ### Example
 
 ```ts

@@ -460,6 +460,7 @@ const hermesLocalAdapter: ServerAdapterModule = {
       "Use Authorization: Bearer $PAPERCLIP_API_KEY on every Paperclip API request.",
       "Use X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every Paperclip API request that writes or mutates data, including comments and issue updates.",
       "Never use a board, browser, or local-board session for Paperclip API writes.",
+      "Do not pipe HTTP responses into interpreters.",
     ].join("\n");
 
     const patchedConfig: Record<string, unknown> = {

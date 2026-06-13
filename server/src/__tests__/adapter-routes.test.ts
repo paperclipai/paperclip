@@ -160,13 +160,14 @@ describe("adapter routes", () => {
       requiresMaterializedRuntimeSkills: false,
     });
 
-    // process adapter should have no local capabilities
+    // process adapter supports run-scoped local JWTs for opt-in auth injection,
+    // but does not support instructions bundles or skills.
     const processAdapter = res.body.find((a: any) => a.type === "process");
     expect(processAdapter).toBeDefined();
     expect(processAdapter.capabilities).toMatchObject({
       supportsInstructionsBundle: false,
       supportsSkills: false,
-      supportsLocalAgentJwt: false,
+      supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: false,
     });
 
@@ -390,5 +391,135 @@ describe("adapter routes", () => {
     unregisterServerAdapter("codex_local");
     expect(findServerAdapter("codex_local")).toBe(builtin);
     setOverridePaused("codex_local", false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 12 test-only patch: hermes_local run-auth injection coverage
+// ---------------------------------------------------------------------------
+
+describe("hermes_local execute wrapper: run-auth injection", () => {
+  let capturedCtx: unknown;
+
+  beforeEach(() => {
+    capturedCtx = undefined;
+    vi.resetModules();
+
+    vi.doMock("hermes-paperclip-adapter/server", () => ({
+      execute: async (ctx: unknown) => {
+        capturedCtx = ctx;
+        return { exitCode: 0, signal: null, timedOut: false };
+      },
+      testEnvironment: async () => ({
+        adapterType: "hermes_local",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+      sessionCodec: {
+        deserialize: async () => null,
+        serialize: (p: unknown) => p,
+        getDisplayId: () => null,
+      },
+      listSkills: async () => [],
+      syncSkills: async () => [],
+      detectModel: async () => null,
+    }));
+
+    vi.doMock("hermes-paperclip-adapter", () => ({
+      agentConfigurationDoc: "# hermes test config",
+      models: [{ id: "test-model", label: "Test Model" }],
+    }));
+
+    vi.doMock("../adapters/plugin-loader.js", () => ({
+      buildExternalAdapters: async () => [],
+    }));
+    vi.doMock("../services/adapter-plugin-store.js", () => ({
+      getDisabledAdapterTypes: () => [],
+    }));
+  });
+
+  it("injects PAPERCLIP_API_KEY and PAPERCLIP_RUN_ID when authToken present and no explicit env key", async () => {
+    const { findServerAdapter } = await import("../adapters/registry.js");
+    const adapter = findServerAdapter("hermes_local");
+    expect(adapter, "hermes_local adapter should be registered").not.toBeNull();
+
+    await adapter!.execute({
+      runId: "run-auth-001",
+      authToken: "injected-api-key",
+      agent: {
+        id: "agent-1",
+        companyId: "co-1",
+        name: "Test Agent",
+        adapterConfig: { env: {} },
+      },
+      runtime: { sessionId: null, sessionParams: null },
+      config: {},
+      context: {},
+      onLog: async () => {},
+    } as any);
+
+    expect(capturedCtx).toBeDefined();
+    const env = (capturedCtx as any).agent.adapterConfig.env;
+    expect(env.PAPERCLIP_API_KEY).toBe("injected-api-key");
+    expect(env.PAPERCLIP_RUN_ID).toBe("run-auth-001");
+  });
+
+  it("auth guard in promptTemplate warns against pipe-to-interpreter HTTP writeback", async () => {
+    const { findServerAdapter } = await import("../adapters/registry.js");
+    const adapter = findServerAdapter("hermes_local");
+    expect(adapter, "hermes_local adapter should be registered").not.toBeNull();
+
+    await adapter!.execute({
+      runId: "run-auth-pipe-guard",
+      authToken: "injected-api-key",
+      agent: {
+        id: "agent-pipe",
+        companyId: "co-1",
+        name: "Pipe Guard Agent",
+        adapterConfig: {
+          env: {},
+          promptTemplate: "You are a helpful assistant.\nComplete the assigned task.",
+        },
+      },
+      runtime: { sessionId: null, sessionParams: null },
+      config: {},
+      context: {},
+      onLog: async () => {},
+    } as any);
+
+    expect(capturedCtx).toBeDefined();
+    const patchedTemplate = (capturedCtx as any).agent.adapterConfig.promptTemplate;
+    expect(patchedTemplate).toBeDefined();
+    expect(
+      patchedTemplate,
+      "auth guard should warn against piping HTTP responses into interpreters",
+    ).toContain("Do not pipe HTTP responses into interpreters");
+  });
+
+  it("preserves explicit PAPERCLIP_API_KEY and still sets PAPERCLIP_RUN_ID", async () => {
+    const { findServerAdapter } = await import("../adapters/registry.js");
+    const adapter = findServerAdapter("hermes_local");
+    expect(adapter, "hermes_local adapter should be registered").not.toBeNull();
+
+    await adapter!.execute({
+      runId: "run-auth-002",
+      authToken: "injected-api-key",
+      agent: {
+        id: "agent-2",
+        companyId: "co-1",
+        name: "Test Agent",
+        adapterConfig: { env: { PAPERCLIP_API_KEY: "explicit-key-keep-me" } },
+      },
+      runtime: { sessionId: null, sessionParams: null },
+      config: {},
+      context: {},
+      onLog: async () => {},
+    } as any);
+
+    expect(capturedCtx).toBeDefined();
+    const env = (capturedCtx as any).agent.adapterConfig.env;
+    expect(env.PAPERCLIP_API_KEY).toBe("explicit-key-keep-me");
+    expect(env.PAPERCLIP_RUN_ID).toBe("run-auth-002");
   });
 });

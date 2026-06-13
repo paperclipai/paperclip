@@ -2,6 +2,7 @@ import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.j
 import {
   asString,
   asNumber,
+  asBoolean,
   asStringArray,
   parseObject,
   buildPaperclipEnv,
@@ -22,6 +23,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
   for (const [k, v] of Object.entries(envConfig)) {
     if (typeof v === "string") env[k] = v;
+  }
+  const shouldInjectRunAuth = asBoolean(config.injectPaperclipRunAuth, false);
+  if (shouldInjectRunAuth && ctx.authToken) {
+    env.PAPERCLIP_API_KEY = ctx.authToken;
+    env.PAPERCLIP_RUN_ID = runId;
+  } else if (shouldInjectRunAuth) {
+    await onLog(
+      "stderr",
+      "[paperclip] Process adapter run auth injection was requested, but no run-scoped auth token was available. PAPERCLIP_API_KEY and PAPERCLIP_RUN_ID were not injected.\n",
+    );
   }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
