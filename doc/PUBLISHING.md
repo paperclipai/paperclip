@@ -11,7 +11,7 @@ Use these scripts:
 - [`scripts/release.sh`](../scripts/release.sh) for canary and stable publish flows
 - [`scripts/create-github-release.sh`](../scripts/create-github-release.sh) after pushing a stable tag
 - [`scripts/rollback-latest.sh`](../scripts/rollback-latest.sh) to repoint `latest`
-- [`scripts/build-npm.sh`](../scripts/build-npm.sh) for the CLI packaging build
+- [`scripts/build-npm.mjs`](../scripts/build-npm.mjs) for the CLI packaging build
 
 Paperclip no longer uses release branches or Changesets for publishing.
 
@@ -26,12 +26,12 @@ The CLI package, `paperclipai`, imports code from workspace packages such as:
 
 Those workspace references are valid in development but not in a publishable npm package. The release flow rewrites versions temporarily, then builds a publishable CLI bundle.
 
-## `build-npm.sh`
+## `build-npm.mjs`
 
 Run:
 
 ```bash
-./scripts/build-npm.sh
+node scripts/build-npm.mjs
 ```
 
 This script:
@@ -242,7 +242,7 @@ This is the fastest way to restore the default install path if a stable release 
 
 ## Related Files
 
-- [`scripts/build-npm.sh`](../scripts/build-npm.sh)
+- [`scripts/build-npm.mjs`](../scripts/build-npm.mjs)
 - [`scripts/generate-npm-package-json.mjs`](../scripts/generate-npm-package-json.mjs)
 - [`scripts/generate-ui-package-json.mjs`](../scripts/generate-ui-package-json.mjs)
 - [`scripts/release-package-map.mjs`](../scripts/release-package-map.mjs)

@@ -219,7 +219,7 @@ release_info "==> Step 2/7: Building workspace artifacts..."
 cd "$REPO_ROOT"
 pnpm build
 node "$REPO_ROOT/scripts/build-standalone-public-packages.mjs"
-bash "$REPO_ROOT/scripts/prepare-server-ui-dist.sh"
+node "$REPO_ROOT/scripts/prepare-server-ui-dist.mjs"
 for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-local; do
   rm -rf "$REPO_ROOT/$pkg_dir/skills"
   cp -r "$REPO_ROOT/skills" "$REPO_ROOT/$pkg_dir/skills"
@@ -233,7 +233,7 @@ release_info "  ✓ Versioned workspace to $TARGET_PUBLISH_VERSION"
 
 release_info ""
 release_info "==> Step 4/7: Building publishable CLI bundle..."
-"$REPO_ROOT/scripts/build-npm.sh" --skip-checks --skip-typecheck
+node "$REPO_ROOT/scripts/build-npm.mjs" --skip-checks --skip-typecheck
 release_info "  ✓ CLI bundle ready"
 
 VERSIONED_PACKAGE_INFO="$(list_public_package_info)"
