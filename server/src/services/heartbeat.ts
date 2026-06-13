@@ -2033,6 +2033,12 @@ export function shouldResetTaskSessionForWake(
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (
     wakeReason === "issue_assigned" ||
+    // A fresh checkout assigns the issue to a (possibly different) agent for a new
+    // unit of work — e.g. a review-stage participant being handed the issue. That
+    // agent must start a FRESH session, not resume its prior (often unrelated or
+    // confused) session. Without this, a reviewer woken by checkout resumes a stale
+    // session and replies "what would you like to work on?" instead of reviewing.
+    wakeReason === "issue_checked_out" ||
     wakeReason === "execution_review_requested" ||
     wakeReason === "execution_approval_requested" ||
     wakeReason === "execution_changes_requested" ||
@@ -2145,6 +2151,7 @@ export function describeSessionResetReason(
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
+  if (wakeReason === "issue_checked_out") return "wake reason is issue_checked_out";
   if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
   if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
   if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
@@ -6987,9 +6994,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
 
+    // The "wait for reviewer feedback or approval" continuation Next Action is written from the
+    // EXECUTOR's point of view. When the woken agent IS the current review participant, parking
+    // the run would cancel the very reviewer who is supposed to provide that feedback — a deadlock
+    // (reviewer run cancelled -> issue stranded -> auto-recovery re-wakes -> cancelled again). Only
+    // park the executor; let the active reviewer/approver run.
+    const executionStateForPark = parseIssueExecutionState(issue.executionState);
+    const parkParticipant = executionStateForPark?.currentParticipant ?? null;
+    const runnerIsActiveReviewParticipant =
+      parkParticipant?.type === "agent" && parkParticipant.agentId === run.agentId;
+
     if (
       issue.status === "in_progress" &&
       !wakeCommentId &&
+      !runnerIsActiveReviewParticipant &&
       (wakeReason === "issue_continuation_needed" || retryReason === "issue_continuation_needed")
     ) {
       const queuedWake = parseObject(context.paperclipWake);
