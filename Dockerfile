@@ -121,8 +121,12 @@ ARG CCROTATE_REF=7cf84fccd07dd3bc8b11845cb0630ae825a008f9
 # Re-pinned 2026-06-06 to kkroo/paperclip-adapter-opencode-k8s master 2d8c7b4
 # (was 380aea4): bound the ccrotate Codex preflight with `timeout 30s` so a
 # stuck account probe cannot block opencode_k8s Jobs before OpenCode starts.
+# (was 2d8c7b4): point AGENT_HOME at the external instructions-bundle root
+# (PR kkroo/paperclip-adapter-opencode-k8s#21, BLO-10267) so opencode_k8s
+# agents with an external bundle can read $AGENT_HOME/{HEARTBEAT,SOUL,TOOLS}.md
+# + skills/*.md instead of 100%-failing with File-not-found.
 ARG CLAUDE_K8S_REF=1d6a08f7c814208caa3bf2333dd7c35ca50b95ae
-ARG OPENCODE_K8S_REF=2d8c7b4e1c19245a49468004815716f7d4991602
+ARG OPENCODE_K8S_REF=168688e48a4c00541c5f509304b74c5d37c10323
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
