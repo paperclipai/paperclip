@@ -13,6 +13,7 @@ const mockIssueService = vi.hoisted(() => ({
   update: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
+  getDependencyReadiness: vi.fn(),
   findMentionedAgents: vi.fn(async () => []),
 }));
 
@@ -124,6 +125,15 @@ describe("issue dependency wakeups in issue routes", () => {
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: "",
+      blockerIssueIds: [],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+      pendingFinalizeBlockerIssueIds: [],
+      allBlockersDone: true,
+      isDependencyReady: true,
+    });
   });
 
   it("wakes dependents when the final blocker transitions to done", async () => {
@@ -273,5 +283,136 @@ describe("issue dependency wakeups in issue routes", () => {
         }),
       );
     });
+  });
+
+  it("auto-resumes when blockedByIssueIds is set and all blockers are already done (CPL-3927)", async () => {
+    const dependentId = "30000000-0000-4000-8000-000000000003";
+    const blockerId1 = "10000000-0000-4000-8000-000000000001";
+    const blockerId2 = "20000000-0000-4000-8000-000000000002";
+    mockIssueService.getById.mockResolvedValue({
+      id: dependentId,
+      companyId: "company-1",
+      identifier: "PAP-102",
+      title: "Dependent task",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-3",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: dependentId,
+      companyId: "company-1",
+      identifier: "PAP-102",
+      title: "Dependent task",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-3",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    // All blockers are already terminal — no unresolved blockers
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: dependentId,
+      blockerIssueIds: [blockerId1, blockerId2],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+      pendingFinalizeBlockerIssueIds: [],
+      allBlockersDone: true,
+      isDependencyReady: true,
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${dependentId}`)
+      .send({ status: "blocked", blockedByIssueIds: [blockerId1, blockerId2] });
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "agent-3",
+        expect.objectContaining({
+          reason: "issue_blockers_resolved",
+          payload: expect.objectContaining({
+            issueId: dependentId,
+            blockerIssueIds: [blockerId1, blockerId2],
+          }),
+          contextSnapshot: expect.objectContaining({
+            source: "issue.blockers_resolved_on_link",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("does NOT auto-resume when blockedByIssueIds has unresolved blockers", async () => {
+    const dependentId = "40000000-0000-4000-8000-000000000004";
+    const doneBlockerId = "50000000-0000-4000-8000-000000000005";
+    const activeBlockerId = "60000000-0000-4000-8000-000000000006";
+    mockIssueService.getById.mockResolvedValue({
+      id: dependentId,
+      companyId: "company-1",
+      identifier: "PAP-103",
+      title: "Dependent with unresolved blocker",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-4",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: dependentId,
+      companyId: "company-1",
+      identifier: "PAP-103",
+      title: "Dependent with unresolved blocker",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-4",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    // One blocker still unresolved
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: dependentId,
+      blockerIssueIds: [doneBlockerId, activeBlockerId],
+      unresolvedBlockerIssueIds: [activeBlockerId],
+      unresolvedBlockerCount: 1,
+      pendingFinalizeBlockerIssueIds: [],
+      allBlockersDone: false,
+      isDependencyReady: false,
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${dependentId}`)
+      .send({ status: "blocked", blockedByIssueIds: [doneBlockerId, activeBlockerId] });
+    expect(res.status).toBe(200);
+    // Wait briefly to allow any async wakeup to fire, then verify it didn't
+    await new Promise((r) => setTimeout(r, 50));
+    const wakeupCalls = mockWakeup.mock.calls.filter(
+      ([, opts]: [string, any]) => opts?.reason === "issue_blockers_resolved",
+    );
+    expect(wakeupCalls).toHaveLength(0);
   });
 });

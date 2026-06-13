@@ -4449,6 +4449,40 @@ export function issueRoutes(
       requestedByActorId: actor.actorId,
     });
 
+    // When an issue is created with blockedByIssueIds and all blockers are already
+    // terminal (done/cancelled), auto-resume immediately (CPL-3927).
+    void (async () => {
+      if (
+        Array.isArray(req.body.blockedByIssueIds) &&
+        issue.status === "blocked" &&
+        issue.assigneeAgentId
+      ) {
+        const readiness = await svc.getDependencyReadiness(issue.id);
+        if (readiness.unresolvedBlockerCount === 0 && readiness.blockerIssueIds.length > 0) {
+          heartbeat.wakeup(issue.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_blockers_resolved",
+            payload: {
+              issueId: issue.id,
+              blockerIssueIds: readiness.blockerIssueIds,
+            },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: issue.id,
+              taskId: issue.id,
+              wakeReason: "issue_blockers_resolved",
+              source: "issue.blockers_resolved_on_create",
+              blockerIssueIds: readiness.blockerIssueIds,
+            },
+          }).catch((err) =>
+            logger.warn({ err, issueId: issue.id }, "failed to wake agent on create with all-blockers-done"),
+          );
+        }
+      }
+    })();
+
     res.status(201).json({
       ...issue,
       relatedWork: referenceSummary,
@@ -5755,6 +5789,35 @@ export function issueRoutes(
               source: "issue.blockers_resolved",
               resolvedBlockerIssueId: issue.id,
               blockerIssueIds: dependent.blockerIssueIds,
+            },
+          });
+        }
+      }
+
+      // When blockedByIssueIds is set and all blockers are already terminal (done/cancelled),
+      // the dependent would otherwise stay blocked forever because issue_blockers_resolved
+      // only fires on blocker status transitions (CPL-3927). Auto-resume immediately.
+      const blockersSetInThisRequest = Array.isArray(req.body.blockedByIssueIds);
+      const issueIsBlocked = issue.status === "blocked";
+      if (blockersSetInThisRequest && issueIsBlocked && issue.assigneeAgentId) {
+        const readiness = await svc.getDependencyReadiness(issue.id);
+        if (readiness.unresolvedBlockerCount === 0 && readiness.blockerIssueIds.length > 0) {
+          addWakeup(issue.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_blockers_resolved",
+            payload: {
+              issueId: issue.id,
+              blockerIssueIds: readiness.blockerIssueIds,
+            },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: issue.id,
+              taskId: issue.id,
+              wakeReason: "issue_blockers_resolved",
+              source: "issue.blockers_resolved_on_link",
+              blockerIssueIds: readiness.blockerIssueIds,
             },
           });
         }
