@@ -270,4 +270,11 @@ describe("isPiUnknownSessionError", () => {
     expect(isPiUnknownSessionError("all good", "")).toBe(false);
     expect(isPiUnknownSessionError("working fine", "no errors")).toBe(false);
   });
+
+  it("detects 404 HTTP errors from claude-cli provider", () => {
+    expect(isPiUnknownSessionError("404 Not Found", "")).toBe(true);
+    expect(isPiUnknownSessionError("", "404 Error")).toBe(true);
+    expect(isPiUnknownSessionError("Request failed: 404 Not Found", "")).toBe(true);
+    expect(isPiUnknownSessionError("exit code 0", "")).toBe(false);
+  });
 });
