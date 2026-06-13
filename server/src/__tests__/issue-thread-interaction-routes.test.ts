@@ -19,6 +19,7 @@ const mockInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(),
   answerQuestions: vi.fn(),
   cancelQuestions: vi.fn(),
+  cancelInteraction: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -306,6 +307,29 @@ describe.sequential("issue thread interaction routes", () => {
       updatedAt: "2026-04-20T12:05:00.000Z",
       resolvedAt: "2026-04-20T12:05:00.000Z",
     });
+    mockInteractionService.cancelInteraction.mockResolvedValue({
+      id: "interaction-3",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "expired",
+      continuationPolicy: "none",
+      idempotencyKey: null,
+      sourceCommentId: "comment-3",
+      sourceRunId: "run-3",
+      payload: {
+        version: 1,
+        prompt: "Push to upstream?",
+      },
+      result: {
+        version: 1,
+        outcome: "cancelled",
+        reason: "Superseded by bulk cleanup",
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
+    });
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelectWhere.mockImplementation(() => ({
@@ -493,6 +517,49 @@ describe.sequential("issue thread interaction routes", () => {
         action: "issue.thread_interaction_cancelled",
       }),
     );
+  });
+
+  it("expires a request_confirmation via PATCH and logs the cancellation", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-3")
+      .send({ status: "expired", reason: "Superseded by bulk cleanup" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("expired");
+    expect(res.body.kind).toBe("request_confirmation");
+    expect(mockInteractionService.cancelInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "interaction-3",
+      { status: "expired", reason: "Superseded by bulk cleanup" },
+      expect.objectContaining({ userId: "local-board" }),
+    );
+    // Expiring a request_confirmation must NOT wake the assignee — the wake helper
+    // short-circuits on status === "expired" (issues.ts queueResolvedInteractionContinuationWakeup).
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_cancelled",
+        details: expect.objectContaining({
+          interactionKind: "request_confirmation",
+          interactionStatus: "expired",
+          cancellationReason: "Superseded by bulk cleanup",
+        }),
+      }),
+    );
+  });
+
+  it("rejects PATCH interaction with an invalid status", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-3")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(400);
+    expect(mockInteractionService.cancelInteraction).not.toHaveBeenCalled();
   });
 
   it("accepts request confirmations and wakes the current assignee when configured for accept-only wakeups", async () => {

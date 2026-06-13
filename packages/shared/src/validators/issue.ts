@@ -829,7 +829,7 @@ export const requestCheckboxConfirmationPayloadSchema = z.object({
 
 export const requestConfirmationResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target"]),
+  outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target", "cancelled"]),
   reason: z.string().trim().max(4000).nullable().optional(),
   commentId: z.string().uuid().nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
@@ -942,6 +942,17 @@ export const cancelIssueThreadInteractionSchema = z.object({
   reason: z.string().trim().max(4000).optional(),
 });
 export type CancelIssueThreadInteraction = z.infer<typeof cancelIssueThreadInteractionSchema>;
+
+// Generalized termination of a pending interaction via PATCH. `status` records the
+// caller's intended terminal state; the service normalizes the stored status per
+// interaction kind (request_confirmation-like -> "expired", ask_user_questions ->
+// "cancelled") and returns the resulting interaction so the caller observes the
+// actual outcome. See FUL-10323.
+export const patchIssueThreadInteractionSchema = z.object({
+  status: z.enum(["cancelled", "expired"]),
+  reason: z.string().trim().max(4000).optional(),
+});
+export type PatchIssueThreadInteraction = z.infer<typeof patchIssueThreadInteractionSchema>;
 
 export const respondIssueThreadInteractionSchema = z.object({
   answers: z.array(askUserQuestionsAnswerSchema).max(20),

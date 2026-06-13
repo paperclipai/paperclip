@@ -16,6 +16,7 @@ import type {
   CancelIssueThreadInteraction,
   CreateIssueThreadInteraction,
   IssueThreadInteraction,
+  IssueThreadInteractionResult,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
   RequestConfirmationTarget,
@@ -734,6 +735,82 @@ export function issueThreadInteractionService(db: Db) {
     return hydrateInteraction(updated);
   }
 
+  // Generalized termination of a pending interaction (FUL-10323). Terminates
+  // both ask_user_questions and request_confirmation-like interactions:
+  //   - ask_user_questions       -> status "cancelled" (preserves result shape)
+  //   - request_confirmation-like -> status "expired"  (matches the convention
+  //     used by expireStaleRequestConfirmationTarget / expireRequestConfirmations*)
+  // The caller's requested `input.status` is advisory; the stored status is
+  // normalized per kind and the resulting interaction is returned so the caller
+  // observes the actual outcome. Non-pending interactions raise 409. Uses the
+  // same WHERE status='pending' guarded UPDATE for idempotency.
+  async function cancelInteractionImpl(
+    issue: { id: string; companyId: string },
+    interactionId: string,
+    input: { reason?: string | null; status?: "cancelled" | "expired" },
+    actor: InteractionActor,
+  ): Promise<IssueThreadInteraction> {
+    const reason = (input?.reason ?? null)?.toString().trim() || null;
+    const current = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId))
+      .then((rows) => rows[0] ?? null);
+
+    if (!current) throw notFound("Interaction not found");
+    if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
+      throw notFound("Interaction not found");
+    }
+
+    const isQuestions = current.kind === "ask_user_questions";
+    const isConfirmationLike = isRequestConfirmationLikeKind(current.kind);
+    if (!isQuestions && !isConfirmationLike) {
+      throw unprocessable(`Interactions of kind "${current.kind}" cannot be cancelled`);
+    }
+    if (current.status !== "pending") {
+      throw conflict("Interaction has already been resolved");
+    }
+
+    const terminalStatus = isQuestions ? "cancelled" : "expired";
+    const result: IssueThreadInteractionResult = isQuestions
+      ? {
+          version: 1,
+          answers: [],
+          cancelled: true,
+          cancellationReason: reason,
+          summaryMarkdown: null,
+        }
+      : {
+          version: 1,
+          outcome: "cancelled",
+          reason,
+        };
+
+    const now = new Date();
+    const [updated] = await db
+      .update(issueThreadInteractions)
+      .set({
+        status: terminalStatus,
+        result,
+        resolvedByAgentId: actor.agentId ?? null,
+        resolvedByUserId: actor.userId ?? null,
+        resolvedAt: now,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(issueThreadInteractions.id, interactionId),
+        eq(issueThreadInteractions.status, "pending"),
+      ))
+      .returning();
+
+    if (!updated) {
+      throw conflict("Interaction has already been resolved");
+    }
+
+    await touchIssue(db, issue.id);
+    return hydrateInteraction(updated);
+  }
+
   return {
     listForIssue: async (issueId: string) => {
       const rows = await db
@@ -1395,6 +1472,19 @@ export function issueThreadInteractionService(db: Db) {
       return hydrateInteraction(updated);
     },
 
+    // Generalized cancel/expire entry point used by PATCH
+    // /issues/:id/interactions/:interactionId (FUL-10323).
+    cancelInteraction: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      input: { reason?: string | null; status?: "cancelled" | "expired" },
+      actor: InteractionActor,
+    ) => cancelInteractionImpl(issue, interactionId, input, actor),
+
+    // Back-compat wrapper for the legacy POST .../cancel route. Delegates to the
+    // generalized cancelInteraction. Historically only ask_user_questions could
+    // be cancelled here; cancellation now also terminates pending
+    // request_confirmation-like interactions (FUL-10323).
     cancelQuestions: async (
       issue: { id: string; companyId: string },
       interactionId: string,
@@ -1402,52 +1492,7 @@ export function issueThreadInteractionService(db: Db) {
       actor: InteractionActor,
     ) => {
       const data = cancelIssueThreadInteractionSchema.parse(input);
-      const current = await db
-        .select()
-        .from(issueThreadInteractions)
-        .where(eq(issueThreadInteractions.id, interactionId))
-        .then((rows) => rows[0] ?? null);
-
-      if (!current) throw notFound("Interaction not found");
-      if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
-        throw notFound("Interaction not found");
-      }
-      if (current.kind !== "ask_user_questions") {
-        throw unprocessable("Only ask_user_questions interactions can be cancelled");
-      }
-      if (current.status !== "pending") {
-        throw conflict("Interaction has already been resolved");
-      }
-
-      const reason = data.reason?.trim() || null;
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
-          status: "cancelled",
-          result: {
-            version: 1,
-            answers: [],
-            cancelled: true,
-            cancellationReason: reason,
-            summaryMarkdown: null,
-          },
-          resolvedByAgentId: actor.agentId ?? null,
-          resolvedByUserId: actor.userId ?? null,
-          resolvedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, interactionId),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
-
-      if (!updated) {
-        throw conflict("Interaction has already been resolved");
-      }
-
-      await touchIssue(db, issue.id);
-      return hydrateInteraction(updated);
+      return cancelInteractionImpl(issue, interactionId, { reason: data.reason ?? null }, actor);
     },
   };
 }

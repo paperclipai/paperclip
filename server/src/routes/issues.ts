@@ -23,6 +23,7 @@ import {
   acceptIssueThreadInteractionSchema,
   attachmentArtifactWorkProductMetadataSchema,
   cancelIssueThreadInteractionSchema,
+  patchIssueThreadInteractionSchema,
   companySearchQuerySchema,
   createIssueAttachmentMetadataSchema,
   createIssueThreadInteractionSchema,
@@ -6364,6 +6365,73 @@ export function issueRoutes(
             interaction.kind === "ask_user_questions"
               ? (interaction.result?.cancellationReason ?? null)
               : null,
+        },
+      });
+
+      queueResolvedInteractionContinuationWakeup({
+        heartbeat,
+        issue,
+        interaction,
+        actor,
+        source: "issue.interaction.cancel",
+      });
+
+      res.json(interaction);
+    },
+  );
+
+  // Generalized cancel/expire (FUL-10323). Unlike the board-only POST .../cancel
+  // route above, this is authorized via assertAgentIssueMutationAllowed (same
+  // pattern as DELETE /comments/:commentId), so authenticated agents/board users
+  // with issue access can terminate pending request_confirmation AND
+  // ask_user_questions interactions. The stored status is normalized per kind by
+  // the service (request_confirmation-like -> "expired", ask_user_questions ->
+  // "cancelled").
+  router.patch(
+    "/issues/:id/interactions/:interactionId",
+    validate(patchIssueThreadInteractionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const interactionId = req.params.interactionId as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+
+      const actor = getActorInfo(req);
+      const interaction = await issueThreadInteractionService(db).cancelInteraction(
+        issue,
+        interactionId,
+        { status: req.body.status, reason: req.body.reason },
+        {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+      );
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.thread_interaction_cancelled",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          interactionStatus: interaction.status,
+          cancellationReason:
+            interaction.kind === "ask_user_questions"
+              ? (interaction.result?.cancellationReason ?? null)
+              : interaction.kind === "request_confirmation"
+                  || interaction.kind === "request_checkbox_confirmation"
+                ? (interaction.result?.reason ?? null)
+                : null,
         },
       });
 
