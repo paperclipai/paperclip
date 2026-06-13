@@ -62,6 +62,10 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import {
+  isHarnessTerminalPatchPrecedenceEnabled,
+  isLatestIssueCommentByAssignee,
+} from "../harness-terminal-patch-precedence.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
@@ -2693,6 +2697,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // MONAA-558: when the latest comment on this assigned issue was authored
+      // by the assignee themselves, the recovery sweep does not retrigger
+      // `stranded_assigned_issue` / `issue_continuation_needed` continuation.
+      // Without this filter, an agent posting a closing self-comment can be
+      // re-woken by its own message and form a continuation cascade.
+      if (
+        isHarnessTerminalPatchPrecedenceEnabled() &&
+        (await isLatestIssueCommentByAssignee(db, issue.id, agentId))
+      ) {
         result.skipped += 1;
         continue;
       }

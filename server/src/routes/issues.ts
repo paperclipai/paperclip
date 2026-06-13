@@ -105,6 +105,10 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import {
+  didStatusBecomeTerminal,
+  isHarnessTerminalPatchPrecedenceEnabled,
+} from "../services/harness-terminal-patch-precedence.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
@@ -5674,7 +5678,14 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+        // MONAA-558: when the same PATCH transitions status to a terminal value
+        // (done/cancelled), the terminal transition wins over the comment-driven
+        // continuation wake so the assignee is not re-woken for its own
+        // closing comment. Gated behind HARNESS_TERMINAL_PATCH_PRECEDENCE.
+        const becameTerminalPatch =
+          isHarnessTerminalPatchPrecedenceEnabled() &&
+          didStatusBecomeTerminal(existing.status, issue.status);
+        const skipAssigneeCommentWake = selfComment || isClosed || becameTerminalPatch;
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {

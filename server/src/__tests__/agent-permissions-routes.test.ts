@@ -748,6 +748,155 @@ describe.sequential("agent permission routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   }, 15_000);
 
+  it("blocks agent-authenticated self-updates that change adapterType (MONAA-1054)", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ adapterType: "opencode_local" }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("adapter choice");
+    expect(res.body.error).toContain("adapterType");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it("blocks agent-authenticated PATCH that changes adapterConfig.model on another agent (MONAA-1054)", async () => {
+    const ceoAgentId = "33333333-3333-4333-8333-333333333333";
+    const targetAgentId = "44444444-4444-4444-8444-444444444444";
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === targetAgentId) {
+        return { ...baseAgent, id: targetAgentId };
+      }
+      if (id === ceoAgentId) {
+        return { ...baseAgent, id: ceoAgentId, role: "ceo" };
+      }
+      return null;
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: ceoAgentId,
+      companyId,
+      source: "agent_jwt",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${targetAgentId}`)
+      .send({ adapterConfig: { model: "claude-opus-4-7" } }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("adapter choice");
+    expect(res.body.error).toContain("adapterConfig.model");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it("blocks agent-authenticated self-updates that change adapterConfig.command (MONAA-1054)", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ adapterConfig: { command: "/usr/local/bin/opencode" } }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("adapter choice");
+    expect(res.body.error).toContain("adapterConfig.command");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it("blocks agent-authenticated self-updates that change a runtimeConfig modelProfile model (MONAA-1054)", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({
+        runtimeConfig: {
+          modelProfiles: {
+            cheap: {
+              adapterConfig: { model: "claude-haiku-4-5-20251001" },
+            },
+          },
+        },
+      }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("adapter choice");
+    expect(res.body.error).toContain("runtimeConfig.modelProfiles.cheap.adapterConfig.model");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it("allows board-authenticated (local_implicit) PATCH to change adapterConfig.model (MONAA-1054)", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterType: "claude_local",
+    });
+    mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(
+      async (_companyId, config) => config,
+    );
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ adapterConfig: { model: "claude-opus-4-7" } }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({ model: "claude-opus-4-7" }),
+      }),
+      expect.anything(),
+    );
+  }, 15_000);
+
+  it("blocks agent-authenticated config-revision rollback (MONAA-1054 bypass)", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/config-revisions/rev-1/rollback`)
+      .send({}));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("rollback");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  }, 15_000);
+
   it("blocks agent-authenticated instructions-path updates", async () => {
     const app = await createApp({
       type: "agent",
