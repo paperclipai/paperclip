@@ -698,9 +698,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         character_maximum_length: number | null;
         numeric_precision: number | null;
         numeric_scale: number | null;
+        is_generated: string;
+        generation_expression: string | null;
       }[]>`
         SELECT column_name, data_type, udt_schema, udt_name, is_nullable, column_default,
-               character_maximum_length, numeric_precision, numeric_scale
+               character_maximum_length, numeric_precision, numeric_scale,
+               is_generated, generation_expression
         FROM information_schema.columns
         WHERE table_schema = ${schema_name} AND table_name = ${tablename}
         ORDER BY ordinal_position
@@ -732,9 +735,14 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           typeStr = col.data_type;
         }
 
-        let def = `  "${col.column_name}" ${typeStr}`;
-        if (col.column_default != null) def += ` DEFAULT ${col.column_default}`;
-        if (col.is_nullable === "NO") def += " NOT NULL";
+        let def: string;
+        if (col.is_generated === "ALWAYS" && col.generation_expression != null) {
+          def = `  "${col.column_name}" ${typeStr} GENERATED ALWAYS AS (${col.generation_expression}) STORED`;
+        } else {
+          def = `  "${col.column_name}" ${typeStr}`;
+          if (col.column_default != null) def += ` DEFAULT ${col.column_default}`;
+          if (col.is_nullable === "NO") def += " NOT NULL";
+        }
         colDefs.push(def);
       }
 
@@ -884,11 +892,13 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       const count = await sql.unsafe<{ n: number }[]>(`SELECT count(*)::int AS n FROM ${qualifiedTableName}`);
       if (excludedTableNames.has(currentTableKey) || (count[0]?.n ?? 0) === 0) continue;
 
-      // Get column info for this table
+      // Get column info for this table — exclude generated columns; PostgreSQL
+      // rejects COPY with generated columns in the column list.
       const cols = await sql<{ column_name: string; data_type: string }[]>`
         SELECT column_name, data_type
         FROM information_schema.columns
         WHERE table_schema = ${schema_name} AND table_name = ${tablename}
+          AND is_generated = 'NEVER'
         ORDER BY ordinal_position
       `;
       const colNames = cols.map((c) => `"${c.column_name}"`).join(", ");
