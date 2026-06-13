@@ -647,6 +647,100 @@ describe("realizeExecutionWorkspace", () => {
     ).rejects.toThrow(/not a reusable git worktree \(worktree HEAD is on "unexpected-branch" instead of "PAP-447-add-worktree-support"\)\./);
   });
 
+  it("refuses to attach a worktree to a pre-existing branch with divergent commits (ZERA-583)", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-447-add-worktree-support";
+    const priorWorktree = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+
+    // Simulate a prior agent session: create the branch + worktree, make a commit
+    // on it, then prune the worktree (mirroring cleanupExecutionWorkspaceArtifacts:
+    // `git worktree remove --force` followed by `git branch -d` that refuses to
+    // delete the unmerged branch and leaves it alive).
+    await fs.mkdir(path.dirname(priorWorktree), { recursive: true });
+    await execFileAsync("git", ["worktree", "add", "-b", branchName, priorWorktree, "HEAD"], { cwd: repoRoot });
+    await fs.writeFile(path.join(priorWorktree, "session-a-work.txt"), "prior session commit\n", "utf8");
+    await runGit(priorWorktree, ["add", "session-a-work.txt"]);
+    await runGit(priorWorktree, ["commit", "-m", "session A commit"]);
+    await execFileAsync("git", ["worktree", "remove", "--force", priorWorktree], { cwd: repoRoot });
+    await execFileAsync("git", ["worktree", "prune"], { cwd: repoRoot });
+
+    // Sanity: the branch survives the prune, divergent from HEAD.
+    const surviving = await execFileAsync("git", ["rev-parse", "--verify", `refs/heads/${branchName}`], { cwd: repoRoot });
+    expect(surviving.stdout.trim()).toMatch(/^[0-9a-f]{40}$/);
+
+    await expect(
+      realizeExecutionWorkspace({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        config: {
+          workspaceStrategy: {
+            type: "git_worktree",
+            branchTemplate: "{{issue.identifier}}-{{slug}}",
+          },
+        },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-447",
+          title: "Add Worktree Support",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+      }),
+    ).rejects.toThrow(/Refusing to reuse branch "PAP-447-add-worktree-support".*ahead of base.*by 1 commit\(s\) from a prior agent session.*ZERA-583/s);
+  });
+
+  it("allows reuse of a pre-existing branch whose tip equals base (no divergent commits)", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "PAP-447-add-worktree-support";
+    const priorWorktree = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+
+    // Same prune-but-keep-branch scenario as above, except the prior session
+    // never committed beyond HEAD. Safe reuse: ahead=0, behind=0.
+    await fs.mkdir(path.dirname(priorWorktree), { recursive: true });
+    await execFileAsync("git", ["worktree", "add", "-b", branchName, priorWorktree, "HEAD"], { cwd: repoRoot });
+    await execFileAsync("git", ["worktree", "remove", "--force", priorWorktree], { cwd: repoRoot });
+    await execFileAsync("git", ["worktree", "prune"], { cwd: repoRoot });
+
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-447",
+        title: "Add Worktree Support",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized.branchName).toBe(branchName);
+    await expect(fs.realpath(realized.cwd)).resolves.toBe(await fs.realpath(priorWorktree));
+  });
+
   it("reuses an already checked out branch from git worktree metadata even when the target path differs", async () => {
     const repoRoot = await createTempRepo();
     const branchName = "PAP-1355-worktree-reuse";
@@ -1656,50 +1750,6 @@ describe("realizeExecutionWorkspace", () => {
     expect(provisionOperation?.result.stdout?.length ?? 0).toBeLessThan(300000);
   }, 10_000);
 
-  it("reuses an existing branch without resetting it when recreating a missing worktree", async () => {
-    const repoRoot = await createTempRepo();
-    const branchName = "PAP-450-recreate-missing-worktree";
-
-    await runGit(repoRoot, ["checkout", "-b", branchName]);
-    await fs.writeFile(path.join(repoRoot, "feature.txt"), "preserve me\n", "utf8");
-    await runGit(repoRoot, ["add", "feature.txt"]);
-    await runGit(repoRoot, ["commit", "-m", "Add preserved feature"]);
-    const expectedHead = (await execFileAsync("git", ["rev-parse", branchName], { cwd: repoRoot })).stdout.trim();
-    await runGit(repoRoot, ["checkout", "main"]);
-
-    const workspace = await realizeExecutionWorkspace({
-      base: {
-        baseCwd: repoRoot,
-        source: "project_primary",
-        projectId: "project-1",
-        workspaceId: "workspace-1",
-        repoUrl: null,
-        repoRef: "HEAD",
-      },
-      config: {
-        workspaceStrategy: {
-          type: "git_worktree",
-          branchTemplate: "{{issue.identifier}}-{{slug}}",
-        },
-      },
-      issue: {
-        id: "issue-1",
-        identifier: "PAP-450",
-        title: "Recreate missing worktree",
-      },
-      agent: {
-        id: "agent-1",
-        name: "Codex Coder",
-        companyId: "company-1",
-      },
-    });
-
-    expect(workspace.branchName).toBe(branchName);
-    await expect(fs.readFile(path.join(workspace.cwd, "feature.txt"), "utf8")).resolves.toBe("preserve me\n");
-    const actualHead = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: workspace.cwd })).stdout.trim();
-    expect(actualHead).toBe(expectedHead);
-  });
-
   it("reattaches a missing persisted git worktree before manual control starts it", async () => {
     const repoRoot = await createTempRepo();
     const branchName = "PAP-451-restore-persisted-worktree";
@@ -1716,13 +1766,6 @@ describe("realizeExecutionWorkspace", () => {
     await fs.chmod(path.join(repoRoot, "scripts", "restore.sh"), 0o755);
     await runGit(repoRoot, ["add", "scripts/restore.sh"]);
     await runGit(repoRoot, ["commit", "-m", "Add restore script"]);
-
-    await runGit(repoRoot, ["checkout", "-b", branchName]);
-    await fs.writeFile(path.join(repoRoot, "feature.txt"), "persisted\n", "utf8");
-    await runGit(repoRoot, ["add", "feature.txt"]);
-    await runGit(repoRoot, ["commit", "-m", "Add persisted feature"]);
-    const expectedHead = (await execFileAsync("git", ["rev-parse", branchName], { cwd: repoRoot })).stdout.trim();
-    await runGit(repoRoot, ["checkout", "main"]);
 
     const initial = await realizeExecutionWorkspace({
       base: {
@@ -1751,6 +1794,12 @@ describe("realizeExecutionWorkspace", () => {
         companyId: "company-1",
       },
     });
+
+    expect(initial.branchName).toBe(branchName);
+    await fs.writeFile(path.join(initial.cwd, "feature.txt"), "persisted\n", "utf8");
+    await runGit(initial.cwd, ["add", "feature.txt"]);
+    await runGit(initial.cwd, ["commit", "-m", "Add persisted feature"]);
+    const expectedHead = (await execFileAsync("git", ["rev-parse", branchName], { cwd: repoRoot })).stdout.trim();
 
     await fs.rm(initial.cwd, { recursive: true, force: true });
 

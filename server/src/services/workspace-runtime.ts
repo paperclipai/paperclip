@@ -686,6 +686,53 @@ async function findRegisteredGitWorktreeByBranch(repoRoot: string, branchName: s
   return null;
 }
 
+// ZERA-583: when realizeExecutionWorkspace would silently attach a worktree to a
+// pre-existing local branch (because the prior session's worktree was pruned but
+// `git branch -d` refused to delete the unmerged branch), the new session would
+// inherit the prior session's commits. A subsequent push could clobber that work.
+// This guard refuses reuse when the existing branch tip carries commits not
+// reachable from `baseRef`. Safe reuse (branch tip == base, or branch lags base
+// only) still proceeds.
+async function assertExistingBranchSafeToReuse(input: {
+  repoRoot: string;
+  branchName: string;
+  baseRef: string;
+}): Promise<void> {
+  const { repoRoot, branchName, baseRef } = input;
+  const branchSha = await runGit(
+    ["rev-parse", "--verify", `refs/heads/${branchName}`],
+    repoRoot,
+  ).catch(() => null);
+  if (!branchSha) return; // branch doesn't actually exist locally; let git report it
+
+  const aheadRaw = await runGit(
+    ["rev-list", "--count", `${baseRef}..refs/heads/${branchName}`],
+    repoRoot,
+  ).catch(() => null);
+  if (aheadRaw === null) {
+    throw new Error(
+      `Refusing to reuse branch "${branchName}": cannot verify divergence from base "${baseRef}". ` +
+        `This branch already exists locally; reusing it without a divergence check risks clobbering ` +
+        `in-flight work from a prior agent session. Resolve by deleting/pushing the branch, or by ` +
+        `configuring a unique branch template. See ZERA-583.`,
+    );
+  }
+  const aheadCount = Number.parseInt(aheadRaw.trim(), 10);
+  if (!Number.isFinite(aheadCount) || aheadCount <= 0) return;
+
+  const baseSha = await runGit(["rev-parse", "--verify", baseRef], repoRoot).catch(() => null);
+  throw new Error(
+    `Refusing to reuse branch "${branchName}" at tip ${branchSha.slice(0, 12)}: ` +
+      `it is ahead of base "${baseRef}"${baseSha ? ` (${baseSha.slice(0, 12)})` : ""} by ` +
+      `${aheadCount} commit(s) from a prior agent session. Silently attaching a new worktree ` +
+      `would let a subsequent push clobber that work. Resolve by one of: ` +
+      `(a) push or otherwise preserve the commits, then \`git branch -D ${branchName}\`; ` +
+      `(b) delete the branch if those commits are abandoned; ` +
+      `(c) configure a unique branch template (e.g. include a run id) to avoid collisions. ` +
+      `See ZERA-583.`,
+  );
+}
+
 async function isGitCheckout(cwd: string): Promise<boolean> {
   return Boolean(await runGit(["rev-parse", "--git-dir"], cwd).catch(() => null));
 }
@@ -1242,6 +1289,7 @@ export async function realizeExecutionWorkspace(input: {
     if (!gitErrorIncludes(error, "already exists")) {
       throw error;
     }
+    await assertExistingBranchSafeToReuse({ repoRoot, branchName, baseRef });
     try {
       await recordGitOperation(input.recorder, {
         phase: "worktree_prepare",
