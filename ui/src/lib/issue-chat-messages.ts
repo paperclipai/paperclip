@@ -99,7 +99,7 @@ export interface StableThreadMessageCacheEntry {
   message: ThreadMessage;
 }
 
-type AssistantTranscriptDerivation = {
+export type AssistantTranscriptDerivation = {
   parts: Array<TextMessagePart | ReasoningMessagePart | ToolCallMessagePart<JsonObject, unknown>>;
   notices: string[];
   segments: SegmentTiming[];
@@ -367,6 +367,10 @@ function isIssueChatRenderableTranscriptEntry(entry: IssueChatTranscriptEntry) {
     && entry.kind !== "system";
 }
 
+function countIssueChatRenderableTranscriptEntries(entries: readonly IssueChatTranscriptEntry[]): number {
+  return entries.filter(isIssueChatRenderableTranscriptEntry).length;
+}
+
 function compactIssueChatTranscript(
   entries: readonly IssueChatTranscriptEntry[],
   maxVisibleEntries = ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES,
@@ -443,7 +447,7 @@ function fingerprintCompactedTranscript(
   ].join(";");
 }
 
-function deriveAssistantTranscriptParts(args: {
+export function deriveIssueChatTranscriptParts(args: {
   cache?: IssueChatMessageBuildCache;
   runKey: string;
   transcript: readonly IssueChatTranscriptEntry[];
@@ -791,14 +795,20 @@ function createHistoricalTranscriptMessage(args: {
   hasOutput: boolean;
   agentMap?: Map<string, Agent>;
   buildCache?: IssueChatMessageBuildCache;
+  lazyRender?: boolean;
 }) {
-  const { run, transcript, hasOutput, agentMap, buildCache } = args;
+  const { run, transcript, hasOutput, agentMap, buildCache, lazyRender = false } = args;
   const agentName = run.agentName ?? agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
-  const { parts, notices, segments } = deriveAssistantTranscriptParts({
-    cache: buildCache,
-    runKey: `historical:${run.runId}`,
-    transcript,
-  });
+  const derived = lazyRender
+    ? null
+    : deriveIssueChatTranscriptParts({
+        cache: buildCache,
+        runKey: `historical:${run.runId}`,
+        transcript,
+      });
+  const parts = derived?.parts ?? [];
+  const notices = derived?.notices ?? [];
+  const segments = derived?.segments ?? [];
   const waitingText = hasOutput ? "" : "Run finished";
   const content = parts.length > 0
     ? parts
@@ -823,6 +833,9 @@ function createHistoricalTranscriptMessage(args: {
       waitingText,
       chainOfThoughtLabel: runDurationLabel(run),
       chainOfThoughtSegments: segments,
+      lazyTranscript: lazyRender,
+      transcriptEntryCount: transcript.length,
+      renderableTranscriptEntryCount: countIssueChatRenderableTranscriptEntries(transcript),
     }),
   };
   return message;
@@ -993,7 +1006,7 @@ function createLiveRunMessage(args: {
   buildCache?: IssueChatMessageBuildCache;
 }) {
   const { run, transcript, buildCache } = args;
-  const { parts, notices, segments } = deriveAssistantTranscriptParts({
+  const { parts, notices, segments } = deriveIssueChatTranscriptParts({
     cache: buildCache,
     runKey: `live:${run.id}`,
     transcript,
@@ -1046,6 +1059,7 @@ export function buildIssueChatMessages(args: {
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
   buildCache?: IssueChatMessageBuildCache;
+  collapseHistoricalRunTranscripts?: boolean;
 }) {
   const {
     comments,
@@ -1064,6 +1078,7 @@ export function buildIssueChatMessages(args: {
     currentUserId,
     userLabelMap,
     buildCache,
+    collapseHistoricalRunTranscripts = false,
   } = args;
 
   const orderedMessages: MessageWithOrder[] = [];
@@ -1122,6 +1137,7 @@ export function buildIssueChatMessages(args: {
           hasOutput: hasRunOutput,
           agentMap,
           buildCache,
+          lazyRender: collapseHistoricalRunTranscripts,
         }),
       });
       continue;

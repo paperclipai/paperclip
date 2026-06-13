@@ -709,6 +709,95 @@ describe("buildIssueChatMessages", () => {
     ]);
   });
 
+  it("can keep historical run transcript content lazy while preserving run metadata", () => {
+    const messages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [
+        {
+          runId: "run-history-lazy",
+          status: "succeeded",
+          agentId: "agent-1",
+          agentName: "CodexCoder",
+          createdAt: new Date("2026-04-06T12:01:00.000Z"),
+          startedAt: new Date("2026-04-06T12:01:00.000Z"),
+          finishedAt: new Date("2026-04-06T12:03:00.000Z"),
+        },
+      ],
+      liveRuns: [],
+      transcriptsByRunId: new Map([
+        [
+          "run-history-lazy",
+          [
+            { kind: "thinking", ts: "2026-04-06T12:01:10.000Z", text: "Checking the current issue thread." },
+            { kind: "assistant", ts: "2026-04-06T12:02:30.000Z", text: "Updated the thread renderer." },
+          ],
+        ],
+      ]),
+      hasOutputForRun: (runId) => runId === "run-history-lazy",
+      currentUserId: "user-1",
+      collapseHistoricalRunTranscripts: true,
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      id: "run-assistant:run-history-lazy",
+      role: "assistant",
+      content: [],
+      metadata: {
+        custom: {
+          kind: "historical-run",
+          runId: "run-history-lazy",
+          lazyTranscript: true,
+          transcriptEntryCount: 2,
+          renderableTranscriptEntryCount: 2,
+          chainOfThoughtLabel: "Worked for 2 minutes",
+        },
+      },
+    });
+  });
+
+  it("still renders live run transcript content when historical transcripts are lazy", () => {
+    const messages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [
+        {
+          id: "run-live-lazy-check",
+          issueId: "issue-1",
+          status: "running",
+          invocationSource: "manual",
+          triggerDetail: null,
+          startedAt: "2026-04-06T12:01:00.000Z",
+          finishedAt: null,
+          createdAt: "2026-04-06T12:01:00.000Z",
+          agentId: "agent-1",
+          agentName: "CodexCoder",
+          adapterType: "codex_local",
+        },
+      ],
+      transcriptsByRunId: new Map([
+        [
+          "run-live-lazy-check",
+          [
+            { kind: "assistant", ts: "2026-04-06T12:01:10.000Z", text: "Live progress is visible." },
+          ],
+        ],
+      ]),
+      currentUserId: "user-1",
+      collapseHistoricalRunTranscripts: true,
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      id: "run-assistant:run-live-lazy-check",
+      role: "assistant",
+      content: [{ type: "text", text: "Live progress is visible." }],
+      metadata: { custom: { kind: "live-run" } },
+    });
+  });
+
   it("compacts long run transcripts in issue chat while preserving matching tool context", () => {
     const isoAt = (baseMs: number, offsetSeconds: number) =>
       new Date(baseMs + offsetSeconds * 1000).toISOString();
