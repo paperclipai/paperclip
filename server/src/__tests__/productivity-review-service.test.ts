@@ -255,6 +255,40 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listRefreshComments(review!.id)).toHaveLength(DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS);
   });
 
+  it("holds the refresh-interval guard under concurrent reconciliation (BLU-7718)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const service = productivityReviewService(db);
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [review] = await listProductivityReviews(seeded.companyId);
+
+    // Multiple server processes fire reconcile concurrently in the same window
+    // (simulated here with Promise.all over a shared pool). Without atomic
+    // check-then-act around the cap+interval check, each racer sees the same
+    // pre-burst count and all racers insert. The empirical BLU-7325 burst on
+    // 2026-05-14 showed three refresh comments committed inside 27ms — the
+    // failure mode this test pins.
+    const refreshAt = new Date(now.getTime() + DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS);
+    const concurrent = 5;
+    const results = await Promise.all(
+      Array.from({ length: concurrent }, () =>
+        service.reconcileProductivityReviews({ now: refreshAt, companyId: seeded.companyId }),
+      ),
+    );
+
+    const totalUpdates = results.reduce((acc, r) => acc + r.updated, 0);
+    expect(totalUpdates).toBe(1);
+    expect(await listRefreshComments(review!.id)).toHaveLength(1);
+  });
+
   it("caps productivity review creation per source issue in the rolling creation window", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
