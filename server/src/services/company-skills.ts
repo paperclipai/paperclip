@@ -4447,6 +4447,13 @@ export function companySkillService(db: Db) {
         metadata,
         updatedAt: new Date(),
       };
+      // When re-importing an existing catalog-type skill under a different source,
+      // remove the stale catalog directory so it cannot be served as stale content.
+      if (existing?.sourceType === "catalog" && skill.sourceType !== "catalog") {
+        const catalogRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__catalog__");
+        await fs.rm(path.resolve(catalogRoot, buildSkillRuntimeName(existing.key, existing.slug)), { recursive: true, force: true });
+      }
+
       const row = existing
         ? await db
           .update(companySkills)
@@ -4540,6 +4547,13 @@ export function companySkillService(db: Db) {
 
     // Clean up materialized runtime files
     await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
+
+    // Clean up materialized catalog files for catalog-type skills so they are
+    // fully re-created on reimport rather than serving stale on-disk content.
+    if (skill.sourceType === "catalog") {
+      const catalogRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__catalog__");
+      await fs.rm(path.resolve(catalogRoot, buildSkillRuntimeName(skill.key, skill.slug)), { recursive: true, force: true });
+    }
 
     return skill;
   }
