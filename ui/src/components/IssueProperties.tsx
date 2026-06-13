@@ -425,6 +425,12 @@ export function IssueProperties({
   const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
   const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
   const normalizedBlockedBySearch = blockedBySearch.trim();
+  const [billingCodeEditing, setBillingCodeEditing] = useState(false);
+  const [billingCodeInput, setBillingCodeInput] = useState(issue.billingCode ?? "");
+
+  useEffect(() => {
+    setBillingCodeInput(issue.billingCode ?? "");
+  }, [issue.billingCode]);
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -2215,6 +2221,72 @@ export function IssueProperties({
             <span className="text-sm">{formatDateTime(issue.completedAt)}</span>
           </PropertyRow>
         )}
+        <PropertyRow label="Billing Code">
+          {billingCodeEditing ? (
+            <div className="flex items-center gap-1 min-w-0 flex-1">
+              <input
+                type="text"
+                className="text-xs bg-transparent border-none outline-none flex-1 min-w-0"
+                value={billingCodeInput}
+                placeholder="Add billing code"
+                onChange={(e) => setBillingCodeInput(e.target.value)}
+                onBlur={() => {
+                  const next = billingCodeInput.trim() || null;
+                  if (next !== issue.billingCode) onUpdate({ billingCode: next });
+                  setBillingCodeEditing(false);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                  if (e.key === "Escape") {
+                    setBillingCodeInput(issue.billingCode ?? "");
+                    setBillingCodeEditing(false);
+                  }
+                }}
+                autoFocus
+                data-testid="issue-properties-billing-code-input"
+              />
+              <button
+                type="button"
+                className="inline-flex items-center justify-center h-4 w-4 rounded hover:bg-accent/50 text-muted-foreground"
+                onClick={() => {
+                  const next = billingCodeInput.trim() || null;
+                  if (next !== issue.billingCode) onUpdate({ billingCode: next });
+                  setBillingCodeEditing(false);
+                }}
+                aria-label="Save billing code"
+              >
+                <Check className="h-3 w-3" />
+              </button>
+            </div>
+          ) : issue.billingCode ? (
+            <div className="flex items-center gap-1 min-w-0 flex-1">
+              <Tag className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+              <span className="text-sm font-mono min-w-0 break-all text-left">{issue.billingCode}</span>
+              <button
+                type="button"
+                className="inline-flex items-center justify-center h-4 w-4 rounded hover:bg-accent/50 text-muted-foreground shrink-0"
+                onClick={() => onUpdate({ billingCode: null })}
+                aria-label="Clear billing code"
+                data-testid="issue-properties-billing-code-clear"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              onClick={() => {
+                setBillingCodeInput("");
+                setBillingCodeEditing(true);
+              }}
+              data-testid="issue-properties-billing-code-add"
+            >
+              <Tag className="h-3.5 w-3.5" />
+              <span>Add billing code</span>
+            </button>
+          )}
+        </PropertyRow>
         <PropertyRow label="Created">
           <span className="text-sm">{formatDateTime(issue.createdAt)}</span>
         </PropertyRow>

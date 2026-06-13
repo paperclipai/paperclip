@@ -1435,4 +1435,68 @@ describe("IssueProperties", () => {
 
     act(() => root.unmount());
   });
+
+  it("shows 'Add billing code' prompt when billingCode is null", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ billingCode: null }),
+      childIssues: [],
+      onAddSubIssue: vi.fn(),
+      onUpdate,
+    });
+    await flush();
+
+    const addButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Add billing code"));
+    expect(addButton).not.toBeUndefined();
+
+    act(() => root.unmount());
+  });
+
+  it("shows billing code value with clear button when billingCode is set", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ billingCode: "client-abc" }),
+      childIssues: [],
+      onAddSubIssue: vi.fn(),
+      onUpdate,
+    });
+    await flush();
+
+    expect(container.textContent).toContain("client-abc");
+
+    const clearButton = container.querySelector("[aria-label='Clear billing code']");
+    expect(clearButton).not.toBeNull();
+
+    await act(async () => {
+      clearButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ billingCode: null });
+
+    act(() => root.unmount());
+  });
+
+  it("switches to input when 'Add billing code' is clicked", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ billingCode: null }),
+      childIssues: [],
+      onAddSubIssue: vi.fn(),
+      onUpdate,
+    });
+    await flush();
+
+    const addButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Add billing code"));
+
+    await act(async () => {
+      addButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const input = container.querySelector("[data-testid='issue-properties-billing-code-input']") as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+
+    act(() => root.unmount());
+  });
 });
