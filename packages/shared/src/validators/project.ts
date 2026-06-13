@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { PROJECT_STATUSES, PROJECT_ICON_NAMES } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
+import { gitOpsProjectPolicySchema } from "./git-ops.js";
 import { trustAuthorizationPolicySchema } from "./trust-policy.js";
 
 const executionWorkspaceStrategySchema = z
@@ -28,6 +29,7 @@ export const projectExecutionWorkspacePolicySchema = z
     runtimePolicy: z.record(z.string(), z.unknown()).optional().nullable(),
     cleanupPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
     authorizationPolicy: trustAuthorizationPolicySchema.optional().nullable(),
+    gitOps: gitOpsProjectPolicySchema.optional().nullable(),
   })
   .strict();
 

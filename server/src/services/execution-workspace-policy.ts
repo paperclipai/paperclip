@@ -5,6 +5,7 @@ import type {
   ProjectExecutionWorkspaceDefaultMode,
   ProjectExecutionWorkspacePolicy,
 } from "@paperclipai/shared";
+import { gitOpsProjectPolicySchema } from "@paperclipai/shared";
 import { asString, parseObject } from "../adapters/utils.js";
 
 type ParsedExecutionWorkspaceMode = Exclude<ExecutionWorkspaceMode, "inherit" | "reuse_existing">;
@@ -79,6 +80,10 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
     ...(parsed.authorizationPolicy && typeof parsed.authorizationPolicy === "object" && !Array.isArray(parsed.authorizationPolicy)
       ? { authorizationPolicy: { ...(parsed.authorizationPolicy as Record<string, unknown>) } }
       : {}),
+    ...(() => {
+      const gitOps = gitOpsProjectPolicySchema.safeParse(parsed.gitOps);
+      return gitOps.success ? { gitOps: gitOps.data } : {};
+    })(),
   };
 }
 
