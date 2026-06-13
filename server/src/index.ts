@@ -57,6 +57,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { ensureEnvAdminUser } from "./headless-bootstrap.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -218,12 +219,12 @@ export async function startServer(): Promise<StartedServer> {
     }
     if (!config.databaseUrl) {
       throw new Error(
-        "authenticated public deployments require DATABASE_URL or config.database.connectionString; refusing embedded PostgreSQL fallback",
+        "authenticated public deployments require PAPERCLIP_DATABASE_URL (or DATABASE_URL) or config.database.connectionString; refusing embedded PostgreSQL fallback",
       );
     }
     if (!isPostgresConnectionString(config.databaseUrl)) {
       throw new Error(
-        "authenticated public deployments require DATABASE_URL to be a postgres/postgresql connection string",
+        "authenticated public deployments require PAPERCLIP_DATABASE_URL to be a postgres/postgresql connection string",
       );
     }
   }
@@ -318,7 +319,7 @@ export async function startServer(): Promise<StartedServer> {
   
     db = createDb(config.databaseUrl);
     pluginMigrationDb = config.databaseMigrationUrl ? createDb(config.databaseMigrationUrl) : db;
-    logger.info("Using external PostgreSQL via DATABASE_URL/config");
+    logger.info("Using external PostgreSQL via PAPERCLIP_DATABASE_URL/DATABASE_URL/config");
     activeDatabaseConnectionString = config.databaseUrl;
     startupDbInfo = { mode: "external-postgres", connectionString: config.databaseUrl };
   } else {
@@ -329,7 +330,7 @@ export async function startServer(): Promise<StartedServer> {
       EmbeddedPostgres = mod.default as EmbeddedPostgresCtor;
     } catch {
       throw new Error(
-        "Embedded PostgreSQL mode requires dependency `embedded-postgres`. Reinstall dependencies (without omitting required packages), or set DATABASE_URL for external Postgres.",
+        "Embedded PostgreSQL mode requires dependency `embedded-postgres`. Reinstall dependencies (without omitting required packages), or set PAPERCLIP_DATABASE_URL for external Postgres.",
       );
     }
     await prepareEmbeddedPostgresNativeRuntime();
@@ -421,7 +422,7 @@ export async function startServer(): Promise<StartedServer> {
           logger.warn(`Embedded PostgreSQL port is in use; using next free port (requestedPort=${configuredPort}, selectedPort=${detectedPort})`);
         }
         port = detectedPort;
-        logger.info(`Using embedded PostgreSQL because no DATABASE_URL set (dataDir=${dataDir}, port=${port})`);
+        logger.info(`Using embedded PostgreSQL because no PAPERCLIP_DATABASE_URL set (dataDir=${dataDir}, port=${port})`);
         embeddedPostgres = new EmbeddedPostgres({
           databaseDir: dataDir,
           user: "paperclip",
@@ -529,6 +530,7 @@ export async function startServer(): Promise<StartedServer> {
   if (config.deploymentMode === "local_trusted") {
     await ensureLocalTrustedBoardPrincipal(db as any);
   }
+  await ensureEnvAdminUser(db as any);
   const accessBackfill = await backfillPrincipalAccessCompatibility(db as any);
   if (accessBackfill.agentMembershipsInserted > 0 || accessBackfill.humanGrantsInserted > 0) {
     logger.info(accessBackfill, "Backfilled principal access compatibility records");
