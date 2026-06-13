@@ -3839,36 +3839,42 @@ export function issueService(db: Db) {
         sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
       );
       const issue = await tx
-        .select({ executionRunId: issues.executionRunId })
+        .select({ executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId })
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
-      if (!issue?.executionRunId) return false;
+
+      // Both locks cleared — nothing to do.
+      const runIdToCheck = issue?.executionRunId ?? issue?.checkoutRunId;
+      if (!runIdToCheck) return false;
 
       await tx.execute(
-        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
+        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${runIdToCheck} for update`,
       );
       const run = await tx
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, issue.executionRunId))
+        .where(eq(heartbeatRuns.id, runIdToCheck))
         .then((rows) => rows[0] ?? null);
       if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+
+      // Clear both execution and checkout locks so that a stale checkoutRunId
+      // cannot block the next heartbeat's checkout even when executionRunId was
+      // already cleared by a prior partial-cleanup path.
+      const whereCondition = issue?.executionRunId
+        ? and(eq(issues.id, issueId), eq(issues.executionRunId, issue.executionRunId))
+        : and(eq(issues.id, issueId), eq(issues.checkoutRunId, issue!.checkoutRunId!));
 
       const updated = await tx
         .update(issues)
         .set({
+          checkoutRunId: null,
           executionRunId: null,
           executionAgentNameKey: null,
           executionLockedAt: null,
           updatedAt: new Date(),
         })
-        .where(
-          and(
-            eq(issues.id, issueId),
-            eq(issues.executionRunId, issue.executionRunId),
-          ),
-        )
+        .where(whereCondition)
         .returning({ id: issues.id })
         .then((rows) => rows[0] ?? null);
 
