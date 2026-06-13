@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PaperclipApiClient } from "./client.js";
 import { createToolDefinitions } from "./tools.js";
 
@@ -30,6 +30,10 @@ describe("paperclip MCP tools", () => {
     vi.restoreAllMocks();
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("adds auth headers and run id to mutating requests", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse({ ok: true }),
@@ -50,6 +54,30 @@ describe("paperclip MCP tools", () => {
     expect((init.headers as Record<string, string>)["X-Paperclip-Run-Id"]).toBe(
       "33333333-3333-3333-3333-333333333333",
     );
+  });
+
+  it("omits Authorization when neither auth header nor api key is configured", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ ok: true }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new PaperclipApiClient({
+      apiUrl: "http://localhost:3100/api",
+      apiKey: "",
+      companyId: null,
+      agentId: null,
+      runId: null,
+      requestHeaders: {
+        Cookie: "paperclip.sid=session-token",
+      },
+    });
+
+    await client.requestJson("GET", "/agents/me");
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+    expect((init.headers as Record<string, string>).Cookie).toBe("paperclip.sid=session-token");
   });
 
   it("uses default company id for company-scoped list tools", async () => {
