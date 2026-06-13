@@ -43,6 +43,7 @@ import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 import type { ServerAdapterModule, AdapterConfigSchema } from "../adapters/types.js";
 import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
+import { runNpm } from "../lib/npm-exec.js";
 import { assertBoardOrgAccess, assertInstanceAdmin } from "./authz.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 
@@ -262,11 +263,9 @@ export function adapterRoutes() {
 
         logger.info({ spec, pluginsDir }, "Installing adapter package via npm");
 
-        const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-        await execFileAsync(npmCmd, ["install", "--no-save", spec], {
+        await runNpm(["install", "--no-save", spec], {
           cwd: pluginsDir,
           timeout: 120_000,
-          shell: process.platform === "win32",
         });
 
         // Read installed version from package.json
@@ -478,11 +477,9 @@ export function adapterRoutes() {
     if (externalRecord.packageName && !externalRecord.localPath) {
       try {
         const pluginsDir = getAdapterPluginsDir();
-        const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-        await execFileAsync(npmCmd, ["uninstall", externalRecord.packageName], {
+        await runNpm(["uninstall", externalRecord.packageName], {
           cwd: pluginsDir,
           timeout: 60_000,
-          shell: process.platform === "win32",
         });
         logger.info(
           { type: adapterType, packageName: externalRecord.packageName },
@@ -593,11 +590,9 @@ export function adapterRoutes() {
 
       logger.info({ type, packageName: record.packageName }, "Reinstalling adapter package via npm");
 
-      const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-      await execFileAsync(npmCmd, ["install", "--no-save", record.packageName], {
+      await runNpm(["install", "--no-save", record.packageName], {
         cwd: pluginsDir,
         timeout: 120_000,
-        shell: process.platform === "win32",
       });
 
       // Reload the freshly installed adapter
