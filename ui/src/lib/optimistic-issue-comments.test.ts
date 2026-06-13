@@ -300,6 +300,19 @@ describe("optimistic issue comments", () => {
     ).toBe(true);
   });
 
+  it("does not autoload when the loaded window already reaches the configured initial page", () => {
+    expect(
+      shouldAutoloadOlderIssueComments({
+        activeDetailTab: "chat",
+        hasOlderComments: true,
+        loadedCommentCount: 50,
+        initialPageLoading: false,
+        olderPageLoading: false,
+        autoLoadLimit: 50,
+      }),
+    ).toBe(false);
+  });
+
   it("does not autoload older comments outside the chat tab", () => {
     expect(
       shouldAutoloadOlderIssueComments({
