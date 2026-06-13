@@ -29,6 +29,7 @@ import { runningProcesses } from "../../adapters/index.js";
 import { forbidden, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { isPidAlive, isProcessGroupAlive, terminateLocalService } from "../local-service-supervisor.js";
+import { shouldSuppressSpuriousBlockedTransition } from "./blocked-transition-guard.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { logActivity } from "../activity-log.js";
@@ -2500,6 +2501,51 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+
+    // BUD-717: skip the in_progress -> blocked transition (and the recovery
+    // wake) when there are no first-class blockers, the issue is not
+    // in_review, and the latest run actually succeeded. The transition
+    // target would not change effective unblock work, and the assignee
+    // would just PATCH it back to in_progress on the next heartbeat,
+    // producing a recovery churn loop (BUD-710, BUD-490, BUD-722/724/727).
+    // The recoveryAction above is still created/upserted so manual review
+    // remains possible; we only suppress the spurious status flip + wake.
+    if (
+      shouldSuppressSpuriousBlockedTransition({
+        blockerIds,
+        status: input.issue.status,
+        latestRunStatus: input.latestRun?.status ?? null,
+      })
+    ) {
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.recovery_transition_suppressed",
+        entityType: "issue",
+        entityId: input.issue.id,
+        details: {
+          identifier: input.issue.identifier,
+          status: input.issue.status,
+          previousStatus: input.previousStatus,
+          source:
+            input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
+              ? "recovery.reconcile_successful_run_handoff_missing_state"
+              : "recovery.reconcile_stranded_assigned_issue",
+          recoveryCause: input.recoveryCause ?? "stranded_assigned_issue",
+          reason: "no_first_class_blockers_and_no_in_review_consumer",
+          latestRunId: input.latestRun?.id ?? null,
+          latestRunStatus: input.latestRun?.status ?? null,
+          latestRunErrorCode: input.latestRun?.errorCode ?? null,
+          recoveryActionId: recoveryAction.id,
+          recoveryOwnerAgentId: recoveryAction.ownerAgentId,
+        },
+      });
+      return null;
+    }
+
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
