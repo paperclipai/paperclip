@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   summarizeHeartbeatRunResultJson,
   buildHeartbeatRunIssueComment,
+  evaluateHeartbeatRunIssueCommentGuard,
   mergeHeartbeatRunResultJson,
 } from "../services/heartbeat-run-summary.js";
 
@@ -62,6 +63,35 @@ describe("buildHeartbeatRunIssueComment", () => {
 
   it("returns null when there is no usable final text", () => {
     expect(buildHeartbeatRunIssueComment({ costUsd: 1.2 })).toBeNull();
+  });
+});
+
+describe("evaluateHeartbeatRunIssueCommentGuard", () => {
+  it("emits the run-summary comment when the issue assignee matches the running agent", () => {
+    expect(
+      evaluateHeartbeatRunIssueCommentGuard({
+        issueAssigneeAgentId: "agent-1",
+        runningAgentId: "agent-1",
+      }),
+    ).toEqual({ emit: true, skipReason: null });
+  });
+
+  it("skips with cross_owner reason when the issue is assigned to a different agent", () => {
+    expect(
+      evaluateHeartbeatRunIssueCommentGuard({
+        issueAssigneeAgentId: "agent-other",
+        runningAgentId: "agent-1",
+      }),
+    ).toEqual({ emit: false, skipReason: "cross_owner" });
+  });
+
+  it("skips with unowned_or_user_assigned reason when the issue has no agent assignee", () => {
+    expect(
+      evaluateHeartbeatRunIssueCommentGuard({
+        issueAssigneeAgentId: null,
+        runningAgentId: "agent-1",
+      }),
+    ).toEqual({ emit: false, skipReason: "unowned_or_user_assigned" });
   });
 });
 
