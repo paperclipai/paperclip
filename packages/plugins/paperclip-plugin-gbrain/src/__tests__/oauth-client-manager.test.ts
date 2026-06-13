@@ -122,6 +122,28 @@ describe("OAuthClientManager", () => {
     await expect(mgr.getToken("a")).rejects.toThrow(/HTTP 401/);
   });
 
+  it("does not cache a failed /token exchange", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "invalid_client" }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        access_token: "recovered-token",
+        token_type: "bearer",
+        expires_in: 3600,
+      }), { status: 200, headers: { "content-type": "application/json" } }));
+    const mgr = new OAuthClientManager({
+      tokenUrl: "http://gbrain/token",
+      clients: { a: { client_id: "c", client_secret: "s" } },
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(mgr.getToken("a")).rejects.toThrow(/HTTP 401/);
+    await expect(mgr.getToken("a")).resolves.toBe("recovered-token");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("throws when the configured agent is unknown", async () => {
     const fetchMock = mockTokenResponse({ access_token: "x" });
     const mgr = new OAuthClientManager({

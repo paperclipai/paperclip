@@ -47,7 +47,7 @@ const manifest: PaperclipPluginManifestV1 = {
       name: "gbrain_recall_cache",
       displayName: "Recall gbrain Context (cached)",
       description:
-        "Return the gbrain graph neighborhood that was prefetched at agent.run.started for this run's issue (depth=2 by default). Cheap read from plugin state — no MCP round-trip. Returns {status, fetchedAtIso, issuePageSlug, depth, graph?, note?}. status='ok' means a graph is included; 'no-issue-page' means the issue has no gbrain page yet; 'skipped' or 'error' explain via note. Call this near the start of your work to get prior decisions, related agents, and recently-promoted facts for the issue you're working on.",
+        "Return the gbrain graph neighborhood that was prefetched at agent.run.started for this run's issue (depth=2 by default). Cheap read from plugin state — no MCP round-trip. Returns {status, fetchedAtIso, issuePageSlug, depth, graph?, note?}. status='ok' means a useful multi-node neighborhood was found; 'empty' and 'island' mean traversal found no reusable neighborhood; 'no-issue-page' means the issue has no gbrain page yet; 'skipped' means no issue-bearing run; 'error' means traversal/auth failed. Call this near the start of your work to get prior decisions, related agents, and recently-promoted facts for the issue you're working on.",
       parametersSchema: {
         type: "object",
         properties: {},

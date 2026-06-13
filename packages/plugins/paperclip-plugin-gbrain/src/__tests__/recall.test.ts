@@ -90,9 +90,16 @@ describe("prefetchRunContext", () => {
 });
 
 describe("buildCacheEntry", () => {
-  it("maps ok+graph → status=ok", () => {
+  it("maps a graph with nodes and edges → status=ok", () => {
     const entry = buildCacheEntry({
-      result: { ok: true, issuePageSlug: "issue-blo-1", graph: { nodes: [] } },
+      result: {
+        ok: true,
+        issuePageSlug: "issue-blo-1",
+        graph: {
+          nodes: [{ slug: "issue-blo-1" }, { slug: "agent-a" }],
+          edges: [{ from: "issue-blo-1", to: "agent-a" }],
+        },
+      },
       depth: 2,
       nowIso: "2026-05-16T03:00:00.000Z",
     });
@@ -100,9 +107,43 @@ describe("buildCacheEntry", () => {
       status: "ok",
       issuePageSlug: "issue-blo-1",
       depth: 2,
-      graph: { nodes: [] },
       fetchedAtIso: "2026-05-16T03:00:00.000Z",
     });
+  });
+
+  it("maps an empty array graph → status=empty", () => {
+    const entry = buildCacheEntry({
+      result: { ok: true, issuePageSlug: "issue-blo-1", graph: [] },
+      depth: 2,
+    });
+    expect(entry.status).toBe("empty");
+    expect(entry.note).toMatch(/empty graph/i);
+  });
+
+  it("maps a single-node array graph → status=island", () => {
+    const entry = buildCacheEntry({
+      result: {
+        ok: true,
+        issuePageSlug: "issue-blo-1",
+        graph: [{ slug: "issue-blo-1" }],
+      },
+      depth: 2,
+    });
+    expect(entry.status).toBe("island");
+    expect(entry.note).toMatch(/only the issue page/i);
+  });
+
+  it("maps a nodes-without-edges graph → status=island", () => {
+    const entry = buildCacheEntry({
+      result: {
+        ok: true,
+        issuePageSlug: "issue-blo-1",
+        graph: { nodes: [{ slug: "issue-blo-1" }, { slug: "fact-a" }], edges: [] },
+      },
+      depth: 2,
+    });
+    expect(entry.status).toBe("island");
+    expect(entry.note).toMatch(/no edges/i);
   });
 
   it("maps ok+null-graph → status=no-issue-page", () => {
@@ -125,10 +166,24 @@ describe("buildCacheEntry", () => {
     expect(entry.issuePageSlug).toBeNull();
   });
 
+  it("maps traversal failure for an issue page → status=error", () => {
+    const entry = buildCacheEntry({
+      result: {
+        ok: false,
+        issuePageSlug: "issue-blo-1",
+        graph: null,
+        reason: "traverse_graph failed: HTTP 401",
+      },
+      depth: 2,
+    });
+    expect(entry.status).toBe("error");
+    expect(entry.note).toMatch(/HTTP 401/);
+  });
+
   it("uses current time when nowIso omitted", () => {
     const before = Date.now();
     const entry = buildCacheEntry({
-      result: { ok: true, issuePageSlug: "s", graph: {} },
+      result: { ok: true, issuePageSlug: "s", graph: [{ slug: "s" }, { slug: "a" }] },
       depth: 2,
     });
     const t = Date.parse(entry.fetchedAtIso);

@@ -36,6 +36,14 @@ export interface PrefetchResult {
   reason?: string;
 }
 
+export type CachedRecallStatus =
+  | "ok"
+  | "no-issue-page"
+  | "empty"
+  | "island"
+  | "skipped"
+  | "error";
+
 /**
  * Fetch a depth-N traversal of the issue page from gbrain, ready to be
  * stashed under the run scope. Returns ok=false (with a reason) when
@@ -73,12 +81,61 @@ export interface CachedRecall {
   fetchedAtIso: string;
   issuePageSlug: string | null;
   depth: number;
-  /** Non-null when prefetch succeeded against an existing page. */
+  /** Non-null when prefetch reached an existing page. */
   graph: unknown | null;
-  /** "ok" when graph is present and non-null; otherwise a human reason. */
-  status: "ok" | "no-issue-page" | "skipped" | "error";
+  /** "ok" only when the traversal found a real neighborhood. */
+  status: CachedRecallStatus;
   /** Free-form context for the agent reading the cache. */
   note?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function arrayPropLength(value: Record<string, unknown>, key: string): number | null {
+  const prop = value[key];
+  return Array.isArray(prop) ? prop.length : null;
+}
+
+function classifyGraphShape(graph: unknown): { status: CachedRecallStatus; note?: string } {
+  if (Array.isArray(graph)) {
+    if (graph.length === 0) {
+      return { status: "empty", note: "traverse_graph returned an empty graph" };
+    }
+    if (graph.length === 1) {
+      return { status: "island", note: "traverse_graph returned only the issue page" };
+    }
+    return { status: "ok" };
+  }
+
+  if (!isRecord(graph)) {
+    return {
+      status: "empty",
+      note: "traverse_graph returned an unrecognized empty graph shape",
+    };
+  }
+
+  const nodeCount = arrayPropLength(graph, "nodes");
+  const edgeCount = arrayPropLength(graph, "edges");
+  if (nodeCount !== null) {
+    if (nodeCount === 0) {
+      return { status: "empty", note: "traverse_graph returned zero nodes" };
+    }
+    if (nodeCount === 1 || edgeCount === 0) {
+      return { status: "island", note: "traverse_graph returned no edges from the issue page" };
+    }
+    return { status: "ok" };
+  }
+
+  if (edgeCount !== null) {
+    if (edgeCount === 0) {
+      return { status: "island", note: "traverse_graph returned no edges" };
+    }
+    return { status: "ok" };
+  }
+
+  return { status: "empty", note: "traverse_graph returned an unrecognized graph shape" };
 }
 
 export function buildCacheEntry(input: {
@@ -88,12 +145,13 @@ export function buildCacheEntry(input: {
 }): CachedRecall {
   const fetchedAtIso = input.nowIso ?? new Date().toISOString();
   if (!input.result.ok) {
+    const status = input.result.issuePageSlug ? "error" : "skipped";
     return {
       fetchedAtIso,
       issuePageSlug: input.result.issuePageSlug,
       depth: input.depth,
       graph: null,
-      status: "skipped",
+      status,
       note: input.result.reason,
     };
   }
@@ -107,11 +165,13 @@ export function buildCacheEntry(input: {
       note: input.result.reason,
     };
   }
+  const classification = classifyGraphShape(input.result.graph);
   return {
     fetchedAtIso,
     issuePageSlug: input.result.issuePageSlug,
     depth: input.depth,
     graph: input.result.graph,
-    status: "ok",
+    status: classification.status,
+    note: classification.note,
   };
 }
