@@ -2853,6 +2853,12 @@ export function agentRoutes(
       );
     }
 
+    if (hasOwn(patchData, "runtimeConfig")) {
+      const existingRuntimeConfig = asRecord(existing.runtimeConfig) ?? {};
+      const requestedRuntimeConfig = asRecord(patchData.runtimeConfig) ?? {};
+      patchData.runtimeConfig = { ...existingRuntimeConfig, ...requestedRuntimeConfig };
+    }
+
     const actor = getActorInfo(req);
     const agent = await svc.update(id, patchData, {
       recordRevision: {
