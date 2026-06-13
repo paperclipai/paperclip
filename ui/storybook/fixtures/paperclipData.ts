@@ -1297,6 +1297,16 @@ export const storybookDashboardSummary: DashboardSummary = {
     { date: "2026-04-19", succeeded: 5, failed: 0, other: 1, total: 6 },
     { date: "2026-04-20", succeeded: 4, failed: 0, other: 2, total: 6 },
   ],
+  tokenActivity: {
+    recentSuccessfulRuns: 64,
+    tokenizedRuns: 52,
+    subscriptionIncludedRuns: 19,
+    inputTokens: 684_000,
+    cachedInputTokens: 148_000,
+    outputTokens: 96_000,
+    totalTokens: 928_000,
+    lastTokenAt: recent(42).toISOString(),
+  },
 };
 
 export const storybookLiveRuns: LiveRunForIssue[] = [

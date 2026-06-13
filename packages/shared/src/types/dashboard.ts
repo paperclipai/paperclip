@@ -6,6 +6,17 @@ export interface DashboardRunActivityDay {
   total: number;
 }
 
+export interface DashboardTokenActivity {
+  recentSuccessfulRuns: number;
+  tokenizedRuns: number;
+  subscriptionIncludedRuns: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  lastTokenAt: string | null;
+}
+
 export interface DashboardSummary {
   companyId: string;
   agents: {
@@ -33,4 +44,5 @@ export interface DashboardSummary {
     pausedProjects: number;
   };
   runActivity: DashboardRunActivityDay[];
+  tokenActivity: DashboardTokenActivity;
 }
