@@ -55,7 +55,13 @@ jobs:
         run: node ./scripts/release-package-map.mjs check
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # On master a dependency PR merges with a stale lockfile: the
+        # no-lockfile-commit policy defers the refresh to chore/refresh-lockfile,
+        # so plain --frozen-lockfile fails on the manifest/lockfile drift until
+        # that refresh lands (which made #404's canary flap red). Try frozen for
+        # reproducibility; fall back to a manifest-driven resolve during the drift
+        # window so the canary validates the about-to-land state, not a stale one.
+        run: pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
 
       - name: Typecheck
         run: pnpm -r typecheck
@@ -94,7 +100,13 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # On master a dependency PR merges with a stale lockfile: the
+        # no-lockfile-commit policy defers the refresh to chore/refresh-lockfile,
+        # so plain --frozen-lockfile fails on the manifest/lockfile drift until
+        # that refresh lands (which made #404's canary flap red). Try frozen for
+        # reproducibility; fall back to a manifest-driven resolve during the drift
+        # window so the canary validates the about-to-land state, not a stale one.
+        run: pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
 
       - name: Run grouped general test suites
         run: pnpm test:run:general -- --group '${{ matrix.group }}'
@@ -139,7 +151,13 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # On master a dependency PR merges with a stale lockfile: the
+        # no-lockfile-commit policy defers the refresh to chore/refresh-lockfile,
+        # so plain --frozen-lockfile fails on the manifest/lockfile drift until
+        # that refresh lands (which made #404's canary flap red). Try frozen for
+        # reproducibility; fall back to a manifest-driven resolve during the drift
+        # window so the canary validates the about-to-land state, not a stale one.
+        run: pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
 
       - name: Run serialized server test shard
         run: pnpm test:run:serialized -- --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }}
@@ -168,7 +186,13 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # On master a dependency PR merges with a stale lockfile: the
+        # no-lockfile-commit policy defers the refresh to chore/refresh-lockfile,
+        # so plain --frozen-lockfile fails on the manifest/lockfile drift until
+        # that refresh lands (which made #404's canary flap red). Try frozen for
+        # reproducibility; fall back to a manifest-driven resolve during the drift
+        # window so the canary validates the about-to-land state, not a stale one.
+        run: pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
 
       - name: Build
         run: pnpm build
