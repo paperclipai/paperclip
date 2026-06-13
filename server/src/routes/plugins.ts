@@ -77,8 +77,8 @@ import {
 } from "../services/plugin-local-folders.js";
 import {
   extractSecretRefPathsFromConfig,
-  PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
 } from "../services/plugin-secrets-handler.js";
+import { secretService } from "../services/secrets.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
@@ -483,6 +483,7 @@ export function pluginRoutes(
 ) {
   const router = Router();
   const registry = pluginRegistryService(db);
+  const secrets = secretService(db);
   const lifecycle = pluginLifecycleManager(db, {
     loader,
     workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
@@ -645,6 +646,27 @@ export function pluginRoutes(
     }
 
     return [];
+  }
+
+  function resolvePluginConfigCompanyId(req: Request): string | null {
+    const body = req.body as { companyId?: unknown } | undefined;
+    const rawCompanyId = typeof req.query.companyId === "string"
+      ? req.query.companyId
+      : typeof body?.companyId === "string"
+        ? body.companyId
+        : null;
+
+    if (rawCompanyId) {
+      if (
+        req.actor.type !== "board" ||
+        (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin)
+      ) {
+        assertCompanyAccess(req, rawCompanyId);
+      }
+      return rawCompanyId;
+    }
+
+    return null;
   }
 
   async function logPluginMutationActivity(
@@ -1278,7 +1300,7 @@ export function pluginRoutes(
         "getData",
         {
           key: body.key,
-          ...(companyId ? { companyId } : {}),
+          companyId: companyId ?? null,
           params: body.params ?? {},
           renderEnvironment: body.renderEnvironment ?? null,
         },
@@ -1371,7 +1393,8 @@ export function pluginRoutes(
         "performAction",
         {
           key: body.key,
-          params: actionParamsWithAuthorizedCompanyScope(body.params, companyId),
+          companyId: companyId ?? null,
+          params: body.params ?? {},
           actorContext: performActionActorContext(req, companyId),
           renderEnvironment: body.renderEnvironment ?? null,
         },
@@ -1465,7 +1488,7 @@ export function pluginRoutes(
         "getData",
         {
           key,
-          ...(companyId ? { companyId } : {}),
+          companyId: companyId ?? null,
           params: body?.params ?? {},
           renderEnvironment: body?.renderEnvironment ?? null,
         },
@@ -1555,7 +1578,8 @@ export function pluginRoutes(
         "performAction",
         {
           key,
-          params: actionParamsWithAuthorizedCompanyScope(body?.params, companyId),
+          companyId: companyId ?? null,
+          params: body?.params ?? {},
           actorContext: performActionActorContext(req, companyId),
           renderEnvironment: body?.renderEnvironment ?? null,
         },
@@ -2113,7 +2137,8 @@ export function pluginRoutes(
       return;
     }
 
-    const config = await registry.getConfig(plugin.id);
+    const companyId = resolvePluginConfigCompanyId(req);
+    const config = await registry.getConfig(plugin.id, companyId);
     res.json(config);
   });
 
@@ -2143,11 +2168,12 @@ export function pluginRoutes(
       return;
     }
 
-    const body = req.body as { configJson?: Record<string, unknown> } | undefined;
+    const body = req.body as { configJson?: Record<string, unknown>; companyId?: string } | undefined;
     if (!body?.configJson || typeof body.configJson !== "object") {
       res.status(400).json({ error: '"configJson" is required and must be an object' });
       return;
     }
+    const companyId = resolvePluginConfigCompanyId(req);
 
     // Strip devUiUrl unless the caller is an instance admin. devUiUrl activates
     // a dev-proxy in the static file route that could be abused for SSRF if any
@@ -2175,25 +2201,36 @@ export function pluginRoutes(
 
     try {
       const secretRefsByPath = extractSecretRefPathsFromConfig(body.configJson, schema);
-      if (secretRefsByPath.size > 0) {
-        res.status(422).json({ error: PLUGIN_SECRET_REFS_DISABLED_MESSAGE });
+      if (secretRefsByPath.size > 0 && !companyId) {
+        res.status(422).json({ error: "Plugin secret references require companyId" });
         return;
+      }
+      if (companyId) {
+        const refs = [...secretRefsByPath.entries()].flatMap(([secretId, paths]) =>
+          [...paths].map((configPath) => ({ secretId, configPath })),
+        );
+        await secrets.syncSecretRefsForTarget(
+          companyId,
+          { targetType: "plugin", targetId: plugin.id },
+          refs,
+        );
       }
 
       const result = await registry.upsertConfig(plugin.id, {
         configJson: body.configJson,
-      });
+      }, companyId);
       await logPluginMutationActivity(req, "plugin.config.updated", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
+        companyId,
         configKeyCount: Object.keys(body.configJson).length,
       });
 
-      // Notify the running worker about the config change (PLUGIN_SPEC §25.4.4).
-      // If the worker implements onConfigChanged, send the new config via RPC.
-      // If it doesn't (METHOD_NOT_IMPLEMENTED), restart the worker so it picks
-      // up the new config on re-initialize. If no worker is running, skip.
-      if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
+      // Notify the running worker only for legacy/global config changes
+      // (PLUGIN_SPEC §25.4.4). Company-scoped config is read on demand through
+      // ctx.config.get() with runtime company context, so one company's config
+      // is never broadcast as process-global worker state.
+      if (companyId === null && bridgeDeps?.workerManager.isRunning(plugin.id)) {
         try {
           await bridgeDeps.workerManager.call(
             plugin.id,

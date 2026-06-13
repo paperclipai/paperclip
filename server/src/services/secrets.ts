@@ -2067,9 +2067,22 @@ export function secretService(db: Db) {
       }
 
       const pathPrefixes = [...new Set(normalizedRefs.map((ref) => ref.configPath.split(".")[0]))];
+      const configPaths = [...new Set(normalizedRefs.map((ref) => ref.configPath))];
 
       await db.transaction(async (tx) => {
         if (pathPrefixes.length > 0) {
+          if (configPaths.length > 0) {
+            await tx
+              .delete(companySecretBindings)
+              .where(
+                and(
+                  eq(companySecretBindings.companyId, companyId),
+                  eq(companySecretBindings.targetType, target.targetType),
+                  eq(companySecretBindings.targetId, target.targetId),
+                  inArray(companySecretBindings.configPath, configPaths),
+                ),
+              );
+          }
           for (const pathPrefix of pathPrefixes) {
             await tx
               .delete(companySecretBindings)
