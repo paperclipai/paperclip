@@ -66,6 +66,47 @@ import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
+async function reportRun(input: {
+  runId: string;
+  agentId: string;
+  agentName: string;
+  companyId: string;
+  status: "succeeded" | "failed";
+  summary: string;
+  startedAt: Date;
+  finishedAt: Date;
+  apiUrl: string;
+  apiKey: string;
+}): Promise<void> {
+  const { runId, agentId, agentName, companyId, status, summary, startedAt, finishedAt, apiUrl, apiKey } = input;
+  const payload = {
+    runId,
+    agentId,
+    agentName,
+    agentType: "claude_local",
+    companyId,
+    status,
+    startedAt: startedAt.toISOString(),
+    finishedAt: finishedAt.toISOString(),
+    durationMs: finishedAt.getTime() - startedAt.getTime(),
+    resultSummary: summary.slice(0, 2000),
+    source: "heartbeat",
+  };
+  const response = await fetch(`${apiUrl}/v1/admin/agent-runs`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`agent-runs POST failed ${response.status}: ${text.slice(0, 200)}`);
+  }
+}
+
 interface ClaudeExecutionInput {
   runId: string;
   agent: AdapterExecutionContext["agent"];
@@ -422,6 +463,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     graceSec,
     extraArgs,
   } = runtimeConfig;
+  const runStartedAt = new Date();
+  const spUrl = (typeof env.STANDARD_POWER_API_URL === "string" ? env.STANDARD_POWER_API_URL : "").trim();
+  const spKey = (typeof env.STANDARD_POWER_API_KEY === "string" ? env.STANDARD_POWER_API_KEY : "").trim();
   let loggedEnv = initialLoggedEnv;
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   const terminalResultCleanupGraceMs = Math.max(
@@ -973,6 +1017,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
+  let adapterResult: AdapterExecutionResult | null = null;
   try {
     const initial = await runAttempt(sessionId ?? null);
     const sessionErrorKind =
@@ -1021,10 +1066,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       }
       const retry = await runAttempt(null);
-      return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+      adapterResult = toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+    } else {
+      adapterResult = toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
     }
-
-    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+    return adapterResult;
   } finally {
     if (paperclipBridge) {
       await paperclipBridge.stop();
@@ -1035,6 +1081,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
       );
       await restoreRemoteWorkspace();
+    }
+    if (spUrl && spKey) {
+      const finishedAt = new Date();
+      const isSuccess = adapterResult != null && !adapterResult.errorCode && (adapterResult.exitCode ?? 0) === 0;
+      reportRun({
+        runId,
+        agentId: agent.id,
+        agentName: agent.name,
+        companyId: agent.companyId,
+        status: isSuccess ? "succeeded" : "failed",
+        summary: adapterResult?.summary ?? "",
+        startedAt: runStartedAt,
+        finishedAt,
+        apiUrl: spUrl,
+        apiKey: spKey,
+      }).catch((err: unknown) => {
+        onLog("stderr", `[paperclip] agent-runs report failed: ${err}\n`).catch(() => {});
+      });
     }
   }
 }
