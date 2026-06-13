@@ -43,6 +43,7 @@ import { pluginManifestValidator } from "./plugin-manifest-validator.js";
 import { pluginCapabilityValidator } from "./plugin-capability-validator.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import type { PluginWorkerManager, WorkerStartOptions, WorkerToHostHandlers } from "./plugin-worker-manager.js";
+import type { PluginStreamBus, StreamEventType } from "./plugin-stream-bus.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import type { PluginJobScheduler } from "./plugin-job-scheduler.js";
 import type { PluginJobStore } from "./plugin-job-store.js";
@@ -289,6 +290,20 @@ export interface PluginRuntimeServices {
   toolDispatcher: PluginToolDispatcher;
   /** Lifecycle manager for state transitions and worker lifecycle events. */
   lifecycleManager: PluginLifecycleManager;
+  /**
+   * Optional in-memory pub/sub bus for SSE push from worker to UI.
+   *
+   * When provided, the loader wires `onStreamNotification` on each spawned
+   * worker so that `streams.{open,emit,close}` JSON-RPC notifications from
+   * the worker are forwarded to the bus and fanned out to connected SSE
+   * clients matching `(pluginId, channel, companyId)`.
+   *
+   * When omitted, plugin SSE bridge requests return 501; useful for tests
+   * that don't exercise the bridge.
+   *
+   * @see PLUGIN_SPEC.md §19.8 — Real-Time Streaming
+   */
+  streamBus?: PluginStreamBus;
   /**
    * Factory that creates worker-to-host RPC handlers for a given plugin.
    *
@@ -1878,6 +1893,29 @@ export function pluginLoader(
         autoRestart: true,
         env: buildPluginWorkerEnv({ manifest, instanceInfo }),
       };
+
+      // Wire worker→host stream notifications to the runtime stream bus, if
+      // provided. The worker emits `streams.{open,emit,close}` JSON-RPC
+      // notifications; we translate each into a `streamBus.publish` so SSE
+      // clients receive the event. Without this wiring, plugin SSE bridge
+      // endpoints reject subscribers with 501 and stream events are
+      // silently dropped by the worker manager.
+      const streamBus = runtimeServices?.streamBus;
+      if (streamBus) {
+        workerOptions.onStreamNotification = (method, params) => {
+          const channel = typeof params.channel === "string" ? params.channel : null;
+          const companyId = typeof params.companyId === "string" ? params.companyId : null;
+          if (!channel || !companyId) return;
+          let eventType: StreamEventType = "message";
+          if (method === "streams.open") eventType = "open";
+          else if (method === "streams.close") eventType = "close";
+          const payload =
+            method === "streams.emit"
+              ? params.event ?? null
+              : { type: eventType, channel, companyId };
+          streamBus.publish(pluginId, channel, companyId, payload, eventType);
+        };
+      }
 
       // Repo-local plugin installs can resolve workspace TS sources at runtime
       // (for example @paperclipai/shared exports). Run those workers through
