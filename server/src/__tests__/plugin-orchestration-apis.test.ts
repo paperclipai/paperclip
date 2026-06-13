@@ -345,11 +345,15 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     const services = buildHostServices(db, "plugin-record-id", "paperclip.alertmanager", createEventBusStub());
     const originKind = "plugin:paperclip.alertmanager:alert";
     const description = [
-      "Alert labels:",
-      "- alertname: KubePersistentVolumeNearlyFull",
-      "- namespace: paperclip",
-      "- persistentvolumeclaim: postgres-data",
-      "- severity: warning",
+      "**Summary**: PVC almost full",
+      "",
+      "### Labels",
+      "| key | value |",
+      "|-----|-------|",
+      "| alertname | KubePersistentVolumeNearlyFull |",
+      "| namespace | paperclip |",
+      "| persistentvolumeclaim | postgres-data |",
+      "| severity | warning |",
     ].join("\n");
 
     const first = await services.issues.create({
@@ -379,6 +383,39 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     ));
     expect(alertIssues).toHaveLength(1);
     expect(alertIssues[0]?.originFingerprint).toBe(first.originFingerprint);
+  });
+
+  it("deduplicates concurrent plugin-created alert issues by origin fingerprint", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.alertmanager", createEventBusStub());
+    const originKind = "plugin:paperclip.alertmanager:alert";
+    const originFingerprint = "alert:KubePersistentVolumeNearlyFull:namespace=paperclip:persistentvolumeclaim=postgres-data";
+    const createInput = {
+      companyId,
+      title: "KubePersistentVolumeNearlyFull firing for postgres-data",
+      status: "todo" as const,
+      assigneeAgentId: agentId,
+      originKind,
+      originId: "alertmanager:receiver:gstack",
+      originFingerprint,
+      actorAgentId: agentId,
+    };
+
+    const [first, duplicate] = await Promise.all([
+      services.issues.create(createInput),
+      services.issues.create({
+        ...createInput,
+        title: "KubePersistentVolumeNearlyFull concurrent firing for postgres-data",
+      }),
+    ]);
+
+    expect(duplicate.id).toBe(first.id);
+    const alertIssues = await db.select().from(issues).where(and(
+      eq(issues.companyId, companyId),
+      eq(issues.originKind, originKind),
+      eq(issues.originFingerprint, originFingerprint),
+    ));
+    expect(alertIssues).toHaveLength(1);
   });
 
   it("derives distinct alert fingerprints for different alert resources", async () => {
