@@ -23,6 +23,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type CSSProperties,
   type DragEvent as ReactDragEvent,
   type ErrorInfo,
   type Ref,
@@ -137,7 +138,7 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
+import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Copy, Hammer, Loader2, Maximize2, Minimize2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
 import { IssueRecoveryActionCard, type RecoveryResolveOutcome } from "./IssueRecoveryActionCard";
@@ -636,6 +637,10 @@ function isUnassignedReassignValue(value: string): boolean {
 }
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const LONG_MARKDOWN_PAGE_CHAR_LIMIT = 5_000;
+const LONG_MARKDOWN_PAGE_LINE_LIMIT = 80;
+const LONG_MARKDOWN_PAGINATION_CHAR_THRESHOLD = 7_000;
+const LONG_MARKDOWN_PAGINATION_LINE_THRESHOLD = 100;
 
 function commentDateLabel(date: Date | string | undefined): string {
   if (!date) return "";
@@ -644,21 +649,199 @@ function commentDateLabel(date: Date | string | undefined): string {
   return formatShortDate(date);
 }
 
+function shouldPaginateMarkdownText(text: string): boolean {
+  if (text.length > LONG_MARKDOWN_PAGINATION_CHAR_THRESHOLD) return true;
+  return text.split("\n").length > LONG_MARKDOWN_PAGINATION_LINE_THRESHOLD;
+}
+
+function getFenceMarker(line: string): string | null {
+  return line.match(/^\s*(```+|~~~+)/)?.[1] ?? null;
+}
+
+function chunkLongMarkdownLine(line: string): string[] {
+  if (line.length <= LONG_MARKDOWN_PAGE_CHAR_LIMIT) return [line];
+  const chunks: string[] = [];
+  for (let index = 0; index < line.length; index += LONG_MARKDOWN_PAGE_CHAR_LIMIT) {
+    chunks.push(line.slice(index, index + LONG_MARKDOWN_PAGE_CHAR_LIMIT));
+  }
+  return chunks;
+}
+
+function paginateMarkdownText(text: string): string[] {
+  if (!shouldPaginateMarkdownText(text)) return [text];
+
+  const pages: string[] = [];
+  let currentLines: string[] = [];
+  let currentChars = 0;
+  let inFence = false;
+  let fenceOpenLine: string | null = null;
+  let fenceCloseMarker: string | null = null;
+
+  const flush = (continueFence = false) => {
+    if (currentLines.length === 0) return;
+    if (continueFence && fenceCloseMarker) {
+      currentLines.push(fenceCloseMarker);
+    }
+    pages.push(currentLines.join("\n"));
+    currentLines = [];
+    currentChars = 0;
+    if (continueFence && fenceOpenLine) {
+      currentLines = [fenceOpenLine];
+      currentChars = fenceOpenLine.length + 1;
+    }
+  };
+
+  for (const originalLine of text.split("\n")) {
+    const lineChunks = chunkLongMarkdownLine(originalLine);
+    for (const line of lineChunks) {
+      const lineChars = line.length + 1;
+      const fenceMarker = getFenceMarker(line);
+      const isClosingFence = inFence && fenceMarker !== null;
+      const isOpeningFence = !inFence && fenceMarker !== null;
+      const shouldStartNextPage =
+        currentLines.length > 0
+        && (
+          currentLines.length >= LONG_MARKDOWN_PAGE_LINE_LIMIT
+          || currentChars + lineChars > LONG_MARKDOWN_PAGE_CHAR_LIMIT
+        );
+
+      if (shouldStartNextPage) flush(inFence && !isClosingFence);
+
+      currentLines.push(line);
+      currentChars += lineChars;
+
+      if (isOpeningFence) {
+        inFence = true;
+        fenceOpenLine = line;
+        fenceCloseMarker = fenceMarker;
+      } else if (isClosingFence) {
+        inFence = false;
+        fenceOpenLine = null;
+        fenceCloseMarker = null;
+      }
+    }
+  }
+
+  flush();
+  return pages.length > 0 ? pages : [text];
+}
+
+function formatCompactCount(value: number, unit: string): string {
+  return `${value.toLocaleString()} ${unit}`;
+}
+
+function IssueChatMarkdownText({
+  text,
+  className,
+  style,
+  softBreaks = true,
+  onImageClick,
+  resolveImageSrc,
+}: {
+  text: string;
+  className?: string;
+  style?: CSSProperties;
+  softBreaks?: boolean;
+  onImageClick?: (src: string) => void;
+  resolveImageSrc?: (src: string) => string | null;
+}) {
+  const pages = useMemo(() => paginateMarkdownText(text), [text]);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [showAll, setShowAll] = useState(false);
+
+  useEffect(() => {
+    setPageIndex(0);
+    setShowAll(false);
+  }, [text]);
+
+  if (pages.length <= 1) {
+    return (
+      <MarkdownBody
+        className={className}
+        style={style}
+        softBreaks={softBreaks}
+        onImageClick={onImageClick}
+        resolveImageSrc={resolveImageSrc}
+      >
+        {text}
+      </MarkdownBody>
+    );
+  }
+
+  const clampedPageIndex = Math.min(pageIndex, pages.length - 1);
+  const visibleText = showAll ? text : pages[clampedPageIndex];
+  const lineCount = text.split("\n").length;
+
+  return (
+    <div className="min-w-0 space-y-2" data-testid="issue-chat-long-markdown">
+      <MarkdownBody
+        className={className}
+        style={style}
+        softBreaks={softBreaks}
+        onImageClick={onImageClick}
+        resolveImageSrc={resolveImageSrc}
+      >
+        {visibleText}
+      </MarkdownBody>
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5 border-t border-border/60 pt-2 text-xs text-muted-foreground">
+        <span className="mr-auto min-w-0">
+          Long comment · {showAll ? "full text" : `page ${clampedPageIndex + 1} of ${pages.length}`} ·{" "}
+          {formatCompactCount(lineCount, lineCount === 1 ? "line" : "lines")} ·{" "}
+          {formatCompactCount(text.length, text.length === 1 ? "char" : "chars")}
+        </span>
+        {!showAll ? (
+          <>
+            <button
+              type="button"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-45"
+              title="Previous page"
+              aria-label="Previous long comment page"
+              disabled={clampedPageIndex === 0}
+              onClick={() => setPageIndex((value) => Math.max(0, value - 1))}
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-45"
+              title="Next page"
+              aria-label="Next long comment page"
+              disabled={clampedPageIndex >= pages.length - 1}
+              onClick={() => setPageIndex((value) => Math.min(pages.length - 1, value + 1))}
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </>
+        ) : null}
+        <button
+          type="button"
+          className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          title={showAll ? "Return to paginated view" : "Show full comment"}
+          aria-label={showAll ? "Return to paginated long comment view" : "Show full long comment"}
+          onClick={() => setShowAll((value) => !value)}
+        >
+          {showAll ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+          <span>{showAll ? "Pages" : "Show all"}</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed }: { text: string; recessed?: boolean }) {
   const { onImageClick, resolveImageSrc } = useContext(IssueChatCtx);
   if (isSuccessfulRunHandoffComment(text)) {
     return <SuccessfulRunHandoffCommentCallout text={text} recessed={recessed} onImageClick={onImageClick} />;
   }
   return (
-    <MarkdownBody
+    <IssueChatMarkdownText
+      text={text}
       className="text-sm leading-6"
       style={recessed ? { opacity: 0.55 } : undefined}
       softBreaks
       onImageClick={onImageClick}
       resolveImageSrc={resolveImageSrc}
-    >
-      {text}
-    </MarkdownBody>
+    />
   );
 });
 
@@ -689,9 +872,12 @@ export function SuccessfulRunHandoffCommentCallout({
             escalated ? "text-red-600 dark:text-red-300" : "text-amber-600 dark:text-amber-300",
           )}
         />
-        <MarkdownBody className="min-w-0 text-sm leading-6" softBreaks onImageClick={onImageClick}>
-          {text}
-        </MarkdownBody>
+        <IssueChatMarkdownText
+          text={text}
+          className="min-w-0 text-sm leading-6"
+          softBreaks
+          onImageClick={onImageClick}
+        />
       </div>
     </div>
   );
@@ -2381,9 +2567,12 @@ function SystemNoticeCommentRow({
     presentation,
     metadata: commentMetadata,
     body: (
-      <MarkdownBody className="text-sm leading-6" softBreaks onImageClick={onImageClick}>
-        {bodyText}
-      </MarkdownBody>
+      <IssueChatMarkdownText
+        text={bodyText}
+        className="text-sm leading-6"
+        softBreaks
+        onImageClick={onImageClick}
+      />
     ),
     timestamp: message.createdAt ? new Date(message.createdAt).toISOString() : undefined,
     source,
