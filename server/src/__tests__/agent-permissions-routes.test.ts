@@ -978,6 +978,223 @@ describe.sequential("agent permission routes", () => {
     );
   });
 
+  it("inherits same-gateway OpenClaw credentials when an agent creates a child agent", async () => {
+    const parentGatewayConfig = {
+      url: "ws://127.0.0.1:18790",
+      headers: {
+        "x-openclaw-token": "parent-gateway-token-1234567890",
+        "x-extra-header": "do-not-inherit",
+      },
+      paperclipApiUrl: "http://127.0.0.1:3100",
+      timeoutSec: 7200,
+      waitTimeoutMs: 7_200_000,
+      role: "operator",
+      scopes: ["operator.admin"],
+      devicePrivateKeyPem: "PARENT_DEVICE_KEY",
+      payloadTemplate: { parent: true },
+      agentId: "parent-agent-id",
+      sessionKey: "parent-session-key",
+      sessionKeyStrategy: "fixed",
+    };
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterType: "openclaw_gateway",
+      adapterConfig: parentGatewayConfig,
+      permissions: { canCreateAgents: true },
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "CMO",
+        role: "cmo",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {},
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createInput = mockAgentService.create.mock.calls[0]?.[1] as { adapterConfig?: Record<string, unknown> };
+    expect(createInput.adapterConfig).toMatchObject({
+      url: "ws://127.0.0.1:18790",
+      headers: { "x-openclaw-token": "parent-gateway-token-1234567890" },
+      paperclipApiUrl: "http://127.0.0.1:3100",
+      timeoutSec: 7200,
+      waitTimeoutMs: 7_200_000,
+      role: "operator",
+      scopes: ["operator.admin"],
+      sessionKeyStrategy: "issue",
+    });
+    expect(createInput.adapterConfig?.headers).not.toHaveProperty("x-extra-header");
+    expect(createInput.adapterConfig?.devicePrivateKeyPem).toEqual(expect.stringContaining("BEGIN PRIVATE KEY"));
+    expect(createInput.adapterConfig?.devicePrivateKeyPem).not.toBe("PARENT_DEVICE_KEY");
+    expect(createInput.adapterConfig).not.toHaveProperty("payloadTemplate");
+    expect(createInput.adapterConfig).not.toHaveProperty("agentId");
+    expect(createInput.adapterConfig).not.toHaveProperty("sessionKey");
+  });
+
+  it("preserves explicit OpenClaw child credentials over same-gateway inheritance", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterType: "openclaw_gateway",
+      adapterConfig: {
+        url: "ws://parent-gateway.local",
+        headers: { "x-openclaw-token": "parent-gateway-token-1234567890" },
+        timeoutSec: 7200,
+        waitTimeoutMs: 7_200_000,
+        role: "parent-role",
+        scopes: ["operator.admin"],
+      },
+      permissions: { canCreateAgents: true },
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "CMO",
+        role: "cmo",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: "ws://child-gateway.local",
+          headers: { "x-openclaw-token": "explicit-child-token-1234567890" },
+          timeoutSec: 300,
+          role: "child-role",
+          scopes: ["operator.read"],
+          sessionKeyStrategy: "run",
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createInput = mockAgentService.create.mock.calls[0]?.[1] as { adapterConfig?: Record<string, unknown> };
+    expect(createInput.adapterConfig).toMatchObject({
+      url: "ws://child-gateway.local",
+      headers: { "x-openclaw-token": "explicit-child-token-1234567890" },
+      timeoutSec: 300,
+      waitTimeoutMs: 7_200_000,
+      role: "child-role",
+      scopes: ["operator.read"],
+      sessionKeyStrategy: "run",
+    });
+  });
+
+  it("rejects agent-created OpenClaw children without explicit or inheritable gateway auth", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterType: "openclaw_gateway",
+      adapterConfig: { url: "ws://127.0.0.1:18790" },
+      permissions: { canCreateAgents: true },
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "CMO",
+        role: "cmo",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {},
+      }));
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("openclaw_gateway_auth_header_missing");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("inherits same-gateway OpenClaw credentials before persisting an agent hire approval payload", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterType: "openclaw_gateway",
+      adapterConfig: {
+        url: "ws://127.0.0.1:18790",
+        headers: { "x-openclaw-token": "parent-gateway-token-1234567890" },
+        paperclipApiUrl: "http://127.0.0.1:3100",
+        timeoutSec: 7200,
+        waitTimeoutMs: 7_200_000,
+        role: "operator",
+        scopes: ["operator.admin"],
+        devicePrivateKeyPem: "PARENT_DEVICE_KEY",
+      },
+      permissions: { canCreateAgents: true },
+    });
+    mockApprovalService.create.mockResolvedValue({
+      id: "approval-1",
+      type: "hire_agent",
+      status: "pending",
+    });
+
+    const app = await createApp(
+      {
+        type: "agent",
+        agentId,
+        companyId,
+        source: "agent_key",
+        runId: "run-1",
+      },
+      { requireBoardApprovalForNewAgents: true },
+    );
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "CMO",
+        role: "cmo",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {},
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createInput = mockAgentService.create.mock.calls[0]?.[1] as { adapterConfig?: Record<string, unknown> };
+    expect(createInput.adapterConfig).toMatchObject({
+      url: "ws://127.0.0.1:18790",
+      headers: { "x-openclaw-token": "parent-gateway-token-1234567890" },
+      paperclipApiUrl: "http://127.0.0.1:3100",
+      timeoutSec: 7200,
+      waitTimeoutMs: 7_200_000,
+      role: "operator",
+      scopes: ["operator.admin"],
+      sessionKeyStrategy: "issue",
+    });
+    expect(createInput.adapterConfig?.devicePrivateKeyPem).toEqual(expect.stringContaining("BEGIN PRIVATE KEY"));
+    expect(createInput.adapterConfig?.devicePrivateKeyPem).not.toBe("PARENT_DEVICE_KEY");
+    expect(mockApprovalService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          adapterType: "openclaw_gateway",
+          requestedConfigurationSnapshot: expect.objectContaining({
+            adapterType: "openclaw_gateway",
+          }),
+        }),
+      }),
+    );
+  });
+
   it("seeds opencode agent creation with the static default model without live discovery", async () => {
     mockEnsureOpenCodeModelConfiguredAndAvailable.mockRejectedValue(
       new Error("`opencode models` should not be called during creation"),

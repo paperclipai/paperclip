@@ -957,6 +957,126 @@ export function agentRoutes(
     return trimmed.length > 0 ? trimmed : null;
   }
 
+  const OPENCLAW_GATEWAY_AUTH_HEADER_KEYS = [
+    "x-openclaw-token",
+    "x-openclaw-auth",
+    "authorization",
+  ] as const;
+  const OPENCLAW_GATEWAY_TOP_LEVEL_AUTH_KEYS = [
+    "authToken",
+    "token",
+    "password",
+  ] as const;
+  const OPENCLAW_GATEWAY_INHERITED_CONFIG_KEYS = [
+    "url",
+    "paperclipApiUrl",
+    "timeoutSec",
+    "waitTimeoutMs",
+    "role",
+    "scopes",
+  ] as const;
+
+  function findHeaderValueIgnoreCase(
+    headers: Record<string, unknown> | null,
+    targetKey: string,
+  ): { key: string; value: string } | null {
+    if (!headers) return null;
+    const target = targetKey.toLowerCase();
+    for (const [key, value] of Object.entries(headers)) {
+      if (key.toLowerCase() !== target) continue;
+      const normalized = asNonEmptyString(value);
+      if (normalized) return { key, value: normalized };
+    }
+    return null;
+  }
+
+  function hasOpenClawGatewayHeaderAuth(headers: Record<string, unknown> | null): boolean {
+    return OPENCLAW_GATEWAY_AUTH_HEADER_KEYS.some((key) =>
+      Boolean(findHeaderValueIgnoreCase(headers, key)),
+    );
+  }
+
+  function hasOpenClawGatewayAuth(adapterConfig: Record<string, unknown>): boolean {
+    if (hasOpenClawGatewayHeaderAuth(asRecord(adapterConfig.headers))) return true;
+    return OPENCLAW_GATEWAY_TOP_LEVEL_AUTH_KEYS.some((key) =>
+      Boolean(asNonEmptyString(adapterConfig[key])),
+    );
+  }
+
+  function cloneInheritedAdapterConfigValue(value: unknown): unknown {
+    return Array.isArray(value) ? [...value] : value;
+  }
+
+  function mergeInheritedOpenClawGatewayAuthHeaders(
+    childHeaders: Record<string, unknown> | null,
+    parentHeaders: Record<string, unknown> | null,
+  ): Record<string, unknown> | null {
+    if (!parentHeaders) return childHeaders;
+    const inheritedEntries: Array<[string, string]> = [];
+    for (const key of OPENCLAW_GATEWAY_AUTH_HEADER_KEYS) {
+      const entry = findHeaderValueIgnoreCase(parentHeaders, key);
+      if (entry) inheritedEntries.push([key, entry.value]);
+    }
+    if (inheritedEntries.length === 0) return childHeaders;
+    const nextHeaders = { ...(childHeaders ?? {}) };
+    for (const [key, value] of inheritedEntries) {
+      if (!findHeaderValueIgnoreCase(nextHeaders, key)) {
+        nextHeaders[key] = value;
+      }
+    }
+    return nextHeaders;
+  }
+
+  function applySameGatewayOpenClawInheritance(input: {
+    adapterType: string;
+    adapterConfig: Record<string, unknown>;
+    actorAgent: NonNullable<Awaited<ReturnType<typeof svc.getById>>> | null;
+  }): Record<string, unknown> {
+    if (input.adapterType !== "openclaw_gateway" || !input.actorAgent) {
+      return input.adapterConfig;
+    }
+
+    const next = { ...input.adapterConfig };
+    const parentConfig =
+      input.actorAgent.adapterType === "openclaw_gateway"
+        ? (asRecord(input.actorAgent.adapterConfig) ?? {})
+        : {};
+
+    for (const key of OPENCLAW_GATEWAY_INHERITED_CONFIG_KEYS) {
+      if (next[key] === undefined && parentConfig[key] !== undefined) {
+        next[key] = cloneInheritedAdapterConfigValue(parentConfig[key]);
+      }
+    }
+
+    const childHadAuth = hasOpenClawGatewayAuth(next);
+    if (!childHadAuth) {
+      for (const key of OPENCLAW_GATEWAY_TOP_LEVEL_AUTH_KEYS) {
+        if (next[key] === undefined && parentConfig[key] !== undefined) {
+          next[key] = parentConfig[key];
+        }
+      }
+      const mergedHeaders = mergeInheritedOpenClawGatewayAuthHeaders(
+        asRecord(next.headers),
+        asRecord(parentConfig.headers),
+      );
+      if (mergedHeaders) {
+        next.headers = mergedHeaders;
+      }
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(next, "sessionKeyStrategy")) {
+      next.sessionKeyStrategy = "issue";
+    }
+
+    if (!hasOpenClawGatewayAuth(next)) {
+      throw unprocessable(
+        "openclaw_gateway_auth_header_missing: agent-created openclaw_gateway children require explicit gateway credentials or an inheritable creator adapterConfig.headers.x-openclaw-token",
+      );
+    }
+
+    return next;
+  }
+
   function preserveInstructionsBundleConfig(
     existingAdapterConfig: Record<string, unknown>,
     nextAdapterConfig: Record<string, unknown>,
@@ -2141,7 +2261,7 @@ export function agentRoutes(
 
   router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    await assertCanCreateAgentsForCompany(req, companyId);
+    const actorAgent = await assertCanCreateAgentsForCompany(req, companyId);
     const sourceIssueIds = parseSourceIssueIds(req.body);
     const {
       desiredSkills: requestedDesiredSkills,
@@ -2158,9 +2278,14 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
+    const inheritedHireAdapterConfig = applySameGatewayOpenClawInheritance({
+      adapterType: hireInput.adapterType,
+      adapterConfig: rawHireAdapterConfig,
+      actorAgent,
+    });
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       hireInput.adapterType,
-      rawHireAdapterConfig,
+      inheritedHireAdapterConfig,
     );
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
@@ -2314,7 +2439,7 @@ export function agentRoutes(
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    await assertCanCreateAgentsForCompany(req, companyId);
+    const actorAgent = await assertCanCreateAgentsForCompany(req, companyId);
 
     const company = await db
       .select()
@@ -2344,9 +2469,14 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
+    const inheritedCreateAdapterConfig = applySameGatewayOpenClawInheritance({
+      adapterType: createInput.adapterType,
+      adapterConfig: rawCreateAdapterConfig,
+      actorAgent,
+    });
     const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       createInput.adapterType,
-      rawCreateAdapterConfig,
+      inheritedCreateAdapterConfig,
     );
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
