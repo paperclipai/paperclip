@@ -5064,6 +5064,13 @@ export function issueRoutes(
       actorType: req.actor.type,
     });
 
+    // Reset gate-block counter when deliverableType changes — the issue may now satisfy
+    // previously-blocked gates (e.g. deliverable_type_required or verification_target_required).
+    const existingDeliverableType = (existing as unknown as { deliverableType: string | null }).deliverableType ?? null;
+    if (req.body.deliverableType !== undefined && req.body.deliverableType !== existingDeliverableType) {
+      (updateFields as Record<string, unknown>).gateBlockCount = 0;
+    }
+
     const nextAssigneeAgentId =
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);
     const nextAssigneeUserId =
