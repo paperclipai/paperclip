@@ -14,6 +14,21 @@ export interface ErrorContext {
   reqQuery?: unknown;
 }
 
+// Postgres invalid_text_representation — typically a non-UUID string handed to a uuid
+// column. Surface as a structured 400 so callers get actionable feedback instead of
+// a silent 500. See ROCAA-33.
+function postgresInvalidTextRepresentation(err: unknown):
+  | { message: string; where: string | null }
+  | null {
+  if (typeof err !== "object" || err === null) return null;
+  const e = err as { name?: unknown; code?: unknown; message?: unknown; where?: unknown };
+  if (e.name !== "PostgresError") return null;
+  if (e.code !== "22P02") return null;
+  const message = typeof e.message === "string" ? e.message : "Invalid input";
+  const where = typeof e.where === "string" ? e.where : null;
+  return { message, where };
+}
+
 function attachErrorContext(
   req: Request,
   res: Response,
@@ -59,6 +74,15 @@ export function errorHandler(
 
   if (err instanceof ZodError) {
     res.status(400).json({ error: "Validation error", details: err.errors });
+    return;
+  }
+
+  const pgInvalidText = postgresInvalidTextRepresentation(err);
+  if (pgInvalidText) {
+    res.status(400).json({
+      error: "bad_uuid_input",
+      details: { message: pgInvalidText.message, where: pgInvalidText.where },
+    });
     return;
   }
 

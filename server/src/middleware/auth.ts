@@ -5,6 +5,7 @@ import type { Db } from "@paperclipai/db";
 import { agentApiKeys, agents, authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import type { DeploymentMode } from "@paperclipai/shared";
+import { isUuidLike } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
@@ -34,7 +35,24 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    const rawRunIdHeader = req.header("x-paperclip-run-id");
+    let runIdHeader: string | undefined;
+    if (rawRunIdHeader === undefined) {
+      runIdHeader = undefined;
+    } else if (isUuidLike(rawRunIdHeader)) {
+      runIdHeader = rawRunIdHeader;
+    } else {
+      runIdHeader = undefined;
+      logger.warn(
+        {
+          rawRunIdHeader,
+          method: req.method,
+          url: req.originalUrl,
+          ua: req.header("user-agent") ?? null,
+        },
+        "Rejecting non-UUID X-Paperclip-Run-Id header",
+      );
+    }
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
