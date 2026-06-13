@@ -9,6 +9,7 @@ import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-ru
 import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv } from "../server/src/dev-runner-worktree.ts";
+import { ensureDevAgentJwtSecret } from "../server/src/dev-jwt-bootstrap.ts";
 import {
   findAdoptableLocalService,
   removeLocalServiceRegistryRecord,
@@ -27,6 +28,15 @@ if (worktreeEnvBootstrap.missingEnv) {
     `[paperclip] linked git worktree at ${repoRoot} is missing ${path.relative(repoRoot, worktreeEnvBootstrap.envPath)}. Run \`paperclipai worktree init\` in this worktree before \`pnpm dev\`.`,
   );
   process.exit(1);
+}
+
+const devJwtBootstrap = ensureDevAgentJwtSecret(process.env);
+if (devJwtBootstrap.action === "generated") {
+  process.env.PAPERCLIP_AGENT_JWT_EPHEMERAL = "1";
+  console.log(
+    "[paperclip] Generated ephemeral PAPERCLIP_AGENT_JWT_SECRET for this dev session " +
+      "(not persisted; regenerated on next boot — set the env var or run `paperclipai onboard` for a stable secret).",
+  );
 }
 
 const mode = process.argv[2] === "watch" ? "watch" : "dev";
