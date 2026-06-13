@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, not, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -580,6 +580,41 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ]);
 
     return Boolean(run || deferredWake);
+  }
+
+  // Returns true when another issue (typically a child reset/recovery run) currently
+  // holds an active executionRunId on the same execution workspace as `issueId`.
+  // This guards against retrying the parent/source issue while a child run still owns
+  // the worktree — the race described in FUL-11071 where FUL-11070 held the workspace
+  // while FUL-11055's recovery tried to re-enter and got adapter_failed in a loop.
+  async function hasActiveRunOnSharedExecutionWorkspace(
+    companyId: string,
+    excludeIssueId: string,
+    executionWorkspaceId: string,
+  ): Promise<{ held: boolean; byIssueId?: string; byRunId?: string }> {
+    const row = await db
+      .select({ issueId: issues.id, runId: heartbeatRuns.id })
+      .from(issues)
+      .innerJoin(
+        heartbeatRuns,
+        and(
+          eq(heartbeatRuns.id, issues.executionRunId),
+          eq(heartbeatRuns.companyId, issues.companyId),
+        ),
+      )
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.executionWorkspaceId, executionWorkspaceId),
+          isNull(issues.hiddenAt),
+          not(eq(issues.id, excludeIssueId)),
+          inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!row) return { held: false };
+    return { held: true, byIssueId: row.issueId, byRunId: row.runId };
   }
 
   async function hasPendingWakeInteraction(companyId: string, issueId: string) {
@@ -2685,6 +2720,38 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
         result.skipped += 1;
         continue;
+      }
+
+      // Defer retry when a child/reset run still holds the shared execution workspace.
+      // Retrying the parent while the child owns the worktree produces an
+      // adapter_failed loop (FUL-11071). Skip for now; the reconciler will re-evaluate
+      // on the next cycle once the child run releases its executionRunId.
+      if (issue.executionWorkspaceId) {
+        const workspaceHold = await hasActiveRunOnSharedExecutionWorkspace(
+          issue.companyId,
+          issue.id,
+          issue.executionWorkspaceId,
+        );
+        if (workspaceHold.held) {
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: null,
+            runId: null,
+            action: "issue.recovery.stranded_workspace_held_skip",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              identifier: issue.identifier,
+              executionWorkspaceId: issue.executionWorkspaceId,
+              heldByIssueId: workspaceHold.byIssueId,
+              heldByRunId: workspaceHold.byRunId,
+            },
+          });
+          result.skipped += 1;
+          continue;
+        }
       }
 
       if (await hasPendingWakeInteraction(issue.companyId, issue.id)) {
