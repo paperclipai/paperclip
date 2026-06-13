@@ -2643,7 +2643,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
-  async function reconcileStrandedAssignedIssues() {
+  async function reconcileStrandedAssignedIssues(opts?: {
+    maxRecoveries?: number;
+    maxActiveRunsPerCompany?: number;
+  }) {
     const candidates = await db
       .select()
       .from(issues)
@@ -2668,8 +2671,50 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       skipped: 0,
       issueIds: [] as string[],
     };
+    const maxRecoveries = opts?.maxRecoveries === undefined
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0, Math.floor(opts.maxRecoveries));
+    const maxActiveRunsPerCompany = opts?.maxActiveRunsPerCompany === undefined
+      ? undefined
+      : Math.max(0, Math.floor(opts.maxActiveRunsPerCompany));
+    const activeRunCountsByCompany = new Map<string, number>();
+    const getActiveRunCount = async (companyId: string) => {
+      const cached = activeRunCountsByCompany.get(companyId);
+      if (cached !== undefined) return cached;
+      const [row] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+        ));
+      const count = Number(row?.count ?? 0);
+      activeRunCountsByCompany.set(companyId, count);
+      return count;
+    };
+    const canEnqueueRecoveryForCompany = async (companyId: string) => {
+      if (maxActiveRunsPerCompany === undefined) return true;
+      return (await getActiveRunCount(companyId)) < maxActiveRunsPerCompany;
+    };
+    const noteEnqueuedRecoveryForCompany = (companyId: string) => {
+      if (maxActiveRunsPerCompany === undefined) return;
+      activeRunCountsByCompany.set(
+        companyId,
+        (activeRunCountsByCompany.get(companyId) ?? 0) + 1,
+      );
+    };
 
     for (const issue of candidates) {
+      if (result.issueIds.length >= maxRecoveries) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (!(await canEnqueueRecoveryForCompany(issue.companyId))) {
+        result.skipped += 1;
+        continue;
+      }
+
       const agentId = issue.assigneeAgentId;
       if (!agentId) {
         result.skipped += 1;
@@ -2729,6 +2774,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           if (queued) {
             result.assignmentDispatched += 1;
             result.issueIds.push(issue.id);
+            noteEnqueuedRecoveryForCompany(issue.companyId);
           } else {
             result.skipped += 1;
           }
@@ -2776,6 +2822,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         if (queued) {
           result.dispatchRequeued += 1;
           result.issueIds.push(issue.id);
+          noteEnqueuedRecoveryForCompany(issue.companyId);
         } else {
           result.skipped += 1;
         }
@@ -2864,6 +2911,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         if (queued) {
           result.continuationRequeued += 1;
           result.issueIds.push(issue.id);
+          noteEnqueuedRecoveryForCompany(issue.companyId);
         } else {
           result.skipped += 1;
         }
@@ -2950,15 +2998,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (queued) {
         result.continuationRequeued += 1;
         result.issueIds.push(issue.id);
+        noteEnqueuedRecoveryForCompany(issue.companyId);
       } else {
         result.skipped += 1;
       }
     }
 
-    const orphanBlockerRecovery = await reconcileUnassignedBlockingIssues();
-    result.orphanBlockersAssigned = orphanBlockerRecovery.assigned;
-    result.skipped += orphanBlockerRecovery.skipped;
-    result.issueIds.push(...orphanBlockerRecovery.issueIds);
+    if (result.issueIds.length < maxRecoveries) {
+      const orphanBlockerRecovery = await reconcileUnassignedBlockingIssues();
+      result.orphanBlockersAssigned = orphanBlockerRecovery.assigned;
+      result.skipped += orphanBlockerRecovery.skipped;
+      result.issueIds.push(...orphanBlockerRecovery.issueIds);
+    }
 
     return result;
   }
