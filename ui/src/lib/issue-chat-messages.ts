@@ -99,6 +99,27 @@ export interface StableThreadMessageCacheEntry {
   message: ThreadMessage;
 }
 
+export type AssistantTranscriptDerivation = {
+  parts: Array<TextMessagePart | ReasoningMessagePart | ToolCallMessagePart<JsonObject, unknown>>;
+  notices: string[];
+  segments: SegmentTiming[];
+};
+
+type CachedTranscriptDerivation = AssistantTranscriptDerivation & {
+  transcript: readonly IssueChatTranscriptEntry[];
+  signature: string;
+};
+
+export interface IssueChatMessageBuildCache {
+  transcriptDerivationsByRunKey: Map<string, CachedTranscriptDerivation>;
+}
+
+export function createIssueChatMessageBuildCache(): IssueChatMessageBuildCache {
+  return {
+    transcriptDerivationsByRunKey: new Map(),
+  };
+}
+
 function toDate(value: Date | string | null | undefined) {
   return value instanceof Date ? value : new Date(value ?? Date.now());
 }
@@ -107,8 +128,76 @@ function toTimestamp(value: Date | string | null | undefined) {
   return toDate(value).getTime();
 }
 
+function hashString(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function fingerprintText(value: string | undefined | null) {
+  const text = value ?? "";
+  return `${text.length}:${hashString(text)}`;
+}
+
+function fingerprintUnknown(value: unknown, seen = new WeakSet<object>()): string {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (typeof value === "string") return `s:${fingerprintText(value)}`;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return `${typeof value}:${String(value)}`;
+  }
+  if (value instanceof Date) return `date:${value.toISOString()}`;
+  if (Array.isArray(value)) {
+    return `a:${value.length}:${value.map((entry) => fingerprintUnknown(entry, seen)).join("|")}`;
+  }
+  if (typeof value === "object") {
+    if (seen.has(value)) return "circular";
+    seen.add(value);
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    return `o:${keys.length}:${keys.map((key) => `${key}=${fingerprintUnknown(record[key], seen)}`).join("|")}`;
+  }
+  return `${typeof value}:${String(value)}`;
+}
+
+function fingerprintMessageContentPart(part: ThreadMessage["content"][number]) {
+  if (part.type === "text" || part.type === "reasoning") {
+    return [
+      part.type,
+      `parent:${"parentId" in part ? part.parentId ?? "" : ""}`,
+      fingerprintText(part.text),
+    ].join(":");
+  }
+  if (part.type === "tool-call") {
+    return [
+      part.type,
+      `id:${part.toolCallId}`,
+      `name:${part.toolName}`,
+      `args:${fingerprintText(part.argsText)}`,
+      `result:${fingerprintUnknown(part.result)}`,
+      `error:${part.isError === true}`,
+    ].join(":");
+  }
+  return fingerprintUnknown(part);
+}
+
 function fingerprintThreadMessage(message: ThreadMessage) {
-  return JSON.stringify(message);
+  const metadata = message.metadata as { custom?: unknown } | undefined;
+  const contentFingerprint = message.content.map(fingerprintMessageContentPart).join(";");
+  const status = "status" in message ? fingerprintUnknown(message.status) : "none";
+  const attachments = "attachments" in message ? fingerprintUnknown(message.attachments) : "none";
+  return [
+    `id:${message.id}`,
+    `role:${message.role}`,
+    `created:${toTimestamp(message.createdAt)}`,
+    `status:${status}`,
+    `content:${message.content.length}:${contentFingerprint}`,
+    `attachments:${attachments}`,
+    `custom:${fingerprintUnknown(metadata?.custom)}`,
+  ].join("|");
 }
 
 export function stabilizeThreadMessages(
@@ -278,6 +367,10 @@ function isIssueChatRenderableTranscriptEntry(entry: IssueChatTranscriptEntry) {
     && entry.kind !== "system";
 }
 
+function countIssueChatRenderableTranscriptEntries(entries: readonly IssueChatTranscriptEntry[]): number {
+  return entries.filter(isIssueChatRenderableTranscriptEntry).length;
+}
+
 function compactIssueChatTranscript(
   entries: readonly IssueChatTranscriptEntry[],
   maxVisibleEntries = ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES,
@@ -325,6 +418,64 @@ function compactIssueChatTranscript(
 
   const compactedEntries = entries.filter((_entry, index) => keptFullIndices.has(index));
   return compactedEntries;
+}
+
+function fingerprintTranscriptEntry(entry: IssueChatTranscriptEntry) {
+  return [
+    entry.kind,
+    entry.ts,
+    `text:${fingerprintText(entry.text)}`,
+    `content:${fingerprintText(entry.content)}`,
+    `toolUse:${entry.toolUseId ?? ""}`,
+    `tool:${entry.toolName ?? entry.name ?? ""}`,
+    `input:${fingerprintUnknown(entry.input)}`,
+    `error:${entry.isError === true}`,
+    `errors:${fingerprintUnknown(entry.errors)}`,
+    `change:${entry.changeType ?? ""}`,
+    `subtype:${entry.subtype ?? ""}`,
+  ].join("|");
+}
+
+function fingerprintCompactedTranscript(
+  sourceEntries: readonly IssueChatTranscriptEntry[],
+  compactedEntries: readonly IssueChatTranscriptEntry[],
+) {
+  return [
+    `source:${sourceEntries.length}`,
+    `visible:${compactedEntries.length}`,
+    ...compactedEntries.map(fingerprintTranscriptEntry),
+  ].join(";");
+}
+
+export function deriveIssueChatTranscriptParts(args: {
+  cache?: IssueChatMessageBuildCache;
+  runKey: string;
+  transcript: readonly IssueChatTranscriptEntry[];
+}): AssistantTranscriptDerivation {
+  const { cache, runKey, transcript } = args;
+  const cached = cache?.transcriptDerivationsByRunKey.get(runKey);
+  if (cached?.transcript === transcript) {
+    return cached;
+  }
+
+  const compactedTranscript = compactIssueChatTranscript(transcript);
+  const signature = fingerprintCompactedTranscript(transcript, compactedTranscript);
+  if (cached?.signature === signature) {
+    const nextCached = {
+      ...cached,
+      transcript,
+    };
+    cache?.transcriptDerivationsByRunKey.set(runKey, nextCached);
+    return nextCached;
+  }
+
+  const derived = buildAssistantPartsFromTranscript(compactedTranscript);
+  cache?.transcriptDerivationsByRunKey.set(runKey, {
+    ...derived,
+    transcript,
+    signature,
+  });
+  return derived;
 }
 
 function createAssistantMetadata(custom: Record<string, unknown>) {
@@ -643,11 +794,21 @@ function createHistoricalTranscriptMessage(args: {
   transcript: readonly IssueChatTranscriptEntry[];
   hasOutput: boolean;
   agentMap?: Map<string, Agent>;
+  buildCache?: IssueChatMessageBuildCache;
+  lazyRender?: boolean;
 }) {
-  const { run, transcript, hasOutput, agentMap } = args;
+  const { run, transcript, hasOutput, agentMap, buildCache, lazyRender = false } = args;
   const agentName = run.agentName ?? agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
-  const compactedTranscript = compactIssueChatTranscript(transcript);
-  const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
+  const derived = lazyRender
+    ? null
+    : deriveIssueChatTranscriptParts({
+        cache: buildCache,
+        runKey: `historical:${run.runId}`,
+        transcript,
+      });
+  const parts = derived?.parts ?? [];
+  const notices = derived?.notices ?? [];
+  const segments = derived?.segments ?? [];
   const waitingText = hasOutput ? "" : "Run finished";
   const content = parts.length > 0
     ? parts
@@ -672,6 +833,9 @@ function createHistoricalTranscriptMessage(args: {
       waitingText,
       chainOfThoughtLabel: runDurationLabel(run),
       chainOfThoughtSegments: segments,
+      lazyTranscript: lazyRender,
+      transcriptEntryCount: transcript.length,
+      renderableTranscriptEntryCount: countIssueChatRenderableTranscriptEntries(transcript),
     }),
   };
   return message;
@@ -839,10 +1003,14 @@ function normalizeLiveRuns(
 function createLiveRunMessage(args: {
   run: LiveRunForIssue;
   transcript: readonly IssueChatTranscriptEntry[];
+  buildCache?: IssueChatMessageBuildCache;
 }) {
-  const { run, transcript } = args;
-  const compactedTranscript = compactIssueChatTranscript(transcript);
-  const { parts, notices, segments } = buildAssistantPartsFromTranscript(compactedTranscript);
+  const { run, transcript, buildCache } = args;
+  const { parts, notices, segments } = deriveIssueChatTranscriptParts({
+    cache: buildCache,
+    runKey: `live:${run.id}`,
+    transcript,
+  });
   const waitingText =
     run.status === "queued"
       ? "Queued..."
@@ -890,6 +1058,8 @@ export function buildIssueChatMessages(args: {
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
+  buildCache?: IssueChatMessageBuildCache;
+  collapseHistoricalRunTranscripts?: boolean;
 }) {
   const {
     comments,
@@ -907,9 +1077,12 @@ export function buildIssueChatMessages(args: {
     agentMap,
     currentUserId,
     userLabelMap,
+    buildCache,
+    collapseHistoricalRunTranscripts = false,
   } = args;
 
   const orderedMessages: MessageWithOrder[] = [];
+  const usedTranscriptCacheKeys = buildCache ? new Set<string>() : null;
 
   for (const comment of sortByCreated(comments)) {
     orderedMessages.push({
@@ -950,6 +1123,8 @@ export function buildIssueChatMessages(args: {
     const transcript = transcriptsByRunId?.get(run.runId) ?? [];
     const hasRunOutput = transcript.length > 0 || (hasOutputForRun?.(run.runId) ?? false);
     if (hasRunOutput || run.status !== "succeeded") {
+      const transcriptCacheKey = `historical:${run.runId}`;
+      usedTranscriptCacheKeys?.add(transcriptCacheKey);
       // Always use the transcript message for non-succeeded runs (even before
       // transcript data loads) so the message type and fold header are stable
       // from initial render — avoids a flash when transcripts arrive later.
@@ -961,6 +1136,8 @@ export function buildIssueChatMessages(args: {
           transcript,
           hasOutput: hasRunOutput,
           agentMap,
+          buildCache,
+          lazyRender: collapseHistoricalRunTranscripts,
         }),
       });
       continue;
@@ -974,14 +1151,25 @@ export function buildIssueChatMessages(args: {
   }
 
   for (const run of normalizeLiveRuns(liveRuns, activeRun, issueId)) {
+    const transcriptCacheKey = `live:${run.id}`;
+    usedTranscriptCacheKeys?.add(transcriptCacheKey);
     orderedMessages.push({
       createdAtMs: toTimestamp(run.startedAt ?? run.createdAt),
       order: 3,
       message: createLiveRunMessage({
         run,
         transcript: transcriptsByRunId?.get(run.id) ?? [],
+        buildCache,
       }),
     });
+  }
+
+  if (buildCache && usedTranscriptCacheKeys) {
+    for (const runKey of buildCache.transcriptDerivationsByRunKey.keys()) {
+      if (!usedTranscriptCacheKeys.has(runKey)) {
+        buildCache.transcriptDerivationsByRunKey.delete(runKey);
+      }
+    }
   }
 
   return orderedMessages

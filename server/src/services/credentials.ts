@@ -14,6 +14,12 @@ import {
 
 type CredentialRow = typeof providerCredentials.$inferSelect;
 type SafeCredential = Omit<CredentialRow, "credential">;
+type CredentialSelectionRow = Pick<CredentialRow, "id" | "type">;
+
+export type CredentialAssignmentValidationResult =
+  | { ok: true; credentials: SafeCredential[] }
+  | { ok: false; error: "credential_not_found"; credentialId: string }
+  | { ok: false; error: "mixed_codex_auth_modes"; message: string };
 
 function stripCredential(row: CredentialRow): SafeCredential {
   const { credential: _credential, ...safe } = row;
@@ -29,6 +35,17 @@ function decryptPayload(row: CredentialRow): Record<string, unknown> {
     return row.credential as Record<string, unknown>;
   }
   return {};
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function readCredentialConfigString(record: Record<string, unknown> | null | undefined, key: string): string | null {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 export function credentialService(db: Db) {
@@ -208,7 +225,13 @@ export function credentialService(db: Db) {
     async setForAgent(
       agentId: string,
       credentialIds: string[],
-    ): Promise<{ ok: true; credentials: SafeCredential[] } | { ok: false; error: "duplicate_type"; type: string } | { ok: false; error: "credential_not_found"; credentialId: string }> {
+      options?: { adapterType?: string; adapterConfig?: Record<string, unknown> | null },
+    ): Promise<
+      | { ok: true; credentials: SafeCredential[] }
+      | { ok: false; error: "duplicate_type"; type: string }
+      | { ok: false; error: "credential_not_found"; credentialId: string }
+      | { ok: false; error: "mixed_codex_auth_modes"; message: string }
+    > {
       const uniqueIds = Array.from(new Set(credentialIds));
 
       if (uniqueIds.length === 0) {
@@ -216,10 +239,29 @@ export function credentialService(db: Db) {
         return { ok: true, credentials: [] };
       }
 
+      const [agentRow] = await db
+        .select({
+          companyId: agents.companyId,
+          adapterType: agents.adapterType,
+          adapterConfig: agents.adapterConfig,
+        })
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .limit(1);
+
+      if (!agentRow) {
+        return { ok: false, error: "credential_not_found", credentialId: uniqueIds[0] };
+      }
+
       const creds = await db
         .select()
         .from(providerCredentials)
-        .where(inArray(providerCredentials.id, uniqueIds));
+        .where(
+          and(
+            eq(providerCredentials.companyId, agentRow.companyId),
+            inArray(providerCredentials.id, uniqueIds),
+          ),
+        );
 
       if (creds.length !== uniqueIds.length) {
         const found = new Set(creds.map((c) => c.id));
@@ -227,10 +269,52 @@ export function credentialService(db: Db) {
         return { ok: false, error: "credential_not_found", credentialId: missing };
       }
 
+      const authModeValidation = validateCredentialSelectionForAdapter({
+        adapterType: options?.adapterType ?? agentRow.adapterType,
+        adapterConfig: options?.adapterConfig ?? asRecord(agentRow.adapterConfig) ?? {},
+        credentials: creds,
+      });
+      if (!authModeValidation.ok) return authModeValidation;
+
       await db.transaction(async (tx) => {
         await tx.delete(agentCredentials).where(eq(agentCredentials.agentId, agentId));
         await tx.insert(agentCredentials).values(uniqueIds.map((credentialId) => ({ agentId, credentialId })));
       });
+
+      return { ok: true, credentials: creds.map(stripCredential) };
+    },
+
+    async validateForAdapterAssignment(input: {
+      companyId: string;
+      adapterType: string;
+      adapterConfig: Record<string, unknown> | null | undefined;
+      credentialIds: string[];
+    }): Promise<CredentialAssignmentValidationResult> {
+      const uniqueIds = Array.from(new Set(input.credentialIds));
+      if (uniqueIds.length === 0) return { ok: true, credentials: [] };
+
+      const creds = await db
+        .select()
+        .from(providerCredentials)
+        .where(
+          and(
+            eq(providerCredentials.companyId, input.companyId),
+            inArray(providerCredentials.id, uniqueIds),
+          ),
+        );
+
+      if (creds.length !== uniqueIds.length) {
+        const found = new Set(creds.map((c) => c.id));
+        const missing = uniqueIds.find((id) => !found.has(id))!;
+        return { ok: false, error: "credential_not_found", credentialId: missing };
+      }
+
+      const authModeValidation = validateCredentialSelectionForAdapter({
+        adapterType: input.adapterType,
+        adapterConfig: input.adapterConfig ?? {},
+        credentials: creds,
+      });
+      if (!authModeValidation.ok) return authModeValidation;
 
       return { ok: true, credentials: creds.map(stripCredential) };
     },
@@ -298,12 +382,15 @@ export function credentialService(db: Db) {
  * - `codex_oauth`: writes `auth.json` under an agent-specific CODEX_HOME and
  *   sets CODEX_HOME so the Codex CLI discovers the ChatGPT OAuth token.
  * - `gemini_api_key`: sets GEMINI_API_KEY and GOOGLE_API_KEY.
- * - `openai_api_key`: sets OPENAI_API_KEY (covers codex-local and cursor-local).
- * - `openrouter_api_key`: sets OPENROUTER_API_KEY (covers opencode-local).
+ * - `openai_api_key`: sets OPENAI_API_KEY (covers codex-local, cursor-local,
+ *   opencode-local, and pi-local's OpenAI API-key provider).
+ * - `openrouter_api_key`: sets OPENROUTER_API_KEY (covers opencode-local and
+ *   pi-local's OpenRouter provider).
  * - `deepseek_api_key`: sets DEEPSEEK_API_KEY (covers deepseek-api), or the
  *   ANTHROPIC_* env when bound to a Claude Code adapter.
  * - `mimo_api_key`: sets the ANTHROPIC_* env routing Claude Code through Xiaomi
- *   MiMo's Anthropic-compatible endpoint (Claude-Code-routing only).
+ *   MiMo's Anthropic-compatible endpoint, or XIAOMI_TOKEN_PLAN_SGP_API_KEY for
+ *   pi-local's Xiaomi MiMo Token Plan provider.
  */
 /**
  * Adapter types that drive the real Claude Code CLI. When one of these agents is
@@ -312,6 +399,10 @@ export function credentialService(db: Db) {
  * Anthropic-compatible endpoint so the full agentic loop runs on DeepSeek.
  */
 const CLAUDE_CODE_ADAPTER_TYPES = new Set(["claude_local", "claude_tui"]);
+const PI_LOCAL_ADAPTER_TYPES = new Set(["pi_local"]);
+const PI_OPENAI_CODEX_PROVIDER_ID = "openai-codex";
+const PI_CODING_AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+const PAPERCLIP_MANAGED_PI_AGENT_DIR_ENV = "PAPERCLIP_MANAGED_PI_AGENT_DIR";
 
 const DEEPSEEK_ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic";
 const DEEPSEEK_PRO_MODEL = "deepseek-v4-pro";
@@ -388,6 +479,57 @@ function buildMimoClaudeCodeEnv(
     ANTHROPIC_DEFAULT_HAIKU_MODEL: lite,
     CLAUDE_CODE_SUBAGENT_MODEL: lite,
     CLAUDE_CODE_EFFORT_LEVEL: "max",
+  };
+}
+
+function piAgentDirForAgent(agentId: string): string {
+  return path.join(resolvePaperclipInstanceRoot(), "agent-homes", agentId, ".pi", "agent");
+}
+
+async function readJsonObjectFile(filePath: string): Promise<Record<string, unknown>> {
+  try {
+    const raw = await fs.readFile(filePath, "utf-8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+async function writePiCodexAuth(input: {
+  agentId: string;
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  accountId: string;
+}): Promise<{ env: Record<string, string>; home: string }> {
+  const agentHome = path.join(resolvePaperclipInstanceRoot(), "agent-homes", input.agentId);
+  const piAgentDir = piAgentDirForAgent(input.agentId);
+  await fs.mkdir(piAgentDir, { recursive: true });
+
+  const authFile = path.join(piAgentDir, "auth.json");
+  const existing = await readJsonObjectFile(authFile);
+  const nextAuth: Record<string, unknown> = {
+    ...existing,
+    [PI_OPENAI_CODEX_PROVIDER_ID]: {
+      type: "oauth",
+      access: input.accessToken,
+      refresh: input.refreshToken,
+      expires: input.expiresAt,
+      ...(input.accountId ? { accountId: input.accountId } : {}),
+    },
+  };
+  await fs.writeFile(authFile, JSON.stringify(nextAuth, null, 2), "utf-8");
+  await fs.chmod(authFile, 0o600).catch(() => undefined);
+
+  return {
+    env: {
+      [PI_CODING_AGENT_DIR_ENV]: piAgentDir,
+      [PAPERCLIP_MANAGED_PI_AGENT_DIR_ENV]: piAgentDir,
+    },
+    home: agentHome,
   };
 }
 
@@ -538,6 +680,23 @@ export async function resolveCredentialEnv(
           accessToken: accessToken || null,
         }) ?? "";
       const lastRefresh = typeof payload.lastRefresh === "string" ? payload.lastRefresh : new Date().toISOString();
+
+      if (adapterType && PI_LOCAL_ADAPTER_TYPES.has(adapterType)) {
+        const expiresAt = typeof payload.expiresAt === "number" ? payload.expiresAt : 4102444800000;
+        const piAuth = await writePiCodexAuth({
+          agentId,
+          accessToken,
+          refreshToken,
+          expiresAt,
+          accountId,
+        });
+        logger.info(
+          { agentId, credentialId, piAgentDir: piAuth.env[PI_CODING_AGENT_DIR_ENV], hasRefreshToken: refreshToken.length > 0, hasAccountId: accountId.length > 0 },
+          "wrote pi openai-codex auth.json for agent",
+        );
+        return piAuth;
+      }
+
       const tokens: Record<string, string> = { access_token: accessToken };
       if (idToken) tokens.id_token = idToken;
       if (refreshToken) tokens.refresh_token = refreshToken;
@@ -610,16 +769,18 @@ export async function resolveCredentialEnv(
         logger.warn({ agentId, credentialId }, "mimo_api_key credential missing apiKey");
         return { env: {} };
       }
-      // MiMo is Claude-Code-routing only (no standalone chat adapter), so it
-      // always resolves to the Anthropic-endpoint env. It's only offered for
-      // claude_local/claude_tui in the UI; if bound elsewhere, inject nothing
-      // rather than a key the adapter can't use.
+      // MiMo has two consumers: Claude Code uses Xiaomi's Anthropic-compatible
+      // endpoint, while Pi reads the Token Plan key from its provider-specific
+      // env var for provider xiaomi-token-plan-sgp.
       if (adapterType && CLAUDE_CODE_ADAPTER_TYPES.has(adapterType)) {
         return { env: buildMimoClaudeCodeEnv(apiKey, payload) };
       }
+      if (adapterType && PI_LOCAL_ADAPTER_TYPES.has(adapterType)) {
+        return { env: { XIAOMI_TOKEN_PLAN_SGP_API_KEY: apiKey } };
+      }
       logger.warn(
         { agentId, credentialId, adapterType },
-        "mimo_api_key bound to a non-Claude-Code adapter; no env injected",
+        "mimo_api_key bound to an adapter that does not consume MiMo credentials; no env injected",
       );
       return { env: {} };
     }
@@ -729,10 +890,158 @@ const ADAPTER_CREDENTIAL_TYPES: Record<string, readonly string[]> = {
   deepseek_api: ["deepseek_api_key"],
   opencode_local: ["openrouter_api_key", "openai_api_key", "claude_api_key", "gemini_api_key"],
   acpx_local: ["claude_oauth", "claude_api_key", "codex_oauth", "openai_api_key"],
+  pi_local: [
+    "codex_oauth",
+    "openai_api_key",
+    "deepseek_api_key",
+    "mimo_api_key",
+    "openrouter_api_key",
+    "claude_api_key",
+    "gemini_api_key",
+  ],
 };
 
 export function credentialTypesForAdapterType(adapterType: string): readonly string[] {
   return ADAPTER_CREDENTIAL_TYPES[adapterType] ?? [];
+}
+
+function credentialTypesForAdapterRuntime(
+  adapterType: string,
+  adapterConfig: Record<string, unknown> | null | undefined,
+): readonly string[] {
+  if (adapterType !== "acpx_local") return credentialTypesForAdapterType(adapterType);
+
+  const acpxAgent = readCredentialConfigString(adapterConfig, "agent") ?? "claude";
+  if (acpxAgent === "claude") return ["claude_oauth", "claude_api_key"];
+  if (acpxAgent === "codex") return ["codex_oauth", "openai_api_key"];
+  return credentialTypesForAdapterType(adapterType);
+}
+
+function isCodexCredentialRuntime(input: {
+  adapterType: string | null | undefined;
+  adapterConfig: Record<string, unknown> | null | undefined;
+}): boolean {
+  if (input.adapterType === "codex_local") return true;
+  if (input.adapterType !== "acpx_local") return false;
+  return readCredentialConfigString(input.adapterConfig, "agent") === "codex";
+}
+
+export function validateCredentialSelectionForAdapter(input: {
+  adapterType: string | null | undefined;
+  adapterConfig?: Record<string, unknown> | null;
+  credentials: CredentialSelectionRow[];
+}): CredentialAssignmentValidationResult {
+  if (!isCodexCredentialRuntime({
+    adapterType: input.adapterType,
+    adapterConfig: input.adapterConfig ?? null,
+  })) {
+    return { ok: true, credentials: [] };
+  }
+
+  const selectedTypes = new Set(input.credentials.map((credential) => credential.type));
+  if (selectedTypes.has("codex_oauth") && selectedTypes.has("openai_api_key")) {
+    return {
+      ok: false,
+      error: "mixed_codex_auth_modes",
+      message:
+        "Codex agents must use one auth mode at a time. Select either Codex OAuth credentials for ChatGPT login rotation or OpenAI API-key credentials, not both.",
+    };
+  }
+
+  return { ok: true, credentials: [] };
+}
+
+export type ResolvedCredentialChoice = { credentialId: string; type: string };
+
+function hasNonEmptyEnvValue(env: Record<string, unknown>, key: string): boolean {
+  const raw = env[key];
+  return typeof raw === "string" && raw.trim().length > 0;
+}
+
+const PI_PROVIDER_CREDENTIAL_TYPES: Record<string, readonly string[]> = {
+  "openai-codex": ["codex_oauth"],
+  openai: ["openai_api_key"],
+  deepseek: ["deepseek_api_key"],
+  "xiaomi-token-plan-sgp": ["mimo_api_key"],
+  openrouter: ["openrouter_api_key"],
+  anthropic: ["claude_api_key"],
+  google: ["gemini_api_key"],
+};
+
+const PI_CREDENTIAL_ENV_KEYS: Record<string, readonly string[]> = {
+  codex_oauth: [PI_CODING_AGENT_DIR_ENV],
+  openai_api_key: ["OPENAI_API_KEY"],
+  deepseek_api_key: ["DEEPSEEK_API_KEY"],
+  mimo_api_key: ["XIAOMI_TOKEN_PLAN_SGP_API_KEY"],
+  openrouter_api_key: ["OPENROUTER_API_KEY"],
+  claude_api_key: ["ANTHROPIC_API_KEY"],
+  gemini_api_key: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+};
+
+function readPiModelProvider(adapterConfig: Record<string, unknown> | null | undefined): string | null {
+  const model = readCredentialConfigString(adapterConfig, "model");
+  if (!model) return null;
+  const slash = model.indexOf("/");
+  if (slash <= 0) return null;
+  return model.slice(0, slash).trim() || null;
+}
+
+function piChoiceHasRuntimeEnv(choice: ResolvedCredentialChoice, env: Record<string, unknown>): boolean {
+  const keys = PI_CREDENTIAL_ENV_KEYS[choice.type] ?? [];
+  return keys.some((key) => hasNonEmptyEnvValue(env, key));
+}
+
+function selectPiActiveCredential(input: {
+  adapterConfig: Record<string, unknown> | null | undefined;
+  chosen: ResolvedCredentialChoice[];
+  env: Record<string, unknown>;
+}): ResolvedCredentialChoice | null {
+  const provider = readPiModelProvider(input.adapterConfig);
+  if (provider) {
+    const providerTypes = PI_PROVIDER_CREDENTIAL_TYPES[provider];
+    if (providerTypes) {
+      return input.chosen.find((choice) => providerTypes.includes(choice.type) && piChoiceHasRuntimeEnv(choice, input.env)) ?? null;
+    }
+  }
+
+  return input.chosen.find((choice) => piChoiceHasRuntimeEnv(choice, input.env)) ?? null;
+}
+
+/**
+ * Attribute a run to the managed credential that the adapter will actually use.
+ * Codex is special because an API key wins over native CODEX_HOME auth, and
+ * current Codex reads that key from auth.json rather than directly from env.
+ * Pi is provider-scoped: the model prefix decides which assigned credential type
+ * is consumed, so we must avoid attributing a DeepSeek Pi run to an OpenAI key
+ * that happened to be assigned to the same agent.
+ */
+export function selectActiveCredentialForAdapter(input: {
+  adapterType: string;
+  adapterConfig?: Record<string, unknown> | null;
+  chosen: ResolvedCredentialChoice[];
+  env: Record<string, unknown>;
+}): ResolvedCredentialChoice | null {
+  const adapterConfig = input.adapterConfig ?? null;
+  const eligibleTypes = new Set(credentialTypesForAdapterRuntime(input.adapterType, adapterConfig));
+  const eligible = input.chosen.filter((choice) => eligibleTypes.has(choice.type));
+
+  if (isCodexCredentialRuntime({ adapterType: input.adapterType, adapterConfig })) {
+    const openAiChoice = eligible.find((choice) => choice.type === "openai_api_key") ?? null;
+    if (hasNonEmptyEnvValue(input.env, "OPENAI_API_KEY")) return openAiChoice;
+
+    const codexOAuthChoice = eligible.find((choice) => choice.type === "codex_oauth") ?? null;
+    if (hasNonEmptyEnvValue(input.env, "CODEX_HOME")) return codexOAuthChoice;
+  }
+
+  if (input.adapterType === "pi_local") {
+    return selectPiActiveCredential({
+      adapterConfig,
+      chosen: eligible,
+      env: input.env,
+    });
+  }
+
+  return eligible[0] ?? input.chosen[0] ?? null;
 }
 
 type RotationCandidate = {
@@ -894,11 +1203,70 @@ export async function recordCredentialSuccess(db: Db, credentialId: string): Pro
     .where(and(eq(providerCredentials.id, credentialId), gt(providerCredentials.consecutiveFailureCount, 0)));
 }
 
+type CodexDiskTokens = {
+  accessToken: string;
+  refreshToken: string;
+  idToken: string;
+  accountId: string;
+  expiresAt: number | null;
+  updatedAtMs: number;
+};
+
+async function fileUpdatedAtMs(filePath: string): Promise<number> {
+  try {
+    return (await fs.stat(filePath)).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+async function readCodexCliDiskTokens(agentId: string): Promise<CodexDiskTokens | null> {
+  const authPath = path.join(resolvePaperclipInstanceRoot(), "agent-homes", agentId, ".codex", "auth.json");
+  const parsed = await readJsonObjectFile(authPath);
+  const tokens =
+    parsed.tokens && typeof parsed.tokens === "object" && !Array.isArray(parsed.tokens)
+      ? (parsed.tokens as Record<string, unknown>)
+      : {};
+  const accessToken = typeof tokens.access_token === "string" ? tokens.access_token : "";
+  if (!accessToken) return null;
+  return {
+    accessToken,
+    refreshToken: typeof tokens.refresh_token === "string" ? tokens.refresh_token : "",
+    idToken: typeof tokens.id_token === "string" ? tokens.id_token : "",
+    accountId: typeof tokens.account_id === "string" ? tokens.account_id : "",
+    expiresAt: null,
+    updatedAtMs: await fileUpdatedAtMs(authPath),
+  };
+}
+
+async function readPiCodexDiskTokens(agentId: string): Promise<CodexDiskTokens | null> {
+  const authPath = path.join(piAgentDirForAgent(agentId), "auth.json");
+  const parsed = await readJsonObjectFile(authPath);
+  const entry =
+    parsed[PI_OPENAI_CODEX_PROVIDER_ID] &&
+    typeof parsed[PI_OPENAI_CODEX_PROVIDER_ID] === "object" &&
+    !Array.isArray(parsed[PI_OPENAI_CODEX_PROVIDER_ID])
+      ? (parsed[PI_OPENAI_CODEX_PROVIDER_ID] as Record<string, unknown>)
+      : {};
+  const accessToken = typeof entry.access === "string" ? entry.access : "";
+  if (!accessToken) return null;
+  return {
+    accessToken,
+    refreshToken: typeof entry.refresh === "string" ? entry.refresh : "",
+    idToken: typeof entry.idToken === "string" ? entry.idToken : "",
+    accountId: typeof entry.accountId === "string" ? entry.accountId : "",
+    expiresAt: typeof entry.expires === "number" && Number.isFinite(entry.expires) ? entry.expires : null,
+    updatedAtMs: await fileUpdatedAtMs(authPath),
+  };
+}
+
 /**
  * After a codex run, the Codex CLI may have refreshed the OAuth token in place at
- * `agent-homes/<agentId>/.codex/auth.json`. Persist the refreshed access/refresh
- * tokens back to the DB credential so the next run uses a live token instead of
- * the stored-and-stale one (the intermittent "works then stops working" cause).
+ * `agent-homes/<agentId>/.codex/auth.json`. Pi runs can also refresh the same
+ * OpenAI Codex OAuth token in its managed `agent-homes/<agentId>/.pi/agent/auth.json`.
+ * Persist refreshed access/refresh tokens back to the DB credential so the next
+ * run uses a live token instead of the stored-and-stale one (the intermittent
+ * "works then stops working" cause).
  *
  * OpenAI drops chatgpt_account_id from the refreshed access_token, so we preserve
  * the stored account_id (and re-derive from the id_token if needed). Only writes
@@ -917,46 +1285,31 @@ export async function persistCodexRefreshedTokens(
     .limit(1);
   if (!cred || cred.type !== "codex_oauth") return { updated: false };
 
-  const authPath = path.join(resolvePaperclipInstanceRoot(), "agent-homes", agentId, ".codex", "auth.json");
-  let raw: string;
-  try {
-    raw = await fs.readFile(authPath, "utf-8");
-  } catch {
-    return { updated: false }; // no on-disk auth.json (e.g. override CODEX_HOME) — nothing to persist
-  }
-
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return { updated: false };
-  }
-  const tokens =
-    parsed.tokens && typeof parsed.tokens === "object" && !Array.isArray(parsed.tokens)
-      ? (parsed.tokens as Record<string, unknown>)
-      : {};
-  const diskAccess = typeof tokens.access_token === "string" ? tokens.access_token : "";
-  if (!diskAccess) return { updated: false };
-
   const stored = decryptPayload(cred);
   const storedAccess = typeof stored.accessToken === "string" ? stored.accessToken : "";
-  if (diskAccess === storedAccess) return { updated: false }; // CLI didn't refresh — nothing to do
+  const disk = (await Promise.all([
+    readCodexCliDiskTokens(agentId),
+    readPiCodexDiskTokens(agentId),
+  ]))
+    .filter((candidate): candidate is CodexDiskTokens => candidate != null)
+    .filter((candidate) => candidate.accessToken !== storedAccess)
+    .sort((a, b) => b.updatedAtMs - a.updatedAtMs)[0] ?? null;
+  if (!disk) return { updated: false }; // CLI/Pi didn't refresh — nothing to do
 
-  const diskRefresh = typeof tokens.refresh_token === "string" ? tokens.refresh_token : "";
-  const diskId = typeof tokens.id_token === "string" ? tokens.id_token : "";
   const storedId = typeof stored.idToken === "string" ? stored.idToken : "";
   // Keep the id_token (and thus account_id source) if the refresh dropped it.
-  const effectiveIdToken = diskId || storedId;
+  const effectiveIdToken = disk.idToken || storedId;
   const accountId = resolveCodexAccountId({
-    accountId: typeof stored.accountId === "string" ? stored.accountId : null,
+    accountId: disk.accountId || (typeof stored.accountId === "string" ? stored.accountId : null),
     idToken: effectiveIdToken || null,
-    accessToken: diskAccess || null,
+    accessToken: disk.accessToken || null,
   });
 
-  const nextPayload: Record<string, unknown> = { ...stored, accessToken: diskAccess };
-  if (diskRefresh) nextPayload.refreshToken = diskRefresh;
+  const nextPayload: Record<string, unknown> = { ...stored, accessToken: disk.accessToken };
+  if (disk.refreshToken) nextPayload.refreshToken = disk.refreshToken;
   if (effectiveIdToken) nextPayload.idToken = effectiveIdToken;
   if (accountId) nextPayload.accountId = accountId;
+  if (disk.expiresAt != null) nextPayload.expiresAt = disk.expiresAt;
   nextPayload.lastRefresh = new Date().toISOString();
 
   await db
@@ -993,20 +1346,6 @@ export async function resolveAllCredentialEnv(
   credentialIds: string[];
   chosen: Array<{ credentialId: string; type: string }>;
 }> {
-  // Disabled credentials (auto-disabled after repeated failures, or manually)
-  // are excluded from the rotation pool entirely — the picker never selects
-  // them until the user re-enables them from the Credentials UI.
-  const joinRows = await db
-    .select({
-      credentialId: agentCredentials.credentialId,
-      type: providerCredentials.type,
-      cooldownUntil: providerCredentials.cooldownUntil,
-      lastUsedAt: providerCredentials.lastUsedAt,
-    })
-    .from(agentCredentials)
-    .innerJoin(providerCredentials, eq(agentCredentials.credentialId, providerCredentials.id))
-    .where(and(eq(agentCredentials.agentId, agentId), isNull(providerCredentials.disabledAt)));
-
   // adapterType decides how some credentials resolve (e.g. a deepseek_api_key on
   // a Claude Code agent routes the CLI through DeepSeek's Anthropic endpoint).
   const [agentRow] = await db
@@ -1016,36 +1355,80 @@ export async function resolveAllCredentialEnv(
     .limit(1);
   const adapterType = agentRow?.adapterType ?? undefined;
 
-  if (joinRows.length === 0) {
+  // Disabled credentials (auto-disabled after repeated failures, or manually)
+  // are excluded from the rotation pool entirely — the picker never selects
+  // them until the user re-enables them from the Credentials UI. Lock the pool
+  // rows before picking/touching so concurrent heartbeats spread across LRU
+  // candidates instead of racing on the same oldest credential.
+  const chosenCandidates = await db.transaction(async (tx) => {
+    await tx.execute(sql`
+      select ${providerCredentials.id}
+      from ${agentCredentials}
+      inner join ${providerCredentials}
+        on ${agentCredentials.credentialId} = ${providerCredentials.id}
+      where ${agentCredentials.agentId} = ${agentId}
+        and ${providerCredentials.disabledAt} is null
+      for update of provider_credentials
+    `);
+
+    const joinRows = await tx
+      .select({
+        credentialId: agentCredentials.credentialId,
+        type: providerCredentials.type,
+        cooldownUntil: providerCredentials.cooldownUntil,
+        lastUsedAt: providerCredentials.lastUsedAt,
+      })
+      .from(agentCredentials)
+      .innerJoin(providerCredentials, eq(agentCredentials.credentialId, providerCredentials.id))
+      .where(and(eq(agentCredentials.agentId, agentId), isNull(providerCredentials.disabledAt)));
+
+    const nowMs = Date.now();
+    const byType = new Map<string, RotationCandidate[]>();
+    for (const row of joinRows) {
+      const list = byType.get(row.type) ?? [];
+      list.push(row);
+      byType.set(row.type, list);
+    }
+
+    const picked: RotationCandidate[] = [];
+    for (const list of byType.values()) {
+      picked.push(pickPoolCredential(list, nowMs));
+    }
+
+    const lastUsedAt = new Date(nowMs);
+    for (const candidate of picked) {
+      await tx
+        .update(providerCredentials)
+        .set({ lastUsedAt })
+        .where(eq(providerCredentials.id, candidate.credentialId));
+    }
+
+    return picked;
+  });
+
+  if (chosenCandidates.length === 0) {
     if (!agentRow?.credentialId) return { env: {}, credentialIds: [], chosen: [] };
-    const res = await resolveCredentialEnv(db, agentId, agentRow.credentialId, adapterType);
-    await touchCredentialLastUsed(db, agentRow.credentialId);
     const [row] = await db
-      .select({ type: providerCredentials.type })
+      .select({ type: providerCredentials.type, disabledAt: providerCredentials.disabledAt })
       .from(providerCredentials)
       .where(eq(providerCredentials.id, agentRow.credentialId))
       .limit(1);
+    if (!row) return { env: {}, credentialIds: [], chosen: [] };
+    if (row.disabledAt) {
+      logger.warn(
+        { agentId, credentialId: agentRow.credentialId },
+        "legacy agent credential is disabled; skipping runtime resolution",
+      );
+      return { env: {}, credentialIds: [], chosen: [] };
+    }
+    const res = await resolveCredentialEnv(db, agentId, agentRow.credentialId, adapterType);
+    await touchCredentialLastUsed(db, agentRow.credentialId);
     return {
       env: res.env,
       home: res.home,
       credentialIds: [agentRow.credentialId],
-      chosen: row ? [{ credentialId: agentRow.credentialId, type: row.type }] : [],
+      chosen: [{ credentialId: agentRow.credentialId, type: row.type }],
     };
-  }
-
-  // Group bound credentials by provider type, then select exactly one per type
-  // (rotation pool). Preserves behaviour for agents with a single credential per
-  // type while enabling LRU rotation when several of the same type are bound.
-  const nowMs = Date.now();
-  const byType = new Map<string, RotationCandidate[]>();
-  for (const r of joinRows) {
-    const list = byType.get(r.type) ?? [];
-    list.push(r);
-    byType.set(r.type, list);
-  }
-  const chosenCandidates: RotationCandidate[] = [];
-  for (const list of byType.values()) {
-    chosenCandidates.push(pickPoolCredential(list, nowMs));
   }
 
   // Resolve oauth (HOME-owning) types last so their HOME overrides take
@@ -1067,7 +1450,6 @@ export async function resolveAllCredentialEnv(
     if (res.home) home = res.home;
     credentialIds.push(candidate.credentialId);
     chosen.push({ credentialId: candidate.credentialId, type: candidate.type });
-    await touchCredentialLastUsed(db, candidate.credentialId);
   }
 
   return { env, home, credentialIds, chosen };

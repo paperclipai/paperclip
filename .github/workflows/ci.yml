@@ -59,7 +59,7 @@ jobs:
           curl -sf -X POST \
             -H "X-API-Key: ${{ secrets.DOKPLOY_API_KEY }}" \
             -H "Content-Type: application/json" \
-            -d '{"composeId":"OebpXiXB663ZmdWv-2G1p"}' \
+            -d '{"composeId":"qmA6aVJHUf_gcNjCelCay"}' \
             "https://dokploy.zenova.id/api/compose.deploy"
 
       - name: Notify Telegram on dev deploy success

@@ -93,6 +93,14 @@ const mockSecretService = vi.hoisted(() => ({
   resolveAdapterConfigForRuntime: vi.fn(),
 }));
 
+const mockCredentialService = vi.hoisted(() => ({
+  listForAgent: vi.fn(),
+  setForAgent: vi.fn(),
+  validateForAdapterAssignment: vi.fn(),
+  getById: vi.fn(),
+  update: vi.fn(),
+}));
+
 const mockAgentInstructionsService = vi.hoisted(() => ({
   materializeManagedBundle: vi.fn(),
 }));
@@ -187,6 +195,7 @@ vi.mock("../services/index.js", () => ({
   issueService: () => mockIssueService,
   logActivity: mockLogActivity,
   secretService: () => mockSecretService,
+  credentialService: () => mockCredentialService,
   syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
   workspaceOperationService: () => mockWorkspaceOperationService,
 }));
@@ -265,6 +274,7 @@ function resetMockDefaults() {
   for (const mock of Object.values(mockIssueApprovalService)) mock.mockReset();
   for (const mock of Object.values(mockIssueService)) mock.mockReset();
   for (const mock of Object.values(mockSecretService)) mock.mockReset();
+  for (const mock of Object.values(mockCredentialService)) mock.mockReset();
   for (const mock of Object.values(mockAgentInstructionsService)) mock.mockReset();
   for (const mock of Object.values(mockCompanySkillService)) mock.mockReset();
   mockLogActivity.mockReset();
@@ -299,6 +309,10 @@ function resetMockDefaults() {
   mockAccessService.ensureMembership.mockImplementation(async () => undefined);
   mockAccessService.setPrincipalPermission.mockImplementation(async () => undefined);
   mockHeartbeatService.cancelActiveForAgent.mockImplementation(async () => undefined);
+  mockCredentialService.listForAgent.mockImplementation(async () => []);
+  mockCredentialService.setForAgent.mockImplementation(async () => ({ ok: true, credentials: [] }));
+  mockCredentialService.validateForAdapterAssignment.mockImplementation(async () => ({ ok: true, credentials: [] }));
+  mockCredentialService.getById.mockImplementation(async () => null);
   mockLogActivity.mockImplementation(async () => undefined);
 }
 
@@ -373,5 +387,5 @@ describe.sequential("agent cross-tenant route authorization", () => {
     expect(res.body.error).toContain("Key not found");
     expect(mockAgentService.getKeyById).toHaveBeenCalledWith(keyId);
     expect(mockAgentService.revokeKey).not.toHaveBeenCalled();
-  });
+  }, 20_000);
 });

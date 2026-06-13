@@ -46,10 +46,13 @@ import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from "../hooks/usePaperclipIssueRuntime";
 import {
   buildIssueChatMessages,
+  createIssueChatMessageBuildCache,
+  deriveIssueChatTranscriptParts,
   formatDurationWords,
   stabilizeThreadMessages,
   type IssueChatComment,
   type IssueChatLinkedRun,
+  type IssueChatMessageBuildCache,
   type StableThreadMessageCacheEntry,
   type IssueChatTranscriptEntry,
   type SegmentTiming,
@@ -175,6 +178,8 @@ interface IssueChatMessageContext {
   ) => Promise<void> | void;
   issueStatus?: string;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  getTranscriptForRun?: (runId: string) => readonly IssueChatTranscriptEntry[];
+  messageBuildCache?: IssueChatMessageBuildCache;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
@@ -1440,6 +1445,8 @@ function IssueChatAssistantMessage({
     stopRunLabel = "Stop run",
     stoppingRunLabel = "Stopping...",
     stopRunVariant = "stop",
+    getTranscriptForRun,
+    messageBuildCache,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1460,15 +1467,53 @@ function IssueChatAssistantMessage({
     : [];
   const waitingText = typeof custom.waitingText === "string" ? custom.waitingText : "";
   const isRunning = message.role === "assistant" && message.status?.type === "running";
+  const isLazyHistoricalTranscript =
+    custom.kind === "historical-run" && custom.lazyTranscript === true && Boolean(runId);
+  const transcriptEntryCount =
+    typeof custom.transcriptEntryCount === "number" && Number.isFinite(custom.transcriptEntryCount)
+      ? custom.transcriptEntryCount
+      : null;
+  const renderableTranscriptEntryCount =
+    typeof custom.renderableTranscriptEntryCount === "number" && Number.isFinite(custom.renderableTranscriptEntryCount)
+      ? custom.renderableTranscriptEntryCount
+      : null;
   const runHref = runId && runAgentId ? `/agents/${runAgentId}/runs/${runId}` : null;
   const canStopRun = Boolean(runId) && (isRunActive || runStatus === "queued" || runStatus === "running");
   const chainOfThoughtLabel = typeof custom.chainOfThoughtLabel === "string" ? custom.chainOfThoughtLabel : null;
-  const hasCoT = message.content.some((p) => p.type === "reasoning" || p.type === "tool-call");
-  const isFoldable = !isRunning && !!chainOfThoughtLabel;
+  const isFoldable = !isRunning && (!!chainOfThoughtLabel || isLazyHistoricalTranscript);
   const [folded, setFolded] = useState(isFoldable);
   const [prevFoldKey, setPrevFoldKey] = useState({ messageId: message.id, isFoldable });
   const [copied, setCopied] = useState(false);
-  const copyText = getThreadMessageCopyText(message);
+  const lazyTranscriptDerivation = useMemo(() => {
+    if (!isLazyHistoricalTranscript || folded || !runId) return null;
+    const transcript = getTranscriptForRun?.(runId) ?? [];
+    return deriveIssueChatTranscriptParts({
+      cache: messageBuildCache,
+      runKey: `historical:${runId}`,
+      transcript,
+    });
+  }, [folded, getTranscriptForRun, isLazyHistoricalTranscript, messageBuildCache, runId]);
+  const displayMessage = useMemo(() => {
+    if (!lazyTranscriptDerivation) return message;
+    return {
+      ...message,
+      content: lazyTranscriptDerivation.parts,
+      metadata: {
+        ...message.metadata,
+        custom: {
+          ...custom,
+          notices: lazyTranscriptDerivation.notices,
+          chainOfThoughtSegments: lazyTranscriptDerivation.segments,
+        },
+      },
+    } as ThreadMessage;
+  }, [custom, lazyTranscriptDerivation, message]);
+  const displayCustom = displayMessage.metadata.custom as Record<string, unknown>;
+  const displayNotices = Array.isArray(displayCustom.notices)
+    ? displayCustom.notices.filter((notice): notice is string => typeof notice === "string" && notice.length > 0)
+    : notices;
+  const hasCoT = displayMessage.content.some((p) => p.type === "reasoning" || p.type === "tool-call");
+  const copyText = getThreadMessageCopyText(displayMessage);
 
   // Derive fold state synchronously during render (not in useEffect) so the
   // browser never paints the un-folded intermediate state — prevents the
@@ -1546,8 +1591,8 @@ function IssueChatAssistantMessage({
           {!folded ? (
             <>
               <div className="space-y-3">
-                <IssueChatAssistantParts message={message} hasCoT={hasCoT} />
-                {message.content.length === 0 && waitingText ? (
+                <IssueChatAssistantParts message={displayMessage} hasCoT={hasCoT} />
+                {displayMessage.content.length === 0 && waitingText ? (
                   <div className="flex items-center gap-2.5 rounded-lg px-1 py-2">
                     <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
                       {agentIcon ? (
@@ -1559,9 +1604,19 @@ function IssueChatAssistantMessage({
                     </span>
                   </div>
                 ) : null}
-                {notices.length > 0 ? (
+                {isLazyHistoricalTranscript
+                  && displayMessage.content.length === 0
+                  && !waitingText
+                  && transcriptEntryCount !== null ? (
+                  <div className="rounded-lg border border-border/60 bg-accent/20 px-3 py-2 text-xs leading-5 text-muted-foreground">
+                    {renderableTranscriptEntryCount === 0
+                      ? "This run has no renderable transcript entries."
+                      : "Transcript output is still loading. Open the run for the raw log if it does not appear."}
+                  </div>
+                ) : null}
+                {displayNotices.length > 0 ? (
                   <div className="space-y-2">
-                    {notices.map((notice, index) => (
+                    {displayNotices.map((notice, index) => (
                       <div
                         key={`${message.id}:notice:${index}`}
                         className="rounded-sm border border-border/60 bg-accent/20 px-3 py-2 text-sm text-muted-foreground"
@@ -3753,6 +3808,16 @@ export function IssueChatThread({
   });
   const resolvedTranscriptByRun = transcriptsByRunId ?? transcriptByRun;
   const resolvedHasOutputForRun = hasOutputForRunOverride ?? hasOutputForRun;
+  const messageBuildCacheRef = useRef<ReturnType<typeof createIssueChatMessageBuildCache> | null>(null);
+  if (!messageBuildCacheRef.current) {
+    messageBuildCacheRef.current = createIssueChatMessageBuildCache();
+  }
+  const messageBuildCache = messageBuildCacheRef.current;
+  const resolvedTranscriptByRunRef = useRef(resolvedTranscriptByRun);
+  resolvedTranscriptByRunRef.current = resolvedTranscriptByRun;
+  const getTranscriptForRun = useCallback((runId: string) => {
+    return resolvedTranscriptByRunRef.current?.get(runId) ?? [];
+  }, []);
   const rawMessages = useMemo(
     () =>
       buildIssueChatMessages({
@@ -3770,6 +3835,8 @@ export function IssueChatThread({
         agentMap,
         currentUserId,
         userLabelMap,
+        collapseHistoricalRunTranscripts: true,
+        buildCache: messageBuildCache,
       }),
     [
       comments,
@@ -3786,6 +3853,7 @@ export function IssueChatThread({
       agentMap,
       currentUserId,
       userLabelMap,
+      messageBuildCache,
     ],
   );
   const stableMessagesRef = useRef<readonly ThreadMessage[]>([]);
@@ -3989,16 +4057,19 @@ export function IssueChatThread({
   // that element is at the scroll container's bottom (or scroll position
   // and content height stop changing).
   function scrollToLatestCommentWithSettle(messageSnapshot: readonly ThreadMessage[] = latestMessagesRef.current) {
-    const latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot);
+    // These are re-targeted inside the settle loop below if a newer comment
+    // arrives mid-settle, so they must be mutable (not captured once).
+    let latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot);
     if (latestCommentIndex < 0) {
       jumpToLatestFallback();
       return;
     }
-    const latestCommentAnchor = issueChatMessageAnchorId(messageSnapshot[latestCommentIndex]);
-    if (!latestCommentAnchor) {
+    const initialLatestAnchor = issueChatMessageAnchorId(messageSnapshot[latestCommentIndex]);
+    if (!initialLatestAnchor) {
       jumpToLatestFallback();
       return;
     }
+    let latestCommentAnchor: string = initialLatestAnchor;
 
     const initial = scrollToThreadAnchor(
       latestCommentAnchor,
@@ -4067,6 +4138,25 @@ export function IssueChatThread({
       if (typeof document === "undefined") {
         finish();
         return;
+      }
+
+      // Re-target if a newer comment has arrived since we started settling. The
+      // loop captures the latest comment once, but a live update can append a
+      // newer one while the scroll is still converging — without re-checking we
+      // settle on the now-stale comment and stop short of the true newest. This
+      // is the real residual short-fall (the progressive-load case is already
+      // covered by the parent refetch + the mount-nudge below). PAP-2672 intent
+      // (land on the last *comment*) is preserved; we just track which one.
+      const currentLatestIndex = findLatestCommentMessageIndex(latestMessagesRef.current);
+      if (currentLatestIndex >= 0) {
+        const currentLatestAnchor = issueChatMessageAnchorId(
+          latestMessagesRef.current[currentLatestIndex],
+        );
+        if (currentLatestAnchor && currentLatestAnchor !== latestCommentAnchor) {
+          latestCommentAnchor = currentLatestAnchor;
+          latestCommentIndex = currentLatestIndex;
+          stableTicks = 0;
+        }
       }
 
       const el = document.getElementById(latestCommentAnchor);
@@ -4171,6 +4261,8 @@ export function IssueChatThread({
       onCancelInteraction: stableOnCancelInteraction,
       issueStatus,
       successfulRunHandoff,
+      getTranscriptForRun,
+      messageBuildCache,
     }),
     [
       feedbackDataSharingPreference,
@@ -4194,6 +4286,8 @@ export function IssueChatThread({
       stableOnCancelInteraction,
       issueStatus,
       successfulRunHandoff,
+      getTranscriptForRun,
+      messageBuildCache,
     ],
   );
 

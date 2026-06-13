@@ -18,6 +18,7 @@ const payload = {
   paperclipApiUrl: process.env.PAPERCLIP_API_URL || null,
   paperclipApiKey: process.env.PAPERCLIP_API_KEY || null,
   paperclipApiBridgeMode: process.env.PAPERCLIP_API_BRIDGE_MODE || null,
+  openAiApiKey: process.env.OPENAI_API_KEY || null,
   paperclipEnvKeys: Object.keys(process.env)
     .filter((key) => key.startsWith("PAPERCLIP_"))
     .sort(),
@@ -77,6 +78,7 @@ type CapturePayload = {
   paperclipApiUrl?: string | null;
   paperclipApiKey?: string | null;
   paperclipApiBridgeMode?: string | null;
+  openAiApiKey?: string | null;
   paperclipEnvKeys: string[];
 };
 
@@ -732,6 +734,106 @@ describe("codex execute", () => {
       expect(result.errorCode).toBe("codex_transient_upstream");
       expect(result.errorFamily).toBe("transient_upstream");
       expect(result.errorMessage).toContain("high demand");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies OpenAI API-key-required failures as Codex auth failures", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-auth-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingCodexCommand(
+      commandPath,
+      "OPENAI_API_KEY is required to use Codex with API-key authentication.",
+    );
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-auth-error",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("codex_auth_required");
+      expect(result.errorFamily).toBeNull();
+      expect(result.errorMessage).toContain("OPENAI_API_KEY");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies plain OpenAI 429 failures as retryable transient upstream errors", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-429-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingCodexCommand(
+      commandPath,
+      "Request failed with status 429 Too Many Requests: rate limit reached for gpt-5.",
+    );
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-openai-429",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("codex_transient_upstream");
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(result.errorMessage).toContain("429");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -1426,6 +1528,162 @@ describe("codex execute", () => {
       else process.env.PAPERCLIP_IN_WORKTREE = previousPaperclipInWorktree;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not pass inherited OPENAI_API_KEY when explicit CODEX_HOME selects Codex OAuth auth", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-oauth-env-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const explicitCodexHome = path.join(root, "oauth-codex-home");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(explicitCodexHome, { recursive: true });
+    await fs.writeFile(
+      path.join(explicitCodexHome, "auth.json"),
+      JSON.stringify({
+        OPENAI_API_KEY: null,
+        tokens: { access_token: "oauth-token" },
+      }),
+      "utf8",
+    );
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousOpenAiApiKey = process.env.OPENAI_API_KEY;
+    process.env.HOME = root;
+    process.env.OPENAI_API_KEY = "sk-host-should-not-leak";
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-explicit-oauth",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            CODEX_HOME: explicitCodexHome,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(result.billingType).toBe("subscription");
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.codexHome).toBe(explicitCodexHome);
+      expect(capture.openAiApiKey).toBeNull();
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining("Ignoring inherited OPENAI_API_KEY"),
+        }),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousOpenAiApiKey;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("writes configured OpenAI API keys into an explicit CODEX_HOME auth.json", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-explicit-api-key-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const explicitCodexHome = path.join(root, "explicit-codex-home");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(explicitCodexHome, { recursive: true });
+    await fs.writeFile(
+      path.join(explicitCodexHome, "auth.json"),
+      JSON.stringify({
+        OPENAI_API_KEY: null,
+        tokens: { access_token: "oauth-token" },
+      }),
+      "utf8",
+    );
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-explicit-api-key",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+            CODEX_HOME: explicitCodexHome,
+            OPENAI_API_KEY: "sk-selected-openai",
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      expect(result.billingType).toBe("api");
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.codexHome).toBe(explicitCodexHome);
+      expect(capture.openAiApiKey).toBe("sk-selected-openai");
+      expect(JSON.parse(await fs.readFile(path.join(explicitCodexHome, "auth.json"), "utf8"))).toEqual({
+        OPENAI_API_KEY: "sk-selected-openai",
+      });
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining("Wrote API-key auth.json into configured Codex home"),
+        }),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });
     }
   });

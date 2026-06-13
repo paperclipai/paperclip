@@ -47,6 +47,15 @@ async function openSectionMenu(container: HTMLElement) {
   await flushReact();
 }
 
+function findSectionLabel(container: HTMLElement, label: string) {
+  return Array.from(container.querySelectorAll("span"))
+    .find((element) => element.textContent?.includes(label) && element.getAttribute("aria-hidden") !== "true");
+}
+
+function sectionLabelText(labelElement: Element | undefined) {
+  return labelElement?.parentElement?.textContent?.replace(/\s+/g, " ").trim();
+}
+
 describe("SidebarSection", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot> | null;
@@ -88,13 +97,11 @@ describe("SidebarSection", () => {
     });
     await flushReact();
 
-    const workLabel = Array.from(container.querySelectorAll("span"))
-      .find((element) => element.textContent === "Work");
-    const projectsLabel = Array.from(container.querySelectorAll("span"))
-      .find((element) => element.textContent === "Projects");
+    const workLabel = findSectionLabel(container, "Work");
+    const projectsLabel = findSectionLabel(container, "Projects");
 
-    expect(workLabel?.parentElement?.textContent).toBe("Work");
-    expect(projectsLabel?.parentElement?.textContent).toBe("Projects");
+    expect(sectionLabelText(workLabel)).toBe("[ Work ]");
+    expect(sectionLabelText(projectsLabel)).toBe("[ Projects ]");
     expect(projectsLabel?.parentElement?.querySelector("svg")).toBeNull();
     expect(container.querySelector('button[aria-label="Collapse Projects"] svg')).toBeTruthy();
   });
@@ -146,8 +153,7 @@ describe("SidebarSection", () => {
     });
     await flushReact();
 
-    const workLabel = Array.from(container.querySelectorAll("span"))
-      .find((element) => element.textContent === "Work");
+    const workLabel = findSectionLabel(container, "Work");
     const staticLabelControl = workLabel?.parentElement;
 
     expect(staticLabelControl?.tagName).toBe("DIV");
@@ -285,14 +291,13 @@ describe("SidebarSection", () => {
     });
     await flushReact();
 
-    const projectsLabel = Array.from(container.querySelectorAll("span"))
-      .find((element) => element.textContent === "Projects");
+    const projectsLabel = findSectionLabel(container, "Projects");
     const caret = container.querySelector('button[aria-label="Expand Projects"] svg');
     const action = container.querySelector('button[aria-label="New project"]');
 
     expect(caret?.getAttribute("class")).toContain("opacity-100");
     expect(caret?.getAttribute("class")).not.toContain("opacity-0");
-    expect(projectsLabel?.parentElement?.textContent).toBe("Projects");
+    expect(sectionLabelText(projectsLabel)).toBe("[ Projects ]");
     expect(action?.getAttribute("class")).toContain("opacity-100");
     expect(action?.getAttribute("class")).not.toContain("opacity-0");
   });

@@ -27,6 +27,13 @@ const mockSecretService = vi.hoisted(() => ({
   normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
   resolveAdapterConfigForRuntime: vi.fn(async (_companyId: string, config: Record<string, unknown>) => ({ config })),
 }));
+const mockCredentialService = vi.hoisted(() => ({
+  listForAgent: vi.fn(async () => []),
+  setForAgent: vi.fn(async () => ({ ok: true, credentials: [] })),
+  validateForAdapterAssignment: vi.fn(async () => ({ ok: true, credentials: [] })),
+  getById: vi.fn(async () => null),
+  update: vi.fn(),
+}));
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
@@ -87,6 +94,7 @@ function registerModuleMocks() {
     issueService: () => ({}),
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
+    credentialService: () => mockCredentialService,
     syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
     workspaceOperationService: () => ({}),
   }));

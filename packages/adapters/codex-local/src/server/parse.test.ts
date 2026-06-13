@@ -174,6 +174,32 @@ describe("isCodexTransientUpstreamError", () => {
     );
   });
 
+  it("classifies shorter ChatGPT usage-limit wording as transient", () => {
+    const errorMessage = "You have reached your usage limit. Try again at 8:15 AM.";
+    const now = new Date(2026, 3, 22, 7, 30, 0);
+
+    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(true);
+    expect(extractCodexRetryNotBefore({ errorMessage }, now)?.getTime()).toBe(
+      new Date(2026, 3, 22, 8, 15, 0, 0).getTime(),
+    );
+  });
+
+  it("classifies usage-limit wording without a retry time as transient", () => {
+    expect(
+      isCodexTransientUpstreamError({
+        errorMessage: "You've reached your usage limit. Upgrade your plan or try again tomorrow.",
+      }),
+    ).toBe(true);
+  });
+
+  it("classifies plain OpenAI API rate-limit failures as transient upstream", () => {
+    expect(
+      isCodexTransientUpstreamError({
+        errorMessage: "Request failed with status 429 Too Many Requests: rate limit reached for gpt-5.",
+      }),
+    ).toBe(true);
+  });
+
   it("parses explicit timezone hints on usage-limit retry windows", () => {
     const errorMessage = "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at 11:31 PM (America/Chicago).";
     const now = new Date("2026-04-23T03:29:02.000Z");

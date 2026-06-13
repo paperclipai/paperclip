@@ -6,10 +6,12 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 
 const CODEX_TRANSIENT_UPSTREAM_RE =
-  /(?:we(?:'|’)re\s+currently\s+experiencing\s+high\s+demand|temporary\s+errors|rate[-\s]?limit(?:ed)?|too\s+many\s+requests|\b429\b|server\s+overloaded|service\s+unavailable|try\s+again\s+later)/i;
+  /(?:we(?:'|’)re\s+currently\s+experiencing\s+high\s+demand|temporary\s+errors|rate[-\s]?limit(?:ed)?|too\s+many\s+requests|\b429\b|server\s+overloaded|service\s+unavailable|try\s+again\s+later|usage\s+limit|quota\s+(?:exceeded|limit)|insufficient_quota)/i;
 const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
+const CODEX_RATE_LIMIT_RE =
+  /(?:rate[-\s]?limit(?:ed)?|too\s+many\s+requests|\b429\b|usage\s+limit|quota\s+(?:exceeded|limit)|insufficient_quota)/i;
 const CODEX_USAGE_LIMIT_RE =
-  /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
+  /you(?:'|’| ha)ve\s+(?:hit|reached)\s+(?:your\s+)?usage limit[\s\S]*?try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
@@ -300,7 +302,11 @@ export function isCodexTransientUpstreamError(input: {
   if (extractCodexRetryNotBefore(input) != null) return true;
   if (!CODEX_TRANSIENT_UPSTREAM_RE.test(haystack)) return false;
   // Keep automatic retries scoped to the observed remote-compaction/high-demand
-  // failure shape, plus explicit usage-limit windows that tell us when retrying
-  // becomes safe again.
-  return CODEX_REMOTE_COMPACTION_RE.test(haystack) || /high\s+demand|temporary\s+errors/i.test(haystack);
+  // failure shape, plus explicit rate/usage-limit windows that can be relieved
+  // by rotating to another selected OpenAI credential.
+  return (
+    CODEX_REMOTE_COMPACTION_RE.test(haystack) ||
+    CODEX_RATE_LIMIT_RE.test(haystack) ||
+    /high\s+demand|temporary\s+errors/i.test(haystack)
+  );
 }

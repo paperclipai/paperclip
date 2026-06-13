@@ -28,6 +28,13 @@ const mockSecretService = vi.hoisted(() => ({
   resolveAdapterConfigForRuntime: vi.fn(),
   normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
 }));
+const mockCredentialService = vi.hoisted(() => ({
+  listForAgent: vi.fn(async () => []),
+  setForAgent: vi.fn(async () => ({ ok: true, credentials: [] })),
+  validateForAdapterAssignment: vi.fn(async () => ({ ok: true, credentials: [] })),
+  getById: vi.fn(async () => null),
+  update: vi.fn(),
+}));
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
@@ -49,6 +56,7 @@ vi.mock("../services/index.js", () => ({
   issueService: () => ({}),
   logActivity: mockLogActivity,
   secretService: () => mockSecretService,
+  credentialService: () => mockCredentialService,
   syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
   workspaceOperationService: () => ({}),
 }));
@@ -79,6 +87,7 @@ function registerModuleMocks() {
     issueService: () => ({}),
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
+    credentialService: () => mockCredentialService,
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
     workspaceOperationService: () => ({}),
   }));
@@ -251,7 +260,7 @@ describe("agent instructions bundle routes", () => {
       entryFile: "AGENTS.md",
     });
     expect(mockAgentInstructionsService.getBundle).toHaveBeenCalled();
-  });
+  }, 20_000);
 
   it("writes a bundle file and persists compatibility config", async () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)

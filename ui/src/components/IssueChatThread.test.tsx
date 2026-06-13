@@ -1720,6 +1720,69 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("renders historical run transcripts only after the folded run is expanded", async () => {
+    const root = createRoot(container);
+    const transcriptText = "Historical transcript payload that should not mount immediately.";
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[
+              {
+                runId: "run-history-lazy-render",
+                status: "succeeded",
+                agentId: "agent-1",
+                agentName: "Agent 1",
+                createdAt: new Date("2026-04-06T12:00:00.000Z"),
+                startedAt: new Date("2026-04-06T12:00:00.000Z"),
+                finishedAt: new Date("2026-04-06T12:01:00.000Z"),
+              },
+            ]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            transcriptsByRunId={new Map([
+              [
+                "run-history-lazy-render",
+                [
+                  {
+                    kind: "assistant",
+                    ts: "2026-04-06T12:00:10.000Z",
+                    text: transcriptText,
+                  },
+                ],
+              ],
+            ])}
+            hasOutputForRun={(runId) => runId === "run-history-lazy-render"}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Agent 1");
+    expect(container.textContent).toContain("worked for 1 minute");
+    expect(container.textContent).not.toContain(transcriptText);
+
+    const toggleButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Agent 1"),
+    );
+    expect(toggleButton).toBeTruthy();
+
+    await act(async () => {
+      toggleButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain(transcriptText);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("shows deferred wake badge only for hold-deferred queued comments", () => {
     const root = createRoot(container);
 
