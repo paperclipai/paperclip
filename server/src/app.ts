@@ -548,6 +548,10 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
       webhookSecret: appConfig.githubWebhookSecret || null,
       pluginWorkerManager: workerManager,
       prReviewerAgentId: appConfig.githubPrReviewerAgentId || null,
+      dependabotAgentId: appConfig.githubDependabotAgentId || null,
+      dependabotMinSeverity: (["low", "medium", "high", "critical"] as const).find(
+        (level) => level === appConfig.githubDependabotMinSeverity,
+      ),
     }),
   );
 

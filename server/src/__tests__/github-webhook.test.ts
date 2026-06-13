@@ -23,6 +23,7 @@ import {
   __test_buildPrReviewerWakeIdempotencyKey,
   __test_extractPaperclipIdentifiers,
   __test_hasPrReviewerRequestMention,
+  __test_resolveDependabotAlertContext,
   __test_resolveEventContext,
   __test_shouldFirePrReviewerWake,
   __test_verifyGithubSignature,
@@ -334,6 +335,62 @@ describe("github-webhook pure helpers", () => {
     expect(ctx?.reviewBody).toBeNull();
     expect(ctx?.reviewState).toBe("approved");
   });
+
+  it("resolves a dependabot_alert.created payload into a remediation context", () => {
+    const ctx = __test_resolveDependabotAlertContext({
+      action: "created",
+      alert: {
+        number: 58,
+        html_url: "https://github.com/Blockcast/paperclip/security/dependabot/58",
+        dependency: {
+          package: { ecosystem: "npm", name: "vitest" },
+          manifest_path: "packages/mcp-gateway/package.json",
+        },
+        security_advisory: {
+          ghsa_id: "GHSA-5xrq-8626-4rwp",
+          cve_id: "CVE-2026-47429",
+          summary: "When Vitest UI server is listening, arbitrary file can be read and executed",
+          severity: "critical",
+        },
+        security_vulnerability: {
+          package: { ecosystem: "npm", name: "vitest" },
+          severity: "critical",
+          vulnerable_version_range: "< 3.2.6",
+          first_patched_version: { identifier: "3.2.6" },
+        },
+      },
+      repository: { full_name: "Blockcast/paperclip" },
+    });
+    expect(ctx).toMatchObject({
+      action: "created",
+      alertNumber: 58,
+      severity: "critical",
+      packageName: "vitest",
+      ecosystem: "npm",
+      manifestPath: "packages/mcp-gateway/package.json",
+      ghsaId: "GHSA-5xrq-8626-4rwp",
+      cveId: "CVE-2026-47429",
+      vulnerableRange: "< 3.2.6",
+      patchedVersion: "3.2.6",
+      alertUrl: "https://github.com/Blockcast/paperclip/security/dependabot/58",
+    });
+  });
+
+  it("ignores terminal dependabot alert actions (fixed / dismissed / auto_dismissed)", () => {
+    for (const action of ["fixed", "dismissed", "auto_dismissed"]) {
+      expect(
+        __test_resolveDependabotAlertContext({
+          action,
+          alert: { number: 7, security_vulnerability: { severity: "critical" } },
+        }),
+      ).toBeNull();
+    }
+  });
+
+  it("returns null for dependabot payloads without a numeric alert number", () => {
+    expect(__test_resolveDependabotAlertContext({ action: "created", alert: {} })).toBeNull();
+    expect(__test_resolveDependabotAlertContext({ action: "created" })).toBeNull();
+  });
 });
 
 describeEmbeddedPostgres("github-webhook route", () => {
@@ -386,7 +443,7 @@ describeEmbeddedPostgres("github-webhook route", () => {
     await tempDb?.cleanup();
   });
 
-  function buildApp(config: Pick<GithubWebhookConfig, "prReviewerAgentId" | "heartbeatOptions"> = {}) {
+  function buildApp(config: Pick<GithubWebhookConfig, "prReviewerAgentId" | "dependabotAgentId" | "dependabotMinSeverity" | "heartbeatOptions"> = {}) {
     const app = express();
     app.use(express.json({
       verify: (req, _res, buf) => {
@@ -781,5 +838,130 @@ describeEmbeddedPostgres("github-webhook route", () => {
       paperclipIdentifiers: ["BLO-3182"],
     });
     expect(wakes[0]!.reason).toBe("github_check_completed");
+  });
+
+  function dependabotPayload(severity: string, action = "created", alertNumber = 58) {
+    return {
+      action,
+      alert: {
+        number: alertNumber,
+        html_url: `https://github.com/Blockcast/paperclip/security/dependabot/${alertNumber}`,
+        dependency: {
+          package: { ecosystem: "npm", name: "vitest" },
+          manifest_path: "packages/mcp-gateway/package.json",
+        },
+        security_advisory: {
+          ghsa_id: "GHSA-5xrq-8626-4rwp",
+          cve_id: "CVE-2026-47429",
+          summary: "When Vitest UI server is listening, arbitrary file can be read and executed",
+          severity,
+        },
+        security_vulnerability: {
+          package: { ecosystem: "npm", name: "vitest" },
+          severity,
+          vulnerable_version_range: "< 3.2.6",
+          first_patched_version: { identifier: "3.2.6" },
+        },
+      },
+      repository: { full_name: "Blockcast/paperclip" },
+    };
+  }
+
+  async function postDependabot(
+    app: ReturnType<typeof buildApp>,
+    payload: Record<string, unknown>,
+    deliveryId = "delivery-dependabot-1",
+  ) {
+    const { body, signature } = signedRequest(payload);
+    return request(app)
+      .post("/api/webhooks/github")
+      .set("x-github-event", "dependabot_alert")
+      .set("x-hub-signature-256", signature)
+      .set("x-github-delivery", deliveryId)
+      .set("content-type", "application/json")
+      .send(body);
+  }
+
+  it("drives a remediation wake for a critical dependabot alert", async () => {
+    const { agentId } = await seedCompanyAndAgent({ agentName: "Release Engineer" });
+    const app = buildApp({ dependabotAgentId: agentId });
+
+    const res = await postDependabot(app, dependabotPayload("critical"));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      ignored: "no_paperclip_identifier",
+      dependabotWakeFired: true,
+    });
+
+    const runs = await db
+      .select({ status: heartbeatRuns.status, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.contextSnapshot).toMatchObject({
+      taskKey: "github-dependabot:Blockcast/paperclip#58",
+      wakeReason: "github_dependabot_alert",
+      dependabotAlertNumber: 58,
+      dependabotSeverity: "critical",
+      dependabotPackage: "vitest",
+      dependabotGhsaId: "GHSA-5xrq-8626-4rwp",
+      dependabotCveId: "CVE-2026-47429",
+      dependabotPatchedVersion: "3.2.6",
+      dependabotManifestPath: "packages/mcp-gateway/package.json",
+    });
+  });
+
+  it("does not wake below the severity floor (default high)", async () => {
+    const { agentId } = await seedCompanyAndAgent({ agentName: "Release Engineer" });
+    const app = buildApp({ dependabotAgentId: agentId });
+
+    const res = await postDependabot(app, dependabotPayload("medium"));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ dependabotWakeFired: false });
+
+    const runs = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+  });
+
+  it("honors a lowered severity floor", async () => {
+    const { agentId } = await seedCompanyAndAgent({ agentName: "Release Engineer" });
+    const app = buildApp({ dependabotAgentId: agentId, dependabotMinSeverity: "medium" });
+
+    const res = await postDependabot(app, dependabotPayload("medium"));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ dependabotWakeFired: true });
+  });
+
+  it("acks dependabot alerts without waking when no remediation agent is configured", async () => {
+    const app = buildApp();
+
+    const res = await postDependabot(app, dependabotPayload("critical"));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      ignored: "no_paperclip_identifier",
+      dependabotWakeFired: false,
+    });
+  });
+
+  it("dedupes a redelivered dependabot created alert via the idempotency key", async () => {
+    const { agentId } = await seedCompanyAndAgent({ agentName: "Release Engineer" });
+    const app = buildApp({ dependabotAgentId: agentId });
+
+    await postDependabot(app, dependabotPayload("critical"), "delivery-1");
+    const res2 = await postDependabot(app, dependabotPayload("critical"), "delivery-2");
+
+    expect(res2.status).toBe(200);
+    const wakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakes).toHaveLength(1);
   });
 });

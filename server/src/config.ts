@@ -146,6 +146,8 @@ export interface Config {
   // events to drive PR review automation. When unset, the github-webhook
   // route only wakes the issue assignee (legacy behavior).
   githubPrReviewerAgentId: string;
+  githubDependabotAgentId: string;
+  githubDependabotMinSeverity: string;
   telemetryEnabled: boolean;
 }
 
@@ -448,6 +450,8 @@ export function loadConfig(): Config {
     // identifier, so PRs without a BLO-XXX in the branch/title/body still
     // get reviewed.
     githubPrReviewerAgentId: process.env.PAPERCLIP_PR_REVIEWER_AGENT_ID ?? "",
+    githubDependabotAgentId: process.env.PAPERCLIP_DEPENDABOT_AGENT_ID ?? "",
+    githubDependabotMinSeverity: process.env.PAPERCLIP_DEPENDABOT_MIN_SEVERITY ?? "high",
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };
 }
