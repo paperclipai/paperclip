@@ -95,19 +95,16 @@ function SortableCompanyItem({
       }}
       className={cn(
         "min-w-0 gap-2 py-2",
-        isEditing && "cursor-grab",
         isDragging && "opacity-80",
         isSelected && "bg-accent text-accent-foreground",
       )}
     >
-      <WorkspaceIcon company={company} />
-      <span className="min-w-0 flex-1 truncate">{company.name}</span>
       {isEditing ? (
         <button
           type="button"
           ref={setActivatorNodeRef}
           aria-label={`Reorder ${company.name}`}
-          className="inline-flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-ring"
+          className="inline-flex size-8 shrink-0 cursor-grab items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-ring active:cursor-grabbing"
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -115,9 +112,12 @@ function SortableCompanyItem({
           {...attributes}
           {...listeners}
         >
-          <GripVertical className="size-4" aria-hidden="true" />
+          <GripVertical className="size-5" aria-hidden="true" />
         </button>
-      ) : (
+      ) : null}
+      <WorkspaceIcon company={company} />
+      <span className="min-w-0 flex-1 truncate">{company.name}</span>
+      {isEditing ? null : (
         <>
           <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
             {company.issuePrefix}
@@ -263,6 +263,11 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
             {isEditingOrder ? "Done" : "Edit"}
           </button>
         </div>
+        {isEditingOrder ? (
+          <p className="px-2 pb-1.5 text-[11px] text-muted-foreground">
+            Drag the handle to reorder.
+          </p>
+        ) : null}
         <div className="max-h-96 overflow-y-auto">
           <DndContext
             sensors={sensors}
