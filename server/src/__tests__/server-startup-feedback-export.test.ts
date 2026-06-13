@@ -348,7 +348,10 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
   });
 
   it("rewrites explicit-port auth public URLs when detect-port selects a new port", async () => {
+    // Use a non-loopback bind host so PAPERCLIP_RUNTIME_API_URL reflects the public URL.
+    // For loopback hosts, PAPERCLIP_RUNTIME_API_URL always uses the loopback address (CES-3523).
     loadConfigMock.mockReturnValueOnce(buildTestConfig({
+      host: "0.0.0.0",
       port: 3100,
       authBaseUrlMode: "explicit",
       authPublicBaseUrl: "http://my-host.ts.net:3100",
@@ -363,7 +366,10 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
   });
 
   it("keeps no-port auth public URLs stable when detect-port selects a new port", async () => {
+    // Use a non-loopback bind host so PAPERCLIP_RUNTIME_API_URL reflects the public URL.
+    // For loopback hosts, PAPERCLIP_RUNTIME_API_URL always uses the loopback address (CES-3523).
     loadConfigMock.mockReturnValueOnce(buildTestConfig({
+      host: "0.0.0.0",
       port: 3100,
       authBaseUrlMode: "explicit",
       authPublicBaseUrl: "https://paperclip.example",
@@ -375,5 +381,22 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     expect(started.listenPort).toBe(3110);
     expect(started.apiUrl).toBe("https://paperclip.example");
     expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("https://paperclip.example");
+  });
+
+  it("uses loopback URL for PAPERCLIP_RUNTIME_API_URL when bound to loopback, even if authPublicBaseUrl is set (CES-3523)", async () => {
+    // Scenario: server binds to 127.0.0.1 and has a public tunnel URL configured.
+    // Agents run on the same machine, so PAPERCLIP_RUNTIME_API_URL must be the
+    // loopback address to stay connected when the tunnel goes down or changes.
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({
+      host: "127.0.0.1",
+      port: 3100,
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "https://tunnel.example.localtunnel.me",
+    }));
+
+    const started = await startServer();
+
+    expect(started.apiUrl).toBe("https://tunnel.example.localtunnel.me");
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:3100");
   });
 });
