@@ -600,6 +600,9 @@ describe.sequential("issue comment reopen routes", () => {
       expect.anything(),
       expect.objectContaining({ reason: "issue_reopened_via_comment" }),
     );
+    expect(mockRoutineService.syncRunStatusForIssue).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+    );
   });
 
   it("rejects non-assignee agent POST comments on closed issues", async () => {

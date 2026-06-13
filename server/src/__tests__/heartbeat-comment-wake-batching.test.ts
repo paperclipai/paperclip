@@ -30,6 +30,18 @@ async function closeDbClient(db: ReturnType<typeof createDb> | undefined) {
   await db?.$client?.end?.({ timeout: 0 });
 }
 
+async function waitForAgentIdle(db: ReturnType<typeof createDb>, agentId: string) {
+  await waitFor(async () => {
+    const agent = await db
+      .select({ status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    return agent?.status !== "running";
+  });
+  await new Promise((resolve) => setTimeout(resolve, 25));
+}
+
 async function createControlledGatewayServer() {
   const server = createServer();
   const wss = new WebSocketServer({ server });
@@ -348,6 +360,7 @@ describe("heartbeat comment wake batching", () => {
           taskId: issueId,
           commentId: comment1.id,
           wakeReason: "issue_commented",
+          skipIssueComment: true,
         },
         requestedByActorType: "user",
         requestedByActorId: "user-1",
@@ -395,6 +408,7 @@ describe("heartbeat comment wake batching", () => {
           taskId: issueId,
           commentId: comment2.id,
           wakeReason: "issue_commented",
+          skipIssueComment: true,
         },
         requestedByActorType: "user",
         requestedByActorId: "user-1",
@@ -409,6 +423,7 @@ describe("heartbeat comment wake batching", () => {
           taskId: issueId,
           commentId: comment3.id,
           wakeReason: "issue_commented",
+          skipIssueComment: true,
         },
         requestedByActorType: "user",
         requestedByActorId: "user-1",
@@ -463,6 +478,7 @@ describe("heartbeat comment wake batching", () => {
         const statusesByRunId = new Map(runs.map((run) => [run.id, run.status]));
         return statusesByRunId.get(firstRun!.id) === "succeeded" && statusesByRunId.get(secondRunId) === "succeeded";
       }, 90_000);
+      await waitForAgentIdle(db, agentId);
 
       expect(secondPayload.paperclip).toMatchObject({
         wake: {
@@ -547,6 +563,7 @@ describe("heartbeat comment wake batching", () => {
           taskId: issueId,
           commentId: comment1.id,
           wakeReason: "issue_commented",
+          skipIssueComment: true,
         },
         requestedByActorType: "user",
         requestedByActorId: "user-1",
@@ -592,6 +609,7 @@ describe("heartbeat comment wake batching", () => {
           taskId: issueId,
           commentId: queuedComment.id,
           wakeReason: "issue_commented",
+          skipIssueComment: true,
         },
         requestedByActorType: "user",
         requestedByActorId: "user-1",
@@ -629,12 +647,18 @@ describe("heartbeat comment wake batching", () => {
         },
       });
       expect(String(promotedPayload.message ?? "")).toContain("Queued follow-up");
+      const promotedRunId = typeof promotedPayload.idempotencyKey === "string" ? promotedPayload.idempotencyKey : null;
+      if (!promotedRunId) {
+        throw new Error("Expected promoted gateway payload to include an idempotencyKey run id");
+      }
 
       gateway.releaseFirstWait();
       await waitFor(async () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => ["cancelled", "succeeded"].includes(run.status));
+        const statusesByRunId = new Map(runs.map((run) => [run.id, run.status]));
+        return statusesByRunId.get(firstRun!.id) === "cancelled" && statusesByRunId.get(promotedRunId) === "succeeded";
       }, 90_000);
+      await waitForAgentIdle(db, agentId);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
@@ -710,6 +734,7 @@ describe("heartbeat comment wake batching", () => {
           taskId: issueId,
           commentId: comment1.id,
           wakeReason: "issue_commented",
+          skipIssueComment: true,
         },
         requestedByActorType: "user",
         requestedByActorId: "user-1",
@@ -746,6 +771,7 @@ describe("heartbeat comment wake batching", () => {
           taskId: issueId,
           commentId: comment2.id,
           wakeReason: "issue_commented",
+          skipIssueComment: true,
         },
         requestedByActorType: "user",
         requestedByActorId: "user-1",
@@ -987,6 +1013,7 @@ describe("heartbeat comment wake batching", () => {
           .then((rows) => rows[0] ?? null);
         return run?.status === "succeeded";
       });
+      await waitForAgentIdle(db, agentId);
 
       const issue = await db
         .select({
