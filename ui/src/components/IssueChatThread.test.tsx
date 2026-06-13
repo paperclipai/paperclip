@@ -1794,6 +1794,66 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("paginates oversized issue comments before rendering all markdown", () => {
+    const root = createRoot(container);
+    const longBody = [
+      "```log",
+      ...Array.from({ length: 140 }, (_, index) => `long comment line ${index + 1}`),
+      "```",
+    ].join("\n");
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[{
+              id: "comment-long-body",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-board",
+              body: longBody,
+              authorType: "user",
+              presentation: null,
+              metadata: null,
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+            }]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="issue-chat-long-markdown"]')).not.toBeNull();
+    expect(container.textContent).toContain("Long comment");
+    expect(container.textContent).toContain("page 1 of 2");
+    expect(container.textContent).toContain("long comment line 1");
+    expect(container.textContent).not.toContain("long comment line 120");
+
+    const nextPage = container.querySelector(
+      '[aria-label="Next long comment page"]',
+    ) as HTMLButtonElement | null;
+    expect(nextPage).not.toBeNull();
+
+    act(() => {
+      nextPage?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("page 2 of 2");
+    expect(container.textContent).toContain("long comment line 120");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("shows deferred wake badge only for hold-deferred queued comments", () => {
     const root = createRoot(container);
 
