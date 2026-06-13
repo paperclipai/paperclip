@@ -76,8 +76,9 @@ import {
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
-import { redactEventPayload } from "../redaction.js";
+import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
+import { summarizeHeartbeatRunResultJson } from "../services/heartbeat-run-summary.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
@@ -110,6 +111,68 @@ function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
   if (!Number.isFinite(parsed)) return RUN_LOG_DEFAULT_LIMIT_BYTES;
   return Math.max(1, Math.min(RUN_LOG_MAX_LIMIT_BYTES, Math.trunc(parsed)));
+}
+
+function asPlainRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function readRedactionMetadata(run: Record<string, unknown>) {
+  const resultJson = asPlainRecord(run.resultJson);
+  const contextSnapshot = asPlainRecord(run.contextSnapshot);
+  const redaction = asPlainRecord(resultJson?.redaction) ?? asPlainRecord(contextSnapshot?.redaction);
+  const securityRedacted = Boolean(
+    run.securityRedacted ??
+      resultJson?.securityRedacted ??
+      contextSnapshot?.securityRedacted ??
+      redaction?.securityRedacted,
+  );
+  const reason = [
+    run.redactionReason,
+    resultJson?.redactionReason,
+    resultJson?.securityRedactionReason,
+    contextSnapshot?.redactionReason,
+    contextSnapshot?.securityRedactionReason,
+    redaction?.reason,
+  ].find((value): value is string => typeof value === "string" && value.trim().length > 0);
+  const incidentTicket = [
+    run.incidentTicket,
+    resultJson?.incidentTicket,
+    resultJson?.securityIncidentTicket,
+    contextSnapshot?.incidentTicket,
+    contextSnapshot?.securityIncidentTicket,
+    redaction?.incidentTicket,
+  ].find((value): value is string => typeof value === "string" && value.trim().length > 0);
+
+  return {
+    securityRedacted,
+    reason: redactSensitiveText(reason ?? "raw_run_output_not_returned"),
+    incidentTicket: incidentTicket ? redactSensitiveText(incidentTicket) : null,
+  };
+}
+
+function safeHeartbeatRunDetail(run: Record<string, unknown>) {
+  const redaction = readRedactionMetadata(run);
+  const contextSnapshot = asPlainRecord(run.contextSnapshot);
+  return {
+    ...run,
+    error: typeof run.error === "string" ? redactSensitiveText(run.error) : run.error,
+    contextSnapshot: contextSnapshot ? redactEventPayload(contextSnapshot) : null,
+    resultJson: redactEventPayload(summarizeHeartbeatRunResultJson(asPlainRecord(run.resultJson))),
+    stdoutExcerpt: null,
+    stderrExcerpt: null,
+    outputRedaction: {
+      rawResultJsonOmitted: true,
+      rawStdoutOmitted: true,
+      rawStderrOmitted: true,
+      securityRedacted: redaction.securityRedacted,
+      reason: redaction.reason,
+      incidentTicket: redaction.incidentTicket,
+      logBytes: run.logBytes ?? null,
+      logSha256: run.logSha256 ?? null,
+    },
+  };
 }
 
 function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
@@ -3463,7 +3526,11 @@ export function agentRoutes(
     const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
     res.json(
       redactCurrentUserValue(
-        { ...run, retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
+        safeHeartbeatRunDetail({
+          ...run,
+          retryExhaustedReason,
+          outputSilence: await heartbeat.buildRunOutputSilence(run),
+        }),
         await getCurrentUserRedactionOptions(),
       ),
     );

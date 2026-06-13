@@ -8821,7 +8821,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
         const sanitizedChunk = compactRunLogChunk(
-          redactCurrentUserText(chunk, currentUserRedactionOptions),
+          redactSensitiveText(redactCurrentUserText(chunk, currentUserRedactionOptions)),
         );
         if (stream === "stdout") stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
@@ -11410,9 +11410,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         store: run.logStore,
         logRef: run.logRef,
         ...result,
-        // Run-log chunks are already redacted before they are appended to the store.
-        // Rewriting the full chunk again on every poll creates avoidable string copies.
-        content: result.content,
+        // Keep the read path defensive for logs retained before newer append-time redaction.
+        content: redactSensitiveText(result.content),
       };
     },
 
