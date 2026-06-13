@@ -262,6 +262,7 @@ export interface IssueFilters {
   originKind?: string;
   originKindPrefix?: string;
   originId?: string;
+  originFingerprint?: string;
   includeRoutineExecutions?: boolean;
   excludeRoutineExecutions?: boolean;
   includePluginOperations?: boolean;
@@ -2942,6 +2943,7 @@ async function blockedInboxIssueConditions(
   if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
   if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
   if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
+  if (filters?.originFingerprint) conditions.push(eq(issues.originFingerprint, filters.originFingerprint));
   if (filters?.hasPlanDocument !== undefined) {
     conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
   }
@@ -4048,6 +4050,7 @@ export function issueService(db: Db) {
       if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
       if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
+      if (filters?.originFingerprint) conditions.push(eq(issues.originFingerprint, filters.originFingerprint));
       if (filters?.hasPlanDocument !== undefined) {
         conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
       }
@@ -4218,6 +4221,7 @@ export function issueService(db: Db) {
       if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
       if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
+      if (filters?.originFingerprint) conditions.push(eq(issues.originFingerprint, filters.originFingerprint));
       if (filters?.hasPlanDocument !== undefined) {
         conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
       }

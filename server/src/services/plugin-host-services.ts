@@ -12,7 +12,7 @@ import {
   principalPermissionGrants,
   projects as projectsTable,
 } from "@paperclipai/db";
-import { eq, and, like, desc, inArray, sql, isNull, isNotNull, gt, lte } from "drizzle-orm";
+import { eq, and, like, desc, inArray, notInArray, sql, isNull, isNotNull, gt, lte } from "drizzle-orm";
 import type {
   HostServices,
   Company,
@@ -684,6 +684,70 @@ export function buildHostServices(
       return originKind;
     }
     throw new Error(`Plugin may only use originKind values under ${defaultPluginOriginKind}`);
+  };
+
+  const alertResourceLabelKeys = [
+    "cluster",
+    "namespace",
+    "persistentvolumeclaim",
+    "persistentvolume",
+    "volume",
+    "node",
+    "pod",
+    "container",
+    "deployment",
+    "daemonset",
+    "statefulset",
+    "replicaset",
+    "job",
+    "cronjob",
+    "service",
+    "ingress",
+    "endpoint",
+    "instance",
+  ];
+
+  const normalizeAlertFingerprintPart = (value: string) =>
+    value.trim().toLowerCase().replace(/[^a-z0-9._:/-]+/g, "-").replace(/^-+|-+$/g, "");
+
+  const collectAlertLabelCandidates = (text: string) => {
+    const labels = new Map<string, string>();
+    const add = (key: string, value: string) => {
+      const normalizedKey = key.trim().toLowerCase();
+      const normalizedValue = value.trim().replace(/^['"]|['"]$/g, "");
+      if (/^[a-z_][a-z0-9_]*$/.test(normalizedKey) && normalizedValue.length > 0) {
+        labels.set(normalizedKey, normalizedValue);
+      }
+    };
+    for (const match of text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"?([^"\s,}\]]+)"?/g)) {
+      add(match[1] ?? "", match[2] ?? "");
+    }
+    for (const match of text.matchAll(/["']([A-Za-z_][A-Za-z0-9_]*)["']\s*:\s*["']([^"']+)["']/g)) {
+      add(match[1] ?? "", match[2] ?? "");
+    }
+    for (const match of text.matchAll(/^\s*[-*]?\s*`?([A-Za-z_][A-Za-z0-9_]*)`?\s*:\s*`?([^`\n]+?)`?\s*$/gm)) {
+      add(match[1] ?? "", match[2] ?? "");
+    }
+    return labels;
+  };
+
+  const deriveAlertOriginFingerprint = (input: {
+    originKind: string;
+    title: string;
+    description?: string | null;
+  }) => {
+    const isAlertIssue = input.originKind.includes(":alert") || pluginKey.toLowerCase().includes("alertmanager");
+    if (!isAlertIssue) return null;
+    const text = `${input.title}\n${input.description ?? ""}`;
+    const labels = collectAlertLabelCandidates(text);
+    const alertName = labels.get("alertname") ?? input.title.match(/\b[A-Z][A-Za-z0-9_]*\b/)?.[0] ?? null;
+    if (!alertName) return null;
+    const resourceParts = alertResourceLabelKeys
+      .filter((key) => labels.has(key))
+      .map((key) => `${key}=${normalizeAlertFingerprintPart(labels.get(key) ?? "")}`)
+      .filter((part) => !part.endsWith("="));
+    if (resourceParts.length === 0) return null;
+    return ["alert", normalizeAlertFingerprintPart(alertName), ...resourceParts].join(":");
   };
 
   const assertReadableOriginFilter = (originKind: unknown) => {
@@ -1544,17 +1608,69 @@ export function buildHostServices(
       async create(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const { actorAgentId, actorUserId, actorRunId, originKind, surfaceVisibility, ...issueInput } = params;
+        const { actorAgentId, actorUserId, actorRunId, originKind, originFingerprint: rawOriginFingerprint, surfaceVisibility, ...issueInput } = params;
         const normalizedOriginKind = normalizePluginOriginKind(
           surfaceVisibility === "plugin_operation" && !originKind
             ? pluginOperationIssueOriginKind(pluginKey)
             : originKind,
         );
+        const originFingerprint = typeof rawOriginFingerprint === "string" && rawOriginFingerprint.trim().length > 0
+          ? rawOriginFingerprint.trim()
+          : deriveAlertOriginFingerprint({
+            originKind: normalizedOriginKind,
+            title: params.title,
+            description: params.description,
+          });
+        if (originFingerprint) {
+          const [existingIssue] = await db
+            .select()
+            .from(issuesTable)
+            .where(and(
+              eq(issuesTable.companyId, companyId),
+              eq(issuesTable.originKind, normalizedOriginKind),
+              eq(issuesTable.originFingerprint, originFingerprint),
+              notInArray(issuesTable.status, ["done", "cancelled"]),
+              isNull(issuesTable.hiddenAt),
+            ))
+            .orderBy(desc(issuesTable.createdAt), desc(issuesTable.id))
+            .limit(1);
+          if (existingIssue) {
+            const comment = [
+              "Alert deduplicated by origin fingerprint.",
+              "",
+              `- Plugin: ${pluginKey}`,
+              `- Origin kind: ${normalizedOriginKind}`,
+              `- Origin fingerprint: ${originFingerprint}`,
+              `- Incoming title: ${params.title}`,
+            ].join("\n");
+            await issues.addComment(existingIssue.id, comment, {
+              agentId: actorAgentId ?? undefined,
+              userId: actorUserId ?? undefined,
+              runId: actorRunId ?? null,
+            });
+            await logPluginActivity({
+              companyId,
+              action: "issue.deduplicated",
+              entityType: "issue",
+              entityId: existingIssue.id,
+              actor: { actorAgentId, actorUserId, actorRunId },
+              details: {
+                identifier: existingIssue.identifier,
+                originKind: normalizedOriginKind,
+                originId: existingIssue.originId,
+                originFingerprint,
+                incomingTitle: params.title,
+              },
+            });
+            return existingIssue as Issue;
+          }
+        }
         const issue = (await issues.create(companyId, {
           ...(issueInput as any),
           originKind: normalizedOriginKind,
           originId: params.originId ?? null,
           originRunId: params.originRunId ?? actorRunId ?? null,
+          ...(originFingerprint ? { originFingerprint } : {}),
           createdByAgentId: actorAgentId ?? null,
           createdByUserId: actorUserId ?? null,
         })) as Issue;
@@ -1569,6 +1685,7 @@ export function buildHostServices(
             identifier: issue.identifier,
             originKind: normalizedOriginKind,
             originId: issue.originId,
+            originFingerprint: issue.originFingerprint,
             billingCode: issue.billingCode,
             blockedByIssueIds: params.blockedByIssueIds ?? [],
           },
