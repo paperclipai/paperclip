@@ -323,6 +323,9 @@ This starts the API server at `http://localhost:3100`. An embedded PostgreSQL da
 
 > **Requirements:** Node.js 20+, pnpm 9.15+
 
+To keep Paperclip running after you log out — start on boot, restart on
+crash — see [Running Paperclip as a systemd service](doc/SYSTEMD.md).
+
 <br/>
 
 ## FAQ
