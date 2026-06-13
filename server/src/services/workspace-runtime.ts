@@ -673,6 +673,12 @@ async function resolveGitOwnerRepoRoot(cwd: string): Promise<string> {
   return path.dirname(path.resolve(checkoutRoot, commonDir));
 }
 
+async function resolveGitOwnerRepoRootOrNull(cwd: string | null | undefined): Promise<string | null> {
+  const trimmed = asString(cwd, "").trim();
+  if (!trimmed) return null;
+  return await resolveGitOwnerRepoRoot(trimmed).catch(() => null);
+}
+
 async function findRegisteredGitWorktreeByBranch(repoRoot: string, branchName: string): Promise<string | null> {
   const raw = await runGit(["worktree", "list", "--porcelain"], repoRoot).catch(() => null);
   if (!raw) return null;
@@ -1339,7 +1345,14 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   if (strategy !== "git_worktree") {
     return realized;
   }
-  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd);
+  const repoRoot =
+    await resolveGitOwnerRepoRootOrNull(input.base.baseCwd)
+    ?? await resolveGitOwnerRepoRootOrNull(realized.worktreePath ?? cwd);
+  if (!repoRoot) {
+    throw new Error(
+      `Execution workspace "${cwd}" cannot be reused because neither base workspace "${input.base.baseCwd}" nor the persisted worktree path is a git repository.`,
+    );
+  }
   const recordedBaseRefSha = readRecordedBaseRefSha(input.workspace.metadata);
   if (await directoryExists(cwd)) {
     const baseDrift = await inspectExecutionWorkspaceBaseDrift({
