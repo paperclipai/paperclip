@@ -853,10 +853,11 @@ export function authorizationService(db: Db) {
   async function decide(input: {
     actor: AuthorizationActor;
     action: AuthorizationAction;
+    permissionKey?: PermissionKey | null;
     resource: AuthorizationResource;
     scope?: Record<string, unknown> | null;
   }): Promise<AuthorizationDecision> {
-    const permissionKey = permissionForAction(input.action);
+    const permissionKey = input.permissionKey ?? permissionForAction(input.action);
     const companyId = companyIdForResource(input.resource);
 
     async function decideWithTaskAssignmentGrants(

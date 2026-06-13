@@ -128,6 +128,7 @@ import {
   remoteSecretImportSchema,
   workspaceFileListQuerySchema,
   workspaceFileResourceQuerySchema,
+  PERMISSION_KEYS,
 } from "@paperclipai/shared";
 
 type JsonSchema = Record<string, unknown>;
@@ -1048,6 +1049,22 @@ registry.registerPath({
     body: jsonBody(updateAgentPermissionsSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/grants",
+  tags: ["agents"],
+  summary: "Update an agent permission grant",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({
+      permissionKey: z.enum(PERMISSION_KEYS),
+      scope: z.record(z.string(), z.unknown()).optional().nullable(),
+      enabled: z.boolean().default(true),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({

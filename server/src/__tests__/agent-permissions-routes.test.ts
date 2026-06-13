@@ -1453,6 +1453,50 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.access.taskAssignSource).toBe("agent_creator");
   });
 
+  it("updates explicit agent grants through the dedicated board route", async () => {
+    mockAccessService.listPrincipalGrants.mockResolvedValue([
+      {
+        id: "grant-1",
+        companyId,
+        principalType: "agent",
+        principalId: agentId,
+        permissionKey: "issues:comment:all",
+        scope: null,
+        grantedByUserId: "board-user",
+        createdAt: new Date("2026-03-19T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      },
+    ]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/grants`)
+      .send({ permissionKey: "issues:comment:all", enabled: true }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
+      companyId,
+      "agent",
+      agentId,
+      "issues:comment:all",
+      true,
+      "board-user",
+      null,
+    );
+    expect(res.body.grants).toEqual([
+      expect.objectContaining({
+        permissionKey: "issues:comment:all",
+      }),
+    ]);
+  });
+
   it("exposes a dedicated agent route for the inbox mine view", async () => {
     mockIssueService.list.mockResolvedValue([
       {
