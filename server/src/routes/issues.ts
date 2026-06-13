@@ -6124,7 +6124,31 @@ export function issueRoutes(
         return;
       }
       assertCompanyAccess(req, issue.companyId);
-      assertBoard(req);
+
+      // Board users can always accept; CEO agents may accept plan-document
+      // request_confirmation interactions specifically (design §3.7).
+      if (req.actor.type !== "board") {
+        let ceoPlanAcceptAllowed = false;
+        if (req.actor.type === "agent" && req.actor.agentId) {
+          const actorAgent = await agentsSvc.getById(req.actor.agentId);
+          if (actorAgent?.companyId === issue.companyId && actorAgent?.role === "ceo") {
+            const pendingInteraction = await issueThreadInteractionService(db).getById(interactionId);
+            ceoPlanAcceptAllowed =
+              pendingInteraction?.kind === "request_confirmation" && (
+                (
+                  pendingInteraction.payload?.target?.type === "issue_document" &&
+                  pendingInteraction.payload?.target?.key === "plan"
+                ) || (
+                  typeof pendingInteraction.idempotencyKey === "string" &&
+                  /^confirmation:[^:]+:plan:/.test(pendingInteraction.idempotencyKey)
+                )
+              );
+          }
+        }
+        if (!ceoPlanAcceptAllowed) {
+          assertBoard(req);
+        }
+      }
 
       const actor = getActorInfo(req);
       const { interaction, createdIssues, continuationIssue } = await issueThreadInteractionService(db).acceptInteraction(issue, interactionId, req.body, {
