@@ -43,6 +43,26 @@ const FREE_TEXT_PATTERNS: RedactionPattern[] = [
     replacement: "[REDACTED_GITHUB_TOKEN]",
   },
   {
+    kind: "github_pat",
+    regex: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
+    replacement: "[REDACTED_GITHUB_PAT]",
+  },
+  {
+    kind: "cloudflare_token",
+    regex: /\bcfut_[A-Za-z0-9_-]{20,}\b/g,
+    replacement: "[REDACTED_CF_TOKEN]",
+  },
+  {
+    kind: "webhook_secret",
+    regex: /\bwhsec_[A-Za-z0-9]{20,}\b/g,
+    replacement: "[REDACTED_WEBHOOK_SECRET]",
+  },
+  {
+    kind: "sentry_token",
+    regex: /\bsntrys_[A-Za-z0-9._-]{20,}/g,
+    replacement: "[REDACTED_SENTRY_TOKEN]",
+  },
+  {
     kind: "provider_api_key",
     regex: /\bsk-(?:ant-)?[A-Za-z0-9_-]{12,}\b/g,
     replacement: "[REDACTED_API_KEY]",
@@ -68,6 +88,18 @@ const FREE_TEXT_PATTERNS: RedactionPattern[] = [
     replacement: "[REDACTED_PHONE]",
   },
 ];
+
+// Subset of FREE_TEXT_PATTERNS safe for run-log chunks.
+// Excludes patterns already covered by redactSensitiveText (github_token,
+// provider_api_key, secret_assignment — the last avoids re-processing
+// ***REDACTED*** markers already placed by redactSensitiveText) and patterns
+// with high false-positive rates in raw agent stdout (jwt, email, phone).
+// bearer_token is intentionally retained: redactSensitiveText handles
+// `Authorization: Bearer xxx` via field-name match, while sanitizeRunLogText
+// catches `Bearer xxx` appearing as a bare value in raw stdout.
+const RUN_LOG_PATTERNS: RedactionPattern[] = FREE_TEXT_PATTERNS.filter((p) =>
+  ["pem_block", "bearer_token", "github_pat", "cloudflare_token", "webhook_secret", "sentry_token", "dsn"].includes(p.kind),
+);
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -130,6 +162,27 @@ export function sanitizeFeedbackText(
     state.truncatedFields.add(fieldPath);
   }
 
+  return output;
+}
+
+/**
+ * Lightweight value-based secret redactor for run-log chunks.
+ *
+ * Applies {@link RUN_LOG_PATTERNS} (a subset of {@link FREE_TEXT_PATTERNS})
+ * without truncation, current-user redaction, or field-state tracking.
+ * Designed to run after {@link redactSensitiveText} in `compactRunLogChunk`
+ * to catch token prefixes not covered by the field-name-based pass
+ * (github_pat_, cfut_, whsec_, sntrys_). Patterns already handled by
+ * redactSensitiveText (ghp_*, sk-*, Authorization Bearer, KEY=value) and
+ * patterns with high false-positive rates in raw stdout (jwt, email, phone)
+ * are intentionally excluded.
+ */
+export function sanitizeRunLogText(input: string): string {
+  let output = input;
+  for (const pattern of RUN_LOG_PATTERNS) {
+    output = output.replace(pattern.regex, pattern.replacement as never);
+    pattern.regex.lastIndex = 0;
+  }
   return output;
 }
 
