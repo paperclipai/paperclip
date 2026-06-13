@@ -434,7 +434,7 @@ export function createPluginWorkerHandle(
       throw new Error(`Worker process for plugin "${pluginId}" is not writable`);
     }
     const serialized = serializeMessage(message as any);
-    childProcess.stdin.write(serialized);
+    try { childProcess.stdin.write(serialized); } catch (err) { if (err.code === "EPIPE") { log.warn({ pluginId }, "EPIPE on stdin write: child process exited, ignoring"); } else { throw err; } }
   }
 
   function errorCodeForWorkerHostError(err: unknown): number {

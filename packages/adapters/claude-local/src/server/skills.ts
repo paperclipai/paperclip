@@ -25,6 +25,7 @@ function resolveClaudeSkillsHome(config: Record<string, unknown>) {
       : {};
   const configuredHome = asString(env.HOME);
   const home = configuredHome ? path.resolve(configuredHome) : os.homedir();
+import type { PluginToolDeclaration } from "@paperclipai/shared";
   return path.join(home, ".claude", "skills");
 }
 
