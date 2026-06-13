@@ -3170,6 +3170,29 @@ export function agentRoutes(
     source: HeartbeatSource | undefined;
     skippedResponse: (agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) => unknown | Promise<unknown>;
   };
+  type WakeupTargetAgent = NonNullable<Awaited<ReturnType<typeof svc.getById>>>;
+  const authorizeWakeupTarget = async (
+    req: Request,
+    res: Response,
+    agent: WakeupTargetAgent,
+    id: string,
+  ): Promise<boolean> => {
+    assertCompanyAccess(req, agent.companyId);
+
+    if (req.actor.type === "agent") {
+      const actorAgentId = req.actor.agentId ?? null;
+      const isSelf = actorAgentId === id;
+      const isDirectReport = actorAgentId != null && agent.reportsTo === actorAgentId;
+      if (!isSelf && !isDirectReport) {
+        res.status(403).json({ error: "Agent can only invoke itself or direct reports" });
+        return false;
+      }
+    } else {
+      await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+    }
+
+    return true;
+  };
   const handleWakeupRoute = async (
     req: Request,
     res: Response,
@@ -3181,15 +3204,8 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, agent.companyId);
-
-    if (req.actor.type === "agent") {
-      if (req.actor.agentId !== id) {
-        res.status(403).json({ error: "Agent can only invoke itself" });
-        return;
-      }
-    } else {
-      await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+    if (!await authorizeWakeupTarget(req, res, agent, id)) {
+      return;
     }
     if (agent.orgChainHealth?.status === "invalid_org_chain") {
       res.status(409).json({
@@ -3255,15 +3271,8 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    assertCompanyAccess(req, agent.companyId);
-
-    if (req.actor.type === "agent") {
-      if (req.actor.agentId !== id) {
-        res.status(403).json({ error: "Agent can only invoke itself" });
-        return;
-      }
-    } else {
-      await assertBoardCanManageAgentsForCompany(req, agent.companyId);
+    if (!await authorizeWakeupTarget(req, res, agent, id)) {
+      return;
     }
     if (agent.orgChainHealth?.status === "invalid_org_chain") {
       res.status(409).json({
