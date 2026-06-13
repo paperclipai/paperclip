@@ -11206,85 +11206,171 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await cancelPendingWakeupsForBudgetScope(scope);
   }
 
+  function buildHeartbeatRunListProjection(safeForLegacyEncoding: boolean) {
+    return safeForLegacyEncoding
+      ? {
+          ...heartbeatRunListColumns,
+          error: sql<string | null>`NULL`.as("error"),
+          ...heartbeatRunListContextColumns,
+        }
+      : {
+          ...heartbeatRunListColumns,
+          ...heartbeatRunListContextColumns,
+          ...heartbeatRunListResultColumns,
+        };
+  }
+
+  function mapHeartbeatRunListRow(
+    row: Record<string, unknown>,
+    safeForLegacyEncoding: boolean,
+  ) {
+    const {
+      contextIssueId,
+      contextTaskId,
+      contextTaskKey,
+      contextCommentId,
+      contextWakeCommentId,
+      contextWakeReason,
+      contextWakeSource,
+      contextWakeTriggerDetail,
+      resultSummary,
+      resultResult,
+      resultMessage,
+      resultError,
+      resultTotalCostUsd,
+      resultCostUsd,
+      resultCostUsdCamel,
+      ...rest
+    } = row as Record<string, unknown> & {
+      contextIssueId?: string | null;
+      contextTaskId?: string | null;
+      contextTaskKey?: string | null;
+      contextCommentId?: string | null;
+      contextWakeCommentId?: string | null;
+      contextWakeReason?: string | null;
+      contextWakeSource?: string | null;
+      contextWakeTriggerDetail?: string | null;
+      resultSummary?: string | null;
+      resultResult?: string | null;
+      resultMessage?: string | null;
+      resultError?: string | null;
+      resultTotalCostUsd?: string | null;
+      resultCostUsd?: string | null;
+      resultCostUsdCamel?: string | null;
+    };
+
+    return {
+      ...rest,
+      contextSnapshot: summarizeHeartbeatRunContextSnapshot({
+        issueId: contextIssueId,
+        taskId: contextTaskId,
+        taskKey: contextTaskKey,
+        commentId: contextCommentId,
+        wakeCommentId: contextWakeCommentId,
+        wakeReason: contextWakeReason,
+        wakeSource: contextWakeSource,
+        wakeTriggerDetail: contextWakeTriggerDetail,
+      }),
+      resultJson: safeForLegacyEncoding
+        ? null
+        : summarizeHeartbeatRunListResultJson({
+            summary: resultSummary,
+            result: resultResult,
+            message: resultMessage,
+            error: resultError,
+            totalCostUsd: resultTotalCostUsd,
+            costUsd: resultCostUsd,
+            costUsdCamel: resultCostUsdCamel,
+          }),
+    };
+  }
+
   return {
-    list: async (companyId: string, agentId?: string, limit?: number) => {
+    list: async (companyId: string, agentId?: string, limit?: number, offset?: number) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
-      const query = db
-        .select(
-          safeForLegacyEncoding
-            ? {
-                ...heartbeatRunListColumns,
-                error: sql<string | null>`NULL`.as("error"),
-                ...heartbeatRunListContextColumns,
-              }
-            : {
-                ...heartbeatRunListColumns,
-                ...heartbeatRunListContextColumns,
-                ...heartbeatRunListResultColumns,
-              },
-        )
+      const base = db
+        .select(buildHeartbeatRunListProjection(safeForLegacyEncoding))
         .from(heartbeatRuns)
         .where(
           agentId
             ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId))
             : eq(heartbeatRuns.companyId, companyId),
         )
-        .orderBy(desc(heartbeatRuns.createdAt));
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+        .$dynamic();
 
-      const rows = limit ? await query.limit(limit) : await query;
-      return rows.map((row) => {
-        const {
-          contextIssueId,
-          contextTaskId,
-          contextTaskKey,
-          contextCommentId,
-          contextWakeCommentId,
-          contextWakeReason,
-          contextWakeSource,
-          contextWakeTriggerDetail,
-          resultSummary,
-          resultResult,
-          resultMessage,
-          resultError,
-          resultTotalCostUsd,
-          resultCostUsd,
-          resultCostUsdCamel,
-          ...rest
-        } = row as typeof row & {
-          resultSummary?: string | null;
-          resultResult?: string | null;
-          resultMessage?: string | null;
-          resultError?: string | null;
-          resultTotalCostUsd?: string | null;
-          resultCostUsd?: string | null;
-          resultCostUsdCamel?: string | null;
-        };
+      let q = base;
+      if (limit !== undefined) {
+        q = q.limit(limit);
+      }
+      if (offset !== undefined && offset > 0) {
+        q = q.offset(offset);
+      }
 
-        return {
-          ...rest,
-          contextSnapshot: summarizeHeartbeatRunContextSnapshot({
-            issueId: contextIssueId,
-            taskId: contextTaskId,
-            taskKey: contextTaskKey,
-            commentId: contextCommentId,
-            wakeCommentId: contextWakeCommentId,
-            wakeReason: contextWakeReason,
-            wakeSource: contextWakeSource,
-            wakeTriggerDetail: contextWakeTriggerDetail,
-          }),
-          resultJson: safeForLegacyEncoding
-            ? null
-            : summarizeHeartbeatRunListResultJson({
-                summary: resultSummary,
-                result: resultResult,
-                message: resultMessage,
-                error: resultError,
-                totalCostUsd: resultTotalCostUsd,
-                costUsd: resultCostUsd,
-                costUsdCamel: resultCostUsdCamel,
-              }),
-        };
-      });
+      const rows = await q;
+      return rows.map((row) => mapHeartbeatRunListRow(row, safeForLegacyEncoding));
+    },
+
+    stats: async (companyId: string, agentId?: string) => {
+      const now = new Date();
+      // Calculate 14 days ago for the trailing activity window
+      const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+
+      const condition = agentId
+        ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId), gt(heartbeatRuns.createdAt, fourteenDaysAgo))
+        : and(eq(heartbeatRuns.companyId, companyId), gt(heartbeatRuns.createdAt, fourteenDaysAgo));
+
+      const rows = await db
+        .select({
+          date: sql<string>`DATE(${heartbeatRuns.createdAt} AT TIME ZONE 'UTC')`.as("date"),
+          status: heartbeatRuns.status,
+          count: sql<number>`count(*)`.as("count"),
+        })
+        .from(heartbeatRuns)
+        .where(condition)
+        .groupBy(sql`DATE(${heartbeatRuns.createdAt} AT TIME ZONE 'UTC')`, heartbeatRuns.status);
+
+      return rows.map(r => ({ ...r, count: Number(r.count) }));
+    },
+
+    latestFailed: async (companyId: string) => {
+      // Get the id + status of the most recent run for each agent in the company.
+      // Note: DISTINCT ON is a PostgreSQL-specific feature.
+      const latestRows = await db.execute(sql`
+        SELECT DISTINCT ON (agent_id)
+          id,
+          status
+        FROM heartbeat_runs
+        WHERE company_id = ${companyId}
+        ORDER BY agent_id, created_at DESC
+      `);
+
+      // Filter to only those whose most recent run was a failure.
+      // db.execute may return rows as a plain array (postgres-js) or wrapped in
+      // { rows: [] } (node-postgres); normalise before filtering.
+      const rawRows: Array<Record<string, unknown>> = Array.isArray(latestRows)
+        ? (latestRows as Array<Record<string, unknown>>)
+        : ((latestRows as { rows?: Array<Record<string, unknown>> }).rows ?? []);
+      const failedIds = rawRows
+        .filter((r) => r.status === "failed" || r.status === "timed_out")
+        .map((r) => r.id as string);
+
+      if (failedIds.length === 0) {
+        return [];
+      }
+
+      // Re-select the failed run ids through the SAME typed projection + summarization
+      // path that list() uses, so latestFailed() returns the same bounded,
+      // encoding-safe, correctly-shaped objects.
+      const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
+      const rows = await db
+        .select(buildHeartbeatRunListProjection(safeForLegacyEncoding))
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, failedIds)))
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+        .limit(500);
+
+      return rows.map((row) => mapHeartbeatRunListRow(row, safeForLegacyEncoding));
     },
 
     getRun,

@@ -13,6 +13,7 @@ vi.mock("acpx/runtime", () => ({
 
 const agentId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
+const OTHER_COMPANY_ID = "33333333-3333-4333-8333-333333333333";
 
 const baseAgent = {
   id: agentId,
@@ -74,6 +75,9 @@ const mockHeartbeatService = vi.hoisted(() => ({
   resetRuntimeSession: vi.fn(),
   getRun: vi.fn(),
   cancelRun: vi.fn(),
+  list: vi.fn(),
+  stats: vi.fn(),
+  latestFailed: vi.fn(),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -1594,5 +1598,88 @@ describe.sequential("agent permission routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects heartbeat stats for a company the caller cannot access", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${OTHER_COMPANY_ID}/heartbeat-runs/stats`));
+
+    expect(res.status).toBe(403);
+    expect(mockHeartbeatService.stats).not.toHaveBeenCalled();
+  });
+
+  it("rejects latest-failed for a company the caller cannot access", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${OTHER_COMPANY_ID}/heartbeat-runs/latest-failed`));
+
+    expect(res.status).toBe(403);
+    expect(mockHeartbeatService.latestFailed).not.toHaveBeenCalled();
+  });
+
+  it("rejects heartbeat run listing with limit below the allowed range", async () => {
+    mockHeartbeatService.list.mockResolvedValue([]);
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${companyId}/heartbeat-runs?limit=0`));
+
+    expect(res.status).toBe(400);
+    expect(mockHeartbeatService.list).not.toHaveBeenCalled();
+  });
+
+  it("rejects heartbeat run listing with limit above the allowed range", async () => {
+    mockHeartbeatService.list.mockResolvedValue([]);
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${companyId}/heartbeat-runs?limit=2000`));
+
+    expect(res.status).toBe(400);
+    expect(mockHeartbeatService.list).not.toHaveBeenCalled();
+  });
+
+  it("rejects heartbeat run listing with a negative offset", async () => {
+    mockHeartbeatService.list.mockResolvedValue([]);
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${companyId}/heartbeat-runs?offset=-1`));
+
+    expect(res.status).toBe(400);
+    expect(mockHeartbeatService.list).not.toHaveBeenCalled();
   });
 });
