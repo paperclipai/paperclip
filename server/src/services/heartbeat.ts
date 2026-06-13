@@ -226,6 +226,7 @@ const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const DETACHED_RUN_SILENT_TERMINATE_THRESHOLD_MS = 6 * 60 * 60 * 1000; // 6 hours
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -7458,6 +7459,61 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 processPid: run.processPid,
               },
             });
+          }
+        } else {
+          // Run is already marked process_detached. If it has been silent beyond the
+          // threshold, kill the child process group and finalize the run as failed so
+          // it doesn't hang indefinitely awaiting board intervention.
+          const silenceRefTime = run.lastOutputAt ?? run.updatedAt ?? run.startedAt ?? run.createdAt;
+          const silenceAgeMs = silenceRefTime ? now.getTime() - new Date(silenceRefTime).getTime() : Infinity;
+          if (silenceAgeMs > DETACHED_RUN_SILENT_TERMINATE_THRESHOLD_MS) {
+            const silenceHours = Math.round(silenceAgeMs / 3600000);
+            const terminateMessage = `Detached child pid ${run.processPid} silent for ${silenceHours}h; force-terminating`;
+            await terminateHeartbeatRunProcess({
+              pid: run.processPid,
+              processGroupId: run.processGroupId,
+            });
+            let finalizedDetachedRun = await setRunStatus(run.id, "failed", {
+              error: terminateMessage,
+              errorCode: "process_detached_silent",
+              finishedAt: now,
+              resultJson: mergeRunStopMetadataForAgent(
+                { adapterType, adapterConfig },
+                "failed",
+                {
+                  resultJson: parseObject(run.resultJson),
+                  errorCode: "process_detached_silent",
+                  errorMessage: terminateMessage,
+                },
+              ),
+            });
+            await setWakeupStatus(run.wakeupRequestId, "failed", {
+              finishedAt: now,
+              error: terminateMessage,
+            });
+            if (!finalizedDetachedRun) finalizedDetachedRun = await getRun(run.id);
+            if (!finalizedDetachedRun) continue;
+            finalizedDetachedRun =
+              (await classifyAndPersistRunLiveness(finalizedDetachedRun, parseObject(finalizedDetachedRun.resultJson))) ??
+              finalizedDetachedRun;
+            await releaseEnvironmentLeasesForRun({
+              runId: finalizedDetachedRun.id,
+              companyId: finalizedDetachedRun.companyId,
+              agentId: finalizedDetachedRun.agentId,
+              status: finalizedDetachedRun.status,
+              failureReason: finalizedDetachedRun.error ?? undefined,
+            });
+            await releaseIssueExecutionAndPromote(finalizedDetachedRun);
+            await appendRunEvent(finalizedDetachedRun, await nextRunEventSeq(finalizedDetachedRun.id), {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "error",
+              message: terminateMessage,
+              payload: { processPid: run.processPid, silenceAgeMs },
+            });
+            await finalizeAgentStatus(run.agentId, "failed");
+            reaped.push(run.id);
+            continue;
           }
         }
         continue;
