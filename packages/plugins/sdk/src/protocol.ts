@@ -1214,6 +1214,20 @@ export interface WorkerToHostMethods {
     result: void,
   ];
 
+  // Agents (org-chart traversal)
+  "agents.orgChart.getDescendants": [
+    params: { agentId: string; companyId: string },
+    result: Agent[],
+  ];
+  "agents.orgChart.getParent": [
+    params: { agentId: string; companyId: string },
+    result: Agent | null,
+  ];
+  "agents.orgChart.isDescendantOf": [
+    params: { candidateId: string; ancestorId: string; companyId: string },
+    result: boolean,
+  ];
+
   // Goals
   "goals.list": [
     params: { companyId: string; level?: string; status?: string; limit?: number; offset?: number },

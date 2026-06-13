@@ -1485,6 +1485,25 @@ export interface PluginAgentsClient {
   resume(agentId: string, companyId: string): Promise<Agent>;
   /** Invoke (wake up) an agent with a prompt payload. Throws if paused, terminated, pending_approval, or not found. Requires `agents.invoke`. */
   invoke(agentId: string, companyId: string, opts: { prompt: string; reason?: string }): Promise<{ runId: string }>;
+  /**
+   * Returns all non-terminated descendants of agentId within companyId (BFS, excludes terminated).
+   * Sorted by (name, id). Throws `ORG_CHART_TOO_LARGE` if descendant count exceeds 500.
+   * Requires `agents.read` + `agents.org-chart.read`.
+   */
+  getDescendants(agentId: string, companyId: string): Promise<Agent[]>;
+  /**
+   * Returns the non-terminated direct parent of agentId within companyId, or null.
+   * Returns null if agentId has no parent, parent is terminated, or parent is in a different company.
+   * Requires `agents.read` + `agents.org-chart.read`.
+   */
+  getParent(agentId: string, companyId: string): Promise<Agent | null>;
+  /**
+   * Returns true if candidateId is a structural descendant of ancestorId within companyId.
+   * Walks reportsTo chain upward through ALL statuses (structural, not operational).
+   * Returns false for same ID, nonexistent IDs, or wrong-company IDs.
+   * Requires `agents.org-chart.read`.
+   */
+  isDescendantOf(candidateId: string, ancestorId: string, companyId: string): Promise<boolean>;
   /** Resolve and reconcile manifest-declared plugin-managed agents by stable key. Requires `agents.managed`. */
   managed: {
     get(agentKey: string, companyId: string): Promise<PluginManagedAgentResolution>;

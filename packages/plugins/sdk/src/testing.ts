@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+import {
+  ORG_CHART_TOO_LARGE_ERROR,
+  pluginOperationIssueOriginKind,
+} from "@paperclipai/shared";
 import type {
   PaperclipPluginManifestV1,
   PluginCapability,
@@ -1914,6 +1917,74 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         }
         return { runId: randomUUID() };
       },
+      async getDescendants(agentId, companyId) {
+        requireCapability(manifest, capabilitySet, "agents.org-chart.read");
+        requireCapability(manifest, capabilitySet, "agents.read");
+        const cid = requireCompanyId(companyId);
+        const allInCompany = [...agents.values()].filter(
+          (a) => a.companyId === cid && a.status !== "terminated",
+        );
+        const childrenMap = new Map<string, Agent[]>();
+        for (const a of allInCompany) {
+          if (!a.reportsTo) continue;
+          const siblings = childrenMap.get(a.reportsTo) ?? [];
+          siblings.push(a);
+          childrenMap.set(a.reportsTo, siblings);
+        }
+        const root = allInCompany.find((a) => a.id === agentId);
+        if (!root) return [];
+        const visited = new Set<string>([agentId]);
+        const queue = [...(childrenMap.get(agentId) ?? [])];
+        const result: Agent[] = [];
+        while (queue.length > 0) {
+          const current = queue.shift()!;
+          if (visited.has(current.id)) continue;
+          visited.add(current.id);
+          result.push(current);
+          if (result.length > 500) throw new Error(ORG_CHART_TOO_LARGE_ERROR);
+          queue.push(...(childrenMap.get(current.id) ?? []));
+        }
+        return result.sort((a, b) => {
+          const n = a.name.localeCompare(b.name);
+          return n !== 0 ? n : a.id.localeCompare(b.id);
+        });
+      },
+
+      async getParent(agentId, companyId) {
+        requireCapability(manifest, capabilitySet, "agents.org-chart.read");
+        requireCapability(manifest, capabilitySet, "agents.read");
+        const cid = requireCompanyId(companyId);
+        const allInCompany = new Map(
+          [...agents.values()]
+            .filter((a) => a.companyId === cid && a.status !== "terminated")
+            .map((a) => [a.id, a]),
+        );
+        const agent = allInCompany.get(agentId);
+        if (!agent || !agent.reportsTo) return null;
+        return allInCompany.get(agent.reportsTo) ?? null;
+      },
+
+      async isDescendantOf(candidateId, ancestorId, companyId) {
+        requireCapability(manifest, capabilitySet, "agents.org-chart.read");
+        const cid = requireCompanyId(companyId);
+        if (candidateId === ancestorId) return false;
+        const allInCompany = new Map(
+          [...agents.values()].filter((a) => a.companyId === cid).map((a) => [a.id, a]),
+        );
+        if (!allInCompany.has(candidateId) || !allInCompany.has(ancestorId)) return false;
+        const visited = new Set<string>([candidateId]);
+        let current = allInCompany.get(candidateId)!;
+        while (current.reportsTo) {
+          if (current.reportsTo === ancestorId) return true;
+          if (visited.has(current.reportsTo)) break;
+          visited.add(current.reportsTo);
+          const next = allInCompany.get(current.reportsTo);
+          if (!next) break;
+          current = next;
+        }
+        return false;
+      },
+
       managed: {
         async get(agentKey, companyId) {
           requireCapability(manifest, capabilitySet, "agents.managed");

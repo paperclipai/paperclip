@@ -1029,6 +1029,18 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           return callHost("agents.invoke", { agentId, companyId, prompt: opts.prompt, reason: opts.reason });
         },
 
+        async getDescendants(agentId: string, companyId: string) {
+          return callHost("agents.orgChart.getDescendants", { agentId, companyId });
+        },
+
+        async getParent(agentId: string, companyId: string) {
+          return callHost("agents.orgChart.getParent", { agentId, companyId });
+        },
+
+        async isDescendantOf(candidateId: string, ancestorId: string, companyId: string) {
+          return callHost("agents.orgChart.isDescendantOf", { candidateId, ancestorId, companyId });
+        },
+
         managed: {
           async get(agentKey: string, companyId: string) {
             return callHost("agents.managed.get", { agentKey, companyId });
