@@ -55,6 +55,11 @@ function readServiceStates(value: unknown): ExecutionWorkspaceConfig["serviceSta
     : null;
 }
 
+function cleanupPolicyAllowsDestructiveCloseWithWarnings(policy: Record<string, unknown> | null | undefined) {
+  if (!policy) return false;
+  return policy.allowDestructiveCloseWithWarnings === true;
+}
+
 async function pathExists(value: string | null | undefined) {
   if (!value) return false;
   try {
@@ -616,6 +621,20 @@ export function executionWorkspaceService(db: Db) {
           git.aheadCount === 1
             ? `This workspace is 1 commit ahead of ${git.baseRef ?? "the base ref"} and is not merged.`
             : `This workspace is ${git.aheadCount} commits ahead of ${git.baseRef ?? "the base ref"} and is not merged.`,
+        );
+      }
+
+      const hasUnreviewedGitState = Boolean(
+        git?.hasDirtyTrackedFiles ||
+        git?.hasUntrackedFiles ||
+        (git?.aheadCount && git.aheadCount > 0 && git.isMergedIntoBase === false),
+      );
+      const destructiveCloseAllowedByPolicy = cleanupPolicyAllowsDestructiveCloseWithWarnings(
+        projectPolicy?.cleanupPolicy,
+      );
+      if (!isSharedWorkspace && hasUnreviewedGitState && !destructiveCloseAllowedByPolicy) {
+        blockingReasons.push(
+          "This workspace has unreviewed git state; archive/cleanup requires an explicit project cleanup policy approval before destructive actions.",
         );
       }
       if (git?.behindCount && git.behindCount > 0) {

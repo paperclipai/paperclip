@@ -5,7 +5,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import {
   companies,
   createDb,
@@ -493,10 +493,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
     expect(readiness).toMatchObject({
       workspaceId: executionWorkspaceId,
-      state: "ready_with_warnings",
+      state: "blocked",
       isSharedWorkspace: false,
       isProjectPrimaryWorkspace: false,
-      isDestructiveCloseAllowed: true,
+      isDestructiveCloseAllowed: false,
       git: {
         workspacePath: worktreePath,
         branchName: "paperclip-close-check",
@@ -513,6 +513,9 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "The workspace has 1 untracked file.",
       "This workspace is 1 commit ahead of main and is not merged.",
     ]));
+    expect(readiness?.blockingReasons).toEqual(expect.arrayContaining([
+      "This workspace has unreviewed git state; archive/cleanup requires an explicit project cleanup policy approval before destructive actions.",
+    ]));
     expect(readiness?.plannedActions.map((action) => action.kind)).toEqual(expect.arrayContaining([
       "archive_record",
       "cleanup_command",
@@ -520,5 +523,37 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "git_worktree_remove",
       "git_branch_delete",
     ]));
+
+    await db.update(projects)
+      .set({
+        executionWorkspacePolicy: {
+          enabled: true,
+          workspaceStrategy: {
+            type: "git_worktree",
+            teardownCommand: "bash ./scripts/project-teardown.sh",
+          },
+          cleanupPolicy: {
+            allowDestructiveCloseWithWarnings: true,
+          },
+        },
+      })
+      .where(eq(projects.id, projectId));
+
+    const policyApprovedReadiness = await svc.getCloseReadiness(executionWorkspaceId);
+
+    expect(policyApprovedReadiness).toMatchObject({
+      workspaceId: executionWorkspaceId,
+      state: "ready_with_warnings",
+      isSharedWorkspace: false,
+      isProjectPrimaryWorkspace: false,
+      isDestructiveCloseAllowed: true,
+    });
+    expect(policyApprovedReadiness?.warnings).toEqual(expect.arrayContaining([
+      "The workspace has 1 untracked file.",
+      "This workspace is 1 commit ahead of main and is not merged.",
+    ]));
+    expect(policyApprovedReadiness?.blockingReasons).not.toContain(
+      "This workspace has unreviewed git state; archive/cleanup requires an explicit project cleanup policy approval before destructive actions.",
+    );
   }, 20_000);
 });
