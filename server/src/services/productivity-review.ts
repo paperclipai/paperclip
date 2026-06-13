@@ -200,6 +200,17 @@ function formatTrigger(trigger: ProductivityReviewTrigger) {
   return "Long active duration";
 }
 
+function isExplicitLongLivedChatMirrorIssue(issue: Pick<IssueRow, "title" | "description">) {
+  const text = `${issue.title}\n${issue.description ?? ""}`.toLowerCase();
+  const namesChatMirror = /\bchat\s+mirror\b/.test(text) || /\bconversation\s+mirror\b/.test(text);
+  if (!namesChatMirror) return false;
+  return (
+    /\blong[-\s]?lived\b/.test(text) ||
+    /\bdo\s+not\s+close\b/.test(text) ||
+    /\bkeep\s+(this\s+)?open\b/.test(text)
+  );
+}
+
 export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: EnqueueWakeup }) {
   const issuesSvc = issueService(db);
   const budgets = budgetService(db);
@@ -476,7 +487,11 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       : null;
 
     const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
-    const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+    const suppressLongActiveForChatMirror = isExplicitLongLivedChatMirrorIssue(sourceIssue);
+    const longActive =
+      !suppressLongActiveForChatMirror &&
+      elapsedMs !== null &&
+      elapsedMs >= thresholds.longActiveMs;
     const highChurn =
       runCountLastHour >= thresholds.highChurnHourly ||
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
