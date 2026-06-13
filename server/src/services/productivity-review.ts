@@ -25,11 +25,41 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS = 6;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_HOURLY = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_SIX_HOURS = 30;
-export const DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS = 6 * 60 * 60 * 1000;
+export const DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS = 3;
 export const DEFAULT_PRODUCTIVITY_REVIEW_CREATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 3;
+
+const ENV_RESOLVED_SNOOZE_HOURS_KEY = "PAPERCLIP_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_HOURS";
+const ENV_MAX_CREATIONS_PER_WINDOW_KEY = "PAPERCLIP_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW";
+
+let cachedEnvThresholdOverrides: Partial<ProductivityReviewThresholds> | null = null;
+
+function readEnvThresholdOverrides(): Partial<ProductivityReviewThresholds> {
+  if (cachedEnvThresholdOverrides) return cachedEnvThresholdOverrides;
+  const overrides: Partial<ProductivityReviewThresholds> = {};
+  const snoozeHoursRaw = process.env[ENV_RESOLVED_SNOOZE_HOURS_KEY];
+  if (snoozeHoursRaw !== undefined && snoozeHoursRaw !== "") {
+    const hours = Number(snoozeHoursRaw);
+    if (Number.isFinite(hours) && hours > 0) {
+      overrides.resolvedSnoozeMs = Math.floor(hours * 60 * 60 * 1000);
+    }
+  }
+  const maxCreationsRaw = process.env[ENV_MAX_CREATIONS_PER_WINDOW_KEY];
+  if (maxCreationsRaw !== undefined && maxCreationsRaw !== "") {
+    const count = Number(maxCreationsRaw);
+    if (Number.isFinite(count) && count > 0) {
+      overrides.maxCreationsPerWindow = Math.floor(count);
+    }
+  }
+  cachedEnvThresholdOverrides = overrides;
+  return overrides;
+}
+
+export function __resetProductivityReviewEnvCacheForTests() {
+  cachedEnvThresholdOverrides = null;
+}
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -139,6 +169,7 @@ function coerceDate(value: Date | string | null | undefined) {
 }
 
 function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): ProductivityReviewThresholds {
+  const envOverrides = readEnvThresholdOverrides();
   return {
     noCommentStreakRuns: readPositiveInteger(
       overrides?.noCommentStreakRuns ?? DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
@@ -157,7 +188,7 @@ function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): Pro
       DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_SIX_HOURS,
     ),
     resolvedSnoozeMs: readPositiveInteger(
-      overrides?.resolvedSnoozeMs ?? DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS,
+      overrides?.resolvedSnoozeMs ?? envOverrides.resolvedSnoozeMs ?? DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS,
       DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS,
     ),
     refreshIntervalMs: readPositiveInteger(
@@ -173,7 +204,7 @@ function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): Pro
       DEFAULT_PRODUCTIVITY_REVIEW_CREATION_WINDOW_MS,
     ),
     maxCreationsPerWindow: readPositiveInteger(
-      overrides?.maxCreationsPerWindow ?? DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW,
+      overrides?.maxCreationsPerWindow ?? envOverrides.maxCreationsPerWindow ?? DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW,
       DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW,
     ),
   };

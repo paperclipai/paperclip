@@ -16,6 +16,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 import {
+  __resetProductivityReviewEnvCacheForTests,
   DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS,
   DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
   DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
@@ -289,6 +290,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     const result = await productivityReviewService(db).reconcileProductivityReviews({
       now,
       companyId: seeded.companyId,
+      thresholds: { resolvedSnoozeMs: 60 * 60 * 1000 },
     });
 
     expect(result.created).toBe(0);
@@ -535,6 +537,58 @@ describeEmbeddedPostgres("productivity review service", () => {
       .where(eq(activityLog.action, "issue.productivity_review_continuation_held"));
     expect(activities).toHaveLength(1);
     expect(activities[0]?.entityId).toBe(seeded.issueId);
+  });
+
+  it("applies env overrides to resolved-review snooze and creation-cap thresholds", async () => {
+    const prevSnooze = process.env.PAPERCLIP_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_HOURS;
+    const prevMaxCreations = process.env.PAPERCLIP_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW;
+    process.env.PAPERCLIP_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_HOURS = "2";
+    process.env.PAPERCLIP_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = "1";
+    __resetProductivityReviewEnvCacheForTests();
+    try {
+      const now = new Date("2026-04-28T12:00:00.000Z");
+      const seeded = await seedAssignedIssue();
+      await insertRuns({
+        companyId: seeded.companyId,
+        agentId: seeded.coderId,
+        issueId: seeded.issueId,
+        count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+        now,
+      });
+
+      const service = productivityReviewService(db);
+      await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+      const [review] = await listProductivityReviews(seeded.companyId);
+      await db
+        .update(issues)
+        .set({ status: "done", updatedAt: now })
+        .where(eq(issues.id, review!.id));
+
+      // 1h later: env snooze of 2h still in effect — the default 6h would also snooze, so the
+      // 30-min control covers the default. Push to 3h to exit the default behaviour as well.
+      const withinEnvSnooze = await service.reconcileProductivityReviews({
+        now: new Date(now.getTime() + 60 * 60 * 1000),
+        companyId: seeded.companyId,
+      });
+      expect(withinEnvSnooze.snoozed).toBe(1);
+
+      // 3h later: env snooze expired, so creation is attempted — but env maxCreationsPerWindow=1
+      // and one done review already counts, so the cap fires.
+      const afterEnvSnooze = await service.reconcileProductivityReviews({
+        now: new Date(now.getTime() + 3 * 60 * 60 * 1000),
+        companyId: seeded.companyId,
+      });
+      expect(afterEnvSnooze.snoozed).toBe(0);
+      expect(afterEnvSnooze.creationCapped).toBe(1);
+      expect(afterEnvSnooze.created).toBe(0);
+      expect(await listProductivityReviews(seeded.companyId)).toHaveLength(1);
+    } finally {
+      if (prevSnooze === undefined) delete process.env.PAPERCLIP_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_HOURS;
+      else process.env.PAPERCLIP_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_HOURS = prevSnooze;
+      if (prevMaxCreations === undefined) delete process.env.PAPERCLIP_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW;
+      else process.env.PAPERCLIP_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = prevMaxCreations;
+      __resetProductivityReviewEnvCacheForTests();
+    }
   });
 
   it("clamps poisoned requestDepth metadata instead of aborting productivity reconciliation", async () => {
