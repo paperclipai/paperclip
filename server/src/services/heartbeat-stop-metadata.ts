@@ -8,6 +8,7 @@ export type HeartbeatRunStopReason =
   | "paused"
   | "max_turns_exhausted"
   | "process_lost"
+  | "autocompact_thrash"
   | "adapter_failed";
 
 export interface HeartbeatRunTimeoutPolicy {
@@ -77,6 +78,13 @@ export function resolveHeartbeatRunTimeoutPolicy(
   };
 }
 
+/** Detects autocompact-thrash failures by the known error strings emitted by the adapter. */
+export function isAutocompactThrashError(errorMessage: string | null | undefined): boolean {
+  if (!errorMessage) return false;
+  const lower = errorMessage.toLowerCase();
+  return lower.includes("autocompact is thrashing") || lower.includes("context refilled to the limit");
+}
+
 export function inferHeartbeatRunStopReason(input: {
   outcome: HeartbeatRunOutcome;
   errorCode?: string | null;
@@ -87,6 +95,9 @@ export function inferHeartbeatRunStopReason(input: {
   if (maxTurnStopReason) return maxTurnStopReason;
   if (input.outcome === "timed_out") return "timeout";
   if (input.outcome === "failed" && input.errorCode === "process_lost") return "process_lost";
+  if (input.outcome === "failed" && isAutocompactThrashError(input.errorMessage)) {
+    return "autocompact_thrash";
+  }
   if (input.outcome === "cancelled") {
     const message = (input.errorMessage ?? "").toLowerCase();
     if (message.includes("budget")) return "budget_paused";

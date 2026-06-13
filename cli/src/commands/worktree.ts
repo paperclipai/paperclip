@@ -985,12 +985,21 @@ async function ensureRepairTargetWorktree(input: {
   };
 }
 
-function resolveSourceConnectionString(config: PaperclipConfig, envEntries: Record<string, string>, portOverride?: number): string {
+export function resolveSourceConnectionString(
+  config: PaperclipConfig,
+  envEntries: Record<string, string>,
+  portOverride?: number,
+  sourceConfigPath?: string,
+): string {
   if (config.database.mode === "postgres") {
-    const connectionString = nonEmpty(envEntries.DATABASE_URL) ?? nonEmpty(config.database.connectionString);
+    const allowProcessEnvFallback = sourceConfigPath ? isCurrentSourceConfigPath(sourceConfigPath) : false;
+    const connectionString =
+      (allowProcessEnvFallback ? nonEmpty(process.env.DATABASE_URL) : null)
+      ?? nonEmpty(envEntries.DATABASE_URL)
+      ?? nonEmpty(config.database.connectionString);
     if (!connectionString) {
       throw new Error(
-        "Source instance uses postgres mode but has no connection string in config or adjacent .env.",
+        "Source instance uses postgres mode but has no connection string in config, live env, or adjacent .env.",
       );
     }
     return connectionString;
@@ -1307,6 +1316,7 @@ async function seedWorktreeDatabase(input: {
       input.sourceConfig,
       sourceEnvEntries,
       sourceHandle?.port,
+      input.sourceConfigPath,
     );
     const backup = await runDatabaseBackup({
       connectionString: sourceConnectionString,
@@ -3278,7 +3288,7 @@ export function registerWorktreeCommands(program: Command): void {
     .option("--home <path>", `Home root for worktree instances (env: PAPERCLIP_WORKTREES_DIR, default: ${DEFAULT_WORKTREE_HOME})`)
     .option("--from-config <path>", "Source config.json to seed from")
     .option("--from-data-dir <path>", "Source PAPERCLIP_HOME used when deriving the source config")
-    .option("--from-instance <id>", "Source instance id when deriving the source config", "default")
+    .option("--from-instance <id>", "Source instance id when deriving the source config")
     .option("--server-port <port>", "Preferred server port", (value) => Number(value))
     .option("--db-port <port>", "Preferred embedded Postgres port", (value) => Number(value))
     .option("--seed-mode <mode>", "Seed profile: minimal or full (default: minimal)", "minimal")
@@ -3295,7 +3305,7 @@ export function registerWorktreeCommands(program: Command): void {
     .option("--home <path>", `Home root for worktree instances (env: PAPERCLIP_WORKTREES_DIR, default: ${DEFAULT_WORKTREE_HOME})`)
     .option("--from-config <path>", "Source config.json to seed from")
     .option("--from-data-dir <path>", "Source PAPERCLIP_HOME used when deriving the source config")
-    .option("--from-instance <id>", "Source instance id when deriving the source config", "default")
+    .option("--from-instance <id>", "Source instance id when deriving the source config")
     .option("--server-port <port>", "Preferred server port", (value) => Number(value))
     .option("--db-port <port>", "Preferred embedded Postgres port", (value) => Number(value))
     .option("--seed-mode <mode>", "Seed profile: minimal or full (default: minimal)", "minimal")

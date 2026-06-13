@@ -24,6 +24,7 @@ import {
   readSourceAttachmentBody,
   rebindWorkspaceCwd,
   resolveSourceConfigPath,
+  resolveSourceConnectionString,
   resolveWorktreeReseedSource,
   resolveWorktreeReseedTargetPaths,
   resolveGitWorktreeAddArgs,
@@ -807,6 +808,134 @@ describe("worktree helpers", () => {
     }
   });
 
+  it("does not force the default source instance when no source selector is provided", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-source-default-"));
+    const repoRoot = path.join(tempRoot, "repo");
+    const localConfigPath = path.join(repoRoot, ".paperclip", "config.json");
+    const defaultConfigPath = path.join(tempRoot, "home", "instances", "default", "config.json");
+    const originalCwd = process.cwd();
+    const originalPaperclipConfig = process.env.PAPERCLIP_CONFIG;
+
+    try {
+      fs.mkdirSync(path.dirname(localConfigPath), { recursive: true });
+      fs.mkdirSync(path.dirname(defaultConfigPath), { recursive: true });
+      fs.writeFileSync(localConfigPath, JSON.stringify(buildSourceConfig()), "utf8");
+      fs.writeFileSync(defaultConfigPath, JSON.stringify(buildSourceConfig()), "utf8");
+      delete process.env.PAPERCLIP_CONFIG;
+      process.chdir(repoRoot);
+
+      expect(resolveSourceConfigPath({ fromInstance: undefined })).toBe(path.resolve(localConfigPath));
+    } finally {
+      process.chdir(originalCwd);
+      if (originalPaperclipConfig === undefined) {
+        delete process.env.PAPERCLIP_CONFIG;
+      } else {
+        process.env.PAPERCLIP_CONFIG = originalPaperclipConfig;
+      }
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("prefers the live DATABASE_URL for the current source config during worktree seeding", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-live-db-url-"));
+    const repoRoot = path.join(tempRoot, "repo");
+    const localConfigPath = path.join(repoRoot, ".paperclip", "config.json");
+    const localEnvPath = path.join(repoRoot, ".paperclip", ".env");
+    const originalCwd = process.cwd();
+    const originalPaperclipConfig = process.env.PAPERCLIP_CONFIG;
+    const originalDatabaseUrl = process.env.DATABASE_URL;
+
+    try {
+      fs.mkdirSync(path.dirname(localConfigPath), { recursive: true });
+      fs.writeFileSync(
+        localConfigPath,
+        JSON.stringify({
+          ...buildSourceConfig(),
+          database: {
+            mode: "postgres",
+            connectionString: "postgres://config-user:config-pass@config-host:5432/paperclip",
+          },
+        }),
+        "utf8",
+      );
+      fs.writeFileSync(
+        localEnvPath,
+        "DATABASE_URL=postgres://env-user:env-pass@stale-host:5432/paperclip\n",
+        "utf8",
+      );
+      process.env.PAPERCLIP_CONFIG = localConfigPath;
+      process.env.DATABASE_URL = "postgres://live-user:live-pass@live-host:5432/paperclip";
+      process.chdir(repoRoot);
+
+      const connectionString = resolveSourceConnectionString(
+        JSON.parse(fs.readFileSync(localConfigPath, "utf8")) as PaperclipConfig,
+        { DATABASE_URL: "postgres://env-user:env-pass@stale-host:5432/paperclip" },
+        undefined,
+        localConfigPath,
+      );
+
+      expect(connectionString).toBe("postgres://live-user:live-pass@live-host:5432/paperclip");
+    } finally {
+      process.chdir(originalCwd);
+      if (originalPaperclipConfig === undefined) {
+        delete process.env.PAPERCLIP_CONFIG;
+      } else {
+        process.env.PAPERCLIP_CONFIG = originalPaperclipConfig;
+      }
+      if (originalDatabaseUrl === undefined) {
+        delete process.env.DATABASE_URL;
+      } else {
+        process.env.DATABASE_URL = originalDatabaseUrl;
+      }
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the explicit source env before config for non-current source configs", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-explicit-db-url-"));
+    const sourceConfigPath = path.join(tempRoot, "source", "config.json");
+    const originalPaperclipConfig = process.env.PAPERCLIP_CONFIG;
+    const originalDatabaseUrl = process.env.DATABASE_URL;
+
+    try {
+      fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
+      fs.writeFileSync(
+        sourceConfigPath,
+        JSON.stringify({
+          ...buildSourceConfig(),
+          database: {
+            mode: "postgres",
+            connectionString: "postgres://config-user:config-pass@config-host:5432/paperclip",
+          },
+        }),
+        "utf8",
+      );
+      process.env.PAPERCLIP_CONFIG = path.join(tempRoot, "other", "config.json");
+      process.env.DATABASE_URL = "postgres://live-user:live-pass@live-host:5432/paperclip";
+
+      const connectionString = resolveSourceConnectionString(
+        JSON.parse(fs.readFileSync(sourceConfigPath, "utf8")) as PaperclipConfig,
+        { DATABASE_URL: "postgres://env-user:env-pass@source-host:5432/paperclip" },
+        undefined,
+        sourceConfigPath,
+      );
+
+      expect(connectionString).toBe("postgres://env-user:env-pass@source-host:5432/paperclip");
+    } finally {
+      if (originalPaperclipConfig === undefined) {
+        delete process.env.PAPERCLIP_CONFIG;
+      } else {
+        process.env.PAPERCLIP_CONFIG = originalPaperclipConfig;
+      }
+      if (originalDatabaseUrl === undefined) {
+        delete process.env.DATABASE_URL;
+      } else {
+        process.env.DATABASE_URL = originalDatabaseUrl;
+      }
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("requires an explicit reseed source", () => {
     expect(() => resolveWorktreeReseedSource({})).toThrow(
       "Pass --from <worktree> or --from-config/--from-instance explicitly so the reseed source is unambiguous.",
@@ -1142,6 +1271,175 @@ describe("worktree helpers", () => {
     } finally {
       process.chdir(originalCwd);
       homedirSpy.mockRestore();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  itEmbeddedPostgres("worktree:make seeds from the current repo-local source without forcing default instance", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-make-seed-current-"));
+    const repoRoot = path.join(tempRoot, "repo");
+    const fakeHome = path.join(tempRoot, "home");
+    const worktreePath = path.join(fakeHome, "paperclip-make-seed-current");
+    const worktreeHome = path.join(tempRoot, ".paperclip-worktrees");
+    const sourceDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-make-source-");
+    const originalCwd = process.cwd();
+    const originalPaperclipConfig = process.env.PAPERCLIP_CONFIG;
+    const originalDatabaseUrl = process.env.DATABASE_URL;
+    const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(fakeHome);
+
+    try {
+      fs.mkdirSync(repoRoot, { recursive: true });
+      fs.mkdirSync(fakeHome, { recursive: true });
+      execFileSync("git", ["init"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["config", "user.name", "Test User"], { cwd: repoRoot, stdio: "ignore" });
+      fs.writeFileSync(path.join(repoRoot, "README.md"), "# temp\n", "utf8");
+      execFileSync("git", ["add", "README.md"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: repoRoot, stdio: "ignore" });
+
+      const localConfigPath = path.join(repoRoot, ".paperclip", "config.json");
+      const localEnvPath = path.join(repoRoot, ".paperclip", ".env");
+      const localKeyPath = path.join(repoRoot, ".paperclip", "secrets", "master.key");
+      fs.mkdirSync(path.dirname(localKeyPath), { recursive: true });
+      const sourceConfig = buildSourceConfig();
+      sourceConfig.database = {
+        mode: "postgres",
+        embeddedPostgresDataDir: path.join(tempRoot, "unused-db"),
+        embeddedPostgresPort: 54329,
+        backup: {
+          enabled: true,
+          intervalMinutes: 60,
+          retentionDays: 30,
+          dir: path.join(tempRoot, "backups"),
+        },
+        connectionString: "postgres://config-user:config-pass@config-host:5432/paperclip",
+      };
+      sourceConfig.logging.logDir = path.join(tempRoot, "logs");
+      sourceConfig.storage.localDisk.baseDir = path.join(tempRoot, "storage");
+      sourceConfig.secrets.localEncrypted.keyFilePath = localKeyPath;
+      fs.writeFileSync(localConfigPath, JSON.stringify(sourceConfig, null, 2), "utf8");
+      fs.writeFileSync(localEnvPath, "DATABASE_URL=postgres://env-user:env-pass@stale-host:5432/paperclip\n", "utf8");
+      fs.writeFileSync(localKeyPath, "source-master-key", "utf8");
+
+      process.env.PAPERCLIP_CONFIG = localConfigPath;
+      process.env.DATABASE_URL = sourceDb.connectionString;
+      process.chdir(repoRoot);
+
+      await worktreeMakeCommand("paperclip-make-seed-current", {
+        home: worktreeHome,
+      });
+
+      const targetConfig = JSON.parse(
+        fs.readFileSync(path.join(worktreePath, ".paperclip", "config.json"), "utf8"),
+      ) as PaperclipConfig;
+      const { default: EmbeddedPostgres } = await import("embedded-postgres");
+      const targetPg = new EmbeddedPostgres({
+        databaseDir: targetConfig.database.embeddedPostgresDataDir,
+        user: "paperclip",
+        password: "paperclip",
+        port: targetConfig.database.embeddedPostgresPort,
+        persistent: true,
+        initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+        onLog: () => {},
+        onError: () => {},
+      });
+
+      await targetPg.start();
+      try {
+        const targetDb = createDb(
+          `postgres://paperclip:paperclip@127.0.0.1:${targetConfig.database.embeddedPostgresPort}/paperclip`,
+        );
+        const companiesInTarget = await targetDb.select().from(companies);
+        expect(companiesInTarget).toEqual([]);
+      } finally {
+        await targetPg.stop();
+      }
+    } finally {
+      process.chdir(originalCwd);
+      homedirSpy.mockRestore();
+      if (originalPaperclipConfig === undefined) {
+        delete process.env.PAPERCLIP_CONFIG;
+      } else {
+        process.env.PAPERCLIP_CONFIG = originalPaperclipConfig;
+      }
+      if (originalDatabaseUrl === undefined) {
+        delete process.env.DATABASE_URL;
+      } else {
+        process.env.DATABASE_URL = originalDatabaseUrl;
+      }
+      await sourceDb.cleanup();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("worktree:make keeps explicit --from-config seeding independent from the current live DATABASE_URL", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-make-explicit-source-"));
+    const repoRoot = path.join(tempRoot, "repo");
+    const fakeHome = path.join(tempRoot, "home");
+    const sourceConfigPath = path.join(tempRoot, "source", "config.json");
+    const sourceKeyPath = path.join(tempRoot, "source", "secrets", "master.key");
+    const worktreePath = path.join(fakeHome, "paperclip-make-explicit-source");
+    const originalCwd = process.cwd();
+    const originalPaperclipConfig = process.env.PAPERCLIP_CONFIG;
+    const originalDatabaseUrl = process.env.DATABASE_URL;
+    const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(fakeHome);
+
+    try {
+      fs.mkdirSync(repoRoot, { recursive: true });
+      fs.mkdirSync(fakeHome, { recursive: true });
+      fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
+      fs.mkdirSync(path.dirname(sourceKeyPath), { recursive: true });
+      execFileSync("git", ["init"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["config", "user.name", "Test User"], { cwd: repoRoot, stdio: "ignore" });
+      fs.writeFileSync(path.join(repoRoot, "README.md"), "# temp\n", "utf8");
+      execFileSync("git", ["add", "README.md"], { cwd: repoRoot, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: repoRoot, stdio: "ignore" });
+
+      fs.writeFileSync(
+        sourceConfigPath,
+        JSON.stringify({
+          ...buildSourceConfig(),
+          database: {
+            mode: "postgres",
+            connectionString: "",
+          },
+          secrets: {
+            provider: "local_encrypted",
+            strictMode: false,
+            localEncrypted: {
+              keyFilePath: sourceKeyPath,
+            },
+          },
+        }),
+        "utf8",
+      );
+      fs.writeFileSync(sourceKeyPath, "source-master-key", "utf8");
+      fs.writeFileSync(path.join(tempRoot, "source", ".env"), "DATABASE_URL=postgres://env-user:env-pass@127.0.0.1:55432/paperclip\n", "utf8");
+
+      process.env.PAPERCLIP_CONFIG = path.join(repoRoot, ".paperclip", "config.json");
+      process.env.DATABASE_URL = "postgres://live-user:live-pass@127.0.0.1:55433/paperclip";
+      process.chdir(repoRoot);
+
+      await expect(worktreeMakeCommand("paperclip-make-explicit-source", {
+        fromConfig: sourceConfigPath,
+        home: path.join(tempRoot, ".paperclip-worktrees"),
+      })).rejects.toThrow(/127\.0\.0\.1:55432|ECONNREFUSED/);
+
+      expect(fs.existsSync(path.join(worktreePath, ".paperclip", "config.json"))).toBe(true);
+    } finally {
+      process.chdir(originalCwd);
+      homedirSpy.mockRestore();
+      if (originalPaperclipConfig === undefined) {
+        delete process.env.PAPERCLIP_CONFIG;
+      } else {
+        process.env.PAPERCLIP_CONFIG = originalPaperclipConfig;
+      }
+      if (originalDatabaseUrl === undefined) {
+        delete process.env.DATABASE_URL;
+      } else {
+        process.env.DATABASE_URL = originalDatabaseUrl;
+      }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   }, 20_000);
