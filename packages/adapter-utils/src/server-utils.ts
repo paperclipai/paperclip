@@ -2156,6 +2156,16 @@ export async function runChildProcess(
       ...opts.env,
     };
 
+    // Never expose JWT signing secrets to spawned agent processes. The server
+    // uses PAPERCLIP_AGENT_JWT_SECRET / BETTER_AUTH_SECRET to mint and verify
+    // agent JWTs; the agent itself only needs PAPERCLIP_API_KEY (a per-run JWT)
+    // to authenticate API calls. sanitizeInheritedPaperclipEnv already strips
+    // PAPERCLIP_AGENT_JWT_SECRET from process.env above; this block also strips
+    // it from opts.env (covering agent config.env) and from BETTER_AUTH_SECRET
+    // which the inherited-env sanitizer does not touch (TEC-1067, TEC-1070).
+    delete rawMerged.PAPERCLIP_AGENT_JWT_SECRET;
+    delete rawMerged.BETTER_AUTH_SECRET;
+
     // Strip Claude Code nesting-guard env vars so spawned `claude` processes
     // don't refuse to start with "cannot be launched inside another session".
     // These vars leak in when the Paperclip server itself is started from
