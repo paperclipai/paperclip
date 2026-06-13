@@ -134,6 +134,12 @@ export interface HostServices {
     list(params: WorkerToHostMethods["entities.list"][0]): Promise<WorkerToHostMethods["entities.list"][1]>;
   };
 
+  /** Provides `plugins.peer.entities.list` and `plugins.peer.entities.get`. Requires `plugins.peer-reads.read`. */
+  peerEntities: {
+    list(params: WorkerToHostMethods["plugins.peer.entities.list"][0]): Promise<WorkerToHostMethods["plugins.peer.entities.list"][1]>;
+    get(params: WorkerToHostMethods["plugins.peer.entities.get"][0]): Promise<WorkerToHostMethods["plugins.peer.entities.get"][1]>;
+  };
+
   /** Provides `events.emit` and `events.subscribe`. */
   events: {
     emit(params: WorkerToHostMethods["events.emit"][0]): Promise<void>;
@@ -376,6 +382,10 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Entities — no specific capability required (plugin-scoped by design)
   "entities.upsert": null,
   "entities.list": null,
+
+  // Cross-plugin peer entity reads (WF-3)
+  "plugins.peer.entities.list": "plugins.peer-reads.read",
+  "plugins.peer.entities.get": "plugins.peer-reads.read",
 
   // Events
   "events.emit": "events.emit",
@@ -680,6 +690,14 @@ export function createHostClientHandlers(
     }),
     "entities.list": gated("entities.list", async (params) => {
       return services.entities.list(params);
+    }),
+
+    // Cross-plugin peer entity reads (WF-3)
+    "plugins.peer.entities.list": gated("plugins.peer.entities.list", async (params) => {
+      return services.peerEntities.list(params);
+    }),
+    "plugins.peer.entities.get": gated("plugins.peer.entities.get", async (params) => {
+      return services.peerEntities.get(params);
     }),
 
     // Events

@@ -2320,6 +2320,21 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         logs.push({ level: "debug", message, meta });
       },
     },
+
+    plugins: {
+      peer: {
+        entities: {
+          async list(_params) {
+            requireCapability(manifest, capabilitySet, "plugins.peer-reads.read");
+            return [];
+          },
+          async get(_params) {
+            requireCapability(manifest, capabilitySet, "plugins.peer-reads.read");
+            return null;
+          },
+        },
+      },
+    },
   };
 
   const harness: TestHarness = {

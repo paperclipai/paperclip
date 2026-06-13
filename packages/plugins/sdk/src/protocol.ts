@@ -798,6 +798,54 @@ export interface WorkerToHostMethods {
     }>,
   ];
 
+  // Cross-plugin peer entity reads (WF-3)
+  "plugins.peer.entities.list": [
+    params: {
+      companyId: string;
+      providerPluginKey: string;
+      entityType: string;
+      scopeKind?: string;
+      scopeId?: string;
+      externalId?: string;
+      limit?: number;
+      offset?: number;
+    },
+    result: Array<{
+      id: string;
+      entityType: string;
+      scopeKind: string;
+      scopeId: string | null;
+      externalId: string | null;
+      title: string | null;
+      status: string | null;
+      data: Record<string, unknown>;
+      createdAt: string;
+      updatedAt: string;
+    }>,
+  ];
+  "plugins.peer.entities.get": [
+    params: {
+      companyId: string;
+      providerPluginKey: string;
+      entityType: string;
+      externalId: string;
+      scopeKind: string;
+      scopeId?: string;
+    },
+    result: {
+      id: string;
+      entityType: string;
+      scopeKind: string;
+      scopeId: string | null;
+      externalId: string | null;
+      title: string | null;
+      status: string | null;
+      data: Record<string, unknown>;
+      createdAt: string;
+      updatedAt: string;
+    } | null,
+  ];
+
   // Events
   "events.emit": [
     params: { name: string; companyId: string; payload: unknown },

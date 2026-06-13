@@ -112,6 +112,8 @@ export type {
   PluginApiRouteMethod,
   PluginEventType,
   PluginBridgeErrorCode,
+  PluginPeerReadsDeclaration,
+  PluginPeerReadEntityDeclaration,
   Company,
   Project,
   Issue,
@@ -337,6 +339,117 @@ export interface PluginEntityQuery {
   limit?: number;
   /** Number of results to skip (for pagination). */
   offset?: number;
+}
+
+// ---------------------------------------------------------------------------
+// WF-3: Cross-plugin peer entity reads
+// ---------------------------------------------------------------------------
+
+/**
+ * A plugin entity record returned by a peer read operation.
+ *
+ * Identical to `PluginEntityRecord` but returned from a peer plugin's entity store.
+ * The `data` blob shape depends on the provider plugin's entity type schema.
+ *
+ * @see CORE-ADDITIONS.md §WF-3
+ */
+export interface PeerEntityRecord {
+  /** UUID primary key of the entity row. */
+  id: string;
+  /** Plugin-defined entity type (e.g. `"gitea-pr"`). */
+  entityType: string;
+  /** Scope kind of this entity. */
+  scopeKind: PluginStateScopeKind;
+  /** Scope ID, if any. */
+  scopeId: string | null;
+  /** External identifier in the provider's external system. */
+  externalId: string | null;
+  /** Human-readable title. */
+  title: string | null;
+  /** Status string. */
+  status: string | null;
+  /** Full entity data blob as stored by the provider. */
+  data: Record<string, unknown>;
+  /** ISO 8601 creation timestamp. */
+  createdAt: string;
+  /** ISO 8601 last-updated timestamp. */
+  updatedAt: string;
+}
+
+/**
+ * Query parameters for `ctx.plugins.peer.entities.list()`.
+ *
+ * @see CORE-ADDITIONS.md §WF-3
+ */
+export interface PeerEntityQuery {
+  /** UUID of the company to scope this read to. Required. */
+  companyId: string;
+  /** Manifest ID (plugin key) of the provider plugin (e.g. `"paperclip.gitea"`). */
+  providerPluginKey: string;
+  /** Entity type to read (e.g. `"gitea-pr"`). Case-sensitive exact match. */
+  entityType: string;
+  /** Filter by scope kind. */
+  scopeKind?: PluginStateScopeKind;
+  /** Filter by scope ID (e.g. issue UUID). */
+  scopeId?: string;
+  /** Filter by external ID. */
+  externalId?: string;
+  /** Maximum number of results (server enforces max of 100). */
+  limit?: number;
+  /** Offset for pagination. */
+  offset?: number;
+}
+
+/**
+ * Parameters for `ctx.plugins.peer.entities.get()`.
+ *
+ * @see CORE-ADDITIONS.md §WF-3
+ */
+export interface PeerEntityGetParams {
+  /** UUID of the company to scope this read to. Required. */
+  companyId: string;
+  /** Manifest ID (plugin key) of the provider plugin (e.g. `"paperclip.gitea"`). */
+  providerPluginKey: string;
+  /** Entity type to read. Case-sensitive exact match. */
+  entityType: string;
+  /** External identifier of the entity to fetch. */
+  externalId: string;
+  /** Scope kind — required to disambiguate when the same externalId appears in multiple scopes. */
+  scopeKind: PluginStateScopeKind;
+  /** Scope ID. Required when scopeKind is not "instance". */
+  scopeId?: string;
+}
+
+/**
+ * `ctx.plugins.peer.entities` — read entity records owned by another plugin.
+ *
+ * Both the provider (via manifest `peerReads.allow`) and consumer (via
+ * `plugins.peer-reads.read` capability) must opt in for reads to succeed.
+ * Authorization failures are indistinguishable from "not found" to prevent
+ * leaking provider installation state.
+ *
+ * @see CORE-ADDITIONS.md §WF-3
+ */
+export interface PluginPeerEntitiesClient {
+  /**
+   * List entity records owned by the named provider plugin.
+   *
+   * Requires `plugins.peer-reads.read` capability.
+   * Provider must declare `peerReads.allow` with this consumer in the allowlist.
+   * Results are capped at 100 rows per call.
+   */
+  list(params: PeerEntityQuery): Promise<PeerEntityRecord[]>;
+
+  /**
+   * Get a single entity by external ID.
+   *
+   * Returns `null` if not found or authorization is denied — callers cannot
+   * distinguish between "entity does not exist" and "not authorized".
+   *
+   * Requires `plugins.peer-reads.read` capability.
+   * Provider must declare `peerReads.allow` with this consumer in the allowlist.
+   */
+  get(params: PeerEntityGetParams): Promise<PeerEntityRecord | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1929,4 +2042,17 @@ export interface PluginContext {
 
   /** Structured logger. Output is captured and surfaced in the plugin health dashboard. */
   logger: PluginLogger;
+
+  /**
+   * Cross-plugin peer access. Requires `plugins.peer-reads.read` capability for reads.
+   * Provider plugins must also declare `peerReads.allow` in their manifest.
+   *
+   * @see CORE-ADDITIONS.md §WF-3
+   */
+  plugins: {
+    peer: {
+      /** Read entity records owned by another plugin. */
+      entities: PluginPeerEntitiesClient;
+    };
+  };
 }

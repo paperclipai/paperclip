@@ -571,6 +571,47 @@ export interface PaperclipPluginManifestV1 {
   launchers?: PluginLauncherDeclaration[];
   /** UI bundle declarations. Requires `entrypoints.ui` when populated. */
   ui?: PluginUiDeclaration;
+  /**
+   * Declares which of this plugin's entity types can be read by peer plugins.
+   * Default-deny: if absent, no peer reads are allowed from this plugin.
+   * Requires that the consumer has the `plugins.peer-reads.read` capability.
+   *
+   * @see CORE-ADDITIONS.md §WF-3
+   */
+  peerReads?: PluginPeerReadsDeclaration;
+}
+
+/**
+ * Declares which entity types this plugin exposes for peer reads and which
+ * consumer plugin keys are permitted to read each type.
+ *
+ * @see CORE-ADDITIONS.md §WF-3
+ */
+export interface PluginPeerReadsDeclaration {
+  /**
+   * List of entity type allowlist entries. Each entry names one entity type
+   * and the consumer plugin keys that may read it.
+   */
+  allow: PluginPeerReadEntityDeclaration[];
+}
+
+/**
+ * Allows the listed consumer plugins to read entities of `entityType` from
+ * this plugin via `ctx.plugins.peer.entities.list / .get`.
+ */
+export interface PluginPeerReadEntityDeclaration {
+  /**
+   * Entity type to expose (e.g. `"gitea-pr"`).
+   * Must match the `entityType` used in `ctx.entities.upsert` calls.
+   * Case-sensitive, exact match.
+   */
+  entityType: string;
+  /**
+   * Manifest IDs (plugin keys) of allowed consumers.
+   * Exact string match against the consumer's `manifest.id` field.
+   * An empty array means no consumers are allowed (effectively no-op declaration).
+   */
+  consumers: string[];
 }
 
 // ---------------------------------------------------------------------------

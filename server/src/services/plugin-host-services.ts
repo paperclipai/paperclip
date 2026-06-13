@@ -1198,6 +1198,15 @@ export function buildHostServices(
       },
     },
 
+    peerEntities: {
+      async list(params) {
+        return registry.peerEntitiesList(pluginId, params) as any;
+      },
+      async get(params) {
+        return registry.peerEntityGet(pluginId, params) as any;
+      },
+    },
+
     events: {
       async emit(params) {
         if (params.companyId) {

@@ -568,6 +568,19 @@ export const pluginApiRouteDeclarationSchema = z.object({
 export type PluginApiRouteDeclarationInput = z.infer<typeof pluginApiRouteDeclarationSchema>;
 
 // ---------------------------------------------------------------------------
+// Plugin peer-reads declaration schema (WF-3)
+// ---------------------------------------------------------------------------
+
+const pluginPeerReadEntityDeclarationSchema = z.object({
+  entityType: z.string().min(1),
+  consumers: z.array(z.string().min(1)),
+});
+
+const pluginPeerReadsDeclarationSchema = z.object({
+  allow: z.array(pluginPeerReadEntityDeclarationSchema),
+});
+
+// ---------------------------------------------------------------------------
 // Plugin Manifest V1 schema
 // ---------------------------------------------------------------------------
 
@@ -651,6 +664,7 @@ export const pluginManifestV1Schema = z.object({
     slots: z.array(pluginUiSlotDeclarationSchema).min(1).optional(),
     launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   }).optional(),
+  peerReads: pluginPeerReadsDeclarationSchema.optional(),
 }).superRefine((manifest, ctx) => {
   // ── Entrypoint ↔ UI slot consistency ──────────────────────────────────
   // Plugins that declare UI slots must also declare a UI entrypoint so the

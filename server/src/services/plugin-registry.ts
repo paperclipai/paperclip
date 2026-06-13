@@ -28,6 +28,7 @@ import type {
   PluginWebhookDeliveryStatus,
 } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
+import { checkPeerEntityAccess, PEER_ENTITY_MAX_LIMIT } from "./plugin-peer-reads.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -580,6 +581,154 @@ export function pluginRegistryService(db: Db) {
         .where(eq(pluginEntities.id, id))
         .returning();
       return rows[0] ?? null;
+    },
+
+    // ----- Peer entity reads (WF-3) ---------------------------------------
+
+    /**
+     * List entity rows owned by a provider plugin, accessible by a consumer plugin.
+     *
+     * Access control: consumer must be authorized in the provider's peerReads.allow
+     * manifest declaration. Provider must be enabled for the given company.
+     * All failures throw PluginPeerReadDenied — callers cannot distinguish
+     * "not found" from "not authorized" to prevent information leakage.
+     *
+     * @param consumerPluginId - UUID of the calling (consumer) plugin.
+     * @param params - Query including companyId, providerPluginKey, entityType, and optional filters.
+     */
+    peerEntitiesList: async (
+      consumerPluginId: string,
+      params: {
+        companyId: string;
+        providerPluginKey: string;
+        entityType: string;
+        scopeKind?: string;
+        scopeId?: string;
+        externalId?: string;
+        limit?: number;
+        offset?: number;
+      },
+    ): Promise<PluginEntityRecord[]> => {
+      const consumer = await getById(consumerPluginId);
+      const provider = await getByKey(params.providerPluginKey);
+      if (!consumer || !provider || provider.status === "uninstalled") {
+        throw Object.assign(new Error("PluginPeerReadDenied"), { code: "PluginPeerReadDenied" });
+      }
+
+      // Defense-in-depth: consumer must declare plugins.peer-reads.read capability
+      const consumerManifest = consumer.manifestJson as PaperclipPluginManifestV1;
+      if (!consumerManifest.capabilities?.includes("plugins.peer-reads.read")) {
+        throw Object.assign(new Error("PluginPeerReadDenied"), { code: "PluginPeerReadDenied" });
+      }
+
+      // Verify provider is enabled for this company.
+      // No settings row means the plugin is enabled by default (plugin_company_settings contract).
+      const providerEnabled = await db
+        .select({ enabled: pluginCompanySettings.enabled })
+        .from(pluginCompanySettings)
+        .where(
+          and(
+            eq(pluginCompanySettings.pluginId, provider.id),
+            eq(pluginCompanySettings.companyId, params.companyId),
+          ),
+        )
+        .then((rows) => rows[0]?.enabled ?? true);
+      if (!providerEnabled) {
+        throw Object.assign(new Error("PluginPeerReadDenied"), { code: "PluginPeerReadDenied" });
+      }
+
+      const access = checkPeerEntityAccess(
+        consumer.pluginKey,
+        provider.manifestJson as PaperclipPluginManifestV1,
+        params.entityType,
+      );
+      if (!access.allowed) {
+        throw Object.assign(new Error("PluginPeerReadDenied"), { code: "PluginPeerReadDenied" });
+      }
+
+      const rawLimit = Number.isFinite(params.limit) && (params.limit ?? 0) > 0 ? params.limit! : PEER_ENTITY_MAX_LIMIT;
+      const effectiveLimit = Math.min(rawLimit, PEER_ENTITY_MAX_LIMIT);
+      const rawOffset = Number.isFinite(params.offset) && (params.offset ?? 0) >= 0 ? params.offset! : 0;
+      const conditions = [
+        eq(pluginEntities.pluginId, provider.id),
+        eq(pluginEntities.entityType, params.entityType),
+      ];
+      if (params.scopeKind) conditions.push(eq(pluginEntities.scopeKind, params.scopeKind as any));
+      if (params.scopeId) conditions.push(eq(pluginEntities.scopeId, params.scopeId));
+      if (params.externalId) conditions.push(eq(pluginEntities.externalId, params.externalId));
+
+      return db
+        .select()
+        .from(pluginEntities)
+        .where(and(...conditions))
+        .orderBy(asc(pluginEntities.createdAt))
+        .limit(effectiveLimit)
+        .offset(rawOffset) as unknown as Promise<PluginEntityRecord[]>;
+    },
+
+    /**
+     * Get a single entity row owned by a provider plugin, accessible by a consumer plugin.
+     *
+     * Returns null if the entity is not found OR access is denied — callers cannot
+     * distinguish between the two cases (no information leakage).
+     *
+     * @param consumerPluginId - UUID of the calling (consumer) plugin.
+     * @param params - Lookup parameters including companyId, providerPluginKey, entityType, externalId, scopeKind.
+     */
+    peerEntityGet: async (
+      consumerPluginId: string,
+      params: {
+        companyId: string;
+        providerPluginKey: string;
+        entityType: string;
+        externalId: string;
+        scopeKind: string;
+        scopeId?: string;
+      },
+    ): Promise<PluginEntityRecord | null> => {
+      const consumer = await getById(consumerPluginId);
+      const provider = await getByKey(params.providerPluginKey);
+      if (!consumer || !provider || provider.status === "uninstalled") return null;
+
+      // Defense-in-depth: consumer must declare plugins.peer-reads.read capability
+      const consumerManifest = consumer.manifestJson as PaperclipPluginManifestV1;
+      if (!consumerManifest.capabilities?.includes("plugins.peer-reads.read")) return null;
+
+      // Verify provider is enabled for this company.
+      // No settings row means the plugin is enabled by default (plugin_company_settings contract).
+      const providerEnabled = await db
+        .select({ enabled: pluginCompanySettings.enabled })
+        .from(pluginCompanySettings)
+        .where(
+          and(
+            eq(pluginCompanySettings.pluginId, provider.id),
+            eq(pluginCompanySettings.companyId, params.companyId),
+          ),
+        )
+        .then((rows) => rows[0]?.enabled ?? true);
+      if (!providerEnabled) return null;
+
+      const access = checkPeerEntityAccess(
+        consumer.pluginKey,
+        provider.manifestJson as PaperclipPluginManifestV1,
+        params.entityType,
+      );
+      if (!access.allowed) return null;
+
+      const conditions = [
+        eq(pluginEntities.pluginId, provider.id),
+        eq(pluginEntities.entityType, params.entityType),
+        eq(pluginEntities.externalId, params.externalId),
+        eq(pluginEntities.scopeKind, params.scopeKind as any),
+      ];
+      if (params.scopeId) conditions.push(eq(pluginEntities.scopeId, params.scopeId));
+
+      return db
+        .select()
+        .from(pluginEntities)
+        .where(and(...conditions))
+        .orderBy(asc(pluginEntities.createdAt))
+        .then((rows) => (rows[0] as unknown as PluginEntityRecord) ?? null);
     },
 
     // ----- Jobs -----------------------------------------------------------
