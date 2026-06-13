@@ -74,5 +74,11 @@ export { workProductService } from "./work-products.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
+export {
+  onboardingIncidentsService,
+  AUTO_FILED_ONBOARDING_5XX_ORIGIN_KIND,
+  AUTO_FILED_ONBOARDING_5XX_LABEL_NAME,
+  type OnboardingIncidentsService,
+} from "./onboarding-incidents.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
