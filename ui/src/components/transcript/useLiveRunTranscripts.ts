@@ -113,7 +113,7 @@ export function useLiveRunTranscripts({
   const seenChunkKeysRef = useRef(new Set<string>());
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
-  const missingTerminalLogRunIdsRef = useRef(new Set<string>());
+  const missingLogRunIdsRef = useRef(new Set<string>());
   const transcriptCacheRef = useRef(new Map<string, {
     adapterType: string;
     chunks: RunLogChunk[];
@@ -196,9 +196,9 @@ export function useLiveRunTranscripts({
         logOffsetByRunRef.current.delete(runId);
       }
     }
-    for (const runId of missingTerminalLogRunIdsRef.current.keys()) {
+    for (const runId of missingLogRunIdsRef.current.keys()) {
       if (!knownRunIds.has(runId)) {
-        missingTerminalLogRunIdsRef.current.delete(runId);
+        missingLogRunIdsRef.current.delete(runId);
       }
     }
     for (const runId of transcriptCacheRef.current.keys()) {
@@ -214,7 +214,7 @@ export function useLiveRunTranscripts({
     let cancelled = false;
 
     const readRunLog = async (run: RunTranscriptSource) => {
-      if (missingTerminalLogRunIdsRef.current.has(run.id)) {
+      if (missingLogRunIdsRef.current.has(run.id)) {
         return;
       }
       const offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
@@ -232,8 +232,8 @@ export function useLiveRunTranscripts({
           logOffsetByRunRef.current.set(run.id, offset + result.content.length);
         }
       } catch (error) {
-        if (error instanceof ApiError && error.status === 404 && isTerminalStatus(run.status)) {
-          missingTerminalLogRunIdsRef.current.add(run.id);
+        if (error instanceof ApiError && error.status === 404) {
+          missingLogRunIdsRef.current.add(run.id);
         }
       } finally {
         if (!cancelled) {
