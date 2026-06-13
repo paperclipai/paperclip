@@ -1,3 +1,6 @@
+---
+context: fork
+---
 # QA Agent Template
 
 Use this template when hiring QA engineers who reproduce bugs, validate fixes, capture screenshots, and report actionable findings.

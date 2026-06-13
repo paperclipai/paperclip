@@ -1,3 +1,6 @@
+---
+context: fork
+---
 # Agent Instruction Templates
 
 Use this reference from step 4 of the hiring workflow. It lists the current role templates, when to use each, and how to decide between an exact template, an adjacent template, or the generic fallback.

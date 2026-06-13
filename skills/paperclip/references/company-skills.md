@@ -1,3 +1,6 @@
+---
+context: fork
+---
 # Company Skills Workflow
 
 Use this reference when a board user, CEO, or manager asks you to find a skill, install it into the company library, or assign it to an agent.
