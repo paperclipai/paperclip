@@ -49,6 +49,12 @@ import {
   reconcileAdapterAvailability,
 } from "./services/adapter-registry-bootstrap.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
+import {
+  formatRunLogRetentionSummary,
+  resolveDefaultRunLogBasePath,
+  resolveRunLogRetentionPolicyFromEnv,
+  rotateRunLogs,
+} from "./services/run-log-retention.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
@@ -912,7 +918,78 @@ export async function startServer(): Promise<StartedServer> {
       });
     }, backupIntervalMs);
   }
-  
+
+  {
+    // Run-log retention: rotate uncompressed run logs into .gz once they age
+    // past PAPERCLIP_RUN_LOG_UNCOMPRESSED_DAYS or grow past
+    // PAPERCLIP_RUN_LOG_MAX_FILE_BYTES, then hard-delete anything older than
+    // PAPERCLIP_RUN_LOG_COMPRESSED_DAYS. Runs once at startup (after the
+    // server is listening) and on a steady interval afterwards. Failures in
+    // the rotator must never take down the server — the rotator already
+    // swallows per-file recoverable FS errors and the outer catch handles
+    // anything that escapes.
+    const rotationIntervalMinutes = (() => {
+      const raw = Number(process.env.PAPERCLIP_RUN_LOG_ROTATE_INTERVAL_MINUTES);
+      if (!Number.isFinite(raw) || raw <= 0) return 360;
+      return raw;
+    })();
+    const runLogBasePath = resolveDefaultRunLogBasePath();
+    const runLogPolicy = resolveRunLogRetentionPolicyFromEnv();
+    const runRunLogRotation = async () => {
+      try {
+        const result = await rotateRunLogs({
+          basePath: runLogBasePath,
+          policy: runLogPolicy,
+          onWarn: ({ path: target, err }) => {
+            logger.warn(
+              { err, path: target },
+              "run-log retention: recoverable filesystem error",
+            );
+          },
+        });
+        if (
+          result.scannedFiles > 0 ||
+          result.gzippedFiles > 0 ||
+          result.deletedFiles > 0 ||
+          result.errors > 0
+        ) {
+          logger.info(
+            {
+              basePath: runLogBasePath,
+              scannedFiles: result.scannedFiles,
+              gzippedFiles: result.gzippedFiles,
+              deletedFiles: result.deletedFiles,
+              rotatedBytes: result.rotatedBytes,
+              errors: result.errors,
+            },
+            formatRunLogRetentionSummary(result),
+          );
+        }
+      } catch (err) {
+        logger.error(
+          { err, basePath: runLogBasePath },
+          "run-log retention tick failed",
+        );
+      }
+    };
+    logger.info(
+      {
+        basePath: runLogBasePath,
+        intervalMinutes: rotationIntervalMinutes,
+        policy: runLogPolicy,
+      },
+      "Run-log retention scheduler enabled",
+    );
+    // Stagger the first tick a bit after listen so it doesn't race
+    // with the rest of startup recovery work.
+    setTimeout(() => {
+      void runRunLogRotation();
+    }, 30_000).unref();
+    setInterval(() => {
+      void runRunLogRotation();
+    }, rotationIntervalMinutes * 60 * 1000).unref();
+  }
+
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
   // reject valid external adapter types during the startup loading window.
