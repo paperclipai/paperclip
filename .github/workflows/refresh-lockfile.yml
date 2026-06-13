@@ -88,9 +88,15 @@ jobs:
           fi
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
 
-      - name: Enable auto-merge for lockfile PR
+      - name: Merge lockfile PR
         if: steps.upsert-pr.outputs.pr_url != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh pr merge --auto --squash --delete-branch "${{ steps.upsert-pr.outputs.pr_url }}"
+          # Lockfile PRs are bot-generated, policy-exempt, and carry no required
+          # checks, so merge immediately. `gh pr merge --auto` needs repo-level
+          # auto-merge, which is disabled here and 404s, leaving every refresh
+          # PR stranded for a manual merge. Merge directly; fall back to --auto
+          # only if a branch-protection rule is ever added that blocks it.
+          gh pr merge --squash --delete-branch "${{ steps.upsert-pr.outputs.pr_url }}" \
+            || gh pr merge --auto --squash --delete-branch "${{ steps.upsert-pr.outputs.pr_url }}"
