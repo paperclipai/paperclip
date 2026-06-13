@@ -3425,6 +3425,16 @@ export function issueService(db: Db) {
     }
   }
 
+  async function assertValidGoal(companyId: string, goalId: string) {
+    const goal = await db
+      .select({ id: goals.id, companyId: goals.companyId })
+      .from(goals)
+      .where(eq(goals.id, goalId))
+      .then((rows) => rows[0] ?? null);
+    if (!goal) throw notFound("Goal not found");
+    if (goal.companyId !== companyId) throw unprocessable("Goal must belong to same company");
+  }
+
   async function assertValidProjectWorkspace(
     companyId: string,
     projectId: string | null | undefined,
@@ -4876,6 +4886,9 @@ export function issueService(db: Db) {
       }
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
+      }
+      if (data.goalId) {
+        await assertValidGoal(companyId, data.goalId);
       }
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
