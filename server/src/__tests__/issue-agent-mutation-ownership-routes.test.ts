@@ -973,6 +973,32 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).toHaveBeenCalled();
   });
 
+  it("allows a CEO-style assigned agent to close its own runless active issue", async () => {
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === ownerAgentId) return makeAgent(ownerAgentId, { role: "ceo", permissions: { canCreateAgents: true } });
+      if (id === peerAgentId) return makeAgent(peerAgentId);
+      return null;
+    });
+    mockAgentService.list.mockResolvedValue([
+      makeAgent(ownerAgentId, { role: "ceo", permissions: { canCreateAgents: true } }),
+      makeAgent(peerAgentId),
+    ]);
+
+    const res = await request(await createApp({ ...ownerActor(), runId: null }))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment: "Verified closeout evidence." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "done",
+        actorAgentId: ownerAgentId,
+      }),
+    );
+  });
+
   it.each([
     ["todo", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Todo update" })],
     ["todo", "comment", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Todo noise" })],
