@@ -57,4 +57,11 @@ describe("npm-exec Windows argument safety", () => {
       /Unsafe npm argument/,
     );
   });
+
+  it("validates flag-position arguments too (no validation bypass)", () => {
+    // A flag carrying a control character must be rejected even though flags
+    // are passed verbatim — validation is not skipped for `-`-prefixed args.
+    const sneakyFlag = `--registry=${String.fromCharCode(0x0a)}evil`;
+    expect(() => buildWindowsCommandLine([sneakyFlag])).toThrow(/Unsafe npm argument/);
+  });
 });

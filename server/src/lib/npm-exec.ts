@@ -34,17 +34,17 @@ function assertSafeWindowsArg(arg: string): void {
 
 /**
  * Build the `cmd.exe` command line used to invoke `npm.cmd` on Windows.
- * Flags (arguments starting with `-`) pass through verbatim; every other
- * argument is validated and double-quoted so package specs and paths cannot
- * inject additional shell commands.
+ * Every argument is validated first (so control or shell-significant characters
+ * can never reach cmd.exe in any position). Flags — arguments starting with `-`
+ * — are then passed verbatim; all other arguments (package specs, paths) are
+ * double-quoted so they cannot inject additional shell commands.
  */
 function buildWindowsCommandLine(args: string[]): string {
   return ["npm.cmd"]
     .concat(
       args.map((arg) => {
-        if (arg.startsWith("-")) return arg;
         assertSafeWindowsArg(arg);
-        return `"${arg}"`;
+        return arg.startsWith("-") ? arg : `"${arg}"`;
       }),
     )
     .join(" ");
@@ -59,9 +59,14 @@ export interface RunNpmOptions {
  * Run an `npm` subcommand cross-platform.
  *
  * `args` is the full npm argument vector (e.g. `["install", spec, "--save"]`).
- * Flags (arguments starting with `-`) are assumed to be code-controlled
- * literals; any other argument (package specs, paths) is treated as untrusted
- * and validated/quoted before reaching a shell on Windows.
+ * Every argument is validated for shell-dangerous characters before reaching a
+ * shell on Windows. Arguments that begin with `-` are treated as trusted npm
+ * flags and passed verbatim (not quoted); all other arguments are double-quoted.
+ *
+ * CONTRACT: callers must keep flags code-controlled. Do not pass an untrusted
+ * value that can begin with `-` in flag position — npm would interpret it as a
+ * flag (an argument-injection that quoting cannot prevent). Untrusted package
+ * specs/paths are safe: they are quoted and cannot break out of the command.
  */
 export async function runNpm(args: string[], options: RunNpmOptions = {}) {
   if (!isWindows) {
