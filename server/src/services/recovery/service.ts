@@ -2697,6 +2697,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      if (
+        issue.description &&
+        (issue.description.includes("No-op rule:") ||
+          issue.description.includes("Disposition sweeps are false positives"))
+      ) {
+        result.skipped += 1;
+        continue;
+      }
+
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({

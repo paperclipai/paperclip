@@ -2178,6 +2178,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(0);
   });
 
+  it("skips in_progress issues whose description contains 'No-op rule:'", async () => {
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+    });
+    await db
+      .update(issues)
+      .set({ description: "**No-op rule:** This issue stays in_progress for 90 days." })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([]);
+  });
+
+  it("skips in_progress issues whose description contains 'Disposition sweeps are false positives'", async () => {
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+    });
+    await db
+      .update(issues)
+      .set({ description: "Disposition sweeps are false positives — live path is the routine." })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([]);
+  });
+
   it("re-enqueues assigned todo work when the last issue run died and no wake remains", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "todo",
