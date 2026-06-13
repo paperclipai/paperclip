@@ -51,4 +51,5 @@ These are set automatically by the server when invoking agents:
 | Variable | Description |
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API key (for Claude Local adapter) |
+| `ANTHROPIC_BASE_URL` | Optional. Overrides the Anthropic API endpoint for the Claude Local adapter. Inherited by the spawned `claude` CLI process — useful when `api.anthropic.com` is unreachable (corporate egress, regional restrictions) and you have access to an Anthropic-compatible proxy. Set on the server process or in an agent's `adapter_config.env`. |
 | `OPENAI_API_KEY` | OpenAI API key (for Codex Local adapter) |
