@@ -2250,7 +2250,10 @@ function shouldQueueFollowupForRunningIssueWake(input: {
 }
 
 function isCheckoutConflictError(error: unknown): boolean {
-  return error instanceof HttpError && error.status === 409 && error.message === "Issue checkout conflict";
+  if (!(error instanceof HttpError)) return false;
+  if (error.status === 409 && error.message === "Issue checkout conflict") return true;
+  if (error.status === 422 && error.message === "Issue is blocked by unresolved blockers") return true;
+  return false;
 }
 
 function deriveCommentId(
