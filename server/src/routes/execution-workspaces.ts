@@ -335,8 +335,12 @@ export function executionWorkspaceRoutes(db: Db) {
           }).then((nestedOperation) => ({
             status: "succeeded" as const,
             exitCode: 0,
+            stdout: nestedOperation?.stdoutExcerpt ?? null,
+            stderr: nestedOperation?.stderrExcerpt ?? null,
+            system: `Completed workspace job "${workspaceCommand.name}"\n`,
             metadata: {
               nestedOperationId: nestedOperation?.id ?? null,
+              nestedLogBytes: nestedOperation?.logBytes ?? null,
               runtimeServiceCount,
             },
           }));
