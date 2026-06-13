@@ -87,6 +87,7 @@ const mockIssueService = vi.hoisted(() => ({
 const mockSecretService = vi.hoisted(() => ({
   normalizeAdapterConfigForPersistence: vi.fn(),
   resolveAdapterConfigForRuntime: vi.fn(),
+  syncEnvBindingsForTarget: vi.fn(),
 }));
 
 const mockAgentInstructionsService = vi.hoisted(() => ({
@@ -321,6 +322,7 @@ describe.sequential("agent permission routes", () => {
     mockIssueService.list.mockReset();
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
     mockSecretService.resolveAdapterConfigForRuntime.mockReset();
+    mockSecretService.syncEnvBindingsForTarget.mockReset();
     mockAgentInstructionsService.materializeManagedBundle.mockReset();
     mockCompanySkillService.listRuntimeSkillEntries.mockReset();
     mockCompanySkillService.resolveRequestedSkillKeys.mockReset();
@@ -389,6 +391,7 @@ describe.sequential("agent permission routes", () => {
     );
     mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => config);
     mockSecretService.resolveAdapterConfigForRuntime.mockImplementation(async (_companyId, config) => ({ config }));
+    mockSecretService.syncEnvBindingsForTarget.mockResolvedValue([]);
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
     });
@@ -1594,5 +1597,63 @@ describe.sequential("agent permission routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("does not call syncEnvBindingsForTarget when updated adapterConfig has no env", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterConfig: {
+        model: "claude-3-5-sonnet",
+        env: { TOKEN: { type: "secret_ref", secretId: "s1", version: "latest" } },
+      },
+    });
+    mockAgentService.update.mockResolvedValue({
+      ...baseAgent,
+      adapterConfig: { model: "gpt-4" },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ adapterConfig: { model: "gpt-4" }, replaceAdapterConfig: true }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockSecretService.syncEnvBindingsForTarget).not.toHaveBeenCalled();
+  });
+
+  it("calls syncEnvBindingsForTarget when updated adapterConfig has env", async () => {
+    const secretId = "44444444-4444-4444-8444-444444444444";
+    const env = { TOKEN: { type: "secret_ref", secretId, version: "latest" } };
+    mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => config);
+    mockAgentService.update.mockResolvedValue({
+      ...baseAgent,
+      adapterConfig: { model: "claude-3-5-sonnet", env },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ adapterConfig: { model: "claude-3-5-sonnet", env } }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockSecretService.syncEnvBindingsForTarget).toHaveBeenCalledWith(
+      companyId,
+      { targetType: "agent", targetId: agentId },
+      env,
+    );
   });
 });
