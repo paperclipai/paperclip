@@ -204,7 +204,7 @@ describe("adapter model listing", () => {
   it("loads cursor models dynamically and caches them", async () => {
     const runner = vi.fn(() => ({
       status: 0,
-      stdout: "Available models: auto, composer-1.5, gpt-5.3-codex-high, sonnet-4.6",
+      stdout: "Available models: auto, composer-1.5, gpt-5.3-codex-high, claude-4.6-opus-high-thinking",
       stderr: "",
       hasError: false,
     }));
@@ -217,7 +217,47 @@ describe("adapter model listing", () => {
     expect(first).toEqual(second);
     expect(first.some((model) => model.id === "auto")).toBe(true);
     expect(first.some((model) => model.id === "gpt-5.3-codex-high")).toBe(true);
-    expect(first.some((model) => model.id === "composer-1")).toBe(true);
+    expect(first.some((model) => model.id === "composer-2-fast")).toBe(true);
+  });
+
+  it("parses cursor models when CLI exits non-zero but emits colonless header", async () => {
+    const runner = vi.fn(() => ({
+      status: 1,
+      stdout: [
+        "Available models",
+        "",
+        "auto - Auto",
+        "claude-4.6-opus-high-thinking - Opus 4.6 1M Thinking",
+      ].join("\n"),
+      stderr: "",
+      hasError: false,
+    }));
+    setCursorModelsRunnerForTests(runner);
+
+    const models = await listAdapterModels("cursor");
+    expect(models.some((m) => m.id === "auto" && m.label === "Auto")).toBe(true);
+    expect(models.some((m) => m.id === "claude-4.6-opus-high-thinking")).toBe(true);
+  });
+
+  it("parses cursor id-dash-label format from agent models output", async () => {
+    const runner = vi.fn(() => ({
+      status: 0,
+      stdout: [
+        "Available models",
+        "",
+        "auto - Auto",
+        "claude-4.6-opus-high-thinking - Opus 4.6 1M Thinking  (current)",
+        "gpt-5.3-codex - GPT-5.3 Codex",
+      ].join("\n"),
+      stderr: "",
+      hasError: false,
+    }));
+    setCursorModelsRunnerForTests(runner);
+
+    const models = await listAdapterModels("cursor");
+    expect(models.some((m) => m.id === "auto" && m.label === "Auto")).toBe(true);
+    expect(models.some((m) => m.id === "claude-4.6-opus-high-thinking" && m.label === "Opus 4.6 1M Thinking")).toBe(true);
+    expect(models.some((m) => m.id === "gpt-5.3-codex" && m.label === "GPT-5.3 Codex")).toBe(true);
   });
 
   describe("PAPERCLIP_ADAPTER_MODELS declared models", () => {
