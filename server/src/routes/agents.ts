@@ -567,8 +567,21 @@ export function agentRoutes(
       buildAgentAccessState(agent),
     ]);
 
+    const base = options?.restricted ? redactForRestrictedAgentView(agent) : agent;
+    const basePermissions =
+      base && typeof base.permissions === "object" && base.permissions !== null
+        ? (base.permissions as Record<string, unknown>)
+        : {};
+    const grantKeys = Array.from(
+      new Set(accessState.grants.map((grant) => grant.permissionKey)),
+    ).sort();
+
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...base,
+      permissions: {
+        ...basePermissions,
+        grants: grantKeys,
+      },
       chainOfCommand,
       access: accessState,
     };

@@ -1402,6 +1402,79 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("explicit_grant");
+    expect(res.body.permissions).toMatchObject({
+      canCreateAgents: false,
+      grants: ["tasks:assign"],
+    });
+  }, 15_000);
+
+  it("exposes fine-grained grants on GET /api/agents/me deduplicated and sorted", async () => {
+    mockAccessService.listPrincipalGrants.mockResolvedValue([
+      {
+        id: "grant-tasks",
+        companyId,
+        principalType: "agent",
+        principalId: agentId,
+        permissionKey: "tasks:assign",
+        scope: null,
+        grantedByUserId: "board-user",
+        createdAt: new Date("2026-03-19T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      },
+      {
+        id: "grant-approvals",
+        companyId,
+        principalType: "agent",
+        principalId: agentId,
+        permissionKey: "approvals:create",
+        scope: null,
+        grantedByUserId: "board-user",
+        createdAt: new Date("2026-03-19T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      },
+      {
+        id: "grant-tasks-scoped",
+        companyId,
+        principalType: "agent",
+        principalId: agentId,
+        permissionKey: "tasks:assign",
+        scope: "project:abc",
+        grantedByUserId: "board-user",
+        createdAt: new Date("2026-03-19T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      },
+    ]);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/me`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.permissions.grants).toEqual(["approvals:create", "tasks:assign"]);
+    expect(res.body.permissions.canCreateAgents).toBe(false);
+  }, 15_000);
+
+  it("returns an empty grants array when the agent holds no grants", async () => {
+    mockAccessService.listPrincipalGrants.mockResolvedValue([]);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/me`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.permissions.grants).toEqual([]);
   }, 15_000);
 
   it("reports simple-mode task assignment as enabled for active company agent members", async () => {

@@ -45,12 +45,23 @@ Returns the agent record for the currently authenticated agent.
   "status": "running",
   "budgetMonthlyCents": 5000,
   "spentMonthlyCents": 1200,
+  "permissions": {
+    "canCreateAgents": false,
+    "grants": ["tasks:assign"]
+  },
   "chainOfCommand": [
     { "id": "mgr-1", "name": "EngineeringLead", "role": "manager" },
     { "id": "ceo-1", "name": "CEO", "role": "ceo" }
   ]
 }
 ```
+
+`permissions.grants` is a sorted, deduplicated list of fine-grained permission keys this
+agent currently holds (e.g. `tasks:assign`, `approvals:create`). It is advisory metadata
+for cheap client-side pre-checks — server-side enforcement remains authoritative, so
+attempting an action you do not hold the grant for will still 403. Agents without any
+explicit grants receive an empty array. The richer per-grant rows (with scope and
+`grantedByUserId`) are still available on `access.grants` for callers that need them.
 
 ## Create Agent
 
