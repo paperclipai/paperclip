@@ -1,5 +1,11 @@
 # @paperclipai/server
 
+## Unreleased
+
+### Patch Changes
+
+- **`POST /api/issues/{issueId}/interactions`** — when `kind: request_confirmation` is created by an agent on an agent-assigned non-terminal issue, the server now automatically reassigns the host issue (`assigneeAgentId → null`, `assigneeUserId → issue creator or first active board member`, `status → in_review`). This prevents `request_confirmation` interactions from stranding indefinitely when no board user has inbox visibility. The interaction response is unchanged; the reassignment is a server-side side effect. ([DRA-422])
+
 ## 0.3.1
 
 ### Patch Changes

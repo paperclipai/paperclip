@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  companyMemberships,
   documents,
   heartbeatRuns,
   issueComments,
@@ -521,6 +522,41 @@ async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
   return hydrateInteraction(updated);
 }
 
+async function resolveAutoRouteTargetUserId(
+  db: Db,
+  companyId: string,
+  createdByUserId: string | null,
+): Promise<string | null> {
+  if (createdByUserId) {
+    const own = await db
+      .select({ principalId: companyMemberships.principalId })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, createdByUserId),
+          eq(companyMemberships.status, "active"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (own) return own.principalId;
+  }
+  const fallback = await db
+    .select({ principalId: companyMemberships.principalId })
+    .from(companyMemberships)
+    .where(
+      and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.status, "active"),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return fallback?.principalId ?? null;
+}
+
 export function issueThreadInteractionService(db: Db) {
   async function getIdempotentInteraction(args: {
     issueId: string;
@@ -756,7 +792,7 @@ export function issueThreadInteractionService(db: Db) {
     },
 
     create: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; assigneeAgentId?: string | null; status?: string; createdByUserId?: string | null },
       input: CreateIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
@@ -849,6 +885,26 @@ export function issueThreadInteractionService(db: Db) {
           });
         }
         return hydrateInteraction(existing);
+      }
+
+      if (
+        data.kind === "request_confirmation"
+        && actor.agentId
+        && !actor.userId
+        && issue.assigneeAgentId
+        && !isTerminalIssueStatus(issue.status ?? "")
+      ) {
+        const targetUserId = await resolveAutoRouteTargetUserId(db, issue.companyId, issue.createdByUserId ?? null);
+        if (targetUserId) {
+          await issueService(db).update(issue.id, {
+            assigneeAgentId: null,
+            assigneeUserId: targetUserId,
+            status: "in_review",
+            actorAgentId: actor.agentId,
+            actorUserId: actor.userId ?? null,
+          });
+          return hydrateInteraction(created);
+        }
       }
 
       await touchIssue(db, issue.id);
