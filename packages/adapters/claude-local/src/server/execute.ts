@@ -127,9 +127,16 @@ function isBedrockAuth(env: Record<string, string>): boolean {
   );
 }
 
-function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" | "metered_api" {
+export function resolveClaudeBillingType(
+  env: Record<string, string>,
+): "api" | "subscription" | "metered_api" {
   if (isBedrockAuth(env)) return "metered_api";
-  return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
+  if (hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY")) return "api";
+  // A custom base URL (LiteLLM, OpenRouter, self-hosted gateway, etc.) means
+  // the request is not hitting the default Anthropic endpoint backing a
+  // Claude.ai subscription, so cost reported by the upstream is real money.
+  if (hasNonEmptyEnvValue(env, "ANTHROPIC_BASE_URL")) return "metered_api";
+  return "subscription";
 }
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
