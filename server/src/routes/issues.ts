@@ -50,6 +50,7 @@ import {
   updateDocumentAnnotationThreadSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
+  doneEvidenceSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   isUuidLike,
@@ -4826,6 +4827,7 @@ export function issueRoutes(
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
+
     if (resumeRequested === true && !commentBody) {
       res.status(400).json({ error: "Follow-up intent requires a comment" });
       return;
@@ -5043,6 +5045,23 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+
+    // QG-4: enforce doneEvidence when an agent's final status (after execution policy routing) is 'done'
+    if (updateFields.status === "done" && req.actor.type === "agent") {
+      const evidence = req.body.doneEvidence;
+      const parsed = doneEvidenceSchema.safeParse(evidence);
+      if (!parsed.success || !parsed.data.testServerHealthGreen) {
+        const missing = !parsed.success
+          ? parsed.error.issues.map((i) => i.path.join(".")).join(", ")
+          : "testServerHealthGreen=false";
+        res.status(422).json({
+          error: "QG-4: doneEvidence required to mark issue done",
+          details: `Missing or invalid fields: ${missing}. Set status to 'verification_missing' if evidence is incomplete.`,
+        });
+        return;
+      }
+    }
+
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
       const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {

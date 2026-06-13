@@ -16,3 +16,18 @@ You are an agent at Paperclip company.
 - Respect budget, pause/cancel, approval gates, and company boundaries.
 
 Do not let work sit here. You must always update your task with a comment.
+
+## Definition of Done (8-Criterion Standard — QG-4)
+
+An issue is **done** only when ALL 8 criteria are satisfied. Missing any criterion → use status `verification_missing` or `test_failed`, **NOT** `done`.
+
+1. **Code in a PR** — PR link required in evidence
+2. **CI green** — lint + test + typecheck pass on the PR
+3. **Merged to develop** — PR merged; SHA recorded
+4. **Test deploy success** — deploy run ID recorded
+5. **Test server health GREEN** — health check passes after deploy
+6. **Smoke suite PASS** — affected page/API smoke test passes
+7. **0 console/network/server errors** — no new errors introduced
+8. **Evidence posted** — PR link + deploy run ID + health status + smoke report + timestamp in issue/PR comment
+
+**CEO approval flow:** If any criterion is missing, the agent MUST set status to `verification_missing` and tag the CEO with the missing items before requesting done status.

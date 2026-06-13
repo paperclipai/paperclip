@@ -316,10 +316,23 @@ test.describe("Signoff execution policy", () => {
     await page.reload();
     await expect(page.locator("text=Approval pending")).toBeVisible({ timeout: 10_000 });
 
-    // Step 5: Approver approves → should complete
+    // Step 5: Approver approves → should complete (doneEvidence required by QG-4)
     const step5Res = await agentPatch(
       ctx.boardRequest, ctx.approver, issueId,
-      { status: "done", comment: "Approved. Ship it." },
+      {
+        status: "done",
+        comment: "Approved. Ship it.",
+        doneEvidence: {
+          prLink: "https://github.com/org/repo/pull/1",
+          releaseSha: "abc123",
+          deployRunId: "run-1",
+          testServerHealthGreen: true,
+          smokeReportLinks: [],
+          consoleErrors: 0,
+          networkErrors: 0,
+          evidenceLinks: [],
+        },
+      },
     );
     expect(step5Res.ok()).toBe(true);
     const step5Issue = await step5Res.json();
@@ -429,10 +442,23 @@ test.describe("Signoff execution policy", () => {
     expect(doneRes.ok()).toBe(true);
     expect((await doneRes.json()).status).toBe("in_review");
 
-    // Reviewer approves → should complete immediately (no approval stage)
+    // Reviewer approves → should complete immediately (no approval stage); QG-4 requires doneEvidence
     const approveRes = await agentPatch(
       ctx.boardRequest, ctx.reviewer, issue.id,
-      { status: "done", comment: "LGTM." },
+      {
+        status: "done",
+        comment: "LGTM.",
+        doneEvidence: {
+          prLink: "https://github.com/org/repo/pull/1",
+          releaseSha: "abc123",
+          deployRunId: "run-1",
+          testServerHealthGreen: true,
+          smokeReportLinks: [],
+          consoleErrors: 0,
+          networkErrors: 0,
+          evidenceLinks: [],
+        },
+      },
     );
     expect(approveRes.ok()).toBe(true);
     const doneIssue = await approveRes.json();

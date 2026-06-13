@@ -182,6 +182,8 @@ const statusColors: Record<string, string> = {
   blocked: "#ef4444",
   cancelled: "#6b7280",
   backlog: "#64748b",
+  verification_missing: "#d97706",
+  test_failed: "#f43f5e",
 };
 
 const statusLabels: Record<string, string> = {
@@ -192,6 +194,8 @@ const statusLabels: Record<string, string> = {
   blocked: "Blocked",
   cancelled: "Cancelled",
   backlog: "Backlog",
+  verification_missing: "Verification Missing",
+  test_failed: "Test Failed",
 };
 
 export function IssueStatusChart({ issues }: { issues: { status: string; createdAt: Date }[] }) {

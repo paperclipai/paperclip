@@ -169,15 +169,45 @@ When creating a pull request (via `gh pr create` or any other method), you **mus
 - **Model Used** — the AI model that produced or assisted with the change (provider, exact model ID, context window, capabilities). Write "None — human-authored" if no AI was used.
 - **Checklist** — all items checked
 
-## 11. Definition of Done
+## 11. Definition of Done (QG-4 — 8-Criterion Standard)
 
-A change is done when all are true:
+A change is **done** only when ALL 8 criteria are satisfied. Missing any criterion → status must be `verification_missing` or `test_failed`, NOT `done`.
 
-1. Behavior matches `doc/SPEC-implementation.md`
-2. Typecheck, tests, and build pass
-3. Contracts are synced across db/shared/server/ui
-4. Docs updated when behavior or commands change
-5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
+1. **Kod PR olusturuldu** — Code change exists in a pull request (PR link required in evidence)
+2. **CI yesil** — Lint, test, and typecheck all pass on the PR (`pnpm -r typecheck && pnpm test:run && pnpm build`)
+3. **Develop branch a merge edildi** — PR merged to `develop` (or equivalent integration branch); SHA recorded
+4. **Test deploy basarili** — Deploy to test/staging environment succeeded; deploy run ID recorded
+5. **Test server health GREEN** — After deploy, test server health endpoint returns healthy (QG-1 gate — required per TREA-156 RCA)
+6. **Smoke suite PASS** — Affected page/API smoke test passes (QG-2 Playwright for UI changes, QG-3 backend for API-only changes)
+7. **0 console/network/server error** — No new errors introduced; screenshot or log excerpt as evidence
+8. **Kanit issue/PR a eklendi** — Evidence posted to the issue/PR: PR link + deploy run ID + test-server-health status + smoke report link + timestamp
+
+### Evidence Schema (doneEvidence)
+
+When marking an issue `done`, the comment MUST include:
+
+```
+- prLink: <GitHub PR URL>
+- releaseSha: <merged commit SHA>
+- deployRunId: <CI/ECS deploy run ID>
+- testServerHealthGreen: true | false
+- smokeReportLinks: [<URL or "N/A — no UI/API change">]
+- consoleErrors: 0
+- networkErrors: 0
+- evidenceLinks: [<screenshot, log, or artifact URLs>]
+```
+
+If any field is missing or `testServerHealthGreen: false`, status MUST be set to `verification_missing` instead of `done`.
+
+### Legacy 5-criterion DoD (superseded)
+
+The previous 5-criterion DoD (behavior match, typecheck, contracts synced, docs updated, PR template) is superseded by this standard. The 5 criteria remain valid checks but are now subsumed into criteria 1–3 and 7–8 above.
+
+**Repo-level verification (unchanged):**
+- Behavior matches `doc/SPEC-implementation.md`
+- Contracts are synced across db/shared/server/ui
+- Docs updated when behavior or commands change
+- PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
 
 ## 11. Fork-Specific: HenkDz/paperclip
 

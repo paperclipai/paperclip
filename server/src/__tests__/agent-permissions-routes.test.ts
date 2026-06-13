@@ -1487,7 +1487,7 @@ describe.sequential("agent permission routes", () => {
     expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
       touchedByUserId: "board-user",
       inboxArchivedByUserId: "board-user",
-      status: "backlog,todo,in_progress,in_review,blocked,done",
+      status: "backlog,todo,in_progress,in_review,blocked,done,verification_missing,test_failed",
       limit: 500,
     });
   });

@@ -166,7 +166,19 @@ describe("issue telemetry routes", () => {
     });
     const res = await request(app)
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ status: "done" });
+      .send({
+        status: "done",
+        doneEvidence: {
+          prLink: "https://github.com/org/repo/pull/1",
+          releaseSha: "abc123",
+          deployRunId: "run-1",
+          testServerHealthGreen: true,
+          smokeReportLinks: [],
+          consoleErrors: 0,
+          networkErrors: 0,
+          evidenceLinks: [],
+        },
+      });
 
     expect(res.status).toBe(200);
     await vi.waitFor(() => {
