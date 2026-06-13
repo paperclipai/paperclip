@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveSessionKey } from "./execute.js";
+import { resolveClaimedApiKeyPath, resolveSessionKey } from "./execute.js";
 
 describe("resolveSessionKey", () => {
   it("prefixes run-scoped session keys with the configured agent", () => {
@@ -48,5 +48,49 @@ describe("resolveSessionKey", () => {
         issueId: null,
       }),
     ).toBe("agent:meridian:paperclip");
+  });
+});
+
+describe("resolveClaimedApiKeyPath", () => {
+  it("returns the default path when value is undefined", () => {
+    expect(resolveClaimedApiKeyPath(undefined)).toBe(
+      "~/.openclaw/workspace/paperclip-claimed-api-key.json",
+    );
+  });
+
+  it("returns the default path when value is null", () => {
+    expect(resolveClaimedApiKeyPath(null)).toBe(
+      "~/.openclaw/workspace/paperclip-claimed-api-key.json",
+    );
+  });
+
+  it("returns the default path when value is empty string", () => {
+    expect(resolveClaimedApiKeyPath("")).toBe(
+      "~/.openclaw/workspace/paperclip-claimed-api-key.json",
+    );
+  });
+
+  it("returns the configured path when a non-empty string is provided", () => {
+    expect(
+      resolveClaimedApiKeyPath(
+        "/home/user/.openclaw/workspace-researcher/paperclip-claimed-api-key.json",
+      ),
+    ).toBe("/home/user/.openclaw/workspace-researcher/paperclip-claimed-api-key.json");
+  });
+
+  it("trims whitespace from the configured path", () => {
+    expect(resolveClaimedApiKeyPath("  /tmp/key.json  ")).toBe("/tmp/key.json");
+  });
+
+  it("returns the default path for non-string input", () => {
+    expect(resolveClaimedApiKeyPath(42)).toBe(
+      "~/.openclaw/workspace/paperclip-claimed-api-key.json",
+    );
+    expect(resolveClaimedApiKeyPath({})).toBe(
+      "~/.openclaw/workspace/paperclip-claimed-api-key.json",
+    );
+    expect(resolveClaimedApiKeyPath([])).toBe(
+      "~/.openclaw/workspace/paperclip-claimed-api-key.json",
+    );
   });
 });
