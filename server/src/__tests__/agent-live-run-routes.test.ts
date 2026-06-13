@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -104,6 +105,25 @@ async function createApp(db: Record<string, unknown> = {}) {
   return app;
 }
 
+async function createAppWithActor(
+  actor: Record<string, unknown>,
+  db: Record<string, unknown> = {},
+) {
+  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
+    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ]);
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    (req as any).actor = actor;
+    next();
+  });
+  app.use("/api", agentRoutes(db as any));
+  app.use(errorHandler);
+  return app;
+}
+
 function createLiveRunsDbStub(rows: Array<Record<string, unknown>>) {
   const limit = vi.fn(async (value: number) => rows.slice(0, value));
   const orderedQuery = {
@@ -180,6 +200,7 @@ describe("agent live run routes", () => {
       name: "Builder",
       adapterType: "codex_local",
     });
+    mockAgentService.list.mockResolvedValue([]);
     mockInstanceSettingsService.get.mockResolvedValue({
       id: "instance-settings-1",
       general: {
@@ -605,5 +626,69 @@ describe("agent live run routes", () => {
         actorId: "local-board",
       },
     });
+  });
+
+  it("allows agent-authenticated manager to invoke wakeup for a direct report", async () => {
+    const managerAgentId = "22222222-2222-4222-8222-222222222222";
+    const directReportId = "33333333-3333-4333-8333-333333333333";
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === directReportId) {
+        return { id: directReportId, companyId: "company-1", name: "Report", adapterType: "codex_local" };
+      }
+      if (id === managerAgentId) {
+        return { id: managerAgentId, companyId: "company-1", name: "Manager", adapterType: "codex_local", role: "cto" };
+      }
+      return null;
+    });
+    mockAgentService.list.mockResolvedValue([
+      { id: managerAgentId, companyId: "company-1", role: "cto", reportsTo: null },
+      { id: directReportId, companyId: "company-1", role: "engineer", reportsTo: managerAgentId },
+    ]);
+
+    const res = await requestApp(
+      await createAppWithActor({
+        type: "agent",
+        agentId: managerAgentId,
+        companyId: "company-1",
+      }),
+      (baseUrl) => request(baseUrl).post(`/api/agents/${directReportId}/wakeup`).send({ source: "on_demand" }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(directReportId, expect.objectContaining({
+      requestedByActorType: "agent",
+      requestedByActorId: managerAgentId,
+    }));
+  });
+
+  it("keeps rejecting agent-authenticated peer wakeup outside reporting chain", async () => {
+    const actorAgentId = "44444444-4444-4444-8444-444444444444";
+    const targetAgentId = "55555555-5555-4555-8555-555555555555";
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === targetAgentId) {
+        return { id: targetAgentId, companyId: "company-1", name: "Target", adapterType: "codex_local" };
+      }
+      if (id === actorAgentId) {
+        return { id: actorAgentId, companyId: "company-1", name: "Peer", adapterType: "codex_local", role: "engineer" };
+      }
+      return null;
+    });
+    mockAgentService.list.mockResolvedValue([
+      { id: actorAgentId, companyId: "company-1", role: "engineer", reportsTo: null },
+      { id: targetAgentId, companyId: "company-1", role: "engineer", reportsTo: null },
+    ]);
+
+    const res = await requestApp(
+      await createAppWithActor({
+        type: "agent",
+        agentId: actorAgentId,
+        companyId: "company-1",
+      }),
+      (baseUrl) => request(baseUrl).post(`/api/agents/${targetAgentId}/heartbeat/invoke`).send({}),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body).toEqual({ error: "Agent can only invoke itself" });
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 });

@@ -845,6 +845,23 @@ export function agentRoutes(
     }
   }
 
+  async function canAgentInvokeRecoveryTarget(actorAgentId: string, targetAgentId: string, companyId: string) {
+    if (actorAgentId === targetAgentId) return true;
+    const companyAgents = await svc.list(companyId);
+    const agentsById = new Map(companyAgents.map((agent) => [agent.id, agent]));
+    const actorAgent = agentsById.get(actorAgentId);
+    if (!actorAgent) return false;
+    if (actorAgent.role === "ceo") return true;
+    let cursor: string | null = targetAgentId;
+    for (let depth = 0; cursor && depth < 50; depth += 1) {
+      const current = agentsById.get(cursor);
+      if (!current) return false;
+      if (current.reportsTo === actorAgentId) return true;
+      cursor = current.reportsTo;
+    }
+    return false;
+  }
+
   function assertKnownAdapterType(type: string | null | undefined): string {
     const adapterType = typeof type === "string" ? type.trim() : "";
     if (!adapterType) {
@@ -3184,7 +3201,8 @@ export function agentRoutes(
     assertCompanyAccess(req, agent.companyId);
 
     if (req.actor.type === "agent") {
-      if (req.actor.agentId !== id) {
+      const actorAgentId = req.actor.agentId;
+      if (!actorAgentId || !(await canAgentInvokeRecoveryTarget(actorAgentId, id, agent.companyId))) {
         res.status(403).json({ error: "Agent can only invoke itself" });
         return;
       }
@@ -3258,7 +3276,8 @@ export function agentRoutes(
     assertCompanyAccess(req, agent.companyId);
 
     if (req.actor.type === "agent") {
-      if (req.actor.agentId !== id) {
+      const actorAgentId = req.actor.agentId;
+      if (!actorAgentId || !(await canAgentInvokeRecoveryTarget(actorAgentId, id, agent.companyId))) {
         res.status(403).json({ error: "Agent can only invoke itself" });
         return;
       }

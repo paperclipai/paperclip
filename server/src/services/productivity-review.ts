@@ -79,6 +79,11 @@ type ProductivityReviewEvidence = {
   generatedAt: Date;
 };
 
+type RecentProgressSignal = {
+  freshnessWindowMs: number;
+  reasons: string[];
+};
+
 type EnqueueWakeup = (
   agentId: string,
   opts?: {
@@ -222,6 +227,31 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
 
   function isAgentInvokable(agent: AgentRow | null | undefined) {
     return Boolean(agent && !["paused", "terminated", "pending_approval"].includes(agent.status));
+  }
+
+  function collectRecentProgressSignal(evidence: ProductivityReviewEvidence): RecentProgressSignal | null {
+    if (evidence.sourceIssue.status !== "in_progress") return null;
+    const freshnessWindowMs = evidence.trigger === "long_active_duration"
+      ? evidence.thresholds.longActiveMs
+      : evidence.thresholds.refreshIntervalMs;
+    const cutoffMs = evidence.generatedAt.getTime() - freshnessWindowMs;
+    const reasons: string[] = [];
+
+    const latestRunWithNextAction = evidence.latestRuns.find((run) =>
+      typeof run.nextAction === "string" && run.nextAction.trim().length > 0
+    );
+    if (latestRunWithNextAction && latestRunWithNextAction.createdAt.getTime() >= cutoffMs) {
+      reasons.push(
+        `latest run ${latestRunWithNextAction.id} recorded a next action at ${latestRunWithNextAction.createdAt.toISOString()}`,
+      );
+    }
+
+    const latestAssigneeComment = evidence.latestComments[0] ?? null;
+    if (latestAssigneeComment && latestAssigneeComment.createdAt.getTime() >= cutoffMs) {
+      reasons.push(`latest assignee run comment was posted at ${latestAssigneeComment.createdAt.toISOString()}`);
+    }
+
+    return reasons.length > 0 ? { freshnessWindowMs, reasons } : null;
   }
 
   async function isProductivityReviewDescendant(issue: Pick<IssueRow, "companyId" | "parentId">) {
@@ -524,7 +554,17 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
 
   async function resolveReviewOwnerAgentId(sourceIssue: IssueRow, sourceAgent: AgentRow) {
     const candidateIds: string[] = [];
-    if (sourceAgent.reportsTo) candidateIds.push(sourceAgent.reportsTo);
+    const chainSeen = new Set<string>();
+    let currentAgent: AgentRow | null = sourceAgent;
+    while (currentAgent?.reportsTo) {
+      const managerId = currentAgent.reportsTo;
+      if (chainSeen.has(managerId)) break;
+      chainSeen.add(managerId);
+      candidateIds.push(managerId);
+      const nextAgent = await getAgent(managerId);
+      if (!nextAgent || nextAgent.companyId !== sourceIssue.companyId) break;
+      currentAgent = nextAgent;
+    }
     if (sourceIssue.createdByAgentId) candidateIds.push(sourceIssue.createdByAgentId);
     if (sourceIssue.projectId) {
       const project = await db
@@ -638,6 +678,42 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     opts: { prefix: string; thresholds: ProductivityReviewThresholds },
   ) {
     const existing = await findOpenProductivityReview(evidence.sourceIssue.companyId, evidence.sourceIssue.id);
+    const recentProgressSignal = collectRecentProgressSignal(evidence);
+    const freshProgressApplies =
+      evidence.trigger === "no_comment_streak" || evidence.trigger === "long_active_duration";
+    if (existing && recentProgressSignal && freshProgressApplies) {
+      await issuesSvc.addComment(
+        existing.id,
+        [
+          "Productivity review auto-resolved.",
+          "",
+          `- Source issue: ${issueUiLink(evidence.sourceIssue, opts.prefix)}`,
+          `- Reason: the source issue is still \`in_progress\` and has fresh assignee progress evidence.`,
+          ...recentProgressSignal.reasons.map((reason) => `- Evidence: ${reason}`),
+        ].join("\n"),
+        {},
+      );
+      await issuesSvc.update(existing.id, { status: "done" });
+      await logActivity(db, {
+        companyId: evidence.sourceIssue.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.productivity_review_auto_resolved",
+        entityType: "issue",
+        entityId: existing.id,
+        agentId: existing.assigneeAgentId,
+        details: {
+          source: "productivity_review.reconcile",
+          sourceIssueId: evidence.sourceIssue.id,
+          trigger: evidence.trigger,
+          reasons: recentProgressSignal.reasons,
+        },
+      });
+      return { kind: "resolved" as const, reviewIssueId: existing.id };
+    }
+    if (recentProgressSignal && freshProgressApplies) {
+      return { kind: "suppressed" as const, reviewIssueId: null };
+    }
     if (existing) {
       const refreshState = await getRefreshCommentState(evidence.sourceIssue.companyId, existing.id);
       const lastRefreshOrCreationAt = refreshState.latestCreatedAt ?? existing.createdAt;
@@ -786,7 +862,9 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       created: 0,
       updated: 0,
       existing: 0,
+      resolved: 0,
       snoozed: 0,
+      suppressed: 0,
       creationCapped: 0,
       skipped: 0,
       failed: 0,
@@ -827,6 +905,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         const outcome = await createOrUpdateReview(evidence, { prefix, thresholds });
         if (outcome.kind === "created") result.created += 1;
         else if (outcome.kind === "updated") result.updated += 1;
+        else if (outcome.kind === "resolved") result.resolved += 1;
+        else if (outcome.kind === "suppressed") result.suppressed += 1;
         else if (outcome.kind === "creation_capped") result.creationCapped += 1;
         else result.existing += 1;
         if (outcome.reviewIssueId) result.reviewIssueIds.push(outcome.reviewIssueId);
