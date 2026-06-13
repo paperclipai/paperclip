@@ -155,6 +155,10 @@ export interface InboxIssueGroupCreateDefaults {
   assigneeUserId?: string;
 }
 
+function isPresent<T>(value: T | null | undefined): value is T {
+  return value != null;
+}
+
 const defaultInboxFilterPreferences: InboxFilterPreferences = {
   allCategoryFilter: "everything",
   allApprovalFilter: "all",
@@ -682,7 +686,7 @@ export function getInboxKeyboardSelectionIndex(
 }
 
 export function getLatestFailedRunsByAgent(runs: HeartbeatRun[]): HeartbeatRun[] {
-  const sorted = [...runs].sort(
+  const sorted = runs.filter(isPresent).sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
   );
   const latestByAgent = new Map<string, HeartbeatRun>();
@@ -719,11 +723,11 @@ export function sortIssuesByMostRecentActivity(a: Issue, b: Issue): number {
 }
 
 export function getRecentTouchedIssues(issues: Issue[]): Issue[] {
-  return [...issues].sort(sortIssuesByMostRecentActivity).slice(0, RECENT_ISSUES_LIMIT);
+  return issues.filter(isPresent).sort(sortIssuesByMostRecentActivity).slice(0, RECENT_ISSUES_LIMIT);
 }
 
 export function getUnreadTouchedIssues(issues: Issue[]): Issue[] {
-  return issues.filter((issue) => issue.isUnreadForMe);
+  return issues.filter(isPresent).filter((issue) => issue.isUnreadForMe);
 }
 
 export function getApprovalsForTab(
@@ -732,7 +736,7 @@ export function getApprovalsForTab(
   filter: InboxApprovalFilter,
   currentUserId?: string | null,
 ): Approval[] {
-  const sortedApprovals = [...approvals].sort(
+  const sortedApprovals = approvals.filter(isPresent).sort(
     (a, b) => normalizeTimestamp(b.updatedAt) - normalizeTimestamp(a.updatedAt),
   );
 
@@ -778,22 +782,22 @@ export function getInboxWorkItems({
   joinRequests?: JoinRequest[];
 }): InboxWorkItem[] {
   return [
-    ...issues.map((issue) => ({
+    ...issues.filter(isPresent).map((issue) => ({
       kind: "issue" as const,
       timestamp: issueLastActivityTimestamp(issue),
       issue,
     })),
-    ...approvals.map((approval) => ({
+    ...approvals.filter(isPresent).map((approval) => ({
       kind: "approval" as const,
       timestamp: approvalActivityTimestamp(approval),
       approval,
     })),
-    ...failedRuns.map((run) => ({
+    ...failedRuns.filter(isPresent).map((run) => ({
       kind: "failed_run" as const,
       timestamp: normalizeTimestamp(run.createdAt),
       run,
     })),
-    ...joinRequests.map((joinRequest) => ({
+    ...joinRequests.filter(isPresent).map((joinRequest) => ({
       kind: "join_request" as const,
       timestamp: normalizeTimestamp(joinRequest.createdAt),
       joinRequest,
@@ -1230,7 +1234,7 @@ export function computeInboxBadgeData({
   dismissedAtByKey: ReadonlyMap<string, number>;
   currentUserId?: string | null;
 }): InboxBadgeData {
-  const actionableApprovals = approvals.filter(
+  const actionableApprovals = approvals.filter(isPresent).filter(
     (approval) =>
       isApprovalVisibleInMine(approval, currentUserId) &&
       ACTIONABLE_APPROVAL_STATUSES.has(approval.status) &&
@@ -1239,10 +1243,10 @@ export function computeInboxBadgeData({
   const failedRuns = getLatestFailedRunsByAgent(heartbeatRuns).filter(
     (run) => !isInboxEntityDismissed(dismissedAtByKey, `run:${run.id}`, run.createdAt),
   ).length;
-  const visibleJoinRequests = joinRequests.filter(
+  const visibleJoinRequests = joinRequests.filter(isPresent).filter(
     (jr) => !isInboxEntityDismissed(dismissedAtByKey, `join:${jr.id}`, jr.updatedAt ?? jr.createdAt),
   ).length;
-  const visibleMineIssues = mineIssues.filter((issue) => issue.isUnreadForMe).length;
+  const visibleMineIssues = mineIssues.filter(isPresent).filter((issue) => issue.isUnreadForMe).length;
   const agentErrorCount = dashboard?.agents.error ?? 0;
   const monthBudgetCents = dashboard?.costs.monthBudgetCents ?? 0;
   const monthUtilizationPercent = dashboard?.costs.monthUtilizationPercent ?? 0;
