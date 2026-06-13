@@ -46,6 +46,7 @@ RUN pnpm install --frozen-lockfile
 
 FROM base AS build
 WORKDIR /app
+ENV NODE_OPTIONS=--max-old-space-size=3072
 COPY --from=deps /app /app
 COPY . .
 RUN pnpm --filter @paperclipai/ui build
