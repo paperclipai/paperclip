@@ -302,6 +302,7 @@ export function ScheduleEditor({
                     variant={dayOfWeek === d.value ? "default" : "outline"}
                     size="sm"
                     className="h-7 px-2 text-xs"
+                    aria-pressed={dayOfWeek === d.value}
                     onClick={() => {
                       setDayOfWeek(d.value);
                       emitChange(preset, hour, minute, d.value, dayOfMonth, customCron);
