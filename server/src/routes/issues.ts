@@ -16,9 +16,11 @@ import {
   issueRelations,
   issues as issueRows,
   issueWorkProducts,
+  planDetails,
   projectWorkspaces,
 } from "@paperclipai/db";
 import {
+  GATE_APPROVAL_TYPES,
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
   attachmentArtifactWorkProductMetadataSchema,
@@ -88,6 +90,7 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+import { evaluateDevTeamDoneReadiness } from "../services/plan-gates.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -1529,6 +1532,54 @@ export function issueRoutes(
         "scheduled_issue_monitor",
       ],
     });
+  }
+
+  // Fix 3 (B1 gap-fix) — interim C1 hard `done` guard for dev_team plans.
+  // An AGENT may not move a dev_team-gated issue to `done` until it has an open
+  // PR and both review gates (code + wiring) are approved. A user/board actor is
+  // never blocked (operator is senior to protocol) but its override is reported
+  // back so the caller can log it. Returns the unmet reasons for an override;
+  // throws for an agent that fails the gate.
+  async function evaluateDevTeamDoneGate(input: {
+    existing: { id: string; status: string; planRootIssueId: string | null; prUrl: string | null };
+    targetStatus: string;
+    actorType: "agent" | "user";
+  }): Promise<{ overrideReasons: string[] }> {
+    const none = { overrideReasons: [] as string[] };
+    if (input.targetStatus !== "done" || input.existing.status === "done") return none;
+    if (!input.existing.planRootIssueId) return none;
+
+    const [plan] = await db
+      .select({ gateProfile: planDetails.gateProfile })
+      .from(planDetails)
+      .where(eq(planDetails.issueId, input.existing.planRootIssueId));
+    if (plan?.gateProfile !== "dev_team") return none;
+
+    const linkedApprovals = await issueApprovalsSvc.listApprovalsForIssue(input.existing.id);
+    const reviewGateStatuses = linkedApprovals
+      .filter(
+        (approval) =>
+          approval.type === GATE_APPROVAL_TYPES.codeReview ||
+          approval.type === GATE_APPROVAL_TYPES.wiringReview,
+      )
+      .map((approval) => String(approval.status));
+
+    const { reasons } = evaluateDevTeamDoneReadiness({
+      gateProfile: plan.gateProfile,
+      targetStatus: input.targetStatus,
+      currentStatus: input.existing.status,
+      prUrl: input.existing.prUrl,
+      reviewGateStatuses,
+    });
+    if (reasons.length === 0) return none;
+
+    if (input.actorType === "agent") {
+      throw unprocessable(
+        "A dev_team issue cannot be marked done until its pull request is open and its code and wiring review gates pass.",
+        { code: "dev_team_done_blocked", reasons },
+      );
+    }
+    return { overrideReasons: reasons };
   }
 
   async function logExpiredRequestConfirmations(input: {
@@ -4910,6 +4961,19 @@ export function issueRoutes(
       actorType: req.actor.type,
     });
 
+    // Fix 3 (B1 gap-fix): block an agent from closing a dev_team issue without an
+    // open PR + passing review gates; a user/board override is allowed and logged.
+    const devTeamDoneGate = await evaluateDevTeamDoneGate({
+      existing: {
+        id: existing.id,
+        status: existing.status,
+        planRootIssueId: existing.planRootIssueId ?? null,
+        prUrl: existing.prUrl ?? null,
+      },
+      targetStatus: effectiveTargetStatus,
+      actorType: actor.actorType,
+    });
+
     const nextAssigneeAgentId =
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);
     const nextAssigneeUserId =
@@ -5066,6 +5130,27 @@ export function issueRoutes(
           details: { source: "issue_status_cancelled", issueId: existing.id },
         });
       }
+    }
+
+    // Fix 3 (B1 gap-fix): a user/board actor closed a dev_team issue that would
+    // have been blocked for an agent (missing PR and/or pending review gates).
+    // Allowed — operator is senior to protocol — but audited.
+    if (devTeamDoneGate.overrideReasons.length > 0 && issue.status === "done") {
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.gate_overridden",
+        entityType: "issue",
+        entityId: existing.id,
+        details: {
+          identifier: existing.identifier ?? null,
+          planRootIssueId: existing.planRootIssueId ?? null,
+          overriddenGates: devTeamDoneGate.overrideReasons,
+        },
+      });
     }
 
     if (titleOrDescriptionChanged) {

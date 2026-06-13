@@ -91,3 +91,26 @@ export function buildGateApprovalsForActivation(
 
   return specs;
 }
+
+// Fix 3 (B1 gap-fix) — interim C1 hard `done` guard, pure decision.
+// Returns the unmet preconditions for closing a dev_team-gated issue: an open PR
+// and approved code + wiring review gates. Empty array = ready to close. The
+// caller decides what to do with the reasons (throw for an agent actor, log an
+// override for a user/board actor). Non-dev_team or non-`done` transitions are
+// never gated.
+export function evaluateDevTeamDoneReadiness(input: {
+  gateProfile: string | null | undefined;
+  targetStatus: string;
+  currentStatus: string;
+  prUrl: string | null;
+  // Statuses of THIS issue's code-review + wiring-review gate approvals.
+  reviewGateStatuses: string[];
+}): { reasons: string[] } {
+  if (input.targetStatus !== "done" || input.currentStatus === "done") return { reasons: [] };
+  if (input.gateProfile !== "dev_team") return { reasons: [] };
+
+  const reasons: string[] = [];
+  if (!input.prUrl) reasons.push("missing_pr");
+  if (input.reviewGateStatuses.some((status) => status !== "approved")) reasons.push("gates_pending");
+  return { reasons };
+}
