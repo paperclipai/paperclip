@@ -2880,9 +2880,15 @@ async function terminateHeartbeatRunProcess(input: {
 function buildProcessLossMessage(run: {
   processPid: number | null;
   processGroupId: number | null;
-}, options?: { descendantOnly?: boolean }) {
+}, options?: { descendantOnly?: boolean; detachedStaleTarget?: "pid" | "group" }) {
   if (options?.descendantOnly && run.processGroupId) {
     return `Process lost -- parent pid ${run.processPid ?? "unknown"} exited, but descendant process group ${run.processGroupId} was still alive and was terminated`;
+  }
+  if (options?.detachedStaleTarget === "pid" && run.processPid) {
+    return `Process lost -- detached child pid ${run.processPid} stayed alive past the stale threshold and was terminated`;
+  }
+  if (options?.detachedStaleTarget === "group" && run.processGroupId) {
+    return `Process lost -- detached process group ${run.processGroupId} stayed alive past the stale threshold and was terminated`;
   }
   if (run.processPid) {
     return `Process lost -- child pid ${run.processPid} is no longer running`;
@@ -7432,16 +7438,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
+      const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+      const isStale = staleThresholdMs <= 0 || now.getTime() - refTime >= staleThresholdMs;
+
       // Apply staleness threshold to avoid false positives
-      if (staleThresholdMs > 0) {
-        const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
-        if (now.getTime() - refTime < staleThresholdMs) continue;
-      }
+      if (!isStale) continue;
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
-      if (processPidAlive) {
+      const detachedRunExceededThreshold =
+        staleThresholdMs > 0 &&
+        run.errorCode === DETACHED_PROCESS_ERROR_CODE &&
+        (Boolean(processPidAlive) || Boolean(processGroupAlive));
+
+      if (processPidAlive && !detachedRunExceededThreshold) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {
@@ -7464,7 +7475,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       let descendantOnlyCleanup = false;
-      if (processGroupAlive) {
+      if (detachedRunExceededThreshold) {
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
+      } else if (processGroupAlive) {
         descendantOnlyCleanup = true;
         await terminateHeartbeatRunProcess({
           pid: run.processPid,
@@ -7473,7 +7489,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
-      const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const baseMessage = buildProcessLossMessage(
+        run,
+        descendantOnlyCleanup
+          ? { descendantOnly: true }
+          : detachedRunExceededThreshold
+            ? { detachedStaleTarget: processPidAlive ? "pid" : "group" }
+            : undefined,
+      );
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
