@@ -684,7 +684,36 @@ export function agentRoutes(
   }
 
   async function assertCanReadConfigurations(req: Request, companyId: string) {
-    return assertCanCreateAgentsForCompany(req, companyId);
+    // Reading agent configurations, skills, and config revisions is a
+    // read-only operation available to any board (human) member of the
+    // company. Responses go through `redactAgentConfiguration` so secrets
+    // are never exposed. Mutations and environment probes still gate on
+    // agents:create via assertCanCreateAgentsForCompany / assertCanUpdateAgent.
+    //
+    // For AGENT actors we keep the previous, stricter gate: an agent must
+    // either have an explicit `agents:create` grant or the legacy
+    // `canCreateAgents` permission on its own record. Agents are
+    // non-human principals — they should not be able to introspect peer
+    // agents' configurations just by virtue of being in the same company.
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type === "agent") {
+      if (!req.actor.agentId) throw forbidden("Agent authentication required");
+      const actorAgent = await svc.getById(req.actor.agentId);
+      if (!actorAgent || actorAgent.companyId !== companyId) {
+        throw forbidden("Agent key cannot access another company");
+      }
+      const allowedByGrant = await access.hasPermission(
+        companyId,
+        "agent",
+        actorAgent.id,
+        "agents:create",
+      );
+      if (!allowedByGrant && !canCreateAgents(actorAgent)) {
+        throw forbidden("Missing permission: can create agents");
+      }
+      return actorAgent;
+    }
+    return null;
   }
 
   async function getAccessibleAgent(req: Request, res: Response, id: string) {
@@ -701,13 +730,27 @@ export function agentRoutes(
   }
 
   async function actorCanReadConfigurationsForCompany(req: Request, companyId: string) {
-    assertCompanyAccess(req, companyId);
-    const decision = await access.decide({
-      actor: req.actor,
-      action: "agent_config:read",
-      resource: { type: "company", companyId },
-    });
-    return decision.allowed;
+    // Mirrors assertCanReadConfigurations but returns a boolean instead of
+    // throwing. Board actors only need company access; agent actors must
+    // still pass the agents:create gate (explicit grant or canCreateAgents
+    // on their own record) so peer agents cannot snoop each others'
+    // configurations.
+    try {
+      assertCompanyAccess(req, companyId);
+    } catch {
+      return false;
+    }
+    if (req.actor.type === "board") return true;
+    if (!req.actor.agentId) return false;
+    const actorAgent = await svc.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== companyId) return false;
+    const allowedByGrant = await access.hasPermission(
+      companyId,
+      "agent",
+      actorAgent.id,
+      "agents:create",
+    );
+    return allowedByGrant || canCreateAgents(actorAgent);
   }
 
   async function buildSkippedWakeupResponse(
@@ -1519,7 +1562,7 @@ export function agentRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const type = assertKnownAdapterType(req.params.type as string);
-      await assertCanReadConfigurations(req, companyId);
+      await assertCanCreateAgentsForCompany(req, companyId);
 
       const adapter = requireServerAdapter(type);
 
