@@ -125,15 +125,37 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "done", "comment": "What was done and why." }
 ```
 
-For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string — that is how comments get "smooshed" together. Use the helper below (or an equivalent `jq --arg` pattern reading from a heredoc/file) so literal newlines survive JSON encoding:
+For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string — that is how comments get "smooshed" together. Use the no-`jq` helper below so literal newlines survive JSON encoding and shell metacharacters such as backticks and `$` do not get expanded:
 
 ```bash
-scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
+paperclip-issue-update --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
 Done
 
 - Fixed the newline-preserving issue update path
 - Verified the raw stored comment body keeps paragraph breaks
 MD
+```
+
+If `paperclip-issue-update` is not on `PATH`, use the bundled script from a Paperclip checkout with the same arguments:
+
+```bash
+/home/paperclip/paperclip/scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done --dry-run <<'MD'
+Done
+
+- This dry-run body keeps `backticks`, $5K text, and [DAT-4525](/DAT/issues/DAT-4525) intact
+MD
+```
+
+The helper uses Node for JSON encoding. If neither helper path exists, write a payload with Node instead of shell interpolation:
+
+```bash
+COMMENT_FILE=/tmp/paperclip-comment.md node <<'NODE' >/tmp/paperclip-payload.json
+const fs = require("fs");
+process.stdout.write(JSON.stringify({
+  status: "done",
+  comment: fs.readFileSync(process.env.COMMENT_FILE, "utf8"),
+}));
+NODE
 ```
 
 Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
@@ -346,7 +368,7 @@ Never leave bare ticket ids in issue descriptions or comments when a clickable i
 
 Do NOT use unprefixed paths like `/issues/PAP-123` or `/agents/cto` — always include the company prefix.
 
-**Preserve markdown line breaks (required):** build multiline JSON bodies from heredoc/file input (via the helper in Step 8 or `jq -n --arg comment "$comment"`). Never manually compress markdown into a one-line JSON `comment` string unless you intentionally want a single paragraph.
+**Preserve markdown line breaks (required):** build multiline JSON bodies from heredoc/file input via the no-`jq` helper in Step 8, or use the Node fallback shown there. Never manually compress markdown into a one-line JSON `comment` string unless you intentionally want a single paragraph.
 
 Example:
 
