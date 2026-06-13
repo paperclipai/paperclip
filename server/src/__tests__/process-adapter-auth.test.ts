@@ -210,6 +210,57 @@ describeEmbeddedPostgres("process adapter local JWT route acceptance", () => {
       await close(server);
     }
   });
+
+  it("rejects local agent JWT requests when the run-id header does not match the signed claim", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const signedRunId = randomUUID();
+    const mismatchedRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Auth Fixture Co",
+      issuePrefix: `AF${companyId.replace(/-/g, "").slice(0, 4).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Fixture Process Agent",
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+    });
+
+    ensureLocalTrustedAgentJwtSecret();
+    const authToken = createLocalAgentJwt(agentId, companyId, "process", signedRunId);
+    expect(authToken).toEqual(expect.any(String));
+
+    const app = express();
+    app.use(express.json());
+    app.use(actorMiddleware(db, { deploymentMode: "local_trusted" }));
+    app.use("/api", agentRoutes(db));
+    app.use(errorHandler);
+
+    const server = await listen(app);
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("test server did not bind to a local TCP port");
+      const apiUrl = `http://127.0.0.1:${address.port}`;
+      const res = await fetch(`${apiUrl}/api/agents/me`, {
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          "x-paperclip-run-id": mismatchedRunId,
+        },
+      });
+      const body = await res.json().catch(() => ({}));
+
+      expect(res.status).toBe(401);
+      expect(body).toEqual({ error: "Agent authentication required" });
+    } finally {
+      await close(server);
+    }
+  });
 });
 
 function listen(app: express.Express): Promise<Server> {

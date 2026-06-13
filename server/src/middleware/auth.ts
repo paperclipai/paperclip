@@ -159,12 +159,17 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
 
+      if (runIdHeader && runIdHeader !== claims.run_id) {
+        next();
+        return;
+      }
+
       req.actor = {
         type: "agent",
         agentId: claims.sub,
         companyId: claims.company_id,
         keyId: undefined,
-        runId: runIdHeader || claims.run_id || undefined,
+        runId: claims.run_id || undefined,
         source: "agent_jwt",
       };
       next();
