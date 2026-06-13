@@ -2803,6 +2803,10 @@ export function issueRoutes(
         blocks: relationsWithRecoveryActions.blocks,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
+        checkoutRunId: issue.checkoutRunId,
+        executionRunId: issue.executionRunId,
+        executionLockedAt: issue.executionLockedAt,
+        executionAgentNameKey: issue.executionAgentNameKey,
         originKind: issue.originKind,
         originId: issue.originId,
         updatedAt: issue.updatedAt,
@@ -5842,6 +5846,13 @@ export function issueRoutes(
     res.json(issue);
   });
 
+  // Agent checkout: `requireAgentRunId` resolves the current heartbeat run from `req.actor.runId`
+  // (typically propagated from `X-Paperclip-Run-Id` on the request or embedded in the agent JWT).
+  // That run id is passed through as `checkoutRunId` into `issueService.checkout`, which persists it
+  // on the row as both `checkoutRunId` and `executionRunId` while the execution lock is active.
+  // For lock state, prefer `GET /api/issues/:id` or `GET .../heartbeat-context` (`issue` snapshot);
+  // clients should not infer locks from headers alone after checkout, because the stored ids must
+  // match when re-entering or adopting an existing checkout for the same run.
   router.post("/issues/:id/checkout", validate(checkoutIssueSchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);

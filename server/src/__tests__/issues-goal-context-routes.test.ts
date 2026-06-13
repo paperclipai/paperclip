@@ -168,6 +168,10 @@ const legacyProjectLinkedIssue = {
   assigneeUserId: null,
   updatedAt: new Date("2026-03-24T12:00:00Z"),
   executionWorkspaceId: null,
+  checkoutRunId: null,
+  executionRunId: null,
+  executionAgentNameKey: null,
+  executionLockedAt: null,
   labels: [],
   labelIds: [],
 };
@@ -387,5 +391,27 @@ describe.sequential("issue goal context routes", () => {
         }),
       ],
     }));
+  });
+
+  it("echoes execution lock fields on heartbeat-context issue snapshot same as GET /issues/:id", async () => {
+    const lockedAt = new Date("2026-05-06T12:00:00.000Z");
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      checkoutRunId: "run-checkout-lock",
+      executionRunId: "run-exec-lock",
+      executionAgentNameKey: "founding-engineer",
+      executionLockedAt: lockedAt,
+    });
+    const app = createApp();
+    const hb = await request(app).get("/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context");
+    const full = await request(app).get("/api/issues/11111111-1111-4111-8111-111111111111");
+    expect(hb.status).toBe(200);
+    expect(full.status).toBe(200);
+    const fields = ["checkoutRunId", "executionRunId", "executionAgentNameKey", "executionLockedAt"] as const;
+    for (const field of fields) {
+      expect(hb.body.issue[field]).toEqual(full.body[field]);
+    }
+    expect(hb.body.issue.executionRunId).toBe("run-exec-lock");
+    expect(hb.body.issue.checkoutRunId).toBe("run-checkout-lock");
   });
 });
