@@ -4444,6 +4444,35 @@ export function issueRoutes(
       }
     }
 
+    // Layer 2 — explicit idempotencyKey dedup (24-hour TTL, company-scoped).
+    // Returns 200 + original issue + X-Paperclip-Deduplicated: true on a key hit.
+    if (createBody.idempotencyKey) {
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const [existingByKey] = await db
+        .select()
+        .from(issueRows)
+        .where(
+          and(
+            eq(issueRows.companyId, companyId),
+            eq(issueRows.idempotencyKey, createBody.idempotencyKey),
+            ne(issueRows.status, "cancelled"),
+            gt(issueRows.createdAt, twentyFourHoursAgo),
+          ),
+        )
+        .limit(1);
+
+      if (existingByKey) {
+        const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(existingByKey.id);
+        res.setHeader("X-Paperclip-Deduplicated", "true");
+        res.status(200).json({
+          ...existingByKey,
+          relatedWork: referenceSummary,
+          referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+        });
+        return;
+      }
+    }
+
     const issueId = randomUUID();
     const sourceTrust = await sourceTrustForActorWrite({
       id: issueId,
