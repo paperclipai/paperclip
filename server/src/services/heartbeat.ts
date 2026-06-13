@@ -25,6 +25,7 @@ import {
 } from "@paperclipai/shared";
 import {
   agents,
+  agentConfigRevisions,
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
@@ -159,6 +160,7 @@ import {
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
+import { isLangfuseEnabled, maybeExportHeartbeatRunToLangfuse } from "./langfuse-export.js";
 import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
@@ -9349,6 +9351,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await updateRuntimeState(agent, finalizedRun, adapterResult, {
           legacySessionId: nextSessionState.legacySessionId,
         }, normalizedUsage);
+
+        let promptVersion = agent.updatedAt ? agent.updatedAt.toISOString() : null;
+        if (issueRef && isLangfuseEnabled()) {
+          try {
+            const latestRevision = await db
+              .select({ id: agentConfigRevisions.id })
+              .from(agentConfigRevisions)
+              .where(and(eq(agentConfigRevisions.companyId, agent.companyId), eq(agentConfigRevisions.agentId, agent.id)))
+              .orderBy(desc(agentConfigRevisions.createdAt))
+              .limit(1)
+              .then((rows) => rows[0] ?? null);
+            promptVersion = latestRevision?.id ?? promptVersion;
+          } catch {
+            // best effort only
+          }
+        }
+
+        const langfuseUsage = normalizedUsage ?? rawUsage;
+        void maybeExportHeartbeatRunToLangfuse({
+          companyId: agent.companyId,
+          run: finalizedRun,
+          agent: { id: agent.id, name: agent.name, adapterType: agent.adapterType },
+          issue: issueRef ? { id: issueRef.id, identifier: issueRef.identifier, title: issueRef.title } : null,
+          adapterResult: {
+            provider: adapterResult.provider ?? null,
+            model: adapterResult.model ?? null,
+            billingType: adapterResult.billingType ?? null,
+            costUsd: adapterResult.costUsd ?? null,
+            exitCode: adapterResult.exitCode ?? null,
+          },
+          usage: langfuseUsage
+            ? {
+              inputTokens: langfuseUsage.inputTokens,
+              outputTokens: langfuseUsage.outputTokens,
+              cachedInputTokens: langfuseUsage.cachedInputTokens,
+            }
+            : null,
+          promptVersion,
+        });
+
         if (taskKey) {
           if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {
