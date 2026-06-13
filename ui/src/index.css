@@ -191,6 +191,18 @@
   color: inherit;
 }
 
+/*
+ * Font loading strategy (PTK-519 commit 2):
+ * - App intentionally uses the system font stack (no Google Fonts, no @font-face)
+ *   so there is no FOIT risk from web fonts for the default theme.
+ * - Runtime branding may inject custom @font-face rules with an external CDN;
+ *   those rules MUST include font-display: swap to prevent invisible text.
+ *   The preconnect hint added in commit 1 covers the DNS+TLS cost for that path.
+ * - font-synthesis: none prevents the browser from synthesising bold/italic
+ *   variants when a custom weight is requested but not loaded yet, which would
+ *   cause a detectable layout shift (CLS) on font swap.
+ */
+
 @layer base {
   * {
     @apply border-border;
@@ -198,6 +210,8 @@
   html {
     height: 100%;
     -webkit-tap-highlight-color: color-mix(in oklab, var(--foreground) 20%, transparent);
+    /* Prevent synthetic bold/italic variants that cause CLS on font swap */
+    font-synthesis: none;
   }
   body {
     @apply bg-background text-foreground antialiased;
