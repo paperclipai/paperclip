@@ -148,6 +148,7 @@ import {
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
   findExistingRunLivenessContinuationWake,
+  isExplicitLiveMonitorContinuationComment,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   readContinuationAttempt,
 } from "./recovery/index.js";
@@ -4946,6 +4947,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       existingWake,
       budgetBlock,
       pauseHold,
+      explicitLiveMonitorContinuation,
     ] = await Promise.all([
       issue
         ? db
@@ -5071,6 +5073,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issue
         ? treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id)
         : Promise.resolve(null),
+      issue
+        ? db
+          .select({ body: issueComments.body })
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.companyId, issue.companyId),
+              eq(issueComments.issueId, issue.id),
+              eq(issueComments.createdByRunId, run.id),
+              eq(issueComments.authorAgentId, run.agentId),
+            ),
+          )
+          .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+          .limit(10)
+          .then((rows) => rows.some((row) => isExplicitLiveMonitorContinuationComment(row.body)))
+        : Promise.resolve(false),
     ]);
 
     const decision = decideSuccessfulRunHandoff({
@@ -5086,6 +5104,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasExplicitBlockerPath: Boolean(explicitBlocker),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
+      hasExplicitLiveMonitorContinuation: Boolean(explicitLiveMonitorContinuation),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });

@@ -9,6 +9,7 @@ import {
   buildSuccessfulRunHandoffRequiredNotice,
   decideSuccessfulRunHandoff,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
+  isExplicitLiveMonitorContinuationComment,
   isSuccessfulRunHandoffRequiredNoticeBody,
   noticeMetadataReferencesRecoveryAction,
 } from "./successful-run-handoff.js";
@@ -52,6 +53,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasExplicitBlockerPath: false,
     hasOpenRecoveryIssue: false,
     hasPauseHold: false,
+    hasExplicitLiveMonitorContinuation: false,
     budgetBlocked: false,
     idempotentWakeExists: false,
     ...overrides,
@@ -128,6 +130,40 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "explicit blocker path owns the next action",
     });
+  });
+
+  it("does not queue when the same run recorded a live monitor continuation", () => {
+    expect(decide({ hasExplicitLiveMonitorContinuation: true })).toEqual({
+      kind: "skip",
+      reason: "explicit live monitor continuation owns the next action",
+    });
+  });
+
+  it("recognizes narrow live-monitor continuation comments", () => {
+    expect(isExplicitLiveMonitorContinuationComment(
+      "finish_successful_run_handoff complete: no pending Projects Chat input; keep live monitor in_progress.",
+    )).toBe(true);
+    expect(isExplicitLiveMonitorContinuationComment(
+      "Source-scoped recovery action closeout: no actionable Projects Chat input yet; keeping live monitor path active.",
+    )).toBe(true);
+    expect(isExplicitLiveMonitorContinuationComment(
+      "Conversation monitor closeout: no new chat requests received; keeping issue in_progress.",
+    )).toBe(true);
+    expect(isExplicitLiveMonitorContinuationComment(
+      "Active monitor: waiting for the next message from the user.",
+    )).toBe(true);
+    expect(isExplicitLiveMonitorContinuationComment(
+      "Implemented the backend detector, but did not choose a final issue state.",
+    )).toBe(false);
+    expect(isExplicitLiveMonitorContinuationComment(
+      "No pending review input; continue implementation tomorrow.",
+    )).toBe(false);
+    expect(isExplicitLiveMonitorContinuationComment(
+      "Deployed the live monitor service.",
+    )).toBe(false);
+    expect(isExplicitLiveMonitorContinuationComment(null)).toBe(false);
+    expect(isExplicitLiveMonitorContinuationComment(undefined)).toBe(false);
+    expect(isExplicitLiveMonitorContinuationComment("")).toBe(false);
   });
 
   it("does not queue when a successful run has no progress signal", () => {
