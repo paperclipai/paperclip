@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, lstatSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, lstatSync, rmSync, symlinkSync, realpathSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,16 +17,31 @@ if (!existsSync(join(packageDir, "package.json"))) {
 
 mkdirSync(scopeDir, { recursive: true });
 
+let stat = null;
 try {
-  const stat = lstatSync(linkTarget);
-  if (stat.isSymbolicLink()) {
-    rmSync(linkTarget, { force: true });
-  } else {
+  stat = lstatSync(linkTarget);
+} catch (err) {
+  if (err.code !== "ENOENT") throw err;
+  // target does not exist yet
+}
+
+if (stat) {
+  if (!stat.isSymbolicLink()) {
     console.log("  i Keeping existing installed @paperclipai/plugin-sdk directory in place");
     process.exit(0);
   }
-} catch {
-  // target does not exist yet
+  // Already linked to the local SDK? Leave it as-is. On Windows pnpm creates a
+  // directory junction here, and re-creating a symlink may require extra privileges.
+  try {
+    if (realpathSync(linkTarget) === realpathSync(sdkDir)) {
+      console.log(`  ✓ @paperclipai/plugin-sdk already linked for ${packageDir}`);
+      process.exit(0);
+    }
+  } catch {
+    // fall through and re-link
+  }
+  // recursive: true is required to remove a directory symlink/junction on Windows.
+  rmSync(linkTarget, { recursive: true, force: true });
 }
 
 const relativeSdkDir = relative(scopeDir, sdkDir);
