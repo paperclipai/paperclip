@@ -1,5 +1,11 @@
 # @paperclipai/adapter-opencode-local
 
+## 0.3.2
+
+### Patch Changes
+
+- Add `parseOpenCodeSessionExport` and `opencode export` fallback in `runAttempt` when stdout has no text events (opencode v1.15.10+ compatibility).
+
 ## 0.3.1
 
 ### Patch Changes

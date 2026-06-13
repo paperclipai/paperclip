@@ -44,7 +44,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolvePaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
+import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl, parseOpenCodeSessionExport } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
@@ -603,10 +603,38 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onSpawn,
         onLog,
       });
+      let parsed = parseOpenCodeJsonl(proc.stdout);
+      // opencode v1.15.10+ no longer emits text/step_finish events to stdout.
+      // Fall back to `opencode export <sessionId>` to read the session DB.
+      if (!parsed.summary && !parsed.errorMessage && parsed.sessionId && !proc.timedOut && (proc.exitCode ?? 0) === 0) {
+        try {
+          await onLog("stdout", `[paperclip] No text in stdout; fetching response via opencode export (session ${parsed.sessionId}).\n`);
+          const exportProc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, ["export", parsed.sessionId], {
+            cwd,
+            env: preparedRuntimeConfig.env,
+            timeoutSec: Math.min(timeoutSec > 0 ? timeoutSec : 30, 30),
+            graceSec,
+            onLog: async () => {},
+          });
+          if ((exportProc.exitCode ?? 1) === 0 && exportProc.stdout.trim()) {
+            const exported = parseOpenCodeSessionExport(exportProc.stdout);
+            if (exported && exported.summary) {
+              parsed = {
+                ...parsed,
+                summary: exported.summary,
+                usage: exported.usage,
+                costUsd: exported.costUsd,
+              };
+            }
+          }
+        } catch (err) {
+          await onLog("stdout", `[paperclip] opencode export fallback failed: ${err instanceof Error ? err.message : String(err)}\n`);
+        }
+      }
       return {
         proc,
         rawStderr: proc.stderr,
-        parsed: parseOpenCodeJsonl(proc.stdout),
+        parsed,
       };
     };
 
