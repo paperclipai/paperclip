@@ -3543,4 +3543,112 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  it("escalates an in-progress issue stalled past the heartbeat threshold even when the latest run succeeded without progress (ZDA-1676)", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "empty_response",
+    });
+
+    const staleUpdatedAt = new Date(Date.now() - 70 * 60 * 1000);
+    await db
+      .update(issues)
+      .set({ updatedAt: staleUpdatedAt })
+      .where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.stalledEscalated).toBe(1);
+    expect(result.escalated).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.successfulContinuationObserved).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    const recovery = await waitForValue(async () =>
+      db
+        .select()
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.originKind, "stranded_issue_recovery"),
+            eq(issues.originId, issueId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null),
+    );
+    expect(recovery).toMatchObject({
+      companyId,
+      parentId: issueId,
+      assigneeAgentId: agentId,
+      originKind: "stranded_issue_recovery",
+      originId: issueId,
+      originRunId: runId,
+    });
+    expect(recovery?.title).toContain("Recover stalled issue");
+
+    const blockerRelations = await db
+      .select()
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, issueId),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    expect(blockerRelations).toHaveLength(1);
+    expect(blockerRelations[0]?.issueId).toBe(recovery?.id);
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("stalled past the heartbeat threshold");
+    expect(comments[0]?.body).toContain(`Recovery issue: [${recovery?.identifier}]`);
+  });
+
+  it("does not escalate an in-progress issue with a future-scheduled monitor even when stalled", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "empty_response",
+    });
+
+    const staleUpdatedAt = new Date(Date.now() - 70 * 60 * 1000);
+    const futureMonitorAt = new Date(Date.now() + 60 * 60 * 1000);
+    await db
+      .update(issues)
+      .set({ updatedAt: staleUpdatedAt, monitorNextCheckAt: futureMonitorAt })
+      .where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.stalledEscalated).toBe(0);
+    expect(result.escalated).toBe(0);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(0);
+  });
 });

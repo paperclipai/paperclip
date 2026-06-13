@@ -65,6 +65,7 @@ import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js"
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
+export const STRANDED_ASSIGNED_ISSUE_STALL_THRESHOLD_MS = 10 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
@@ -255,6 +256,25 @@ function isExhaustedSuccessfulRunHandoff(latestRun: LatestIssueRun) {
   if (!evidence) return null;
   if (evidence.handoffAttempt < evidence.maxHandoffAttempts) return { ...evidence, exhausted: false };
   return { ...evidence, exhausted: true };
+}
+
+function isInProgressIssueStalledPastHeartbeat(
+  issue: Pick<typeof issues.$inferSelect, "status" | "updatedAt" | "monitorNextCheckAt">,
+  nowMs: number,
+) {
+  if (issue.status !== "in_progress") return false;
+  const updatedAt = issue.updatedAt instanceof Date ? issue.updatedAt : new Date(issue.updatedAt);
+  const updatedAtMs = updatedAt.getTime();
+  if (!Number.isFinite(updatedAtMs)) return false;
+  if (nowMs - updatedAtMs <= STRANDED_ASSIGNED_ISSUE_STALL_THRESHOLD_MS) return false;
+  if (issue.monitorNextCheckAt) {
+    const monitorAt = issue.monitorNextCheckAt instanceof Date
+      ? issue.monitorNextCheckAt
+      : new Date(issue.monitorNextCheckAt);
+    const monitorAtMs = monitorAt.getTime();
+    if (Number.isFinite(monitorAtMs) && monitorAtMs > nowMs) return false;
+  }
+  return true;
 }
 
 function issueIdFromRunContext(contextSnapshot: unknown) {
@@ -2663,11 +2683,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       successfulContinuationObserved: 0,
       orphanBlockersAssigned: 0,
       successfulRunHandoffEscalated: 0,
+      stalledEscalated: 0,
       escalated: 0,
       recentProgressExempted: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
+
+    const nowMs = Date.now();
 
     for (const issue of candidates) {
       const agentId = issue.assigneeAgentId;
@@ -2775,6 +2798,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
         if (queued) {
           result.dispatchRequeued += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
+      if (isInProgressIssueStalledPastHeartbeat(issue, nowMs)) {
+        const updated = await escalateStrandedAssignedIssue({
+          issue,
+          previousStatus: "in_progress",
+          latestRun,
+          comment:
+            "Paperclip detected this assigned `in_progress` issue stalled past the heartbeat threshold " +
+            `(no progress for more than ${Math.round(STRANDED_ASSIGNED_ISSUE_STALL_THRESHOLD_MS / 1000)}s) ` +
+            "and no live execution path remains. Moving it to `blocked` so the team can intervene.",
+        });
+        if (updated) {
+          result.stalledEscalated += 1;
+          result.escalated += 1;
           result.issueIds.push(issue.id);
         } else {
           result.skipped += 1;
