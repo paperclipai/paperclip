@@ -28,7 +28,11 @@ export interface ActiveRunForIssue {
   agentName: string;
   adapterType: string;
   logBytes?: number | null;
+  lastOutputAt?: string | Date | null;
+  lastOutputSeq?: number | null;
+  lastOutputStream?: "stdout" | "stderr" | null;
   lastOutputBytes?: number | null;
+  processStartedAt?: string | Date | null;
   issueId?: string | null;
   livenessState?: RunLivenessFields["livenessState"];
   livenessReason?: string | null;
@@ -52,7 +56,11 @@ export interface LiveRunForIssue {
   agentName: string;
   adapterType: string;
   logBytes?: number | null;
+  lastOutputAt?: string | null;
+  lastOutputSeq?: number | null;
+  lastOutputStream?: "stdout" | "stderr" | null;
   lastOutputBytes?: number | null;
+  processStartedAt?: string | null;
   issueId?: string | null;
   livenessState?: RunLivenessFields["livenessState"];
   livenessReason?: string | null;
