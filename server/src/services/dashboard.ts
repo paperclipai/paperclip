@@ -59,6 +59,7 @@ export function dashboardService(db: Db) {
         error: 0,
       };
       for (const row of agentRows) {
+        if (!row) continue;
         const count = Number(row.count);
         // "idle" agents are operational — count them as active
         const bucket = row.status === "idle" ? "active" : row.status;
@@ -72,6 +73,7 @@ export function dashboardService(db: Db) {
         done: 0,
       };
       for (const row of taskRows) {
+        if (!row) continue;
         const count = Number(row.count);
         if (row.status === "in_progress") taskCounts.inProgress += count;
         if (row.status === "blocked") taskCounts.blocked += count;
@@ -95,7 +97,7 @@ export function dashboardService(db: Db) {
           ),
         );
 
-      const monthSpendCents = Number(monthSpend);
+      const monthSpendCents = Number(monthSpend ?? 0);
       const runActivityDayExpr = sql<string>`to_char(${heartbeatRuns.createdAt} at time zone 'UTC', 'YYYY-MM-DD')`;
       const runActivityRows = await db
         .select({

@@ -1167,15 +1167,19 @@ const heartbeatRunListContextColumns = {
   contextWakeTriggerDetail: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeTriggerDetail'`.as("contextWakeTriggerDetail"),
 } as const;
 
-const heartbeatRunListResultColumns = {
-  resultSummary: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'summary', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultSummary"),
-  resultResult: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'result', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultResult"),
-  resultMessage: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'message', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultMessage"),
-  resultError: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'error', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultError"),
-  resultTotalCostUsd: sql<string | null>`${heartbeatRuns.resultJson} ->> 'total_cost_usd'`.as("resultTotalCostUsd"),
-  resultCostUsd: sql<string | null>`${heartbeatRuns.resultJson} ->> 'cost_usd'`.as("resultCostUsd"),
-  resultCostUsdCamel: sql<string | null>`${heartbeatRuns.resultJson} ->> 'costUsd'`.as("resultCostUsdCamel"),
-} as const;
+// Small list payloads intentionally return the complete JSONB object; large payloads are stubbed
+// instead of SQL-extracting text fields that can fail on historical client-encoding edge cases.
+const heartbeatRunListResultJsonColumn = sql<Record<string, unknown> | null>`
+  case
+    when ${heartbeatRuns.resultJson} is null then null
+    when pg_column_size(${heartbeatRuns.resultJson}) <= ${HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES}
+      then ${heartbeatRuns.resultJson}
+    else jsonb_build_object(
+      'truncated', true,
+      'truncationReason', 'oversized_result_json'
+    )
+  end
+`.as("resultJson");
 
 const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
   case
@@ -1637,6 +1641,40 @@ export function summarizeHeartbeatRunListResultJson(input: {
     ["cost_usd", input.costUsd],
     ["costUsd", input.costUsdCamel],
   ] as const) {
+    const normalized = readNonEmptyString(value);
+    if (!normalized) continue;
+    const parsed = Number(normalized);
+    if (Number.isFinite(parsed)) summary[key] = parsed;
+  }
+
+  return Object.keys(summary).length > 0 ? summary : null;
+}
+
+function summarizeHeartbeatRunListResultJsonPayload(
+  resultJson: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (!resultJson) return null;
+
+  const summary: Record<string, unknown> = {};
+  for (const [key, value] of [
+    ["summary", resultJson.summary],
+    ["result", resultJson.result],
+    ["message", resultJson.message],
+    ["error", resultJson.error],
+  ] as const) {
+    const normalized = readNonEmptyString(value);
+    if (normalized) summary[key] = normalized;
+  }
+
+  for (const [key, value] of [
+    ["total_cost_usd", resultJson.total_cost_usd],
+    ["cost_usd", resultJson.cost_usd],
+    ["costUsd", resultJson.costUsd],
+  ] as const) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      summary[key] = value;
+      continue;
+    }
     const normalized = readNonEmptyString(value);
     if (!normalized) continue;
     const parsed = Number(normalized);
@@ -4134,7 +4172,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         createdAt: heartbeatRuns.createdAt,
         usageJson: heartbeatRuns.usageJson,
         error: heartbeatRuns.error,
-        ...heartbeatRunListResultColumns,
+        resultJson: heartbeatRunListResultJsonColumn,
       })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.sessionIdAfter, sessionId)))
@@ -4188,15 +4226,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    const latestSummary = summarizeHeartbeatRunListResultJson({
-      summary: latestRun?.resultSummary,
-      result: latestRun?.resultResult,
-      message: latestRun?.resultMessage,
-      error: latestRun?.resultError,
-      totalCostUsd: latestRun?.resultTotalCostUsd,
-      costUsd: latestRun?.resultCostUsd,
-      costUsdCamel: latestRun?.resultCostUsdCamel,
-    });
+    const latestSummary = summarizeHeartbeatRunListResultJsonPayload(latestRun?.resultJson);
     const latestTextSummary =
       readNonEmptyString(latestSummary?.summary) ??
       readNonEmptyString(latestSummary?.result) ??
@@ -11216,11 +11246,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 ...heartbeatRunListColumns,
                 error: sql<string | null>`NULL`.as("error"),
                 ...heartbeatRunListContextColumns,
+                resultJson: sql<Record<string, unknown> | null>`NULL`.as("resultJson"),
               }
             : {
                 ...heartbeatRunListColumns,
                 ...heartbeatRunListContextColumns,
-                ...heartbeatRunListResultColumns,
+                resultJson: heartbeatRunListResultJsonColumn,
               },
         )
         .from(heartbeatRuns)
@@ -11242,13 +11273,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           contextWakeReason,
           contextWakeSource,
           contextWakeTriggerDetail,
-          resultSummary,
-          resultResult,
-          resultMessage,
-          resultError,
-          resultTotalCostUsd,
-          resultCostUsd,
-          resultCostUsdCamel,
+          resultJson,
           ...rest
         } = row as typeof row & {
           resultSummary?: string | null;
@@ -11272,17 +11297,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             wakeSource: contextWakeSource,
             wakeTriggerDetail: contextWakeTriggerDetail,
           }),
-          resultJson: safeForLegacyEncoding
-            ? null
-            : summarizeHeartbeatRunListResultJson({
-                summary: resultSummary,
-                result: resultResult,
-                message: resultMessage,
-                error: resultError,
-                totalCostUsd: resultTotalCostUsd,
-                costUsd: resultCostUsd,
-                costUsdCamel: resultCostUsdCamel,
-              }),
+          resultJson,
         };
       });
     },
