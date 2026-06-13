@@ -138,4 +138,22 @@ describe("isCodexTransientUpstreamError", () => {
       }),
     ).toBe(false);
   });
+
+  it("classifies stream disconnects to the Codex chatgpt.com transport as transient", () => {
+    expect(
+      isCodexTransientUpstreamError({
+        errorMessage:
+          "stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)",
+      }),
+    ).toBe(true);
+  });
+
+  it("classifies websocket DNS lookup failures to the Codex chatgpt.com transport as transient", () => {
+    expect(
+      isCodexTransientUpstreamError({
+        errorMessage:
+          "websocket DNS lookup failed for wss://chatgpt.com/backend-api/codex/responses: getaddrinfo ENOTFOUND chatgpt.com",
+      }),
+    ).toBe(true);
+  });
 });
