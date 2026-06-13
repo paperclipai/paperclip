@@ -50,6 +50,7 @@ import {
 import {
   RECOVERY_ORIGIN_KINDS,
   buildIssueGraphLivenessLeafKey,
+  isRecoveryOriginKind,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "./origins.js";
@@ -2148,6 +2149,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) return null;
+    // Defense-in-depth against the recovery-cascade pattern (incident
+    // 2026-04-25). The reconcile loop already filters stranded recovery issues
+    // out at the candidate-classification step, but additional callers should
+    // also refuse to spawn a stranded-recovery issue *for* any kind of
+    // recovery-origin issue (stranded, harness liveness, stale active run) —
+    // those issues are themselves recovery artefacts and must escalate
+    // in-place if they get stuck.
+    if (isRecoveryOriginKind(input.issue.originKind)) return null;
 
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
