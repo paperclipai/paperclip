@@ -930,12 +930,14 @@ function toInviteSummaryResponse(
       brandColor: string | null;
       logoUrl: string | null;
     }
-    | null = null
+    | null = null,
+  publicBaseUrl?: string
 ) {
   const companyInfo = typeof company === "string"
     ? { name: company, brandColor: null, logoUrl: null }
     : company;
-  const baseUrl = requestBaseUrl(req);
+  const overrideBaseUrl = publicBaseUrl?.trim().replace(/\/+$/, "");
+  const baseUrl = overrideBaseUrl || requestBaseUrl(req);
   const invitePath = `/invite/${token}`;
   const onboardingPath = `/api/invites/${token}/onboarding`;
   const onboardingTextPath = `/api/invites/${token}/onboarding.txt`;
@@ -1550,6 +1552,7 @@ function buildInviteOnboardingManifest(
     deploymentExposure: DeploymentExposure;
     bindHost: string;
     allowedHostnames: string[];
+    authPublicBaseUrl?: string;
   }
 ) {
   const baseUrl = requestBaseUrl(req);
@@ -1581,7 +1584,8 @@ function buildInviteOnboardingManifest(
       req,
       token,
       invite,
-      opts.companyName ?? null
+      opts.companyName ?? null,
+      opts.authPublicBaseUrl
     ),
     onboarding: {
       instructions:
@@ -2418,6 +2422,13 @@ export function accessRoutes(
     deploymentExposure: DeploymentExposure;
     bindHost: string;
     allowedHostnames: string[];
+    /**
+     * Optional explicit public base URL (e.g. https://desktop.tail-scale.ts.net).
+     * When set, invite summary URLs prefer this over the request host so that
+     * "Copy invite link" emits a shareable URL even when the UI talks to
+     * 127.0.0.1. Sourced from PAPERCLIP_PUBLIC_URL / auth.publicBaseUrl.
+     */
+    authPublicBaseUrl?: string;
     inviteResolutionNetwork?: Partial<InviteResolutionNetwork>;
   }
 ) {
@@ -3102,7 +3113,8 @@ export function accessRoutes(
         req,
         token,
         created,
-        companyBranding
+        companyBranding,
+        opts.authPublicBaseUrl
       );
       res.status(201).json({
         ...created,
@@ -3156,7 +3168,8 @@ export function accessRoutes(
         req,
         token,
         created,
-        companyBranding
+        companyBranding,
+        opts.authPublicBaseUrl
       );
       res.status(201).json({
         ...created,
@@ -3196,7 +3209,7 @@ export function accessRoutes(
         )
       : null;
     res.json({
-      ...toInviteSummaryResponse(req, token, invite, companyBranding),
+      ...toInviteSummaryResponse(req, token, invite, companyBranding, opts.authPublicBaseUrl),
       invitedByUserName: inviterName,
       joinRequestStatus: inviteJoinRequest?.status ?? null,
       joinRequestType: inviteJoinRequest?.requestType ?? null,
