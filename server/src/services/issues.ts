@@ -5088,6 +5088,46 @@ export function issueService(db: Db) {
             tx,
           );
         }
+        if (issue.parentId && issue.assigneeAgentId && /^qa review:/i.test(issue.title.trim())) {
+          const qaAssignee = await tx
+            .select({ id: agents.id })
+            .from(agents)
+            .where(and(eq(agents.id, issue.assigneeAgentId), eq(agents.companyId, companyId), eq(agents.role, "qa")))
+            .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+          const parent = await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(and(eq(issues.id, issue.parentId), eq(issues.companyId, companyId)))
+            .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+
+          if (qaAssignee && parent) {
+            const existingBlockers = await tx
+              .select({ blockerIssueId: issueRelations.issueId })
+              .from(issueRelations)
+              .where(
+                and(
+                  eq(issueRelations.companyId, companyId),
+                  eq(issueRelations.relatedIssueId, parent.id),
+                  eq(issueRelations.type, "blocks"),
+                ),
+              );
+            await syncBlockedByIssueIds(
+              parent.id,
+              companyId,
+              [
+                ...new Set([
+                  ...existingBlockers.map((row: { blockerIssueId: string }) => row.blockerIssueId),
+                  issue.id,
+                ]),
+              ],
+              {
+                agentId: issueData.createdByAgentId ?? null,
+                userId: issueData.createdByUserId ?? null,
+              },
+              tx,
+            );
+          }
+        }
         const [enriched] = await withIssueLabels(tx, [issue]);
         return enriched;
       });

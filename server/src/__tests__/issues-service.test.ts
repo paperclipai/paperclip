@@ -2849,6 +2849,57 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     ]);
   });
 
+  it("automatically blocks a parent on a QA review child created through generic issue creation", async () => {
+    const companyId = randomUUID();
+    const parentIssueId = randomUUID();
+    const qaAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: qaAgentId,
+      companyId,
+      name: "QA Reviewer",
+      role: "qa",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Implement PR work",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const child = await svc.create(companyId, {
+      parentId: parentIssueId,
+      title: "QA review: paperclip PR #123 (blocker linkage)",
+      description: "Review the linked PR.",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: qaAgentId,
+    });
+
+    const parentRelations = await svc.getRelationSummaries(parentIssueId);
+    expect(parentRelations.blockedBy).toEqual([
+      expect.objectContaining({
+        id: child.id,
+        title: "QA review: paperclip PR #123 (blocker linkage)",
+      }),
+    ]);
+    expect(parentRelations.blockedBy[0]?.status).toBe("todo");
+  });
+
   it("clamps helper-created child requestDepth to the safe maximum", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
