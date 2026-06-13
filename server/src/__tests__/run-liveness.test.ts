@@ -133,6 +133,52 @@ describe("run liveness classifier", () => {
     expect(classification.actionability).toBe("blocked_external");
   });
 
+  it("suppresses regex-based blocker detection when PAPERCLIP_RELAX_LIVENESS_BLOCKER_REGEX=true", () => {
+    const previous = process.env.PAPERCLIP_RELAX_LIVENESS_BLOCKER_REGEX;
+    process.env.PAPERCLIP_RELAX_LIVENESS_BLOCKER_REGEX = "true";
+    try {
+      const classification = classifyRunLiveness({
+        ...baseInput,
+        resultJson: {
+          summary: "I cannot proceed because I need access credentials.",
+        },
+      });
+
+      // Same input that triggers `livenessState: "blocked"` above is suppressed
+      // when the relax flag is set. The agent's prose still mentions credentials
+      // but the regex is not allowed to flip the issue state on its own.
+      expect(classification.livenessState).not.toBe("blocked");
+      expect(classification.actionability).not.toBe("blocked_external");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.PAPERCLIP_RELAX_LIVENESS_BLOCKER_REGEX;
+      } else {
+        process.env.PAPERCLIP_RELAX_LIVENESS_BLOCKER_REGEX = previous;
+      }
+    }
+  });
+
+  it("still respects explicit issue.status === 'blocked' even when the relax flag is set", () => {
+    const previous = process.env.PAPERCLIP_RELAX_LIVENESS_BLOCKER_REGEX;
+    process.env.PAPERCLIP_RELAX_LIVENESS_BLOCKER_REGEX = "true";
+    try {
+      const classification = classifyRunLiveness({
+        ...baseInput,
+        issue: { ...(baseInput.issue ?? {}), status: "blocked" } as typeof baseInput.issue,
+        resultJson: { summary: "Working on it." },
+      });
+
+      // Genuine blocker (explicit issue.status) still flips even with relax flag.
+      expect(classification.livenessState).toBe("blocked");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.PAPERCLIP_RELAX_LIVENESS_BLOCKER_REGEX;
+      } else {
+        process.env.PAPERCLIP_RELAX_LIVENESS_BLOCKER_REGEX = previous;
+      }
+    }
+  });
+
   it("treats PAP-2000-style validation output as runnable follow-up, not an external blocker", () => {
     const classification = classifyRunLiveness({
       ...baseInput,
