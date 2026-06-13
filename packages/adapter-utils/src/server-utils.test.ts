@@ -385,6 +385,38 @@ describe("adapter skill snapshots", () => {
       managed: true,
     }));
   });
+
+  it("reports company-managed skills as shared_unlinked when desired but not linked in the shared home", () => {
+    // Simulates the shared OpenCode ~/.claude/skills scenario: another agent's sync cleared
+    // the symlinks for skills that belong to this agent. Source is resolvable; link is absent.
+    const snapshot = buildPersistentSkillSnapshot({
+      adapterType: "opencode_local",
+      availableEntries: [requiredEntry, optionalEntry],
+      desiredSkills: [requiredEntry.key, optionalEntry.key],
+      installed: new Map(),
+      skillsHome: "/home/me/.claude/skills",
+      locationLabel: "~/.claude/skills",
+      missingDetail: "Configured but not currently linked into the shared Claude/OpenCode skills home.",
+      externalConflictDetail: "Name occupied externally.",
+      externalDetail: "Installed outside Paperclip management.",
+    });
+
+    // Company-managed skill with available source → shared_unlinked (not a true orphan)
+    expect(snapshot.entries).toContainEqual(expect.objectContaining({
+      key: optionalEntry.key,
+      state: "shared_unlinked",
+      origin: "company_managed",
+      desired: true,
+    }));
+
+    // Required skill with available source → still missing (not company_managed)
+    expect(snapshot.entries).toContainEqual(expect.objectContaining({
+      key: requiredEntry.key,
+      state: "missing",
+      origin: "paperclip_required",
+      desired: true,
+    }));
+  });
 });
 
 describe("runChildProcess", () => {
