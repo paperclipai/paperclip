@@ -84,7 +84,7 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
 }
 
 function resolveLocalPaperclipApiUrl(): string {
-  const rawHost = process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost";
+  const rawHost = process.env.PAPERCLIP_LISTEN_HOST ?? "localhost";
   const host = rawHost.trim();
   const resolvedHost =
     !host || host === "0.0.0.0" || host === "::"
@@ -92,7 +92,7 @@ function resolveLocalPaperclipApiUrl(): string {
       : host.includes(":") && !host.startsWith("[") && !host.endsWith("]")
         ? `[${host}]`
         : host;
-  const port = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
+  const port = (process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100").trim();
   return `http://${resolvedHost}:${port}`;
 }
 
