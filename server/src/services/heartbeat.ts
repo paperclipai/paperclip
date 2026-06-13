@@ -2853,6 +2853,24 @@ function isProcessAlive(pid: number | null | undefined) {
   }
 }
 
+async function readLinuxProcessStatus(pid: number | null | undefined) {
+  if (process.platform !== "linux") return null;
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    const status = await fs.readFile(`/proc/${pid}/status`, "utf8");
+    const parentPidMatch = /^PPid:\s*(\d+)$/m.exec(status);
+    const stateMatch = /^State:\s*([A-Z])\s*\(([^)]+)\)$/m.exec(status);
+    const parentPid = parentPidMatch ? Number.parseInt(parentPidMatch[1]!, 10) : null;
+    return {
+      parentPid: Number.isInteger(parentPid) ? parentPid : null,
+      stateCode: stateMatch?.[1] ?? null,
+      stateLabel: stateMatch?.[2] ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function terminateHeartbeatRunProcess(input: {
   pid: number | null | undefined;
   processGroupId: number | null | undefined;
@@ -2880,7 +2898,10 @@ async function terminateHeartbeatRunProcess(input: {
 function buildProcessLossMessage(run: {
   processPid: number | null;
   processGroupId: number | null;
-}, options?: { descendantOnly?: boolean }) {
+}, options?: { descendantOnly?: boolean; orphanedChild?: boolean }) {
+  if (options?.orphanedChild && run.processPid) {
+    return `Process lost -- child pid ${run.processPid} was reparented to init or exited as a zombie and was terminated`;
+  }
   if (options?.descendantOnly && run.processGroupId) {
     return `Process lost -- parent pid ${run.processPid ?? "unknown"} exited, but descendant process group ${run.processGroupId} was still alive and was terminated`;
   }
@@ -7441,8 +7462,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      const processStatus = processPidAlive ? await readLinuxProcessStatus(run.processPid) : null;
+      const processPidIsZombie = processStatus?.stateCode === "Z";
+      const orphanedLocalChild = processStatus?.parentPid === 1 || processPidIsZombie;
       if (processPidAlive) {
-        if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
+        if (!orphanedLocalChild && run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {
             error: detachedMessage,
@@ -7460,11 +7484,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
           }
         }
-        continue;
+        if (!orphanedLocalChild) continue;
       }
 
       let descendantOnlyCleanup = false;
-      if (processGroupAlive) {
+      let orphanedChildCleanup = false;
+      if (orphanedLocalChild) {
+        orphanedChildCleanup = true;
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
+      } else if (processGroupAlive) {
         descendantOnlyCleanup = true;
         await terminateHeartbeatRunProcess({
           pid: run.processPid,
@@ -7472,8 +7503,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
-      const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const shouldRetry =
+        !orphanedChildCleanup &&
+        tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      const baseMessage = buildProcessLossMessage(
+        run,
+        orphanedChildCleanup ? { orphanedChild: true } : descendantOnlyCleanup ? { descendantOnly: true } : undefined,
+      );
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
@@ -7525,6 +7561,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
+          ...(orphanedChildCleanup ? { orphanedChildCleanup: true } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
         },
       });
