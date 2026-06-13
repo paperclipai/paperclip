@@ -1,0 +1,65 @@
+services:
+  paperclip:
+    build:
+      context: https://github.com/victorbvieira/paperclip.git#prod
+      dockerfile: Dockerfile
+    container_name: paperclip
+    restart: unless-stopped
+    user: "0:0"
+
+    ports:
+      - "3100:3100"
+
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "3100"
+      SERVE_UI: "true"
+
+      DATABASE_URL: "${DATABASE_URL}"
+
+      PAPERCLIP_HOME: "/paperclip"
+
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public"
+
+      PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL}"
+      BETTER_AUTH_TRUSTED_ORIGINS: "${PAPERCLIP_PUBLIC_URL}"
+
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET}"
+
+      # Z.AI via OpenCode (rota 1 — provider OpenAI-compatible).
+      # Lido pelo arquivo /paperclip/.config/opencode/opencode.json injetado
+      # via `configs:` abaixo. NÃO existe adapter zai nativo nesta branch.
+      ZAI_API_KEY: "${ZAI_API_KEY}"
+
+      # ChatGPT (Codex CLI) — billing por assinatura.
+      # NÃO setar OPENAI_API_KEY nem CODEX_API_KEY aqui. Se setar, o paperclip
+      # entra em modo API-key e ignora o auth.json criado por `codex login`.
+      # Ver: packages/adapters/codex-local/src/server/codex-home.ts:101
+
+    # OpenCode config para Z.AI provider vive em /opt/paperclip/.config/opencode/
+    # no host (dentro do volume bind). É escrito manualmente uma vez via
+    # `scripts/install-opencode-config.sh` — NÃO usar `configs:` aqui porque
+    # o Docker monta configs como root:root sem permissão de leitura pelo
+    # processo node (UID 1000) que o paperclip server roda, causando EACCES
+    # em prepareOpenCodeRuntimeConfig() quando ele tenta copiar o arquivo
+    # para o tmp dir antes de cada run.
+
+    volumes:
+      - /opt/paperclip:/paperclip
+
+    # Dokploy roda em modo Docker Swarm. A rede overlay attachable criada
+    # pelo instalador do Dokploy se chama `dokploy-network` — é onde todos
+    # os services (incluindo o Postgres `databases-postgres-cypdtq`) ficam
+    # acessíveis por DNS interno. Confirme com `docker network ls`.
+    networks:
+      - dokploy-network
+
+networks:
+  dokploy-network:
+    external: true
+    # Rede overlay attachable criada pelo instalador do Dokploy. Existe em
+    # qualquer host Dokploy. Se o nome for outro no seu daemon, descubra com:
+    #   docker network ls
+    # E adicione `name:` apontando pro nome real, mantendo o alias `dokploy-network`
+    # nas referências do serviço acima.
