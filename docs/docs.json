@@ -101,6 +101,7 @@
               "adapters/process",
               "adapters/http",
               "adapters/external-adapters",
+              "adapters/edenai",
               "adapters/adapter-ui-parser",
               "adapters/creating-an-adapter"
             ]
