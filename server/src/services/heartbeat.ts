@@ -10507,13 +10507,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .where(eq(issues.id, issue.id));
         }
 
-        if (!activeExecutionRun) {
+        if (!activeExecutionRun && issue.assigneeAgentId) {
+          // ELB-445: legacy reattach must be scoped to the issue's current assignee.
+          // Without the agentId guard, orphan queued/scheduled runs from a prior
+          // assignee — left over after PATCH-with-comment cross-issue reassignments
+          // — get re-stamped onto the issue ~1s after a bare PATCH lands, blocking
+          // the new assignee's checkout with a 409.
           const legacyRun = await tx
             .select()
             .from(heartbeatRuns)
             .where(
               and(
                 eq(heartbeatRuns.companyId, issue.companyId),
+                eq(heartbeatRuns.agentId, issue.assigneeAgentId),
                 inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
                 sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
               ),
@@ -10528,7 +10534,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (legacyRun) {
             if (await cancelStaleScheduledRetry(legacyRun)) {
               activeExecutionRun = null;
-            } else {
+            } else if (legacyRun.status === "running") {
+              // Only a *running* legacy run owns the issue execution lock right now.
+              // Queued/scheduled_retry legacy runs must defer the stamp to claimQueuedRun
+              // (Fix A: lazy locking). Stamping at queue time here re-introduces ELB-445:
+              // a queued legacy run gets stamped onto the issue ~1s after the wake fires,
+              // and the next checkout — whose actorRunId is a different live run — fails
+              // the executionLockCondition with a 409.
               activeExecutionRun = legacyRun;
               const legacyAgent = await tx
                 .select({ name: agents.name })
@@ -10544,6 +10556,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   updatedAt: new Date(),
                 })
                 .where(eq(issues.id, issue.id));
+            } else {
+              // Treat the queued/scheduled_retry legacy run as the active execution path
+              // so the new wake coalesces/defers against it, but do NOT eagerly stamp
+              // executionRunId. The lazy stamp in claimQueuedRun will take over once the
+              // legacy run actually transitions to "running".
+              activeExecutionRun = legacyRun;
             }
           }
         }
