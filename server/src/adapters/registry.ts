@@ -214,6 +214,98 @@ function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(
   return ctx;
 }
 
+// ---------------------------------------------------------------------------
+// Hermes provider-aware API key check
+// ---------------------------------------------------------------------------
+// hermes-paperclip-adapter@0.2.0's testEnvironment only checks for ANTHROPIC_API_KEY,
+// OPENROUTER_API_KEY, OPENAI_API_KEY, and ZAI_API_KEY. Hermes itself supports more
+// providers via --provider (minimax, minimax-cn, kimi-coding, nous, ...). When a
+// user wires hermes to one of those providers and sets the matching key (e.g.
+// MINIMAX_API_KEY), the upstream check spuriously warns that no LLM keys are
+// configured and points them at ANTHROPIC_API_KEY. The wrapper below augments
+// the upstream result so a configured-provider key suppresses that false warning.
+
+const HERMES_PROVIDER_KEYS: Record<string, string[]> = {
+  openrouter: ["OPENROUTER_API_KEY"],
+  nous: ["NOUS_API_KEY", "HERMES_API_KEY"],
+  "openai-codex": ["OPENAI_API_KEY"],
+  zai: ["ZAI_API_KEY"],
+  "kimi-coding": ["MOONSHOT_API_KEY", "KIMI_API_KEY"],
+  minimax: ["MINIMAX_API_KEY"],
+  "minimax-cn": ["MINIMAX_API_KEY"],
+};
+
+const HERMES_MODEL_PREFIX_KEYS: Record<string, string[]> = {
+  anthropic: ["ANTHROPIC_API_KEY"],
+  openai: ["OPENAI_API_KEY"],
+  openrouter: ["OPENROUTER_API_KEY"],
+  minimax: ["MINIMAX_API_KEY"],
+  "minimax-cn": ["MINIMAX_API_KEY"],
+  zai: ["ZAI_API_KEY"],
+  moonshot: ["MOONSHOT_API_KEY", "KIMI_API_KEY"],
+  kimi: ["KIMI_API_KEY", "MOONSHOT_API_KEY"],
+  nous: ["NOUS_API_KEY", "HERMES_API_KEY"],
+};
+
+function expectedHermesProviderKeys(config: Record<string, unknown>): string[] {
+  const provider =
+    typeof config.provider === "string" ? config.provider.trim().toLowerCase() : "";
+  const model = typeof config.model === "string" ? config.model.trim().toLowerCase() : "";
+  const keys = new Set<string>();
+  if (provider && provider !== "auto") {
+    for (const k of HERMES_PROVIDER_KEYS[provider] ?? []) keys.add(k);
+  }
+  const slashIdx = model.indexOf("/");
+  if (slashIdx > 0) {
+    const prefix = model.slice(0, slashIdx);
+    for (const k of HERMES_MODEL_PREFIX_KEYS[prefix] ?? []) keys.add(k);
+  }
+  return [...keys];
+}
+
+function hermesEnvHasKey(config: Record<string, unknown>, key: string): boolean {
+  const env =
+    config.env && typeof config.env === "object" && !Array.isArray(config.env)
+      ? (config.env as Record<string, unknown>)
+      : {};
+  const fromConfig = typeof env[key] === "string" && (env[key] as string).length > 0;
+  if (fromConfig) return true;
+  const fromProcess = process.env[key];
+  return typeof fromProcess === "string" && fromProcess.length > 0;
+}
+
+async function hermesTestEnvironmentWithProviderAwareKeys<
+  T extends { config?: unknown },
+>(ctx: T): Promise<Awaited<ReturnType<typeof hermesTestEnvironment>>> {
+  const result = await hermesTestEnvironment(ctx as never);
+  const config =
+    ctx && typeof ctx === "object" && ctx.config && typeof ctx.config === "object"
+      ? (ctx.config as Record<string, unknown>)
+      : {};
+  const expected = expectedHermesProviderKeys(config);
+  if (expected.length === 0) return result;
+
+  const noKeysIdx = result.checks.findIndex((c) => c.code === "hermes_no_api_keys");
+  if (noKeysIdx < 0) return result;
+
+  const found = expected.find((k) => hermesEnvHasKey(config, k));
+  if (!found) return result;
+
+  const checks = result.checks.slice();
+  checks[noKeysIdx] = {
+    level: "info",
+    message: `API key found for configured provider: ${found}`,
+    code: "hermes_api_keys_found",
+  };
+  const hasErrors = checks.some((c) => c.level === "error");
+  const hasWarnings = checks.some((c) => c.level === "warn");
+  return {
+    ...result,
+    status: hasErrors ? "fail" : hasWarnings ? "warn" : "pass",
+    checks,
+  };
+}
+
 function dedupeAdapterModels(models: AdapterModel[]): AdapterModel[] {
   const seen = new Set<string>();
   const result: AdapterModel[] = [];
@@ -488,7 +580,8 @@ const hermesLocalAdapter: ServerAdapterModule = {
 
     return executeHermesLocal(patchedCtx);
   },
-  testEnvironment: (ctx) => hermesTestEnvironment(normalizeHermesConfig(ctx) as never),
+  testEnvironment: (ctx) =>
+    hermesTestEnvironmentWithProviderAwareKeys(normalizeHermesConfig(ctx) as never),
   sessionCodec: hermesSessionCodec,
   listSkills: hermesListSkills,
   syncSkills: hermesSyncSkills,

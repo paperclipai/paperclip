@@ -10,14 +10,23 @@ const hermesExecuteMock = vi.hoisted(() =>
   })),
 );
 
+const hermesTestEnvironmentMock = vi.hoisted(() =>
+  vi.fn(async () => ({
+    adapterType: "hermes_local",
+    status: "pass" as const,
+    checks: [] as Array<{
+      code: string;
+      level: "info" | "warn" | "error";
+      message: string;
+      hint?: string | null;
+    }>,
+    testedAt: new Date(0).toISOString(),
+  })),
+);
+
 vi.mock("hermes-paperclip-adapter/server", () => ({
   execute: hermesExecuteMock,
-  testEnvironment: async () => ({
-    adapterType: "hermes_local",
-    status: "pass",
-    checks: [],
-    testedAt: new Date(0).toISOString(),
-  }),
+  testEnvironment: hermesTestEnvironmentMock,
   sessionCodec: null,
   listSkills: async () => [],
   syncSkills: async () => ({ entries: [] }),
@@ -68,6 +77,7 @@ describe("server adapter registry", () => {
     unregisterServerAdapter("claude_local");
     setOverridePaused("claude_local", false);
     hermesExecuteMock.mockClear();
+    hermesTestEnvironmentMock.mockClear();
   });
 
   it("registers external adapters and exposes them through lookup helpers", async () => {
@@ -479,6 +489,96 @@ describe("server adapter registry", () => {
     expect(patchedCtx.agent.adapterConfig.promptTemplate).toBeUndefined();
     // Auth token is still injected.
     expect(patchedCtx.agent.adapterConfig.env.PAPERCLIP_API_KEY).toBe("agent-run-jwt");
+  });
+
+  it("treats a configured Hermes provider key as satisfying the upstream no-API-keys warning", async () => {
+    hermesTestEnvironmentMock.mockResolvedValueOnce({
+      adapterType: "hermes_local",
+      status: "warn",
+      checks: [
+        {
+          level: "warn",
+          message: "No LLM API keys found in environment",
+          hint: "Set ANTHROPIC_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, or ZAI_API_KEY in the agent's env secrets. Hermes may also have keys configured in ~/.hermes/.env",
+          code: "hermes_no_api_keys",
+        },
+      ],
+      testedAt: new Date(0).toISOString(),
+    });
+
+    const adapter = requireServerAdapter("hermes_local");
+    const result = await adapter.testEnvironment({
+      companyId: "company-123",
+      adapterType: "hermes_local",
+      config: {
+        provider: "minimax",
+        env: { MINIMAX_API_KEY: "mm-secret" },
+      },
+    });
+
+    expect(result.status).toBe("pass");
+    expect(result.checks).toHaveLength(1);
+    expect(result.checks[0]).toMatchObject({
+      level: "info",
+      code: "hermes_api_keys_found",
+      message: expect.stringContaining("MINIMAX_API_KEY"),
+    });
+  });
+
+  it("infers the expected Hermes key from the model prefix when provider is unset", async () => {
+    hermesTestEnvironmentMock.mockResolvedValueOnce({
+      adapterType: "hermes_local",
+      status: "warn",
+      checks: [
+        {
+          level: "warn",
+          message: "No LLM API keys found in environment",
+          code: "hermes_no_api_keys",
+        },
+      ],
+      testedAt: new Date(0).toISOString(),
+    });
+
+    const adapter = requireServerAdapter("hermes_local");
+    const result = await adapter.testEnvironment({
+      companyId: "company-123",
+      adapterType: "hermes_local",
+      config: {
+        model: "minimax/minimax-m2.5-free",
+        env: { MINIMAX_API_KEY: "mm-secret" },
+      },
+    });
+
+    expect(result.status).toBe("pass");
+    expect(result.checks[0].code).toBe("hermes_api_keys_found");
+  });
+
+  it("preserves the upstream warning when the configured provider key is still missing", async () => {
+    hermesTestEnvironmentMock.mockResolvedValueOnce({
+      adapterType: "hermes_local",
+      status: "warn",
+      checks: [
+        {
+          level: "warn",
+          message: "No LLM API keys found in environment",
+          code: "hermes_no_api_keys",
+        },
+      ],
+      testedAt: new Date(0).toISOString(),
+    });
+
+    const adapter = requireServerAdapter("hermes_local");
+    const result = await adapter.testEnvironment({
+      companyId: "company-123",
+      adapterType: "hermes_local",
+      config: {
+        provider: "minimax",
+        env: {},
+      },
+    });
+
+    expect(result.status).toBe("warn");
+    expect(result.checks[0].code).toBe("hermes_no_api_keys");
   });
 });
 
