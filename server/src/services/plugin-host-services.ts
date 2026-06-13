@@ -2551,7 +2551,14 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         const agent = await agents.getById(params.agentId);
         requireInCompany("Agent", agent, companyId);
-        const taskKey = params.taskKey ?? `plugin:${pluginKey}:session:${randomUUID()}`;
+        // Wrap any caller-supplied taskKey inside the required prefix so
+        // sendMessage/list/close (which filter on `plugin:${pluginKey}:session:%`)
+        // can still find the session. Without this, a custom taskKey orphans the
+        // session — sendMessage immediately throws `Session not found`.
+        const rawTaskKey = params.taskKey ?? randomUUID();
+        const taskKey = rawTaskKey.startsWith(`plugin:${pluginKey}:session:`)
+          ? rawTaskKey
+          : `plugin:${pluginKey}:session:${rawTaskKey}`;
 
         const row = await db
           .insert(agentTaskSessionsTable)
