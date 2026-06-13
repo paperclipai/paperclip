@@ -598,7 +598,7 @@ All endpoints are under `/api` and return JSON.
 
 - `GET /companies/:companyId/goals`
 - `POST /companies/:companyId/goals`
-- `GET /goals/:goalId`
+- `GET /goals/:goalId` returns the goal and may include a limited preview of direct visible issues linked by `issues.goal_id` (`linkedIssues`, `linkedIssueIdentifiers`) plus `linkedIssueCount` for the total so goal detail surfaces can show executable work beside sub-goals and projects.
 - `PATCH /goals/:goalId`
 - `DELETE /goals/:goalId` (soft delete optional, hard delete board-only)
 

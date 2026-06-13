@@ -41,6 +41,7 @@ export const issuesApi = {
       attention?: "blocked";
       status?: string;
       projectId?: string;
+      goalId?: string;
       parentId?: string;
       assigneeAgentId?: string;
       participantAgentId?: string;
@@ -70,6 +71,7 @@ export const issuesApi = {
     if (filters?.attention) params.set("attention", filters.attention);
     if (filters?.status) params.set("status", filters.status);
     if (filters?.projectId) params.set("projectId", filters.projectId);
+    if (filters?.goalId) params.set("goalId", filters.goalId);
     if (filters?.parentId) params.set("parentId", filters.parentId);
     if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
     if (filters?.participantAgentId) params.set("participantAgentId", filters.participantAgentId);
@@ -106,6 +108,7 @@ export const issuesApi = {
       assigneeAgentId?: string;
       assigneeUserId?: string;
       projectId?: string;
+      goalId?: string;
       labelId?: string;
       q?: string;
     },
@@ -116,6 +119,7 @@ export const issuesApi = {
     if (filters.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
     if (filters.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
     if (filters.projectId) params.set("projectId", filters.projectId);
+    if (filters.goalId) params.set("goalId", filters.goalId);
     if (filters.labelId) params.set("labelId", filters.labelId);
     if (filters.q) params.set("q", filters.q);
     return api.get<{ count: number }>(`/companies/${companyId}/issues/count?${params.toString()}`);
