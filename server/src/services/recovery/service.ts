@@ -2149,6 +2149,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) return null;
 
+    // PATCH 2026-05-03 (alex@antoniou.net): skip recovery for issues with
+    // originKind "routine_execution". These are the per-tick issues created
+    // by cron-fired routines (e.g. CoS hourly briefing, McKinsey 4hr brief);
+    // their `runId=null` between scheduled ticks is the NORMAL steady state,
+    // not a stranded condition. Treating them as stranded spawned ~1 recovery
+    // wrapper per cron tick (~50+ wrappers in 24h on PortfolioHQ alone),
+    // polluting the inbox.
+    // The latestRun.status==succeeded check below would catch SOME of these
+    // but the issue's own status flips to in_progress/todo on each tick,
+    // and with runId=null, the detector still fires on at least the first
+    // pass after each tick.
+    // Filed at briefings/escalations/ for upstream Paperclip team.
+    if (input.issue.originKind === "routine_execution") return null;
+
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
 
