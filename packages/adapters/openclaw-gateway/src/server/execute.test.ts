@@ -81,4 +81,16 @@ describe("resolveClaimedApiKeyPath", () => {
   it("trims whitespace from the configured path", () => {
     expect(resolveClaimedApiKeyPath("  /tmp/key.json  ")).toBe("/tmp/key.json");
   });
+
+  it("returns the default path for non-string input", () => {
+    expect(resolveClaimedApiKeyPath(42)).toBe(
+      "~/.openclaw/workspace/paperclip-claimed-api-key.json",
+    );
+    expect(resolveClaimedApiKeyPath({})).toBe(
+      "~/.openclaw/workspace/paperclip-claimed-api-key.json",
+    );
+    expect(resolveClaimedApiKeyPath([])).toBe(
+      "~/.openclaw/workspace/paperclip-claimed-api-key.json",
+    );
+  });
 });

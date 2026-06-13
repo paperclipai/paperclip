@@ -1142,10 +1142,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
   delete agentParams.text;
   // Paperclip metadata requires protocol 5+ (OpenClaw ≤2026.6.x rejects unknown root properties).
-  // TODO: Re-enable when gateway supports protocol 5.
-  // if (PROTOCOL_VERSION >= 5) {
-  //   agentParams.paperclip = paperclipPayload;
-  // }
+  // TODO: Re-enable when gateway supports protocol 5:
+  //   if (PROTOCOL_VERSION >= 5) {
+  //     agentParams.paperclip = paperclipPayload;
+  //   }
 
   const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
