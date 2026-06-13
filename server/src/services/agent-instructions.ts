@@ -172,20 +172,29 @@ function shouldIgnoreInstructionsEntry(entry: { name: string; isDirectory(): boo
 
 async function listFilesRecursive(rootPath: string): Promise<string[]> {
   const output: string[] = [];
+  const visitedRealPaths = new Set<string>();
 
   async function walk(currentPath: string, relativeDir: string) {
+    const realCurrentPath = await fs.realpath(currentPath).catch(() => currentPath);
+    if (visitedRealPaths.has(realCurrentPath)) return;
+    visitedRealPaths.add(realCurrentPath);
+
     const entries = await fs.readdir(currentPath, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
-      if (shouldIgnoreInstructionsEntry(entry)) continue;
       const absolutePath = path.join(currentPath, entry.name);
+      const isSymlink = entry.isSymbolicLink();
+      const isDir = isSymlink ? (await fs.stat(absolutePath).catch(() => null))?.isDirectory() ?? false : entry.isDirectory();
+      const isFile = isSymlink ? (await fs.stat(absolutePath).catch(() => null))?.isFile() ?? false : entry.isFile();
+      const resolvedEntry = { name: entry.name, isDirectory: () => isDir, isFile: () => isFile };
+      if (shouldIgnoreInstructionsEntry(resolvedEntry)) continue;
       const relativePath = normalizeRelativeFilePath(
         relativeDir ? path.posix.join(relativeDir, entry.name) : entry.name,
       );
-      if (entry.isDirectory()) {
+      if (isDir) {
         await walk(absolutePath, relativePath);
         continue;
       }
-      if (!entry.isFile()) continue;
+      if (!isFile) continue;
       output.push(relativePath);
     }
   }
