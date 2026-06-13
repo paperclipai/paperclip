@@ -1445,4 +1445,233 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       retryNotBefore.toISOString(),
     );
   });
+
+  it("does not re-stamp execution_run_id to a stale-assignee legacy run during mid-run reassignment", async () => {
+    const companyId = randomUUID();
+    const oldAgentId = randomUUID();
+    const newAgentId = randomUUID();
+    const issueId = randomUUID();
+    const legacyRunId = randomUUID();
+    const now = new Date("2026-05-13T03:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: oldAgentId,
+        companyId,
+        name: "ClaudeCoder",
+        role: "engineer",
+        status: "active",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            wakeOnDemand: true,
+            maxConcurrentRuns: 1,
+          },
+        },
+        permissions: {},
+      },
+      {
+        id: newAgentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            wakeOnDemand: true,
+            maxConcurrentRuns: 1,
+          },
+        },
+        permissions: {},
+      },
+    ]);
+
+    // Old assignee has a still-running heartbeat run tagged with this issue.
+    await db.insert(heartbeatRuns).values({
+      id: legacyRunId,
+      companyId,
+      agentId: oldAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_assigned",
+      },
+      startedAt: now,
+      updatedAt: now,
+      createdAt: now,
+    });
+
+    // Issue has been reassigned to the new agent mid-run. execution_run_id was
+    // cleared by the reassignment so the legacyRun fallback path is reachable.
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reassigned mid-run",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: newAgentId,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+      issueNumber: 1,
+      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-1`,
+    });
+
+    // Saturate the new assignee's queue so wakeup does not actually launch.
+    await db.insert(heartbeatRuns).values(
+      Array.from({ length: 5 }, () => ({
+        id: randomUUID(),
+        companyId,
+        agentId: newAgentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "running" as const,
+        contextSnapshot: {
+          wakeReason: "test_busy_slot",
+        },
+        startedAt: now,
+        updatedAt: now,
+        createdAt: now,
+      })),
+    );
+
+    const newAssigneeRun = await heartbeat.wakeup(newAgentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId, mutation: "update" },
+      contextSnapshot: { issueId, source: "issue.update" },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
+
+    expect(newAssigneeRun).not.toBeNull();
+    expect(newAssigneeRun?.agentId).toBe(newAgentId);
+
+    const issueAfter = await db
+      .select({
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issueAfter?.executionRunId).not.toBe(legacyRunId);
+
+    const deferredWakeups = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.status, "deferred_issue_execution"))
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(deferredWakeups).toBe(0);
+  });
+
+  it("still re-stamps execution_run_id when the legacy run belongs to the current assignee (same-agent re-entry)", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const legacyRunId = randomUUID();
+    const now = new Date("2026-05-13T03:30:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "ClaudeCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: legacyRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_assigned",
+      },
+      startedAt: now,
+      updatedAt: now,
+      createdAt: now,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Same-agent re-entry",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+      issueNumber: 1,
+      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-1`,
+    });
+
+    // Saturate the agent's queue so wakeup does not actually launch.
+    await db.insert(heartbeatRuns).values(
+      Array.from({ length: 5 }, () => ({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "running" as const,
+        contextSnapshot: {
+          wakeReason: "test_busy_slot",
+        },
+        startedAt: now,
+        updatedAt: now,
+        createdAt: now,
+      })),
+    );
+
+    await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId, mutation: "update" },
+      contextSnapshot: { issueId, source: "issue.update" },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
+
+    const issueAfter = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issueAfter?.executionRunId).toBe(legacyRunId);
+  });
 });

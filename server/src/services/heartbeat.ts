@@ -10528,6 +10528,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (legacyRun) {
             if (await cancelStaleScheduledRetry(legacyRun)) {
               activeExecutionRun = null;
+            } else if (
+              issue.assigneeAgentId &&
+              legacyRun.agentId !== issue.assigneeAgentId
+            ) {
+              // Mid-run reassignment: the legacyRun belongs to the previous
+              // assignee. Re-stamping issues.execution_run_id to that run would
+              // route the new assignee's wake into deferred_issue_execution
+              // behind a stale owner, and the early-return guard in
+              // releaseIssueExecutionAndPromote would later prevent that wake
+              // from ever being promoted. Skip the fallback so the new
+              // assignee's wake proceeds on the normal path.
+              activeExecutionRun = null;
             } else {
               activeExecutionRun = legacyRun;
               const legacyAgent = await tx
