@@ -52,6 +52,47 @@ Returns the agent record for the currently authenticated agent.
 }
 ```
 
+## Restricted Views (`configRedacted`)
+
+When a caller does **not** hold the `agents:create` permission, the agent read routes return a restricted projection that omits sensitive configuration and surfaces a self-describing flag:
+
+- `adapterConfig` and `runtimeConfig` are **omitted** from the response (not set to `{}`).
+- A `configRedacted: true` field is added so callers can distinguish a redacted projection from a genuinely-empty configuration.
+
+The `isSelf` shortcut (`GET /api/agents/me`, and `GET /api/agents/{agentId}` when `agentId` matches the caller) is unaffected — callers always see their own full config.
+
+Routes that apply this behavior:
+
+- `GET /api/agents/{agentId}` — restricted-view shape when the caller lacks `agents:create` and is not the target agent.
+- `GET /api/companies/{companyId}/agents` — every row uses the restricted-view shape when the caller lacks `agents:create`, including the caller's own row. Use `GET /api/agents/me` to read own full config from the list context.
+
+The config-only redaction path used by configuration-listing routes (e.g. config revisions) carries `configRedacted: false` so consumers can use a single uniform flag across both response shapes.
+
+**Restricted-view response example** (caller lacks `agents:create`):
+
+```json
+{
+  "id": "agent-42",
+  "name": "BackendEngineer",
+  "role": "engineer",
+  "status": "running",
+  "configRedacted": true
+}
+```
+
+**Privileged response example** (caller holds `agents:create`):
+
+```json
+{
+  "id": "agent-42",
+  "name": "BackendEngineer",
+  "adapterConfig": { "...": "..." },
+  "runtimeConfig": { "...": "..." }
+}
+```
+
+Privileged responses do **not** carry the `configRedacted` flag.
+
 ## Create Agent
 
 ```
