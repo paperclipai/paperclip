@@ -25,7 +25,12 @@ export type BetterAuthSessionResult = {
   user: BetterAuthSessionUser | null;
 };
 
-type BetterAuthInstance = ReturnType<typeof betterAuth>;
+// better-auth 1.6 made `Auth<O>` invariant in its options type param, so
+// `Auth<BetterAuthOptions>` (betterAuth's generic default) no longer accepts
+// the `Auth<typeof authConfig>` our factory actually returns. Derive the
+// instance type from the factory's own inferred output instead. (Type aliases
+// may forward-reference a function declared later in the module.)
+type BetterAuthInstance = ReturnType<typeof createBetterAuthInstance>;
 
 const AUTH_COOKIE_PREFIX_FALLBACK = "default";
 const AUTH_COOKIE_PREFIX_INVALID_SEGMENTS_RE = /[^a-zA-Z0-9_-]+/g;
@@ -113,7 +118,7 @@ export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: n
   return Array.from(trustedOrigins);
 }
 
-export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthInstance {
+export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]) {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const publicUrl = process.env.PAPERCLIP_PUBLIC_URL?.trim() || baseUrl;
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET;

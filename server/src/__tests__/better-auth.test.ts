@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { BetterAuthOptions } from "better-auth";
 import { getCookies } from "better-auth/cookies";
 import {
@@ -182,5 +182,91 @@ describe("Better Auth cookie scoping", () => {
     ]));
     expect(trustedOrigins).not.toContain("https://board.example.test:3100");
     expect(trustedOrigins).not.toContain("http://board.example.test:3100");
+  });
+});
+
+// Runtime round-trip against embedded Postgres: proves the drizzle adapter,
+// session-token generation, cookie handling, and getSession read all work on
+// better-auth 1.6 (the 1.4→1.6 bump made `Auth<>` invariant; this guards the
+// actual auth flow, not just the type fix). Added with the 1.6 migration.
+import { createDb } from "@paperclipai/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
+import {
+  createBetterAuthInstance,
+  resolveBetterAuthSessionFromHeaders,
+} from "../auth/better-auth.js";
+import type { Config } from "../config.js";
+
+const embeddedSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbedded = embeddedSupport.supported ? describe : describe.skip;
+
+function testAuthConfig(): Config {
+  return {
+    deploymentMode: "authenticated",
+    deploymentExposure: "private",
+    authBaseUrlMode: "auto",
+    authPublicBaseUrl: undefined,
+    authDisableSignUp: false,
+  } as Config;
+}
+
+describeEmbedded("Better Auth 1.6 runtime round-trip", () => {
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let db: ReturnType<typeof createDb>;
+  const ORIGINAL_SECRET = process.env.BETTER_AUTH_SECRET;
+
+  beforeAll(async () => {
+    process.env.BETTER_AUTH_SECRET = "test-better-auth-secret-do-not-use-in-prod";
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-better-auth-roundtrip-");
+    db = createDb(tempDb.connectionString);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+    if (ORIGINAL_SECRET === undefined) delete process.env.BETTER_AUTH_SECRET;
+    else process.env.BETTER_AUTH_SECRET = ORIGINAL_SECRET;
+  });
+
+  it("signs up an email user and validates the issued session", async () => {
+    const auth = createBetterAuthInstance(db, testAuthConfig(), ["http://localhost:3100"]);
+
+    // Sign up writes user + account rows via the drizzle adapter and issues a
+    // session cookie — exercises the schema mapping that a 1.6 change would break.
+    const signUp = await (auth as unknown as {
+      api: { signUpEmail: (input: unknown) => Promise<{ headers: Headers }> };
+    }).api.signUpEmail({
+      body: {
+        email: "roundtrip@example.test",
+        password: "correct-horse-battery-staple",
+        name: "Round Trip",
+      },
+      returnHeaders: true,
+    });
+
+    const setCookie = signUp.headers.get("set-cookie");
+    expect(setCookie, "sign-up should issue a session cookie").toBeTruthy();
+
+    // Reduce Set-Cookie to the bare "name=value" pairs and replay them through
+    // the production session-resolution path.
+    const cookiePairs = (setCookie ?? "")
+      .split(/,(?=[^;]+=)/)
+      .map((c) => c.split(";")[0]!.trim())
+      .filter(Boolean)
+      .join("; ");
+    const headers = new Headers({ cookie: cookiePairs });
+
+    const resolved = await resolveBetterAuthSessionFromHeaders(auth, headers);
+    expect(resolved, "session should resolve from the issued cookie").not.toBeNull();
+    expect(resolved!.user.email).toBe("roundtrip@example.test");
+    expect(resolved!.session.userId).toBe(resolved!.user.id);
+  });
+
+  it("returns null for a request with no session cookie", async () => {
+    const auth = createBetterAuthInstance(db, testAuthConfig(), ["http://localhost:3100"]);
+    const resolved = await resolveBetterAuthSessionFromHeaders(auth, new Headers());
+    expect(resolved).toBeNull();
   });
 });
