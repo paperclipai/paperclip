@@ -5762,6 +5762,23 @@ export function issueRoutes(
 
       const becameTerminal =
         !["done", "cancelled"].includes(existing.status) && ["done", "cancelled"].includes(issue.status);
+      if (becameTerminal) {
+        // Auto-resolve any active recovery actions on the issue now that it has reached a terminal state.
+        // The documented "owner heartbeat confirms done" mechanism does not exist as an automatic trigger;
+        // this is the correct hook. Outcome is "restored" for done, "cancelled" for cancelled.
+        const recoveryOutcome = issue.status === "done" ? "restored" : "cancelled";
+        await recoveryActionsSvc
+          .resolveActiveForIssue({
+            companyId: issue.companyId,
+            sourceIssueId: issue.id,
+            status: recoveryOutcome === "cancelled" ? "cancelled" : "resolved",
+            outcome: recoveryOutcome,
+            resolutionNote: `Auto-resolved: issue reached ${issue.status} status.`,
+          })
+          .catch((err) => {
+            logger.warn({ err, issueId: issue.id }, "failed to auto-resolve recovery action on terminal status");
+          });
+      }
       if (becameTerminal && issue.parentId) {
         const parent = await svc.getWakeableParentAfterChildCompletion(issue.parentId);
         if (parent) {
