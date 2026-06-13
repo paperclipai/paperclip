@@ -46,6 +46,11 @@ export function QuotaBar({
       <div className="relative h-2 w-full border border-border overflow-hidden">
         {/* fill */}
         <div
+          role="progressbar"
+          aria-valuenow={Math.round(clampedPct)}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={`${label}: ${Math.round(clampedPct)}%`}
           className={cn(
             "absolute inset-y-0 left-0 transition-[width,background-color] duration-150",
             fillColor(clampedPct),
