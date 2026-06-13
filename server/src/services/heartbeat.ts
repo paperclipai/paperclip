@@ -98,6 +98,8 @@ import {
   persistAdapterManagedRuntimeServices,
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
+  syncReusedExecutionWorktree,
+  provisionReusedExecutionWorktree,
   type ExecutionWorkspaceInput,
   type RealizedExecutionWorkspace,
   sanitizeRuntimeServiceBaseEnv,
@@ -668,6 +670,8 @@ export function applyPersistedExecutionWorkspaceConfig(input: {
     const nextStrategy = parseObject(nextConfig.workspaceStrategy);
     if (input.workspaceConfig.provisionCommand === null) delete nextStrategy.provisionCommand;
     else nextStrategy.provisionCommand = input.workspaceConfig.provisionCommand;
+    if (input.workspaceConfig.syncCommand === null) delete nextStrategy.syncCommand;
+    else nextStrategy.syncCommand = input.workspaceConfig.syncCommand;
     if (input.workspaceConfig.teardownCommand === null) delete nextStrategy.teardownCommand;
     else nextStrategy.teardownCommand = input.workspaceConfig.teardownCommand;
     nextConfig.workspaceStrategy = nextStrategy;
@@ -760,6 +764,7 @@ function buildExecutionWorkspaceConfigSnapshot(
 
   if ("workspaceStrategy" in config) {
     snapshot.provisionCommand = typeof strategy.provisionCommand === "string" ? strategy.provisionCommand : null;
+    snapshot.syncCommand = typeof strategy.syncCommand === "string" ? strategy.syncCommand : null;
     snapshot.teardownCommand = typeof strategy.teardownCommand === "string" ? strategy.teardownCommand : null;
   }
 
@@ -8360,6 +8365,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           workspace: existingExecutionWorkspace,
         })
       : null;
+    if (reusedExecutionWorkspace && reusedExecutionWorkspace.strategy === "git_worktree" && reusedExecutionWorkspace.cwd) {
+      const reusedWorkspaceRef = {
+        cwd: reusedExecutionWorkspace.cwd,
+        branchName: reusedExecutionWorkspace.branchName,
+        worktreePath: reusedExecutionWorkspace.worktreePath,
+      };
+      const reusedAgentRef = {
+        id: agent.id,
+        name: agent.name,
+        companyId: agent.companyId,
+      };
+      await syncReusedExecutionWorktree({
+        config: runtimeConfig,
+        workspace: reusedWorkspaceRef,
+        base: executionWorkspaceBase,
+        issue: issueRef,
+        agent: reusedAgentRef,
+        recorder: workspaceOperationRecorder,
+      });
+      await provisionReusedExecutionWorktree({
+        config: runtimeConfig,
+        workspace: reusedWorkspaceRef,
+        base: executionWorkspaceBase,
+        issue: issueRef,
+        agent: reusedAgentRef,
+        recorder: workspaceOperationRecorder,
+      });
+    }
     const executionWorkspace = reusedExecutionWorkspace ?? await realizeExecutionWorkspace({
           base: executionWorkspaceBase,
           config: hostExecutionWorkspaceConfig,

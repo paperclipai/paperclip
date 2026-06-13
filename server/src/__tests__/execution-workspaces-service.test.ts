@@ -44,6 +44,7 @@ describe("execution workspace config helpers", () => {
       provisionCommand: "bash ./scripts/provision-worktree.sh",
       teardownCommand: "bash ./scripts/teardown-worktree.sh",
       cleanupCommand: "pkill -f vite || true",
+      syncCommand: null,
       desiredState: null,
       serviceStates: null,
       workspaceRuntime: {

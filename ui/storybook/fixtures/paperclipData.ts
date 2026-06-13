@@ -546,6 +546,7 @@ export const storybookExecutionWorkspaces: ExecutionWorkspace[] = [
       provisionCommand: null,
       teardownCommand: "pnpm dev:stop && rm -rf ui/storybook-static",
       cleanupCommand: null,
+      syncCommand: null,
       workspaceRuntime: storybookWorkspaceRuntime,
       desiredState: "stopped",
       serviceStates: { storybook: "stopped" },

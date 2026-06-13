@@ -941,7 +941,7 @@ async function recordGitOperation(
 async function recordWorkspaceCommandOperation(
   recorder: WorkspaceOperationRecorder | null | undefined,
   input: {
-    phase: "workspace_provision" | "workspace_teardown";
+    phase: "workspace_provision" | "workspace_sync" | "workspace_teardown";
     command: string;
     resolvedCommand?: string;
     cwd: string;
@@ -1042,6 +1042,148 @@ async function provisionExecutionWorktree(input: {
       resolvedCommand: resolvedProvisionCommand === provisionCommand ? null : resolvedProvisionCommand,
     },
     successMessage: `Provisioned workspace at ${input.worktreePath}\n`,
+  });
+}
+
+async function syncExecutionWorktree(input: {
+  strategy: Record<string, unknown>;
+  base: ExecutionWorkspaceInput;
+  repoRoot: string;
+  worktreePath: string;
+  branchName: string;
+  issue: ExecutionWorkspaceIssueRef | null;
+  agent: ExecutionWorkspaceAgentRef;
+  recorder?: WorkspaceOperationRecorder | null;
+}) {
+  const syncCommand = asString(input.strategy.syncCommand, "").trim();
+  if (!syncCommand) return;
+  const resolvedSyncCommand = resolveRepoManagedWorkspaceCommand(syncCommand, input.repoRoot);
+
+  await recordWorkspaceCommandOperation(input.recorder, {
+    phase: "workspace_sync",
+    command: syncCommand,
+    resolvedCommand: resolvedSyncCommand,
+    cwd: input.worktreePath,
+    env: buildWorkspaceCommandEnv({
+      base: input.base,
+      repoRoot: input.repoRoot,
+      worktreePath: input.worktreePath,
+      branchName: input.branchName,
+      issue: input.issue,
+      agent: input.agent,
+      created: false,
+    }),
+    label: `Execution workspace sync command "${syncCommand}"`,
+    metadata: {
+      repoRoot: input.repoRoot,
+      worktreePath: input.worktreePath,
+      branchName: input.branchName,
+      resolvedCommand: resolvedSyncCommand === syncCommand ? null : resolvedSyncCommand,
+    },
+    successMessage: `Synced workspace at ${input.worktreePath}\n`,
+  });
+}
+
+export async function syncReusedExecutionWorktree(input: {
+  config: Record<string, unknown>;
+  workspace: {
+    cwd: string;
+    branchName: string | null;
+    worktreePath: string | null;
+  };
+  base: ExecutionWorkspaceInput;
+  issue: ExecutionWorkspaceIssueRef | null;
+  agent: ExecutionWorkspaceAgentRef;
+  recorder?: WorkspaceOperationRecorder | null;
+}) {
+  const rawStrategy = parseObject(input.config.workspaceStrategy);
+  const syncCommand = asString(rawStrategy.syncCommand, "").trim();
+  if (!syncCommand) return;
+
+  const worktreePath = input.workspace.worktreePath ?? input.workspace.cwd;
+  // Use resolveGitOwnerRepoRoot (--git-common-dir based) so we land on the
+  // canonical main repo root in linked worktrees, matching the behaviour of
+  // realizeExecutionWorkspace. --show-toplevel would resolve to the worktree
+  // root, leaving REPO_ROOT and resolved script paths inconsistent between
+  // the reuse-recovery path and the initial provision path.
+  const repoRoot = await resolveGitOwnerRepoRoot(worktreePath).catch(() => null);
+  if (!repoRoot) {
+    if (input.recorder) {
+      await input.recorder.recordOperation({
+        phase: "workspace_sync",
+        command: syncCommand,
+        cwd: worktreePath,
+        metadata: { skipped: true, reason: "git_repo_root_unresolved", worktreePath },
+        run: async () => ({
+          status: "skipped",
+          exitCode: null,
+          system: `Skipped workspace sync: unable to resolve git repo root from ${worktreePath}\n`,
+        }),
+      });
+    }
+    return;
+  }
+
+  await syncExecutionWorktree({
+    strategy: rawStrategy,
+    base: input.base,
+    repoRoot,
+    worktreePath,
+    branchName: input.workspace.branchName ?? "",
+    issue: input.issue,
+    agent: input.agent,
+    recorder: input.recorder ?? null,
+  });
+}
+
+export async function provisionReusedExecutionWorktree(input: {
+  config: Record<string, unknown>;
+  workspace: {
+    cwd: string;
+    branchName: string | null;
+    worktreePath: string | null;
+  };
+  base: ExecutionWorkspaceInput;
+  issue: ExecutionWorkspaceIssueRef | null;
+  agent: ExecutionWorkspaceAgentRef;
+  recorder?: WorkspaceOperationRecorder | null;
+}) {
+  const rawStrategy = parseObject(input.config.workspaceStrategy);
+  const provisionCommand = asString(rawStrategy.provisionCommand, "").trim();
+  if (!provisionCommand) return;
+
+  const worktreePath = input.workspace.worktreePath ?? input.workspace.cwd;
+  // Same rationale as syncReusedExecutionWorktree: use resolveGitOwnerRepoRoot
+  // so REPO_ROOT and resolved script paths point at the main repo root, not
+  // the linked worktree root.
+  const repoRoot = await resolveGitOwnerRepoRoot(worktreePath).catch(() => null);
+  if (!repoRoot) {
+    if (input.recorder) {
+      await input.recorder.recordOperation({
+        phase: "workspace_provision",
+        command: provisionCommand,
+        cwd: worktreePath,
+        metadata: { skipped: true, reason: "git_repo_root_unresolved", worktreePath },
+        run: async () => ({
+          status: "skipped",
+          exitCode: null,
+          system: `Skipped workspace provision: unable to resolve git repo root from ${worktreePath}\n`,
+        }),
+      });
+    }
+    return;
+  }
+
+  await provisionExecutionWorktree({
+    strategy: rawStrategy,
+    base: input.base,
+    repoRoot,
+    worktreePath,
+    branchName: input.workspace.branchName ?? "",
+    issue: input.issue,
+    agent: input.agent,
+    created: false,
+    recorder: input.recorder ?? null,
   });
 }
 
@@ -1171,6 +1313,16 @@ export async function realizeExecutionWorkspace(input: {
         }),
       });
     }
+    await syncExecutionWorktree({
+      strategy: rawStrategy,
+      base: input.base,
+      repoRoot,
+      worktreePath: reusablePath,
+      branchName,
+      issue: input.issue,
+      agent: input.agent,
+      recorder: input.recorder ?? null,
+    });
     await provisionExecutionWorktree({
       strategy: rawStrategy,
       base: input.base,
