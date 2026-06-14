@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
@@ -38,8 +38,8 @@ function readNestedString(value: unknown, path: string[]): string | null {
 }
 
 const fieldClassName =
-  "w-full border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-500";
-const panelClassName = "border border-zinc-800 bg-zinc-950/95 p-6";
+  "w-full border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-ring";
+const panelClassName = "border border-border bg-card text-card-foreground p-6";
 const modeButtonBaseClassName =
   "flex-1 border px-3 py-2 text-sm transition-colors";
 
@@ -164,46 +164,46 @@ function AwaitingJoinApprovalPanel({
   const approverLabel = invitedByUserName ?? "A company admin";
 
   return (
-    <div className="min-h-screen bg-zinc-950 px-6 py-12 text-zinc-100">
-      <div className="mx-auto max-w-md border border-zinc-800 bg-zinc-950 p-6" data-testid="invite-pending-approval">
+    <div className="min-h-screen bg-background px-6 py-12 text-foreground">
+      <div className="mx-auto max-w-md border border-border bg-card text-card-foreground p-6" data-testid="invite-pending-approval">
         <div className="flex items-center gap-3">
           <InviteCompanyLogo
             companyDisplayName={companyDisplayName}
             companyLogoUrl={companyLogoUrl}
             companyBrandColor={companyBrandColor}
-            className="h-12 w-12 border border-zinc-800 rounded-none"
+            className="h-12 w-12 border border-border rounded-none"
           />
           <h1 className="text-lg font-semibold">Request to join {companyDisplayName}</h1>
         </div>
         <div className="mt-4 space-y-3">
-          <p className="text-sm text-zinc-400">
+          <p className="text-sm text-muted-foreground">
             Your request is still awaiting approval. {approverLabel} must approve your request to join.
           </p>
-          <div className="border border-zinc-800 p-3">
-            <p className="text-xs text-zinc-500 mb-1">Approval page</p>
+          <div className="border border-border p-3">
+            <p className="text-xs text-muted-foreground mb-1">Approval page</p>
             <a
               href={approvalUrl}
-              className="text-sm text-zinc-200 underline underline-offset-2 hover:text-zinc-100"
+              className="text-sm text-foreground underline underline-offset-2 hover:opacity-80"
             >
               Company Settings → Members
             </a>
           </div>
-          <p className="text-sm text-zinc-400">
-            Ask them to visit <a href={approvalUrl} className="text-zinc-200 underline underline-offset-2 hover:text-zinc-100">Company Settings → Members</a> to approve your request.
+          <p className="text-sm text-muted-foreground">
+            Ask them to visit <a href={approvalUrl} className="text-foreground underline underline-offset-2 hover:opacity-80">Company Settings → Members</a> to approve your request.
           </p>
-          <p className="text-xs text-zinc-500">
+          <p className="text-xs text-muted-foreground">
             Refresh this page after you've been approved — you'll be redirected automatically.
           </p>
         </div>
         {claimSecret && claimApiKeyPath ? (
-          <div className="mt-4 space-y-1 border border-zinc-800 p-3 text-xs text-zinc-400">
-            <div className="text-zinc-200">Claim secret</div>
+          <div className="mt-4 space-y-1 border border-border p-3 text-xs text-muted-foreground">
+            <div className="text-foreground">Claim secret</div>
             <div className="font-mono break-all">{claimSecret}</div>
             <div className="font-mono break-all">POST {claimApiKeyPath}</div>
           </div>
         ) : null}
         {onboardingTextUrl ? (
-          <div className="mt-4 text-xs text-zinc-400">
+          <div className="mt-4 text-xs text-muted-foreground">
             Onboarding: <span className="font-mono break-all">{onboardingTextUrl}</span>
           </div>
         ) : null}
@@ -228,8 +228,14 @@ export function InviteLandingPage() {
   const [result, setResult] = useState<{ kind: "bootstrap" | "join"; payload: unknown } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [authFeedback, setAuthFeedback] = useState<AuthFeedback | null>(null);
-  const [autoAcceptStarted, setAutoAcceptStarted] = useState(false);
+  const [autoAcceptAttempts, setAutoAcceptAttempts] = useState(0);
   const authErrorId = "invite-auth-error";
+  // A valid human invite reached while authenticated should join the user
+  // without manual action. We bound the auto-retries so a persistently failing
+  // accept (e.g. a genuinely revoked invite) falls back to the manual button
+  // instead of hammering the endpoint, but a single transient failure (session
+  // or membership not yet propagated) still recovers on its own.
+  const MAX_AUTO_ACCEPT_ATTEMPTS = 2;
 
   const healthQuery = useQuery({
     queryKey: queryKeys.health,
@@ -259,7 +265,7 @@ export function InviteLandingPage() {
   }, [token]);
 
   useEffect(() => {
-    setAutoAcceptStarted(false);
+    setAutoAcceptAttempts(0);
   }, [token]);
 
   useEffect(() => {
@@ -297,13 +303,14 @@ export function InviteLandingPage() {
   const showsAgentForm = invite?.inviteType !== "bootstrap_ceo" && invite?.allowedJoinTypes === "agent";
   const shouldAutoAcceptHumanInvite =
     Boolean(sessionQuery.data) &&
+    Boolean(invite) &&
     !showsAgentForm &&
     invite?.inviteType !== "bootstrap_ceo" &&
     (!inviteJoinRequestStatus || canCompleteAcceptedHumanInvite) &&
     !isCheckingExistingMembership &&
     !isCurrentMember &&
     !result &&
-    error === null;
+    autoAcceptAttempts < MAX_AUTO_ACCEPT_ATTEMPTS;
   const sessionLabel =
     sessionQuery.data?.user.name?.trim() ||
     sessionQuery.data?.user.email?.trim() ||
@@ -351,12 +358,22 @@ export function InviteLandingPage() {
     },
   });
 
+  // Dispatch at most one accept per attempt. Without this guard the effect can
+  // re-enter (React re-renders while the mutation is settling) and fire the same
+  // attempt twice before `autoAcceptAttempts` updates.
+  const lastDispatchedAttemptRef = useRef(-1);
   useEffect(() => {
-    if (!shouldAutoAcceptHumanInvite || autoAcceptStarted || acceptMutation.isPending) return;
-    setAutoAcceptStarted(true);
+    lastDispatchedAttemptRef.current = -1;
+  }, [token]);
+
+  useEffect(() => {
+    if (!shouldAutoAcceptHumanInvite || acceptMutation.isPending) return;
+    if (lastDispatchedAttemptRef.current === autoAcceptAttempts) return;
+    lastDispatchedAttemptRef.current = autoAcceptAttempts;
+    setAutoAcceptAttempts((attempts) => attempts + 1);
     setError(null);
     acceptMutation.mutate();
-  }, [acceptMutation, autoAcceptStarted, shouldAutoAcceptHumanInvite]);
+  }, [acceptMutation, autoAcceptAttempts, shouldAutoAcceptHumanInvite]);
 
   const authMutation = useMutation({
     mutationFn: async () => {
@@ -476,8 +493,8 @@ export function InviteLandingPage() {
 
   if (result?.kind === "bootstrap") {
     return (
-      <div className="min-h-screen bg-zinc-950 px-6 py-12 text-zinc-100">
-        <div className="mx-auto max-w-md border border-zinc-800 bg-zinc-950 p-6">
+      <div className="min-h-screen bg-background px-6 py-12 text-foreground">
+        <div className="mx-auto max-w-md border border-border bg-card text-card-foreground p-6">
           <h1 className="text-lg font-semibold">Bootstrap complete</h1>
           <div className="mt-4">
             <Button asChild className="rounded-none">
@@ -502,14 +519,14 @@ export function InviteLandingPage() {
 
     return (
       joinedNow ? (
-        <div className="min-h-screen bg-zinc-950 px-6 py-12 text-zinc-100">
-          <div className="mx-auto max-w-md border border-zinc-800 bg-zinc-950 p-6">
+        <div className="min-h-screen bg-background px-6 py-12 text-foreground">
+          <div className="mx-auto max-w-md border border-border bg-card text-card-foreground p-6">
             <div className="flex items-center gap-3">
               <InviteCompanyLogo
                 companyDisplayName={companyDisplayName}
                 companyLogoUrl={companyLogoUrl}
                 companyBrandColor={companyBrandColor}
-                className="h-12 w-12 border border-zinc-800 rounded-none"
+                className="h-12 w-12 border border-border rounded-none"
               />
               <h1 className="text-lg font-semibold">You joined the company</h1>
             </div>
@@ -535,7 +552,7 @@ export function InviteLandingPage() {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-950 px-6 py-12 text-zinc-100">
+    <div className="min-h-screen bg-background px-6 py-12 text-foreground">
       <div className="mx-auto max-w-5xl">
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]">
           <section className={`${panelClassName} space-y-6`}>
@@ -544,16 +561,16 @@ export function InviteLandingPage() {
                 companyDisplayName={companyDisplayName}
                 companyLogoUrl={companyLogoUrl}
                 companyBrandColor={companyBrandColor}
-                className="h-16 w-16 rounded-none border border-zinc-800"
+                className="h-16 w-16 rounded-none border border-border"
               />
               <div className="min-w-0">
-                <p className="text-xs uppercase tracking-[0.24em] text-zinc-500">
+                <p className="text-xs uppercase tracking-[0.24em] text-muted-foreground">
                   You&apos;ve been invited to join Paperclip
                 </p>
                 <h1 className="mt-2 text-2xl font-semibold">
                   {invite.inviteType === "bootstrap_ceo" ? "Set up Paperclip" : `Join ${companyDisplayName}`}
                 </h1>
-                <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-300">
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
                   {showsAgentForm
                     ? "Review the invite details, then submit the agent information below to start the join request."
                     : requiresHumanAccount
@@ -564,35 +581,35 @@ export function InviteLandingPage() {
             </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="border border-zinc-800 p-3">
-                <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Company</div>
-                <div className="mt-1 text-sm text-zinc-100">{companyDisplayName}</div>
+              <div className="border border-border p-3">
+                <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Company</div>
+                <div className="mt-1 text-sm text-foreground">{companyDisplayName}</div>
               </div>
-              <div className="border border-zinc-800 p-3">
-                <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Invited by</div>
-                <div className="mt-1 text-sm text-zinc-100">{invitedByUserName ?? "Paperclip board"}</div>
+              <div className="border border-border p-3">
+                <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Invited by</div>
+                <div className="mt-1 text-sm text-foreground">{invitedByUserName ?? "Paperclip board"}</div>
               </div>
-              <div className="border border-zinc-800 p-3">
-                <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Requested access</div>
-                <div className="mt-1 text-sm text-zinc-100">
+              <div className="border border-border p-3">
+                <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Requested access</div>
+                <div className="mt-1 text-sm text-foreground">
                   {showsAgentForm ? "Agent join request" : requestedHumanRole ?? "Company access"}
                 </div>
               </div>
-              <div className="border border-zinc-800 p-3">
-                <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Invite expires</div>
-                <div className="mt-1 text-sm text-zinc-100">{formatDate(invite.expiresAt)}</div>
+              <div className="border border-border p-3">
+                <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Invite expires</div>
+                <div className="mt-1 text-sm text-foreground">{formatDate(invite.expiresAt)}</div>
               </div>
             </div>
 
             {inviteMessage ? (
               <div className="border border-amber-500/40 bg-amber-500/10 p-4">
-                <div className="text-xs uppercase tracking-[0.2em] text-amber-200/80">Message from inviter</div>
-                <p className="mt-2 text-sm leading-6 text-amber-50">{inviteMessage}</p>
+                <div className="text-xs uppercase tracking-[0.2em] text-amber-700 dark:text-amber-200/80">Message from inviter</div>
+                <p className="mt-2 text-sm leading-6 text-amber-900 dark:text-amber-50">{inviteMessage}</p>
               </div>
             ) : null}
 
             {sessionQuery.data ? (
-              <div className="border border-emerald-500/40 bg-emerald-500/10 p-4 text-sm text-emerald-50">
+              <div className="border border-emerald-500/40 bg-emerald-500/10 p-4 text-sm text-emerald-900 dark:text-emerald-50">
                 Signed in as <span className="font-medium">{sessionLabel}</span>.
               </div>
             ) : null}
@@ -603,12 +620,12 @@ export function InviteLandingPage() {
               <div className="space-y-4">
                 <div>
                   <h2 className="text-lg font-semibold">Submit agent details</h2>
-                  <p className="mt-1 text-sm text-zinc-400">
+                  <p className="mt-1 text-sm text-muted-foreground">
                     This invite will create an approval request for a new agent in {companyDisplayName}.
                   </p>
                 </div>
                 <label className="block text-sm">
-                  <span className="mb-1 block text-zinc-400">Agent name</span>
+                  <span className="mb-1 block text-muted-foreground">Agent name</span>
                   <input
                     className={fieldClassName}
                     value={agentName}
@@ -616,7 +633,7 @@ export function InviteLandingPage() {
                   />
                 </label>
                 <label className="block text-sm">
-                  <span className="mb-1 block text-zinc-400">Adapter type</span>
+                  <span className="mb-1 block text-muted-foreground">Adapter type</span>
                   <select
                     className={fieldClassName}
                     value={adapterType}
@@ -630,7 +647,7 @@ export function InviteLandingPage() {
                   </select>
                 </label>
                 <label className="block text-sm">
-                  <span className="mb-1 block text-zinc-400">Capabilities</span>
+                  <span className="mb-1 block text-muted-foreground">Capabilities</span>
                   <textarea
                     className={fieldClassName}
                     rows={4}
@@ -638,7 +655,7 @@ export function InviteLandingPage() {
                     onChange={(event) => setCapabilities(event.target.value)}
                   />
                 </label>
-                {error ? <p className="text-xs text-red-400">{error}</p> : null}
+                {error ? <p className="text-xs text-destructive">{error}</p> : null}
                 <Button
                   className="w-full rounded-none"
                   disabled={acceptMutation.isPending || agentName.trim().length === 0}
@@ -653,7 +670,7 @@ export function InviteLandingPage() {
                   <h2 className="text-lg font-semibold">
                     {authMode === "sign_up" ? "Create your account" : "Sign in to continue"}
                   </h2>
-                  <p className="mt-1 text-sm text-zinc-400">
+                  <p className="mt-1 text-sm text-muted-foreground">
                     {authMode === "sign_up"
                       ? `Start with a Paperclip account. After that, you'll come right back here to accept the invite for ${companyDisplayName}.`
                       : "Use the Paperclip account that already matches this invite. If you do not have one yet, switch back to create account."}
@@ -665,8 +682,8 @@ export function InviteLandingPage() {
                     type="button"
                     className={`${modeButtonBaseClassName} ${
                       authMode === "sign_up"
-                        ? "border-zinc-100 bg-zinc-100 text-zinc-950"
-                        : "border-zinc-800 text-zinc-300 hover:border-zinc-600"
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border text-muted-foreground hover:border-muted-foreground"
                     }`}
                     onClick={() => {
                       setAuthFeedback(null);
@@ -679,8 +696,8 @@ export function InviteLandingPage() {
                     type="button"
                     className={`${modeButtonBaseClassName} ${
                       authMode === "sign_in"
-                        ? "border-zinc-100 bg-zinc-100 text-zinc-950"
-                        : "border-zinc-800 text-zinc-300 hover:border-zinc-600"
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border text-muted-foreground hover:border-muted-foreground"
                     }`}
                     onClick={() => {
                       setAuthFeedback(null);
@@ -708,7 +725,7 @@ export function InviteLandingPage() {
                 >
                   {authMode === "sign_up" ? (
                     <label className="block text-sm" htmlFor="invite-name">
-                      <span className="mb-1 block text-zinc-400">Name</span>
+                      <span className="mb-1 block text-muted-foreground">Name</span>
                       <input
                         id="invite-name"
                         name="name"
@@ -728,7 +745,7 @@ export function InviteLandingPage() {
                     </label>
                   ) : null}
                   <label className="block text-sm" htmlFor="invite-email">
-                    <span className="mb-1 block text-zinc-400">Email</span>
+                    <span className="mb-1 block text-muted-foreground">Email</span>
                     <input
                       id="invite-email"
                       name="email"
@@ -748,7 +765,7 @@ export function InviteLandingPage() {
                     />
                   </label>
                   <label className="block text-sm" htmlFor="invite-password">
-                    <span className="mb-1 block text-zinc-400">Password</span>
+                    <span className="mb-1 block text-muted-foreground">Password</span>
                     <input
                       id="invite-password"
                       name="password"
@@ -771,7 +788,7 @@ export function InviteLandingPage() {
                       id={authErrorId}
                       role="alert"
                       className={`text-xs ${
-                        authFeedback.tone === "info" ? "text-amber-300" : "text-red-400"
+                        authFeedback.tone === "info" ? "text-amber-600 dark:text-amber-300" : "text-destructive"
                       }`}
                     >
                       {authFeedback.message}
@@ -791,7 +808,7 @@ export function InviteLandingPage() {
                   </Button>
                 </form>
 
-                <p className="text-xs leading-5 text-zinc-500">
+                <p className="text-xs leading-5 text-muted-foreground">
                   {authMode === "sign_up"
                     ? "Already signed up before? Use the existing-account option instead so the invite lands on the right Paperclip user."
                     : "No account yet? Switch back to create account so you can accept the invite with a new login."}
@@ -809,7 +826,7 @@ export function InviteLandingPage() {
                         ? "Accept bootstrap invite"
                         : "Accept company invite"}
                   </h2>
-                  <p className="mt-1 text-sm text-zinc-400">
+                  <p className="mt-1 text-sm text-muted-foreground">
                     {shouldAutoAcceptHumanInvite
                       ? `Granting your access to ${companyDisplayName}.`
                       : isCurrentMember
@@ -819,9 +836,9 @@ export function InviteLandingPage() {
                         }.`}
                   </p>
                 </div>
-                {error ? <p className="text-xs text-red-400">{error}</p> : null}
+                {error ? <p className="text-xs text-destructive">{error}</p> : null}
                 {shouldAutoAcceptHumanInvite ? (
-                  <div className="text-sm text-zinc-400">
+                  <div className="text-sm text-muted-foreground">
                     {acceptMutation.isPending ? "Submitting request..." : "Finishing sign-in..."}
                   </div>
                 ) : (

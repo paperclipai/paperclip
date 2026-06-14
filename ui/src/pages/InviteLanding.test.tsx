@@ -506,6 +506,115 @@ describe("InviteLandingPage", () => {
     });
   });
 
+  it("auto-accepts a fresh human invite for a user who arrives already authenticated", async () => {
+    // Repro of the cloud signup-via-invite journey: the brand-new user signs up
+    // on the marketing /auth pages, then is redirected (already authenticated)
+    // to /invite/:token. They never touch InviteLanding's inline auth, so the
+    // page must auto-accept on mount. Regression guard: it must NOT surface
+    // "Invite not found" (a stale acceptMutation closure firing before the
+    // invite query settled).
+    getSessionMock.mockResolvedValue({
+      session: { id: "session-1", userId: "user-1" },
+      user: {
+        id: "user-1",
+        name: "Jane Example",
+        email: "jane@example.com",
+        image: null,
+      },
+    });
+    // Cloud reality: the brand-new user already auto-provisioned their OWN
+    // company at signup, so the list is non-empty but does not include the
+    // inviter's company.
+    listCompaniesMock.mockResolvedValue([{ id: "own-company", name: "Jane Co" }]);
+    acceptInviteMock.mockResolvedValue({
+      id: "join-1",
+      companyId: "company-1",
+      requestType: "human",
+      status: "approved",
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    await flushReact();
+    await flushReact();
+
+    expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
+    expect(container.textContent).not.toContain("Invite not found");
+    expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
+    expect(localStorage.getItem("paperclip:pending-invite-token")).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("retries auto-accept after a transient failure instead of stranding the user with a stale error", async () => {
+    // A brand-new authenticated user lands on the invite. The first auto-accept
+    // attempt fails transiently (e.g. the session cookie/membership had not
+    // propagated yet). The page must not get permanently stuck showing the error
+    // with only a manual button: a second mount/settle should auto-retry and
+    // join the user. Guards the `error === null` clause that used to latch
+    // auto-accept off forever after one failure.
+    getSessionMock.mockResolvedValue({
+      session: { id: "session-1", userId: "user-1" },
+      user: { id: "user-1", name: "Jane Example", email: "jane@example.com", image: null },
+    });
+    listCompaniesMock.mockResolvedValue([{ id: "own-company", name: "Jane Co" }]);
+    acceptInviteMock
+      .mockRejectedValueOnce(Object.assign(new Error("Request failed: 409"), { status: 409 }))
+      .mockResolvedValue({
+        id: "join-1",
+        companyId: "company-1",
+        requestType: "human",
+        status: "approved",
+      });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    await flushReact();
+    await flushReact();
+    await flushReact();
+
+    // First attempt failed, second auto-retried and succeeded.
+    expect(acceptInviteMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
+    expect(container.textContent).not.toContain("Request failed: 409");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("shows the pending approval page with the company icon and linked access instructions", async () => {
     acceptInviteMock.mockResolvedValue({
       id: "join-1",
@@ -955,6 +1064,43 @@ describe("InviteLandingPage", () => {
 
     expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
     expect(container.textContent).toContain("Request to join Acme Robotics");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders with theme tokens so it follows the deployer default theme instead of hardcoding dark", async () => {
+    // The invite page is reached before the normal app shell. It must inherit
+    // the document theme (set by the PAPERCLIP_DEFAULT_THEME bootstrap) via
+    // shadcn theme tokens, not hardcode zinc/dark classes — otherwise a cream
+    // (light) cloud renders a dark invite page.
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const root1 = container.querySelector(".min-h-screen") as HTMLElement | null;
+    expect(root1).not.toBeNull();
+    expect(root1!.className).toContain("bg-background");
+    expect(root1!.className).toContain("text-foreground");
+    // No hardcoded dark zinc surfaces anywhere in the rendered tree.
+    expect(container.innerHTML).not.toContain("bg-zinc-950");
+    expect(container.innerHTML).not.toContain("text-zinc-100");
 
     await act(async () => {
       root.unmount();
