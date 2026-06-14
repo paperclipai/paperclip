@@ -3092,6 +3092,21 @@ export function heartbeatService(db: Db) {
             // assign time; if one is missed (server restart, concurrent-run
             // cap, transient failure) the task sits forever because
             // Worker/Reviewer/Architect have no timer wake to fall back on.
+            //
+            // Deliberately EXCLUDE `in_review` here (AA-1582 livelock fix).
+            // Tasks are born `todo` (issuesSvc.create); a no-skill agent's task
+            // becomes `in_review` ONLY because a run just above held it there
+            // (branch not on origin → not done). So a SELF chain-wake onto an
+            // `in_review` task always re-runs work this agent just failed to
+            // land — and because the runtime reuses the task session, the model
+            // resumes its prior stance ("waiter re-armed / redundant, stopping")
+            // and exits in ~30s, which re-enters this hook and re-selects the
+            // same task → an infinite, server-driven burn (89 runs / ~$196,
+            // none landing). `in_review` tasks still advance correctly via the
+            // step-above "next mover" wake (Coordinator/parent, fires every
+            // hook) and via explicit re-dispatch — both use a FRESH session and
+            // a real decision, and are picked up by the task-injection selector
+            // (which keeps `in_review`). Only this self chain-wake must skip it.
             const nextTask = await db
               .select()
               .from(issues)
@@ -3099,11 +3114,11 @@ export function heartbeatService(db: Db) {
                 and(
                   eq(issues.companyId, agent.companyId),
                   eq(issues.assigneeAgentId, agent.id),
-                  inArray(issues.status, ["in_progress", "in_review", "todo"]),
+                  inArray(issues.status, ["in_progress", "todo"]),
                 ),
               )
               .orderBy(
-                sql`CASE ${issues.status} WHEN 'in_progress' THEN 0 WHEN 'in_review' THEN 1 ELSE 2 END`,
+                sql`CASE ${issues.status} WHEN 'in_progress' THEN 0 ELSE 1 END`,
                 asc(issues.createdAt),
               )
               .limit(1)
