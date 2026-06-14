@@ -123,6 +123,8 @@ import {
   resolveExecutionWorkspaceEnvironmentId,
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
+import { routeModelProfile, type ModelRouterDecision } from "./model-router.js";
+import { hasBlockingErrorHistoryForIssue, isModelRouterEnabled } from "./model-router-signals.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import {
   RECOVERY_ORIGIN_KINDS,
@@ -2430,6 +2432,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         status: issues.status,
         workMode: issues.workMode,
         priority: issues.priority,
+        originKind: issues.originKind,
         projectId: issues.projectId,
         projectWorkspaceId: issues.projectWorkspaceId,
         executionWorkspaceId: issues.executionWorkspaceId,
@@ -7012,12 +7015,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         "Failed to resolve adapter model profiles; falling back to primary adapter config",
       );
     }
+    // --- Per-task model router (Phase 1: rules only). Opt-in via env. ---
+    let routerDecision: ModelRouterDecision = { profile: null, reason: "router_disabled", needsClassifier: false };
+    const cheapProfileConfigured =
+      readAgentRuntimeModelProfile(agent.runtimeConfig, "cheap").configured;
+    const routerApplies =
+      isModelRouterEnabled(process.env) &&
+      agent.adapterType === "lmstudio_local" &&
+      cheapProfileConfigured &&
+      !issueAssigneeOverrides?.modelProfile; // manual override wins, skip router
+    if (routerApplies) {
+      const hasBlockingErrorHistory = issueId
+        ? await hasBlockingErrorHistoryForIssue({ db, companyId: agent.companyId, issueId })
+        : false;
+      // title/description/priority/originKind come from issueContext (already loaded above)
+      const promptChars =
+        (issueContext?.title?.length ?? 0) + (issueContext?.description?.length ?? 0);
+      routerDecision = routeModelProfile({
+        wakeReason: readNonEmptyString(context.wakeReason),
+        issuePriority: issueContext?.priority ?? null,
+        issueOriginKind: issueContext?.originKind ?? null,
+        promptChars,
+        hasBlockingErrorHistory,
+        classifierVerdict: null, // Phase 2 fills this in later
+      });
+      // TODO(Phase 2): when routerDecision.needsClassifier, run the classifier and re-route.
+    }
     const modelProfileApplication = resolveModelProfileApplication({
       adapterModelProfiles,
       agentRuntimeConfig: agent.runtimeConfig,
       issueModelProfile: issueAssigneeOverrides?.modelProfile ?? null,
       contextSnapshot: context,
       profileResolutionFallbackReason,
+      routerModelProfile: routerDecision.profile,
+      routerReason: routerDecision.reason,
     });
     const modelProfileMetadata = modelProfileRunMetadata(modelProfileApplication);
     if (modelProfileMetadata) {
