@@ -70,6 +70,17 @@ describeEmbeddedPostgres("agent service clearError", () => {
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
+      consecutiveFailureCount: 4,
+      metadata: {
+        lastFailure: {
+          outcome: "failed",
+          errorCode: "adapter_failed",
+          errorMessage: "Adapter exited with code 1",
+          runId,
+          consecutiveFailures: 4,
+        },
+        otherField: "preserved",
+      },
     });
 
     await db.insert(heartbeatRuns).values({
@@ -116,7 +127,9 @@ describeEmbeddedPostgres("agent service clearError", () => {
       status: "idle",
       pauseReason: null,
       pausedAt: null,
+      consecutiveFailureCount: 0,
     });
+    expect(cleared?.metadata).toEqual({ otherField: "preserved" });
 
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(run).toMatchObject({
