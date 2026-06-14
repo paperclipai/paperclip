@@ -8,7 +8,7 @@ import { defineConfig } from "@playwright/test";
 const PORT = Number(process.env.PAPERCLIP_E2E_PORT ?? 3199);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 const PAPERCLIP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-e2e-home-"));
-const CHROMIUM_CHANNEL = process.env.CI ? "chrome" : undefined;
+const PLAYWRIGHT_CHANNEL = process.env.PAPERCLIP_PLAYWRIGHT_CHANNEL;
 
 export default defineConfig({
   testDir: ".",
@@ -18,6 +18,11 @@ export default defineConfig({
   testIgnore: ["multi-user.spec.ts", "multi-user-authenticated.spec.ts"],
   timeout: 60_000,
   retries: 0,
+  // All specs share one throwaway server, and several toggle instance-level
+  // state (the `enableConferenceRoomChat` experimental flag) that changes
+  // which UI variant renders. Run files serially so a flag flip in one spec
+  // can't change the wizard/thread under another spec mid-flight.
+  workers: 1,
   use: {
     baseURL: BASE_URL,
     headless: true,
@@ -27,7 +32,10 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { browserName: "chromium", ...(CHROMIUM_CHANNEL ? { channel: CHROMIUM_CHANNEL } : {}) },
+      use: {
+        browserName: "chromium",
+        ...(PLAYWRIGHT_CHANNEL ? { channel: PLAYWRIGHT_CHANNEL } : {}),
+      },
     },
   ],
   // The webServer directive bootstraps a throwaway instance and then starts it.

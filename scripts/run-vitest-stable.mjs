@@ -9,12 +9,14 @@ const serverRoot = path.join(repoRoot, "server");
 const serverTestsDir = path.join(repoRoot, "server", "src", "__tests__");
 const nonServerProjects = [
   "@paperclipai/shared",
+  "@paperclipai/skills-catalog",
   "@paperclipai/db",
   "@paperclipai/adapter-utils",
   "@paperclipai/adapter-acpx-local",
   "@paperclipai/adapter-codex-local",
   "@paperclipai/adapter-opencode-local",
   "@paperclipai/plugin-sdk",
+  "@paperclipai/create-paperclip-plugin",
   "@paperclipai/ui",
   "paperclipai",
 ];
@@ -58,7 +60,6 @@ const generalGroupNames = [generalServerGroupName, generalWorkspacesAGroupName, 
 const serializedServerVitestArgs = [
   "--no-file-parallelism",
   "--maxWorkers=1",
-  "--minWorkers=1",
 ];
 
 function walk(dir) {
@@ -320,7 +321,7 @@ function runSerializedSuites(routeTests, shardIndex, shardCount) {
         "@paperclipai/server",
         routeTest.repoPath,
         "--pool=forks",
-        "--poolOptions.forks.isolate=true",
+        "--isolate",
       ],
       routeTest.repoPath,
     );
