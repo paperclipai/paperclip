@@ -10,6 +10,7 @@ import {
   IssueChatThread,
   VIRTUALIZED_THREAD_ROW_THRESHOLD,
   canStopIssueChatRun,
+  didPrependThreadMessages,
   findLatestCommentMessageIndex,
   resolveAssistantMessageFoldedState,
   resolveIssueChatHumanAuthor,
@@ -1057,6 +1058,35 @@ describe("IssueChatThread", () => {
       ] as never),
     ).toBe(-1);
     expect(findLatestCommentMessageIndex([] as never)).toBe(-1);
+  });
+
+  it("detects only true message prepends for virtual scroll anchoring", () => {
+    const previous = [
+      { id: "comment-1" },
+      { id: "run-1" },
+      { id: "comment-2" },
+    ];
+
+    expect(
+      didPrependThreadMessages(previous as never, [
+        { id: "comment-older" },
+        ...previous,
+      ] as never),
+    ).toBe(true);
+    expect(
+      didPrependThreadMessages(previous as never, [
+        previous[0],
+        { id: "run-inserted-by-refetch" },
+        previous[1],
+        previous[2],
+      ] as never),
+    ).toBe(false);
+    expect(
+      didPrependThreadMessages(previous as never, [
+        ...previous,
+        { id: "live-run-tail" },
+      ] as never),
+    ).toBe(false);
   });
 
   it("keeps the direct render path for short threads under the virtualization threshold", () => {

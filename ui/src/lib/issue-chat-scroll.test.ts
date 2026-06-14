@@ -27,6 +27,18 @@ describe("issue-chat-scroll", () => {
     const composer = document.createElement("div");
     document.body.appendChild(composer);
     const scrollByMock = vi.spyOn(window, "scrollBy").mockImplementation(() => {});
+    Object.defineProperty(document.documentElement, "scrollHeight", {
+      configurable: true,
+      value: 2400,
+    });
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 800,
+    });
+    Object.defineProperty(window, "scrollY", {
+      configurable: true,
+      value: 200,
+    });
 
     mockTop(composer, 420);
     const snapshot = captureComposerViewportSnapshot(composer);
@@ -38,6 +50,36 @@ describe("issue-chat-scroll", () => {
 
     scrollByMock.mockRestore();
     composer.remove();
+  });
+
+  it("keeps an internal scroller pinned to bottom instead of restoring a stale composer offset", () => {
+    const mainContent = document.createElement("main");
+    mainContent.id = "main-content";
+    mainContent.style.overflowY = "auto";
+    Object.defineProperty(mainContent, "scrollHeight", {
+      configurable: true,
+      value: 1800,
+    });
+    Object.defineProperty(mainContent, "clientHeight", {
+      configurable: true,
+      value: 900,
+    });
+    mainContent.scrollTop = 900;
+    document.body.appendChild(mainContent);
+
+    const composer = document.createElement("div");
+    document.body.appendChild(composer);
+
+    mockTop(composer, 420);
+    const snapshot = captureComposerViewportSnapshot(composer);
+
+    mockTop(composer, 300);
+    restoreComposerViewportSnapshot(snapshot, composer);
+
+    expect(mainContent.scrollTop).toBe(900);
+
+    composer.remove();
+    mainContent.remove();
   });
 
   it("does not scroll the window when the document body is clipped", () => {

@@ -2966,9 +2966,40 @@ export function findLatestCommentMessageIndex(messages: readonly ThreadMessage[]
   return -1;
 }
 
+function findContiguousMessageIdOffset(
+  previousIds: readonly string[],
+  nextIds: readonly string[],
+): number {
+  if (previousIds.length === 0 || nextIds.length <= previousIds.length) return -1;
+
+  const maxOffset = nextIds.length - previousIds.length;
+  for (let offset = 0; offset <= maxOffset; offset += 1) {
+    let matches = true;
+    for (let index = 0; index < previousIds.length; index += 1) {
+      if (nextIds[offset + index] !== previousIds[index]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return offset;
+  }
+
+  return -1;
+}
+
+export function didPrependThreadMessages(
+  previousMessages: readonly ThreadMessage[],
+  nextMessages: readonly ThreadMessage[],
+): boolean {
+  const previousIds = previousMessages.map((message) => message.id);
+  const nextIds = nextMessages.map((message) => message.id);
+  return findContiguousMessageIdOffset(previousIds, nextIds) > 0;
+}
+
 type VirtualizedVisibleAnchorSnapshot = {
   anchorId: string;
   index: number;
+  messageIds: readonly string[];
   viewportTop: number;
 };
 
@@ -3256,6 +3287,7 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
       pendingPrependAnchorRef.current = {
         anchorId,
         index,
+        messageIds: messages.map((message) => message.id),
         viewportTop: visibleRow.getBoundingClientRect().top,
       };
     };
@@ -3266,6 +3298,9 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
     pendingPrependAnchorRef.current = null;
     virtualizer.measure();
     if (!pendingAnchor || typeof window === "undefined") return;
+    const nextIds = messages.map((message) => message.id);
+    if (findContiguousMessageIdOffset(pendingAnchor.messageIds, nextIds) <= 0) return;
+
     const nextIndex = findMessageAnchorIndex(messages, pendingAnchor.anchorId);
     if (nextIndex <= pendingAnchor.index) return;
 
