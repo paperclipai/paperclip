@@ -29,6 +29,8 @@ import {
   instanceSettingsService,
   logActivity,
 } from "../services/index.js";
+import { listCatalogTeams, teamsCatalogService } from "../services/teams-catalog.js";
+import { logger } from "../middleware/logger.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { COMPANY_IMPORT_ROUTE_PATH } from "./company-import-paths.js";
@@ -352,6 +354,43 @@ export function companyRoutes(db: Db, storage?: StorageService) {
         req.actor.userId ?? "board",
       );
     }
+
+    // Auto-provision the catalog teams flagged defaultInstall (the gate-ready
+    // dev-team) so a fresh company comes up gate-ready with no manual install.
+    // Non-fatal by design: a provisioning failure must never fail company
+    // creation. Idempotent via the installed-team provenance check.
+    try {
+      const teamsCatalog = teamsCatalogService(db);
+      const defaultTeams = (await listCatalogTeams()).filter((team) => team.defaultInstall);
+      if (defaultTeams.length > 0) {
+        const installedIds = new Set(
+          (await teamsCatalog.listInstalledCatalogTeams(company.id)).map((team) => team.catalogId),
+        );
+        const provisioned: string[] = [];
+        for (const team of defaultTeams) {
+          if (installedIds.has(team.id)) continue;
+          await teamsCatalog.installCatalogTeam(company.id, team.key, {
+            collisionStrategy: "skip",
+            actor: getActorInfo(req),
+          });
+          provisioned.push(team.slug);
+        }
+        if (provisioned.length > 0) {
+          await logActivity(db, {
+            companyId: company.id,
+            actorType: "user",
+            actorId: req.actor.userId ?? "board",
+            action: "company.auto_provisioned",
+            entityType: "company",
+            entityId: company.id,
+            details: { teams: provisioned },
+          });
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, companyId: company.id }, "default team auto-provision failed");
+    }
+
     res.status(201).json(company);
   });
 
