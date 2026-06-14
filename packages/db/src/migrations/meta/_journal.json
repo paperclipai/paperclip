@@ -764,6 +764,13 @@
       "when": 1781395200000,
       "tag": "0108_tool_profile_new_tools_review",
       "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "7",
+      "when": 1781481600000,
+      "tag": "0109_tool_invocation_connected_mcp_metadata",
+      "breakpoints": true
     }
   ]
 }

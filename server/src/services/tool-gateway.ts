@@ -225,6 +225,19 @@ function toolRequiresFormalApproval(tool: ToolGatewayDescriptor): boolean {
   return tool.risk === "destructive";
 }
 
+function toolAuditMetadata(tool: ToolGatewayDescriptor): Record<string, unknown> {
+  return {
+    applicationId: tool.applicationId ?? null,
+    applicationKey: tool.applicationKey ?? null,
+    connectionId: tool.connectionId ?? null,
+    catalogEntryId: tool.catalogEntryId ?? null,
+    upstreamToolName: tool.upstreamToolName ?? tool.name,
+    providerType: tool.providerType,
+    risk: tool.risk,
+    riskLevel: tool.risk,
+  };
+}
+
 const REDACTED_ARGUMENT_SENTINEL = "***REDACTED***";
 
 /** Turn a machine field key (`note_body`, `noteBody`, `note-body`) into a Title-Cased label. */
@@ -620,6 +633,8 @@ export function createToolGatewayService(
             : "success";
     await db.insert(toolAccessAuditEvents).values({
       companyId: input.companyId,
+      connectionId: typeof input.details.connectionId === "string" ? input.details.connectionId : null,
+      catalogEntryId: typeof input.details.catalogEntryId === "string" ? input.details.catalogEntryId : null,
       actorType: input.actorType ?? "agent",
       actorId: input.actorId ?? input.agentId,
       action: dedicatedAuditAction,
@@ -761,7 +776,9 @@ export function createToolGatewayService(
     argumentsSummary?: ReturnType<typeof summarizeToolValue> | null;
     resultSummary?: ReturnType<typeof summarizeToolValue> | null;
     metadata?: Record<string, unknown> | null;
+    tool?: ToolGatewayDescriptor | null;
   }) {
+    const metadata = input.tool ? toolAuditMetadata(input.tool) : {};
     await db.insert(toolCallEvents).values({
       companyId: input.session.companyId,
       invocationId: input.invocationId ?? null,
@@ -773,6 +790,9 @@ export function createToolGatewayService(
       agentId: input.session.agentId,
       issueId: input.session.issueId,
       runId: input.session.runId,
+      applicationId: input.tool?.applicationId ?? null,
+      connectionId: input.tool?.connectionId ?? null,
+      catalogEntryId: input.tool?.catalogEntryId ?? null,
       toolName: input.toolName,
       decision: input.policyDecision ?? null,
       reasonCode: input.reasonCode ?? null,
@@ -782,7 +802,9 @@ export function createToolGatewayService(
       resultHash: input.resultSummary?.sha256 ?? null,
       resultSummary: input.resultSummary ?? null,
       resultSizeBytes: input.resultSummary?.sizeBytes ?? null,
-      metadata: input.metadata ?? null,
+      metadata: Object.keys(metadata).length > 0 || input.metadata
+        ? { ...metadata, ...(input.metadata ?? {}) }
+        : null,
     });
   }
 
@@ -820,6 +842,7 @@ export function createToolGatewayService(
         policyDecision: "deny",
         reasonCode: "approval_path_missing",
         argumentsSummary: input.argumentsSummary,
+        tool: input.tool,
       });
       throw new ToolGatewayHttpError(
         409,
@@ -960,6 +983,7 @@ export function createToolGatewayService(
       reasonCode: "requires_approval_policy",
       argumentsSummary: input.argumentsSummary,
       metadata: { actionRequestId: actionRequest.id, interactionId: interaction.id, approvalId: formalApprovalId },
+      tool: input.tool,
     });
 
     await writeAudit({
@@ -978,7 +1002,7 @@ export function createToolGatewayService(
         reasonCode: "requires_approval_policy",
         matchedPolicyIds: input.policyDecision.matchedPolicyIds,
         tool: input.tool.name,
-        risk: input.tool.risk,
+        ...toolAuditMetadata(input.tool),
         argumentsSummary: input.argumentsSummary,
       },
     });
@@ -1039,8 +1063,12 @@ export function createToolGatewayService(
       request: {
         toolName: input.tool.name,
         applicationId: input.tool.applicationId ?? null,
+        applicationKey: input.tool.applicationKey ?? null,
         connectionId: input.tool.connectionId ?? null,
         catalogEntryId: input.tool.catalogEntryId ?? null,
+        providerType: input.tool.providerType,
+        upstreamToolName: input.tool.upstreamToolName ?? input.tool.name,
+        riskLevel: input.tool.risk,
         arguments: input.parameters ?? {},
         idempotencyKey: input.idempotencyKey ?? null,
         sideEffecting: input.tool.risk !== "read",
@@ -1817,6 +1845,7 @@ export function createToolGatewayService(
               policyDecision: "require_approval",
               reasonCode: "interaction_accepted",
               metadata: { actionRequestId: actionRequest.id, interactionId: actionRequest.interactionId },
+              tool,
             });
           }
         }
@@ -1914,7 +1943,7 @@ export function createToolGatewayService(
               decision: "allow",
               reasonCode: "idempotent_replay",
               tool: tool.name,
-              providerType: tool.providerType,
+              ...toolAuditMetadata(tool),
               replayed: true,
             },
           });
@@ -1950,8 +1979,7 @@ export function createToolGatewayService(
               reasonCode: accessDecision.reasonCode,
               matchedPolicyIds: accessDecision.matchedPolicyIds,
               tool: tool.name,
-              providerType: tool.providerType,
-              risk: tool.risk,
+              ...toolAuditMetadata(tool),
               argumentsSummary: effectiveArgumentsSummary,
               rateLimitState: accessDecision.rateLimitState ?? null,
             },
@@ -1987,8 +2015,7 @@ export function createToolGatewayService(
           decision: input.approvedActionRequestId ? "approved" : "allow",
           reasonCode: input.approvedActionRequestId ? "approved_action_request" : "profile_allows_tool",
           tool: tool.name,
-          providerType: tool.providerType,
-          risk: tool.risk,
+          ...toolAuditMetadata(tool),
           argumentsSummary: effectiveArgumentsSummary,
         },
       });
@@ -2042,6 +2069,7 @@ export function createToolGatewayService(
           reasonCode: "tool_completed",
           argumentsSummary: effectiveArgumentsSummary,
           resultSummary: resultValidation.summary,
+          tool,
         });
 
         await writeAudit({
@@ -2056,7 +2084,7 @@ export function createToolGatewayService(
             decision: "allow",
             reasonCode: "tool_completed",
             tool: tool.name,
-            providerType: tool.providerType,
+            ...toolAuditMetadata(tool),
             durationMs: Date.now() - startedAt,
             result: summarizeResult(resultValidation.value),
             resultSummary: resultValidation.summary,
@@ -2109,6 +2137,7 @@ export function createToolGatewayService(
           reasonCode,
           argumentsSummary: effectiveArgumentsSummary,
           metadata: normalizedError instanceof ToolContentValidationError ? { findings: normalizedError.findings } : null,
+          tool,
         });
         await writeAudit({
           session,
@@ -2122,7 +2151,8 @@ export function createToolGatewayService(
             decision: isDeferred ? "defer_runtime" : "deny",
             reasonCode,
             tool: tool.name,
-            providerType: tool.providerType,
+            ...toolAuditMetadata(tool),
+            argumentsSummary: effectiveArgumentsSummary,
             durationMs: Date.now() - startedAt,
             error: message,
           },
@@ -2224,7 +2254,7 @@ export function createToolGatewayService(
             reasonCode: accessDecision.reasonCode,
             matchedPolicyIds: accessDecision.matchedPolicyIds,
             tool: input.tool,
-            providerType: "paperclip_plugin",
+            ...toolAuditMetadata(tool),
             argumentsSummary: argumentValidation.summary,
             rateLimitState: accessDecision.rateLimitState ?? null,
           },
@@ -2260,7 +2290,7 @@ export function createToolGatewayService(
           decision: "allow",
           reasonCode: "profile_allows_tool",
           tool: input.tool,
-          providerType: "paperclip_plugin",
+          ...toolAuditMetadata(tool),
           argumentsSummary: argumentValidation.summary,
         },
       });
@@ -2295,6 +2325,7 @@ export function createToolGatewayService(
           reasonCode: "tool_completed",
           argumentsSummary: argumentValidation.summary,
           resultSummary: resultValidation.summary,
+          tool,
         });
         await writeAudit({
           session: sessionLike,
@@ -2308,7 +2339,7 @@ export function createToolGatewayService(
             decision: "allow",
             reasonCode: "tool_completed",
             tool: input.tool,
-            providerType: "paperclip_plugin",
+            ...toolAuditMetadata(tool),
             durationMs: Date.now() - startedAt,
             result: summarizeResult((resultValidation.value as typeof result).result),
             resultSummary: resultValidation.summary,
@@ -2344,6 +2375,7 @@ export function createToolGatewayService(
           reasonCode,
           argumentsSummary: argumentValidation.summary,
           metadata: err instanceof ToolContentValidationError ? { findings: err.findings } : null,
+          tool,
         });
         await writeAudit({
           session: sessionLike,
@@ -2357,7 +2389,8 @@ export function createToolGatewayService(
             decision: "deny",
             reasonCode,
             tool: input.tool,
-            providerType: "paperclip_plugin",
+            ...toolAuditMetadata(tool),
+            argumentsSummary: argumentValidation.summary,
             durationMs: Date.now() - startedAt,
             error: message,
           },

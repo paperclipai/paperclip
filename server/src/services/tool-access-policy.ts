@@ -37,6 +37,7 @@ import type {
   ToolRateLimitRule,
   ToolRedactedValueSummary,
   ToolTrustRuleArgumentFilters,
+  ToolRiskLevel,
 } from "@paperclipai/shared";
 import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
 
@@ -55,8 +56,11 @@ type ToolAccessContext = {
   catalogStatus: string | null;
   catalogVersionHash: string | null;
   catalogSchemaHash: string | null;
+  providerType: string | null;
+  applicationKey: string | null;
+  upstreamToolName: string | null;
   toolName: string;
-  riskLevel: string | null;
+  riskLevel: ToolRiskLevel | null;
   argumentsHash: string;
   arguments: unknown;
 };
@@ -257,6 +261,21 @@ function listValues(value: unknown): string[] {
   if (typeof value === "string" && value.trim()) return [value.trim()];
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function asToolRiskLevel(value: unknown): ToolRiskLevel | null {
+  if (
+    value === "low"
+    || value === "medium"
+    || value === "high"
+    || value === "critical"
+    || value === "read"
+    || value === "write"
+    || value === "destructive"
+  ) {
+    return value;
+  }
+  return null;
 }
 
 function selectorMatches(selector: ToolAccessSelector | Record<string, unknown> | null | undefined, ctx: ToolAccessContext): boolean {
@@ -630,7 +649,12 @@ export function toolAccessPolicyService(db: Db) {
     let catalogStatus: string | null = null;
     let catalogVersionHash: string | null = null;
     let catalogSchemaHash: string | null = null;
-    let riskLevel: string | null = null;
+    let providerType = typeof input.request.providerType === "string" ? input.request.providerType : null;
+    let applicationKey = typeof input.request.applicationKey === "string" ? input.request.applicationKey : null;
+    let upstreamToolName = typeof input.request.upstreamToolName === "string" ? input.request.upstreamToolName : null;
+    let riskLevel = asToolRiskLevel(input.request.riskLevel);
+    let connectionTransport: string | null = null;
+    let applicationType: string | null = null;
 
     if (catalogEntryId) {
       const [entry] = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.id, catalogEntryId));
@@ -640,6 +664,7 @@ export function toolAccessPolicyService(db: Db) {
       connectionId = entry.connectionId;
       applicationId = entry.applicationId ?? applicationId;
       riskLevel = entry.riskLevel;
+      upstreamToolName = upstreamToolName ?? entry.toolName;
       catalogStatus = entry.status;
       catalogVersionHash = entry.versionHash;
       catalogSchemaHash = entry.schemaHash;
@@ -652,6 +677,7 @@ export function toolAccessPolicyService(db: Db) {
         catalogEntryId = entry.id;
         applicationId = entry.applicationId ?? applicationId;
         riskLevel = entry.riskLevel;
+        upstreamToolName = upstreamToolName ?? entry.toolName;
         catalogStatus = entry.status;
         catalogVersionHash = entry.versionHash;
         catalogSchemaHash = entry.schemaHash;
@@ -667,6 +693,7 @@ export function toolAccessPolicyService(db: Db) {
         return { ok: false, redaction, decision: decision("deny", "deny_disabled_connection", "Connection is disabled.", [], [], { redactionPlan: redaction.redactionPlan }) };
       }
       applicationId = connection.applicationId;
+      connectionTransport = connection.transport;
     }
     if (applicationId) {
       const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, applicationId));
@@ -679,7 +706,11 @@ export function toolAccessPolicyService(db: Db) {
       if (application.status === "archived") {
         return { ok: false, redaction, decision: decision("deny", "deny_archived_application", "Application is archived.", [], [], { redactionPlan: redaction.redactionPlan }) };
       }
+      applicationKey = applicationKey ?? application.applicationKey;
+      applicationType = application.type;
     }
+    providerType = providerType
+      ?? (applicationType === "mcp_http" && connectionTransport === "remote_http" ? "mcp_remote_http" : null);
 
     return {
       ok: true,
@@ -699,6 +730,9 @@ export function toolAccessPolicyService(db: Db) {
         catalogStatus,
         catalogVersionHash,
         catalogSchemaHash,
+        providerType,
+        applicationKey,
+        upstreamToolName,
         toolName: input.request.toolName,
         riskLevel,
         argumentsHash: redaction.summary.sha256 ?? sha256(input.request.arguments ?? {}),
@@ -939,7 +973,11 @@ export function toolAccessPolicyService(db: Db) {
       connectionId: input.request.connectionId ?? null,
       catalogEntryId: input.request.catalogEntryId ?? null,
       applicationId: input.request.applicationId ?? null,
+      providerType: input.request.providerType ?? null,
+      applicationKey: input.request.applicationKey ?? null,
+      upstreamToolName: input.request.upstreamToolName ?? null,
       toolName: input.request.toolName,
+      riskLevel: input.request.riskLevel ?? null,
     };
     const runId = "runId" in ctx ? ctx.runId : ctx.heartbeatRunId;
     const [legacyAuditEvent] = await db.insert(toolAccessAuditEvents).values({
@@ -956,10 +994,14 @@ export function toolAccessPolicyService(db: Db) {
         matchedPolicyIds: accessDecision.matchedPolicyIds,
         effectiveProfileIds: accessDecision.effectiveProfileIds,
         applicationId: ctx.applicationId,
+        applicationKey: ctx.applicationKey,
+        providerType: ctx.providerType,
+        upstreamToolName: ctx.upstreamToolName,
         agentId: ctx.agentId,
         issueId: ctx.issueId,
         runId,
         toolName: ctx.toolName,
+        riskLevel: ctx.riskLevel,
         argumentsSummary: redaction.summary,
         redactionPlan: redaction.redactionPlan,
         rateLimitState: accessDecision.rateLimitState ?? null,
@@ -990,6 +1032,10 @@ export function toolAccessPolicyService(db: Db) {
         legacyAuditEventId: legacyAuditEvent.id,
         effectiveProfileIds: accessDecision.effectiveProfileIds,
         explanation: accessDecision.explanation,
+        providerType: ctx.providerType,
+        applicationKey: ctx.applicationKey,
+        upstreamToolName: ctx.upstreamToolName,
+        riskLevel: ctx.riskLevel,
       },
     }).returning();
     return { legacyAuditEvent, toolCallEvent };
@@ -1029,6 +1075,10 @@ export function toolAccessPolicyService(db: Db) {
       catalogEntryId: ctx.catalogEntryId,
       catalogVersionHash: ctx.catalogVersionHash,
       catalogSchemaHash: ctx.catalogSchemaHash,
+      providerType: ctx.providerType,
+      applicationKey: ctx.applicationKey,
+      upstreamToolName: ctx.upstreamToolName,
+      riskLevel: ctx.riskLevel,
       toolName: ctx.toolName,
       argumentsHash,
       argumentsSummary: redaction.summary,
@@ -1036,6 +1086,9 @@ export function toolAccessPolicyService(db: Db) {
       matchedPolicyIds: accessDecision.matchedPolicyIds,
       approvalState: accessDecision.decision === "require_approval" ? "pending" : "not_required",
       status,
+      errorCode: accessDecision.allowed || accessDecision.decision === "require_approval" ? null : accessDecision.reasonCode,
+      errorMessage: accessDecision.allowed || accessDecision.decision === "require_approval" ? null : accessDecision.explanation,
+      completedAt: accessDecision.allowed || accessDecision.decision === "require_approval" ? null : new Date(),
     }).returning();
     let actionRequest = null;
     if (accessDecision.decision === "require_approval") {
@@ -1107,8 +1160,11 @@ export function toolAccessPolicyService(db: Db) {
         catalogStatus: null,
         catalogVersionHash: invocation.catalogVersionHash,
         catalogSchemaHash: invocation.catalogSchemaHash,
+        providerType: invocation.providerType,
+        applicationKey: invocation.applicationKey,
+        upstreamToolName: invocation.upstreamToolName,
         toolName: invocation.toolName,
-        riskLevel: null,
+        riskLevel: invocation.riskLevel,
         argumentsHash: invocation.argumentsHash ?? "",
         arguments: {},
       })) return false;

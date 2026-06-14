@@ -172,6 +172,7 @@ async function createRemoteMcpTool(
     quarantinedAt?: Date | null;
     credentialRefs?: typeof toolConnections.$inferInsert["credentialRefs"];
     credentialSecretRefs?: typeof toolConnections.$inferInsert["credentialSecretRefs"];
+    riskLevel?: "read" | "write" | "destructive";
   } = {},
 ) {
   const applicationKey = input.applicationKey ?? `app-${randomUUID().slice(0, 8)}`;
@@ -241,15 +242,31 @@ async function createRemoteMcpTool(
       additionalProperties: false,
     },
     annotations: { readOnlyHint: false },
-    riskLevel: "write",
-    isReadOnly: false,
-    isWrite: true,
-    isDestructive: false,
+    riskLevel: input.riskLevel ?? "write",
+    isReadOnly: (input.riskLevel ?? "write") === "read",
+    isWrite: (input.riskLevel ?? "write") === "write",
+    isDestructive: (input.riskLevel ?? "write") === "destructive",
     status: input.catalogStatus ?? "active",
     versionHash: randomUUID(),
     quarantinedAt: input.quarantinedAt ?? null,
   }).returning();
   return { application, connection: connection!, catalogEntry: catalogEntry! };
+}
+
+function expectedConnectedToolName(input: { applicationKey: string | null; connectionId: string; toolName: string }) {
+  const applicationSegment = (input.applicationKey ?? "mcp")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64) || "mcp";
+  const toolSegment = input.toolName
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64) || "tool";
+  return `mcp.${applicationSegment}-${input.connectionId.replace(/-/g, "").slice(0, 8)}:${toolSegment}`;
 }
 
 function expectGatewayError(error: unknown, status: number, reasonCode: string) {
@@ -727,10 +744,76 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         issueId: issue.id,
         runId: run.id,
         toolName: connectedTool!.name,
+        providerType: "mcp_remote_http",
+        applicationKey: "kv-demo",
+        upstreamToolName: "kv_set",
+        riskLevel: "write",
         status: "succeeded",
       });
+      expect(invocation.applicationId).toBe(connectedTool!.applicationId);
       expect(invocation.connectionId).toBe(connectedTool!.connectionId);
       expect(invocation.catalogEntryId).toBe(connectedTool!.catalogEntryId);
+      expect(invocation.argumentsSummary).toMatchObject({
+        summary: expect.stringContaining("\"key\":\"alpha\""),
+      });
+      expect(invocation.resultSummary).toMatchObject({
+        summary: expect.stringContaining("\"saved\":true"),
+      });
+
+      const callEvents = await db.select().from(toolCallEvents);
+      expect(callEvents).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          eventType: "policy_decision",
+          applicationId: connectedTool!.applicationId,
+          connectionId: connectedTool!.connectionId,
+          catalogEntryId: connectedTool!.catalogEntryId,
+          toolName: connectedTool!.name,
+          decision: "allow",
+          reasonCode: "allow_profile",
+        }),
+        expect.objectContaining({
+          eventType: "call_completed",
+          applicationId: connectedTool!.applicationId,
+          connectionId: connectedTool!.connectionId,
+          catalogEntryId: connectedTool!.catalogEntryId,
+          toolName: connectedTool!.name,
+          metadata: expect.objectContaining({
+            applicationKey: "kv-demo",
+            providerType: "mcp_remote_http",
+            upstreamToolName: "kv_set",
+            risk: "write",
+          }),
+        }),
+      ]));
+
+      const gatewayAudits = await db.select().from(toolAccessAuditEvents);
+      expect(gatewayAudits).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          action: "tool_access.policy_decision",
+          connectionId: connectedTool!.connectionId,
+          catalogEntryId: connectedTool!.catalogEntryId,
+          reasonCode: "allow_profile",
+          details: expect.objectContaining({
+            applicationKey: "kv-demo",
+            providerType: "mcp_remote_http",
+            upstreamToolName: "kv_set",
+            riskLevel: "write",
+          }),
+        }),
+        expect.objectContaining({
+          action: "call_completed",
+          connectionId: connectedTool!.connectionId,
+          catalogEntryId: connectedTool!.catalogEntryId,
+          reasonCode: "tool_completed",
+          details: expect.objectContaining({
+            applicationKey: "kv-demo",
+            providerType: "mcp_remote_http",
+            upstreamToolName: "kv_set",
+            risk: "write",
+            resultSummary: expect.objectContaining({ summary: expect.stringContaining("\"saved\":true") }),
+          }),
+        }),
+      ]));
 
       const persisted = JSON.stringify({
         invocations: await db.select().from(toolInvocations),
@@ -739,6 +822,290 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         activity: await db.select().from(activityLog),
       });
       expect(persisted).not.toContain(credentialValue);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("enforces policy, approvals, retries, rate limits, and company boundaries for connected remote MCP calls", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const otherCompany = await createCompany(db);
+    const otherAgent = await createAgent(db, otherCompany.id);
+    const { run: otherRun } = await createIssueAndRun(db, otherCompany.id, otherAgent.id);
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => ({
+      body: {
+        jsonrpc: "2.0",
+        id: fakeRequest.body?.id,
+        result: {
+          content: [{ type: "text", text: "connected ok" }],
+          structuredContent: {
+            receivedArguments: (fakeRequest.body?.params as Record<string, unknown> | undefined)?.arguments,
+            leakedToken: "sk-connected-mcp-secret-123456",
+          },
+        },
+      },
+    }));
+
+    try {
+      const denyTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "deny-app",
+        toolName: "kv_set",
+        url: fake.url,
+      });
+      const denyToolName = expectedConnectedToolName({
+        applicationKey: denyTool.application.applicationKey,
+        connectionId: denyTool.connection.id,
+        toolName: denyTool.catalogEntry.toolName,
+      });
+
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: denyToolName,
+        parameters: { key: "blocked", value: "secret=sk-denied-secret-123456" },
+      }).then(
+        () => {
+          throw new Error("Expected connected MCP call to be denied by default");
+        },
+        (error) => expectGatewayError(error, 403, "deny_default"),
+      );
+
+      const [deniedInvocation] = await db
+        .select()
+        .from(toolInvocations)
+        .where(eq(toolInvocations.toolName, denyToolName));
+      expect(deniedInvocation).toMatchObject({
+        companyId: company.id,
+        status: "denied",
+        errorCode: "deny_default",
+        providerType: "mcp_remote_http",
+        applicationKey: "deny-app",
+        upstreamToolName: "kv_set",
+        riskLevel: "write",
+      });
+      expect(JSON.stringify(deniedInvocation)).not.toContain("sk-denied-secret-123456");
+
+      const approvalTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "approval-app",
+        toolName: "kv_set",
+        url: fake.url,
+      });
+      await allowToolsForAgent(db, company.id, agent.id, [
+        expectedConnectedToolName({
+          applicationKey: approvalTool.application.applicationKey,
+          connectionId: approvalTool.connection.id,
+          toolName: approvalTool.catalogEntry.toolName,
+        }),
+      ]);
+      const approvalToolName = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.connectionId === approvalTool.connection.id)!.name;
+      await db.insert(toolPolicies).values({
+        companyId: company.id,
+        name: "Review connected writes",
+        policyType: "require_approval",
+        selectors: { connectionId: approvalTool.connection.id },
+        description: "Connected MCP writes need review.",
+        priority: 10,
+      });
+
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: approvalToolName,
+        parameters: { key: "approved", value: "original" },
+      }).then(
+        () => {
+          throw new Error("Expected connected MCP call to require approval");
+        },
+        (error) => expectGatewayError(error, 409, "approval_required"),
+      );
+      const [approvalRequest] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.companyId, company.id));
+      expect(approvalRequest).toMatchObject({
+        issueId: issue.id,
+        status: "pending",
+        canonicalArgumentsHash: expect.any(String),
+      });
+      const [approvalInvocation] = await db
+        .select()
+        .from(toolInvocations)
+        .where(eq(toolInvocations.id, approvalRequest.invocationId));
+      expect(approvalInvocation).toMatchObject({
+        status: "awaiting_approval",
+        policyDecision: "require_approval",
+        connectionId: approvalTool.connection.id,
+        providerType: "mcp_remote_http",
+        applicationKey: "approval-app",
+        upstreamToolName: "kv_set",
+      });
+
+      await db
+        .update(issueThreadInteractions)
+        .set({
+          status: "accepted",
+          resolvedByAgentId: agent.id,
+          resolvedAt: new Date(),
+        })
+        .where(eq(issueThreadInteractions.id, approvalRequest.interactionId!));
+
+      await expect(gateway.executeTool({
+        sessionToken: session.token,
+        tool: approvalToolName,
+        parameters: { key: "approved", value: "tampered" },
+        approvedActionRequestId: approvalRequest.id,
+      })).resolves.toMatchObject({ status: "completed", tool: approvalToolName });
+      expect(fake.requests.at(-1)!.body).toMatchObject({
+        params: {
+          name: "kv_set",
+          arguments: { key: "approved", value: "original" },
+        },
+      });
+      const [executedApproval] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.id, approvalRequest.id));
+      expect(executedApproval.status).toBe("executed");
+
+      const rejectedTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "rejected-app",
+        toolName: "kv_set",
+        url: fake.url,
+      });
+      await allowToolsForAgent(db, company.id, agent.id, [
+        expectedConnectedToolName({
+          applicationKey: rejectedTool.application.applicationKey,
+          connectionId: rejectedTool.connection.id,
+          toolName: rejectedTool.catalogEntry.toolName,
+        }),
+      ]);
+      await db.insert(toolPolicies).values({
+        companyId: company.id,
+        name: "Reject connected writes",
+        policyType: "require_approval",
+        selectors: { connectionId: rejectedTool.connection.id },
+        description: "This approval will be rejected.",
+        priority: 5,
+      });
+      const rejectedToolName = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.connectionId === rejectedTool.connection.id)!.name;
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: rejectedToolName,
+        parameters: { key: "rejected", value: "never-run" },
+      }).then(
+        () => {
+          throw new Error("Expected connected MCP call to require approval before rejection");
+        },
+        (error) => expectGatewayError(error, 409, "approval_required"),
+      );
+      const rejectedRequest = (await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.companyId, company.id)))
+        .find((requestRow) => requestRow.id !== approvalRequest.id)!;
+      await gateway.declineActionRequest({
+        companyId: company.id,
+        actionRequestId: rejectedRequest.id,
+        actor: { agentId: agent.id },
+      });
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: rejectedToolName,
+        parameters: { key: "rejected", value: "retry" },
+        approvedActionRequestId: rejectedRequest.id,
+      }).then(
+        () => {
+          throw new Error("Expected rejected approval to block retry");
+        },
+        (error) => expectGatewayError(error, 409, "action_not_approved"),
+      );
+
+      const rateTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "rate-app",
+        toolName: "kv_set",
+        url: fake.url,
+      });
+      await allowToolsForAgent(db, company.id, agent.id, [
+        expectedConnectedToolName({
+          applicationKey: rateTool.application.applicationKey,
+          connectionId: rateTool.connection.id,
+          toolName: rateTool.catalogEntry.toolName,
+        }),
+      ]);
+      await db.insert(toolPolicies).values({
+        companyId: company.id,
+        name: "One connected call",
+        policyType: "rate_limit",
+        selectors: { connectionId: rateTool.connection.id },
+        config: { limit: 1, windowSeconds: 60 },
+        priority: 1,
+      });
+      const rateToolName = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.connectionId === rateTool.connection.id)!.name;
+      await expect(gateway.executeTool({
+        sessionToken: session.token,
+        tool: rateToolName,
+        parameters: { key: "rate", value: "first" },
+      })).resolves.toMatchObject({ status: "completed" });
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: rateToolName,
+        parameters: { key: "rate", value: "second" },
+      }).then(
+        () => {
+          throw new Error("Expected connected MCP call to be rate limited");
+        },
+        (error) => expectGatewayError(error, 429, "rate_limited"),
+      );
+      const [rateLimitedInvocation] = await db
+        .select()
+        .from(toolInvocations)
+        .where(eq(toolInvocations.toolName, rateToolName))
+        .then((rows) => rows.filter((row) => row.status === "rate_limited"));
+      expect(rateLimitedInvocation).toMatchObject({
+        connectionId: rateTool.connection.id,
+        providerType: "mcp_remote_http",
+        applicationKey: "rate-app",
+        errorCode: "rate_limited",
+      });
+
+      const otherTool = await createRemoteMcpTool(db, otherCompany.id, {
+        applicationKey: "other-company-app",
+        toolName: "kv_set",
+        url: fake.url,
+      });
+      await allowAllToolsForAgent(db, otherCompany.id, otherAgent.id);
+      const otherGateway = createTestToolGatewayService(db);
+      const otherSession = await otherGateway.createSession({ companyId: otherCompany.id, agentId: otherAgent.id, runId: otherRun.id });
+      const otherToolName = (await otherGateway.listToolsForSession(otherSession.token))
+        .find((tool) => tool.connectionId === otherTool.connection.id)!.name;
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: otherToolName,
+        parameters: { key: "cross", value: "company" },
+      }).then(
+        () => {
+          throw new Error("Expected cross-company connected MCP tool name to be hidden");
+        },
+        (error) => expectGatewayError(error, 404, "tool_not_found"),
+      );
+
+      const persisted = JSON.stringify({
+        invocations: await db.select().from(toolInvocations),
+        callEvents: await db.select().from(toolCallEvents),
+        audits: await db.select().from(toolAccessAuditEvents),
+        activity: await db.select().from(activityLog),
+      });
+      expect(persisted).not.toContain("sk-connected-mcp-secret-123456");
+      expect(persisted).not.toContain("sk-denied-secret-123456");
+      expect(persisted).toContain("mcp_remote_http");
+      expect(persisted).toContain("approval-app");
+      expect(persisted).toContain("kv_set");
     } finally {
       await fake.close();
     }

@@ -848,6 +848,10 @@ export interface ToolAccessDecisionInput {
     applicationId?: string | null;
     connectionId?: string | null;
     catalogEntryId?: string | null;
+    providerType?: string | null;
+    applicationKey?: string | null;
+    upstreamToolName?: string | null;
+    riskLevel?: ToolRiskLevel | string | null;
     toolName: string;
     arguments?: unknown;
     idempotencyKey?: string | null;
