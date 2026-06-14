@@ -62,6 +62,25 @@ export {
 } from "./command-redaction.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
+export {
+  evaluatePreflightDenylist,
+  loadPreflightDenylistConfig,
+  resolvePreflightDenylistPath,
+  formatPreflightRefusalComment,
+  postPreflightRefusal,
+  runAdapterPreflightDenylist,
+  DEFAULT_PREFLIGHT_DENYLIST_PATH,
+} from "./preflight-denylist.js";
+export type {
+  PreflightDenylistConfig,
+  PreflightDenylistInput,
+  PreflightDenylistDecision,
+  PreflightDenylistRuleId,
+  PostPreflightRefusalInput,
+  PostPreflightRefusalResult,
+  RunAdapterPreflightDenylistInput,
+  RunAdapterPreflightDenylistResult,
+} from "./preflight-denylist.js";
 // Keep the root adapter-utils entry browser-safe because the UI imports it.
 // The sandbox callback bridge stays available via its dedicated subpath export.
 export type {

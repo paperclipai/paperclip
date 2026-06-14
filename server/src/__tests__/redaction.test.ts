@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { REDACTED_EVENT_VALUE, redactEventPayload, redactSensitiveText, sanitizeRecord } from "../redaction.js";
+import { REDACTED_EVENT_VALUE, redactAdapterConfig, redactEventPayload, redactSensitiveText, sanitizeRecord } from "../redaction.js";
 
 describe("redaction", () => {
   it("redacts sensitive keys and nested secret values", () => {
@@ -134,5 +134,117 @@ describe("redaction", () => {
 
     expect(result?.args).toEqual(["--api-key", "not-a-command-secret"]);
     expect(result?.argv).toEqual(["--api-key", REDACTED_EVENT_VALUE]);
+  });
+
+  it("redacts token-containing keys via SECRET_PAYLOAD_KEY_RE — GITHUB_TOKEN key-name regression", () => {
+    // sanitizeRecord uses the key-name regex; env-namespace redaction is a separate path.
+    // SECRET_FIELD_NAME_PATTERN matches any key containing a secret keyword (incl. "token"),
+    // so GITHUB_TOKEN, MY_API_TOKEN, TOKEN, TOKENIZER, TOKEN_ENDPOINT are all redacted.
+    const result = sanitizeRecord({
+      GITHUB_TOKEN: "github_pat_secret",
+      MY_API_TOKEN: { type: "plain", value: "plain-val" },
+      TOKEN: "bare-token-value",
+      TOKENIZER: "safe-value",
+      TOKEN_ENDPOINT: "https://example.com/token",
+      SAFE_MODEL: "claude-sonnet-4-6",
+    });
+
+    expect(result.GITHUB_TOKEN).toBe(REDACTED_EVENT_VALUE);
+    expect(result.MY_API_TOKEN).toEqual({ type: "plain", value: REDACTED_EVENT_VALUE });
+    expect(result.TOKEN).toBe(REDACTED_EVENT_VALUE);
+    expect(result.TOKENIZER).toBe(REDACTED_EVENT_VALUE);
+    expect(result.TOKEN_ENDPOINT).toBe(REDACTED_EVENT_VALUE);
+    expect(result.SAFE_MODEL).toBe("claude-sonnet-4-6");
+  });
+});
+
+describe("redactAdapterConfig", () => {
+  it("redacts EVERY env value regardless of key name — GITHUB_TOKEN leak regression (Defect 2)", () => {
+    const config = {
+      env: {
+        GITHUB_TOKEN: { type: "plain", value: "ghp_xxxxxxxxxxxxxxxxxxxx" },
+        CLAUDE_CODE_OAUTH_TOKEN: { type: "plain", value: "oauth-token-value" },
+        ANTHROPIC_API_KEY: { type: "plain", value: "sk-ant-key" },
+        PAPERCLIP_API_URL: { type: "plain", value: "http://localhost:3100" },
+        SECRET_REF_KEY: { type: "secret_ref", secretId: "abc-123-def" },
+      },
+    };
+
+    const result = redactAdapterConfig(config);
+
+    expect(result?.env).toEqual({
+      GITHUB_TOKEN: { type: "plain", value: REDACTED_EVENT_VALUE },
+      CLAUDE_CODE_OAUTH_TOKEN: { type: "plain", value: REDACTED_EVENT_VALUE },
+      ANTHROPIC_API_KEY: { type: "plain", value: REDACTED_EVENT_VALUE },
+      PAPERCLIP_API_URL: { type: "plain", value: REDACTED_EVENT_VALUE },
+      SECRET_REF_KEY: { type: "secret_ref", secretId: "abc-123-def" },
+    });
+  });
+
+  it("redacts env namespaces nested inside runtimeConfig modelProfiles", () => {
+    const runtimeConfig = {
+      modelProfiles: [
+        {
+          name: "default",
+          adapterConfig: {
+            env: {
+              GITHUB_TOKEN: { type: "plain", value: "ghp_nested_token" },
+              SAFE_URL: { type: "plain", value: "http://localhost:3100" },
+              REF: { type: "secret_ref", secretId: "nested-ref-id" },
+            },
+          },
+        },
+      ],
+    };
+
+    const result = redactAdapterConfig(runtimeConfig);
+
+    expect((result?.modelProfiles as Array<unknown>)?.[0]).toEqual({
+      name: "default",
+      adapterConfig: {
+        env: {
+          GITHUB_TOKEN: { type: "plain", value: REDACTED_EVENT_VALUE },
+          SAFE_URL: { type: "plain", value: REDACTED_EVENT_VALUE },
+          REF: { type: "secret_ref", secretId: "nested-ref-id" },
+        },
+      },
+    });
+  });
+
+  it("redacts plain-string env values that have no binding wrapper", () => {
+    const config = {
+      env: {
+        GITHUB_TOKEN: "ghp_raw_string_token",
+        SAFE_URL: "http://localhost:3100",
+      },
+    };
+
+    const result = redactAdapterConfig(config);
+
+    expect(result?.env).toEqual({
+      GITHUB_TOKEN: REDACTED_EVENT_VALUE,
+      SAFE_URL: REDACTED_EVENT_VALUE,
+    });
+  });
+
+  it("returns null for null/undefined input", () => {
+    expect(redactAdapterConfig(null)).toBeNull();
+    expect(redactAdapterConfig(undefined)).toBeNull();
+  });
+
+  it("preserves non-env fields via normal key-based sanitization", () => {
+    const config = {
+      model: "claude-sonnet-4-6",
+      apiKey: "sk-ant-key",
+      env: {
+        SECRET_REF: { type: "secret_ref", secretId: "ref-id" },
+      },
+    };
+
+    const result = redactAdapterConfig(config);
+
+    expect(result?.model).toBe("claude-sonnet-4-6");
+    expect(result?.apiKey).toBe(REDACTED_EVENT_VALUE);
+    expect(result?.env).toEqual({ SECRET_REF: { type: "secret_ref", secretId: "ref-id" } });
   });
 });
