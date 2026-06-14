@@ -601,6 +601,48 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(CAPACITY_BLOCKED_HEARTBEAT_RETRY_MAX_ATTEMPTS).toBeGreaterThan(12);
   });
 
+  // BLO-10448 — scheduler-level transient infra failures retry gate
+  it.each(["k8s_pod_schedule_failed", "job_missing"])(
+    "BLO-10448: retries %s on a pr_review wake (work never ran)",
+    (errorCode) => {
+      expect(
+        shouldScheduleAutomaticRunRetry({
+          errorCode,
+          resultJson: {},
+          contextSnapshot: { wakeReason: "github_pr_opened", reviewKind: "pr_review", githubPrNumber: 408 },
+        }),
+      ).toBe(true);
+      // thin snapshot (taskKey-only) — webhook-driven reviewer wakes get trimmed
+      expect(
+        shouldScheduleAutomaticRunRetry({
+          errorCode,
+          resultJson: {},
+          contextSnapshot: { taskKey: "pr_review:Blockcast/Network-Operator-Portal:408" },
+        }),
+      ).toBe(true);
+    },
+  );
+
+  it.each(["k8s_pod_schedule_failed", "job_missing"])(
+    "BLO-10448: does NOT retry %s on non-PR wakes (BLO-7913 leak guard)",
+    (errorCode) => {
+      expect(
+        shouldScheduleAutomaticRunRetry({
+          errorCode,
+          resultJson: {},
+          contextSnapshot: { issueId: randomUUID(), wakeReason: "issue_assigned" },
+        }),
+      ).toBe(false);
+      expect(
+        shouldScheduleAutomaticRunRetry({
+          errorCode,
+          resultJson: {},
+          contextSnapshot: {},
+        }),
+      ).toBe(false);
+    },
+  );
+
   it("does not defer a new assignee behind the previous assignee's scheduled retry", async () => {
     const companyId = randomUUID();
     const oldAgentId = randomUUID();
