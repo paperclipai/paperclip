@@ -11,6 +11,7 @@ import {
   createDb,
   environmentLeases,
   environments,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueRecoveryActions,
@@ -136,6 +137,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.delete(issueComments);
     await db.delete(environmentLeases);
     await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(environments);
@@ -953,6 +955,113 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       removedBlockedByIssueIds: [blockerIssueId],
       blockedByIssueIds: [],
     });
+  });
+
+  it("requires checked-out assignees to prove run ownership for recovery-shaped source patches", async () => {
+    const { companyId, managerId, coderId, sourceIssueId, prefix } = await seedCompany();
+    const recoveryOwnerId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const activeRunId = randomUUID();
+    const staleRunId = randomUUID();
+    await db.insert(agents).values({
+      id: recoveryOwnerId,
+      companyId,
+      name: "Recovery Owner",
+      role: "platform_owner",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: activeRunId,
+        companyId,
+        agentId: coderId,
+        invocationSource: "manual",
+        status: "running",
+        startedAt: new Date("2026-05-13T18:00:00.000Z"),
+        contextSnapshot: { issueId: sourceIssueId },
+      },
+      {
+        id: staleRunId,
+        companyId,
+        agentId: coderId,
+        invocationSource: "manual",
+        status: "running",
+        startedAt: new Date("2026-05-13T18:01:00.000Z"),
+        contextSnapshot: { issueId: sourceIssueId },
+      },
+    ]);
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      title: "Implementation handoff",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: managerId,
+      issueNumber: 2,
+      identifier: `${prefix}-2`,
+    });
+    await db
+      .update(issues)
+      .set({
+        status: "in_progress",
+        assigneeAgentId: coderId,
+        checkoutRunId: activeRunId,
+        executionRunId: activeRunId,
+      })
+      .where(eq(issues.id, sourceIssueId));
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: sourceIssueId,
+      type: "blocks",
+    });
+    await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: recoveryOwnerId,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:assignee-checkout-required",
+      evidence: { latestIssueStatus: "blocked", blockerIssueId },
+      nextAction: "Remove the stale blocker and restore the original assignee's live path.",
+      wakePolicy: { type: "manual" },
+    });
+    const app = createApp({
+      type: "agent",
+      agentId: coderId,
+      companyId,
+      runId: staleRunId,
+      source: "agent_jwt",
+    });
+
+    const res = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({
+        status: "todo",
+        blockedByIssueIds: [],
+        comment: "Assignee must still prove active checkout ownership.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue run ownership conflict");
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(sourceIssue).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: coderId,
+      checkoutRunId: activeRunId,
+      executionRunId: activeRunId,
+    });
+    const relationRows = await db
+      .select()
+      .from(issueRelations)
+      .where(eq(issueRelations.relatedIssueId, sourceIssueId));
+    expect(relationRows).toHaveLength(1);
+    expect(relationRows[0]?.issueId).toBe(blockerIssueId);
   });
 
   it("rejects ordinary agents clearing stale blockers on another assignee's issue", async () => {

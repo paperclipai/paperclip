@@ -1847,7 +1847,6 @@ export function issueRoutes(
     issue: { companyId: string; assigneeAgentId: string | null },
     activeRecoveryAction: Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>> | null,
   ) {
-    if (req.actor.type !== "agent") return true;
     if (!activeRecoveryAction) return false;
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) return false;
@@ -1888,8 +1887,10 @@ export function issueRoutes(
       res.status(403).json({ error: "Agent authentication required" });
       return false;
     }
+    const isIssueAssignee = issue.assigneeAgentId === actorAgentId;
     if (
       options.allowRecoveryActionAuthority === true &&
+      !isIssueAssignee &&
       await agentHasRecoveryActionAuthority(req, issue, options.activeRecoveryAction ?? null)
     ) {
       return true;
@@ -1902,7 +1903,7 @@ export function issueRoutes(
     if (issue.assigneeAgentId === null) {
       return true;
     }
-    if (issue.assigneeAgentId !== actorAgentId) {
+    if (!isIssueAssignee) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
       }
