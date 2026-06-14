@@ -1,0 +1,43 @@
+{
+  "name": "issue-update-with-paperclip-link",
+  "description": "Linear Issue update for an existing Paperclip mirror; covers the production syncFromLinear + Paperclip backlink branch.",
+  "headers": {
+    "content-type": "application/json",
+    "linear-event": "Issue",
+    "linear-signature": "[redacted]"
+  },
+  "body": {
+    "type": "Issue",
+    "action": "update",
+    "organizationId": "lin-org-sanitized",
+    "webhookId": "lin-webhook-sanitized",
+    "createdAt": "2026-06-13T00:00:00.000Z",
+    "data": {
+      "id": "lin-issue-001",
+      "identifier": "LIN-42",
+      "title": "[sanitized-title]",
+      "description": "See linked Paperclip issue: https://app.paperclip.test/BLO/issues/FIX-1",
+      "url": "[redacted]",
+      "team": {
+        "id": "lin-team-001",
+        "key": "LIN",
+        "name": "[sanitized-team]"
+      },
+      "state": {
+        "id": "lin-state-001",
+        "name": "[sanitized-state]"
+      }
+    },
+    "updatedFrom": {
+      "description": "No Paperclip link yet."
+    }
+  },
+  "expect": {
+    "eventType": "Issue",
+    "action": "update",
+    "paperclipSideEffects": [
+      "resolves existing Paperclip/Linear binding instead of creating a duplicate",
+      "writes the Paperclip mirror backlink through Linear attachmentCreate"
+    ]
+  }
+}

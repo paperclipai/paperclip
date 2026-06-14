@@ -1,0 +1,42 @@
+{
+  "name": "comment-create",
+  "description": "Linear Comment create payload tied to an issue with a Paperclip backlink.",
+  "headers": {
+    "content-type": "application/json",
+    "linear-event": "Comment",
+    "linear-signature": "[redacted]"
+  },
+  "body": {
+    "type": "Comment",
+    "action": "create",
+    "organizationId": "lin-org-sanitized",
+    "webhookId": "lin-webhook-sanitized",
+    "createdAt": "2026-06-13T00:01:00.000Z",
+    "data": {
+      "id": "lin-comment-001",
+      "body": "[redacted]",
+      "url": "[redacted]",
+      "issue": {
+        "id": "lin-issue-001",
+        "identifier": "LIN-42",
+        "title": "[redacted]",
+        "description": "[redacted]",
+        "url": "[redacted]"
+      },
+      "user": {
+        "id": "lin-user-001",
+        "name": "[redacted]",
+        "email": "[redacted]",
+        "avatarUrl": "[redacted]"
+      }
+    }
+  },
+  "expect": {
+    "eventType": "Comment",
+    "action": "create",
+    "paperclipSideEffects": [
+      "creates one Paperclip issue comment for the bound Linear issue",
+      "deduplicates retry delivery using the Linear comment id sentinel"
+    ]
+  }
+}
