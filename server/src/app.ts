@@ -10,6 +10,7 @@ import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { applyTrustProxy, parseTrustProxyEnv } from "./middleware/trust-proxy.js";
+import { serverVersion } from "./version.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
@@ -124,6 +125,19 @@ export function shouldEnablePrivateHostnameGuard(opts: {
     opts.deploymentExposure === "private" &&
     (opts.deploymentMode === "local_trusted" || opts.deploymentMode === "authenticated")
   );
+}
+
+/**
+ * Resolve the host version advertised to the plugin runtime.
+ *
+ * Falls back to the server's own package version so the plugin compatibility
+ * gate (`PluginManifest.minimumHostVersion`) compares against the real running
+ * version. Without this, an unset `hostVersion` defaulted to "0.0.0", which
+ * rejected every version-gated plugin with "this server is running 0.0.0"
+ * even though `/api/health` reported the correct version.
+ */
+export function resolveHostVersion(explicitHostVersion?: string): string {
+  return explicitHostVersion ?? serverVersion;
 }
 
 export async function createApp(
@@ -288,7 +302,7 @@ export async function createApp(
       lifecycleManager: lifecycle,
       instanceInfo: {
         instanceId: opts.instanceId ?? "default",
-        hostVersion: opts.hostVersion ?? "0.0.0",
+        hostVersion: resolveHostVersion(opts.hostVersion),
         deploymentMode: opts.deploymentMode,
         deploymentExposure: opts.deploymentExposure,
       },
