@@ -6106,6 +6106,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+    // All automatic scheduled retries share this gate so transient adapter
+    // retries cannot bypass budget, ownership, pause, review, or dependency holds.
     const gate = await evaluateScheduledRetryGate({ run, agent, contextSnapshot, retryReason });
     const allowLegacyLooseIssueRetry =
       !gate.allowed &&
