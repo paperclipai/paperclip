@@ -1335,6 +1335,7 @@ export interface PluginIssuesClient {
     originKind?: PluginIssueOriginKind;
     originKindPrefix?: string;
     originId?: string;
+    originFingerprint?: string;
     status?: Issue["status"];
     includePluginOperations?: boolean;
     limit?: number;
@@ -1360,6 +1361,7 @@ export interface PluginIssuesClient {
     originKind?: PluginIssueOriginKind;
     originId?: string | null;
     originRunId?: string | null;
+    originFingerprint?: string | null;
     blockedByIssueIds?: string[];
     labelIds?: string[];
     executionWorkspaceId?: string | null;
