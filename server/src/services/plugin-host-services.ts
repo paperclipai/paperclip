@@ -12,6 +12,7 @@ import {
   issues as issuesTable,
   labels as labelsTable,
   pluginLogs,
+  pluginManagedResources,
   principalPermissionGrants,
   projects as projectsTable,
 } from "@paperclipai/db";
@@ -80,7 +81,52 @@ import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { resolveApprovalWithSideEffects } from "./approval-resolution.js";
-import { sanitizeRecord } from "../redaction.js";
+import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
+
+// ---------------------------------------------------------------------------
+// Agent adapter-override (plugin host method `agents.updateAdapterOverrides`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Keys a plugin override may set on an agent's `adapterConfig`. The repoint use
+ * case (PEN-255: route a company agent's traffic through api.penstock.run as a
+ * canary) needs the endpoint + routing metadata only — NEVER raw credentials.
+ * Per the adapter-registry contract, secrets travel via envKeys/process-env and
+ * MUST NOT live in adapterConfig, so this allowlist intentionally excludes any
+ * token/apiKey/authorization field. An override carrying a disallowed key is
+ * rejected rather than silently dropped.
+ */
+const ADAPTER_OVERRIDE_ALLOWED_KEYS = new Set(["url", "baseUrl", "headers", "env", "model"]);
+
+/** Revision `source` tag for an applied plugin adapter override. */
+const ADAPTER_OVERRIDE_APPLY_SOURCE = "plugin:adapter-override";
+/** Revision `source` tag for a cleared (rolled-back) plugin adapter override. */
+const ADAPTER_OVERRIDE_CLEAR_SOURCE = "plugin:adapter-override:clear";
+
+/** Split an override payload into allowlisted keys and rejected (disallowed) keys. */
+function partitionAdapterOverrideKeys(overrides: Record<string, unknown>): {
+  allowed: Record<string, unknown>;
+  rejected: string[];
+} {
+  const allowed: Record<string, unknown> = {};
+  const rejected: string[] = [];
+  for (const [key, value] of Object.entries(overrides)) {
+    if (ADAPTER_OVERRIDE_ALLOWED_KEYS.has(key)) {
+      allowed[key] = value;
+    } else {
+      rejected.push(key);
+    }
+  }
+  return { allowed, rejected };
+}
+
+/** True if a (snapshotted) value tree contains the redaction sentinel. */
+function adapterSnapshotContainsRedaction(value: unknown): boolean {
+  if (value === REDACTED_EVENT_VALUE) return true;
+  if (Array.isArray(value)) return value.some(adapterSnapshotContainsRedaction);
+  if (typeof value !== "object" || value === null) return false;
+  return Object.values(value as Record<string, unknown>).some(adapterSnapshotContainsRedaction);
+}
 
 // ---------------------------------------------------------------------------
 // SSRF protection for plugin HTTP fetch
@@ -2441,6 +2487,88 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         return managedAgents.reset(params.agentKey, companyId);
+      },
+      async updateAdapterOverrides(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const agent = requireInCompany("Agent", await agents.getById(params.agentId), companyId);
+
+        // Refuse plugin-managed agents: their adapter is owned by the managing
+        // plugin's reconcile loop, not repointable via a one-off override.
+        const managedRow = await db
+          .select({ id: pluginManagedResources.id })
+          .from(pluginManagedResources)
+          .where(
+            and(
+              eq(pluginManagedResources.companyId, companyId),
+              eq(pluginManagedResources.resourceKind, "managed_agent"),
+              eq(pluginManagedResources.resourceId, params.agentId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        if (managedRow) {
+          throw new Error("Cannot override the adapter of a plugin-managed agent");
+        }
+
+        // null => clear: undo the most recent applied override by restoring the
+        // adapter state captured in that revision's pre-change snapshot.
+        if (params.overrides === null) {
+          const revisions = await agents.listConfigRevisions(params.agentId);
+          const lastApply = revisions.find((revision) => revision.source === ADAPTER_OVERRIDE_APPLY_SOURCE);
+          if (!lastApply) {
+            return agent as Agent; // nothing to clear — idempotent no-op
+          }
+          const before = lastApply.beforeConfig as Record<string, unknown> | null;
+          const beforeAdapterType = before?.adapterType;
+          const beforeAdapterConfig = before?.adapterConfig;
+          if (
+            adapterSnapshotContainsRedaction(beforeAdapterType) ||
+            adapterSnapshotContainsRedaction(beforeAdapterConfig)
+          ) {
+            // Fail closed rather than write redaction sentinels back into live config.
+            throw new Error("Cannot clear adapter override: pre-override snapshot contains redacted values");
+          }
+          const restored = await agents.update(
+            params.agentId,
+            {
+              ...(typeof beforeAdapterType === "string" ? { adapterType: beforeAdapterType } : {}),
+              adapterConfig: (beforeAdapterConfig as Record<string, unknown> | undefined) ?? {},
+            },
+            { recordRevision: { source: ADAPTER_OVERRIDE_CLEAR_SOURCE, rolledBackFromRevisionId: lastApply.id } },
+          );
+          await logPluginActivity({
+            companyId,
+            action: "agent.adapter_override.clear",
+            entityType: "agent",
+            entityId: params.agentId,
+            details: { rolledBackFromRevisionId: lastApply.id },
+          });
+          return (restored ?? agent) as Agent;
+        }
+
+        // Apply: allowlist-bound merge onto the live adapterConfig. Reject (not
+        // drop) any disallowed key so a plugin can't smuggle arbitrary fields.
+        const { allowed, rejected } = partitionAdapterOverrideKeys(params.overrides);
+        if (rejected.length > 0) {
+          throw new Error(`Adapter override contains disallowed keys: ${rejected.join(", ")}`);
+        }
+        const baseConfig =
+          typeof agent.adapterConfig === "object" && agent.adapterConfig !== null && !Array.isArray(agent.adapterConfig)
+            ? (agent.adapterConfig as Record<string, unknown>)
+            : {};
+        const updated = await agents.update(
+          params.agentId,
+          { adapterConfig: { ...baseConfig, ...allowed } },
+          { recordRevision: { source: ADAPTER_OVERRIDE_APPLY_SOURCE } },
+        );
+        await logPluginActivity({
+          companyId,
+          action: "agent.adapter_override.apply",
+          entityType: "agent",
+          entityId: params.agentId,
+          details: { keys: Object.keys(allowed) }, // keys only — never the values (redaction)
+        });
+        return (updated ?? agent) as Agent;
       },
     },
 

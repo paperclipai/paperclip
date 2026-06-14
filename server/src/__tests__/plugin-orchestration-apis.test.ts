@@ -6,6 +6,7 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentConfigRevisions,
   agentWakeupRequests,
   agents,
   companies,
@@ -890,6 +891,158 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       inputTokens: 30,
       cachedInputTokens: 3,
       outputTokens: 6,
+    });
+  });
+
+  describe("agents.updateAdapterOverrides (PEN-778)", () => {
+    const pluginKey = "penstock.repoint";
+
+    async function revisionsFor(agentId: string) {
+      return db.select().from(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, agentId));
+    }
+
+    it("applies an allowlisted override by merging onto adapterConfig and recording a revision", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const services = buildHostServices(db, "plugin-record-id", pluginKey, createEventBusStub());
+
+      const updated = await services.agents.updateAdapterOverrides({
+        companyId,
+        agentId,
+        overrides: { url: "https://api.penstock.run", model: "claude-opus-4-8" },
+      });
+
+      expect(updated.adapterConfig).toMatchObject({
+        command: "true", // base preserved
+        url: "https://api.penstock.run",
+        model: "claude-opus-4-8",
+      });
+      const revisions = await revisionsFor(agentId);
+      expect(revisions).toHaveLength(1);
+      expect(revisions[0]!.source).toBe("plugin:adapter-override");
+    });
+
+    it("rejects (does not drop) an override carrying a disallowed key and writes nothing", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const services = buildHostServices(db, "plugin-record-id", pluginKey, createEventBusStub());
+
+      await expect(
+        services.agents.updateAdapterOverrides({
+          companyId,
+          agentId,
+          overrides: { url: "https://api.penstock.run", apiKey: "sk-should-be-refused" },
+        }),
+      ).rejects.toThrow(/disallowed keys: apiKey/);
+
+      expect(await revisionsFor(agentId)).toHaveLength(0);
+    });
+
+    it("clears an override (null) by restoring the pre-override adapterConfig and recording a clear revision", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const services = buildHostServices(db, "plugin-record-id", pluginKey, createEventBusStub());
+
+      await services.agents.updateAdapterOverrides({
+        companyId,
+        agentId,
+        overrides: { url: "https://api.penstock.run" },
+      });
+      const cleared = await services.agents.updateAdapterOverrides({ companyId, agentId, overrides: null });
+
+      expect(cleared.adapterConfig).toEqual({ command: "true" }); // back to base, override gone
+      const sources = (await revisionsFor(agentId)).map((revision) => revision.source);
+      expect(sources).toContain("plugin:adapter-override:clear");
+    });
+
+    it("is an idempotent no-op when clearing with no prior override", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const services = buildHostServices(db, "plugin-record-id", pluginKey, createEventBusStub());
+
+      const result = await services.agents.updateAdapterOverrides({ companyId, agentId, overrides: null });
+
+      expect(result.adapterConfig).toEqual({ command: "true" });
+      expect(await revisionsFor(agentId)).toHaveLength(0);
+    });
+
+    it("refuses to override an agent in a different company", async () => {
+      const { agentId } = await seedCompanyAndAgent();
+      const otherCompanyId = randomUUID();
+      await db.insert(companies).values({
+        id: otherCompanyId,
+        name: "Other",
+        issuePrefix: issuePrefix(otherCompanyId),
+        requireBoardApprovalForNewAgents: false,
+      });
+      const services = buildHostServices(db, "plugin-record-id", pluginKey, createEventBusStub());
+
+      await expect(
+        services.agents.updateAdapterOverrides({
+          companyId: otherCompanyId,
+          agentId,
+          overrides: { url: "https://api.penstock.run" },
+        }),
+      ).rejects.toThrow(/Agent not found/);
+    });
+
+    it("refuses to override a plugin-managed agent", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const pluginId = randomUUID();
+      await db.insert(plugins).values({
+        id: pluginId,
+        pluginKey,
+        packageName: "@penstock/paperclip-plugin",
+        version: "1.0.0",
+        apiVersion: 1,
+        categories: ["automation"],
+        manifestJson: {
+          id: pluginKey,
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Penstock",
+          description: "Penstock repoint plugin",
+          author: "Penstock",
+          categories: ["automation"],
+          capabilities: ["agents.adapter.write"],
+          entrypoints: { worker: "dist/worker.js" },
+        } as never,
+      });
+      await db.insert(pluginManagedResources).values({
+        companyId,
+        pluginId,
+        pluginKey,
+        resourceKind: "managed_agent",
+        resourceKey: "managed-engineer",
+        resourceId: agentId,
+      });
+      const services = buildHostServices(db, pluginId, pluginKey, createEventBusStub());
+
+      await expect(
+        services.agents.updateAdapterOverrides({
+          companyId,
+          agentId,
+          overrides: { url: "https://api.penstock.run" },
+        }),
+      ).rejects.toThrow(/plugin-managed agent/);
+      expect(await revisionsFor(agentId)).toHaveLength(0);
+    });
+
+    it("audits the apply with overridden key names only — never the values", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const services = buildHostServices(db, "plugin-record-id", pluginKey, createEventBusStub());
+
+      await services.agents.updateAdapterOverrides({
+        companyId,
+        agentId,
+        overrides: { url: "https://api.penstock.run" },
+      });
+
+      const rows = await db
+        .select()
+        .from(activityLog)
+        .where(and(eq(activityLog.entityType, "agent"), eq(activityLog.entityId, agentId)));
+      const applyRow = rows.find((row) => row.action === "agent.adapter_override.apply");
+      expect(applyRow).toBeTruthy();
+      expect(applyRow!.details).toMatchObject({ keys: ["url"] });
+      // the endpoint value must NOT leak into the audit details
+      expect(JSON.stringify(applyRow!.details)).not.toContain("penstock.run");
     });
   });
 });
