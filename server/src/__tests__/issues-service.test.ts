@@ -1398,7 +1398,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
     const inboxIssueIds = (await svc.list(companyId, {
       assigneeAgentId: agentId,
-      status: "todo,in_progress,blocked",
+      status: "todo,in_progress,in_review,blocked",
       includeRoutineExecutions: true,
     })).map((issue) => issue.id);
     expect(inboxIssueIds).toContain(normalIssueId);
