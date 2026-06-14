@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent, Issue, IssueTreeControlPreview, IssueTreeHold } from "@paperclipai/shared";
+import type { Agent, Issue, IssueComment, IssueTreeControlPreview, IssueTreeHold } from "@paperclipai/shared";
 import { act, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -192,6 +192,8 @@ vi.mock("../components/InlineEditor", () => ({
 
 vi.mock("../components/IssueChatThread", () => ({
   IssueChatThread: (props: {
+    comments?: IssueComment[];
+    initialScrollToLatestKey?: string | null;
     onWorkModeChange?: (workMode: string) => void;
     issueWorkMode?: string;
     onStopRun?: (runId: string) => Promise<void>;
@@ -390,6 +392,24 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     documentSummaries: [],
     ...overrides,
   } as Issue;
+}
+
+function createIssueComment(index: number, overrides: Partial<IssueComment> = {}): IssueComment {
+  const createdAt = new Date(Date.UTC(2026, 3, 21, 0, index, 0));
+  return {
+    id: `comment-${index}`,
+    companyId: "company-1",
+    issueId: "issue-1",
+    authorType: index % 2 === 0 ? "agent" : "user",
+    authorAgentId: index % 2 === 0 ? "agent-1" : null,
+    authorUserId: index % 2 === 0 ? null : "user-1",
+    body: `Comment ${index}`,
+    presentation: null,
+    metadata: null,
+    createdAt,
+    updatedAt: createdAt,
+    ...overrides,
+  };
 }
 
 function createAgent(overrides: Partial<Agent> = {}): Agent {
@@ -838,6 +858,57 @@ describe("IssueDetail", () => {
     expect(container.textContent).toContain("Issue detail smoke");
     expect(container.textContent).toContain("Chat thread");
     expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it("requests and renders issue comments in 10-comment pages", async () => {
+    const comments = Array.from({ length: 12 }, (_value, index) => createIssueComment(index + 1));
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.listComments.mockResolvedValue([...comments].reverse());
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockIssuesApi.listComments).toHaveBeenCalledWith("PAP-1", {
+      order: "desc",
+      limit: 10,
+    });
+
+    const latestChatProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+    expect(latestChatProps?.initialScrollToLatestKey).toBe("issue-1");
+    expect(latestChatProps?.comments?.map((comment: IssueComment) => comment.id)).toEqual([
+      "comment-3",
+      "comment-4",
+      "comment-5",
+      "comment-6",
+      "comment-7",
+      "comment-8",
+      "comment-9",
+      "comment-10",
+      "comment-11",
+      "comment-12",
+    ]);
+
+    const olderButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Older"));
+    expect(olderButton).toBeTruthy();
+
+    await act(async () => {
+      olderButton!.click();
+    });
+    await flushReact();
+
+    const olderChatProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+    expect(olderChatProps?.comments?.map((comment: IssueComment) => comment.id)).toEqual([
+      "comment-1",
+      "comment-2",
+    ]);
   });
 
   it("passes blocker attention to the issue detail header status icon", async () => {

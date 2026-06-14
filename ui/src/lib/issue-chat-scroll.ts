@@ -6,6 +6,27 @@ export interface ComposerViewportSnapshot {
   composerViewportTop: number;
 }
 
+/**
+ * The page itself is only a usable scroll target when the document can actually
+ * scroll. The desktop app shell pins the body and renders its own internal
+ * scroller, so a window scroll there can shift the whole shell off-screen.
+ */
+export function isWindowScrollable(
+  doc: Document = document,
+  win: Window = window,
+): boolean {
+  const candidates = [doc.scrollingElement, doc.documentElement, doc.body];
+  for (const element of candidates) {
+    if (!(element instanceof HTMLElement)) continue;
+    const style = win.getComputedStyle(element);
+    const clipped = (value: string) => value === "hidden" || value === "clip";
+    if (clipped(style.overflowY) || clipped(style.overflow)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function resolveIssueChatScrollTarget(
   doc: Document = document,
   win: Window = window,
@@ -65,6 +86,8 @@ export function restoreComposerViewportSnapshot(
     target.element.scrollTop += delta;
     return;
   }
+
+  if (!isWindowScrollable(doc, win)) return;
 
   win.scrollBy({ top: delta, left: 0, behavior: "auto" });
 }

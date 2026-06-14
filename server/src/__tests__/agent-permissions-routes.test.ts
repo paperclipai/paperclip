@@ -443,6 +443,63 @@ describe.sequential("agent permission routes", () => {
     ]);
   });
 
+  it("allows board members without agents:create to read redacted agent configuration", async () => {
+    mockAccessService.canUser.mockResolvedValue(false);
+
+    const app = await createApp({
+      type: "board",
+      userId: "member-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/agents/${agentId}/configuration`),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({ id: agentId }));
+  });
+
+  it("keeps adapter environment probes gated behind agents:create", async () => {
+    mockAccessService.canUser.mockResolvedValue(false);
+
+    const app = await createApp({
+      type: "board",
+      userId: "member-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/companies/${companyId}/adapters/process/test-environment`)
+        .send({ adapterConfig: {} }),
+    );
+
+    expect(res.status).toBe(403);
+  });
+
+  it("denies agent actors without agents:create when reading peer configuration", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(false);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/agents/33333333-3333-4333-8333-333333333333/configuration`),
+    );
+
+    expect(res.status).toBe(403);
+  });
+
   it("blocks agent updates for authenticated company members without agent admin permission", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
 

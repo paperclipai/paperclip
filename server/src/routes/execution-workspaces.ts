@@ -45,7 +45,7 @@ export function executionWorkspaceRoutes(db: Db) {
       projectId: req.query.projectId as string | undefined,
       projectWorkspaceId: req.query.projectWorkspaceId as string | undefined,
       issueId: req.query.issueId as string | undefined,
-      status: req.query.status as string | undefined,
+      status: req.query.status as string | string[] | undefined,
       reuseEligible: req.query.reuseEligible === "true",
     };
     const workspaces = req.query.summary === "true"

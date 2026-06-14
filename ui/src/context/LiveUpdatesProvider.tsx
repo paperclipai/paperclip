@@ -9,7 +9,10 @@ import { authApi } from "../api/auth";
 import { useCompany } from "./CompanyContext";
 import type { ToastInput } from "./ToastContext";
 import { useToastActions } from "./ToastContext";
-import { upsertIssueCommentInInfiniteData } from "../lib/optimistic-issue-comments";
+import {
+  ISSUE_COMMENT_THREAD_PAGE_SIZE,
+  upsertIssueCommentInInfiniteData,
+} from "../lib/optimistic-issue-comments";
 import { clearIssueExecutionRun, removeLiveRunById } from "../lib/optimistic-issue-runs";
 import { queryKeys } from "../lib/queryKeys";
 import { toCompanyRelativePath } from "../lib/company-routes";
@@ -21,7 +24,7 @@ const RECONNECT_SUPPRESS_MS = 2000;
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
-const ISSUE_COMMENT_PAGE_SIZE = 50;
+const ISSUE_COMMENT_PAGE_SIZE = ISSUE_COMMENT_THREAD_PAGE_SIZE;
 
 type LiveUpdatesSocketLike = {
   readyState: number;

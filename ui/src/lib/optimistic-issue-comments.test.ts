@@ -12,6 +12,7 @@ import {
   loadRemainingIssueCommentPages,
   matchesIssueRef,
   mergeIssueComments,
+  paginateIssueComments,
   removeIssueCommentFromPages,
   shouldAutoloadOlderIssueComments,
   takeOptimisticIssueComment,
@@ -220,6 +221,40 @@ describe("optimistic issue comments", () => {
     ]);
 
     expect(flattened.map((comment) => comment.id)).toEqual(["comment-1", "comment-2", "comment-3"]);
+  });
+
+  it("paginates comments from the latest end while preserving chronological display inside each page", () => {
+    const pages = paginateIssueComments(
+      Array.from({ length: 25 }, (_value, index) => ({ id: `comment-${index + 1}` })),
+      10,
+    );
+
+    expect(pages.map((page) => page.map((comment) => comment.id))).toEqual([
+      ["comment-1", "comment-2", "comment-3", "comment-4", "comment-5"],
+      ["comment-6", "comment-7", "comment-8", "comment-9", "comment-10", "comment-11", "comment-12", "comment-13", "comment-14", "comment-15"],
+      ["comment-16", "comment-17", "comment-18", "comment-19", "comment-20", "comment-21", "comment-22", "comment-23", "comment-24", "comment-25"],
+    ]);
+  });
+
+  it("returns a single page when the comment count is at the page size", () => {
+    const pages = paginateIssueComments(
+      Array.from({ length: 10 }, (_value, index) => ({ id: `comment-${index + 1}` })),
+      10,
+    );
+
+    expect(pages).toHaveLength(1);
+    expect(pages[0]?.map((comment) => comment.id)).toEqual([
+      "comment-1",
+      "comment-2",
+      "comment-3",
+      "comment-4",
+      "comment-5",
+      "comment-6",
+      "comment-7",
+      "comment-8",
+      "comment-9",
+      "comment-10",
+    ]);
   });
 
   it("returns no next page param when the last page is missing", () => {

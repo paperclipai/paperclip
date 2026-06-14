@@ -389,13 +389,22 @@ async function loadEffectiveRuntimeServicesByExecutionWorkspace(
 }
 
 export function executionWorkspaceService(db: Db) {
+  function parseStatusFilter(input: string | readonly string[] | undefined): string[] {
+    if (input == null) return [];
+    const entries = Array.isArray(input) ? input : typeof input === "string" ? [input] : [];
+    return entries
+      .flatMap((entry) => (typeof entry === "string" ? entry.split(",") : []))
+      .map((value) => value.trim())
+      .filter(Boolean);
+  }
+
   function buildListConditions(
     companyId: string,
     filters?: {
       projectId?: string;
       projectWorkspaceId?: string;
       issueId?: string;
-      status?: string;
+      status?: string | readonly string[];
       reuseEligible?: boolean;
     },
   ) {
@@ -405,11 +414,9 @@ export function executionWorkspaceService(db: Db) {
       conditions.push(eq(executionWorkspaces.projectWorkspaceId, filters.projectWorkspaceId));
     }
     if (filters?.issueId) conditions.push(eq(executionWorkspaces.sourceIssueId, filters.issueId));
-    if (filters?.status) {
-      const statuses = filters.status.split(",").map((value) => value.trim()).filter(Boolean);
-      if (statuses.length === 1) conditions.push(eq(executionWorkspaces.status, statuses[0]!));
-      else if (statuses.length > 1) conditions.push(inArray(executionWorkspaces.status, statuses));
-    }
+    const statuses = parseStatusFilter(filters?.status);
+    if (statuses.length === 1) conditions.push(eq(executionWorkspaces.status, statuses[0]!));
+    else if (statuses.length > 1) conditions.push(inArray(executionWorkspaces.status, statuses));
     if (filters?.reuseEligible) {
       conditions.push(inArray(executionWorkspaces.status, ["active", "idle", "in_review"]));
     }
@@ -421,7 +428,7 @@ export function executionWorkspaceService(db: Db) {
       projectId?: string;
       projectWorkspaceId?: string;
       issueId?: string;
-      status?: string;
+      status?: string | readonly string[];
       reuseEligible?: boolean;
     }) => {
       const conditions = buildListConditions(companyId, filters);
@@ -443,7 +450,7 @@ export function executionWorkspaceService(db: Db) {
       projectId?: string;
       projectWorkspaceId?: string;
       issueId?: string;
-      status?: string;
+      status?: string | readonly string[];
       reuseEligible?: boolean;
     }) => {
       const conditions = buildListConditions(companyId, filters);
