@@ -1,0 +1,79 @@
+# Republish the fork's SDK packages under the Blockcast-owned @penstock/* scope to
+# public npm via OIDC Trusted Publishing.
+#
+# WHY: Blockcast/paperclip is a fork of paperclipai/paperclip. It cannot publish
+# under @paperclipai/* (upstream owns the scope) and the upstream release jobs are
+# guarded `github.repository == 'paperclipai/paperclip'`, so they skip here. This
+# workflow republishes @paperclipai/{plugin-sdk,shared} as @penstock/{plugin-sdk,
+# shared} so consumers (e.g. @penstock/paperclip-plugin) can pin the fork's surface
+# via a pnpm alias. See scripts/publish-penstock-scope.mjs.
+#
+# PREREQUISITE (one-time, npm UI): @penstock/plugin-sdk and @penstock/shared must
+# already exist on npm AND have a Trusted Publisher configured for this repo +
+# workflow. npm cannot do the *first* publish of a brand-new package over OIDC, so
+# the initial version is published manually with 2FA; every release after that is
+# OIDC. (Same bootstrap as @penstock/paperclip-plugin.)
+#
+# MANUAL ONLY: workflow_dispatch — never runs on push. Defaults to dry_run.
+name: Release @penstock-scoped SDK
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, YYYY.MMDD.N (mirror upstream scheme), e.g. 2026.614.0"
+        required: true
+      dry_run:
+        description: "Dry run (pack + validate, do NOT publish)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write # required: lets the runner mint the OIDC token npm exchanges
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm-penstock-scope # optional manual-approval gate; configure in repo settings
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+
+      # Trusted publishing requires npm >= 11.5.1 (setup-node ships older).
+      - name: Upgrade npm (trusted publishing)
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Restore tracked install-time changes
+        run: git checkout -- pnpm-lock.yaml || true
+
+      - name: Build SDK packages
+        run: |
+          pnpm --filter @paperclipai/shared build
+          pnpm --filter @paperclipai/plugin-sdk build
+
+      - name: Publish under @penstock (OIDC)
+        if: ${{ !inputs.dry_run }}
+        env:
+          VERSION: ${{ inputs.version }}
+        run: node scripts/publish-penstock-scope.mjs --version "$VERSION" --publish --provenance
+
+      - name: Dry run (pack + validate only)
+        if: ${{ inputs.dry_run }}
+        env:
+          VERSION: ${{ inputs.version }}
+        run: node scripts/publish-penstock-scope.mjs --version "$VERSION"
