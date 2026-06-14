@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { activityLog } from "@paperclipai/db";
-import { PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
+import { PLUGIN_EVENT_TYPES, type PluginEventType, isUuidLike } from "@paperclipai/shared";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { publishLiveEvent } from "./live-events.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
@@ -70,6 +70,11 @@ export async function logActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = sanitizedDetails
     ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
     : null;
+  // run_id has a FK to heartbeat_runs.id. Manual / non-heartbeat callers may
+  // pass synthetic ids (e.g. "manual-<ts>") in X-Paperclip-Run-Id. Drop those
+  // so the FK insert succeeds; keep the original value in the event payload
+  // for observability.
+  const persistedRunId = input.runId && isUuidLike(input.runId) ? input.runId : null;
   await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
@@ -78,7 +83,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId: persistedRunId,
     details: redactedDetails,
   });
 
