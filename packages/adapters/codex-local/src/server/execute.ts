@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, runAdapterPreflightDenylist, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -322,6 +322,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const configuredCwd = asString(config.cwd, "");
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
+
+  // ADR-0008 layer-2 preflight: refuse before any LLM call if workspace/spec hits denylist.
+  const preflightResult = await runAdapterPreflightDenylist({
+    agentName: agent.name,
+    workspaceCwd: effectiveWorkspaceCwd || workspaceCwd,
+    specBody: `${agent.name} ${runId}`,
+    issueId: context.issueId as string,
+    apiUrl: process.env.PAPERCLIP_API_URL ?? "",
+    authToken: authToken ?? "",
+    unblockOwner: undefined,
+    onLog,
+  });
+  if (preflightResult.refused) {
+    return {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      summary: `[preflight] ADR-0008 denylist refusal — ${preflightResult.decision.decision === "refuse" ? preflightResult.decision.evidence : "denylist hit"}`,
+    };
+  }
+
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   const envConfig = parseObject(config.env);
   const executionTarget = readAdapterExecutionTarget({
