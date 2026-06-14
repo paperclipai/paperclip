@@ -1,0 +1,1 @@
+ALTER TABLE "companies" ADD COLUMN "issue_visibility_mode" text DEFAULT 'open' NOT NULL;

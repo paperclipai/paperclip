@@ -7,6 +7,7 @@ import type {
   CompanyPortabilityImportResult,
   CompanyPortabilityPreviewRequest,
   CompanyPortabilityPreviewResult,
+  IssueVisibilityMode,
   UpdateCompanyBranding,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -42,6 +43,8 @@ export const companiesApi = {
   ) => api.patch<Company>(`/companies/${companyId}`, data),
   updateBranding: (companyId: string, data: UpdateCompanyBranding) =>
     api.patch<Company>(`/companies/${companyId}/branding`, data),
+  updateIssueVisibilityMode: (companyId: string, issueVisibilityMode: IssueVisibilityMode) =>
+    api.patch<Company>(`/companies/${companyId}/issue-visibility`, { issueVisibilityMode }),
   archive: (companyId: string) => api.post<Company>(`/companies/${companyId}/archive`, {}),
   remove: (companyId: string) => api.delete<{ ok: true }>(`/companies/${companyId}`),
   exportBundle: (

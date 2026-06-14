@@ -2,7 +2,9 @@ import { ChangeEvent, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
+  ISSUE_VISIBILITY_MODE_LABELS,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
+  type IssueVisibilityMode,
 } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -83,6 +85,14 @@ export function CompanySettings() {
       companiesApi.update(selectedCompanyId!, {
         requireBoardApprovalForNewAgents: requireApproval
       }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    }
+  });
+
+  const issueVisibilityMutation = useMutation({
+    mutationFn: (mode: IssueVisibilityMode) =>
+      companiesApi.updateIssueVisibilityMode(selectedCompanyId!, mode),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
@@ -362,6 +372,45 @@ export function CompanySettings() {
             onChange={(v) => settingsMutation.mutate(v)}
             toggleTestId="company-settings-team-approval-toggle"
           />
+        </div>
+      </div>
+
+      {/* Issue Visibility */}
+      <div className="space-y-4" data-testid="company-settings-issue-visibility-section">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Issue Visibility
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">Who can see issues</label>
+            <select
+              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+              value={selectedCompany.issueVisibilityMode ?? "open"}
+              onChange={(e) => {
+                const next = e.target.value as IssueVisibilityMode;
+                if (next === selectedCompany.issueVisibilityMode) return;
+                if (next === "project_scoped") {
+                  const ok = window.confirm(
+                    "Switch to project-scoped visibility?\n\nOperators and viewers will only see issues in projects they belong to (plus their own assigned work). Owners and admins keep full visibility.",
+                  );
+                  if (!ok) return;
+                }
+                issueVisibilityMutation.mutate(next);
+              }}
+              disabled={issueVisibilityMutation.isPending}
+              data-testid="company-settings-issue-visibility-select"
+            >
+              <option value="open">{ISSUE_VISIBILITY_MODE_LABELS.open}</option>
+              <option value="project_scoped">{ISSUE_VISIBILITY_MODE_LABELS.project_scoped}</option>
+            </select>
+            <p className="text-xs text-muted-foreground">
+              Project-scoped visibility limits non-privileged members to issues in
+              their projects. Manage per-user project membership from the Members page.
+            </p>
+            {issueVisibilityMutation.isError ? (
+              <p className="text-xs text-destructive">Failed to update issue visibility.</p>
+            ) : null}
+          </div>
         </div>
       </div>
 

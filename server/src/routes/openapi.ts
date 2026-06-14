@@ -35,6 +35,7 @@ import {
   createCompanySchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,
+  updateIssueVisibilityModeSchema,
   companyArtifactsQuerySchema,
   companyArtifactsResponseSchema,
   // Routine
@@ -848,6 +849,18 @@ registry.registerPath({
     body: jsonBody(updateCompanyBrandingSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/companies/{companyId}/issue-visibility",
+  tags: ["companies"],
+  summary: "Update company issue visibility mode",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(updateIssueVisibilityModeSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({

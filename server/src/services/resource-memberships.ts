@@ -137,6 +137,22 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
   }
 
   return {
+    async activeProjectIdsForUser(companyId: string, userId: string): Promise<string[]> {
+      const rows = await db
+        .select({
+          projectId: projectMemberships.projectId,
+          state: projectMemberships.state,
+        })
+        .from(projectMemberships)
+        .where(and(
+          eq(projectMemberships.companyId, companyId),
+          eq(projectMemberships.userId, userId),
+        ));
+      return rows
+        .filter((row) => row.state !== "left" && typeof row.projectId === "string")
+        .map((row) => row.projectId);
+    },
+
     async listForUser(companyId: string, userId: string, actor: BoardActor): Promise<ResourceMemberships> {
       assertBoardSelfMembershipAccess(actor, companyId, userId);
       const [projectRows, agentRows] = await Promise.all([

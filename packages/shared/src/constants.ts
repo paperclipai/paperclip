@@ -706,6 +706,16 @@ export const HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS: Record<HumanCompanyMembership
   viewer: "Viewer",
 };
 
+export const ISSUE_VISIBILITY_MODES = ["open", "project_scoped"] as const;
+export type IssueVisibilityMode = (typeof ISSUE_VISIBILITY_MODES)[number];
+
+export const DEFAULT_ISSUE_VISIBILITY_MODE: IssueVisibilityMode = "open";
+
+export const ISSUE_VISIBILITY_MODE_LABELS: Record<IssueVisibilityMode, string> = {
+  open: "Open (all company members see every issue)",
+  project_scoped: "Project-scoped (members see only their projects' issues)",
+};
+
 export const INSTANCE_USER_ROLES = ["instance_admin"] as const;
 export type InstanceUserRole = (typeof INSTANCE_USER_ROLES)[number];
 
@@ -730,6 +740,7 @@ export const PERMISSION_KEYS = [
   "tasks:assign_scope",
   "tasks:manage_active_checkouts",
   "joins:approve",
+  "issues:read_scope",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
