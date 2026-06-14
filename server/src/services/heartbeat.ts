@@ -6986,6 +6986,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
+    const isProcessLossRetry = wakeReason === "process_lost_retry" || retryReason === "process_lost";
 
     if (
       issue.status === "in_progress" &&
@@ -7031,12 +7032,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "done" || issue.status === "cancelled") {
-      if (!resumeIntent && !wakeCommentId) {
+      if (isProcessLossRetry || (!resumeIntent && !wakeCommentId)) {
         return {
           stale: true,
           errorCode: "issue_terminal_status",
           reason: `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`,
-          details: { issueId, currentStatus: issue.status },
+          details: { issueId, currentStatus: issue.status, wakeReason, retryReason },
         };
       }
     }

@@ -410,6 +410,78 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
+  it("cancels process-lost retries carrying stale wake comments after the issue is done", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    const staleCommentId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Completed task with stale retry context",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(issueComments).values({
+      id: staleCommentId,
+      companyId,
+      issueId,
+      authorUserId: "local-board",
+      body: "[paperclip-sweeper] All blockers on this ticket are now `done`.",
+      createdAt: new Date("2026-06-13T06:53:43.758Z"),
+    });
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "process_lost_retry",
+      invocationSource: "automation",
+      scheduledRetryReason: "process_lost",
+      contextExtras: {
+        retryReason: "process_lost",
+        commentId: staleCommentId,
+        wakeCommentId: staleCommentId,
+        wakeCommentIds: [staleCommentId],
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "cancelled";
+    });
+
+    const [run, wakeup] = await Promise.all([
+      db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          resultJson: heartbeatRuns.resultJson,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_terminal_status");
+    expect(run?.resultJson).toMatchObject({ stopReason: "issue_terminal_status" });
+    expect(wakeup?.status).toBe("skipped");
+    expect(wakeup?.error).toContain("terminal status");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
   it("cancels queued max-turn continuations when the issue is no longer in_progress before the run starts", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
