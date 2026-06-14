@@ -54,11 +54,39 @@ async function createCompany(db: ReturnType<typeof createDb>) {
     .then((rows) => rows[0]!);
 }
 
-function mockToolsList(tools: unknown[]) {
-  return vi.spyOn(globalThis, "fetch").mockResolvedValue({
+// Build a Response-like object that mirrors what `fetch` returns for an MCP
+// Streamable HTTP JSON response: `text()`, `json()`, and a `content-type`
+// header. Production now reads the body via `text()` + content-type so it can
+// also decode SSE-framed responses, so test doubles must supply both.
+function mcpHttpResponse(
+  payload: unknown,
+  opts: { contentType?: string; body?: string } = {},
+): Response {
+  const contentType = opts.contentType ?? "application/json";
+  const body = opts.body ?? JSON.stringify(payload);
+  return {
     ok: true,
-    json: async () => ({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools } }),
-  } as Response);
+    status: 200,
+    headers: { get: (name: string) => (name.toLowerCase() === "content-type" ? contentType : null) },
+    text: async () => body,
+    json: async () => payload,
+  } as unknown as Response;
+}
+
+// Build an SSE-framed (`event: message\ndata: {…}`) MCP Streamable HTTP
+// response, the shape a spec-compliant server returns once the request carries
+// the `Accept: application/json, text/event-stream` header.
+function mcpSseResponse(payload: unknown): Response {
+  return mcpHttpResponse(payload, {
+    contentType: "text/event-stream",
+    body: `event: message\ndata: ${JSON.stringify(payload)}\n\n`,
+  });
+}
+
+function mockToolsList(tools: unknown[]) {
+  return vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    mcpHttpResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools } }),
+  );
 }
 
 function createRouteApp(db: ReturnType<typeof createDb>, actor?: Express.Request["actor"]) {
@@ -190,23 +218,20 @@ describeEmbeddedPostgres("tool access service", () => {
       .update(toolCatalogEntries)
       .set({ status: "active", reviewedAt: new Date(), quarantineReason: null, quarantinedAt: null })
       .where(eq(toolCatalogEntries.toolName, "send_email"));
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        jsonrpc: "2.0",
-        id: "paperclip-catalog-refresh",
-        result: {
-          tools: [
-            {
-              name: "send_email",
-              description: "Send an email with attachments.",
-              inputSchema: { type: "object", properties: { to: { type: "string" }, attachment: { type: "string" } } },
-              annotations: { readOnlyHint: false },
-            },
-          ],
-        },
-      }),
-    } as Response);
+    fetchMock.mockResolvedValueOnce(mcpHttpResponse({
+      jsonrpc: "2.0",
+      id: "paperclip-catalog-refresh",
+      result: {
+        tools: [
+          {
+            name: "send_email",
+            description: "Send an email with attachments.",
+            inputSchema: { type: "object", properties: { to: { type: "string" }, attachment: { type: "string" } } },
+            annotations: { readOnlyHint: false },
+          },
+        ],
+      },
+    }));
 
     const secondRefresh = await service.refreshCatalog(connection.id);
 
@@ -220,6 +245,62 @@ describeEmbeddedPostgres("tool access service", () => {
         }),
       ]),
     );
+  });
+
+  it("sends the MCP Streamable HTTP Accept header and decodes an SSE catalog response", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+
+    // Emulate a spec-compliant Streamable HTTP server: 406 unless the request
+    // advertises `Accept: application/json, text/event-stream`, and an
+    // SSE-framed body in response. Regression guard for PAP-11097.
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      const accept = headers.accept ?? headers.Accept ?? "";
+      if (!accept.includes("application/json") || !accept.includes("text/event-stream")) {
+        return {
+          ok: false,
+          status: 406,
+          headers: { get: () => null },
+          text: async () => JSON.stringify({
+            jsonrpc: "2.0",
+            error: { code: -32000, message: "Not Acceptable: Client must accept both application/json and text/event-stream" },
+            id: null,
+          }),
+        } as unknown as Response;
+      }
+      return mcpSseResponse({
+        jsonrpc: "2.0",
+        id: "paperclip-catalog-refresh",
+        result: { tools: [{ name: "kv_get", description: "Read a value.", annotations: { readOnlyHint: true } }] },
+      });
+    });
+
+    const connection = await service.createConnection(company.id, {
+      name: "Streamable HTTP fixture",
+      transport: "remote_http",
+      config: { url: "http://127.0.0.1:8848/mcp" },
+      enabled: true,
+      status: "active",
+    });
+
+    const refresh = await service.refreshCatalog(connection.id, { actorType: "user", actorId: "board" });
+
+    expect(refresh.discoveredCount).toBe(1);
+    expect(refresh.catalog).toEqual(
+      expect.arrayContaining([expect.objectContaining({ toolName: "kv_get", riskLevel: "read" })]),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8848/mcp",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ accept: "application/json, text/event-stream" }),
+      }),
+    );
+
+    // The same probe backs the periodic health sweep, so it must also pass.
+    const health = await service.checkHealth(connection.id);
+    expect(health.connection.healthStatus).toBe("ok");
   });
 
   it("registers an approved local stdio template and exposes its runtime slot", async () => {
@@ -1158,19 +1239,16 @@ describeEmbeddedPostgres("tool access service", () => {
       }
       if (href === "https://mcp.slack.com/mcp") {
         expect(init?.headers).toEqual(expect.objectContaining({ Authorization: "Bearer access-token" }));
-        return {
-          ok: true,
-          json: async () => ({
-            jsonrpc: "2.0",
-            id: "paperclip-catalog-refresh",
-            result: {
-              tools: [
-                { name: "search_messages", description: "Search messages.", annotations: { readOnlyHint: true } },
-                { name: "send_message", description: "Send a message.", annotations: { readOnlyHint: false } },
-              ],
-            },
-          }),
-        } as Response;
+        return mcpHttpResponse({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          result: {
+            tools: [
+              { name: "search_messages", description: "Search messages.", annotations: { readOnlyHint: true } },
+              { name: "send_message", description: "Send a message.", annotations: { readOnlyHint: false } },
+            ],
+          },
+        });
       }
       throw new Error(`unexpected fetch ${href}`);
     });
@@ -1311,14 +1389,11 @@ describeEmbeddedPostgres("tool access service", () => {
       }
       if (href === "https://mcp.slack.com/mcp") {
         expect(init?.headers).toEqual(expect.objectContaining({ Authorization: "Bearer bound-access-token" }));
-        return {
-          ok: true,
-          json: async () => ({
-            jsonrpc: "2.0",
-            id: "paperclip-catalog-refresh",
-            result: { tools: [{ name: "search_messages", annotations: { readOnlyHint: true } }] },
-          }),
-        } as Response;
+        return mcpHttpResponse({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          result: { tools: [{ name: "search_messages", annotations: { readOnlyHint: true } }] },
+        });
       }
       throw new Error(`unexpected fetch ${href}`);
     });
@@ -1372,14 +1447,11 @@ describeEmbeddedPostgres("tool access service", () => {
         } as Response;
       }
       if (href === "https://mcp.slack.com/mcp") {
-        return {
-          ok: true,
-          json: async () => ({
-            jsonrpc: "2.0",
-            id: "paperclip-catalog-refresh",
-            result: { tools: [{ name: "search_messages", annotations: { readOnlyHint: true } }] },
-          }),
-        } as Response;
+        return mcpHttpResponse({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          result: { tools: [{ name: "search_messages", annotations: { readOnlyHint: true } }] },
+        });
       }
       throw new Error(`unexpected fetch ${href}`);
     });
@@ -2102,35 +2174,32 @@ describeEmbeddedPostgres("tool access service", () => {
       ]),
     );
 
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        jsonrpc: "2.0",
-        id: "paperclip-catalog-refresh",
-        result: {
-          tools: [
-            {
-              name: "list_zaps",
-              description: "List Zapier actions.",
-              inputSchema: { type: "object", properties: {} },
-              annotations: { readOnlyHint: true },
-            },
-            {
-              name: "update_zap",
-              description: "Update a Zapier action with new args.",
-              inputSchema: { type: "object", properties: { id: { type: "string" }, label: { type: "string" } } },
-              annotations: { readOnlyHint: false },
-            },
-            {
-              name: "create_zap",
-              description: "Create a Zapier action.",
-              inputSchema: { type: "object", properties: { label: { type: "string" } } },
-              annotations: { readOnlyHint: false },
-            },
-          ],
-        },
-      }),
-    } as Response);
+    fetchMock.mockResolvedValueOnce(mcpHttpResponse({
+      jsonrpc: "2.0",
+      id: "paperclip-catalog-refresh",
+      result: {
+        tools: [
+          {
+            name: "list_zaps",
+            description: "List Zapier actions.",
+            inputSchema: { type: "object", properties: {} },
+            annotations: { readOnlyHint: true },
+          },
+          {
+            name: "update_zap",
+            description: "Update a Zapier action with new args.",
+            inputSchema: { type: "object", properties: { id: { type: "string" }, label: { type: "string" } } },
+            annotations: { readOnlyHint: false },
+          },
+          {
+            name: "create_zap",
+            description: "Create a Zapier action.",
+            inputSchema: { type: "object", properties: { label: { type: "string" } } },
+            annotations: { readOnlyHint: false },
+          },
+        ],
+      },
+    }));
     const rereview = await service.refreshCatalog(connect.connectionId, { actorType: "user", actorId: "board" });
     expect(rereview.quarantinedCount).toBe(2);
     expect(rereview.catalog).toEqual(

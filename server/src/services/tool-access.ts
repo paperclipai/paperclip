@@ -93,6 +93,7 @@ import type {
 import { getToolAppGalleryEntry, isToolConnectionAttentionHealth } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
+import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
 import { secretService } from "./secrets.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { createToolRuntimeSupervisor, ToolRuntimeSupervisorError } from "./tool-runtime-supervisor.js";
@@ -1798,10 +1799,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const headers = await resolveCredentialHeaders(connection);
     const response = await fetch(remoteEndpoint(connection.config), {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...headers,
-      },
+      // MCP Streamable HTTP requires advertising that we accept both a JSON body
+      // and an SSE stream; spec-compliant servers 406 without it (see mcp-http.ts).
+      headers: mcpHttpRequestHeaders(headers),
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: "paperclip-catalog-refresh",
@@ -1819,7 +1819,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       }
       throw new HttpError(502, "Remote app returned an error", { status: response.status });
     }
-    const payload = await response.json() as unknown;
+    const payload = parseMcpHttpResponseBody(await response.text(), response.headers.get("content-type"));
     const result = asRecord(asRecord(payload).result);
     const payloadTools = asRecord(payload).tools;
     const tools: unknown[] = Array.isArray(result.tools) ? result.tools : Array.isArray(payloadTools) ? payloadTools : [];

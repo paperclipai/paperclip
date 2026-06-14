@@ -25,6 +25,7 @@ import type { DeploymentExposure, DeploymentMode, ToolAccessDecision, ToolAccess
 import type { AgentToolDescriptor, PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
 import { secretService } from "./secrets.js";
+import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
@@ -1428,10 +1429,9 @@ export function createToolGatewayService(
     try {
       const response = await fetch(endpoint, {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...headers,
-        },
+        // MCP Streamable HTTP requires the Accept header advertising both a JSON
+        // body and an SSE stream; spec-compliant servers 406 without it.
+        headers: mcpHttpRequestHeaders(headers),
         signal: controller.signal,
         body: JSON.stringify({
           jsonrpc: "2.0",
@@ -1454,7 +1454,7 @@ export function createToolGatewayService(
       }
       let payload: unknown;
       try {
-        payload = JSON.parse(body);
+        payload = parseMcpHttpResponseBody(body, response.headers.get("content-type"));
       } catch {
         await markRemoteConnectionHealth(connection, "error", "Remote MCP server returned invalid JSON.");
         throw new ToolGatewayHttpError(502, "Remote MCP server returned invalid JSON", "remote_http_invalid_json", {

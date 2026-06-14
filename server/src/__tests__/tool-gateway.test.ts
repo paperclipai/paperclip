@@ -729,6 +729,8 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         },
       });
       expect(fake.requests).toHaveLength(1);
+      // Streamable HTTP requires advertising both JSON and SSE on the call (PAP-11097).
+      expect(fake.requests[0]!.headers.accept).toBe("application/json, text/event-stream");
       expect(fake.requests[0]!.body).toMatchObject({
         method: "tools/call",
         params: {
@@ -822,6 +824,58 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         activity: await db.select().from(activityLog),
       });
       expect(persisted).not.toContain(credentialValue);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("decodes an SSE-framed tools/call response from a spec-compliant Streamable HTTP server", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    // Spec-compliant server: 406 unless the request advertises both content
+    // types, and replies with an SSE-framed body (PAP-11097).
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => {
+      const accept = String(fakeRequest.headers.accept ?? "");
+      if (!accept.includes("application/json") || !accept.includes("text/event-stream")) {
+        return { status: 406, rawBody: "Not Acceptable" };
+      }
+      const message = {
+        jsonrpc: "2.0",
+        id: fakeRequest.body?.id,
+        result: { content: [{ type: "text", text: "sse ok" }], structuredContent: { via: "sse" } },
+      };
+      return {
+        headers: { "content-type": "text/event-stream" },
+        rawBody: `event: message\ndata: ${JSON.stringify(message)}\n\n`,
+      };
+    });
+    try {
+      await createRemoteMcpTool(db, company.id, {
+        applicationKey: "kv-demo",
+        connectionName: "KV Demo SSE",
+        toolName: "kv_set",
+        title: "Set KV value",
+        url: fake.url,
+        credentialRefs: [],
+        credentialSecretRefs: [],
+      });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const connectedTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.providerType === "mcp_remote_http");
+      expect(connectedTool).toBeTruthy();
+
+      const result = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: { key: "alpha", value: "one" },
+      });
+      expect(result).toMatchObject({
+        status: "completed",
+        result: { content: "sse ok", data: { structuredContent: { via: "sse" }, transport: "mcp_http" } },
+      });
     } finally {
       await fake.close();
     }
