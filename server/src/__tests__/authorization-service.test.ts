@@ -520,6 +520,80 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("allows active board members to read agents, issues, and projects without explicit grants", async () => {
+    const company = await createCompany(db, "BoardMemberRead");
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+
+    for (const role of ["operator", "viewer"] as const) {
+      const userId = `user-${randomUUID()}`;
+      await db.insert(companyMemberships).values({
+        companyId: company.id,
+        principalType: "user",
+        principalId: userId,
+        status: "active",
+        membershipRole: role,
+      });
+
+      const auth = authorizationService(db);
+      const actor = { type: "board", userId, source: "session" } as const;
+
+      const agentRead = await auth.decide({
+        actor,
+        action: "agent:read",
+        resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+      });
+      expect(agentRead).toMatchObject({ allowed: true, reason: "allow_company_member_read" });
+
+      const issueRead = await auth.decide({
+        actor,
+        action: "issue:read",
+        resource: { type: "issue", companyId: company.id },
+      });
+      expect(issueRead).toMatchObject({ allowed: true, reason: "allow_company_member_read" });
+
+      const projectRead = await auth.decide({
+        actor,
+        action: "project:read",
+        resource: { type: "project", companyId: company.id },
+      });
+      expect(projectRead).toMatchObject({ allowed: true, reason: "allow_company_member_read" });
+    }
+  });
+
+  it("does not let board member read access leak sensitive null-mapped actions", async () => {
+    const company = await createCompany(db, "BoardMemberReadSensitive");
+    const userId = `user-${randomUUID()}`;
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "operator",
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "board", userId, source: "session" },
+      action: "secrets:read",
+      resource: { type: "company", companyId: company.id },
+    });
+
+    expect(decision).toMatchObject({ allowed: false, reason: "deny_unsupported_action" });
+  });
+
+  it("denies agent reads for board users who are not active members of the company", async () => {
+    const company = await createCompany(db, "BoardNonMemberRead");
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    const userId = `user-${randomUUID()}`;
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "board", userId, source: "session" },
+      action: "agent:read",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({ allowed: false, reason: "deny_missing_membership" });
+  });
+
   it("denies simple-mode assignment to a target agent from another company", async () => {
     const sourceCompany = await createCompany(db, "AssignmentSource");
     const targetCompany = await createCompany(db, "AssignmentTarget");
