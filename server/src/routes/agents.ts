@@ -1793,7 +1793,16 @@ export function agentRoutes(
     const result = await filterAgentsForActor(req, await svc.list(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      if (req.actor.type === "agent") {
+        // Agent-to-agent cross-read: redact every env value unconditionally (ANT-2673 Defect 1).
+        res.json(result.map((agent) => ({
+          ...agent,
+          adapterConfig: redactAdapterConfig(agent.adapterConfig as Record<string, unknown> | null),
+          runtimeConfig: redactAdapterConfig(agent.runtimeConfig as Record<string, unknown> | null),
+        })));
+      } else {
+        res.json(result);
+      }
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
