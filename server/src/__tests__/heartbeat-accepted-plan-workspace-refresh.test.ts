@@ -7,15 +7,26 @@ import { promisify } from "node:util";
 import { eq, ne } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
+  agentRuntimeState,
   agentTaskSessions,
+  agentWakeupRequests,
   agents,
   companies,
+  companySkills,
   createDb,
+  documentRevisions,
+  documents,
   executionWorkspaces,
+  heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
+  issueDocuments,
+  issuePlanDecompositions,
   issues,
   projects,
   projectWorkspaces,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -97,12 +108,82 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       const root = tempRoots.pop();
       if (root) await rm(root, { recursive: true, force: true }).catch(() => undefined);
     }
+    await db.delete(issuePlanDecompositions);
+    await db.delete(issueDocuments);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
+    await db.delete(agentTaskSessions);
+    await db.delete(executionWorkspaces);
+    await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
+    await db.delete(heartbeatRuns);
+    await db.delete(issueComments);
+    await db.delete(issues);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(agentWakeupRequests);
+    await db.delete(agentRuntimeState);
+    await db.delete(agents);
+    await db.delete(workspaceOperations);
+    await db.delete(companySkills);
+    await db.delete(companies);
   });
 
   afterAll(async () => {
     await db.$client.end();
     await tempDb?.cleanup();
   });
+
+  async function seedAcceptedPlanClaim(args: {
+    companyId: string;
+    issueId: string;
+    ownerAgentId: string;
+    status?: "in_flight" | "completed";
+  }) {
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+
+    await db.insert(documents).values({
+      id: documentId,
+      companyId: args.companyId,
+      title: "Plan",
+      format: "markdown",
+      latestBody: "Plan body",
+      latestRevisionId: revisionId,
+      latestRevisionNumber: 1,
+      createdByAgentId: args.ownerAgentId,
+      updatedByAgentId: args.ownerAgentId,
+    });
+    await db.insert(documentRevisions).values({
+      id: revisionId,
+      companyId: args.companyId,
+      documentId,
+      revisionNumber: 1,
+      title: "Plan",
+      format: "markdown",
+      body: "Plan body",
+      createdByAgentId: args.ownerAgentId,
+    });
+    await db.insert(issueDocuments).values({
+      companyId: args.companyId,
+      issueId: args.issueId,
+      documentId,
+      key: "plan",
+    });
+    await db.insert(issuePlanDecompositions).values({
+      companyId: args.companyId,
+      sourceIssueId: args.issueId,
+      acceptedPlanRevisionId: revisionId,
+      status: args.status ?? "in_flight",
+      requestFingerprint: `claim:${args.issueId}`,
+      requestedChildCount: 1,
+      requestedChildren: [{ title: "child-1" }],
+      childIssueIds: [],
+      ownerAgentId: args.ownerAgentId,
+      updatedAt: new Date(),
+      ...(args.status === "completed" ? { completedAt: new Date() } : {}),
+    });
+  }
 
   it("realizes an isolated workspace and drops stale shared task-session params before executing", async () => {
     const companyId = randomUUID();
@@ -275,5 +356,452 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       sourceIssueId: issueId,
     });
     expect(isolatedRows[0]?.cwd).not.toBe(repoRoot);
+  }, 20_000);
+
+  it("forces a fresh session and suppresses accepted-plan continuation when another issue owns the in-flight claim", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const issueId = randomUUID();
+    const otherPlanningIssueId = randomUUID();
+    const agentId = randomUUID();
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+
+    await instanceSettingsService(db).updateExperimental({
+      enableIsolatedWorkspaces: false,
+    });
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Accepted Plan Routing",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      cwd: repoRoot,
+      isPrimary: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        title: "Later planning wake",
+        status: "in_progress",
+        workMode: "planning",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        identifier: "PAP-9301",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: otherPlanningIssueId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        title: "Earlier accepted plan",
+        status: "in_progress",
+        workMode: "planning",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        identifier: "PAP-9302",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    await seedAcceptedPlanClaim({
+      companyId,
+      issueId: otherPlanningIssueId,
+      ownerAgentId: agentId,
+      status: "in_flight",
+    });
+    await db.insert(agentTaskSessions).values({
+      companyId,
+      agentId,
+      adapterType: "codex_local",
+      taskKey: issueId,
+      sessionParamsJson: {
+        sessionId: "stale-cross-issue-session",
+        cwd: repoRoot,
+      },
+      sessionDisplayId: "stale-cross-issue-session",
+    });
+    adapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, issueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        sessionParams: { sessionId: "fresh-session" },
+        sessionDisplayId: "fresh-session",
+        summary: "Suppressed cross-issue accepted-plan continuation.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: {
+        issueId,
+        interactionId: "interaction-cross-issue",
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        mutation: "interaction",
+      },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_blockers_resolved",
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+      },
+    });
+
+    expect(run).not.toBeNull();
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(run!.id);
+      expect(latest?.status).toBe("succeeded");
+    }, { timeout: 10_000 });
+
+    expect(adapterExecute).toHaveBeenCalledTimes(1);
+    const adapterInput = adapterExecute.mock.calls[0]?.[0] as {
+      runtime: { sessionId: string | null; sessionParams: Record<string, unknown> | null };
+      context: Record<string, unknown>;
+    };
+    expect(adapterInput.runtime.sessionId).toBeNull();
+    expect(adapterInput.runtime.sessionParams).toBeNull();
+    expect(adapterInput.context.acceptedPlanWakeRouting).toEqual(expect.objectContaining({
+      reason: "other_issue_claim_in_flight",
+      otherActiveClaimIssueId: otherPlanningIssueId,
+      otherActiveClaimIdentifier: "PAP-9302",
+    }));
+    expect(adapterInput.context.paperclipTaskMarkdown).toContain("Make the plan only.");
+    expect(adapterInput.context.paperclipTaskMarkdown).not.toContain("Create child issues from the approved plan only");
+  }, 20_000);
+
+  it("guards cross-issue accepted-plan retries even when the waking issue is standard work mode", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const issueId = randomUUID();
+    const otherPlanningIssueId = randomUUID();
+    const agentId = randomUUID();
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+
+    await instanceSettingsService(db).updateExperimental({
+      enableIsolatedWorkspaces: false,
+    });
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Accepted Plan Routing",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      cwd: repoRoot,
+      isPrimary: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        title: "Implementation wake after accepted plan",
+        status: "in_progress",
+        workMode: "standard",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        identifier: "PAP-9401",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: otherPlanningIssueId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        title: "Earlier accepted plan",
+        status: "in_progress",
+        workMode: "planning",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        identifier: "PAP-9402",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+    await seedAcceptedPlanClaim({
+      companyId,
+      issueId: otherPlanningIssueId,
+      ownerAgentId: agentId,
+      status: "in_flight",
+    });
+    await db.insert(agentTaskSessions).values({
+      companyId,
+      agentId,
+      adapterType: "codex_local",
+      taskKey: issueId,
+      sessionParamsJson: {
+        sessionId: "stale-standard-cross-issue-session",
+        cwd: repoRoot,
+      },
+      sessionDisplayId: "stale-standard-cross-issue-session",
+    });
+    adapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, issueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        sessionParams: { sessionId: "fresh-session" },
+        sessionDisplayId: "fresh-session",
+        summary: "Suppressed cross-issue accepted-plan continuation for a standard-work wake.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId,
+        interactionId: "interaction-standard-cross-issue",
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        mutation: "interaction",
+      },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_commented",
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        forceFreshSession: true,
+        workspaceRefreshReason: "accepted_plan_confirmation",
+      },
+    });
+
+    expect(run).not.toBeNull();
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(run!.id);
+      expect(latest?.status).toBe("succeeded");
+    }, { timeout: 10_000 });
+
+    expect(adapterExecute).toHaveBeenCalledTimes(1);
+    const adapterInput = adapterExecute.mock.calls[0]?.[0] as {
+      runtime: { sessionId: string | null; sessionParams: Record<string, unknown> | null };
+      context: Record<string, unknown>;
+    };
+    expect(adapterInput.runtime.sessionId).toBeNull();
+    expect(adapterInput.runtime.sessionParams).toBeNull();
+    expect(adapterInput.context.acceptedPlanWakeRouting).toEqual(expect.objectContaining({
+      reason: "other_issue_claim_in_flight",
+      otherActiveClaimIssueId: otherPlanningIssueId,
+      otherActiveClaimIdentifier: "PAP-9402",
+    }));
+    expect(adapterInput.context.paperclipTaskMarkdown).toContain("Issue: \"PAP-9401\"");
+    expect(adapterInput.context.paperclipTaskMarkdown).not.toContain("Create child issues from the approved plan only");
+  }, 20_000);
+
+  it("preserves accepted-plan continuation resume state when the wake issue owns the in-flight claim", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+
+    await instanceSettingsService(db).updateExperimental({
+      enableIsolatedWorkspaces: false,
+    });
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Accepted Plan Retry",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      cwd: repoRoot,
+      isPrimary: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Accepted plan retry",
+      status: "in_progress",
+      workMode: "planning",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      identifier: "PAP-9303",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await seedAcceptedPlanClaim({
+      companyId,
+      issueId,
+      ownerAgentId: agentId,
+      status: "in_flight",
+    });
+    await db.insert(agentTaskSessions).values({
+      companyId,
+      agentId,
+      adapterType: "codex_local",
+      taskKey: issueId,
+      sessionParamsJson: {
+        sessionId: "accepted-plan-retry-session",
+        cwd: repoRoot,
+      },
+      sessionDisplayId: "accepted-plan-retry-session",
+    });
+    adapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, issueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        sessionParams: { sessionId: "accepted-plan-retry-session" },
+        sessionDisplayId: "accepted-plan-retry-session",
+        summary: "Resumed accepted-plan continuation for the same issue.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: {
+        issueId,
+        interactionId: "interaction-same-issue",
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        mutation: "interaction",
+      },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_blockers_resolved",
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+      },
+    });
+
+    expect(run).not.toBeNull();
+    await vi.waitFor(async () => {
+      const latest = await heartbeat.getRun(run!.id);
+      expect(latest?.status).toBe("succeeded");
+    }, { timeout: 10_000 });
+
+    expect(adapterExecute).toHaveBeenCalledTimes(1);
+    const adapterInput = adapterExecute.mock.calls[0]?.[0] as {
+      runtime: { sessionId: string | null; sessionParams: Record<string, unknown> | null };
+      context: Record<string, unknown>;
+    };
+    expect(adapterInput.runtime.sessionId).toBe("accepted-plan-retry-session");
+    expect(adapterInput.context.acceptedPlanWakeRouting).toBeUndefined();
+    expect(adapterInput.context.paperclipTaskMarkdown).toContain("Create child issues from the approved plan only");
   }, 20_000);
 });

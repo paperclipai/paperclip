@@ -12,8 +12,28 @@ const mockAccessService = vi.hoisted(() => ({
 }));
 
 const mockCompanySkillService = vi.hoisted(() => ({
+  list: vi.fn(),
+  categoryCounts: vi.fn(),
+  detail: vi.fn(),
+  listVersions: vi.fn(),
+  getVersion: vi.fn(),
+  createVersion: vi.fn(),
+  starSkill: vi.fn(),
+  unstarSkill: vi.fn(),
+  forkSkill: vi.fn(),
+  listComments: vi.fn(),
+  createComment: vi.fn(),
+  updateComment: vi.fn(),
+  deleteComment: vi.fn(),
   importFromSource: vi.fn(),
+  installFromCatalog: vi.fn(),
   deleteSkill: vi.fn(),
+}));
+
+const mockCatalogService = vi.hoisted(() => ({
+  listCatalogSkills: vi.fn(),
+  getCatalogSkillOrThrow: vi.fn(),
+  readCatalogSkillFile: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -48,6 +68,8 @@ function registerModuleMocks() {
     companySkillService: () => mockCompanySkillService,
   }));
 
+  vi.doMock("../services/skills-catalog.js", () => mockCatalogService);
+
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     agentService: () => mockAgentService,
@@ -81,6 +103,7 @@ describe("company skill mutation permissions", () => {
     vi.doUnmock("../services/activity-log.js");
     vi.doUnmock("../services/agents.js");
     vi.doUnmock("../services/company-skills.js");
+    vi.doUnmock("../services/skills-catalog.js");
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/company-skills.js");
     vi.doUnmock("../routes/authz.js");
@@ -92,10 +115,178 @@ describe("company skill mutation permissions", () => {
       imported: [],
       warnings: [],
     });
+    mockCompanySkillService.list.mockResolvedValue([]);
+    mockCompanySkillService.categoryCounts.mockResolvedValue([]);
+    mockCompanySkillService.detail.mockResolvedValue(null);
+    mockCompanySkillService.listVersions.mockResolvedValue([]);
+    mockCompanySkillService.getVersion.mockResolvedValue(null);
+    mockCompanySkillService.createVersion.mockResolvedValue({
+      id: "version-1",
+      companyId: "company-1",
+      companySkillId: "skill-1",
+      revisionNumber: 1,
+      label: "v1",
+      fileInventory: [{ path: "SKILL.md", kind: "skill", content: "# Skill" }],
+      authorAgentId: null,
+      authorUserId: "board",
+      createdAt: new Date("2026-05-26T00:00:00.000Z"),
+    });
+    mockCompanySkillService.starSkill.mockResolvedValue({
+      skillId: "skill-1",
+      starred: true,
+      starCount: 1,
+    });
+    mockCompanySkillService.unstarSkill.mockResolvedValue({
+      skillId: "skill-1",
+      starred: false,
+      starCount: 0,
+    });
+    mockCompanySkillService.forkSkill.mockResolvedValue({
+      id: "skill-fork",
+      companyId: "company-1",
+      key: "company/company-1/review-fork",
+      slug: "review-fork",
+      name: "Review Fork",
+      description: null,
+      markdown: "# Review",
+      sourceType: "local_path",
+      sourceLocator: "/tmp/review-fork",
+      sourceRef: null,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      iconUrl: null,
+      color: null,
+      tagline: null,
+      authorName: null,
+      homepageUrl: null,
+      categories: [],
+      sharingScope: "company",
+      publicShareToken: null,
+      forkedFromSkillId: "skill-1",
+      forkedFromCompanyId: "company-1",
+      starCount: 0,
+      installCount: 1,
+      forkCount: 0,
+      currentVersionId: null,
+      metadata: null,
+      createdAt: new Date("2026-05-26T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-26T00:00:00.000Z"),
+    });
+    mockCompanySkillService.listComments.mockResolvedValue([]);
+    mockCompanySkillService.createComment.mockResolvedValue({
+      id: "comment-1",
+      companyId: "company-1",
+      companySkillId: "skill-1",
+      parentCommentId: null,
+      authorAgentId: null,
+      authorUserId: "board",
+      body: "Looks good",
+      deletedAt: null,
+      createdAt: new Date("2026-05-26T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-26T00:00:00.000Z"),
+    });
+    mockCompanySkillService.updateComment.mockResolvedValue({
+      id: "comment-1",
+      companyId: "company-1",
+      companySkillId: "skill-1",
+      parentCommentId: null,
+      authorAgentId: null,
+      authorUserId: "board",
+      body: "Updated",
+      deletedAt: null,
+      createdAt: new Date("2026-05-26T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-26T00:00:00.000Z"),
+    });
+    mockCompanySkillService.deleteComment.mockResolvedValue({
+      id: "comment-1",
+      companyId: "company-1",
+      companySkillId: "skill-1",
+      parentCommentId: null,
+      authorAgentId: null,
+      authorUserId: "board",
+      body: "Updated",
+      deletedAt: new Date("2026-05-26T00:01:00.000Z"),
+      createdAt: new Date("2026-05-26T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-26T00:01:00.000Z"),
+    });
+    mockCompanySkillService.installFromCatalog.mockResolvedValue({
+      action: "created",
+      skill: {
+        id: "skill-1",
+        companyId: "company-1",
+        key: "paperclipai/bundled/software-development/review",
+        slug: "review",
+        name: "review",
+        description: "Review code",
+        markdown: "# Review",
+        sourceType: "catalog",
+        sourceLocator: "/tmp/review",
+        sourceRef: "sha256:abc",
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+        fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+        metadata: {
+          sourceKind: "catalog",
+          catalogId: "paperclipai:bundled:software-development:review",
+          originHash: "sha256:abc",
+        },
+        createdAt: new Date("2026-05-26T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-26T00:00:00.000Z"),
+      },
+      catalogSkill: {
+        id: "paperclipai:bundled:software-development:review",
+        key: "paperclipai/bundled/software-development/review",
+        kind: "bundled",
+        category: "software-development",
+        slug: "review",
+        name: "review",
+        description: "Review code",
+        path: "catalog/bundled/software-development/review",
+        entrypoint: "SKILL.md",
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+        defaultInstall: false,
+        recommendedForRoles: ["engineer"],
+        requires: [],
+        tags: ["review"],
+        files: [{ path: "SKILL.md", kind: "skill", sizeBytes: 8, sha256: "abc" }],
+        contentHash: "sha256:abc",
+      },
+      warnings: [],
+    });
     mockCompanySkillService.deleteSkill.mockResolvedValue({
       id: "skill-1",
       slug: "find-skills",
       name: "Find Skills",
+    });
+    mockCatalogService.listCatalogSkills.mockReturnValue([]);
+    mockCatalogService.getCatalogSkillOrThrow.mockReturnValue({
+      id: "paperclipai:bundled:software-development:review",
+      key: "paperclipai/bundled/software-development/review",
+      kind: "bundled",
+      category: "software-development",
+      slug: "review",
+      name: "review",
+      description: "Review code",
+      path: "catalog/bundled/software-development/review",
+      entrypoint: "SKILL.md",
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      defaultInstall: false,
+      recommendedForRoles: ["engineer"],
+      requires: [],
+      tags: ["review"],
+      files: [{ path: "SKILL.md", kind: "skill", sizeBytes: 8, sha256: "abc" }],
+      contentHash: "sha256:abc",
+    });
+    mockCatalogService.readCatalogSkillFile.mockResolvedValue({
+      catalogSkillId: "paperclipai:bundled:software-development:review",
+      path: "SKILL.md",
+      kind: "skill",
+      content: "# Review",
+      language: "markdown",
+      markdown: true,
     });
     mockLogActivity.mockResolvedValue(undefined);
     mockAccessService.canUser.mockResolvedValue(true);
@@ -118,6 +309,113 @@ describe("company skill mutation permissions", () => {
       imported: [],
       warnings: [],
     });
+  });
+
+  it("serves catalog listing without mutating company skills", async () => {
+    mockCatalogService.listCatalogSkills.mockReturnValue([
+      {
+        id: "paperclipai:bundled:software-development:review",
+        key: "paperclipai/bundled/software-development/review",
+        kind: "bundled",
+        category: "software-development",
+        slug: "review",
+        name: "review",
+        description: "Review code",
+        path: "catalog/bundled/software-development/review",
+        entrypoint: "SKILL.md",
+        trustLevel: "markdown_only",
+        compatibility: "compatible",
+        defaultInstall: false,
+        recommendedForRoles: ["engineer"],
+        requires: [],
+        tags: ["review"],
+        files: [{ path: "SKILL.md", kind: "skill", sizeBytes: 8, sha256: "abc" }],
+        contentHash: "sha256:abc",
+      },
+    ]);
+
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .get("/api/skills/catalog?kind=bundled&q=review");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCatalogService.listCatalogSkills).toHaveBeenCalledWith({ kind: "bundled", q: "review" });
+    expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
+    expect(mockCompanySkillService.installFromCatalog).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("requires authentication for catalog read routes", async () => {
+    const app = await createApp({ type: "none" });
+
+    const list = await request(app).get("/api/skills/catalog");
+    const detail = await request(app).get("/api/skills/catalog/review");
+    const file = await request(app).get("/api/skills/catalog/review/files?path=SKILL.md");
+
+    expect(list.status, JSON.stringify(list.body)).toBe(401);
+    expect(detail.status, JSON.stringify(detail.body)).toBe(401);
+    expect(file.status, JSON.stringify(file.body)).toBe(401);
+    expect(mockCatalogService.listCatalogSkills).not.toHaveBeenCalled();
+    expect(mockCatalogService.getCatalogSkillOrThrow).not.toHaveBeenCalled();
+    expect(mockCatalogService.readCatalogSkillFile).not.toHaveBeenCalled();
+  });
+
+  it("serves catalog detail and files by catalog reference", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    });
+
+    const detail = await request(app)
+      .get("/api/skills/catalog/review");
+    const file = await request(app)
+      .get("/api/skills/catalog/review/files?path=SKILL.md");
+
+    expect(detail.status, JSON.stringify(detail.body)).toBe(200);
+    expect(file.status, JSON.stringify(file.body)).toBe(200);
+    expect(mockCatalogService.getCatalogSkillOrThrow).toHaveBeenCalledWith("review");
+    expect(mockCatalogService.readCatalogSkillFile).toHaveBeenCalledWith("review", "SKILL.md");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("installs catalog skills with mutation permissions and logs provenance", async () => {
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/install-catalog")
+      .send({
+        catalogSkillId: "paperclipai:bundled:software-development:review",
+        slug: "review",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockCompanySkillService.installFromCatalog).toHaveBeenCalledWith("company-1", {
+      catalogSkillId: "paperclipai:bundled:software-development:review",
+      slug: "review",
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId: "company-1",
+      action: "company.skill_catalog_installed",
+      entityType: "company_skill",
+      entityId: "skill-1",
+      details: expect.objectContaining({
+        catalogId: "paperclipai:bundled:software-development:review",
+        catalogKey: "paperclipai/bundled/software-development/review",
+        originHash: "sha256:abc",
+      }),
+    }));
   });
 
   it("tracks public GitHub skill imports with an explicit skill reference", async () => {
@@ -272,6 +570,108 @@ describe("company skill mutation permissions", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
+  });
+
+  it("blocks agent catalog installs for other companies", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      permissions: { canCreateAgents: true },
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .post("/api/companies/company-2/skills/install-catalog")
+      .send({ catalogSkillId: "paperclipai:bundled:software-development:review" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockCompanySkillService.installFromCatalog).not.toHaveBeenCalled();
+  });
+
+  it("passes store list filters and category count requests to the service", async () => {
+    const app = await createApp({ type: "board", source: "local_implicit" });
+
+    await request(app)
+      .get("/api/companies/company-1/skills?sort=stars&categories[]=memory&category=git&scope=company&q=review")
+      .expect(200);
+    expect(mockCompanySkillService.list).toHaveBeenCalledWith("company-1", {
+      q: "review",
+      sort: "stars",
+      categories: ["git", "memory"],
+      scope: "company",
+    });
+
+    await request(app).get("/api/companies/company-1/skills/categories").expect(200);
+    expect(mockCompanySkillService.categoryCounts).toHaveBeenCalledWith("company-1");
+  });
+
+  it("creates skill versions and logs the mutation", async () => {
+    const app = await createApp({ type: "board", source: "local_implicit", userId: "user-1" });
+
+    await request(app)
+      .post("/api/companies/company-1/skills/skill-1/versions")
+      .send({ label: "v1" })
+      .expect(201);
+
+    expect(mockCompanySkillService.createVersion).toHaveBeenCalledWith("company-1", "skill-1", { label: "v1" }, {
+      type: "user",
+      userId: "user-1",
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.skill_version_created",
+      entityType: "company_skill_version",
+      entityId: "version-1",
+    }));
+  });
+
+  it("stars, forks, and comments on skills through company-scoped endpoints", async () => {
+    const app = await createApp({ type: "board", source: "local_implicit", userId: "user-1" });
+
+    await request(app).post("/api/companies/company-1/skills/skill-1/star").send({}).expect(200);
+    expect(mockCompanySkillService.starSkill).toHaveBeenCalledWith("company-1", "skill-1", {
+      type: "user",
+      userId: "user-1",
+    });
+
+    await request(app).post("/api/companies/company-1/skills/skill-1/fork").send({ slug: "review-fork" }).expect(201);
+    expect(mockCompanySkillService.forkSkill).toHaveBeenCalledWith("company-1", "skill-1", { slug: "review-fork" }, {
+      type: "user",
+      userId: "user-1",
+    });
+
+    await request(app).post("/api/companies/company-1/skills/skill-1/comments").send({ body: "Looks good" }).expect(201);
+    expect(mockCompanySkillService.createComment).toHaveBeenCalledWith("company-1", "skill-1", { body: "Looks good" }, {
+      type: "user",
+      userId: "user-1",
+    });
+
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.skill_starred",
+      entityId: "skill-1",
+    }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.skill_forked",
+      entityId: "skill-fork",
+    }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.skill_comment_created",
+      entityId: "comment-1",
+    }));
+  });
+
+  it("does not synthesize a shared board user id for board actors without user ids", async () => {
+    const app = await createApp({ type: "board", source: "local_implicit" });
+
+    await request(app).post("/api/companies/company-1/skills/skill-1/star").send({}).expect(200);
+
+    expect(mockCompanySkillService.starSkill).toHaveBeenCalledWith("company-1", "skill-1", {
+      type: "user",
+      userId: null,
+    });
   });
 
   it("allows agents with canCreateAgents to mutate company skills", async () => {

@@ -1,20 +1,23 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   projects,
   projectGoals,
   goals,
+  issues,
+  budgetPolicies,
   pluginManagedResources,
   plugins,
   projectWorkspaces,
   workspaceRuntimeServices,
 } from "@paperclipai/db";
 import {
-  PROJECT_COLORS,
   deriveProjectUrlKey,
   hasNonAsciiContent,
   isUuidLike,
   normalizeProjectUrlKey,
+  type BudgetWindowKind,
+  type ProjectBudgetSummary,
   type ProjectCodebase,
   type ProjectExecutionWorkspacePolicy,
   type ProjectGoalRef,
@@ -62,6 +65,8 @@ interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> 
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
   managedByPlugin: ProjectManagedByPlugin | null;
+  taskCount?: number;
+  budget?: ProjectBudgetSummary | null;
 }
 
 interface ProjectShortnameRow {
@@ -315,6 +320,86 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
   });
 }
 
+type TaskCountRow = { projectId: string | null; count: number };
+type ProjectBudgetRow = { scopeId: string; amount: number; windowKind: string };
+
+/**
+ * Build the per-project task-count and budget lookups from the aggregate query
+ * rows. Pure (no DB) so the merge logic can be unit-tested in isolation.
+ * Only active policies with a positive amount surface as a budget.
+ */
+export function buildProjectListMetricMaps(taskCountRows: TaskCountRow[], budgetRows: ProjectBudgetRow[]) {
+  const taskCountByProjectId = new Map<string, number>();
+  for (const row of taskCountRows) {
+    if (row.projectId) taskCountByProjectId.set(row.projectId, Number(row.count) || 0);
+  }
+
+  const budgetByProjectId = new Map<string, ProjectBudgetSummary>();
+  for (const row of budgetRows) {
+    if (row.amount > 0) {
+      budgetByProjectId.set(row.scopeId, {
+        amountCents: row.amount,
+        windowKind: row.windowKind as BudgetWindowKind,
+      });
+    }
+  }
+
+  return { taskCountByProjectId, budgetByProjectId };
+}
+
+/**
+ * Attach lightweight list-only metrics (task count + budget) to a set of
+ * projects using two aggregate queries (no N+1). Used by the projects list
+ * view (IA Phase 4 — PAP-60).
+ */
+async function attachListMetrics(
+  db: Db,
+  companyId: string,
+  rows: ProjectWithGoals[],
+): Promise<ProjectWithGoals[]> {
+  if (rows.length === 0) return rows;
+
+  const projectIds = rows.map((r) => r.id);
+
+  const [taskCountRows, budgetRows] = await Promise.all([
+    db
+      .select({
+        projectId: issues.projectId,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), inArray(issues.projectId, projectIds)))
+      .groupBy(issues.projectId),
+    db
+      .select({
+        scopeId: budgetPolicies.scopeId,
+        amount: budgetPolicies.amount,
+        windowKind: budgetPolicies.windowKind,
+      })
+      .from(budgetPolicies)
+      .where(
+        and(
+          eq(budgetPolicies.companyId, companyId),
+          eq(budgetPolicies.scopeType, "project"),
+          eq(budgetPolicies.metric, "billed_cents"),
+          eq(budgetPolicies.isActive, true),
+          inArray(budgetPolicies.scopeId, projectIds),
+        ),
+      ),
+  ]);
+
+  const { taskCountByProjectId, budgetByProjectId } = buildProjectListMetricMaps(
+    taskCountRows,
+    budgetRows,
+  );
+
+  return rows.map((row) => ({
+    ...row,
+    taskCount: taskCountByProjectId.get(row.id) ?? 0,
+    budget: budgetByProjectId.get(row.id) ?? null,
+  }));
+}
+
 /** Sync the project_goals join table for a single project. */
 async function syncGoalLinks(db: Db, projectId: string, companyId: string, goalIds: string[]) {
   // Delete existing links
@@ -463,13 +548,8 @@ export function projectService(db: Db) {
     const { goalIds: inputGoalIds, ...projectData } = data;
     const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
 
-    // Auto-assign a color from the palette if none provided
-    if (!projectData.color) {
-      const existing = await db.select({ color: projects.color }).from(projects).where(eq(projects.companyId, companyId));
-      const usedColors = new Set(existing.map((r) => r.color).filter(Boolean));
-      const nextColor = PROJECT_COLORS.find((c) => !usedColors.has(c)) ?? PROJECT_COLORS[existing.length % PROJECT_COLORS.length];
-      projectData.color = nextColor;
-    }
+    // Note: color is intentionally NOT auto-assigned. New projects default to
+    // `color = null` (neutral gray) unless an explicit color is supplied. See PAP-68.
 
     const existingProjects = await db
       .select({ id: projects.id, name: projects.name })
@@ -512,7 +592,8 @@ export function projectService(db: Db) {
     list: async (companyId: string): Promise<ProjectWithGoals[]> => {
       const rows = await db.select().from(projects).where(eq(projects.companyId, companyId));
       const withGoals = await attachGoals(db, rows);
-      return attachWorkspaces(db, withGoals);
+      const withWorkspaces = await attachWorkspaces(db, withGoals);
+      return attachListMetrics(db, companyId, withWorkspaces);
     },
 
     listByIds: async (companyId: string, ids: string[]): Promise<ProjectWithGoals[]> => {

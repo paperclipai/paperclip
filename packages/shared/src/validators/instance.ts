@@ -31,6 +31,9 @@ export const instanceGeneralSettingsSchema = z.object({
     DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   ),
   backupRetention: backupRetentionPolicySchema.default(DEFAULT_BACKUP_RETENTION),
+  // Execution policy. Absent/"any" = unrestricted; "kubernetes" forces the
+  // Kubernetes sandbox provider and denies local/ssh execution (cloud_tenant).
+  executionMode: z.enum(["kubernetes", "any"]).optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.partial();
@@ -38,6 +41,10 @@ export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.
 export const instanceExperimentalSettingsSchema = z.object({
   enableEnvironments: z.boolean().default(false),
   enableIsolatedWorkspaces: z.boolean().default(false),
+  enableStreamlinedLeftNavigation: z.boolean().default(false),
+  enableConferenceRoomChat: z.boolean().default(false),
+  enableIssuePlanDecompositions: z.boolean().default(false),
+  enableExperimentalFileViewer: z.boolean().default(false),
   enableCloudSync: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
   enableIssueGraphLivenessAutoRecovery: z.boolean().default(false),

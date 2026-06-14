@@ -45,6 +45,10 @@ These decisions close open questions from `SPEC.md` for V1.
 | Budget enforcement | Soft alerts + hard limit auto-pause |
 | Deployment modes | Canonical model is `local_trusted` + `authenticated` with `private/public` exposure policy (see `doc/DEPLOYMENT-MODES.md`) |
 
+Low-trust agent presets are containment controls for hostile automated work, not
+general project or issue privacy controls. The core preset resolver contract is
+documented in `doc/LOW-TRUST-PRESETS.md`.
+
 ## 4. Current Baseline (Repo Snapshot)
 
 As of 2026-02-17, the repo already includes:
@@ -392,6 +396,13 @@ Operational policy:
   - `issue_id` uuid fk not null
   - `asset_id` uuid fk not null
   - `issue_comment_id` uuid fk null
+- V1 attachment serving contract:
+  - Default upload allowlist includes common images, PDF, plain text/markdown/JSON/CSV/HTML, ZIP, and video artifacts (`video/mp4`, `video/webm`, `video/quicktime`).
+  - Attachment reads are company-scoped and expose stable path metadata: `contentPath`/`openPath` for inline-safe viewing and `downloadPath` for forced download.
+  - Inline-safe responses use `Content-Disposition: inline`; unsafe types and explicit download requests use `attachment`.
+  - Video attachments are inline-safe and support single `Range: bytes=start-end` requests with `206`, `Content-Range`, and `Accept-Ranges: bytes` for browser playback/seeking.
+- Attachment-backed artifact work products use `type: "artifact"`, `provider: "paperclip"`, and metadata with `attachmentId`, `contentType`, `byteSize`, `contentPath`, `openPath`, `downloadPath`, and optional `originalFilename`.
+- Workspace-only file references use work product `metadata.resourceRef` with `kind: "workspace_file"`, `issueId`, `workspaceKind` (`execution_workspace` or `project_workspace`), `workspaceId`, `relativePath`, optional `line`/`column`, and `displayPath`. These references point at files in a workspace; they do not replace attachment-backed artifacts for deliverables that must be inspectable without workspace access.
 
 ## 7.15 `documents` + `document_revisions` + `issue_documents`
 
