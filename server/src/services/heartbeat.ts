@@ -7116,27 +7116,135 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
     if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action") {
       const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, claimedIssueId),
-            eq(issues.companyId, claimed.companyId),
-            // Mention/context runs can touch an issue, but only the current assignee
-            // owns the issue execution lock shown as the active run.
-            eq(issues.assigneeAgentId, claimed.agentId),
-            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
-          ),
-        );
+      try {
+        await db
+          .update(issues)
+          .set({
+            executionRunId: claimed.id,
+            executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
+            executionLockedAt: claimedAt,
+            updatedAt: claimedAt,
+          })
+          .where(
+            and(
+              eq(issues.id, claimedIssueId),
+              eq(issues.companyId, claimed.companyId),
+              // Mention/context runs can touch an issue, but only the current assignee
+              // owns the issue execution lock shown as the active run.
+              eq(issues.assigneeAgentId, claimed.agentId),
+              or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
+            ),
+          );
+      } catch (error) {
+        // TWB-748: `always_enqueue` routines deliberately create a NEW routine_execution
+        // issue per fire even for an identical dispatch fingerprint. With lazy locking each
+        // is created with execution_run_id = NULL, so issue creation does not trip the
+        // `issues_open_routine_execution_uq` partial unique index. But the first claim to
+        // stamp execution_run_id for that fingerprint wins, and any later same-fingerprint
+        // claim's lazy-lock UPDATE then violates the index (23505). Previously the throw
+        // failed the run with no verdict and cascaded — which red-checked the GitHub
+        // ai-review check (see TWB-745). Treat the conflict as "another run already owns the
+        // execution lock for this fingerprint" and degrade gracefully: cancel this run and
+        // its duplicate issue instead of failing the run.
+        if (isOpenRoutineExecutionLockConflict(error)) {
+          logger.info(
+            { runId: claimed.id, issueId: claimedIssueId },
+            "claimQueuedRun: duplicate routine-execution fingerprint already owns the lock; cancelling run as duplicate",
+          );
+          await cancelClaimedRunForDuplicateRoutineExecution(claimed, claimedIssueId);
+          return null;
+        }
+        throw error;
+      }
     }
 
     return claimed;
+  }
+
+  function isOpenRoutineExecutionLockConflict(error: unknown): boolean {
+    // Drizzle wraps driver errors, so the Postgres fields live on `.cause`. The
+    // `postgres` driver also exposes the constraint name as `constraint_name` (not
+    // `constraint`), so check both. Walk the cause chain to be safe.
+    let current: unknown = error;
+    for (let depth = 0; current && typeof current === "object" && depth < 5; depth += 1) {
+      const candidate = current as { code?: string; constraint?: string; constraint_name?: string };
+      const constraint = candidate.constraint ?? candidate.constraint_name;
+      if (candidate.code === "23505" && constraint === "issues_open_routine_execution_uq") {
+        return true;
+      }
+      current = (current as { cause?: unknown }).cause;
+    }
+    return false;
+  }
+
+  // TWB-748: graceful-degrade path when a claimed run's lazy-lock UPDATE collides with the
+  // `issues_open_routine_execution_uq` index because another same-fingerprint routine_execution
+  // issue already owns the lock. Cancels the run cleanly (no failure / no red-check) and cancels
+  // the duplicate routine-execution issue so it does not orphan as actionable work that would
+  // re-run the identical dispatch on the next heartbeat.
+  async function cancelClaimedRunForDuplicateRoutineExecution(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+  ) {
+    const now = new Date();
+    const reason =
+      "Cancelled because another run already owns the routine-execution lock for this dispatch fingerprint (duplicate fire)";
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: now,
+      error: reason,
+      errorCode: "routine_execution_lock_conflict",
+      resultJson: {
+        ...parseObject(run.resultJson),
+        stopReason: "routine_execution_lock_conflict",
+        effectiveTimeoutSec: 0,
+        timeoutConfigured: false,
+        timeoutSource: "routine_execution_lock_gate",
+        timeoutFired: false,
+      },
+    });
+    if (!cancelled) return null;
+
+    await setWakeupStatus(run.wakeupRequestId, "skipped", {
+      finishedAt: now,
+      error: reason,
+    });
+
+    // Defensive: ensure this duplicate issue does not retain/contend for the execution lock.
+    // (The lazy-lock UPDATE threw before stamping, so this is normally a no-op.)
+    await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(issues.companyId, run.companyId),
+          eq(issues.id, issueId),
+          eq(issues.executionRunId, run.id),
+        ),
+      );
+
+    await issuesSvc
+      .update(issueId, { status: "cancelled", actorAgentId: run.agentId })
+      .catch((err) => {
+        logger.warn(
+          { err, issueId, runId: run.id },
+          "failed to cancel duplicate routine-execution issue after lock conflict",
+        );
+      });
+
+    await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: reason,
+      payload: { issueId },
+    });
+
+    return cancelled;
   }
 
   async function cancelQueuedRunForBlockedDependencies(
