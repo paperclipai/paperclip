@@ -340,6 +340,77 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     expect(alertIssues).toHaveLength(2);
   });
 
+  it("does not deduplicate plugin issues that explicitly pass the default fingerprint sentinel", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const originKind = "plugin:paperclip.missions";
+
+    const first = await services.issues.create({
+      companyId,
+      title: "Mission Alpha",
+      status: "todo",
+      assigneeAgentId: agentId,
+      originKind,
+      originFingerprint: "default",
+      actorAgentId: agentId,
+    });
+    const second = await services.issues.create({
+      companyId,
+      title: "Mission Beta",
+      status: "todo",
+      assigneeAgentId: agentId,
+      originKind,
+      originFingerprint: "default",
+      actorAgentId: agentId,
+    });
+
+    expect(second.id).not.toBe(first.id);
+    const missionIssues = await db.select().from(issues).where(and(
+      eq(issues.companyId, companyId),
+      eq(issues.originKind, originKind),
+    ));
+    expect(missionIssues).toHaveLength(2);
+    expect(missionIssues.map((issue) => issue.originFingerprint)).toEqual(["default", "default"]);
+  });
+
+  it("does not append duplicate dedupe comments for identical duplicate alert retries", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.alertmanager", createEventBusStub());
+    const originKind = "plugin:paperclip.alertmanager:alert";
+    const originFingerprint = "alert:KubePersistentVolumeNearlyFull:namespace=paperclip:persistentvolumeclaim=postgres-data";
+    const duplicateInput = {
+      companyId,
+      title: "KubePersistentVolumeNearlyFull still firing for postgres-data",
+      status: "todo" as const,
+      assigneeAgentId: agentId,
+      originKind,
+      originFingerprint,
+      actorAgentId: agentId,
+    };
+
+    const first = await services.issues.create({
+      ...duplicateInput,
+      title: "KubePersistentVolumeNearlyFull firing for postgres-data",
+    });
+    const duplicate = await services.issues.create(duplicateInput);
+    const duplicateRetry = await services.issues.create(duplicateInput);
+
+    expect(duplicate.id).toBe(first.id);
+    expect(duplicateRetry.id).toBe(first.id);
+    const dedupeComments = await db.select().from(issueComments).where(and(
+      eq(issueComments.issueId, first.id),
+      eq(issueComments.body, [
+        "Alert deduplicated by origin fingerprint.",
+        "",
+        "- Plugin: paperclip.alertmanager",
+        `- Origin kind: ${originKind}`,
+        `- Origin fingerprint: ${originFingerprint}`,
+        `- Incoming title: ${duplicateInput.title}`,
+      ].join("\n")),
+    ));
+    expect(dedupeComments).toHaveLength(1);
+  });
+
   it("derives alert fingerprints from alert labels when plugins omit origin fingerprints", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const services = buildHostServices(db, "plugin-record-id", "paperclip.alertmanager", createEventBusStub());

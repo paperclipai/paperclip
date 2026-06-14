@@ -7,6 +7,7 @@ import {
   costEvents,
   heartbeatRuns,
   invites,
+  issueComments,
   issues as issuesTable,
   pluginLogs,
   principalPermissionGrants,
@@ -710,6 +711,11 @@ export function buildHostServices(
   const normalizeAlertFingerprintPart = (value: string) =>
     value.trim().toLowerCase().replace(/[^a-z0-9._:/-]+/g, "-").replace(/^-+|-+$/g, "");
 
+  const normalizeOriginFingerprint = (value: string | null | undefined) => {
+    const trimmed = typeof value === "string" ? value.trim() : "";
+    return trimmed.length > 0 && trimmed !== "default" ? trimmed : null;
+  };
+
   const collectAlertLabelCandidates = (text: string) => {
     const labels = new Map<string, string>();
     const add = (key: string, value: string) => {
@@ -749,7 +755,7 @@ export function buildHostServices(
     title: string;
     description?: string | null;
   }) => {
-    const isAlertIssue = input.originKind.includes(":alert") || pluginKey.toLowerCase().includes("alertmanager");
+    const isAlertIssue = input.originKind.endsWith(":alert") || pluginKey.toLowerCase().includes("alertmanager");
     if (!isAlertIssue) return null;
     const text = `${input.title}\n${input.description ?? ""}`;
     const labels = collectAlertLabelCandidates(text);
@@ -789,8 +795,8 @@ export function buildHostServices(
     });
   };
 
-  const isUniqueConstraintViolation = (error: unknown, constraintName: string): boolean => {
-    if (!error || typeof error !== "object") return false;
+  const isUniqueConstraintViolation = (error: unknown, constraintName: string, depth = 0): boolean => {
+    if (!error || typeof error !== "object" || depth > 10) return false;
     const record = error as Record<string, unknown>;
     const code = record.code;
     const constraint = record.constraint ?? record.constraint_name;
@@ -801,7 +807,7 @@ export function buildHostServices(
     ) {
       return true;
     }
-    return isUniqueConstraintViolation(record.cause, constraintName);
+    return isUniqueConstraintViolation(record.cause, constraintName, depth + 1);
   };
 
   const findActiveOriginFingerprintIssue = async (
@@ -1662,15 +1668,13 @@ export function buildHostServices(
             ? pluginOperationIssueOriginKind(pluginKey)
             : originKind,
         );
-        const originFingerprint = typeof rawOriginFingerprint === "string" && rawOriginFingerprint.trim().length > 0
-          ? rawOriginFingerprint.trim()
-          : deriveAlertOriginFingerprint({
-            originKind: normalizedOriginKind,
-            title: params.title,
-            description: params.description,
-          });
+        const originFingerprint = normalizeOriginFingerprint(rawOriginFingerprint) ?? normalizeOriginFingerprint(deriveAlertOriginFingerprint({
+          originKind: normalizedOriginKind,
+          title: params.title,
+          description: params.description,
+        }));
         const returnDeduplicatedIssue = async (existingIssue: typeof issuesTable.$inferSelect) => {
-          const isAlertDedupe = normalizedOriginKind.includes(":alert") || pluginKey.toLowerCase().includes("alertmanager");
+          const isAlertDedupe = normalizedOriginKind.endsWith(":alert") || pluginKey.toLowerCase().includes("alertmanager");
           const comment = [
             isAlertDedupe
               ? "Alert deduplicated by origin fingerprint."
@@ -1681,11 +1685,19 @@ export function buildHostServices(
             `- Origin fingerprint: ${originFingerprint}`,
             `- Incoming title: ${params.title}`,
           ].join("\n");
-          await issues.addComment(existingIssue.id, comment, {
-            agentId: actorAgentId ?? undefined,
-            userId: actorUserId ?? undefined,
-            runId: actorRunId ?? null,
-          });
+          const [latestComment] = await db
+            .select({ body: issueComments.body })
+            .from(issueComments)
+            .where(and(eq(issueComments.issueId, existingIssue.id), isNull(issueComments.deletedAt)))
+            .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+            .limit(1);
+          if (latestComment?.body !== comment) {
+            await issues.addComment(existingIssue.id, comment, {
+              agentId: actorAgentId ?? undefined,
+              userId: actorUserId ?? undefined,
+              runId: actorRunId ?? null,
+            });
+          }
           await logPluginActivity({
             companyId,
             action: "issue.deduplicated",
