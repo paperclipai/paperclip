@@ -1,7 +1,7 @@
 # Nightly LLM Advisor — Design
 
 - **Datum:** 2026-06-14
-- **Status:** Spec, genehmigt zur Planung
+- **Status:** umgesetzt 2026-06-14 (Routine `666f3c66…`, Run-Issue WHI-1376 erfolgreich)
 - **Engine:** Paperclip-Routine auf Agent „Online-Rechercheur" (`d80fe6b9-b2ac-4d58-8525-8bbbb1d0caf7`, Company `9cebf3cf-efe8-4597-a400-f06488900a87`)
 - **Eigentümer der Modellauswahl:** CTO (`5b7cb8a7-945f-4861-b3a7-4ae84d242d1e`)
 
