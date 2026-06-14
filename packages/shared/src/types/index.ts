@@ -30,6 +30,11 @@ export type {
   BackupRetentionPolicy,
   IssueGraphLivenessAutoRecoveryPreview,
   IssueGraphLivenessAutoRecoveryPreviewItem,
+  InstanceGuardsBudgetConfig,
+  InstanceGuardsPerRunConfig,
+  InstanceGuardsBreakerConfig,
+  InstanceGuardsConfig,
+  PatchInstanceGuardsConfig,
 } from "./instance.js";
 export {
   DAILY_RETENTION_PRESETS,

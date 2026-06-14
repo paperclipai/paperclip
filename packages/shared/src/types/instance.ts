@@ -1,5 +1,50 @@
 import type { FeedbackDataSharingPreference } from "./feedback.js";
 
+// --- Platform guard config ---
+
+export const DEFAULT_GUARD_COMPANY_MONTHLY_TOKENS = 40_000_000;
+export const DEFAULT_GUARD_AGENT_MONTHLY_TOKENS = 8_000_000;
+export const DEFAULT_GUARD_WARN_PERCENT = 80;
+export const DEFAULT_GUARD_MAX_TURNS_PER_RUN = 120;
+export const DEFAULT_GUARD_MAX_TOKENS_PER_RUN = 1_000_000;
+export const DEFAULT_GUARD_MAX_RUNS_PER_AGENT_PER_HOUR = 15;
+export const DEFAULT_GUARD_MAX_CONSECUTIVE_SAME_ISSUE_RUNS = 6;
+
+export interface InstanceGuardsBudgetConfig {
+  metric: "total_tokens";
+  windowKind: "calendar_month_utc";
+  companyMonthlyTokens: number;
+  agentMonthlyTokens: number;
+  warnPercent: number;
+  hardStop: boolean;
+}
+
+export interface InstanceGuardsPerRunConfig {
+  maxTurnsPerRun: number;
+  maxTokensPerRun: number;
+}
+
+export interface InstanceGuardsBreakerConfig {
+  maxRunsPerAgentPerHour: number;
+  maxConsecutiveSameIssueRuns: number;
+}
+
+export interface InstanceGuardsConfig {
+  enabled: boolean;
+  budget: InstanceGuardsBudgetConfig;
+  perRun: InstanceGuardsPerRunConfig;
+  breaker: InstanceGuardsBreakerConfig;
+}
+
+export type PatchInstanceGuardsConfig = Partial<{
+  enabled: boolean;
+  budget: Partial<InstanceGuardsBudgetConfig>;
+  perRun: Partial<InstanceGuardsPerRunConfig>;
+  breaker: Partial<InstanceGuardsBreakerConfig>;
+}>;
+
+// ------------------------------------
+
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
 export const MONTHLY_RETENTION_PRESETS = [1, 3, 6] as const;
@@ -43,6 +88,7 @@ export interface InstanceSettings {
   id: string;
   general: InstanceGeneralSettings;
   experimental: InstanceExperimentalSettings;
+  guards: InstanceGuardsConfig;
   createdAt: Date;
   updatedAt: Date;
 }

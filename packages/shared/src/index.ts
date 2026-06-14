@@ -397,6 +397,8 @@ export type {
   AgentSkillSyncRequest,
   InstanceExperimentalSettings,
   InstanceGeneralSettings,
+  InstanceGuardsConfig,
+  PatchInstanceGuardsConfig,
   InstanceSettings,
   IssueGraphLivenessAutoRecoveryPreview,
   IssueGraphLivenessAutoRecoveryPreviewItem,
@@ -844,6 +846,13 @@ export {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  DEFAULT_GUARD_COMPANY_MONTHLY_TOKENS,
+  DEFAULT_GUARD_AGENT_MONTHLY_TOKENS,
+  DEFAULT_GUARD_WARN_PERCENT,
+  DEFAULT_GUARD_MAX_TURNS_PER_RUN,
+  DEFAULT_GUARD_MAX_TOKENS_PER_RUN,
+  DEFAULT_GUARD_MAX_RUNS_PER_AGENT_PER_HOUR,
+  DEFAULT_GUARD_MAX_CONSECUTIVE_SAME_ISSUE_RUNS,
 } from "./types/instance.js";
 
 export type {
@@ -873,6 +882,8 @@ export {
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
+  instanceGuardsConfigSchema,
+  patchInstanceGuardsConfigSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   trustPresetSchema,
   lowTrustBoundarySchema,
