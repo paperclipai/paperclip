@@ -5,6 +5,25 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it("refreshes plugin registry queries when plugin UI changes hot at runtime", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidatePluginUiQueries(queryClient as never);
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.plugins.all,
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.plugins.uiContributions,
+    });
+  });
+
   it("refreshes touched inbox queries and only the changed issue data for issue updates", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
