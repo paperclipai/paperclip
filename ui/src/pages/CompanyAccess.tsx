@@ -411,6 +411,29 @@ export function CompanyAccess() {
                   </select>
                 </label>
               </div>
+              {selectedCompany?.issueVisibilityMode === "project_scoped" ? (
+                <div
+                  className="rounded-md border border-border bg-muted/40 px-3 py-2.5 text-xs text-muted-foreground"
+                  data-testid="member-project-scope-note"
+                >
+                  {draftRole === "owner" || draftRole === "admin" ? (
+                    <span>
+                      Owners and admins always see every issue in this company.
+                    </span>
+                  ) : (
+                    <span>
+                      This company uses project-scoped issue visibility. With this role,
+                      the member only sees issues in projects they belong to, plus issues
+                      assigned to them. Manage project membership from the{" "}
+                      <Link to="/projects" className="underline hover:text-foreground">
+                        Projects
+                      </Link>{" "}
+                      page, or grant cross-project visibility with an{" "}
+                      <code>issues:read_scope</code> grant.
+                    </span>
+                  )}
+                </div>
+              ) : null}
             </div>
           )}
           <DialogFooter>
