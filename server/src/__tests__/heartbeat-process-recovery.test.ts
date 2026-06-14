@@ -38,6 +38,7 @@ import {
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
+  closeDbClient,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { runningProcesses } from "../adapters/index.ts";
@@ -435,6 +436,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     cleanupPids.clear();
     runningProcesses.clear();
+    await closeDbClient(db);
     await tempDb?.cleanup();
   });
 

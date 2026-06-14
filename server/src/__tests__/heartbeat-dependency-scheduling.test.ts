@@ -25,6 +25,7 @@ import {
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
+  closeDbClient,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
@@ -150,6 +151,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   });
 
   afterAll(async () => {
+    await heartbeat?.drain();
+    await closeDbClient(db);
     await tempDb?.cleanup();
   });
 

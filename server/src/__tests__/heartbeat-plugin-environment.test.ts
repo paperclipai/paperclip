@@ -16,6 +16,7 @@ import {
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
+  closeDbClient,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
@@ -52,17 +53,28 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 describeEmbeddedPostgres("heartbeat plugin environments", () => {
-  let stopDb: (() => Promise<void>) | null = null;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db!: ReturnType<typeof createDb>;
   const tempRoots: string[] = [];
+  // Heartbeat instances created per test, so their detached executeRun chains
+  // can be drained before the next test / before the DB client is closed.
+  const heartbeats: Array<ReturnType<typeof heartbeatService>> = [];
+
+  function makeHeartbeat(options?: Parameters<typeof heartbeatService>[1]) {
+    const heartbeat = heartbeatService(db, options);
+    heartbeats.push(heartbeat);
+    return heartbeat;
+  }
 
   beforeAll(async () => {
-    const started = await startEmbeddedPostgresTestDatabase("heartbeat-plugin-environment");
-    stopDb = started.stop;
-    db = createDb(started.connectionString);
+    tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-plugin-environment");
+    db = createDb(tempDb.connectionString);
   }, 20_000);
 
   afterEach(async () => {
+    while (heartbeats.length > 0) {
+      await heartbeats.pop()?.drain();
+    }
     adapterExecute.mockClear();
     while (tempRoots.length > 0) {
       const root = tempRoots.pop();
@@ -71,8 +83,8 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
   });
 
   afterAll(async () => {
-    await db.$client.end();
-    await stopDb?.();
+    await closeDbClient(db);
+    await tempDb?.cleanup();
   });
 
   it("acquires plugin environment leases through the heartbeat execution path", async () => {
@@ -189,7 +201,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       updatedAt: new Date(),
     });
 
-    const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager });
+    const heartbeat = makeHeartbeat({ pluginWorkerManager: workerManager });
     const run = await heartbeat.wakeup(agentId, {
       source: "on_demand",
       triggerDetail: "manual",
@@ -411,7 +423,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       updatedAt: new Date(),
     });
 
-    const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager });
+    const heartbeat = makeHeartbeat({ pluginWorkerManager: workerManager });
     const run = await heartbeat.wakeup(agentId, {
       source: "assignment",
       triggerDetail: "manual",

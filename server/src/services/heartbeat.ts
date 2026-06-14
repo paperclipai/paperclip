@@ -3119,6 +3119,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
   const activeRunExecutions = new Set<string>();
+  // Detached `void executeRun(...)` promises spawned by startNextQueuedRunForAgent.
+  // These keep issuing queries against `db` after the caller (enqueueWakeup,
+  // resumeQueuedRuns, tickTimers, executeRun's own finally) has already resolved.
+  // We track them so drain() can await them before a caller (e.g. a test teardown
+  // or a graceful scheduler shutdown) closes the DB client — otherwise the
+  // detached query rejects against a torn-down socket as
+  // "write CONNECTION_ENDED/CONNECTION_DESTROYED 127.0.0.1:<port>".
+  const pendingExecutions = new Set<Promise<unknown>>();
+  function trackPendingExecution(promise: Promise<unknown>) {
+    pendingExecutions.add(promise);
+    promise.finally(() => {
+      pendingExecutions.delete(promise);
+    }).catch(() => undefined);
+  }
   const liveRunExecutions = {
     has(id: string) {
       return runningProcesses.has(id) || activeRunExecutions.has(id);
@@ -7733,9 +7747,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (claimedRuns.length === 0) return [];
 
       for (const claimedRun of claimedRuns) {
-        void executeRun(claimedRun.id).catch((err) => {
-          logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
-        });
+        trackPendingExecution(
+          executeRun(claimedRun.id).catch((err) => {
+            logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
+          }),
+        );
       }
       return claimedRuns;
     });
@@ -11568,6 +11584,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .orderBy(desc(heartbeatRuns.startedAt))
         .limit(1);
       return run ?? null;
+    },
+
+    /**
+     * Await the detached run executions this service instance spawned (the
+     * fire-and-forget `void executeRun(...)` chains from startNextQueuedRunForAgent).
+     * Call this before closing the DB client / stopping the database so in-flight
+     * queries finish against a live socket instead of rejecting with
+     * "write CONNECTION_ENDED/CONNECTION_DESTROYED".
+     *
+     * Bounded by `timeoutMs` (default 5s): the common case to drain is the fast
+     * post-run unwind (lease release, status writes), which settles in
+     * milliseconds. An execution genuinely stuck on external I/O (e.g. a gateway
+     * agent.wait that never returns, or a scheduled retry) must NOT hang the
+     * caller's teardown forever, so drain resolves once `timeoutMs` elapses even
+     * if some executions are still pending. `maxPasses` re-checks for executions
+     * chained from a draining one within the time budget. Returns true if fully
+     * drained, false if it gave up on a deadline.
+     */
+    drain: async (options: { timeoutMs?: number; maxPasses?: number } = {}): Promise<boolean> => {
+      const timeoutMs = Math.max(0, options.timeoutMs ?? 5_000);
+      const maxPasses = Math.max(1, options.maxPasses ?? 50);
+      const deadline = Date.now() + timeoutMs;
+      for (let pass = 0; pass < maxPasses && pendingExecutions.size > 0; pass += 1) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const budget = new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, remaining);
+          timer.unref?.();
+        });
+        await Promise.race([Promise.allSettled([...pendingExecutions]), budget]);
+        if (timer) clearTimeout(timer);
+      }
+      return pendingExecutions.size === 0;
     },
   };
 }
