@@ -634,3 +634,179 @@ describe("issue attachment routes", () => {
     );
   });
 });
+
+
+describe("issue attachment secret-scan (ANT-2506)", () => {
+  const ISSUE_ID = "11111111-1111-4111-8111-111111111111";
+  const liveGoogleApiKey = "AIza" + "0123456789abcdefghijABCDEFGHIJ_-klm".slice(0, 35);
+  const oauthClientId = "609733124074-abc123def456ghi789.apps.googleusercontent.com";
+
+  const serviceAccountJson = JSON.stringify({
+    type: "service_account",
+    project_id: "demo-project-1234",
+    private_key_id: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+    private_key: "REDACTED-FOR-TEST",
+    client_email: "svc@demo-project-1234.iam.gserviceaccount.com",
+    client_id: "109876543210987654321",
+    token_uri: "https://oauth2.googleapis.com/token",
+  });
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("@paperclipai/shared/telemetry");
+    vi.doUnmock("../telemetry.js");
+    vi.doUnmock("../services/issues.js");
+    vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../routes/issues.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerRouteMocks();
+    vi.clearAllMocks();
+    mockLogActivity.mockResolvedValue(undefined);
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      attachmentMaxBytes: 1024 * 1024 * 1024,
+    });
+  });
+
+  async function uploadFile(contentType: string, filename: string, body: Buffer) {
+    const storage = createStorageService();
+    mockIssueService.getById.mockResolvedValue({
+      id: ISSUE_ID,
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+    mockIssueService.createAttachment.mockResolvedValue(makeAttachment(contentType, filename));
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post(`/api/companies/company-1/issues/${ISSUE_ID}/attachments`)
+      .attach("file", body, { filename, contentType });
+    return { res, storage };
+  }
+
+  it("rejects a service-account JSON by shape (SA-JSON rule) with 422 and no echoed bytes", async () => {
+    const { res, storage } = await uploadFile(
+      "application/json",
+      "serviceAccount.json",
+      Buffer.from(serviceAccountJson, "utf8"),
+    );
+    expect(res.status).toBe(422);
+    expect(res.body.reason).toBeUndefined();
+    expect(res.body.error).toBe("Attachment rejected: possible secret detected");
+    expect(res.body.error).not.toContain("private_key");
+    expect(storage.__calls.putFile).toBeUndefined();
+    expect(mockIssueService.createAttachment).not.toHaveBeenCalled();
+  });
+
+  it("rejects a PEM private key file with 422", async () => {
+    const pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----\n";
+    const { res, storage } = await uploadFile("text/plain", "id_rsa", Buffer.from(pem, "utf8"));
+    expect(res.status).toBe(422);
+    expect(res.body.reason).toBeUndefined();
+    expect(res.body.error).toBe("Attachment rejected: possible secret detected");
+    expect(storage.__calls.putFile).toBeUndefined();
+  });
+
+  it("rejects a PKCS#8 encrypted private key (ENCRYPTED PRIVATE KEY header) with 422 (ANT-2658)", async () => {
+    // Regression test for ANT-2506 FINDING-1: ENCRYPTED prefix was missing from PEM regex.
+    // PKCS#8 password-protected keys still contain key material and must be blocked.
+    const pem = "-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIFHDBOBgkqhkiG9w0BBQ0wMTAbBgkq\n-----END ENCRYPTED PRIVATE KEY-----\n";
+    const { res, storage } = await uploadFile("text/plain", "encrypted.pem", Buffer.from(pem, "utf8"));
+    expect(res.status).toBe(422);
+    expect(res.body.reason).toBeUndefined();
+    expect(res.body.error).toBe("Attachment rejected: possible secret detected");
+    expect(storage.__calls.putFile).toBeUndefined();
+  });
+
+  it("rejects a file containing a GitHub PAT (known token) with 422", async () => {
+    const body = `deploy notes\nGITHUB_TOKEN=ghp_${"a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"}\n`;
+    const { res, storage } = await uploadFile("text/plain", "notes.txt", Buffer.from(body, "utf8"));
+    expect(res.status).toBe(422);
+    expect(res.body.reason).toBeUndefined();
+    expect(res.body.error).toBe("Attachment rejected: possible secret detected");
+    expect(storage.__calls.putFile).toBeUndefined();
+  });
+
+  it("accepts a realistic google-services.json (allowlist precision before entropy) with 201", async () => {
+    const googleServices = JSON.stringify({
+      project_info: {
+        project_number: "609733124074",
+        project_id: "my-firebase-app",
+        storage_bucket: "my-firebase-app.appspot.com",
+      },
+      client: [
+        {
+          client_info: {
+            mobilesdk_app_id: "1:609733124074:android:a1b2c3d4e5f6a7b8",
+            android_client_info: { package_name: "com.example.app" },
+          },
+          oauth_client: [{ client_id: oauthClientId, client_type: 3 }],
+          api_key: [{ current_key: liveGoogleApiKey }],
+          services: { appinvite_service: { other_platform_oauth_client: [] } },
+        },
+      ],
+      configuration_version: "1",
+    });
+    const { res } = await uploadFile(
+      "application/json",
+      "google-services.json",
+      Buffer.from(googleServices, "utf8"),
+    );
+    expect(res.status).toBe(201);
+    expect(mockIssueService.createAttachment).toHaveBeenCalled();
+  });
+
+  it("accepts plain prose with no secret with 201", async () => {
+    const { res } = await uploadFile(
+      "text/plain",
+      "readme.txt",
+      Buffer.from("This is a normal document describing the project roadmap.\n", "utf8"),
+    );
+    expect(res.status).toBe(201);
+  });
+
+  it("rejects service-account JSON renamed to .png (content-gate, not extension) with 422", async () => {
+    const { res, storage } = await uploadFile(
+      "image/png",
+      "evil.png",
+      Buffer.from(serviceAccountJson, "utf8"),
+    );
+    expect(res.status).toBe(422);
+    expect(res.body.reason).toBeUndefined();
+    expect(res.body.error).toBe("Attachment rejected: possible secret detected");
+    expect(storage.__calls.putFile).toBeUndefined();
+  });
+
+  it("accepts a file with only an AIza key + OAuth client id (Stage-0 strips before entropy) with 201", async () => {
+    const body = `api_key=${liveGoogleApiKey}\nclient_id=${oauthClientId}\n`;
+    const { res } = await uploadFile("text/plain", "public-config.txt", Buffer.from(body, "utf8"));
+    expect(res.status).toBe(201);
+  });
+
+  it("rejects with 422 when the secret scanner throws (fail-secure catch path)", async () => {
+    // Applying OWASP Fail Securely lens: a scanner crash must reject the upload,
+    // never fall through to persist unscanned bytes.
+    vi.doMock("../security/attachment-secret-scan.js", () => ({
+      scanAttachmentForSecrets: () => {
+        throw new Error("scanner unavailable");
+      },
+    }));
+
+    const storage = createStorageService();
+    mockIssueService.getById.mockResolvedValue({
+      id: ISSUE_ID,
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post(`/api/companies/company-1/issues/${ISSUE_ID}/attachments`)
+      .attach("file", Buffer.from("safe content"), { filename: "safe.txt", contentType: "text/plain" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("Attachment rejected: secret scan unavailable");
+    expect(storage.__calls.putFile).toBeUndefined();
+  });
+});
