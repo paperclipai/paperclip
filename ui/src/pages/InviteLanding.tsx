@@ -314,6 +314,45 @@ export function InviteLandingPage() {
     password.trim().length > 0 &&
     (authMode === "sign_in" || (name.trim().length > 0 && password.trim().length >= 8));
 
+  // After a successful accept we hand off to the company root redirect via
+  // navigate("/"). That redirect resolves the destination company by looking the
+  // selected id up in the companies list, so the just-joined company must be in
+  // the list before we navigate. For a user whose FIRST page load is
+  // /invite/:token (no selected/last company yet), the membership write may not
+  // be readable by the companies endpoint on the immediate refetch; if we
+  // navigate before it lands, the root redirect cannot find the selected company
+  // and falls back to companies[0] (e.g. an auto-provisioned default company),
+  // stranding the invitee on the wrong board. Refetch the list a bounded number
+  // of times until the joined company appears, then select + navigate.
+  const enterJoinedCompany = async (companyId: string) => {
+    // Persist the selection up front so it survives the refetch loop and any
+    // re-render: the root redirect keys off this id once the company is in the
+    // list.
+    setSelectedCompanyId(companyId, { source: "manual" });
+    let present = false;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const { companies } = await queryClient.fetchQuery({
+        ...companiesListQueryOptions,
+        staleTime: 0,
+      });
+      if (companies.some((company) => company.id === companyId)) {
+        present = true;
+        break;
+      }
+      // Short backoff for the membership write to become readable before the
+      // next refetch. Skip the wait on the final attempt.
+      if (attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 120 * (attempt + 1)));
+      }
+    }
+    // Navigate regardless: if the list is still lagging after the bounded
+    // retries the selection persists, so the root redirect (or a later companies
+    // refetch) still lands on the right company rather than silently choosing
+    // companies[0].
+    navigate("/", { replace: true });
+    return present;
+  };
+
   const acceptMutation = useMutation({
     mutationFn: async () => {
       if (!invite) throw new Error("Invite not found");
@@ -340,10 +379,10 @@ export function InviteLandingPage() {
       setResult({ kind: asBootstrap ? "bootstrap" : "join", payload });
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       if (invite?.companyId && isApprovedHumanJoinPayload(payload, showsAgentForm)) {
-        setSelectedCompanyId(invite.companyId, { source: "manual" });
-        navigate("/", { replace: true });
+        await enterJoinedCompany(invite.companyId);
+      } else {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       }
     },
     onError: (err) => {
@@ -379,8 +418,7 @@ export function InviteLandingPage() {
 
       if (invite?.companyId && freshCompanies.some((company) => company.id === invite.companyId)) {
         clearPendingInviteToken(token);
-        setSelectedCompanyId(invite.companyId, { source: "manual" });
-        navigate("/", { replace: true });
+        await enterJoinedCompany(invite.companyId);
         return;
       }
 
