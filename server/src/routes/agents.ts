@@ -26,6 +26,7 @@ import {
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
   LOW_TRUST_REVIEW_PRESET,
+  normalizeAgentUrlKey,
 } from "@paperclipai/shared";
 import {
   readPaperclipSkillSyncPreference,
@@ -1202,7 +1203,9 @@ export function agentRoutes(
     }
 
     const files = input?.files
-      ?? await loadDefaultAgentInstructionsBundle(resolveDefaultAgentInstructionsBundleRole(agent.role));
+      ?? await loadDefaultAgentInstructionsBundle(
+        resolveDefaultAgentInstructionsBundleRole(agent.role, normalizeAgentUrlKey(agent.name)),
+      );
     const materialized = await instructions.materializeManagedBundle(
       agent,
       files,
