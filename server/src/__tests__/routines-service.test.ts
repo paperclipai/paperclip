@@ -783,6 +783,57 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues[0]?.id).toBe(previousIssue.id);
   });
 
+  it("skips skip_if_active firings when an orphaned in_progress sibling has no live run (SPC-9521)", async () => {
+    const { companyId, issueSvc, routine, svc } = await seedFixture();
+    const previousRunId = randomUUID();
+
+    await db
+      .update(routines)
+      .set({ concurrencyPolicy: "skip_if_active" })
+      .where(eq(routines.id, routine.id));
+
+    const orphanedIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "in_progress",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: orphanedIssue.id,
+    });
+    // No checkoutRunId, no executionRunId, no heartbeatRun — the orphan accumulation
+    // case from SPC-9521: prior execution crashed (process_lost), issue stuck in_progress.
+    await db
+      .update(issues)
+      .set({ checkoutRunId: null, executionRunId: null, executionLockedAt: null })
+      .where(eq(issues.id, orphanedIssue.id));
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+
+    expect(run.status).toBe("skipped");
+    expect(run.linkedIssueId).toBe(orphanedIssue.id);
+
+    const routineIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+    expect(routineIssues).toHaveLength(1);
+    expect(routineIssues[0]?.id).toBe(orphanedIssue.id);
+  });
+
   it("touches a coalesced routine issue for the manual runner's inbox", async () => {
     const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
     const userId = randomUUID();
