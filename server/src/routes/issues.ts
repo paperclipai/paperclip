@@ -136,6 +136,12 @@ import {
   resolveCoreTrustPreset,
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
+import {
+  isSSIDirector,
+  readPriorRunKnowledge,
+  resolveProjectDomain,
+  type PriorRunKnowledgeEntry,
+} from "../services/knowledge-reader.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -934,6 +940,13 @@ export function issueRoutes(
     searchService?: CompanySearchService;
     searchRateLimiter?: CompanySearchRateLimiter;
     pluginWorkerManager?: PluginWorkerManager;
+    /** Override the priorRunKnowledge reader; used in tests to inject a tempdir-backed reader. */
+    priorRunKnowledgeReader?: (
+      companyId: string,
+      specialty: string,
+      domain: string,
+      currentIdentifier: string,
+    ) => PriorRunKnowledgeEntry[];
   } = {},
 ) {
   const router = Router();
@@ -976,6 +989,10 @@ export function issueRoutes(
   };
   const feedbackExportService = opts?.feedbackExportService;
   const environmentsSvc = environmentService(db);
+  const priorRunKnowledgeReader =
+    opts.priorRunKnowledgeReader ??
+    ((companyId, specialty, domain, currentIdentifier) =>
+      readPriorRunKnowledge(companyId, specialty, domain, currentIdentifier));
 
   async function sourceTrustForActorWrite(
     issue: { id: string; companyId: string; projectId?: string | null; executionPolicy?: unknown },
@@ -2627,6 +2644,18 @@ export function issueRoutes(
         ? redactQuarantinedBodyForHigherTrust(continuationSummary)
         : continuationSummary;
 
+    // priorRunKnowledge: MVP — only for SSI Director assignee; file reads only, no DB hit.
+    let priorRunKnowledge: PriorRunKnowledgeEntry[] | undefined;
+    if (isSSIDirector(issue.assigneeAgentId) && issue.identifier) {
+      const domain = resolveProjectDomain(project?.name);
+      priorRunKnowledge = priorRunKnowledgeReader(
+        issue.companyId,
+        "ssi_director",
+        domain,
+        issue.identifier,
+      );
+    }
+
     res.json({
       issue: {
         id: issue.id,
@@ -2697,6 +2726,7 @@ export function issueRoutes(
           }
         : null,
       currentExecutionWorkspace,
+      ...(priorRunKnowledge !== undefined ? { priorRunKnowledge } : {}),
     });
   });
 
