@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { resolveHostVersion } from "../app.ts";
-import { serverVersion } from "../version.js";
+import { serverVersion } from "../version.ts";
 
 describe("resolveHostVersion", () => {
   it("falls back to the server's package version when no host version is provided", () => {
