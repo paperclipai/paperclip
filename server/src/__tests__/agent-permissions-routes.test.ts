@@ -1595,4 +1595,95 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(403);
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
+
+  // ANT-885 endpoint-level regression — fail-old/pass-new
+  // Unit tests on redactAdapterConfig alone cannot catch Defect 1 (missing call-site gate).
+  describe("ANT-885 — agent cross-read env redaction (endpoint regression)", () => {
+    const peerAgentId = "99999999-9999-4999-8999-999999999999";
+    const agentWithSecret = {
+      ...baseAgent,
+      id: peerAgentId,
+      adapterConfig: {
+        command: "pnpm agent:run",
+        env: {
+          GITHUB_TOKEN: { type: "plain", value: "ghp_compromised_token" },
+          ANTHROPIC_API_KEY: { type: "plain", value: "sk-ant-compromised" },
+        },
+      },
+      runtimeConfig: {
+        modelProfiles: {
+          default: {
+            adapterConfig: {
+              env: {
+                NESTED_TOKEN: { type: "plain", value: "nested-secret-value" },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    it("redacts env for agent-actor reading a peer agent (ANT-885 Defect 1 regression)", async () => {
+      mockAgentService.getById.mockResolvedValue(agentWithSecret);
+
+      const app = await createApp({
+        type: "agent",
+        agentId, // reading agent (not peerAgentId — cross-read)
+        companyId,
+        source: "agent_key",
+        runId: "run-1",
+      });
+
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get(`/api/agents/${peerAgentId}`),
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body.adapterConfig.env.GITHUB_TOKEN).toEqual({ type: "plain", value: "***REDACTED***" });
+      expect(res.body.adapterConfig.env.ANTHROPIC_API_KEY).toEqual({ type: "plain", value: "***REDACTED***" });
+      // command (non-env field) preserved
+      expect(res.body.adapterConfig.command).toBe("pnpm agent:run");
+    }, 20_000);
+
+    it("redacts nested runtimeConfig env for agent-actor cross-read (ANT-885 Defect 2 regression)", async () => {
+      mockAgentService.getById.mockResolvedValue(agentWithSecret);
+
+      const app = await createApp({
+        type: "agent",
+        agentId,
+        companyId,
+        source: "agent_key",
+        runId: "run-1",
+      });
+
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get(`/api/agents/${peerAgentId}`),
+      );
+
+      expect(res.status).toBe(200);
+      const defaultProfile = res.body.runtimeConfig?.modelProfiles?.default as Record<string, unknown> | undefined;
+      const nestedEnv = (defaultProfile?.adapterConfig as Record<string, unknown> | undefined)?.env as Record<string, unknown> | undefined;
+      expect(nestedEnv?.NESTED_TOKEN).toEqual({ type: "plain", value: "***REDACTED***" });
+    }, 20_000);
+
+    it("keeps env unredacted for human board/instance-admin reading agent (board contract, ANT-885)", async () => {
+      mockAgentService.getById.mockResolvedValue(agentWithSecret);
+
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get(`/api/agents/${peerAgentId}`),
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body.adapterConfig.env.GITHUB_TOKEN).toEqual({ type: "plain", value: "ghp_compromised_token" });
+      expect(res.body.adapterConfig.env.ANTHROPIC_API_KEY).toEqual({ type: "plain", value: "sk-ant-compromised" });
+    }, 20_000);
+  });
 });

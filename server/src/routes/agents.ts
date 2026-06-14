@@ -560,20 +560,26 @@ export function agentRoutes(
 
   async function buildAgentDetail(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
-    options?: { restricted?: boolean },
+    options?: { restricted?: boolean; redactSecrets?: boolean },
   ) {
     const [chainOfCommand, accessState] = await Promise.all([
       svc.getChainOfCommand(agent.id),
       buildAgentAccessState(agent),
     ]);
 
-    const base = options?.restricted
-      ? redactForRestrictedAgentView(agent)
-      : {
-          ...agent,
-          adapterConfig: redactAdapterConfig(agent.adapterConfig as Record<string, unknown> | null),
-          runtimeConfig: redactAdapterConfig(agent.runtimeConfig as Record<string, unknown> | null),
-        };
+    let base: Record<string, unknown>;
+    if (options?.restricted) {
+      base = redactForRestrictedAgentView(agent);
+    } else if (options?.redactSecrets) {
+      // Agent-to-agent cross-read: redact every env value regardless of key name (ANT-885 Defect 1+2)
+      base = {
+        ...agent,
+        adapterConfig: redactAdapterConfig(agent.adapterConfig as Record<string, unknown> | null),
+        runtimeConfig: redactAdapterConfig(agent.runtimeConfig as Record<string, unknown> | null),
+      };
+    } else {
+      base = { ...agent };
+    }
     return {
       ...base,
       chainOfCommand,
@@ -2003,7 +2009,9 @@ export function agentRoutes(
       res.json(await buildAgentDetail(agent, { restricted: true }));
       return;
     }
-    res.json(await buildAgentDetail(agent));
+    // Agent-to-agent cross-read: redact env secrets (ANT-885). Human board/admin actors keep raw env.
+    const isAgentActor = req.actor.type === "agent" && !isSelf;
+    res.json(await buildAgentDetail(agent, { redactSecrets: isAgentActor }));
   });
 
   router.get("/agents/:id/configuration", async (req, res) => {
@@ -2497,7 +2505,7 @@ export function agentRoutes(
       },
     });
 
-    res.json(await buildAgentDetail(agent));
+    res.json(await buildAgentDetail(agent, { redactSecrets: req.actor.type === "agent" }));
   });
 
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {
