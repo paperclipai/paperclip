@@ -253,7 +253,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     // Emulate a spec-compliant Streamable HTTP server: 406 unless the request
     // advertises `Accept: application/json, text/event-stream`, and an
-    // SSE-framed body in response. Regression guard for PAP-11097.
+    // SSE-framed body in response. Regression guard for PAP-11096.
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
       const headers = (init?.headers ?? {}) as Record<string, string>;
       const accept = headers.accept ?? headers.Accept ?? "";

@@ -10,8 +10,8 @@ describe("mcpHttpRequestHeaders", () => {
     expect(MCP_HTTP_ACCEPT).toBe("application/json, text/event-stream");
   });
 
-  it("lets caller-supplied headers (e.g. credentials) override", () => {
-    expect(mcpHttpRequestHeaders({ Authorization: "Bearer x" })).toMatchObject({
+  it("preserves caller-supplied headers while keeping the required Accept value", () => {
+    expect(mcpHttpRequestHeaders({ Authorization: "Bearer x", accept: "application/json" })).toMatchObject({
       accept: "application/json, text/event-stream",
       Authorization: "Bearer x",
     });

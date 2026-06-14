@@ -35,8 +35,10 @@ import {
 } from "@paperclipai/db";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { toolGatewayRoutes } from "../routes/tool-gateway.js";
+import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
 import { secretService } from "../services/secrets.js";
+import { createKvDemoHttpServer, type KvDemoHttpServer } from "../../../packages/kv-demo-mcp-server/src/http.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -729,7 +731,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         },
       });
       expect(fake.requests).toHaveLength(1);
-      // Streamable HTTP requires advertising both JSON and SSE on the call (PAP-11097).
+      // Streamable HTTP requires advertising both JSON and SSE on the call (PAP-11096).
       expect(fake.requests[0]!.headers.accept).toBe("application/json, text/event-stream");
       expect(fake.requests[0]!.body).toMatchObject({
         method: "tools/call",
@@ -834,7 +836,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     const agent = await createAgent(db, company.id);
     const { run } = await createIssueAndRun(db, company.id, agent.id);
     // Spec-compliant server: 406 unless the request advertises both content
-    // types, and replies with an SSE-framed body (PAP-11097).
+    // types, and replies with an SSE-framed body (PAP-11096).
     const fake = await startFakeRemoteMcpServer((fakeRequest) => {
       const accept = String(fakeRequest.headers.accept ?? "");
       if (!accept.includes("application/json") || !accept.includes("text/event-stream")) {
@@ -878,6 +880,61 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       });
     } finally {
       await fake.close();
+    }
+  });
+
+  it("discovers and calls the SDK-backed KV demo MCP server over Streamable HTTP", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const kvDemo: KvDemoHttpServer = createKvDemoHttpServer();
+    const port = await kvDemo.listen(0, "127.0.0.1");
+    try {
+      const access = toolAccessService(db);
+      const connection = await access.createConnection(company.id, {
+        name: "KV demo SDK fixture",
+        transport: "remote_http",
+        config: { url: `http://127.0.0.1:${port}/mcp` },
+        enabled: true,
+        status: "active",
+      });
+      const refresh = await access.refreshCatalog(connection.id, { actorType: "user", actorId: "board" });
+      expect(refresh.catalog.map((entry) => entry.toolName).sort()).toEqual([
+        "kv_delete",
+        "kv_get",
+        "kv_list",
+        "kv_set",
+      ]);
+
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const connectedTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.providerType === "mcp_remote_http" && tool.upstreamToolName === "kv_set");
+      expect(connectedTool).toBeTruthy();
+
+      const result = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: { key: "streamable-key", value: "streamable-value" },
+      });
+
+      expect(result).toMatchObject({
+        status: "completed",
+        tool: connectedTool!.name,
+        result: {
+          data: {
+            isError: false,
+            transport: "mcp_http",
+            spawnedLocalProcess: false,
+          },
+        },
+      });
+      expect(kvDemo.store.snapshot().entries).toEqual([
+        expect.objectContaining({ key: "streamable-key", value: "streamable-value" }),
+      ]);
+    } finally {
+      await kvDemo.close();
     }
   });
 
