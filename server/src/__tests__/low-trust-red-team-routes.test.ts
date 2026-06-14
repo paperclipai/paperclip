@@ -81,6 +81,17 @@ function expectNoCanary(value: unknown, ...markers: string[]) {
   for (const marker of markers) expect(serialized).not.toContain(marker);
 }
 
+function expectStructuredWakePayload(message: unknown, expected: Record<string, unknown>) {
+  const text = String(message ?? "");
+  const match = text.match(/Structured wake payload JSON:\n```json\n([\s\S]*?)\n```/);
+  expect(match?.[1]).toBeTruthy();
+  const expectedPayload =
+    typeof expected.wake === "object" && expected.wake !== null
+      ? (expected.wake as Record<string, unknown>)
+      : expected;
+  expect(JSON.parse(match?.[1] ?? "{}")).toMatchObject(expectedPayload);
+}
+
 function agentActor(fixture: Fixture, agentId = fixture.agents.lowTrust.id): Express.Request["actor"] {
   return {
     type: "agent",
@@ -906,7 +917,8 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       expect(run).not.toBeNull();
       await waitFor(() => gateway.getAgentPayloads().length === 1, 30_000);
       const payload = gateway.getAgentPayloads()[0] ?? {};
-      expect(payload.paperclip).toMatchObject({
+      expect(payload.paperclip).toBeUndefined();
+      expectStructuredWakePayload(payload.message, {
         wake: {
           reason: "issue_commented",
           issue: {
@@ -920,23 +932,10 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
               id: comment.body.id,
               issueId: fixture.issues.assignedReview.id,
               body: LOW_TRUST_QUARANTINED_BODY,
-              presentation: null,
-              metadata: null,
-              sourceTrust: {
-                preset: LOW_TRUST_REVIEW_PRESET,
-                disposition: "quarantined",
-                sourceIssueId: fixture.issues.assignedReview.id,
-                sourceRunId: fixture.runs.lowTrust.id,
-                sourceAgentId: fixture.agents.lowTrust.id,
-              },
             },
           ],
           continuationSummary: {
             body: LOW_TRUST_QUARANTINED_BODY,
-            sourceTrust: {
-              preset: LOW_TRUST_REVIEW_PRESET,
-              disposition: "quarantined",
-            },
           },
           livenessContinuation: {
             attempt: 1,
