@@ -5,7 +5,11 @@ import {
   resolveEffectiveGateProfile,
   GATE_TRIAGE_MAX_FILES_BEFORE_FULL,
 } from "../services/gate-triage.js";
-import { buildGateApprovalsForActivation, planApprovalAgentIds } from "../services/plan-gates.js";
+import {
+  buildGateApprovalsForActivation,
+  planApprovalAgentIds,
+  reviewGateAgentIdsFromApprovals,
+} from "../services/plan-gates.js";
 
 describe("gate triage — Layer 0 hard-rule floor", () => {
   it("forces full for high-risk surfaces regardless of file count", () => {
@@ -113,5 +117,61 @@ describe("gate triage — W5a planApprovalAgentIds (activation-actionable wake t
       gateProfile: "dev_team",
     });
     expect(planApprovalAgentIds(specs)).toEqual([]);
+  });
+});
+
+describe("gate triage — W5b reviewGateAgentIdsFromApprovals (in_review wake targets)", () => {
+  const pending = (type: string, designatedAgentId: unknown) => ({
+    type,
+    status: "pending",
+    payload: { gate: true, designatedAgentId } as Record<string, unknown>,
+  });
+
+  it("returns the designated code-review + wiring agents for pending review gates, deduped", () => {
+    const approvals = [
+      pending(GATE_APPROVAL_TYPES.planApproval, "arch"),
+      pending(GATE_APPROVAL_TYPES.codeReview, "cr"),
+      pending(GATE_APPROVAL_TYPES.wiringReview, "we"),
+    ];
+    expect(reviewGateAgentIdsFromApprovals(approvals).sort()).toEqual(["cr", "we"]);
+  });
+
+  it("excludes the plan-approval gate (architect is woken at activation, W5a)", () => {
+    expect(
+      reviewGateAgentIdsFromApprovals([pending(GATE_APPROVAL_TYPES.planApproval, "arch")]),
+    ).toEqual([]);
+  });
+
+  it("ignores non-pending review gates (already decided)", () => {
+    const approvals = [
+      { type: GATE_APPROVAL_TYPES.codeReview, status: "approved", payload: { designatedAgentId: "cr" } },
+      { type: GATE_APPROVAL_TYPES.wiringReview, status: "rejected", payload: { designatedAgentId: "we" } },
+    ];
+    expect(reviewGateAgentIdsFromApprovals(approvals)).toEqual([]);
+  });
+
+  it("ignores null / missing / empty designatedAgentId (board-routed gate)", () => {
+    const approvals = [
+      pending(GATE_APPROVAL_TYPES.codeReview, null),
+      pending(GATE_APPROVAL_TYPES.wiringReview, ""),
+      { type: GATE_APPROVAL_TYPES.codeReview, status: "pending", payload: {} as Record<string, unknown> },
+      { type: GATE_APPROVAL_TYPES.wiringReview, status: "pending", payload: null },
+    ];
+    expect(reviewGateAgentIdsFromApprovals(approvals)).toEqual([]);
+  });
+
+  it("dedups when the same agent holds both review gates (light/solo staffing)", () => {
+    const approvals = [
+      pending(GATE_APPROVAL_TYPES.codeReview, "same"),
+      pending(GATE_APPROVAL_TYPES.wiringReview, "same"),
+    ];
+    expect(reviewGateAgentIdsFromApprovals(approvals)).toEqual(["same"]);
+  });
+
+  it("returns [] when there are no review gates", () => {
+    expect(reviewGateAgentIdsFromApprovals([])).toEqual([]);
+    expect(
+      reviewGateAgentIdsFromApprovals([pending(GATE_APPROVAL_TYPES.planApproval, "arch")]),
+    ).toEqual([]);
   });
 });

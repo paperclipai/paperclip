@@ -126,6 +126,31 @@ export function planApprovalAgentIds(specs: GateApprovalSpec[]): string[] {
   return Array.from(ids);
 }
 
+const REVIEW_GATE_TYPES = new Set<string>([
+  GATE_APPROVAL_TYPES.codeReview,
+  GATE_APPROVAL_TYPES.wiringReview,
+]);
+
+// W5b — the review-gate agents to push-wake when a leaf reaches in_review.
+// Reads the issue's persisted approvals (listApprovalsForIssue): the designated
+// code-reviewer + wiring-expert of any still-pending review gate. Plan-approval
+// gates are excluded (their agent is woken at activation, W5a); decided gates and
+// board-routed gates (null designatedAgentId) yield nothing. De-duplicated.
+export function reviewGateAgentIdsFromApprovals(
+  approvals: ReadonlyArray<{ type: string; status: string; payload: Record<string, unknown> | null }>,
+): string[] {
+  const ids = new Set<string>();
+  for (const approval of approvals) {
+    if (!REVIEW_GATE_TYPES.has(approval.type)) continue;
+    if (approval.status !== "pending") continue;
+    const designated = approval.payload?.designatedAgentId;
+    if (typeof designated === "string" && designated.length > 0) {
+      ids.add(designated);
+    }
+  }
+  return Array.from(ids);
+}
+
 // Fix 3 (B1 gap-fix) + triage — the pure `done`-gate decision, right-sized by
 // profile. Returns the unmet preconditions for closing a gated issue. Empty
 // array = ready to close. The caller decides what to do with the reasons (throw

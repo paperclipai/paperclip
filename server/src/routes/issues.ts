@@ -90,7 +90,7 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
-import { evaluateDevTeamDoneReadiness } from "../services/plan-gates.js";
+import { evaluateDevTeamDoneReadiness, reviewGateAgentIdsFromApprovals } from "../services/plan-gates.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -5746,6 +5746,32 @@ export function issueRoutes(
               childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
             },
           });
+        }
+      }
+
+      // W5b: when a leaf reaches in_review, push-wake its designated code-review
+      // + wiring-review gate agents now instead of letting them discover the gate
+      // on the global heartbeat. source:"assignment" so the W2 timer-only idle
+      // short-circuit never suppresses it (mirrors W5a's plan-approval wake).
+      const becameInReview = existing.status !== "in_review" && issue.status === "in_review";
+      if (becameInReview) {
+        // Guarded: a throw here must not skip the flush loop below (which would
+        // silently drop the other queued wakeups for this update).
+        try {
+          const linkedApprovals = await issueApprovalsSvc.listApprovalsForIssue(issue.id);
+          for (const agentId of reviewGateAgentIdsFromApprovals(linkedApprovals)) {
+            addWakeup(agentId, {
+              source: "assignment",
+              triggerDetail: "system",
+              reason: "gate_review_requested",
+              payload: { issueId: issue.id, mutation: "in_review" },
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: { issueId: issue.id, source: "issue.in_review.gate" },
+            });
+          }
+        } catch (err) {
+          logger.warn({ err, issueId: issue.id }, "failed to resolve in_review review-gate wake targets");
         }
       }
 
