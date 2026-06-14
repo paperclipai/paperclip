@@ -634,7 +634,7 @@ export function toolAccessPolicyService(db: Db) {
 
     if (catalogEntryId) {
       const [entry] = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.id, catalogEntryId));
-      if (!entry || entry.companyId !== input.companyId || (entry.name !== input.request.toolName && entry.toolName !== input.request.toolName)) {
+      if (!entry || entry.companyId !== input.companyId) {
         return { ok: false, redaction, decision: decision("deny", "deny_missing_tool", "Requested tool is not in the company catalog.", [], [], { redactionPlan: redaction.redactionPlan }) };
       }
       connectionId = entry.connectionId;

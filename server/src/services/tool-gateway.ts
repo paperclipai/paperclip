@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, desc, eq, lte } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -13,7 +13,10 @@ import {
   projects,
   toolActionRequests,
   toolAccessAuditEvents,
+  toolApplications,
   toolCallEvents,
+  toolCatalogEntries,
+  toolConnections,
   toolGatewaySessions,
   toolInvocations,
 } from "@paperclipai/db";
@@ -21,6 +24,7 @@ import type { ToolRunContext } from "@paperclipai/plugin-sdk";
 import type { DeploymentExposure, DeploymentMode, ToolAccessDecision, ToolAccessDecisionInput } from "@paperclipai/shared";
 import type { AgentToolDescriptor, PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
+import { secretService } from "./secrets.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
@@ -42,17 +46,45 @@ import {
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
+const MAX_REMOTE_MCP_RESPONSE_BYTES = 1_000_000;
 const ACTIVE_GATEWAY_RUN_STATUSES = new Set(["running"]);
 
 export type ToolGatewayProviderType =
   | "mcp_http_fixture"
   | "mcp_stdio_fixture"
+  | "mcp_remote_http"
   | "paperclip_self"
   | "paperclip_plugin";
+
+export interface ConnectedMcpGatewayMetadata {
+  applicationId: string;
+  applicationKey: string | null;
+  connectionId: string;
+  catalogEntryId: string;
+  transport: "remote_http";
+  gatewayToolName: string;
+  upstreamToolName: string;
+  catalogName: string;
+  inputSchema: Record<string, unknown>;
+  outputSchema: Record<string, unknown> | null;
+  annotations: Record<string, unknown>;
+  risk: {
+    level: string;
+    isReadOnly: boolean;
+    isWrite: boolean;
+    isDestructive: boolean;
+  };
+}
 
 export interface ToolGatewayDescriptor extends AgentToolDescriptor {
   providerType: ToolGatewayProviderType;
   risk: "read" | "write" | "destructive";
+  applicationId?: string | null;
+  applicationKey?: string | null;
+  connectionId?: string | null;
+  catalogEntryId?: string | null;
+  upstreamToolName?: string | null;
+  providerMetadata?: ConnectedMcpGatewayMetadata | Record<string, unknown>;
 }
 
 export interface ToolGatewaySession {
@@ -163,6 +195,30 @@ function inferToolRisk(toolName: string): ToolGatewayDescriptor["risk"] {
     return "write";
   }
   return "read";
+}
+
+function riskFromCatalogEntry(entry: Pick<typeof toolCatalogEntries.$inferSelect, "riskLevel" | "isReadOnly" | "isWrite" | "isDestructive">): ToolGatewayDescriptor["risk"] {
+  if (entry.riskLevel === "destructive" || entry.isDestructive || entry.riskLevel === "critical" || entry.riskLevel === "high") {
+    return "destructive";
+  }
+  if (entry.riskLevel === "write" || entry.isWrite || entry.riskLevel === "medium") {
+    return "write";
+  }
+  return "read";
+}
+
+function slugSegment(value: string | null | undefined, fallback: string): string {
+  const slug = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  return slug || fallback;
+}
+
+function shortStableId(id: string): string {
+  return id.replace(/-/g, "").slice(0, 8);
 }
 
 function toolRequiresFormalApproval(tool: ToolGatewayDescriptor): boolean {
@@ -352,6 +408,7 @@ export function createToolGatewayService(
   const pluginToolDispatcher = options.pluginToolDispatcher;
   const interactions = issueThreadInteractionService(db);
   const policyService = toolAccessPolicyService(db);
+  const secrets = secretService(db);
 
   function pluginTools(): ToolGatewayDescriptor[] {
     return (pluginToolDispatcher?.listToolsForAgent() ?? []).map((tool) => ({
@@ -363,6 +420,90 @@ export function createToolGatewayService(
 
   function allTools(): ToolGatewayDescriptor[] {
     return [...BUILTIN_TOOLS, ...pluginTools()];
+  }
+
+  async function connectedMcpToolsForCompany(companyId: string): Promise<ToolGatewayDescriptor[]> {
+    const rows = await db
+      .select({
+        catalogEntry: toolCatalogEntries,
+        connection: toolConnections,
+        application: toolApplications,
+      })
+      .from(toolCatalogEntries)
+      .innerJoin(toolConnections, eq(toolCatalogEntries.connectionId, toolConnections.id))
+      .innerJoin(toolApplications, eq(toolConnections.applicationId, toolApplications.id))
+      .where(and(
+        eq(toolCatalogEntries.companyId, companyId),
+        eq(toolCatalogEntries.entryKind, "tool"),
+        eq(toolCatalogEntries.status, "active"),
+        isNull(toolCatalogEntries.quarantinedAt),
+        eq(toolConnections.companyId, companyId),
+        eq(toolConnections.transport, "remote_http"),
+        eq(toolConnections.status, "active"),
+        eq(toolConnections.enabled, true),
+        inArray(toolConnections.healthStatus, ["ok", "healthy"]),
+        eq(toolApplications.companyId, companyId),
+        eq(toolApplications.type, "mcp_http"),
+        eq(toolApplications.status, "active"),
+      ))
+      .orderBy(toolConnections.name, toolCatalogEntries.name);
+
+    const baseNames = rows.map(({ catalogEntry, connection, application }) => {
+      const applicationKey = application.applicationKey ?? null;
+      const connectionNamespace = `${slugSegment(applicationKey ?? connection.name ?? application.name, "mcp")}-${shortStableId(connection.id)}`;
+      const toolSlug = slugSegment(catalogEntry.toolName, "tool");
+      return `mcp.${connectionNamespace}:${toolSlug}`;
+    });
+    const baseNameCounts = baseNames.reduce<Map<string, number>>((counts, name) => {
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+      return counts;
+    }, new Map());
+
+    return rows.map(({ catalogEntry, connection, application }, index) => {
+      const baseName = baseNames[index]!;
+      const gatewayToolName = baseNameCounts.get(baseName)! > 1
+        ? `${baseName}-${shortStableId(catalogEntry.id)}`
+        : baseName;
+      const applicationKey = application.applicationKey ?? null;
+      const inputSchema = catalogEntry.inputSchema ?? {};
+      const outputSchema = catalogEntry.outputSchema ?? null;
+      const annotations = catalogEntry.annotations ?? {};
+      const risk = riskFromCatalogEntry(catalogEntry);
+      const providerMetadata: ConnectedMcpGatewayMetadata = {
+        applicationId: application.id,
+        applicationKey,
+        connectionId: connection.id,
+        catalogEntryId: catalogEntry.id,
+        transport: "remote_http",
+        gatewayToolName,
+        upstreamToolName: catalogEntry.toolName,
+        catalogName: catalogEntry.name,
+        inputSchema,
+        outputSchema,
+        annotations,
+        risk: {
+          level: catalogEntry.riskLevel,
+          isReadOnly: catalogEntry.isReadOnly,
+          isWrite: catalogEntry.isWrite,
+          isDestructive: catalogEntry.isDestructive,
+        },
+      };
+      return {
+        name: gatewayToolName,
+        displayName: catalogEntry.title ?? catalogEntry.toolName,
+        description: catalogEntry.description ?? `Connected MCP tool ${catalogEntry.toolName} from ${connection.name}.`,
+        parametersSchema: inputSchema,
+        pluginId: `mcp:${applicationKey ?? application.id}`,
+        providerType: "mcp_remote_http",
+        risk,
+        applicationId: application.id,
+        applicationKey,
+        connectionId: connection.id,
+        catalogEntryId: catalogEntry.id,
+        upstreamToolName: catalogEntry.toolName,
+        providerMetadata,
+      };
+    });
   }
 
   async function assertAgentInCompany(companyId: string, agentId: string): Promise<void> {
@@ -897,6 +1038,9 @@ export function createToolGatewayService(
       },
       request: {
         toolName: input.tool.name,
+        applicationId: input.tool.applicationId ?? null,
+        connectionId: input.tool.connectionId ?? null,
+        catalogEntryId: input.tool.catalogEntryId ?? null,
         arguments: input.parameters ?? {},
         idempotencyKey: input.idempotencyKey ?? null,
         sideEffecting: input.tool.risk !== "read",
@@ -910,8 +1054,17 @@ export function createToolGatewayService(
     return 403;
   }
 
-  function findTool(toolName: string): ToolGatewayDescriptor {
+  function findStaticTool(toolName: string): ToolGatewayDescriptor {
     const tool = allTools().find((candidate) => candidate.name === toolName);
+    if (!tool) {
+      throw new ToolGatewayHttpError(404, `Tool "${toolName}" not found`, "tool_not_found", { tool: toolName });
+    }
+    return tool;
+  }
+
+  async function findToolForSession(session: ToolGatewaySession, toolName: string): Promise<ToolGatewayDescriptor> {
+    const tool = [...allTools(), ...await connectedMcpToolsForCompany(session.companyId)]
+      .find((candidate) => candidate.name === toolName);
     if (!tool) {
       throw new ToolGatewayHttpError(404, `Tool "${toolName}" not found`, "tool_not_found", { tool: toolName });
     }
@@ -920,7 +1073,8 @@ export function createToolGatewayService(
 
   async function listToolsForContext(session: ToolGatewaySession): Promise<ToolGatewayDescriptor[]> {
     await assertAgentInCompany(session.companyId, session.agentId);
-    const decisions = await Promise.all(allTools().map(async (tool) => {
+    const tools = [...allTools(), ...await connectedMcpToolsForCompany(session.companyId)];
+    const decisions = await Promise.all(tools.map(async (tool) => {
       const decision = await policyService.decide(policyInputForTool({ session, tool }));
       return { tool, decision };
     }));
@@ -1076,6 +1230,244 @@ export function createToolGatewayService(
     }
 
     throw new ToolGatewayHttpError(404, `Tool "${tool.name}" not found`, "tool_not_found");
+  }
+
+  function remoteEndpoint(config: Record<string, unknown>): string {
+    const value = config.url ?? config.endpoint ?? config.remoteUrl;
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new ToolGatewayHttpError(422, "Remote MCP connection requires config.url", "remote_http_url_missing");
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(value);
+    } catch {
+      throw new ToolGatewayHttpError(422, "Remote MCP connection URL is invalid", "remote_http_url_invalid");
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new ToolGatewayHttpError(422, "Remote MCP connection URL must use http or https", "remote_http_url_invalid");
+    }
+    return parsed.toString();
+  }
+
+  async function markRemoteConnectionHealth(
+    connection: typeof toolConnections.$inferSelect,
+    status: "ok" | "error" | "missing_secret",
+    message: string | null,
+  ) {
+    const now = new Date();
+    await db
+      .update(toolConnections)
+      .set({
+        healthStatus: status,
+        healthMessage: message,
+        healthCheckedAt: now,
+        lastHealthAt: now,
+        lastError: status === "ok" ? null : message,
+        updatedAt: now,
+      })
+      .where(eq(toolConnections.id, connection.id));
+  }
+
+  async function resolveCredentialHeaders(connection: typeof toolConnections.$inferSelect): Promise<Record<string, string>> {
+    const headers: Record<string, string> = {};
+    for (const ref of connection.credentialRefs ?? []) {
+      if (ref.placement !== "header") continue;
+      try {
+        const value = await secrets.resolveSecretValue(connection.companyId, ref.secretId, ref.version ?? "latest", {
+          consumerType: "tool_connection",
+          consumerId: connection.id,
+          configPath: `credentials.${ref.name}`,
+          actorType: "system",
+        });
+        headers[ref.key] = `${ref.prefix ?? ""}${value}`;
+      } catch {
+        await markRemoteConnectionHealth(connection, "missing_secret", "A configured credential secret could not be resolved.");
+        throw new ToolGatewayHttpError(
+          422,
+          "A configured credential secret could not be resolved.",
+          "remote_http_missing_secret",
+          { connectionId: connection.id, credential: ref.name },
+        );
+      }
+    }
+    return headers;
+  }
+
+  async function resolveConnectedRemoteTool(session: ToolGatewaySession, tool: ToolGatewayDescriptor) {
+    if (tool.providerType !== "mcp_remote_http" || !tool.connectionId || !tool.catalogEntryId) {
+      throw new ToolGatewayHttpError(404, `Tool "${tool.name}" not found`, "tool_not_found");
+    }
+    const [entry] = await db
+      .select()
+      .from(toolCatalogEntries)
+      .where(and(
+        eq(toolCatalogEntries.id, tool.catalogEntryId),
+        eq(toolCatalogEntries.companyId, session.companyId),
+      ))
+      .limit(1);
+    if (!entry || entry.status !== "active" || entry.entryKind !== "tool") {
+      throw new ToolGatewayHttpError(404, `Tool "${tool.name}" not found`, "tool_not_found");
+    }
+    const [connection] = await db
+      .select()
+      .from(toolConnections)
+      .where(and(
+        eq(toolConnections.id, entry.connectionId),
+        eq(toolConnections.companyId, session.companyId),
+      ))
+      .limit(1);
+    if (!connection || connection.transport !== "remote_http") {
+      throw new ToolGatewayHttpError(404, `Tool "${tool.name}" not found`, "tool_not_found");
+    }
+    if (!connection.enabled || connection.status !== "active") {
+      throw new ToolGatewayHttpError(403, "Connection is disabled.", "remote_http_connection_disabled", {
+        connectionId: connection.id,
+      });
+    }
+    return { entry, connection };
+  }
+
+  function responseTooLargeError() {
+    return new ToolGatewayHttpError(
+      502,
+      "Remote MCP response exceeded the gateway size limit",
+      "remote_http_response_too_large",
+      { maxBytes: MAX_REMOTE_MCP_RESPONSE_BYTES },
+    );
+  }
+
+  async function readBoundedRemoteResponse(response: Response): Promise<string> {
+    const contentLength = response.headers.get("content-length");
+    if (contentLength && Number(contentLength) > MAX_REMOTE_MCP_RESPONSE_BYTES) {
+      throw responseTooLargeError();
+    }
+    const body = await response.text();
+    if (Buffer.byteLength(body, "utf8") > MAX_REMOTE_MCP_RESPONSE_BYTES) {
+      throw responseTooLargeError();
+    }
+    return body;
+  }
+
+  function malformedRemoteMcpResponse(): ToolGatewayHttpError {
+    return new ToolGatewayHttpError(
+      502,
+      "Remote MCP server returned a malformed tools/call response",
+      "remote_mcp_malformed_response",
+    );
+  }
+
+  function normalizeMcpContent(content: unknown): string {
+    if (!Array.isArray(content)) throw malformedRemoteMcpResponse();
+    return content.map((item) => {
+      const record = asRecord(item);
+      if (!record || typeof record.type !== "string") throw malformedRemoteMcpResponse();
+      if (record.type === "text") {
+        if (typeof record.text !== "string") throw malformedRemoteMcpResponse();
+        return record.text;
+      }
+      return JSON.stringify(record);
+    }).join("\n");
+  }
+
+  function normalizeMcpToolResult(result: unknown) {
+    const record = asRecord(result);
+    if (!record) throw malformedRemoteMcpResponse();
+    return {
+      content: normalizeMcpContent(record.content),
+      data: {
+        content: record.content,
+        structuredContent: record.structuredContent ?? null,
+        isError: record.isError === true,
+        transport: "mcp_http",
+        spawnedLocalProcess: false,
+      },
+      ...(record.isError === true ? { error: "Remote MCP tool returned an error result" } : {}),
+    };
+  }
+
+  async function executeRemoteHttpTool(
+    session: ToolGatewaySession,
+    tool: ToolGatewayDescriptor,
+    parameters: unknown,
+    ms: number,
+  ) {
+    const { entry, connection } = await resolveConnectedRemoteTool(session, tool);
+    const endpoint = remoteEndpoint(connection.config ?? {});
+    const headers = await resolveCredentialHeaders(connection);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    timer.unref?.();
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...headers,
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: `paperclip-tool-${randomUUID()}`,
+          method: "tools/call",
+          params: {
+            name: entry.toolName,
+            arguments: parameters ?? {},
+          },
+        }),
+      });
+      const body = await readBoundedRemoteResponse(response);
+      if (!response.ok) {
+        await markRemoteConnectionHealth(connection, "error", "Remote MCP server returned an HTTP error.");
+        throw new ToolGatewayHttpError(502, "Remote MCP server returned an HTTP error", "remote_http_status", {
+          status: response.status,
+          connectionId: connection.id,
+          catalogEntryId: entry.id,
+        });
+      }
+      let payload: unknown;
+      try {
+        payload = JSON.parse(body);
+      } catch {
+        await markRemoteConnectionHealth(connection, "error", "Remote MCP server returned invalid JSON.");
+        throw new ToolGatewayHttpError(502, "Remote MCP server returned invalid JSON", "remote_http_invalid_json", {
+          connectionId: connection.id,
+          catalogEntryId: entry.id,
+        });
+      }
+      const payloadRecord = asRecord(payload);
+      if (!payloadRecord) throw malformedRemoteMcpResponse();
+      if (payloadRecord.error !== undefined) {
+        const errorRecord = asRecord(payloadRecord.error);
+        await markRemoteConnectionHealth(connection, "error", "Remote MCP server returned a JSON-RPC error.");
+        throw new ToolGatewayHttpError(502, "Remote MCP server returned an error", "remote_mcp_error", {
+          code: typeof errorRecord?.code === "number" ? errorRecord.code : null,
+          connectionId: connection.id,
+          catalogEntryId: entry.id,
+        });
+      }
+      if (!Object.prototype.hasOwnProperty.call(payloadRecord, "result")) {
+        throw malformedRemoteMcpResponse();
+      }
+      const result = normalizeMcpToolResult(payloadRecord.result);
+      await markRemoteConnectionHealth(connection, "ok", "Remote MCP server responded to tools/call.");
+      return result;
+    } catch (error) {
+      if (error instanceof ToolGatewayHttpError) throw error;
+      if (error instanceof Error && error.name === "AbortError") {
+        await markRemoteConnectionHealth(connection, "error", "Remote MCP tool call timed out.");
+        throw new ToolGatewayHttpError(504, "Remote MCP tool call timed out", "tool_timeout", {
+          connectionId: connection.id,
+          catalogEntryId: entry.id,
+        });
+      }
+      await markRemoteConnectionHealth(connection, "error", "Remote MCP tool call failed.");
+      throw new ToolGatewayHttpError(502, "Remote MCP tool call failed", "remote_http_fetch_failed", {
+        connectionId: connection.id,
+        catalogEntryId: entry.id,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async function runWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -1330,7 +1722,7 @@ export function createToolGatewayService(
       let invocationId = String(randomUUID());
       const startedAt = Date.now();
 
-      const tool = findTool(input.tool);
+      const tool = await findToolForSession(session, input.tool);
 
       const requestedParameters = input.parameters ?? {};
       const argumentValidation = validateToolContent({
@@ -1602,8 +1994,11 @@ export function createToolGatewayService(
       });
 
       try {
+        const executionTimeoutMs = timeoutMs(input.timeoutMs);
         const result =
-          tool.providerType === "paperclip_plugin"
+          tool.providerType === "mcp_remote_http"
+            ? await executeRemoteHttpTool(session, tool, effectiveParameters, executionTimeoutMs)
+            : tool.providerType === "paperclip_plugin"
             ? await runWithTimeout(
                 pluginToolDispatcher!.executeTool(
                   tool.name,
@@ -1615,9 +2010,9 @@ export function createToolGatewayService(
                     projectId: session.projectId ?? "",
                   },
                 ),
-                timeoutMs(input.timeoutMs),
+                executionTimeoutMs,
               )
-            : await runWithTimeout(executeBuiltinTool(session, tool, effectiveParameters), timeoutMs(input.timeoutMs));
+            : await runWithTimeout(executeBuiltinTool(session, tool, effectiveParameters), executionTimeoutMs);
 
         const resultValidation = validateToolContent({
           value: result,
@@ -1774,7 +2169,7 @@ export function createToolGatewayService(
         expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
       };
 
-      const tool = findTool(input.tool);
+      const tool = findStaticTool(input.tool);
 
       if (tool.providerType !== "paperclip_plugin") {
         throw new ToolGatewayHttpError(404, `Tool "${input.tool}" is not a plugin tool`, "tool_not_found");

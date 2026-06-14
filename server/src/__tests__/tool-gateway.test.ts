@@ -1,11 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
+import { createServer, type IncomingMessage } from "node:http";
 import express from "express";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  companySecretBindings,
+  companySecrets,
+  companySecretVersions,
   companyMemberships,
   companies,
   createDb,
@@ -17,6 +21,7 @@ import {
   toolAccessAuditEvents,
   toolActionRequests,
   toolApplications,
+  toolCatalogEntries,
   toolCallEvents,
   toolConnections,
   toolGatewaySessions,
@@ -26,10 +31,12 @@ import {
   toolProfileEntries,
   toolProfiles,
   toolRuntimeSlots,
+  secretAccessEvents,
 } from "@paperclipai/db";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
+import { secretService } from "../services/secrets.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -129,6 +136,122 @@ async function allowToolsForAgent(db: Db, companyId: string, agentId: string, to
   return profile;
 }
 
+async function allowAllToolsForAgent(db: Db, companyId: string, agentId: string) {
+  const profile = await db
+    .insert(toolProfiles)
+    .values({
+      companyId,
+      profileKey: `gateway-all-${randomUUID()}`,
+      name: `Gateway all profile ${randomUUID()}`,
+      defaultAction: "allow",
+    })
+    .returning()
+    .then((rows) => rows[0]!);
+  await db.insert(toolProfileBindings).values({
+    companyId,
+    profileId: profile.id,
+    targetType: "agent",
+    targetId: agentId,
+  });
+  return profile;
+}
+
+async function createRemoteMcpTool(
+  db: Db,
+  companyId: string,
+  input: {
+    applicationKey?: string | null;
+    connectionName?: string;
+    url?: string;
+    toolName?: string;
+    title?: string | null;
+    connectionEnabled?: boolean;
+    connectionStatus?: "draft" | "active" | "disabled" | "archived";
+    healthStatus?: "unknown" | "healthy" | "degraded" | "failed" | "unchecked" | "ok" | "error" | "missing_secret";
+    catalogStatus?: "active" | "disabled" | "quarantined" | "removed";
+    quarantinedAt?: Date | null;
+    credentialRefs?: typeof toolConnections.$inferInsert["credentialRefs"];
+    credentialSecretRefs?: typeof toolConnections.$inferInsert["credentialSecretRefs"];
+  } = {},
+) {
+  const applicationKey = input.applicationKey ?? `app-${randomUUID().slice(0, 8)}`;
+  let application = await db
+    .select()
+    .from(toolApplications)
+    .where(and(eq(toolApplications.companyId, companyId), eq(toolApplications.applicationKey, applicationKey)))
+    .limit(1)
+    .then((rows) => rows[0]);
+  if (!application) {
+    [application] = await db.insert(toolApplications).values({
+      companyId,
+      applicationKey,
+      name: `Remote app ${randomUUID()}`,
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+  }
+  const [connection] = await db.insert(toolConnections).values({
+    companyId,
+    applicationId: application.id,
+    name: input.connectionName ?? `Remote connection ${randomUUID()}`,
+    transport: "remote_http",
+    status: input.connectionStatus ?? "active",
+    enabled: input.connectionEnabled ?? true,
+    healthStatus: input.healthStatus ?? "ok",
+    config: { url: input.url ?? "https://mcp.example.test/mcp" },
+    transportConfig: { url: input.url ?? "https://mcp.example.test/mcp" },
+    credentialRefs: input.credentialRefs ?? [],
+    credentialSecretRefs: input.credentialSecretRefs ?? [],
+  }).returning();
+  if (input.credentialRefs?.length || input.credentialSecretRefs?.length) {
+    await db.insert(companySecretBindings).values([
+      ...(input.credentialRefs ?? []).map((ref) => ({
+        companyId,
+        secretId: ref.secretId,
+        targetType: "tool_connection" as const,
+        targetId: connection!.id,
+        configPath: `credentials.${ref.name}`,
+      })),
+      ...(input.credentialSecretRefs ?? []).map((ref) => ({
+        companyId,
+        secretId: ref.secretId,
+        targetType: "tool_connection" as const,
+        targetId: connection!.id,
+        configPath: ref.configPath,
+        versionSelector: String(ref.versionSelector ?? "latest"),
+        required: ref.required ?? true,
+        label: ref.label ?? null,
+      })),
+    ]).onConflictDoNothing();
+  }
+  const toolName = input.toolName ?? "kv_set";
+  const [catalogEntry] = await db.insert(toolCatalogEntries).values({
+    companyId,
+    applicationId: application.id,
+    connectionId: connection!.id,
+    entryKind: "tool",
+    name: `${toolName}-${randomUUID()}`,
+    toolName,
+    title: input.title ?? "KV Set",
+    description: `Call ${toolName}`,
+    inputSchema: {
+      type: "object",
+      properties: { key: { type: "string" }, value: { type: "string" } },
+      required: ["key", "value"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false },
+    riskLevel: "write",
+    isReadOnly: false,
+    isWrite: true,
+    isDestructive: false,
+    status: input.catalogStatus ?? "active",
+    versionHash: randomUUID(),
+    quarantinedAt: input.quarantinedAt ?? null,
+  }).returning();
+  return { application, connection: connection!, catalogEntry: catalogEntry! };
+}
+
 function expectGatewayError(error: unknown, status: number, reasonCode: string) {
   expect(error).toBeInstanceOf(ToolGatewayHttpError);
   const gatewayError = error as ToolGatewayHttpError;
@@ -165,6 +288,70 @@ function createGatewayRouteApp(
   return app;
 }
 
+type FakeMcpRequest = {
+  headers: IncomingMessage["headers"];
+  body: Record<string, unknown> | null;
+};
+
+async function startFakeRemoteMcpServer(handler: (request: FakeMcpRequest) => Promise<{
+  status?: number;
+  headers?: Record<string, string>;
+  body?: unknown;
+  rawBody?: string;
+  delayMs?: number;
+}> | {
+  status?: number;
+  headers?: Record<string, string>;
+  body?: unknown;
+  rawBody?: string;
+  delayMs?: number;
+}) {
+  const requests: FakeMcpRequest[] = [];
+  const server = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    req.on("end", async () => {
+      const raw = Buffer.concat(chunks).toString("utf8");
+      let body: Record<string, unknown> | null = null;
+      try {
+        body = raw ? JSON.parse(raw) as Record<string, unknown> : null;
+      } catch {
+        body = null;
+      }
+      const requestRecord = { headers: req.headers, body };
+      requests.push(requestRecord);
+      const response = await handler(requestRecord);
+      if (response.delayMs) {
+        await new Promise((resolve) => setTimeout(resolve, response.delayMs));
+      }
+      res.statusCode = response.status ?? 200;
+      for (const [key, value] of Object.entries(response.headers ?? {})) {
+        res.setHeader(key, value);
+      }
+      if (response.rawBody !== undefined) {
+        res.end(response.rawBody);
+      } else {
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify(response.body ?? {
+          jsonrpc: "2.0",
+          id: body?.id ?? "test",
+          result: { content: [{ type: "text", text: "ok" }] },
+        }));
+      }
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Expected TCP fake MCP server address");
+  return {
+    url: `http://127.0.0.1:${address.port}/mcp`,
+    requests,
+    close: () => new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    }),
+  };
+}
+
 describeEmbeddedPostgres("tool gateway acceptance", () => {
   let db!: Db;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -188,6 +375,10 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     await db.delete(toolProfiles);
     await db.delete(toolConnections);
     await db.delete(toolApplications);
+    await db.delete(secretAccessEvents);
+    await db.delete(companySecretBindings);
+    await db.delete(companySecretVersions);
+    await db.delete(companySecrets);
     await db.delete(issueThreadInteractions);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
@@ -305,6 +496,332 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       toolName: "mcp-remote-fixture:add",
     });
   });
+
+  it("lists connected remote MCP catalog tools only for the scoped company and agent policy", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const unprofiledAgent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { run: unprofiledRun } = await createIssueAndRun(db, company.id, unprofiledAgent.id);
+    const remoteTool = await createRemoteMcpTool(db, company.id, {
+      applicationKey: "kv-demo",
+      connectionName: "KV Demo",
+      toolName: "kv_set",
+      title: "Set KV value",
+    });
+    const otherCompany = await createCompany(db);
+    const otherAgent = await createAgent(db, otherCompany.id);
+    const { run: otherRun } = await createIssueAndRun(db, otherCompany.id, otherAgent.id);
+    const otherRemoteTool = await createRemoteMcpTool(db, otherCompany.id, {
+      applicationKey: "kv-demo",
+      connectionName: "KV Demo",
+      toolName: "kv_set",
+      title: "Set KV value",
+    });
+    const profile = await allowToolsForAgent(db, company.id, agent.id, []);
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id,
+      profileId: profile.id,
+      selectorType: "catalog_entry",
+      effect: "include",
+      catalogEntryId: remoteTool.catalogEntry.id,
+    });
+    const otherProfile = await allowToolsForAgent(db, otherCompany.id, otherAgent.id, []);
+    await db.insert(toolProfileEntries).values({
+      companyId: otherCompany.id,
+      profileId: otherProfile.id,
+      selectorType: "connection",
+      effect: "include",
+      connectionId: otherRemoteTool.connection.id,
+    });
+
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const unprofiledSession = await gateway.createSession({
+      companyId: company.id,
+      agentId: unprofiledAgent.id,
+      runId: unprofiledRun.id,
+    });
+    const otherSession = await gateway.createSession({
+      companyId: otherCompany.id,
+      agentId: otherAgent.id,
+      runId: otherRun.id,
+    });
+
+    const tools = await gateway.listToolsForSession(session.token);
+    const connectedTool = tools.find((tool) => tool.providerType === "mcp_remote_http");
+    expect(connectedTool).toMatchObject({
+      name: expect.stringMatching(/^mcp\.kv-demo-[0-9a-f]{8}:kv-set$/),
+      displayName: "Set KV value",
+      providerType: "mcp_remote_http",
+      risk: "write",
+      applicationId: remoteTool.application.id,
+      applicationKey: "kv-demo",
+      connectionId: remoteTool.connection.id,
+      catalogEntryId: remoteTool.catalogEntry.id,
+      upstreamToolName: "kv_set",
+      parametersSchema: expect.objectContaining({ type: "object" }),
+      providerMetadata: expect.objectContaining({
+        applicationKey: "kv-demo",
+        connectionId: remoteTool.connection.id,
+        catalogEntryId: remoteTool.catalogEntry.id,
+        transport: "remote_http",
+        upstreamToolName: "kv_set",
+        annotations: { readOnlyHint: false },
+        risk: expect.objectContaining({ level: "write", isWrite: true }),
+      }),
+    });
+
+    await expect(gateway.listToolsForSession(unprofiledSession.token)).resolves.toEqual([]);
+    const otherTools = await gateway.listToolsForSession(otherSession.token);
+    expect(otherTools).toEqual([
+      expect.objectContaining({
+        providerType: "mcp_remote_http",
+        connectionId: otherRemoteTool.connection.id,
+        catalogEntryId: otherRemoteTool.catalogEntry.id,
+      }),
+    ]);
+    expect(otherTools.map((tool) => tool.catalogEntryId)).not.toContain(remoteTool.catalogEntry.id);
+  });
+
+  it("keeps connected remote MCP gateway names collision-safe and excludes inactive catalog sources", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const first = await createRemoteMcpTool(db, company.id, {
+      applicationKey: "kv-demo",
+      connectionName: "KV Demo Primary",
+      toolName: "kv_set",
+      title: "Set KV value",
+    });
+    const second = await createRemoteMcpTool(db, company.id, {
+      applicationKey: "kv-demo",
+      connectionName: "KV Demo Secondary",
+      toolName: "kv_set",
+      title: "Set KV value",
+    });
+    await createRemoteMcpTool(db, company.id, {
+      applicationKey: "disabled-demo",
+      connectionName: "Disabled Demo",
+      toolName: "kv_set",
+      connectionEnabled: false,
+    });
+    await createRemoteMcpTool(db, company.id, {
+      applicationKey: "unhealthy-demo",
+      connectionName: "Unhealthy Demo",
+      toolName: "kv_set",
+      healthStatus: "error",
+    });
+    await createRemoteMcpTool(db, company.id, {
+      applicationKey: "quarantined-demo",
+      connectionName: "Quarantined Demo",
+      toolName: "kv_set",
+      catalogStatus: "quarantined",
+      quarantinedAt: new Date(),
+    });
+    await allowAllToolsForAgent(db, company.id, agent.id);
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+
+    const connectedTools = (await gateway.listToolsForSession(session.token))
+      .filter((tool) => tool.providerType === "mcp_remote_http");
+    expect(connectedTools).toHaveLength(2);
+    expect(connectedTools.map((tool) => tool.catalogEntryId).sort()).toEqual([
+      first.catalogEntry.id,
+      second.catalogEntry.id,
+    ].sort());
+    expect(new Set(connectedTools.map((tool) => tool.name)).size).toBe(2);
+    expect(connectedTools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      expect.stringMatching(new RegExp(`^mcp\\.kv-demo-${first.connection.id.replace(/-/g, "").slice(0, 8)}:kv-set$`)),
+      expect.stringMatching(new RegExp(`^mcp\\.kv-demo-${second.connection.id.replace(/-/g, "").slice(0, 8)}:kv-set$`)),
+    ]));
+  });
+
+  it("executes a connected remote HTTP MCP tool with stored credentials and redacted audit state", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const credentialValue = `remote-secret-${randomUUID()}`;
+    const secret = await secretService(db).create(company.id, {
+      name: `Remote MCP token ${randomUUID()}`,
+      key: `remote_mcp_token_${randomUUID().replace(/-/g, "")}`,
+      provider: "local_encrypted",
+      value: credentialValue,
+    });
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => {
+      expect(fakeRequest.headers.authorization).toBe(`Bearer ${credentialValue}`);
+      const params = fakeRequest.body?.params as Record<string, unknown>;
+      const args = params.arguments as Record<string, unknown>;
+      return {
+        body: {
+          jsonrpc: "2.0",
+          id: fakeRequest.body?.id,
+          result: {
+            content: [{ type: "text", text: `stored ${String(args.key)}=${String(args.value)}` }],
+            structuredContent: { saved: true, key: args.key },
+          },
+        },
+      };
+    });
+    try {
+      await createRemoteMcpTool(db, company.id, {
+        applicationKey: "kv-demo",
+        connectionName: "KV Demo",
+        toolName: "kv_set",
+        title: "Set KV value",
+        url: fake.url,
+        credentialRefs: [{
+          name: "credentials.authorization",
+          secretId: secret.id,
+          version: "latest",
+          placement: "header",
+          key: "Authorization",
+          prefix: "Bearer ",
+        }],
+        credentialSecretRefs: [{
+          secretId: secret.id,
+          versionSelector: "latest",
+          configPath: "credentials.authorization",
+          required: true,
+          label: "Remote MCP token",
+        }],
+      });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const connectedTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.providerType === "mcp_remote_http");
+      expect(connectedTool).toBeTruthy();
+
+      const result = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: { key: "alpha", value: "one" },
+      });
+      expect(result).toMatchObject({
+        status: "completed",
+        tool: connectedTool!.name,
+        result: {
+          content: "stored alpha=one",
+          data: {
+            structuredContent: { saved: true, key: "alpha" },
+            isError: false,
+            transport: "mcp_http",
+            spawnedLocalProcess: false,
+          },
+        },
+      });
+      expect(fake.requests).toHaveLength(1);
+      expect(fake.requests[0]!.body).toMatchObject({
+        method: "tools/call",
+        params: {
+          name: "kv_set",
+          arguments: { key: "alpha", value: "one" },
+        },
+      });
+
+      const [invocation] = await db.select().from(toolInvocations);
+      expect(invocation).toMatchObject({
+        companyId: company.id,
+        agentId: agent.id,
+        issueId: issue.id,
+        runId: run.id,
+        toolName: connectedTool!.name,
+        status: "succeeded",
+      });
+      expect(invocation.connectionId).toBe(connectedTool!.connectionId);
+      expect(invocation.catalogEntryId).toBe(connectedTool!.catalogEntryId);
+
+      const persisted = JSON.stringify({
+        invocations: await db.select().from(toolInvocations),
+        callEvents: await db.select().from(toolCallEvents),
+        audits: await db.select().from(toolAccessAuditEvents),
+        activity: await db.select().from(activityLog),
+      });
+      expect(persisted).not.toContain(credentialValue);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  const remoteFailureCases = [
+    {
+      name: "HTTP status",
+      reasonCode: "remote_http_status",
+      status: 502,
+      response: () => ({ status: 503, body: { error: "unavailable" } }),
+    },
+    {
+      name: "invalid JSON",
+      reasonCode: "remote_http_invalid_json",
+      status: 502,
+      response: () => ({ rawBody: "not json" }),
+    },
+    {
+      name: "malformed MCP response",
+      reasonCode: "remote_mcp_malformed_response",
+      status: 502,
+      response: () => ({ body: { jsonrpc: "2.0", id: "bad", result: { content: { type: "text", text: "bad" } } } }),
+    },
+    {
+      name: "response size",
+      reasonCode: "remote_http_response_too_large",
+      status: 502,
+      response: () => {
+        const rawBody = "x".repeat(1_000_001);
+        return { rawBody, headers: { "content-length": String(Buffer.byteLength(rawBody)) } };
+      },
+    },
+    {
+      name: "timeout abort",
+      reasonCode: "tool_timeout",
+      status: 504,
+      timeoutMs: 10,
+      response: () => ({ delayMs: 75, body: { jsonrpc: "2.0", id: "slow", result: { content: [{ type: "text", text: "late" }] } } }),
+    },
+  ];
+
+  for (const scenario of remoteFailureCases) {
+    it(`returns a controlled gateway error for remote MCP ${scenario.name}`, async () => {
+      const company = await createCompany(db);
+      const agent = await createAgent(db, company.id);
+      const { run } = await createIssueAndRun(db, company.id, agent.id);
+      const fake = await startFakeRemoteMcpServer(() => scenario.response());
+      try {
+        await createRemoteMcpTool(db, company.id, {
+          applicationKey: `failure-${scenario.reasonCode}`,
+          toolName: "kv_set",
+          url: fake.url,
+        });
+        await allowAllToolsForAgent(db, company.id, agent.id);
+        const gateway = createTestToolGatewayService(db);
+        const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+        const connectedTool = (await gateway.listToolsForSession(session.token))
+          .find((tool) => tool.providerType === "mcp_remote_http");
+        expect(connectedTool).toBeTruthy();
+
+        await gateway.executeTool({
+          sessionToken: session.token,
+          tool: connectedTool!.name,
+          parameters: { key: "alpha", value: "one" },
+          timeoutMs: scenario.timeoutMs,
+        }).then(
+          () => {
+            throw new Error("Expected remote MCP call to fail");
+          },
+          (error) => expectGatewayError(error, scenario.status, scenario.reasonCode),
+        );
+
+        const [invocation] = await db.select().from(toolInvocations);
+        expect(invocation).toMatchObject({
+          status: scenario.status === 504 ? "timed_out" : "failed",
+          errorCode: scenario.reasonCode,
+        });
+      } finally {
+        await fake.close();
+      }
+    });
+  }
 
   it("persists hashed sessions and accepts them across gateway service instances", async () => {
     const company = await createCompany(db);
