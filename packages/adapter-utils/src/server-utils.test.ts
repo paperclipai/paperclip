@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
@@ -1149,6 +1149,121 @@ describe("refreshPaperclipWorkspaceEnvForExecution", () => {
         workspaceId: "workspace-2",
       },
     ]);
+  });
+});
+
+describe("PersistentRunningProcessesMap", () => {
+  const originalHome = process.env.PAPERCLIP_HOME;
+  const originalInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+  let tmpDir: string | undefined;
+
+  afterEach(async () => {
+    if (originalHome === undefined) delete process.env.PAPERCLIP_HOME;
+    else process.env.PAPERCLIP_HOME = originalHome;
+    if (originalInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+    else process.env.PAPERCLIP_INSTANCE_ID = originalInstanceId;
+    vi.resetModules();
+    if (tmpDir) {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+      tmpDir = undefined;
+    }
+  });
+
+  async function freshModule() {
+    vi.resetModules();
+    return import("./server-utils.js");
+  }
+
+  async function setupTmpInstance() {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-running-processes-"));
+    process.env.PAPERCLIP_HOME = tmpDir;
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
+    return path.join(tmpDir, "instances", "default", "runningProcesses.json");
+  }
+
+  it("persists set/delete/clear to runningProcesses.json under the instance root", async () => {
+    const file = await setupTmpInstance();
+    const mod = await freshModule();
+
+    const fakeChild = { pid: 4242, killed: false, kill: () => true } as any;
+    mod.runningProcesses.set("run-a", { child: fakeChild, graceSec: 5, processGroupId: 4242 });
+
+    expect(JSON.parse(await fs.readFile(file, "utf8"))).toEqual([
+      { runId: "run-a", processPid: 4242, processGroupId: 4242, graceSec: 5 },
+    ]);
+
+    mod.runningProcesses.delete("run-a");
+    expect(JSON.parse(await fs.readFile(file, "utf8"))).toEqual([]);
+  });
+
+  it("rehydrates entries on construction and the stub kill() signals the real pid/pgid", async () => {
+    await setupTmpInstance();
+
+    const { spawn } = await import("node:child_process");
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+      detached: true,
+    });
+    const pid = child.pid!;
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(isPidAlive(pid)).toBe(true);
+
+      const firstMod = await freshModule();
+      firstMod.runningProcesses.set("run-b", {
+        child: child as any,
+        graceSec: 5,
+        processGroupId: pid,
+      });
+
+      // Simulate an adapter restart: a fresh module instance rehydrates from disk.
+      const secondMod = await freshModule();
+      const rehydrated = secondMod.runningProcesses.get("run-b") as
+        | { child: { kill(signal: NodeJS.Signals): void }; processGroupId: number | null }
+        | undefined;
+      expect(rehydrated).toBeDefined();
+      expect(rehydrated?.processGroupId).toBe(pid);
+
+      rehydrated?.child.kill("SIGKILL");
+      expect(await waitForPidExit(pid)).toBe(true);
+    } finally {
+      if (isPidAlive(pid)) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // Ignore cleanup races.
+        }
+      }
+    }
+  });
+
+  it("adds negligible overhead to set()", async () => {
+    await setupTmpInstance();
+    const mod = await freshModule();
+    const fakeChild = { pid: 1, killed: false, kill: () => true } as any;
+
+    const iterations = 50;
+    const start = performance.now();
+    for (let i = 0; i < iterations; i++) {
+      mod.runningProcesses.set(`run-${i}`, { child: fakeChild, graceSec: 5, processGroupId: 1 });
+    }
+    const elapsed = performance.now() - start;
+
+    expect(elapsed / iterations).toBeLessThan(20);
+    mod.runningProcesses.clear();
+  });
+
+  it("removes the persistence file on process exit", async () => {
+    const file = await setupTmpInstance();
+    const mod = await freshModule();
+    const fakeChild = { pid: 1, killed: false, kill: () => true } as any;
+    mod.runningProcesses.set("run-c", { child: fakeChild, graceSec: 5, processGroupId: 1 });
+
+    expect(await fs.access(file).then(() => true, () => false)).toBe(true);
+
+    (process as any).emit("exit", 0);
+
+    expect(await fs.access(file).then(() => true, () => false)).toBe(false);
   });
 });
 
