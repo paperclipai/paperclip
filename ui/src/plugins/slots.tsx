@@ -927,14 +927,14 @@ export function PluginSlotOutlet({
 }
 
 // ---------------------------------------------------------------------------
-// Test helpers — exported for use in test suites only.
+// Runtime cache management
 // ---------------------------------------------------------------------------
 
 /**
- * Reset the module loader state. Only use in tests.
- * @internal
+ * Reset the plugin module loader state so a hot install, uninstall, or upgrade
+ * can discover fresh UI contributions without a full page reload.
  */
-export function _resetPluginModuleLoader(): void {
+export function resetPluginModuleLoader(): void {
   pluginLoadStates.clear();
   inflightImports.clear();
   registry.clear();
@@ -947,6 +947,12 @@ export function _resetPluginModuleLoader(): void {
     delete shimBlobUrls[key];
   }
 }
+
+/**
+ * Backwards-compatible test helper alias.
+ * @internal
+ */
+export const _resetPluginModuleLoader = resetPluginModuleLoader;
 
 export const _applyJsxRuntimeKeyForTests = applyJsxRuntimeKey;
 export const _createReactShimSourceForTests = createReactShimSource;

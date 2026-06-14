@@ -15,6 +15,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { toCompanyRelativePath } from "../lib/company-routes";
 import { useLocation } from "../lib/router";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
+import { resetPluginModuleLoader } from "../plugins/slots";
 
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
@@ -769,6 +770,12 @@ function invalidateActivityQueries(
   }
 }
 
+function invalidatePluginUiQueries(queryClient: ReturnType<typeof useQueryClient>) {
+  resetPluginModuleLoader();
+  queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
+  queryClient.invalidateQueries({ queryKey: queryKeys.plugins.uiContributions });
+}
+
 interface ToastGate {
   cooldownHits: Map<string, number[]>;
   suppressUntil: number;
@@ -813,6 +820,11 @@ function handleLiveEvent(
   gate: ToastGate,
   currentActor: { userId: string | null; agentId: string | null },
 ) {
+  if (event.type === "plugin.ui.updated") {
+    invalidatePluginUiQueries(queryClient);
+    return;
+  }
+
   if (event.companyId !== expectedCompanyId) return;
 
   const nameOf = (id: string) => resolveAgentName(queryClient, expectedCompanyId, id);
@@ -920,6 +932,7 @@ export const __liveUpdatesTestUtils = {
   hydrateVisibleIssueComment,
   invalidateActivityQueries,
   invalidateVisibleIssueRunQueries,
+  invalidatePluginUiQueries,
   resolveLiveCompanyId,
   shouldDeferIssueRefetchForVisibleAgentActivity,
   shouldDeferVisibleIssueCommentActivity,

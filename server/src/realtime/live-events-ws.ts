@@ -8,7 +8,7 @@ import { agentApiKeys, companyMemberships, instanceUserRoles } from "@paperclipa
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
-import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { subscribeCompanyLiveEvents, subscribeGlobalLiveEvents } from "../services/live-events.js";
 
 interface WsSocket {
   readyState: number;
@@ -205,10 +205,17 @@ export function setupLiveEventsWebSocketServer(
       return;
     }
 
-    const unsubscribe = subscribeCompanyLiveEvents(context.companyId, (event) => {
+    const sendEvent = (event: unknown) => {
       if (socket.readyState !== WebSocket.OPEN) return;
       socket.send(JSON.stringify(event));
-    });
+    };
+
+    const unsubscribeCompany = subscribeCompanyLiveEvents(context.companyId, sendEvent);
+    const unsubscribeGlobal = subscribeGlobalLiveEvents(sendEvent);
+    const unsubscribe = () => {
+      unsubscribeCompany();
+      unsubscribeGlobal();
+    };
 
     cleanupByClient.set(socket, unsubscribe);
     aliveByClient.set(socket, true);
