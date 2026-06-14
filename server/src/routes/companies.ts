@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
+import { agents as agentsTable, authUsers, companyMemberships, issues as issuesTable } from "@paperclipai/db";
+import { and, count, eq, isNotNull } from "drizzle-orm";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   companyPortabilityExportSchema,
@@ -438,6 +440,27 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
     res.json({ ok: true });
+  });
+
+
+  router.get('/:companyId/analytics', async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const [agentRows, issueRows, memberRows, telemetryLinkedRows] = await Promise.all([
+      db.select({ cnt: count() }).from(agentsTable).where(eq(agentsTable.companyId, companyId)),
+      db.select({ cnt: count() }).from(issuesTable).where(eq(issuesTable.companyId, companyId)),
+      db.select({ cnt: count() }).from(companyMemberships).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, 'user'))),
+      db.select({ cnt: count() }).from(authUsers).innerJoin(companyMemberships, eq(authUsers.id, companyMemberships.principalId)).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, 'user'), isNotNull(authUsers.telemetryId))),
+    ]);
+
+    res.json({
+      agentCount: Number(agentRows[0]?.cnt ?? 0),
+      issueCount: Number(issueRows[0]?.cnt ?? 0),
+      userCount: Number(memberRows[0]?.cnt ?? 0),
+      telemetryLinkedUserCount: Number(telemetryLinkedRows[0]?.cnt ?? 0),
+    });
   });
 
   return router;

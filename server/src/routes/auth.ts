@@ -17,6 +17,7 @@ async function loadCurrentUserProfile(db: Db, userId: string) {
       email: authUsers.email,
       name: authUsers.name,
       image: authUsers.image,
+      telemetryId: authUsers.telemetryId,
     })
     .from(authUsers)
     .where(eq(authUsers.id, userId))
@@ -31,6 +32,7 @@ async function loadCurrentUserProfile(db: Db, userId: string) {
     email: user.email ?? null,
     name: user.name ?? null,
     image: user.image ?? null,
+    telemetryId: user.telemetryId ?? null,
   });
 }
 
@@ -73,6 +75,7 @@ export function authRoutes(db: Db) {
       .set({
         name: patch.name,
         ...(patch.image !== undefined ? { image: patch.image } : {}),
+        ...(patch.telemetryId !== undefined ? { telemetryId: patch.telemetryId } : {}),
         updatedAt: now,
       })
       .where(eq(authUsers.id, req.actor.userId))
@@ -81,7 +84,8 @@ export function authRoutes(db: Db) {
         email: authUsers.email,
         name: authUsers.name,
         image: authUsers.image,
-      })
+        telemetryId: authUsers.telemetryId,
+        })
       .then((rows) => rows[0] ?? null);
 
     if (!updated) {
@@ -93,6 +97,7 @@ export function authRoutes(db: Db) {
       email: updated.email ?? null,
       name: updated.name ?? null,
       image: updated.image ?? null,
+      telemetryId: updated.telemetryId ?? null,
     }));
   });
 

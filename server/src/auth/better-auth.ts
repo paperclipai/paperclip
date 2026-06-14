@@ -143,6 +143,16 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
         verification: authVerifications,
       },
     }),
+    databaseHooks: {
+      user: {
+        create: {
+          before: async (user: Record<string, unknown>) => {
+            const { randomUUID } = await import('node:crypto');
+            return { data: { ...user, telemetryId: randomUUID() } };
+          },
+        },
+      },
+    },
     emailAndPassword: {
       enabled: true,
       requireEmailVerification: false,

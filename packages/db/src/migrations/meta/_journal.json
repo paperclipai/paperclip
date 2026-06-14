@@ -645,6 +645,13 @@
       "when": 1778810394522,
       "tag": "0091_old_swarm",
       "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1781314619505,
+      "tag": "0092_user_telemetry_id",
+      "breakpoints": true
     }
   ]
 }
