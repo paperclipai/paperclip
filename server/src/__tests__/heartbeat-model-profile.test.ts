@@ -79,18 +79,10 @@ describe("heartbeat model profile application", () => {
     });
   });
 
-  it("falls back to the primary config when the adapter does not support the requested profile", () => {
+  it("falls back to the primary config when neither adapter nor runtime defines the requested profile", () => {
     const modelProfile = resolveModelProfileApplication({
       adapterModelProfiles: [],
-      agentRuntimeConfig: {
-        modelProfiles: {
-          cheap: {
-            adapterConfig: {
-              model: "agent-cheap",
-            },
-          },
-        },
-      },
+      agentRuntimeConfig: {}, // no modelProfiles configured in runtime either
       issueModelProfile: null,
       contextSnapshot: { modelProfile: "cheap" },
     });
@@ -119,5 +111,38 @@ describe("heartbeat model profile application", () => {
     });
 
     expect(contextSnapshot).toMatchObject({ modelProfile: "cheap" });
+  });
+
+  it("applies an agent-runtime-only cheap profile when the adapter declares none (lmstudio)", () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [], // plugin adapter => no registry profiles
+      agentRuntimeConfig: {
+        modelProfiles: { cheap: { enabled: true, adapterConfig: { model: "gemma-4-31b-it-mlx" } } },
+      },
+      issueModelProfile: null,
+      contextSnapshot: {},
+      routerModelProfile: "cheap",
+      routerReason: "short_non_substantive",
+    });
+    expect(modelProfile.applied).toBe("cheap");
+    expect(modelProfile.requestedBy).toBe("auto_router");
+    expect(modelProfile.routerReason).toBe("short_non_substantive");
+    expect(modelProfile.configSource).toBe("agent_runtime");
+    expect(modelProfile.adapterConfig).toMatchObject({ model: "gemma-4-31b-it-mlx" });
+  });
+
+  it("lets an explicit issue override win over the router decision", () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [],
+      agentRuntimeConfig: {
+        modelProfiles: { cheap: { enabled: true, adapterConfig: { model: "gemma-4-31b-it-mlx" } } },
+      },
+      issueModelProfile: "cheap",
+      contextSnapshot: {},
+      routerModelProfile: "cheap",
+      routerReason: "short_non_substantive",
+    });
+    expect(modelProfile.requestedBy).toBe("issue_override");
+    expect(modelProfile.routerReason).toBeNull();
   });
 });

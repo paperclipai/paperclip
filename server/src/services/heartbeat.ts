@@ -959,7 +959,7 @@ interface ParsedIssueAssigneeAdapterOverrides {
   useProjectWorkspace: boolean | null;
 }
 
-type ModelProfileRequestSource = "issue_override" | "wake_context";
+type ModelProfileRequestSource = "issue_override" | "wake_context" | "auto_router";
 type AppliedModelProfileConfigSource = "agent_runtime" | "adapter_default";
 
 export interface ModelProfileApplication {
@@ -969,6 +969,7 @@ export interface ModelProfileApplication {
   configSource: AppliedModelProfileConfigSource | null;
   fallbackReason: string | null;
   adapterConfig: Record<string, unknown> | null;
+  routerReason: string | null;
 }
 
 export type ResolvedWorkspaceForRun = {
@@ -1050,49 +1051,56 @@ export function resolveModelProfileApplication(input: {
   agentRuntimeConfig: unknown;
   issueModelProfile: ModelProfileKey | null | undefined;
   contextSnapshot: Record<string, unknown> | null | undefined;
+  routerModelProfile?: ModelProfileKey | null;
+  routerReason?: string | null;
   profileResolutionFallbackReason?: string | null;
 }): ModelProfileApplication {
   const issueModelProfile = input.issueModelProfile ?? null;
   const contextModelProfile = readContextModelProfile(input.contextSnapshot);
-  const requested = issueModelProfile ?? contextModelProfile;
+  const routerModelProfile = input.routerModelProfile ?? null;
+  const requested = issueModelProfile ?? contextModelProfile ?? routerModelProfile;
   const requestedBy: ModelProfileRequestSource | null = issueModelProfile
     ? "issue_override"
     : contextModelProfile
       ? "wake_context"
-      : null;
+      : routerModelProfile
+        ? "auto_router"
+        : null;
+  const routerReason = requestedBy === "auto_router" ? input.routerReason ?? null : null;
 
-  if (!requested) {
-    return {
-      requested: null,
-      requestedBy: null,
-      applied: null,
-      configSource: null,
-      fallbackReason: null,
-      adapterConfig: null,
-    };
-  }
+  const empty = {
+    requested: null,
+    requestedBy: null,
+    applied: null,
+    configSource: null,
+    fallbackReason: null,
+    adapterConfig: null,
+    routerReason: null,
+  } satisfies ModelProfileApplication;
 
-  const adapterProfile = input.adapterModelProfiles.find((profile) => profile.key === requested) ?? null;
-  if (!adapterProfile) {
-    return {
-      requested,
-      requestedBy,
-      applied: null,
-      configSource: null,
-      fallbackReason: input.profileResolutionFallbackReason ?? "adapter_profile_not_supported",
-      adapterConfig: null,
-    };
-  }
+  if (!requested) return empty;
 
   const runtimeProfile = readAgentRuntimeModelProfile(input.agentRuntimeConfig, requested);
-  if (!runtimeProfile.enabled) {
+  const adapterProfile = input.adapterModelProfiles.find((profile) => profile.key === requested) ?? null;
+
+  // Neither the adapter registry nor the agent runtime defines this profile.
+  if (!adapterProfile && !runtimeProfile.configured) {
     return {
+      ...empty,
       requested,
       requestedBy,
-      applied: null,
-      configSource: null,
+      routerReason,
+      fallbackReason: input.profileResolutionFallbackReason ?? "adapter_profile_not_supported",
+    };
+  }
+
+  if (!runtimeProfile.enabled) {
+    return {
+      ...empty,
+      requested,
+      requestedBy,
+      routerReason,
       fallbackReason: "agent_runtime_profile_disabled",
-      adapterConfig: null,
     };
   }
 
@@ -1102,8 +1110,10 @@ export function resolveModelProfileApplication(input: {
     applied: requested,
     configSource: runtimeProfile.configured ? "agent_runtime" : "adapter_default",
     fallbackReason: null,
+    routerReason,
     adapterConfig: {
-      ...parseObject(adapterProfile.adapterConfig),
+      // adapterProfile may be null for a runtime-only profile (e.g. lmstudio plugin adapter)
+      ...parseObject(adapterProfile?.adapterConfig),
       ...runtimeProfile.adapterConfig,
     },
   };
@@ -1131,6 +1141,7 @@ function modelProfileRunMetadata(
     applied: modelProfile.applied,
     configSource: modelProfile.configSource,
     fallbackReason: modelProfile.fallbackReason,
+    ...(modelProfile.routerReason ? { routerReason: modelProfile.routerReason } : {}),
   };
 }
 
