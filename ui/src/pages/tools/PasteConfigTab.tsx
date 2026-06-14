@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
-import { CheckCircle2, KeyRound } from "lucide-react";
+import { ArrowRight, CheckCircle2, KeyRound } from "lucide-react";
 import type { McpJsonImportDraft, McpJsonImportPreview } from "@paperclipai/shared";
+import { useNavigate } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { toolsApi } from "@/api/tools";
@@ -31,6 +33,32 @@ function draftSummary(draft: McpJsonImportDraft): string {
 }
 
 /**
+ * A draft is connectable when it's a remote server with a real http(s) URL — that
+ * is exactly what the "Connect with a link" wizard step needs to land an active
+ * `tool_connection`. Imported stdio commands stay draft-only (they require an
+ * approved Paperclip template), so they get no hand-off here.
+ */
+function draftConnectUrl(draft: McpJsonImportDraft): string | null {
+  if (draft.transport !== "remote_http") return null;
+  const raw = draft.config?.url;
+  if (typeof raw !== "string") return null;
+  try {
+    const parsed = new URL(raw.trim());
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+/** Hand the draft off to the Apps Connect wizard, pre-filled with its URL and name. */
+function connectHref(url: string, name: string): string {
+  const params = new URLSearchParams({ link: url });
+  if (name.trim()) params.set("name", name.trim());
+  return `/apps/connect?${params.toString()}`;
+}
+
+/**
  * M8a — "Paste a config" tab on the Advanced door (PAP-10862, plan D8).
  *
  * A thin, honest surface over `POST /companies/:id/tools/mcp/import-json`: paste
@@ -39,6 +67,7 @@ function draftSummary(draft: McpJsonImportDraft): string {
  * of the two M8 screens where "MCP" vocabulary is allowed (PAP-10827 vocab map).
  */
 export function PasteConfigTab({ companyId }: { companyId: string }) {
+  const navigate = useNavigate();
   const [draftText, setDraftText] = useState("");
   const [preview, setPreview] = useState<McpJsonImportPreview | null>(null);
 
@@ -65,6 +94,13 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
     <div className="space-y-5">
       <p className="max-w-2xl text-sm text-muted-foreground">
         Paste the MCP config snippet from the tool's README and we'll turn it into a friendly setup.
+      </p>
+      <p className="text-xs text-muted-foreground">
+        Just a URL?{" "}
+        <Link to="/apps/connect" className="text-primary hover:underline">
+          Paste it on Connect an app → Connect with a link
+        </Link>{" "}
+        instead.
       </p>
 
       <div className="space-y-2">
@@ -93,7 +129,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
           onClick={() => importMutation.mutate(draftText)}
           disabled={!canSubmit || Boolean(localParseError)}
         >
-          {importMutation.isPending ? "Checking…" : "Check & continue"}
+          {importMutation.isPending ? "Checking…" : "Check config"}
         </Button>
         <span className="text-xs text-muted-foreground">
           We'll read it and show what we found before anything is saved.
@@ -113,12 +149,27 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
               <CheckCircle2 className="h-4 w-4 text-emerald-600" />
               We found {drafts.length} {drafts.length === 1 ? "app" : "apps"} in that config
             </h3>
-            {drafts.map((draft, index) => (
-              <DraftCard key={`${draft.name}-${index}`} draft={draft} />
-            ))}
-            <p className="text-xs text-muted-foreground">
-              We humanized the field names from the config. Next, you'll add the keys and pick the actions you want on.
-            </p>
+            {drafts.map((draft, index) => {
+              const url = draftConnectUrl(draft);
+              return (
+                <DraftCard
+                  key={`${draft.name}-${index}`}
+                  draft={draft}
+                  onContinue={url ? () => navigate(connectHref(url, draft.name)) : undefined}
+                />
+              );
+            })}
+            {drafts.some((d) => draftConnectUrl(d)) ? (
+              <p className="text-xs text-muted-foreground">
+                Continue takes you to add the keys and pick the actions you want on — that's the step that turns this
+                into a connected app.
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                We humanized the field names from the config. These run-in-your-workspace tools stay as drafts until an
+                admin maps them to an approved template.
+              </p>
+            )}
           </div>
         )
       ) : null}
@@ -126,7 +177,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
   );
 }
 
-function DraftCard({ draft }: { draft: McpJsonImportDraft }) {
+function DraftCard({ draft, onContinue }: { draft: McpJsonImportDraft; onContinue?: () => void }) {
   return (
     <div className="rounded-lg border border-border bg-card p-4">
       <div className="flex items-center justify-between gap-3">
@@ -134,6 +185,12 @@ function DraftCard({ draft }: { draft: McpJsonImportDraft }) {
           <div className="font-semibold text-foreground">{draft.name}</div>
           <div className="text-xs text-muted-foreground">{draftSummary(draft)}</div>
         </div>
+        {onContinue ? (
+          <Button size="sm" className="shrink-0" onClick={onContinue}>
+            Continue
+            <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
+          </Button>
+        ) : null}
       </div>
 
       {draft.credentialRefs.length > 0 ? (
