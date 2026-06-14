@@ -162,10 +162,12 @@ jobs:
           PAPERCLIP_BUMP_TOKEN: ${{ secrets.PAPERCLIP_AGENT_BUMP_TOKEN }}
           NEW_IMAGE_SHORT: ${{ steps.sha.outputs.short }}
           BUILD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-          # Production company id for Blockcast :: CEO. If we add more
-          # companies, refactor the endpoint to take a list (or call it N
-          # times here); single POST for now.
-          COMPANY_ID: aaced805-3491-4ee5-9b14-cdf70cb81d47
+          # Space-separated list of production company ids to bump.
+          # BLO-10409: added Penstock (b1d3f3d3-…) alongside Blockcast (aaced805-…)
+          # so both companies' opencode_k8s agents stay in sync on every build.
+          COMPANY_IDS: >-
+            aaced805-3491-4ee5-9b14-cdf70cb81d47
+            b1d3f3d3-adc9-48af-beb1-013a18368d84
         run: |
           set -euo pipefail
           if [ -z "${PAPERCLIP_BUMP_TOKEN:-}" ]; then
@@ -173,20 +175,36 @@ jobs:
             exit 0
           fi
           NEW_IMAGE="harbor.blockcast.net/paperclip-agent/paperclip-agent:sha-${NEW_IMAGE_SHORT}-k8s-vendored"
-          response=$(mktemp)
-          http=$(curl -sS -o "$response" -w "%{http_code}" \
-            -X POST "${PAPERCLIP_API}/api/admin/agents/bump-agent-image" \
-            -H "Authorization: Bearer ${PAPERCLIP_BUMP_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "$(jq -n --arg image "$NEW_IMAGE" --arg sha "$BUILD_SHA" --arg cid "$COMPANY_ID" '
-              { companyId: $cid, image: $image, source: "ci:docker-agent.yml", buildSha: $sha }
-            ')")
-          echo "HTTP $http"
-          jq '.' "$response" || cat "$response"
-          if [ "$http" != "200" ]; then
-            echo "::error::bump-agent-image returned HTTP $http"
+          total_bumped=0
+          total_skipped=0
+          total_unchanged=0
+          failed=0
+          for cid in $COMPANY_IDS; do
+            echo "--- Bumping company ${cid} ---"
+            response=$(mktemp)
+            http=$(curl -sS -o "$response" -w "%{http_code}" \
+              -X POST "${PAPERCLIP_API}/api/admin/agents/bump-agent-image" \
+              -H "Authorization: Bearer ${PAPERCLIP_BUMP_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg image "$NEW_IMAGE" --arg sha "$BUILD_SHA" --arg cid "$cid" '
+                { companyId: $cid, image: $image, source: "ci:docker-agent.yml", buildSha: $sha }
+              ')")
+            echo "HTTP $http"
+            jq '.' "$response" || cat "$response"
+            if [ "$http" != "200" ]; then
+              echo "::error::bump-agent-image returned HTTP $http for company ${cid}"
+              failed=$((failed + 1))
+            else
+              total_bumped=$((total_bumped + $(jq -r '.bumped | length' "$response")))
+              total_skipped=$((total_skipped + $(jq -r '.skipped | length' "$response")))
+              total_unchanged=$((total_unchanged + $(jq -r '.unchanged | length' "$response")))
+            fi
+          done
+          echo "=== Totals across all companies ==="
+          echo "Bumped: ${total_bumped} agents"
+          echo "Skipped: ${total_skipped} agents (will auto-retry on next run completion)"
+          echo "Already on target: ${total_unchanged} agents"
+          if [ "$failed" -gt 0 ]; then
+            echo "::error::${failed} company bump(s) failed"
             exit 1
           fi
-          echo "Bumped: $(jq -r '.bumped | length' "$response") agents"
-          echo "Skipped: $(jq -r '.skipped | length' "$response") agents (will auto-retry on next run completion)"
-          echo "Already on target: $(jq -r '.unchanged | length' "$response") agents"
