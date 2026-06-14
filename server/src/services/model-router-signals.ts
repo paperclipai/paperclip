@@ -7,7 +7,12 @@ export function isModelRouterEnabled(env: NodeJS.ProcessEnv | Record<string, str
   return env.PAPERCLIP_MODEL_ROUTER === "on";
 }
 
-/** Error codes that mean "this issue spun / failed hard" — never downgrade it. */
+/**
+ * Error codes that mean "this issue spun / failed hard" on task complexity —
+ * never downgrade such an issue to the fast model. Intentionally EXCLUDES infra
+ * failures (`llm_unreachable`, `process_lost`): those reflect host/sleep/network
+ * problems, not that the task was too hard for the model.
+ */
 const BLOCKING_ERROR_CODES = ["max_iterations", "timeout", "adapter_failed"];
 
 /**
