@@ -265,6 +265,21 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/apps/advanced/paste-config");
   });
 
+  // PAP-11091: discoverability copy for remote MCP URLs — the link field
+  // advertises that any remote tool URL (incl. a local MCP server) works, and
+  // the placeholder shows both an https and a localhost MCP example.
+  it("advertises that remote/local MCP URLs work under 'Connect with a link'", async () => {
+    await render();
+
+    expect(container.textContent).toContain(
+      "Any remote tool URL works here — including a local MCP server you're running yourself.",
+    );
+    const linkInput = Array.from(container.querySelectorAll<HTMLInputElement>("input")).find((i) =>
+      i.getAttribute("placeholder")?.startsWith("https://example.com/actions"),
+    );
+    expect(linkInput?.getAttribute("placeholder")).toContain("http://127.0.0.1:8848/mcp");
+  });
+
   // Reconnect from the app page: ?link/?name/?applicationId prefill skips the
   // gallery and re-attaches the connection to the existing application.
   it("prefills the link frame from search params and passes applicationId to connect", async () => {
