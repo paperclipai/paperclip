@@ -6095,34 +6095,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
-    if (retryReason !== MAX_TURN_CONTINUATION_RETRY_REASON) {
-      const invokability = await getAgentInvokability(agent);
-      if (!invokability.invokable) {
-        const contextSnapshot = parseObject(run.contextSnapshot);
-        const issueId = readNonEmptyString(contextSnapshot.issueId);
-        await appendRunEvent(run, await nextRunEventSeq(run.id), {
-          eventType: "lifecycle",
-          stream: "system",
-          level: "warn",
-          message: "Scheduled retry suppressed because the agent is not invokable",
-          payload: {
-            retryReason,
-            scheduledRetryAttempt: nextAttempt,
-            maxAttempts,
-            reason: invokability.reason,
-            invalidOrgChain: invokability.invalidOrgChain,
-            ...invokability.details,
-          },
-        });
-        return {
-          outcome: "not_scheduled" as const,
-          reason: "Scheduled retry suppressed because the agent is not invokable",
-          errorCode: "agent_not_invokable" as const,
-          issueId,
-        };
-      }
-    }
-
     const schedule =
       transientRetryNotBefore && transientRetryNotBefore.getTime() > baseSchedule.dueAt.getTime()
         ? {
@@ -6134,28 +6106,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
-    if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
-      const gate = await evaluateScheduledRetryGate({ run, agent, contextSnapshot, retryReason });
-      if (!gate.allowed) {
-        await appendRunEvent(run, await nextRunEventSeq(run.id), {
-          eventType: "lifecycle",
-          stream: "system",
-          level: "warn",
-          message: gate.reason,
-          payload: {
-            retryReason,
-            scheduledRetryAttempt: nextAttempt,
-            maxAttempts,
-            ...gate.details,
-          },
-        });
-        return {
-          outcome: "not_scheduled" as const,
-          reason: gate.reason,
-          errorCode: gate.errorCode,
-          issueId: gate.issueId,
-        };
-      }
+    // All automatic scheduled retries share this gate so transient adapter
+    // retries cannot bypass budget, ownership, pause, review, or dependency holds.
+    const gate = await evaluateScheduledRetryGate({ run, agent, contextSnapshot, retryReason });
+    const allowLegacyLooseIssueRetry =
+      !gate.allowed &&
+      gate.errorCode === "issue_not_found" &&
+      retryReason !== MAX_TURN_CONTINUATION_RETRY_REASON;
+    if (!gate.allowed && !allowLegacyLooseIssueRetry) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: gate.reason,
+        payload: {
+          retryReason,
+          scheduledRetryAttempt: nextAttempt,
+          maxAttempts,
+          ...gate.details,
+        },
+      });
+      return {
+        outcome: "not_scheduled" as const,
+        reason: gate.reason,
+        errorCode: gate.errorCode,
+        issueId: gate.issueId,
+      };
     }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);

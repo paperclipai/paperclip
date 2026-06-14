@@ -721,6 +721,137 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(retryRuns).toBe(0);
   });
 
+  it("suppresses transient adapter retry scheduling for blocked issues with unresolved blockers", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const blockerId = randomUUID();
+    const sourceRunId = randomUUID();
+    const now = new Date("2026-04-20T18:00:00.000Z");
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: sourceRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "failed",
+      error: "adapter overloaded",
+      errorCode: "adapter_failed",
+      finishedAt: now,
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        wakeReason: "issue_assigned",
+      },
+      updatedAt: now,
+      createdAt: now,
+    });
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Board decision",
+        status: "todo",
+        priority: "high",
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked adapter retry",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: agentId,
+        executionRunId: sourceRunId,
+        executionAgentNameKey: "codexcoder",
+        executionLockedAt: now,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    const suppressed = await heartbeat.scheduleBoundedRetry(sourceRunId, {
+      now,
+      random: () => 0.5,
+    });
+    expect(suppressed).toMatchObject({
+      outcome: "not_scheduled",
+      errorCode: "issue_dependencies_blocked",
+      issueId: blockedIssueId,
+    });
+
+    const retryRunsBeforeResolution = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, sourceRunId))
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(retryRunsBeforeResolution).toBe(0);
+
+    const wakeupsBeforeResolution = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(wakeupsBeforeResolution).toBe(0);
+
+    const suppressionEvent = await db
+      .select({ message: heartbeatRunEvents.message, payload: heartbeatRunEvents.payload })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, sourceRunId))
+      .orderBy(sql`${heartbeatRunEvents.id} desc`)
+      .then((rows) => rows[0] ?? null);
+    expect(suppressionEvent?.message).toContain("issue dependencies are still blocked");
+    expect(suppressionEvent?.payload).toMatchObject({
+      retryReason: "transient_failure",
+      unresolvedBlockerIssueIds: [blockerId],
+      unresolvedBlockerCount: 1,
+    });
+
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: now })
+      .where(eq(issues.id, blockerId));
+
+    const scheduledAfterResolution = await heartbeat.scheduleBoundedRetry(sourceRunId, {
+      now,
+      random: () => 0.5,
+    });
+    expect(scheduledAfterResolution.outcome).toBe("scheduled");
+    if (scheduledAfterResolution.outcome !== "scheduled") return;
+    expect(scheduledAfterResolution.run.retryOfRunId).toBe(sourceRunId);
+    expect(scheduledAfterResolution.run.scheduledRetryReason).toBe("transient_failure");
+  });
+
   it("does not defer a new assignee behind the previous assignee's scheduled retry", async () => {
     const companyId = randomUUID();
     const oldAgentId = randomUUID();
