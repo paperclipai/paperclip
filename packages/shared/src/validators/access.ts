@@ -3,6 +3,7 @@ import {
   AGENT_ADAPTER_TYPES,
   HUMAN_COMPANY_MEMBERSHIP_ROLES,
   INVITE_JOIN_TYPES,
+  ISSUE_VISIBILITY_MODES,
   JOIN_REQUEST_STATUSES,
   JOIN_REQUEST_TYPES,
   PERMISSION_KEYS,
@@ -205,3 +206,9 @@ export const updateCurrentUserProfileSchema = z.object({
 });
 
 export type UpdateCurrentUserProfile = z.infer<typeof updateCurrentUserProfileSchema>;
+
+export const updateIssueVisibilityModeSchema = z.object({
+  issueVisibilityMode: z.enum(ISSUE_VISIBILITY_MODES),
+});
+
+export type UpdateIssueVisibilityMode = z.infer<typeof updateIssueVisibilityModeSchema>;

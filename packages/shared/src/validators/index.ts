@@ -501,6 +501,7 @@ export {
   updateCompanyMemberWithPermissionsSchema,
   archiveCompanyMemberSchema,
   updateMemberPermissionsSchema,
+  updateIssueVisibilityModeSchema,
   searchAdminUsersQuerySchema,
   updateUserCompanyAccessSchema,
   type CreateCompanyInvite,
@@ -520,6 +521,7 @@ export {
   type UpdateCompanyMemberWithPermissions,
   type ArchiveCompanyMember,
   type UpdateMemberPermissions,
+  type UpdateIssueVisibilityMode,
   type SearchAdminUsersQuery,
   type UpdateUserCompanyAccess,
 } from "./access.js";
