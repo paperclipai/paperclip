@@ -27,6 +27,25 @@ import { issueRoutes } from "../routes/issues.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
 
+const mockRouteHeartbeatService = vi.hoisted(() => ({
+  cancelRun: vi.fn(async () => null),
+  reportRunActivity: vi.fn(async () => undefined),
+  retryScheduledRetryNow: vi.fn(async () => ({ outcome: "noop", message: "noop", scheduledRetry: null })),
+  triggerIssueMonitor: vi.fn(async () => null),
+  wakeup: vi.fn(async () => null),
+}));
+
+vi.mock(
+  "../services/index.js",
+  async (importOriginal: () => Promise<typeof import("../services/index.js")>) => {
+    const actual = await importOriginal();
+    return {
+      ...actual,
+      heartbeatService: () => mockRouteHeartbeatService,
+    };
+  },
+);
+
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
