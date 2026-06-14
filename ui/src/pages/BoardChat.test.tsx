@@ -112,6 +112,7 @@ const BOARD_ISSUE = {
   id: "issue-board",
   identifier: "PAP-1",
   title: "Board Operations",
+  originKind: "board_chat",
   status: "in_progress",
   createdAt: "2026-06-10T00:00:00.000Z",
   updatedAt: "2026-06-10T00:00:00.000Z",
@@ -120,6 +121,7 @@ const OLDER_BOARD_ISSUE = {
   id: "issue-board-old",
   identifier: "PAP-0",
   title: "Board Operations",
+  originKind: "board_chat",
   status: "todo",
   createdAt: "2026-06-09T00:00:00.000Z",
   updatedAt: "2026-06-09T00:00:00.000Z",
@@ -336,6 +338,24 @@ describe("BoardChat staged typing intro", () => {
     expect(mockChatComposerProps.at(-1)?.submitKey).toBe("mod-enter");
   });
 
+  it("loads Conference Room history by board_chat origin", async () => {
+    await render();
+
+    expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      originKind: "board_chat",
+      sortField: "updated",
+      sortDir: "desc",
+    }));
+  });
+
+  it("uses a friendly date label for legacy Board Operations history rows", async () => {
+    mockIssuesApi.list.mockResolvedValue([OLDER_BOARD_ISSUE]);
+    await render();
+
+    expect(container.textContent).toMatch(/Chat from .*2026/);
+    expect(container.textContent).not.toContain("PAP-0");
+  });
+
   it("starts a fresh server-side conversation after New chat is clicked", async () => {
     const encoder = new TextEncoder();
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
@@ -383,9 +403,13 @@ describe("BoardChat staged typing intro", () => {
   });
 
   it("switches comment history when a prior chat is selected", async () => {
-    mockIssuesApi.list.mockResolvedValue([BOARD_ISSUE, OLDER_BOARD_ISSUE]);
+    const olderPlanningIssue = {
+      ...OLDER_BOARD_ISSUE,
+      title: "Older planning chat",
+    };
+    mockIssuesApi.list.mockResolvedValue([BOARD_ISSUE, olderPlanningIssue]);
     mockIssuesApi.listComments.mockImplementation(async (issueId: string) =>
-      issueId === OLDER_BOARD_ISSUE.id
+      issueId === olderPlanningIssue.id
         ? [{ ...USER_COMMENT, id: "comment-old", body: "Older chat" }]
         : [],
     );
@@ -402,7 +426,7 @@ describe("BoardChat staged typing intro", () => {
     });
 
     const olderButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes(OLDER_BOARD_ISSUE.identifier),
+      (button) => button.textContent?.includes(olderPlanningIssue.title),
     ) as HTMLButtonElement | undefined;
     expect(olderButton).toBeDefined();
     await act(async () => {
@@ -412,7 +436,7 @@ describe("BoardChat staged typing intro", () => {
       await vi.advanceTimersByTimeAsync(0);
     });
 
-    expect(mockIssuesApi.listComments).toHaveBeenCalledWith(OLDER_BOARD_ISSUE.id);
+    expect(mockIssuesApi.listComments).toHaveBeenCalledWith(olderPlanningIssue.id);
     expect(container.textContent).toContain("Older chat");
   });
 });

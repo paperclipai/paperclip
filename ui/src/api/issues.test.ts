@@ -71,6 +71,18 @@ describe("issuesApi.list", () => {
     );
   });
 
+  it("passes special origin opt-in filters through to the company issues endpoint", async () => {
+    await issuesApi.list("company-1", {
+      originKind: "board_chat",
+      includeSpecialOrigins: true,
+      limit: 25,
+    });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/issues?originKind=board_chat&includeSpecialOrigins=true&limit=25",
+    );
+  });
+
   it("posts recovery action resolution to the source issue endpoint", async () => {
     await issuesApi.resolveRecoveryAction("issue-1", {
       actionId: "00000000-0000-0000-0000-0000000000aa",

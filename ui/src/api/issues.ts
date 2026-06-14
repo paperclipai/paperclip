@@ -56,6 +56,7 @@ export const issuesApi = {
       originId?: string;
       descendantOf?: string;
       includeRoutineExecutions?: boolean;
+      includeSpecialOrigins?: boolean;
       includeBlockedBy?: boolean;
       includeBlockedInboxAttention?: boolean;
       hasPlanDocument?: boolean;
@@ -85,6 +86,7 @@ export const issuesApi = {
     if (filters?.originId) params.set("originId", filters.originId);
     if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
     if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
+    if (filters?.includeSpecialOrigins) params.set("includeSpecialOrigins", "true");
     if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
     if (filters?.includeBlockedInboxAttention) params.set("includeBlockedInboxAttention", "true");
     if (filters?.hasPlanDocument !== undefined) {

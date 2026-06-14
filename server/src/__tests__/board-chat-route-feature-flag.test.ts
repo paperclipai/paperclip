@@ -7,6 +7,7 @@ const mockGetExperimental = vi.hoisted(() => vi.fn());
 const mockIssueService = vi.hoisted(() => ({
   list: vi.fn(),
   create: vi.fn(),
+  update: vi.fn(),
   addComment: vi.fn(),
   listComments: vi.fn(),
 }));
@@ -116,7 +117,7 @@ describe("board-chat client disconnect", () => {
   it("kills the spawned subprocess when the client disconnects mid-stream", async () => {
     mockGetExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
     mockIssueService.list.mockResolvedValue([
-      { id: "issue-1", title: "Board Operations", status: "todo" },
+      { id: "issue-1", title: "Quarterly hiring plan", originKind: "board_chat", status: "todo" },
     ]);
     mockIssueService.addComment.mockResolvedValue({ id: "comment-1" });
     mockIssueService.listComments.mockResolvedValue([]);
@@ -146,7 +147,7 @@ describe("board-chat client disconnect", () => {
     await pending;
   });
 
-  it("tags newly created Board Operations issues as board chat conversations", async () => {
+  it("tags newly created issues as board chat conversations with a first-message title", async () => {
     mockGetExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
     mockIssueService.list.mockResolvedValue([]);
     mockIssueService.create.mockResolvedValue({ id: "issue-new" });
@@ -170,11 +171,61 @@ describe("board-chat client disconnect", () => {
     fakeProc.emit("close", 0);
 
     expect(mockIssueService.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
-      title: "Board Operations",
+      title: "hello",
       originKind: "board_chat",
     }));
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
       "issue-new",
+      "hello",
+      expect.any(Object),
+    );
+    req.abort();
+    await pending;
+  });
+
+  it("reuses board chat issues by origin before falling back to legacy route-owned Board Operations issues", async () => {
+    mockGetExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
+    mockIssueService.list
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: "issue-legacy",
+          title: "Board Operations",
+          description: "Standing issue for board concierge conversations and decision log",
+          originKind: "manual",
+          status: "todo",
+        },
+      ]);
+    mockIssueService.update.mockResolvedValue({ id: "issue-legacy", originKind: "board_chat" });
+    mockIssueService.addComment.mockResolvedValue({ id: "comment-1" });
+    mockIssueService.listComments.mockResolvedValue([]);
+    const fakeProc = makeFakeProc();
+    mockSpawn.mockReturnValue(fakeProc);
+    const app = await createApp();
+
+    const req = request(app)
+      .post("/api/board/chat/stream")
+      .set("Content-Type", "application/json")
+      .send(JSON.stringify({ companyId: "company-1", message: "hello" }));
+    const pending = req.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    await vi.waitFor(() => expect(mockSpawn).toHaveBeenCalled());
+    fakeProc.exitCode = 0;
+    fakeProc.emit("close", 0);
+
+    expect(mockIssueService.list).toHaveBeenNthCalledWith(1, "company-1", expect.objectContaining({
+      originKind: "board_chat",
+    }));
+    expect(mockIssueService.list).toHaveBeenNthCalledWith(2, "company-1", expect.objectContaining({
+      q: "Board Operations",
+    }));
+    expect(mockIssueService.update).toHaveBeenCalledWith("issue-legacy", { originKind: "board_chat" });
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "issue-legacy",
       "hello",
       expect.any(Object),
     );

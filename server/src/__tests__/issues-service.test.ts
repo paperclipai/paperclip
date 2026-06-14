@@ -1312,6 +1312,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     const operationIssueId = randomUUID();
     const typedOperationIssueId = randomUUID();
     const legacyContentMachineOperationIssueId = randomUUID();
+    const boardChatIssueId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -1387,6 +1388,15 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         originKind: "plugin:paperclipai.content-machine:evaluation",
         originId: "content-machine-operation-1",
       },
+      {
+        id: boardChatIssueId,
+        companyId,
+        projectId,
+        title: "Chat about hiring",
+        status: "todo",
+        priority: "medium",
+        originKind: "board_chat",
+      },
     ]);
 
     const defaultIssueIds = (await svc.list(companyId)).map((issue) => issue.id);
@@ -1395,6 +1405,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(defaultIssueIds).not.toContain(operationIssueId);
     expect(defaultIssueIds).not.toContain(typedOperationIssueId);
     expect(defaultIssueIds).not.toContain(legacyContentMachineOperationIssueId);
+    expect(defaultIssueIds).not.toContain(boardChatIssueId);
 
     const inboxIssueIds = (await svc.list(companyId, {
       assigneeAgentId: agentId,
@@ -1405,6 +1416,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(inboxIssueIds).not.toContain(operationIssueId);
     expect(inboxIssueIds).not.toContain(typedOperationIssueId);
     expect(inboxIssueIds).not.toContain(legacyContentMachineOperationIssueId);
+    expect(inboxIssueIds).not.toContain(boardChatIssueId);
 
     await expect(svc.list(companyId, { originKind: "plugin:paperclip.missions:operation" }))
       .resolves.toEqual([expect.objectContaining({ id: operationIssueId })]);
@@ -1415,16 +1427,23 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         expect.objectContaining({ id: operationIssueId }),
         expect.objectContaining({ id: typedOperationIssueId }),
       ]));
+    await expect(svc.list(companyId, { originKind: "board_chat" }))
+      .resolves.toEqual([expect.objectContaining({ id: boardChatIssueId })]);
 
     const projectIssueIds = (await svc.list(companyId, { projectId })).map((issue) => issue.id);
     expect(projectIssueIds).toContain(operationIssueId);
     expect(projectIssueIds).toContain(typedOperationIssueId);
     expect(projectIssueIds).toContain(legacyContentMachineOperationIssueId);
+    expect(projectIssueIds).not.toContain(boardChatIssueId);
 
     const advancedIssueIds = (await svc.list(companyId, { includePluginOperations: true })).map((issue) => issue.id);
     expect(advancedIssueIds).toContain(operationIssueId);
     expect(advancedIssueIds).toContain(typedOperationIssueId);
     expect(advancedIssueIds).toContain(legacyContentMachineOperationIssueId);
+    expect(advancedIssueIds).not.toContain(boardChatIssueId);
+
+    const specialIssueIds = (await svc.list(companyId, { includeSpecialOrigins: true })).map((issue) => issue.id);
+    expect(specialIssueIds).toContain(boardChatIssueId);
   });
 
   it("excludes plugin operation issues from unread inbox counts", async () => {
@@ -1433,6 +1452,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     const otherUserId = "other-user";
     const normalIssueId = randomUUID();
     const operationIssueId = randomUUID();
+    const boardChatIssueId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -1458,6 +1478,15 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         createdByUserId: userId,
         originKind: "plugin:paperclip.missions:operation",
       },
+      {
+        id: boardChatIssueId,
+        companyId,
+        title: "Board chat touched issue",
+        status: "todo",
+        priority: "medium",
+        createdByUserId: userId,
+        originKind: "board_chat",
+      },
     ]);
     await db.insert(issueComments).values([
       {
@@ -1471,6 +1500,12 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         issueId: operationIssueId,
         authorUserId: otherUserId,
         body: "Unread operation update.",
+      },
+      {
+        companyId,
+        issueId: boardChatIssueId,
+        authorUserId: otherUserId,
+        body: "Unread board chat update.",
       },
     ]);
 

@@ -2534,6 +2534,8 @@ export function issueRoutes(
         req.query.excludeRoutineExecutions === "true" || req.query.excludeRoutineExecutions === "1",
       includePluginOperations:
         req.query.includePluginOperations === "true" || req.query.includePluginOperations === "1",
+      includeSpecialOrigins:
+        req.query.includeSpecialOrigins === "true" || req.query.includeSpecialOrigins === "1",
       includeBlockedBy: req.query.includeBlockedBy === "true" || req.query.includeBlockedBy === "1",
       includeBlockedInboxAttention:
         req.query.includeBlockedInboxAttention === "true" || req.query.includeBlockedInboxAttention === "1",
@@ -2611,6 +2613,8 @@ export function issueRoutes(
         req.query.excludeRoutineExecutions === "true" || req.query.excludeRoutineExecutions === "1",
       includePluginOperations:
         req.query.includePluginOperations === "true" || req.query.includePluginOperations === "1",
+      includeSpecialOrigins:
+        req.query.includeSpecialOrigins === "true" || req.query.includeSpecialOrigins === "1",
       includeBlockedBy: true,
       includeBlockedInboxAttention: true,
       hasPlanDocument,

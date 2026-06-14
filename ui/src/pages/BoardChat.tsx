@@ -31,7 +31,7 @@ import {
 } from "../components/AgentBubbleActionRow";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { cn, formatDateTime, relativeTime } from "../lib/utils";
-import type { FeedbackVoteValue } from "@paperclipai/shared";
+import type { FeedbackVoteValue, Issue } from "@paperclipai/shared";
 import {
   Sheet,
   SheetContent,
@@ -57,6 +57,7 @@ const DEFAULT_CHAT_FRACTION = 2 / 3;
 const BOARD_CHAT_MARKDOWN_CLASS =
   "max-w-full overflow-visible [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto";
 const BOARD_CHAT_ISSUE_TITLE = "Board Operations";
+const BOARD_CHAT_ORIGIN_KIND = "board_chat";
 
 const boardChatBubbleShell =
   "min-w-0 max-w-[85%] break-words px-3 py-2 text-sm overflow-x-auto overflow-y-visible";
@@ -65,6 +66,26 @@ const boardChatBubbleShell =
 function agentInitials(name: string): string {
   const parts = name.trim().split(/\s+/);
   return (((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase()) || "A";
+}
+
+const boardChatHistoryDateFormatter = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+});
+
+function formatBoardChatHistoryDate(value: Date | string | null | undefined): string {
+  if (!value) return "recent chat";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "recent chat";
+  return boardChatHistoryDateFormatter.format(date);
+}
+
+function boardChatHistoryLabel(issue: Pick<Issue, "title" | "createdAt" | "updatedAt">): string {
+  if (!issue.title || issue.title === BOARD_CHAT_ISSUE_TITLE) {
+    return `Chat from ${formatBoardChatHistoryDate(issue.createdAt ?? issue.updatedAt)}`;
+  }
+  return issue.title;
 }
 
 /**
@@ -314,10 +335,10 @@ export function BoardChat() {
   // company-scoped issues so history survives reloads without a separate chat
   // store.
   const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "board-chat-history"],
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
-        q: BOARD_CHAT_ISSUE_TITLE,
+        originKind: BOARD_CHAT_ORIGIN_KIND,
         limit: 50,
         sortField: "updated",
         sortDir: "desc",
@@ -330,7 +351,7 @@ export function BoardChat() {
       (issues ?? [])
         .filter(
           (i) =>
-            i.title === BOARD_CHAT_ISSUE_TITLE &&
+            i.originKind === BOARD_CHAT_ORIGIN_KIND &&
             i.status !== "cancelled",
         )
         .sort(
@@ -884,6 +905,7 @@ export function BoardChat() {
                   <div className="divide-y divide-border">
                     {boardChatIssues.map((issue) => {
                       const active = issue.id === boardIssueId && !isComposingNewConversation;
+                      const label = boardChatHistoryLabel(issue);
                       return (
                         <button
                           key={issue.id}
@@ -898,7 +920,7 @@ export function BoardChat() {
                           <History className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
                           <span className="min-w-0 flex-1">
                             <span className="block truncate text-sm font-medium text-foreground">
-                              {issue.identifier ?? issue.title}
+                              {label}
                             </span>
                             <span className="block truncate text-xs text-muted-foreground">
                               Updated {relativeTime(issue.updatedAt)}

@@ -61,6 +61,34 @@ export function isConciergeReply(comment: {
 
 /** Max simultaneous `claude` subprocesses across all board-chat requests. */
 const MAX_CONCURRENT_BOARD_CHATS = 3;
+const BOARD_CHAT_ORIGIN_KIND = "board_chat";
+const LEGACY_BOARD_CHAT_TITLE = "Board Operations";
+const BOARD_CHAT_DESCRIPTION = "Standing issue for board concierge conversations and decision log";
+
+function deriveBoardChatIssueTitle(message: string): string {
+  const singleLine = message.replace(/\s+/g, " ").trim();
+  if (!singleLine) return "New chat";
+  if (singleLine.length <= 80) return singleLine;
+  return `${singleLine.slice(0, 77).trimEnd()}...`;
+}
+
+function isOpenBoardChatIssue(issue: { status?: string | null }) {
+  return issue.status !== "done" && issue.status !== "cancelled";
+}
+
+function isLegacyBoardChatIssue(issue: {
+  title?: string | null;
+  description?: string | null;
+  originKind?: string | null;
+  status?: string | null;
+}) {
+  return (
+    issue.title === LEGACY_BOARD_CHAT_TITLE &&
+    issue.description === BOARD_CHAT_DESCRIPTION &&
+    (issue.originKind === undefined || issue.originKind === null || issue.originKind === "manual") &&
+    isOpenBoardChatIssue(issue)
+  );
+}
 
 export function boardChatRoutes(
   db: Db,
@@ -154,31 +182,43 @@ export function boardChatRoutes(
     const issueSvc = issueService(db);
     let issueId = wantsNewConversation ? undefined : taskId;
 
-    // Find or create the standing "Board Operations" issue that anchors the
-    // board conversation + decision log.
+    // Find or create the standing issue that anchors the board conversation +
+    // decision log. New records use the special origin; the title fallback
+    // below is intentionally narrow so unrelated "Board Operations" tasks are
+    // not silently pulled into Conference Room history.
     if (!issueId) {
       if (!wantsNewConversation) {
-        const companyIssues = await issueSvc.list(companyId, {
-          q: "Board Operations",
+        const boardChatIssues = await issueSvc.list(companyId, {
+          originKind: BOARD_CHAT_ORIGIN_KIND,
           sortField: "updated",
           sortDir: "desc",
         });
-        const boardIssue = companyIssues.find(
-          (i) =>
-            i.title === "Board Operations" &&
-            i.status !== "done" &&
-            i.status !== "cancelled",
-        );
+        const boardIssue = boardChatIssues.find(isOpenBoardChatIssue);
         if (boardIssue) {
           issueId = boardIssue.id;
+        }
+        if (!issueId) {
+          const legacyIssues = await issueSvc.list(companyId, {
+            q: LEGACY_BOARD_CHAT_TITLE,
+            sortField: "updated",
+            sortDir: "desc",
+          });
+          const legacyIssue = legacyIssues.find(isLegacyBoardChatIssue);
+          if (legacyIssue) {
+            issueId = legacyIssue.id;
+            try {
+              await issueSvc.update(legacyIssue.id, { originKind: BOARD_CHAT_ORIGIN_KIND });
+            } catch {
+              /* best-effort legacy repair; the selected issue still anchors this request */
+            }
+          }
         }
       }
       if (!issueId) {
         const created = await issueSvc.create(companyId, {
-          title: "Board Operations",
-          description:
-            "Standing issue for board concierge conversations and decision log",
-          originKind: "board_chat",
+          title: deriveBoardChatIssueTitle(message),
+          description: BOARD_CHAT_DESCRIPTION,
+          originKind: BOARD_CHAT_ORIGIN_KIND,
           // `todo` rather than `in_progress`: this is an unassigned standing
           // issue, and the service rejects in_progress issues without an
           // assignee.
