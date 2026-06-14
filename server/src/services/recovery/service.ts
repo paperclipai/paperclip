@@ -1680,6 +1680,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         return true;
       });
       if (autoDismissed) {
+        await logActivity(db, {
+          companyId: input.run.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: input.run.agentId,
+          runId: input.run.id,
+          action: "heartbeat.output_stale_evaluation_suppressed",
+          entityType: "issue",
+          entityId: closedEvaluation.id,
+          details: {
+            source: "recovery.scan_silent_active_runs",
+            reason: "closed_evaluation_auto_dismissed",
+            closedEvaluationIssueId: closedEvaluation.id,
+            closedEvaluationIssueIdentifier: closedEvaluation.identifier,
+          },
+        });
         return { kind: "skipped" as const };
       }
     }
@@ -1719,6 +1735,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           run: input.run,
         });
       }
+      await logActivity(db, {
+        companyId: input.run.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: input.run.agentId,
+        runId: input.run.id,
+        action: "heartbeat.output_stale_evaluation_suppressed",
+        entityType: "issue",
+        entityId: existing.id,
+        details: {
+          source: "recovery.scan_silent_active_runs",
+          reason: "open_evaluation_exists",
+          existingEvaluationIssueId: existing.id,
+          existingEvaluationIssueIdentifier: existing.identifier,
+          level,
+          silenceAgeMs: evidence.silenceAgeMs,
+        },
+      });
       return { kind: "existing" as const, evaluationIssueId: existing.id };
     }
 
