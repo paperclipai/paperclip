@@ -168,6 +168,7 @@ const pluginLoadStates = new Map<string, PluginLoadState>();
  * Promise cache to prevent concurrent duplicate imports for the same plugin.
  */
 const inflightImports = new Map<string, Promise<void>>();
+let pluginModuleLoaderGeneration = 0;
 
 /**
  * Build the full URL for a plugin's UI entry module.
@@ -369,6 +370,7 @@ async function importPluginModule(url: string): Promise<Record<string, unknown>>
 async function loadPluginModule(contribution: PluginUiContribution): Promise<void> {
   const { pluginId, pluginKey, slots, launchers } = contribution;
   const moduleKey = buildPluginModuleKey(contribution);
+  const generation = pluginModuleLoaderGeneration;
 
   // Already loaded or loading — return early.
   const state = pluginLoadStates.get(moduleKey);
@@ -398,6 +400,7 @@ async function loadPluginModule(contribution: PluginUiContribution): Promise<voi
       // Dynamic ESM import of the plugin's UI entry module with
       // bare-specifier rewriting for host-provided dependencies.
       const mod: Record<string, unknown> = await importPluginModule(url);
+      if (generation !== pluginModuleLoaderGeneration) return;
 
       // Collect the set of export names declared across all UI contributions so
       // we only register what the manifest advertises (ignore extra exports).
@@ -442,10 +445,14 @@ async function loadPluginModule(contribution: PluginUiContribution): Promise<voi
 
       pluginLoadStates.set(moduleKey, "loaded");
     } catch (err) {
-      pluginLoadStates.set(moduleKey, "error");
+      if (generation === pluginModuleLoaderGeneration) {
+        pluginLoadStates.set(moduleKey, "error");
+      }
       console.error(`Failed to load UI module for plugin "${pluginKey}"`, err);
     } finally {
-      inflightImports.delete(pluginId);
+      if (generation === pluginModuleLoaderGeneration) {
+        inflightImports.delete(pluginId);
+      }
     }
   })();
 
@@ -837,24 +844,11 @@ export function PluginSlotOutlet({
  * can discover fresh UI contributions without a full page reload.
  */
 export function resetPluginModuleLoader(): void {
+  pluginModuleLoaderGeneration += 1;
   pluginLoadStates.clear();
   inflightImports.clear();
   registry.clear();
-  if (typeof URL.revokeObjectURL === "function") {
-    for (const url of Object.values(shimBlobUrls)) {
-      URL.revokeObjectURL(url);
-    }
-  }
-  for (const key of Object.keys(shimBlobUrls)) {
-    delete shimBlobUrls[key];
-  }
 }
-
-/**
- * Backwards-compatible test helper alias.
- * @internal
- */
-export const _resetPluginModuleLoader = resetPluginModuleLoader;
 
 export const _applyJsxRuntimeKeyForTests = applyJsxRuntimeKey;
 export const _rewriteBareSpecifiersForTests = rewriteBareSpecifiers;

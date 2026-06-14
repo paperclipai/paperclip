@@ -619,6 +619,8 @@ function handleLiveEvent(
   gate: ToastGate,
   currentActor: { userId: string | null; agentId: string | null },
 ) {
+  // Global plugin UI events are stamped with companyId "*" and must be handled
+  // before the company guard below, or hot plugin UI refresh is silently dropped.
   if (event.type === "plugin.ui.updated") {
     invalidatePluginUiQueries(queryClient);
     return;
@@ -724,6 +726,7 @@ export const __liveUpdatesTestUtils = {
   buildAgentStatusToast,
   buildRunStatusToast,
   closeSocketQuietly,
+  handleLiveEvent,
   invalidateActivityQueries,
   invalidatePluginUiQueries,
   resolveLiveCompanyId,

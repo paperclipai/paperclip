@@ -1,10 +1,84 @@
 // @vitest-environment node
 
 import { describe, expect, it, vi } from "vitest";
+
+const resetPluginModuleLoaderMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../plugins/slots", () => ({
+  resetPluginModuleLoader: resetPluginModuleLoaderMock,
+}));
+
 import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it("handles global plugin UI updates before the company guard", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    resetPluginModuleLoaderMock.mockClear();
+
+    __liveUpdatesTestUtils.handleLiveEvent(
+      queryClient as never,
+      "company-1",
+      "/",
+      {
+        id: 1,
+        companyId: "*",
+        type: "plugin.ui.updated",
+        createdAt: "2026-06-14T00:00:00.000Z",
+        payload: { pluginId: "plugin-1", action: "upgraded" },
+      },
+      () => null,
+      { cooldownHits: new Map(), suppressUntil: 0 },
+      { userId: null, agentId: null },
+    );
+
+    expect(resetPluginModuleLoaderMock).toHaveBeenCalledTimes(1);
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.plugins.all,
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.plugins.uiContributions,
+    });
+  });
+
+  it("drops non-global plugin-unrelated events for other companies", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    resetPluginModuleLoaderMock.mockClear();
+
+    __liveUpdatesTestUtils.handleLiveEvent(
+      queryClient as never,
+      "company-1",
+      "/",
+      {
+        id: 1,
+        companyId: "company-2",
+        type: "agent.status",
+        createdAt: "2026-06-14T00:00:00.000Z",
+        payload: { agentId: "agent-1", status: "error" },
+      },
+      () => null,
+      { cooldownHits: new Map(), suppressUntil: 0 },
+      { userId: null, agentId: null },
+    );
+
+    expect(resetPluginModuleLoaderMock).not.toHaveBeenCalled();
+    expect(invalidations).toEqual([]);
+  });
+
   it("refreshes plugin registry queries when plugin UI changes hot at runtime", () => {
     const invalidations: unknown[] = [];
     const queryClient = {
@@ -14,8 +88,11 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       getQueryData: () => undefined,
     };
 
+    resetPluginModuleLoaderMock.mockClear();
+
     __liveUpdatesTestUtils.invalidatePluginUiQueries(queryClient as never);
 
+    expect(resetPluginModuleLoaderMock).toHaveBeenCalledTimes(1);
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.plugins.all,
     });

@@ -5,7 +5,7 @@ import type { Duplex } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentApiKeys, companyMemberships, instanceUserRoles } from "@paperclipai/db";
-import type { DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentMode, LiveEvent } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
 import { subscribeCompanyLiveEvents, subscribeGlobalLiveEvents } from "../services/live-events.js";
@@ -205,13 +205,15 @@ export function setupLiveEventsWebSocketServer(
       return;
     }
 
-    const sendEvent = (event: unknown) => {
+    const sendEvent = (event: LiveEvent) => {
       if (socket.readyState !== WebSocket.OPEN) return;
       socket.send(JSON.stringify(event));
     };
 
     const unsubscribeCompany = subscribeCompanyLiveEvents(context.companyId, sendEvent);
-    const unsubscribeGlobal = subscribeGlobalLiveEvents(sendEvent);
+    const unsubscribeGlobal = context.actorType === "board"
+      ? subscribeGlobalLiveEvents(sendEvent)
+      : () => undefined;
     const unsubscribe = () => {
       unsubscribeCompany();
       unsubscribeGlobal();
