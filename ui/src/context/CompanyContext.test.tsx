@@ -35,6 +35,7 @@ function makeCompany(id: string): Company {
     pauseReason: null,
     pausedAt: null,
     issuePrefix: "PAP",
+    issueVisibilityMode: "open",
     issueCounter: 1,
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
