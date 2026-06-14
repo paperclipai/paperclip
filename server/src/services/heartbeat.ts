@@ -124,6 +124,7 @@ import {
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { routeModelProfile, type ModelRouterDecision } from "./model-router.js";
+import { classifyTaskComplexity } from "./model-router-classifier.js";
 import { hasBlockingErrorHistoryForIssue, isModelRouterEnabled } from "./model-router-signals.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import {
@@ -7031,15 +7032,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // title/description/priority/originKind come from issueContext (already loaded above)
       const promptChars =
         (issueContext?.title?.length ?? 0) + (issueContext?.description?.length ?? 0);
+      let classifierVerdict: "reasoning" | "fast" | null = null;
+      const ruleOnly = routeModelProfile({
+        wakeReason: readNonEmptyString(context.wakeReason),
+        issuePriority: issueContext?.priority ?? null,
+        issueOriginKind: issueContext?.originKind ?? null,
+        promptChars,
+        hasBlockingErrorHistory,
+        classifierVerdict: null,
+      });
+      if (ruleOnly.needsClassifier && issueId) {
+        const cheapCfg = readAgentRuntimeModelProfile(agent.runtimeConfig, "cheap").adapterConfig;
+        const classifierModel = typeof cheapCfg.model === "string" ? cheapCfg.model : "gemma-4-31b-it-mlx";
+        // config.url is the lmstudio adapter's primary URL field (default: http://localhost:1234).
+        // resolvedConfig is not yet available at this point in the call stack, so we read
+        // the raw adapterConfig via the already-parsed `config` variable (set at line ~6863).
+        const lmstudioBase = typeof config.url === "string" ? config.url : "http://localhost:1234";
+        const baseUrl = `${lmstudioBase.replace(/\/+$/, "")}/v1`;
+        classifierVerdict = await classifyTaskComplexity({
+          issueId,
+          title: issueContext?.title ?? "",
+          description: issueContext?.description ?? "",
+          baseUrl,
+          model: classifierModel,
+        });
+      }
       routerDecision = routeModelProfile({
         wakeReason: readNonEmptyString(context.wakeReason),
         issuePriority: issueContext?.priority ?? null,
         issueOriginKind: issueContext?.originKind ?? null,
         promptChars,
         hasBlockingErrorHistory,
-        classifierVerdict: null, // Phase 2 fills this in later
+        classifierVerdict,
       });
-      // TODO(Phase 2): when routerDecision.needsClassifier, run the classifier and re-route.
     }
     const modelProfileApplication = resolveModelProfileApplication({
       adapterModelProfiles,
