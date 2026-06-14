@@ -7,6 +7,7 @@ import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.
 import { cancelIssueSubtree } from "../services/issue-subtree-cancel.js";
 import { publishLiveEvent } from "../services/live-events.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { logger } from "../middleware/logger.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const planTierSchema = z.object({
@@ -172,7 +173,7 @@ export function planRoutes(
     assertCompanyAccess(req, existing.companyId);
     const actor = getActorInfo(req);
 
-    const { planDetails, createdChildren, gateApprovalIds } = await plans.activate(planIssueId, {
+    const { planDetails, createdChildren, gateApprovalIds, planApprovalWakeAgentIds } = await plans.activate(planIssueId, {
       agentId: actor.agentId,
       userId: actor.actorType === "user" ? actor.actorId : null,
     });
@@ -202,6 +203,24 @@ export function planRoutes(
         requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
         requestedByActorId: actor.actorId,
       });
+    }
+
+    // W5a: wake the plan-approval gate agent(s) (the architect) directly so plan
+    // review starts immediately rather than waiting for the global heartbeat
+    // cadence. Only the plan-approval gate is actionable at activation; code/wiring
+    // reviewers are woken when their leaf reaches in_review (W5b, not yet wired).
+    for (const agentId of planApprovalWakeAgentIds) {
+      void heartbeat
+        .wakeup(agentId, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "gate_plan_approval_requested",
+          payload: { issueId: planIssueId, mutation: "plan_activated" },
+          requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
+          requestedByActorId: actor.actorId,
+          contextSnapshot: { issueId: planIssueId, source: "plan.activated.gate" },
+        })
+        .catch((err) => logger.warn({ err, planIssueId, agentId }, "failed to wake plan-approval gate agent"));
     }
 
     publishLiveEvent({

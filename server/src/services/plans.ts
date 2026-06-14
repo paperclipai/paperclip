@@ -9,6 +9,7 @@ import {
   GATE_DESIGNATED_URL_KEY,
   buildGateApprovalsForActivation,
   isGateApprovalType,
+  planApprovalAgentIds,
 } from "./plan-gates.js";
 import { resolveEffectiveGateProfile } from "./gate-triage.js";
 import { logger } from "../middleware/logger.js";
@@ -70,7 +71,7 @@ export function planService(db: Db) {
     leafIssueIds: string[],
     actor: { agentId: string | null; userId: string | null },
     gateProfile: PlanGateProfile | null,
-  ): Promise<string[]> {
+  ): Promise<{ approvalIds: string[]; planApprovalAgentIds: string[] }> {
     const urlKeys = Array.from(new Set(Object.values(GATE_DESIGNATED_URL_KEY)));
     const designatedByUrlKey: Record<string, string | null> = {};
     for (const urlKey of urlKeys) {
@@ -122,7 +123,10 @@ export function planService(db: Db) {
       });
       createdApprovalIds.push(approval.id);
     }
-    return createdApprovalIds;
+    return {
+      approvalIds: createdApprovalIds,
+      planApprovalAgentIds: planApprovalAgentIds(specs),
+    };
   }
 
   // E6 run hygiene: sync issue-scoped, lifetime, hard-stop budget policies on
@@ -302,17 +306,23 @@ export function planService(db: Db) {
       // pending approvals so the board surfaces them, but nothing here blocks
       // activation or any downstream transition.
       let gateApprovalIds: string[] = [];
+      // W5a: agents whose gate is actionable the moment the plan activates (the
+      // architect's plan-approval gate). The caller wakes them directly so plan
+      // review starts immediately instead of waiting for the global heartbeat.
+      let planApprovalWakeAgentIds: string[] = [];
       // Any gated profile (solo/light/dev_team) arms the runaway budget policy —
       // solo/light still spawn an implementor that burns tokens. createActivationGates
       // emits the profile-sized gate set (0 for solo, 1/leaf for light, full for dev_team).
       if (details.gateProfile !== "none") {
-        gateApprovalIds = await createActivationGates(
+        const gates = await createActivationGates(
           details.companyId,
           issueId,
           createdChildren.map((c) => c.id),
           actor,
           details.gateProfile as PlanGateProfile,
         );
+        gateApprovalIds = gates.approvalIds;
+        planApprovalWakeAgentIds = gates.planApprovalAgentIds;
         await syncIssueBudgetPolicies(
           details.companyId,
           issueId,
@@ -322,7 +332,7 @@ export function planService(db: Db) {
         );
       }
 
-      return { planDetails: updated, createdChildren, gateApprovalIds };
+      return { planDetails: updated, createdChildren, gateApprovalIds, planApprovalWakeAgentIds };
     },
 
     markStopped: async (issueId: string, reason: string) => {

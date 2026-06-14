@@ -5,7 +5,7 @@ import {
   resolveEffectiveGateProfile,
   GATE_TRIAGE_MAX_FILES_BEFORE_FULL,
 } from "../services/gate-triage.js";
-import { buildGateApprovalsForActivation } from "../services/plan-gates.js";
+import { buildGateApprovalsForActivation, planApprovalAgentIds } from "../services/plan-gates.js";
 
 describe("gate triage — Layer 0 hard-rule floor", () => {
   it("forces full for high-risk surfaces regardless of file count", () => {
@@ -86,5 +86,32 @@ describe("gate triage — Layer 2 buildGateApprovalsForActivation by profile", (
   it("defaults to the full set when no profile is given (back-compat)", () => {
     const specs = buildGateApprovalsForActivation(base);
     expect(specs).toHaveLength(5);
+  });
+});
+
+describe("gate triage — W5a planApprovalAgentIds (activation-actionable wake targets)", () => {
+  const base = {
+    planRootIssueId: "root",
+    leafIssueIds: ["leaf-1"],
+    designatedByUrlKey: { architect: "arch-agent", "code-reviewer": "cr-agent", "wiring-expert": "we-agent" },
+  };
+
+  it("returns the architect for a dev_team plan (plan-approval gate is actionable now)", () => {
+    const specs = buildGateApprovalsForActivation({ ...base, gateProfile: "dev_team" });
+    expect(planApprovalAgentIds(specs)).toEqual(["arch-agent"]);
+  });
+
+  it("returns nothing for light or solo (no plan-approval gate)", () => {
+    expect(planApprovalAgentIds(buildGateApprovalsForActivation({ ...base, gateProfile: "light" }))).toEqual([]);
+    expect(planApprovalAgentIds(buildGateApprovalsForActivation({ ...base, gateProfile: "solo" }))).toEqual([]);
+  });
+
+  it("ignores a null designated agent (unstaffed architect role)", () => {
+    const specs = buildGateApprovalsForActivation({
+      ...base,
+      designatedByUrlKey: {},
+      gateProfile: "dev_team",
+    });
+    expect(planApprovalAgentIds(specs)).toEqual([]);
   });
 });

@@ -110,6 +110,22 @@ export function buildGateApprovalsForActivation(
   return specs;
 }
 
+// Unique designated agent ids for gates that are actionable at plan activation.
+// Only the plan-approval gate (the architect) can be acted on the moment a plan
+// activates — the plan exists and is reviewable. Code-review/wiring gates are not
+// actionable until their leaf is implemented, so their agents are not woken here
+// (that is the in_review-triggered wake, tracked as W5b). Returns [] for profiles
+// with no plan-approval gate (solo/light/none).
+export function planApprovalAgentIds(specs: GateApprovalSpec[]): string[] {
+  const ids = new Set<string>();
+  for (const spec of specs) {
+    if (spec.type === GATE_APPROVAL_TYPES.planApproval && spec.designatedAgentId) {
+      ids.add(spec.designatedAgentId);
+    }
+  }
+  return Array.from(ids);
+}
+
 // Fix 3 (B1 gap-fix) + triage — the pure `done`-gate decision, right-sized by
 // profile. Returns the unmet preconditions for closing a gated issue. Empty
 // array = ready to close. The caller decides what to do with the reasons (throw
