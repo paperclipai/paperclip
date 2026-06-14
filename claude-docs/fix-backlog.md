@@ -18,6 +18,42 @@ Effort: **S** = small/surgical, **M** = medium (multi-file + tests).
 
 ---
 
+## Status — updated 2026-06-14 (after the build session)
+
+Shipped this session (branch `pilot/b1-dogfood`), each with a `claude-docs/` overview:
+
+| Item | Status | Commit | Overview |
+|---|---|---|---|
+| #1 W2 idle short-circuit | ✅ shipped | `8daad42d` | `wake-cost-fixes-overview.md` |
+| #2 W1 instruction-readiness | ✅ shipped | `8daad42d` | `wake-cost-fixes-overview.md` |
+| #5 W3 Claude session rotation | ✅ shipped | `06b00c66` | `wake-cost-fixes-overview.md` |
+| #6 triage (solo/light/full) | ✅ shipped | `444297cf` | `gate-triage-overview.md` |
+| #3 done-gate dead-end | ✅ shipped (rode #6) | `444297cf` | `gate-triage-overview.md` |
+| #7 G3 per-run ceiling + #10 tests | ✅ shipped **as post-run enforcement** | `c8e243cd` | `per-run-ceiling-overview.md` |
+| #9 W5 targeted gate wake | ⏳ **W5a shipped**; W5b/W5c deferred | `17476dbd` | `targeted-gate-wake-overview.md` |
+
+Revised understanding of the **remaining** items (corrected against the code):
+
+- **#4 factory instructions** — still open. Needs its own **scoping pass**: entangled
+  with operator-local/gitignored AGENTS.md bundles + the skill-sync pipeline across
+  adapters. Half provisioning-concern, half self-heal-sync code. Do NOT build blind.
+- **#8 W4 minimal review payload** — **downgraded / likely deprecated.** Once W3 caps
+  the transcript and the wake payload is already bounded (`MAX_INLINE_WAKE_COMMENTS=8`,
+  12k chars) and reviewers force-fresh, the marginal value collapsed. The plan's "10×"
+  claim conflated the transcript (W3) with the wake payload. Skip unless evidence shows
+  review-wake payloads are still fat.
+- **#9 W5b** — reviewer wake on `in_review`. The bulk of the gate-wake value (2 of 3
+  gate types, per-leaf). Needs integration into the issues PATCH-update wake flow.
+- **#9 W5c** — raise default cadence. Only safe after W5b; low marginal value post-W2.
+- **#11 CTO self-assign protocol** — eco-system prompt (`teams/agent-team/prompts/`),
+  **out of this repo's scope**.
+
+Net: all three load-bearing legs are in — **wake-cost** (W1/W2/W3 ✅, W4 deprecated,
+W5a ✅/W5b open), **triage** (✅), **burn-guard** (✅, G3 closed). What's left is one
+genuine feature (#4, needs scoping) and one wake-latency follow-up (W5b).
+
+---
+
 ## P0 — pure-waste burn, fix first
 
 | # | Issue | Evidence | Fix | Plan | Effort |
