@@ -80,6 +80,7 @@ export type AuthorizationDecision = {
     | "allow_company_agent"
     | "allow_simple_company_member"
     | "allow_manager_chain"
+    | "allow_company_member_read"
     | "deny_unauthenticated"
     | "deny_company_boundary"
     | "deny_missing_membership"
@@ -120,6 +121,22 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
   if (action === "issue:mutate") return null;
   return action;
 }
+
+/**
+ * Read-only "view" actions that any active company member (board user) may
+ * perform on companies they belong to — regardless of explicit grants or
+ * membership role (owner/operator/viewer). These have no permission-key
+ * mapping (see permissionForAction), so without this allowance a non
+ * instance-admin board user would be denied on every dashboard list query.
+ * Sensitive null-mapped actions (agent:wake, runtime:manage, secrets:read)
+ * are deliberately excluded and keep requiring instance-admin / grants.
+ */
+const MEMBER_READABLE_ACTIONS = new Set<AuthorizationAction>([
+  "agent:read",
+  "issue:read",
+  "project:read",
+  "company_scope:read",
+]);
 
 function canCreateAgentsLegacy(agent: { role: string; permissions: unknown }) {
   if (agent.role === "ceo") return true;
@@ -956,6 +973,21 @@ export function authorizationService(db: Db) {
             explanation: "Allowed by simple mode company-wide task assignment default.",
           });
         }
+      }
+      if (MEMBER_READABLE_ACTIONS.has(input.action)) {
+        const membership = await getActiveMembership(companyId, "user", input.actor.userId);
+        if (membership) {
+          return allow({
+            action: input.action,
+            reason: "allow_company_member_read",
+            explanation: "Allowed because the actor is an active company member with read access.",
+          });
+        }
+        return deny({
+          action: input.action,
+          reason: "deny_missing_membership",
+          explanation: `User ${input.actor.userId} is not an active member of company ${companyId}.`,
+        });
       }
       if (!permissionKey) {
         return deny({
