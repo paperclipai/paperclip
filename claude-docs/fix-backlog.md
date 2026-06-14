@@ -31,12 +31,17 @@ Shipped this session (branch `pilot/b1-dogfood`), each with a `claude-docs/` ove
 | #3 done-gate dead-end | ✅ shipped (rode #6) | `444297cf` | `gate-triage-overview.md` |
 | #7 G3 per-run ceiling + #10 tests | ✅ shipped **as post-run enforcement** | `c8e243cd` | `per-run-ceiling-overview.md` |
 | #9 W5 targeted gate wake | ⏳ **W5a shipped**; W5b/W5c deferred | `17476dbd` | `targeted-gate-wake-overview.md` |
+| #4 gate-agent instructions | ✅ **shipped** (identity-aware seed) | `cba094b4` | `gate-agent-instructions-overview.md` |
 
 Revised understanding of the **remaining** items (corrected against the code):
 
-- **#4 factory instructions** — still open. Needs its own **scoping pass**: entangled
-  with operator-local/gitignored AGENTS.md bundles + the skill-sync pipeline across
-  adapters. Half provisioning-concern, half self-heal-sync code. Do NOT build blind.
+- **#4 factory instructions** — ✅ **shipped**. Scoped via
+  `agent-instructions-architecture.md`; root cause was the seed selector keying on
+  `agent.role` (only ceo/default) while gate identity lives in the name-derived urlKey.
+  Fix (a): identity-aware seed selector + three checked-in gate-role bundles. Remaining
+  follow-ups are **separate**: backfill/re-materialize already-created gate agents
+  (immediate, to fix the *current* company), auto-provision gate agents at company
+  setup, and skill auto-assignment.
 - **#8 W4 minimal review payload** — **downgraded / likely deprecated.** Once W3 caps
   the transcript and the wake payload is already bounded (`MAX_INLINE_WAKE_COMMENTS=8`,
   12k chars) and reviewers force-fresh, the marginal value collapsed. The plan's "10×"
