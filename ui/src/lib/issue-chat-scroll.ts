@@ -4,7 +4,10 @@ export type IssueChatScrollTarget =
 
 export interface ComposerViewportSnapshot {
   composerViewportTop: number;
+  distanceFromBottom: number | null;
 }
+
+const BOTTOM_PROXIMITY_PX = 48;
 
 /**
  * The page itself is only a usable scroll target when the document can actually
@@ -47,13 +50,51 @@ export function resolveIssueChatScrollTarget(
   return { type: "window" };
 }
 
+function issueChatDistanceFromBottom(
+  target: IssueChatScrollTarget,
+  doc: Document,
+  win: Window,
+): number | null {
+  if (target.type === "element") {
+    return Math.max(
+      0,
+      target.element.scrollHeight - target.element.scrollTop - target.element.clientHeight,
+    );
+  }
+
+  const scroller = doc.scrollingElement ?? doc.documentElement;
+  if (!scroller) return null;
+
+  return Math.max(0, scroller.scrollHeight - win.scrollY - win.innerHeight);
+}
+
+function scrollIssueChatTargetToBottom(
+  target: IssueChatScrollTarget,
+  doc: Document,
+  win: Window,
+) {
+  if (target.type === "element") {
+    target.element.scrollTop = Math.max(0, target.element.scrollHeight - target.element.clientHeight);
+    return;
+  }
+
+  if (!isWindowScrollable(doc, win)) return;
+
+  const scroller = doc.scrollingElement ?? doc.documentElement;
+  win.scrollTo({ top: scroller.scrollHeight, left: 0, behavior: "auto" });
+}
+
 export function captureComposerViewportSnapshot(
   composerElement: HTMLElement | null,
+  doc: Document = document,
+  win: Window = window,
 ): ComposerViewportSnapshot | null {
   if (!composerElement) return null;
+  const target = resolveIssueChatScrollTarget(doc, win);
 
   return {
     composerViewportTop: composerElement.getBoundingClientRect().top,
+    distanceFromBottom: issueChatDistanceFromBottom(target, doc, win),
   };
 }
 
@@ -82,6 +123,17 @@ export function restoreComposerViewportSnapshot(
   if (!Number.isFinite(delta) || Math.abs(delta) < 1) return;
 
   const target = resolveIssueChatScrollTarget(doc, win);
+  const currentDistanceFromBottom = issueChatDistanceFromBottom(target, doc, win);
+  if (
+    snapshot.distanceFromBottom !== null
+    && currentDistanceFromBottom !== null
+    && snapshot.distanceFromBottom <= BOTTOM_PROXIMITY_PX
+    && currentDistanceFromBottom <= Math.max(BOTTOM_PROXIMITY_PX, Math.abs(delta) + BOTTOM_PROXIMITY_PX)
+  ) {
+    scrollIssueChatTargetToBottom(target, doc, win);
+    return;
+  }
+
   if (target.type === "element") {
     target.element.scrollTop += delta;
     return;
