@@ -920,6 +920,53 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("scrolls to the latest comment on initial issue open", async () => {
+    const scrolled: Array<{ id: string; options: unknown }> = [];
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = vi.fn(function scrollIntoView(this: Element, options?: boolean | ScrollIntoViewOptions) {
+      scrolled.push({ id: this.id, options });
+    }) as unknown as typeof Element.prototype.scrollIntoView;
+
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(
+          <MemoryRouter>
+            <IssueChatThread
+              comments={issueChatLongThreadComments.slice(0, 3)}
+              linkedRuns={[]}
+              timelineEvents={[]}
+              liveRuns={[]}
+              agentMap={issueChatLongThreadAgentMap}
+              currentUserId="user-board"
+              onAdd={async () => {}}
+              enableLiveTranscriptPolling={false}
+              initialScrollToLatestKey="issue-1"
+            />
+          </MemoryRouter>,
+        );
+      });
+      await act(async () => {
+        await new Promise((resolve) => window.requestAnimationFrame(resolve));
+        await new Promise((resolve) => window.requestAnimationFrame(resolve));
+      });
+
+      const latestId = `comment-${issueChatLongThreadComments[2]!.id}`;
+      expect(scrolled.some((call) =>
+        call.id === latestId
+        && typeof call.options === "object"
+        && call.options !== null
+        && (call.options as ScrollIntoViewOptions).behavior === "auto"
+        && (call.options as ScrollIntoViewOptions).block === "end"
+      )).toBe(true);
+    } finally {
+      Element.prototype.scrollIntoView = originalScrollIntoView;
+      act(() => {
+        root.unmount();
+      });
+    }
+  });
+
   it("uses comments rendered by onRefreshLatestComments before resolving latest", async () => {
     const scrolledIds: string[] = [];
     const originalScrollIntoView = Element.prototype.scrollIntoView;

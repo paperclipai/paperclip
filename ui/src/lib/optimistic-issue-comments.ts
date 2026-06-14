@@ -1,5 +1,7 @@
 import type { Issue, IssueComment } from "@paperclipai/shared";
 
+export const ISSUE_COMMENT_THREAD_PAGE_SIZE = 10;
+
 export interface IssueCommentReassignment {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -158,6 +160,23 @@ export function flattenIssueCommentPages(
     }
   }
   return sortIssueComments([...byId.values()]);
+}
+
+export function paginateIssueComments<T>(
+  comments: readonly T[],
+  pageSize: number,
+): T[][] {
+  if (comments.length === 0) return [];
+  if (!Number.isFinite(pageSize) || pageSize <= 0) return [[...comments]];
+
+  const pages: T[][] = [];
+  let end = comments.length;
+  while (end > 0) {
+    const start = Math.max(0, end - pageSize);
+    pages.unshift([...comments.slice(start, end)]);
+    end = start;
+  }
+  return pages;
 }
 
 export function getNextIssueCommentPageParam(

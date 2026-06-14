@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type Ref } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
-import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
+import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
@@ -47,10 +47,11 @@ import {
   createOptimisticIssueComment,
   flattenIssueCommentPages,
   getNextIssueCommentPageParam,
+  ISSUE_COMMENT_THREAD_PAGE_SIZE,
   isQueuedIssueComment,
-  loadRemainingIssueCommentPages,
   matchesIssueRef,
   mergeIssueComments,
+  paginateIssueComments,
   removeIssueCommentFromPages,
   shouldAutoloadOlderIssueComments,
   takeOptimisticIssueComment,
@@ -118,6 +119,7 @@ import {
   Archive,
   ArrowLeft,
   Check,
+  ChevronLeft,
   ChevronRight,
   Copy,
   Eye,
@@ -170,11 +172,10 @@ type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
 };
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
-const ISSUE_COMMENT_PAGE_SIZE = 50;
+const ISSUE_COMMENT_PAGE_SIZE = ISSUE_COMMENT_THREAD_PAGE_SIZE;
 // Keep historical comments behind the explicit "Load earlier comments" action.
 // Autoloading multiple pages makes large issue threads feel heavy immediately.
 const ISSUE_COMMENT_AUTOLOAD_LIMIT = ISSUE_COMMENT_PAGE_SIZE;
-const JUMP_TO_LATEST_MAX_COMMENT_PAGES = 10;
 const TREE_CONTROL_MODE_LABEL: Record<IssueTreeControlMode, string> = {
   pause: "Pause subtree",
   resume: "Resume subtree",
@@ -633,7 +634,7 @@ type IssueDetailChatTabProps = {
   interactions: IssueThreadInteraction[];
   hasOlderComments: boolean;
   commentsLoadingOlder: boolean;
-  onLoadOlderComments: () => void;
+  onLoadOlderComments: () => Promise<unknown> | void;
   onRefreshLatestComments: () => Promise<unknown> | void;
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
   composerRef: Ref<IssueChatComposerHandle>;
@@ -873,31 +874,185 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     () => extractIssueTimelineEvents(resolvedActivity),
     [resolvedActivity],
   );
+  const [commentPageFromLatest, setCommentPageFromLatest] = useState(0);
+  useEffect(() => {
+    setCommentPageFromLatest(0);
+  }, [issueId]);
+
+  const commentPages = useMemo(
+    () => paginateIssueComments(commentsWithRunMeta, ISSUE_COMMENT_PAGE_SIZE),
+    [commentsWithRunMeta],
+  );
+  const loadedCommentPageCount = Math.max(1, commentPages.length);
+  const boundedCommentPageFromLatest = Math.min(
+    Math.max(0, commentPageFromLatest),
+    loadedCommentPageCount - 1,
+  );
+  const commentPageIndex = commentPages.length === 0
+    ? 0
+    : loadedCommentPageCount - 1 - boundedCommentPageFromLatest;
+  const visibleComments = commentPages[commentPageIndex] ?? [];
+  const visibleCommentStartIndex = commentPages
+    .slice(0, commentPageIndex)
+    .reduce((total, page) => total + page.length, 0);
+  const visibleCommentStart = visibleComments.length > 0 ? visibleCommentStartIndex + 1 : 0;
+  const visibleCommentEnd = visibleCommentStartIndex + visibleComments.length;
+  const showCommentPagination =
+    hasOlderComments
+    || commentsWithRunMeta.length > ISSUE_COMMENT_PAGE_SIZE
+    || commentPageFromLatest > 0;
+  const canShowLoadedOlderPage = boundedCommentPageFromLatest < loadedCommentPageCount - 1;
+  const canLoadOlderPage = boundedCommentPageFromLatest === loadedCommentPageCount - 1 && hasOlderComments;
+  const canGoOlder = canShowLoadedOlderPage || canLoadOlderPage;
+  const canGoNewer = boundedCommentPageFromLatest > 0;
+  const handleOlderCommentPage = useCallback(async () => {
+    if (canShowLoadedOlderPage) {
+      setCommentPageFromLatest((page) => page + 1);
+      return;
+    }
+    if (!canLoadOlderPage || commentsLoadingOlder) return;
+    await onLoadOlderComments();
+    setCommentPageFromLatest((page) => page + 1);
+  }, [canLoadOlderPage, canShowLoadedOlderPage, commentsLoadingOlder, onLoadOlderComments]);
+  const handleNewerCommentPage = useCallback(() => {
+    setCommentPageFromLatest((page) => Math.max(0, page - 1));
+  }, []);
+  const handleAddVisibleComment = useCallback(
+    async (body: string, reopen?: boolean, reassignment?: CommentReassignment) => {
+      setCommentPageFromLatest(0);
+      await onAdd(body, reopen, reassignment);
+    },
+    [onAdd],
+  );
+  const handleRefreshLatestComments = useCallback(async () => {
+    setCommentPageFromLatest(0);
+    await onRefreshLatestComments();
+  }, [onRefreshLatestComments]);
+  const visibleCommentIds = useMemo(
+    () => new Set(visibleComments.map((comment) => comment.id)),
+    [visibleComments],
+  );
+  const visibleRunIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const comment of visibleComments) {
+      if (comment.runId) ids.add(comment.runId);
+      if (comment.interruptedRunId) ids.add(comment.interruptedRunId);
+      if (comment.queueTargetRunId) ids.add(comment.queueTargetRunId);
+    }
+    return ids;
+  }, [visibleComments]);
+  const visibleCommentWindow = useMemo(() => {
+    if (visibleComments.length === 0) return null;
+    const times = visibleComments
+      .map((comment) => new Date(comment.createdAt).getTime())
+      .filter(Number.isFinite);
+    if (times.length === 0) return null;
+    return {
+      start: Math.min(...times),
+      end: Math.max(...times),
+    };
+  }, [visibleComments]);
+  const isVisibleTime = useCallback((value: Date | string | null | undefined) => {
+    if (!visibleCommentWindow) return true;
+    if (!value) return false;
+    const time = new Date(value).getTime();
+    if (!Number.isFinite(time)) return false;
+    return time >= visibleCommentWindow.start && time <= visibleCommentWindow.end;
+  }, [visibleCommentWindow]);
+  const visibleInteractions = useMemo(
+    () =>
+      visibleCommentWindow
+        ? interactions.filter((interaction) => {
+          const sourceRunId =
+            "sourceRunId" in interaction && typeof interaction.sourceRunId === "string"
+              ? interaction.sourceRunId
+              : null;
+          return isVisibleTime(interaction.createdAt)
+            || (!!sourceRunId && visibleRunIds.has(sourceRunId));
+        })
+        : interactions,
+    [interactions, isVisibleTime, visibleCommentWindow, visibleRunIds],
+  );
+  const visibleTimelineEvents = useMemo(
+    () =>
+      visibleCommentWindow
+        ? timelineEvents.filter((event) =>
+          isVisibleTime(event.createdAt)
+          || (!!event.commentId && visibleCommentIds.has(event.commentId))
+          || (!!event.runId && visibleRunIds.has(event.runId))
+        )
+        : timelineEvents,
+    [isVisibleTime, timelineEvents, visibleCommentIds, visibleCommentWindow, visibleRunIds],
+  );
+  const visibleTimelineRuns = useMemo(
+    () =>
+      visibleCommentWindow
+        ? timelineRuns.filter((run) =>
+          visibleRunIds.has(run.runId)
+          || isVisibleTime(run.startedAt ?? run.createdAt)
+          || isVisibleTime(run.finishedAt ?? null)
+        )
+        : timelineRuns,
+    [isVisibleTime, timelineRuns, visibleCommentWindow, visibleRunIds],
+  );
+  const renderCommentPaginationControls = () => showCommentPagination ? (
+    <div
+      className="flex flex-col gap-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between"
+      data-testid="issue-comment-pagination"
+    >
+      <div className="tabular-nums">
+        {visibleComments.length > 0 ? (
+          <>
+            Comments {visibleCommentStart}-{visibleCommentEnd} of {commentsWithRunMeta.length}
+            {hasOlderComments ? "+" : ""}
+          </>
+        ) : (
+          <>No comments loaded</>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={!canGoOlder || commentsLoadingOlder}
+          onClick={handleOlderCommentPage}
+        >
+          <ChevronLeft className="mr-1 h-3.5 w-3.5" />
+          {commentsLoadingOlder && canLoadOlderPage ? "Loading older..." : "Older"}
+        </Button>
+        <span className="min-w-20 text-center tabular-nums">
+          Page {boundedCommentPageFromLatest + 1}
+          {hasOlderComments && boundedCommentPageFromLatest === loadedCommentPageCount - 1
+            ? "+"
+            : ` of ${loadedCommentPageCount}`}
+        </span>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={!canGoNewer}
+          onClick={handleNewerCommentPage}
+        >
+          Newer
+          <ChevronRight className="ml-1 h-3.5 w-3.5" />
+        </Button>
+      </div>
+    </div>
+  ) : null;
 
   return (
     <div className="space-y-3">
-      {hasOlderComments ? (
-        <div className="flex justify-center">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={commentsLoadingOlder}
-            onClick={onLoadOlderComments}
-          >
-            {commentsLoadingOlder ? "Loading earlier comments..." : "Load earlier comments"}
-          </Button>
-        </div>
-      ) : null}
+      {renderCommentPaginationControls()}
       <IssueChatThread
         composerRef={composerRef}
-        comments={commentsWithRunMeta}
-        interactions={interactions}
+        comments={visibleComments}
+        interactions={visibleInteractions}
         feedbackVotes={feedbackVotes}
         feedbackDataSharingPreference={feedbackDataSharingPreference}
         feedbackTermsUrl={feedbackTermsUrl}
-        linkedRuns={timelineRuns}
-        timelineEvents={timelineEvents}
+        linkedRuns={visibleTimelineRuns}
+        timelineEvents={visibleTimelineEvents}
         liveRuns={resolvedLiveRuns}
         activeRun={resolvedActiveRun}
         blockedBy={blockedBy ?? []}
@@ -923,7 +1078,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         composerDisabledReason={composerDisabledReason}
         composerHint={composerHint}
         onVote={onVote}
-        onAdd={onAdd}
+        onAdd={handleAddVisibleComment}
         imageUploadHandler={onImageUpload}
         onAttachImage={onAttachImage}
         onInterruptQueued={onInterruptQueued}
@@ -949,11 +1104,13 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           : undefined}
         onImageClick={onImageClick}
         resolveImageSrc={resolveImageSrc}
-        onRefreshLatestComments={onRefreshLatestComments}
+        onRefreshLatestComments={handleRefreshLatestComments}
+        initialScrollToLatestKey={issueId}
         assigneeUserId={assigneeUserId}
         onResumeFromBacklog={onResumeFromBacklog}
         resumeFromBacklogPending={resumeFromBacklogPending}
       />
+      {renderCommentPaginationControls()}
     </div>
   );
 });
@@ -1230,7 +1387,6 @@ export function IssueDetail() {
   const { setBreadcrumbs, setMobileToolbar } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const navigationType = useNavigationType();
   const location = useLocation();
   const { pushToast } = useToastActions();
   const { isMobile } = useSidebar();
@@ -2586,15 +2742,6 @@ export function IssueDetail() {
 
   const isFromInbox = resolvedIssueDetailState?.issueDetailSource === "inbox";
 
-  // Scroll to top on forward navigation (PUSH/REPLACE) so issue doesn't
-  // inherit the inbox/issues-list scroll position on mobile.
-  useEffect(() => {
-    if (navigationType === "POP") return;
-    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-    const main = document.getElementById("main-content");
-    if (main) main.scrollTop = 0;
-  }, [issueId, navigationType]);
-
   // Redirect to identifier-based URL if navigated via UUID
   useEffect(() => {
     const nextState = resolvedIssueDetailState ?? location.state;
@@ -2901,30 +3048,10 @@ export function IssueDetail() {
 
   const attachmentsInitialLoading = attachmentsLoading && attachments === undefined;
   const loadOlderComments = useCallback(() => {
-    void fetchOlderComments();
+    return fetchOlderComments();
   }, [fetchOlderComments]);
   const refetchLatestComments = useCallback(async () => {
-    // Refetch page 0 first so comments that arrived after initial load are
-    // visible, then load every remaining older page. The chat thread is
-    // paginated and virtualized, so "latest" must be resolved against the
-    // complete comment set rather than the current loaded window.
-    const refreshed = await refetchComments();
-    const loaded = await loadRemainingIssueCommentPages<IssueComment>({
-      pages: refreshed.data?.pages,
-      pageParams: refreshed.data?.pageParams as Array<string | null> | undefined,
-      pageSize: ISSUE_COMMENT_PAGE_SIZE,
-      maxPages: JUMP_TO_LATEST_MAX_COMMENT_PAGES,
-      fetchPage: (afterCommentId) =>
-        issuesApi.listComments(issueId!, {
-          order: "desc",
-          limit: ISSUE_COMMENT_PAGE_SIZE,
-          after: afterCommentId,
-        }),
-    });
-    queryClient.setQueryData<InfiniteData<IssueComment[], string | null>>(
-      queryKeys.issues.comments(issueId!),
-      loaded,
-    );
+    await refetchComments();
     await new Promise<void>((resolve) => {
       if (typeof window === "undefined") {
         resolve();
@@ -2932,7 +3059,7 @@ export function IssueDetail() {
       }
       window.requestAnimationFrame(() => resolve());
     });
-  }, [issueId, queryClient, refetchComments]);
+  }, [refetchComments]);
   useEffect(() => {
     if (!shouldPrefetchOlderComments) return;
     void fetchOlderComments();

@@ -385,6 +385,7 @@ interface IssueChatThreadProps {
    * comment is in the loaded set before we scroll to it.
    */
   onRefreshLatestComments?: () => Promise<unknown> | void;
+  initialScrollToLatestKey?: string | null;
 }
 
 type IssueChatErrorBoundaryProps = {
@@ -3978,6 +3979,7 @@ export function IssueChatThread({
   issueWorkMode,
   onWorkModeChange,
   onRefreshLatestComments,
+  initialScrollToLatestKey = null,
   assigneeUserId = null,
   onResumeFromBacklog,
   resumeFromBacklogPending = false,
@@ -4280,12 +4282,12 @@ export function IssueChatThread({
     };
   }, [location.hash, messageAnchorIndex, messages, useVirtualizedThread]);
 
-  function jumpToLatestFallback() {
+  function jumpToLatestFallback(behavior: ScrollBehavior = "smooth") {
     if (useVirtualizedThread) {
-      virtualizedThreadRef.current?.scrollToLatest({ behavior: "smooth" });
+      virtualizedThreadRef.current?.scrollToLatest({ behavior });
       return;
     }
-    bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    bottomAnchorRef.current?.scrollIntoView({ behavior, block: "end" });
   }
 
   // Lands on the latest `comment-*` row and then drives the scroll the rest
@@ -4300,28 +4302,31 @@ export function IssueChatThread({
   // on the latest comment element on every tick until the DOM bottom of
   // that element is at the scroll container's bottom (or scroll position
   // and content height stop changing).
-  function scrollToLatestCommentWithSettle(messageSnapshot: readonly ThreadMessage[] = latestMessagesRef.current) {
+  function scrollToLatestCommentWithSettle(
+    messageSnapshot: readonly ThreadMessage[] = latestMessagesRef.current,
+    behavior: ScrollBehavior = "smooth",
+  ) {
     // These are re-targeted inside the settle loop below if a newer comment
     // arrives mid-settle, so they must be mutable (not captured once).
     let latestCommentIndex = findLatestCommentMessageIndex(messageSnapshot);
     if (latestCommentIndex < 0) {
-      jumpToLatestFallback();
+      jumpToLatestFallback(behavior);
       return;
     }
     const initialLatestAnchor = issueChatMessageAnchorId(messageSnapshot[latestCommentIndex]);
     if (!initialLatestAnchor) {
-      jumpToLatestFallback();
+      jumpToLatestFallback(behavior);
       return;
     }
     let latestCommentAnchor: string = initialLatestAnchor;
 
     const initial = scrollToThreadAnchor(
       latestCommentAnchor,
-      { align: "end", behavior: "smooth" },
+      { align: "end", behavior },
       messageSnapshot,
     );
     if (!initial) {
-      jumpToLatestFallback();
+      jumpToLatestFallback(behavior);
       return;
     }
 
@@ -4425,7 +4430,7 @@ export function IssueChatThread({
       const offBottom = elBottom - containerBottom;
 
       if (Math.abs(offBottom) > TOLERANCE_PX) {
-        el.scrollIntoView({ behavior: "smooth", block: "end" });
+        el.scrollIntoView({ behavior, block: "end" });
       }
 
       const currentScrollTop = container?.scrollTop ?? window.scrollY;
@@ -4452,6 +4457,35 @@ export function IssueChatThread({
     // the target) before we start settling.
     scheduleTick(120);
   }
+
+  const lastInitialScrollKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const key = initialScrollToLatestKey ?? null;
+    if (!key || lastInitialScrollKeyRef.current === key) return;
+    const hash = location.hash || (typeof window !== "undefined" ? window.location.hash : "");
+    if (
+      hash.startsWith("#comment-")
+      || hash.startsWith("#activity-")
+      || hash.startsWith("#run-")
+      || hash.startsWith("#interaction-")
+    ) {
+      return;
+    }
+    if (messages.length === 0) return;
+    lastInitialScrollKeyRef.current = key;
+    if (typeof window === "undefined") return;
+
+    const frame = window.requestAnimationFrame(() => {
+      scrollToLatestCommentWithSettle(latestMessagesRef.current, "auto");
+    });
+    const timeout = window.setTimeout(() => {
+      scrollToLatestCommentWithSettle(latestMessagesRef.current, "auto");
+    }, 120);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timeout);
+    };
+  }, [initialScrollToLatestKey, location.hash, messages]);
 
   function handleJumpToLatest() {
     if (onRefreshLatestComments) {
