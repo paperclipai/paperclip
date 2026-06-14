@@ -15,6 +15,8 @@ import {
   DEFAULT_GUARD_MAX_TOKENS_PER_RUN,
   DEFAULT_GUARD_MAX_RUNS_PER_AGENT_PER_HOUR,
   DEFAULT_GUARD_MAX_CONSECUTIVE_SAME_ISSUE_RUNS,
+  DEFAULT_GUARD_SKIP_IDLE_TIMER_WAKES,
+  DEFAULT_GUARD_PAUSE_ON_EMPTY_INSTRUCTIONS,
 } from "../types/instance.js";
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
 
@@ -90,11 +92,17 @@ export const instanceGuardsBreakerConfigSchema = z.object({
   maxConsecutiveSameIssueRuns: z.number().int().positive().default(DEFAULT_GUARD_MAX_CONSECUTIVE_SAME_ISSUE_RUNS),
 });
 
+export const instanceGuardsWakeConfigSchema = z.object({
+  skipIdleTimerWakes: z.boolean().default(DEFAULT_GUARD_SKIP_IDLE_TIMER_WAKES),
+  pauseOnEmptyInstructions: z.boolean().default(DEFAULT_GUARD_PAUSE_ON_EMPTY_INSTRUCTIONS),
+});
+
 export const instanceGuardsConfigSchema = z.object({
   enabled: z.boolean().default(true),
   budget: instanceGuardsBudgetConfigSchema.default({}),
   perRun: instanceGuardsPerRunConfigSchema.default({}),
   breaker: instanceGuardsBreakerConfigSchema.default({}),
+  wake: instanceGuardsWakeConfigSchema.default({}),
 });
 
 export const patchInstanceGuardsConfigSchema = z.object({
@@ -102,6 +110,7 @@ export const patchInstanceGuardsConfigSchema = z.object({
   budget: instanceGuardsBudgetConfigSchema.partial().optional(),
   perRun: instanceGuardsPerRunConfigSchema.partial().optional(),
   breaker: instanceGuardsBreakerConfigSchema.partial().optional(),
+  wake: instanceGuardsWakeConfigSchema.partial().optional(),
 });
 
 export type InstanceGeneralSettings = z.infer<typeof instanceGeneralSettingsSchema>;

@@ -193,6 +193,7 @@ export function instanceSettingsService(db: Db) {
         ...(patch.budget !== undefined ? { budget: { ...currentGuards.budget, ...patch.budget } } : {}),
         ...(patch.perRun !== undefined ? { perRun: { ...currentGuards.perRun, ...patch.perRun } } : {}),
         ...(patch.breaker !== undefined ? { breaker: { ...currentGuards.breaker, ...patch.breaker } } : {}),
+        ...(patch.wake !== undefined ? { wake: { ...currentGuards.wake, ...patch.wake } } : {}),
       });
       const now = new Date();
       const [updated] = await db

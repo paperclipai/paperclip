@@ -9,6 +9,8 @@ export const DEFAULT_GUARD_MAX_TURNS_PER_RUN = 120;
 export const DEFAULT_GUARD_MAX_TOKENS_PER_RUN = 1_000_000;
 export const DEFAULT_GUARD_MAX_RUNS_PER_AGENT_PER_HOUR = 15;
 export const DEFAULT_GUARD_MAX_CONSECUTIVE_SAME_ISSUE_RUNS = 6;
+export const DEFAULT_GUARD_SKIP_IDLE_TIMER_WAKES = true;
+export const DEFAULT_GUARD_PAUSE_ON_EMPTY_INSTRUCTIONS = true;
 
 export interface InstanceGuardsBudgetConfig {
   metric: "total_tokens";
@@ -29,11 +31,19 @@ export interface InstanceGuardsBreakerConfig {
   maxConsecutiveSameIssueRuns: number;
 }
 
+export interface InstanceGuardsWakeConfig {
+  // Skip timer-source heartbeat wakes for agents with no actionable work (W2).
+  skipIdleTimerWakes: boolean;
+  // Refuse to invoke a managed-bundle agent whose instruction bundle is empty (W1).
+  pauseOnEmptyInstructions: boolean;
+}
+
 export interface InstanceGuardsConfig {
   enabled: boolean;
   budget: InstanceGuardsBudgetConfig;
   perRun: InstanceGuardsPerRunConfig;
   breaker: InstanceGuardsBreakerConfig;
+  wake: InstanceGuardsWakeConfig;
 }
 
 export type PatchInstanceGuardsConfig = Partial<{
@@ -41,6 +51,7 @@ export type PatchInstanceGuardsConfig = Partial<{
   budget: Partial<InstanceGuardsBudgetConfig>;
   perRun: Partial<InstanceGuardsPerRunConfig>;
   breaker: Partial<InstanceGuardsBreakerConfig>;
+  wake: Partial<InstanceGuardsWakeConfig>;
 }>;
 
 // ------------------------------------

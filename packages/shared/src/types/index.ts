@@ -33,6 +33,7 @@ export type {
   InstanceGuardsBudgetConfig,
   InstanceGuardsPerRunConfig,
   InstanceGuardsBreakerConfig,
+  InstanceGuardsWakeConfig,
   InstanceGuardsConfig,
   PatchInstanceGuardsConfig,
 } from "./instance.js";

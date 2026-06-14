@@ -34,6 +34,7 @@ const defaultGuards: InstanceGuardsConfig = {
   },
   perRun: { maxTurnsPerRun: 120, maxTokensPerRun: 1_000_000 },
   breaker: { maxRunsPerAgentPerHour: 15, maxConsecutiveSameIssueRuns: 6 },
+  wake: { skipIdleTimerWakes: true, pauseOnEmptyInstructions: true },
 };
 
 describeEmbeddedPostgres("platform guard breaker (G4/G5)", () => {

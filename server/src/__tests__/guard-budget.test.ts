@@ -58,6 +58,7 @@ describeEmbeddedPostgres("platform guard budget (G1/G2/G5)", () => {
         },
         perRun: { maxTurnsPerRun: 120, maxTokensPerRun: 1_000_000 },
         breaker: { maxRunsPerAgentPerHour: 15, maxConsecutiveSameIssueRuns: 6 },
+        wake: { skipIdleTimerWakes: true, pauseOnEmptyInstructions: true },
       },
     });
   }

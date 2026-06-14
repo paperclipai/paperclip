@@ -467,6 +467,24 @@ export function agentInstructionsService() {
     return toBundle(agent, state, summaries);
   }
 
+  // Cheap readiness probe for the pre-wake instruction-readiness gate (W1).
+  // Returns empty:true only for a managed bundle that would invoke the adapter
+  // with no instructions at all — managed mode, no instruction files on disk,
+  // and no legacy prompt template. External/unmanaged agents are never flagged.
+  // Does not read file contents (no summaries), so it is safe on every wake.
+  async function isManagedBundleEmpty(
+    agent: AgentLike,
+  ): Promise<{ empty: boolean; mode: BundleMode | null }> {
+    const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
+    if (state.mode !== "managed") return { empty: false, mode: state.mode };
+    if (state.legacyPromptTemplateActive) return { empty: false, mode: state.mode };
+    if (!state.rootPath) return { empty: true, mode: state.mode };
+    const stat = await statIfExists(state.rootPath);
+    if (!stat?.isDirectory()) return { empty: true, mode: state.mode };
+    const files = await listFilesRecursive(state.rootPath);
+    return { empty: files.length === 0, mode: state.mode };
+  }
+
   async function readFile(agent: AgentLike, relativePath: string): Promise<AgentInstructionsFileDetail> {
     const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
     if (relativePath === LEGACY_PROMPT_TEMPLATE_PATH) {
@@ -724,6 +742,7 @@ export function agentInstructionsService() {
 
   return {
     getBundle,
+    isManagedBundleEmpty,
     readFile,
     updateBundle,
     writeFile,

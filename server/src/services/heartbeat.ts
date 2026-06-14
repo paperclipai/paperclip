@@ -136,6 +136,9 @@ import {
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { runBreakerService } from "./run-breaker.js";
+import { instructionReadinessService } from "./instruction-readiness.js";
+import { agentInstructionsService } from "./agent-instructions.js";
+import { hasActionableWork } from "./actionable-work.js";
 import {
   RECOVERY_ORIGIN_KINDS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
@@ -3017,6 +3020,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   };
   const budgets = budgetService(db, budgetHooks);
   const runBreaker = runBreakerService(db);
+  const instructionReadiness = instructionReadinessService(db);
+  const agentInstructions = agentInstructionsService();
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
@@ -6654,6 +6659,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
+    // W1 (defense in depth) — a queued run whose agent's managed bundle became
+    // empty between enqueue and claim must not invoke the adapter. Cancel it and
+    // raise the same incident as the enqueue-time gate.
+    const claimGuards = await instanceSettings.getGuards();
+    if (claimGuards.enabled && claimGuards.wake.pauseOnEmptyInstructions) {
+      const readiness = await agentInstructions.isManagedBundleEmpty(agent);
+      const fault = instructionReadiness.evaluate(readiness.empty);
+      if (fault) {
+        await instructionReadiness.trip(agent.companyId, agent.id, fault);
+        await cancelRunInternal(run.id, "Cancelled because the agent has an empty managed instruction bundle");
+        return null;
+      }
+    }
+
     const issueId = readNonEmptyString(context.issueId);
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
@@ -9984,6 +10003,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
+    // W1 — instruction-readiness gate. A managed-bundle agent with an empty
+    // instruction bundle would invoke the adapter with no instructions and burn
+    // tokens flailing. Pause it + raise an incident instead, never invoke. Runs
+    // after invokability/policy so an already-paused agent is filtered first and
+    // a single incident is raised rather than one per wake. Applies to every
+    // source — a brain-dead agent must never run regardless of what woke it.
+    if (guards.enabled && guards.wake.pauseOnEmptyInstructions) {
+      const readiness = await agentInstructions.isManagedBundleEmpty(agent);
+      const fault = instructionReadiness.evaluate(readiness.empty);
+      if (fault) {
+        await writeSkippedRequest("agent.instructions_empty", { error: fault.detail });
+        await instructionReadiness.trip(agent.companyId, agentId, fault);
+        if (opts.requestedByActorType === "user") {
+          throw conflict(fault.detail, { reason: fault.reason });
+        }
+        return null;
+      }
+    }
+
+    // W2 — idle short-circuit. Skip a timer wake for an agent with no actionable
+    // work. ONLY the timer source is ever skipped; assignment/gate/monitor/
+    // recovery/on-demand wakes always carry intent and must run.
+    if (source === "timer" && guards.enabled && guards.wake.skipIdleTimerWakes) {
+      if (!(await hasActionableWork(db, agentId, agent.companyId))) {
+        await writeSkippedRequest("agent.no_actionable_work");
+        return null;
+      }
+    }
+
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(agent.companyId, issueId);
       if (activePauseHold) {
@@ -11180,6 +11228,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .innerJoin(companies, eq(companies.id, agents.companyId))
         .where(eq(companies.status, "active"));
       const agentsByCompany = groupAgentOrgRowsByCompany(allAgents.map(toAgentOrgRow));
+      // W2 — idle short-circuit (pre-filter). Avoid even the enqueueWakeup
+      // round-trip for idle agents on a timer tick. enqueueWakeup re-checks the
+      // same predicate as the authoritative gate; this is the optimization.
+      const tickGuards = await instanceSettings.getGuards();
+      const idleSkipEnabled = tickGuards.enabled && tickGuards.wake.skipIdleTimerWakes;
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
@@ -11194,6 +11247,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        if (idleSkipEnabled && !(await hasActionableWork(db, agent.id, agent.companyId))) {
+          skipped += 1;
+          continue;
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
