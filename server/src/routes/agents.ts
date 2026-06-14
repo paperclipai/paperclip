@@ -3469,6 +3469,34 @@ export function agentRoutes(
     );
   });
 
+  router.post("/heartbeat-runs/stale/cancel", async (req, res) => {
+    assertBoard(req);
+    const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
+    if (!companyId) {
+      res.status(400).json({ error: "companyId is required" });
+      return;
+    }
+    assertCompanyAccess(req, companyId);
+    const result = await heartbeat.cancelStaleQueuedRuns(companyId);
+
+    if (result.cancelled.length > 0) {
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "heartbeat.stale_queued_cancelled",
+        entityType: "company",
+        entityId: companyId,
+        details: {
+          cancelledCount: result.cancelledCount,
+          cancelledRunIds: result.cancelled.map((entry) => entry.runId),
+        },
+      });
+    }
+
+    res.json(result);
+  });
+
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
     assertBoard(req);
     const runId = req.params.runId as string;
