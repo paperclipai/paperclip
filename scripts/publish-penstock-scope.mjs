@@ -61,7 +61,7 @@ if (!version || !/^\d{4}\.\d{3,4}\.\d+$/.test(version)) {
   process.exit(1);
 }
 
-// @paperclipai/* -> @penstock/* rename map (also used to rewrite internal deps).
+// @paperclipai/* -> @penstock/* rename map.
 const RENAME = {
   "@paperclipai/plugin-sdk": "@penstock/plugin-sdk",
   "@paperclipai/shared": "@penstock/shared",
@@ -78,9 +78,9 @@ function rewriteDeps(deps) {
   if (!deps || typeof deps !== "object") return deps;
   const out = {};
   for (const [name, spec] of Object.entries(deps)) {
-    // Renamed internal deps are pinned to THIS republish version (discarding the
-    // original `workspace:*`/range spec, since the renamed pkg only exists at this version).
-    if (RENAME[name]) out[RENAME[name]] = version;
+    // Keep the dependency key aligned with source/emitted import specifiers while
+    // resolving it to the republished package under the Blockcast-owned scope.
+    if (RENAME[name]) out[name] = `npm:${RENAME[name]}@${version}`;
     else out[name] = spec;
   }
   return out;
