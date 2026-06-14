@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import {
   agents,
   companies,
@@ -8,6 +9,7 @@ import {
   instanceUserRoles,
   issues,
   principalPermissionGrants,
+  projectMemberships,
   projects,
 } from "@paperclipai/db";
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
@@ -72,6 +74,7 @@ async function createIssue(
     projectId?: string | null;
     parentId?: string | null;
     assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
   } = {},
 ) {
   return db
@@ -85,6 +88,7 @@ async function createIssue(
       projectId: input.projectId ?? null,
       parentId: input.parentId ?? null,
       assigneeAgentId: input.assigneeAgentId ?? null,
+      assigneeUserId: input.assigneeUserId ?? null,
     })
     .returning()
     .then((rows) => rows[0]!);
@@ -125,6 +129,7 @@ describeEmbeddedPostgres("authorization service", () => {
 
   afterEach(async () => {
     await db.delete(principalPermissionGrants);
+    await db.delete(projectMemberships);
     await db.delete(companyMemberships);
     await db.delete(instanceUserRoles);
     await db.delete(issues);
@@ -911,5 +916,265 @@ describeEmbeddedPostgres("authorization service", () => {
       allowed: true,
       grant: { permissionKey: "tasks:assign" },
     });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Project-scoped issue visibility (opt-in per company)
+  // ---------------------------------------------------------------------------
+
+  async function setIssueVisibilityMode(
+    companyId: string,
+    mode: "open" | "project_scoped",
+  ) {
+    await db
+      .update(companies)
+      .set({ issueVisibilityMode: mode })
+      .where(eq(companies.id, companyId));
+  }
+
+  async function joinProject(companyId: string, userId: string, projectId: string) {
+    await db.insert(projectMemberships).values({
+      companyId,
+      projectId,
+      userId,
+      state: "joined",
+    });
+  }
+
+  async function addUserMembership(
+    companyId: string,
+    userId: string,
+    role: "owner" | "admin" | "operator" | "viewer",
+  ) {
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: role,
+    });
+  }
+
+  function issueResource(companyId: string, issue: {
+    id: string;
+    projectId: string | null;
+    parentId: string | null;
+    status: string;
+    assigneeUserId?: string | null;
+  }) {
+    return {
+      type: "issue" as const,
+      companyId,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      parentIssueId: issue.parentId,
+      assigneeUserId: issue.assigneeUserId ?? null,
+      status: issue.status,
+    };
+  }
+
+  it("open mode lets a viewer read every company issue (unchanged behavior)", async () => {
+    const company = await createCompany(db, "OpenMode");
+    const userId = `user-${randomUUID()}`;
+    await addUserMembership(company.id, userId, "viewer");
+    const projectA = await createProject(db, company.id, "A");
+    const projectB = await createProject(db, company.id, "B");
+    const issueA = await createIssue(db, company.id, { projectId: projectA.id });
+    const issueB = await createIssue(db, company.id, { projectId: projectB.id });
+    // Member is in no project; open mode ignores project membership.
+    const authorization = authorizationService(db);
+    const actor = { type: "board" as const, userId, source: "session" as const };
+
+    for (const issue of [issueA, issueB]) {
+      await expect(authorization.decide({
+        actor,
+        action: "issue:read",
+        resource: issueResource(company.id, issue),
+      })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    }
+  });
+
+  it("project_scoped mode limits a viewer to issues in their member projects", async () => {
+    const company = await createCompany(db, "ScopedMember");
+    await setIssueVisibilityMode(company.id, "project_scoped");
+    const userId = `user-${randomUUID()}`;
+    await addUserMembership(company.id, userId, "viewer");
+    const memberProject = await createProject(db, company.id, "Member");
+    const otherProject = await createProject(db, company.id, "Other");
+    await joinProject(company.id, userId, memberProject.id);
+    const memberIssue = await createIssue(db, company.id, { projectId: memberProject.id });
+    const otherIssue = await createIssue(db, company.id, { projectId: otherProject.id });
+    const authorization = authorizationService(db);
+    const actor = { type: "board" as const, userId, source: "session" as const };
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:read",
+      resource: issueResource(company.id, memberIssue),
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_project_member" });
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:read",
+      resource: issueResource(company.id, otherIssue),
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_project_scope" });
+
+    // project:read mirrors the membership logic.
+    await expect(authorization.decide({
+      actor,
+      action: "project:read",
+      resource: { type: "project", companyId: company.id, projectId: memberProject.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_project_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "project:read",
+      resource: { type: "project", companyId: company.id, projectId: otherProject.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_project_scope" });
+  });
+
+  it("an explicit issues:read_scope grant widens visibility without project membership", async () => {
+    const company = await createCompany(db, "ScopedGrant");
+    await setIssueVisibilityMode(company.id, "project_scoped");
+    const userId = `user-${randomUUID()}`;
+    await addUserMembership(company.id, userId, "operator");
+    const grantedProject = await createProject(db, company.id, "Granted");
+    const issue = await createIssue(db, company.id, { projectId: grantedProject.id });
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      permissionKey: "issues:read_scope",
+      scope: { projectIds: [grantedProject.id] },
+      grantedByUserId: null,
+    });
+    const authorization = authorizationService(db);
+    const actor = { type: "board" as const, userId, source: "session" as const };
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:read",
+      resource: issueResource(company.id, issue),
+      scope: { issueId: issue.id, projectId: issue.projectId },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_project_grant" });
+  });
+
+  it("the assignee always sees their own issue regardless of project", async () => {
+    const company = await createCompany(db, "ScopedAssignee");
+    await setIssueVisibilityMode(company.id, "project_scoped");
+    const userId = `user-${randomUUID()}`;
+    await addUserMembership(company.id, userId, "viewer");
+    const foreignProject = await createProject(db, company.id, "Foreign");
+    const issue = await createIssue(db, company.id, {
+      projectId: foreignProject.id,
+      assigneeUserId: userId,
+    });
+    const authorization = authorizationService(db);
+    const actor = { type: "board" as const, userId, source: "session" as const };
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:read",
+      resource: issueResource(company.id, issue),
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_own_assignment" });
+  });
+
+  it("owners and admins keep full visibility under project_scoped mode", async () => {
+    const company = await createCompany(db, "ScopedPrivileged");
+    await setIssueVisibilityMode(company.id, "project_scoped");
+    const ownerId = `user-${randomUUID()}`;
+    const adminId = `user-${randomUUID()}`;
+    await addUserMembership(company.id, ownerId, "owner");
+    await addUserMembership(company.id, adminId, "admin");
+    const project = await createProject(db, company.id, "Any");
+    const issue = await createIssue(db, company.id, { projectId: project.id });
+    const authorization = authorizationService(db);
+
+    for (const userId of [ownerId, adminId]) {
+      await expect(authorization.decide({
+        actor: { type: "board", userId, source: "session" },
+        action: "issue:read",
+        resource: issueResource(company.id, issue),
+      })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    }
+  });
+
+  it("instance admins and the local board see all issues under project_scoped mode", async () => {
+    const company = await createCompany(db, "ScopedInstanceLocal");
+    await setIssueVisibilityMode(company.id, "project_scoped");
+    const project = await createProject(db, company.id, "Any");
+    const issue = await createIssue(db, company.id, { projectId: project.id });
+    const authorization = authorizationService(db);
+
+    const adminUserId = `user-${randomUUID()}`;
+    await db.insert(instanceUserRoles).values({ userId: adminUserId, role: "instance_admin" });
+
+    await expect(authorization.decide({
+      actor: { type: "board", userId: adminUserId, source: "session", isInstanceAdmin: true },
+      action: "issue:read",
+      resource: issueResource(company.id, issue),
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_instance_admin" });
+
+    await expect(authorization.decide({
+      actor: { type: "board", userId: "local", source: "local_implicit" },
+      action: "issue:read",
+      resource: issueResource(company.id, issue),
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_local_board" });
+  });
+
+  it("project-less issues stay visible by default under project_scoped mode", async () => {
+    const company = await createCompany(db, "ScopedNullProject");
+    await setIssueVisibilityMode(company.id, "project_scoped");
+    const userId = `user-${randomUUID()}`;
+    await addUserMembership(company.id, userId, "viewer");
+    const issue = await createIssue(db, company.id, { projectId: null });
+    const authorization = authorizationService(db);
+
+    await expect(authorization.decide({
+      actor: { type: "board", userId, source: "session" },
+      action: "issue:read",
+      resource: issueResource(company.id, issue),
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_project_member" });
+  });
+
+  it("project_scoped filtering yields the same visible-issue set used by list/count routes", async () => {
+    // Mirrors filterIssuesForActor: decide() per row, keep allowed rows. The
+    // count route counts the same allowed set, so list and count agree.
+    const company = await createCompany(db, "ScopedListCount");
+    await setIssueVisibilityMode(company.id, "project_scoped");
+    const userId = `user-${randomUUID()}`;
+    await addUserMembership(company.id, userId, "viewer");
+    const memberProject = await createProject(db, company.id, "Member");
+    const otherProject = await createProject(db, company.id, "Other");
+    await joinProject(company.id, userId, memberProject.id);
+    const memberIssue = await createIssue(db, company.id, { projectId: memberProject.id });
+    const ownIssue = await createIssue(db, company.id, {
+      projectId: otherProject.id,
+      assigneeUserId: userId,
+    });
+    const nullIssue = await createIssue(db, company.id, { projectId: null });
+    const hiddenIssue = await createIssue(db, company.id, { projectId: otherProject.id });
+    const allIssues = [memberIssue, ownIssue, nullIssue, hiddenIssue];
+    const authorization = authorizationService(db);
+    const actor = { type: "board" as const, userId, source: "session" as const };
+
+    const decisions = await Promise.all(
+      allIssues.map((issue) =>
+        authorization.decide({
+          actor,
+          action: "issue:read",
+          resource: issueResource(company.id, issue),
+        }),
+      ),
+    );
+    const visible = allIssues.filter((_, index) => decisions[index]?.allowed);
+    const visibleIds = new Set(visible.map((issue) => issue.id));
+
+    expect(visible).toHaveLength(3);
+    expect(visibleIds.has(memberIssue.id)).toBe(true);
+    expect(visibleIds.has(ownIssue.id)).toBe(true);
+    expect(visibleIds.has(nullIssue.id)).toBe(true);
+    expect(visibleIds.has(hiddenIssue.id)).toBe(false);
+    // count == visible list length
+    expect(visible.length).toBe([...visibleIds].length);
   });
 });
