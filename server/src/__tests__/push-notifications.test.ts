@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { buildActivityNotification } from "../services/push-triggers.js";
+import {
+  buildActivityNotification,
+  buildRunStatusNotification,
+  shouldPushRunStatus,
+} from "../services/push-triggers.js";
 import { pruneEndpoints, upsertSubscription, type StoredPushSubscription } from "../services/push-subscription-store.js";
 import {
   __resetPushConfigForTests,
@@ -65,6 +69,85 @@ describe("buildActivityNotification", () => {
     expect(
       buildActivityNotification(activity({ action: "approval.created", entityType: "agent", entityId: "x" }))?.url,
     ).toBe("/");
+  });
+});
+
+describe("run-status push gating (shouldPushRunStatus)", () => {
+  afterEach(() => {
+    delete process.env.PAPERCLIP_PUSH_RUN_SUCCEEDED;
+  });
+
+  it("always pushes failure-ish terminal states", () => {
+    expect(shouldPushRunStatus("failed")).toBe(true);
+    expect(shouldPushRunStatus("timed_out")).toBe(true);
+  });
+
+  it("never pushes in-flight or benign states", () => {
+    expect(shouldPushRunStatus("running")).toBe(false);
+    expect(shouldPushRunStatus("queued")).toBe(false);
+    expect(shouldPushRunStatus("cancelled")).toBe(false);
+  });
+
+  it("treats succeeded as opt-in via PAPERCLIP_PUSH_RUN_SUCCEEDED", () => {
+    delete process.env.PAPERCLIP_PUSH_RUN_SUCCEEDED;
+    expect(shouldPushRunStatus("succeeded")).toBe(false);
+    process.env.PAPERCLIP_PUSH_RUN_SUCCEEDED = "1";
+    expect(shouldPushRunStatus("succeeded")).toBe(true);
+    process.env.PAPERCLIP_PUSH_RUN_SUCCEEDED = "true";
+    expect(shouldPushRunStatus("succeeded")).toBe(true);
+  });
+});
+
+describe("buildRunStatusNotification", () => {
+  it("returns null for states that should not push", () => {
+    expect(buildRunStatusNotification({ status: "running", runId: "r1" })).toBeNull();
+    expect(buildRunStatusNotification({ status: "succeeded", runId: "r1" })).toBeNull();
+  });
+
+  it("maps failed/timed_out with distinct titles and deep links", () => {
+    const failed = buildRunStatusNotification({
+      status: "failed",
+      runId: "r1",
+      agentName: "Atlas",
+      issueIdentifier: "TON-2315",
+      issueTitle: "Web Push",
+    });
+    expect(failed?.title).toBe("Agent run failed");
+    expect(failed?.body).toContain("Atlas");
+    expect(failed?.body).toContain("TON-2315");
+    expect(failed?.url).toBe("/issues/TON-2315");
+    expect(failed?.tag).toBe("run:r1");
+
+    const timedOut = buildRunStatusNotification({ status: "timed_out", runId: "r2" });
+    expect(timedOut?.title).toBe("Agent run timed out");
+    expect(timedOut?.body).toContain("timed out");
+    expect(timedOut?.body).toContain("An agent");
+  });
+
+  it("includes a truncated error snippet when present", () => {
+    const long = "x".repeat(300);
+    const payload = buildRunStatusNotification({ status: "failed", runId: "r1", error: long });
+    expect(payload?.body).toContain("xxx");
+    // 140-char cap on the snippet keeps the notification body short.
+    expect(payload?.body.length ?? 0).toBeLessThan(220);
+  });
+
+  it("falls back through identifier -> issueId -> /runs for the deep link", () => {
+    expect(buildRunStatusNotification({ status: "failed", runId: "r", issueIdentifier: "TON-9" })?.url).toBe(
+      "/issues/TON-9",
+    );
+    expect(buildRunStatusNotification({ status: "failed", runId: "r", issueId: "uuid-1" })?.url).toBe(
+      "/issues/uuid-1",
+    );
+    expect(buildRunStatusNotification({ status: "failed", runId: "r" })?.url).toBe("/runs");
+  });
+
+  it("renders succeeded when opt-in is enabled", () => {
+    process.env.PAPERCLIP_PUSH_RUN_SUCCEEDED = "1";
+    const payload = buildRunStatusNotification({ status: "succeeded", runId: "r1", agentName: "CTO" });
+    expect(payload?.title).toBe("Agent run finished");
+    expect(payload?.body).toContain("CTO");
+    delete process.env.PAPERCLIP_PUSH_RUN_SUCCEEDED;
   });
 });
 
