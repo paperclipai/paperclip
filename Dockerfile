@@ -126,7 +126,13 @@ ARG CCROTATE_REF=7cf84fccd07dd3bc8b11845cb0630ae825a008f9
 # agents with an external bundle can read $AGENT_HOME/{HEARTBEAT,SOUL,TOOLS}.md
 # + skills/*.md instead of 100%-failing with File-not-found.
 ARG CLAUDE_K8S_REF=1d6a08f7c814208caa3bf2333dd7c35ca50b95ae
-ARG OPENCODE_K8S_REF=168688e48a4c00541c5f509304b74c5d37c10323
+# Re-pinned 2026-06-14 to kkroo/paperclip-adapter-opencode-k8s master a533d11
+# (was 168688e): BLO-10448 — a transient k8s status-read error during the
+# completion poll was mislabeled as a deadline, surfacing as the bogus
+# "Timed out after 0s" and discarding finished (exit 0) runs (dropped PR
+# reviews on the Ally path). PR kkroo/paperclip-adapter-opencode-k8s#23;
+# also picks up #22 (BLO-10315 shared-docs symlink, already merged upstream).
+ARG OPENCODE_K8S_REF=a533d110596d69fa9b9adcc8ad81f49f98fbc8e2
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest
