@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   PluginSlotMount,
   _collectRegisterableExportNamesForTests,
-  _resetPluginModuleLoader,
   registerPluginWebComponent,
+  resetPluginModuleLoader,
   type ResolvedPluginSlot,
 } from "./slots";
 
@@ -21,7 +21,7 @@ afterEach(() => {
     });
   }
   roots = [];
-  _resetPluginModuleLoader();
+  resetPluginModuleLoader();
 });
 
 describe("plugin slot export registration", () => {
