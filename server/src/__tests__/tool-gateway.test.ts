@@ -1326,6 +1326,126 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     }
   });
 
+  it("requires re-review when an approved connected MCP replay credential latest version changed", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const originalCredential = `approved-replay-token-${randomUUID()}`;
+    const rotatedCredential = `rotated-replay-token-${randomUUID()}`;
+    const secret = await secretService(db).create(company.id, {
+      name: `Approved replay MCP token ${randomUUID()}`,
+      key: `approved_replay_mcp_token_${randomUUID().replace(/-/g, "")}`,
+      provider: "local_encrypted",
+      value: originalCredential,
+    });
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => {
+      expect(fakeRequest.headers.authorization).toBe(`Bearer ${originalCredential}`);
+      return {
+        body: {
+          jsonrpc: "2.0",
+          id: fakeRequest.body?.id,
+          result: {
+            content: [{ type: "text", text: "should not run after credential drift" }],
+          },
+        },
+      };
+    });
+
+    try {
+      const remoteTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "approval-credential-drift-app",
+        toolName: "kv_set",
+        url: fake.url,
+        credentialRefs: [{
+          name: "authorization",
+          secretId: secret.id,
+          version: "latest",
+          placement: "header",
+          key: "Authorization",
+          prefix: "Bearer ",
+        }],
+        credentialSecretRefs: [{
+          secretId: secret.id,
+          versionSelector: "latest",
+          configPath: "credentials.authorization",
+          required: true,
+          label: "Remote MCP token",
+        }],
+      });
+      const remoteToolName = expectedConnectedToolName({
+        applicationKey: remoteTool.application.applicationKey,
+        connectionId: remoteTool.connection.id,
+        toolName: remoteTool.catalogEntry.toolName,
+      });
+      await allowToolsForAgent(db, company.id, agent.id, [remoteToolName]);
+      await db.insert(toolPolicies).values({
+        companyId: company.id,
+        name: "Review credential driftable connected writes",
+        policyType: "require_approval",
+        selectors: { connectionId: remoteTool.connection.id },
+        priority: 10,
+      });
+
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: remoteToolName,
+        parameters: { key: "approved", value: "original" },
+      }).then(
+        () => {
+          throw new Error("Expected connected MCP call to require approval");
+        },
+        (error) => expectGatewayError(error, 409, "approval_required"),
+      );
+
+      const [actionRequest] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.companyId, company.id));
+      await db
+        .update(issueThreadInteractions)
+        .set({
+          status: "accepted",
+          resolvedByAgentId: agent.id,
+          resolvedAt: new Date(),
+        })
+        .where(eq(issueThreadInteractions.id, actionRequest.interactionId!));
+
+      await secretService(db).rotate(secret.id, { value: rotatedCredential });
+
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: remoteToolName,
+        parameters: { key: "approved", value: "tampered" },
+        approvedActionRequestId: actionRequest.id,
+      }).then(
+        () => {
+          throw new Error("Expected approved connected MCP retry to fail after credential drift");
+        },
+        (error) => expectGatewayError(error, 409, "approved_tool_target_changed"),
+      );
+
+      expect(fake.requests).toHaveLength(0);
+      const [afterReplayAttempt] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.id, actionRequest.id));
+      expect(afterReplayAttempt).toMatchObject({
+        issueId: issue.id,
+        status: "approved",
+      });
+      const persisted = JSON.stringify({
+        actionRequests: await db.select().from(toolActionRequests),
+        callEvents: await db.select().from(toolCallEvents),
+      });
+      expect(persisted).not.toContain(originalCredential);
+      expect(persisted).not.toContain(rotatedCredential);
+    } finally {
+      await fake.close();
+    }
+  });
+
   const remoteFailureCases = [
     {
       name: "HTTP status",

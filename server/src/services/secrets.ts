@@ -653,6 +653,31 @@ export function secretService(db: Db) {
     return (await resolveSecretValueInternal(companyId, secretId, version, context)).value;
   }
 
+  async function resolveSecretVersion(
+    companyId: string,
+    secretId: string,
+    version: number | "latest",
+    context?: SecretConsumerContext,
+  ): Promise<number> {
+    const secret = await getById(secretId);
+    if (!secret) throw notFound("Secret not found");
+    if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
+    const resolvedVersion = version === "latest" ? secret.latestVersion : version;
+    if (secret.status === "deleted") {
+      throw new HttpError(404, "Secret not found", { code: "secret_deleted" });
+    }
+    if (secret.status !== "active") {
+      throw unprocessable("Secret is not active", { code: "secret_inactive" });
+    }
+    await assertBindingContext(companyId, secret.id, context);
+    const versionRow = await getSecretVersion(secret.id, resolvedVersion);
+    if (!versionRow) throw new HttpError(404, "Secret version not found", { code: "version_missing" });
+    if (versionRow.status === "disabled" || versionRow.status === "destroyed" || versionRow.revokedAt) {
+      throw unprocessable("Secret version is not active", { code: "version_inactive" });
+    }
+    return resolvedVersion;
+  }
+
   async function normalizeEnvConfig(
     companyId: string,
     envValue: unknown,
@@ -1579,6 +1604,7 @@ export function secretService(db: Db) {
     getById,
     getByName,
     resolveSecretValue,
+    resolveSecretVersion,
 
     create: async (
       companyId: string,

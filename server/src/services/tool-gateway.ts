@@ -21,7 +21,15 @@ import {
   toolInvocations,
 } from "@paperclipai/db";
 import type { ToolRunContext } from "@paperclipai/plugin-sdk";
-import type { DeploymentExposure, DeploymentMode, ToolAccessDecision, ToolAccessDecisionInput } from "@paperclipai/shared";
+import type {
+  DeploymentExposure,
+  DeploymentMode,
+  McpConnectionCredentialRef,
+  SecretVersionSelector,
+  ToolAccessDecision,
+  ToolAccessDecisionInput,
+  ToolCredentialSecretRef,
+} from "@paperclipai/shared";
 import type { AgentToolDescriptor, PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
 import { secretService } from "./secrets.js";
@@ -259,6 +267,12 @@ function approvalSnapshotsMatch(reviewed: unknown, live: Record<string, unknown>
   if (!reviewedRecord || !live) return false;
   return stableSerialize(reviewedRecord) === stableSerialize(live);
 }
+
+type ConnectedCredentialVersionSnapshot = {
+  refHash: string;
+  versionSelector: string;
+  resolvedVersion: number;
+};
 
 const REDACTED_ARGUMENT_SENTINEL = "***REDACTED***";
 
@@ -841,7 +855,9 @@ export function createToolGatewayService(
   }): Promise<never> {
     const canonicalArguments = canonicalToolArguments(input.parameters);
     const canonicalArgumentsHash = input.argumentsSummary.sha256 ?? "";
-    const approvalSnapshot = await connectedRemoteApprovalSnapshot(input.session, input.tool);
+    const approvalSnapshot = await connectedRemoteApprovalSnapshot(input.session, input.tool, {
+      requireResolvedCredentials: true,
+    });
 
     if (!input.session.issueId) {
       await db
@@ -1345,6 +1361,102 @@ export function createToolGatewayService(
     return headers;
   }
 
+  function credentialVersionRefHash(value: Record<string, unknown>): string {
+    return stableHash(value);
+  }
+
+  async function resolveConnectedCredentialVersion(
+    connection: typeof toolConnections.$inferSelect,
+    input: {
+      secretId: string;
+      versionSelector: SecretVersionSelector | undefined;
+      configPath: string;
+      refHash: string;
+      requireResolved: boolean;
+    },
+  ): Promise<ConnectedCredentialVersionSnapshot> {
+    const versionSelector = input.versionSelector ?? "latest";
+    try {
+      const resolvedVersion = await secrets.resolveSecretVersion(connection.companyId, input.secretId, versionSelector, {
+        consumerType: "tool_connection",
+        consumerId: connection.id,
+        configPath: input.configPath,
+        actorType: "system",
+      });
+      return {
+        refHash: input.refHash,
+        versionSelector: String(versionSelector),
+        resolvedVersion,
+      };
+    } catch {
+      await markRemoteConnectionHealth(connection, "missing_secret", "A configured credential secret could not be resolved.");
+      if (input.requireResolved) {
+        throw new ToolGatewayHttpError(
+          422,
+          "A configured credential secret could not be resolved.",
+          "remote_http_missing_secret",
+          { connectionId: connection.id, credential: input.configPath },
+        );
+      }
+      return {
+        refHash: input.refHash,
+        versionSelector: String(versionSelector),
+        resolvedVersion: -1,
+      };
+    }
+  }
+
+  async function connectedCredentialVersionSnapshots(
+    connection: typeof toolConnections.$inferSelect,
+    options: { requireResolved: boolean },
+  ): Promise<{
+    headerCredentialVersions: ConnectedCredentialVersionSnapshot[];
+    credentialSecretVersions: ConnectedCredentialVersionSnapshot[];
+  }> {
+    const headerCredentialVersions: ConnectedCredentialVersionSnapshot[] = [];
+    const credentialSecretVersions: ConnectedCredentialVersionSnapshot[] = [];
+
+    for (const ref of connection.credentialRefs ?? []) {
+      if (ref.placement !== "header") continue;
+      const typedRef = ref as McpConnectionCredentialRef;
+      const configPath = `credentials.${typedRef.name}`;
+      headerCredentialVersions.push(await resolveConnectedCredentialVersion(connection, {
+        secretId: typedRef.secretId,
+        versionSelector: typedRef.version,
+        configPath,
+        refHash: credentialVersionRefHash({
+          kind: "header",
+          name: typedRef.name,
+          secretId: typedRef.secretId,
+          placement: typedRef.placement,
+          key: typedRef.key,
+          prefix: typedRef.prefix ?? null,
+          configPath,
+        }),
+        requireResolved: options.requireResolved,
+      }));
+    }
+
+    for (const ref of connection.credentialSecretRefs ?? []) {
+      const typedRef = ref as ToolCredentialSecretRef;
+      credentialSecretVersions.push(await resolveConnectedCredentialVersion(connection, {
+        secretId: typedRef.secretId,
+        versionSelector: typedRef.versionSelector,
+        configPath: typedRef.configPath,
+        refHash: credentialVersionRefHash({
+          kind: "secret_ref",
+          secretId: typedRef.secretId,
+          configPath: typedRef.configPath,
+          required: typedRef.required ?? true,
+          label: typedRef.label ?? null,
+        }),
+        requireResolved: options.requireResolved,
+      }));
+    }
+
+    return { headerCredentialVersions, credentialSecretVersions };
+  }
+
   async function resolveConnectedRemoteTool(session: ToolGatewaySession, tool: ToolGatewayDescriptor) {
     if (tool.providerType !== "mcp_remote_http" || !tool.connectionId || !tool.catalogEntryId) {
       throw new ToolGatewayHttpError(404, `Tool "${tool.name}" not found`, "tool_not_found");
@@ -1382,6 +1494,7 @@ export function createToolGatewayService(
   async function connectedRemoteApprovalSnapshot(
     session: ToolGatewaySession,
     tool: ToolGatewayDescriptor,
+    options: { requireResolvedCredentials?: boolean } = {},
   ): Promise<Record<string, unknown> | null> {
     if (tool.providerType !== "mcp_remote_http" || !tool.connectionId || !tool.catalogEntryId) {
       return null;
@@ -1404,6 +1517,9 @@ export function createToolGatewayService(
       ))
       .limit(1);
     if (!row) return null;
+    const credentialVersions = await connectedCredentialVersionSnapshots(row.connection, {
+      requireResolved: options.requireResolvedCredentials === true,
+    });
     return {
       applicationId: row.application.id,
       applicationKey: row.application.applicationKey ?? null,
@@ -1417,6 +1533,8 @@ export function createToolGatewayService(
       connectionTransportConfigHash: stableHash(row.connection.transportConfig ?? {}),
       credentialRefsHash: stableHash(row.connection.credentialRefs ?? []),
       credentialSecretRefsHash: stableHash(row.connection.credentialSecretRefs ?? []),
+      headerCredentialVersions: credentialVersions.headerCredentialVersions,
+      credentialSecretVersions: credentialVersions.credentialSecretVersions,
       catalogEntryId: row.entry.id,
       catalogStatus: row.entry.status,
       catalogEntryKind: row.entry.entryKind,
