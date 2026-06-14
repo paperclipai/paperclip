@@ -2061,6 +2061,19 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         }
         return { runId: randomUUID() };
       },
+      async updateAdapterOverrides(agentId, companyId, overrides) {
+        requireCapability(manifest, capabilitySet, "agents.adapter.write");
+        const cid = requireCompanyId(companyId);
+        const agent = agents.get(agentId);
+        if (!isInCompany(agent, cid)) throw new Error(`Agent not found: ${agentId}`);
+        const updated: Agent = {
+          ...agent!,
+          adapterConfig: overrides === null ? {} : { ...agent!.adapterConfig, ...overrides },
+          updatedAt: new Date(),
+        };
+        agents.set(agentId, updated);
+        return updated;
+      },
       managed: {
         async get(agentKey, companyId) {
           requireCapability(manifest, capabilitySet, "agents.managed");

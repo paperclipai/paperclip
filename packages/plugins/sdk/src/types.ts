@@ -1626,6 +1626,13 @@ export interface PluginAgentsClient {
   resume(agentId: string, companyId: string): Promise<Agent>;
   /** Invoke (wake up) an agent with a prompt payload. Throws if paused, terminated, pending_approval, or not found. Requires `agents.invoke`. */
   invoke(agentId: string, companyId: string, opts: { prompt: string; reason?: string }): Promise<{ runId: string }>;
+  /**
+   * Set or clear a company agent's adapter override. The override is overlaid on
+   * the agent's base adapter config (e.g. to repoint traffic at a different
+   * endpoint); passing `null` clears it and restores the prior adapter (rollback).
+   * Throws if the agent is not found or not owned by the company. Requires `agents.adapter.write`.
+   */
+  updateAdapterOverrides(agentId: string, companyId: string, overrides: Record<string, unknown> | null): Promise<Agent>;
   /** Resolve and reconcile manifest-declared plugin-managed agents by stable key. Requires `agents.managed`. */
   managed: {
     get(agentKey: string, companyId: string): Promise<PluginManagedAgentResolution>;

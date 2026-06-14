@@ -1352,6 +1352,10 @@ export interface WorkerToHostMethods {
     params: { agentId: string; companyId: string; prompt: string; reason?: string },
     result: { runId: string },
   ];
+  "agents.updateAdapterOverrides": [
+    params: { agentId: string; companyId: string; overrides: Record<string, unknown> | null },
+    result: Agent,
+  ];
   "agents.managed.get": [
     params: { agentKey: string; companyId: string },
     result: PluginManagedAgentResolution,

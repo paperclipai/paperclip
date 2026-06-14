@@ -833,6 +833,7 @@ export const PLUGIN_CAPABILITIES = [
   "agents.pause",
   "agents.resume",
   "agents.invoke",
+  "agents.adapter.write",
   "agents.managed",
   "access.members.write",
   "access.invites.write",

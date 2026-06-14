@@ -267,3 +267,77 @@ describe("createHostClientHandlers invocation company scope", () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 });
+
+describe("agents.updateAdapterOverrides (optional, capability-gated host method)", () => {
+  const PARAMS = {
+    agentId: "agent-1",
+    companyId: "company-a",
+    overrides: { endpoint: "https://api.penstock.run" } as Record<string, unknown>,
+  };
+
+  it("denies the call without the agents.adapter.write capability", async () => {
+    const updateAdapterOverrides = vi.fn(async () => ({}) as never);
+    const services = {
+      agents: { updateAdapterOverrides },
+    } as unknown as HostServices;
+
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: [],
+      services,
+    });
+
+    await expect(handlers["agents.updateAdapterOverrides"](PARAMS)).rejects.toBeInstanceOf(
+      CapabilityDeniedError,
+    );
+    expect(updateAdapterOverrides).not.toHaveBeenCalled();
+  });
+
+  it("delegates to the host when the capability is granted and the host implements it", async () => {
+    const updated = { id: "agent-1", companyId: "company-a", adapterConfig: PARAMS.overrides };
+    const updateAdapterOverrides = vi.fn(async () => updated as never);
+    const services = {
+      agents: { updateAdapterOverrides },
+    } as unknown as HostServices;
+
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["agents.adapter.write"],
+      services,
+    });
+
+    await expect(handlers["agents.updateAdapterOverrides"](PARAMS)).resolves.toBe(updated);
+    expect(updateAdapterOverrides).toHaveBeenCalledWith(PARAMS);
+  });
+
+  it("forwards a null override (rollback) unchanged", async () => {
+    const updateAdapterOverrides = vi.fn(async () => ({ id: "agent-1", adapterConfig: {} }) as never);
+    const services = {
+      agents: { updateAdapterOverrides },
+    } as unknown as HostServices;
+
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["agents.adapter.write"],
+      services,
+    });
+
+    const clearParams = { agentId: "agent-1", companyId: "company-a", overrides: null };
+    await handlers["agents.updateAdapterOverrides"](clearParams);
+    expect(updateAdapterOverrides).toHaveBeenCalledWith(clearParams);
+  });
+
+  it("throws not-implemented when a capable host has not wired the optional method", async () => {
+    const services = { agents: {} } as unknown as HostServices;
+
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["agents.adapter.write"],
+      services,
+    });
+
+    await expect(handlers["agents.updateAdapterOverrides"](PARAMS)).rejects.toThrow(
+      /does not implement agents\.updateAdapterOverrides/,
+    );
+  });
+});

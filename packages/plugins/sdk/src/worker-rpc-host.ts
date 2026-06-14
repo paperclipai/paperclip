@@ -1136,6 +1136,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           return callHost("agents.invoke", { agentId, companyId, prompt: opts.prompt, reason: opts.reason });
         },
 
+        async updateAdapterOverrides(
+          agentId: string,
+          companyId: string,
+          overrides: Record<string, unknown> | null,
+        ) {
+          return callHost("agents.updateAdapterOverrides", { agentId, companyId, overrides });
+        },
+
         managed: {
           async get(agentKey: string, companyId: string) {
             return callHost("agents.managed.get", { agentKey, companyId });
