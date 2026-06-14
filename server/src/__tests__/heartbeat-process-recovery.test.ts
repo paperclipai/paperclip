@@ -1450,6 +1450,75 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
   });
 
+  it("schedules a bounded retry for a pr_review run whose external Job vanished (job_missing, BLO-10448)", async () => {
+    const stale = new Date(Date.now() - 16 * 60 * 1000);
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "claude_k8s",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: stale,
+      contextSnapshot: {
+        reviewKind: "pr_review",
+        taskKey: "pr_review:Blockcast/Network-Operator-Portal:411",
+        wakeReason: "github_pr_ready_for_review",
+      },
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
+    mockListAgentJobRunStatuses.mockResolvedValueOnce(new Map());
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("job_missing");
+    // BLO-10448: the vanished-Job reconciler now consults the same automatic
+    // retry decision as the adapter -> liveness path, so the dropped pr_review
+    // is re-queued. scheduleBoundedRetryForRun inserts a fresh child run
+    // (status scheduled_retry, retryOfRunId = the failed run) rather than
+    // mutating the original — that child is the re-dispatch.
+    const retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun).not.toBeNull();
+    expect(retryRun?.status).toBe("scheduled_retry");
+    expect(retryRun?.scheduledRetryAttempt).toBe(1);
+  });
+
+  it("does NOT retry a non-pr_review run whose external Job vanished (BLO-10448 leak guard)", async () => {
+    const stale = new Date(Date.now() - 16 * 60 * 1000);
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "claude_k8s",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: stale,
+      contextSnapshot: { wakeReason: "issue_assigned" },
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
+    mockListAgentJobRunStatuses.mockResolvedValueOnce(new Map());
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("job_missing");
+    // Non-pr / non-retryable terminal codes stay terminal (BLO-7913 leak guard):
+    // no scheduled_retry child run is created.
+    const retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun).toBeNull();
+  });
+
   it("reaps external-lifecycle runs whose Job has gone silent past the staleness window", async () => {
     // 16 min ago — past the 15-min EXTERNAL_LIFECYCLE_STALE_MS threshold.
     const stale = new Date(Date.now() - 16 * 60 * 1000);

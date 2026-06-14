@@ -9122,6 +9122,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!finalizedRun) return true;
 
     finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, resultJson) ?? finalizedRun;
+
+    // BLO-10448: job_missing (and any other automatically-retryable terminal
+    // errorCode) is stamped here, in the vanished-Job reconciler — NOT on the
+    // adapter -> liveness path that consults shouldScheduleAutomaticRunRetry at
+    // the end of evaluateRunLiveness. Without consulting it here too, a pr_review
+    // run whose external-lifecycle Job vanished before completion was finalized
+    // terminal with no retry, silently dropping the review (observed on the Ally
+    // reviewer path). Mirror the liveness retry decision so the bounded re-queue
+    // fires for these reconciler-finalized failures as well. Non-pr / non-retryable
+    // codes return false from the predicate and stay terminal (BLO-7913 leak guard).
+    if (terminalOutcome.status === "failed" && shouldScheduleAutomaticRunRetry(finalizedRun)) {
+      const retryAgent = await getAgent(finalizedRun.agentId);
+      if (retryAgent) {
+        await scheduleBoundedRetryForRun(
+          finalizedRun,
+          retryAgent,
+          resolveAutomaticRunRetryOpts(finalizedRun),
+        );
+        finalizedRun = (await getRun(finalizedRun.id)) ?? finalizedRun;
+      }
+    }
+
     await releaseEnvironmentLeasesForRun({
       runId: finalizedRun.id,
       companyId: finalizedRun.companyId,
