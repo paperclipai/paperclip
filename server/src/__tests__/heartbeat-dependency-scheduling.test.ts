@@ -240,18 +240,24 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         .then((rows) => rows[0] ?? null);
       return Boolean(
         wakeup &&
-        wakeup.status === "skipped" &&
+        wakeup.status === "scheduled" &&
         wakeup.reason === "issue_dependencies_blocked",
       );
     });
     expect(blockedWakeRequest).toBe(true);
 
-    const blockedRunsBeforeResolution = await db
-      .select({ count: sql<number>`count(*)::int` })
+    const blockedRetryBeforeResolution = await db
+      .select({
+        status: heartbeatRuns.status,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      })
       .from(heartbeatRuns)
       .where(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${blockedIssueId}`)
-      .then((rows) => rows[0]?.count ?? 0);
-    expect(blockedRunsBeforeResolution).toBe(0);
+      .then((rows) => rows[0] ?? null);
+    expect(blockedRetryBeforeResolution).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryReason: DEP_BLOCKED_RETRY_REASON,
+    });
 
     const interactionWake = await heartbeat.wakeup(agentId, {
       source: "automation",
