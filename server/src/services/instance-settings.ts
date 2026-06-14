@@ -8,6 +8,9 @@ import {
   type InstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
   type InstanceExperimentalSettings,
+  instanceGuardsConfigSchema,
+  type InstanceGuardsConfig,
+  type PatchInstanceGuardsConfig,
   type PatchInstanceGeneralSettings,
   type InstanceSettings,
   type PatchInstanceExperimentalSettings,
@@ -17,6 +20,13 @@ import { eq } from "drizzle-orm";
 const DEFAULT_SINGLETON_KEY = "default";
 const instanceGeneralSettingsStorageSchema = instanceGeneralSettingsSchema.strip();
 const instanceExperimentalSettingsStorageSchema = instanceExperimentalSettingsSchema.strip();
+const instanceGuardsConfigStorageSchema = instanceGuardsConfigSchema;
+
+export function normalizeGuardsConfig(raw: unknown): InstanceGuardsConfig {
+  const parsed = instanceGuardsConfigStorageSchema.safeParse(raw ?? {});
+  if (parsed.success) return parsed.data;
+  return instanceGuardsConfigStorageSchema.parse({});
+}
 
 function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
   const parsed = instanceGeneralSettingsStorageSchema.safeParse(raw ?? {});
@@ -75,6 +85,7 @@ function toInstanceSettings(row: typeof instanceSettings.$inferSelect): Instance
     id: row.id,
     general: normalizeGeneralSettings(row.general),
     experimental: normalizeExperimentalSettings(row.experimental),
+    guards: normalizeGuardsConfig(row.guards),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -163,6 +174,30 @@ export function instanceSettingsService(db: Db) {
           experimental: { ...nextExperimental },
           updatedAt: now,
         })
+        .where(eq(instanceSettings.id, current.id))
+        .returning();
+      return toInstanceSettings(updated ?? current);
+    },
+
+    getGuards: async (): Promise<InstanceGuardsConfig> => {
+      const row = await getOrCreateRow();
+      return normalizeGuardsConfig(row.guards);
+    },
+
+    updateGuards: async (patch: PatchInstanceGuardsConfig): Promise<InstanceSettings> => {
+      const current = await getOrCreateRow();
+      const currentGuards = normalizeGuardsConfig(current.guards);
+      const nextGuards = normalizeGuardsConfig({
+        ...currentGuards,
+        ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+        ...(patch.budget !== undefined ? { budget: { ...currentGuards.budget, ...patch.budget } } : {}),
+        ...(patch.perRun !== undefined ? { perRun: { ...currentGuards.perRun, ...patch.perRun } } : {}),
+        ...(patch.breaker !== undefined ? { breaker: { ...currentGuards.breaker, ...patch.breaker } } : {}),
+      });
+      const now = new Date();
+      const [updated] = await db
+        .update(instanceSettings)
+        .set({ guards: { ...nextGuards }, updatedAt: now })
         .where(eq(instanceSettings.id, current.id))
         .returning();
       return toInstanceSettings(updated ?? current);

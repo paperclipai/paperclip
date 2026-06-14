@@ -31,6 +31,7 @@ export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
+export { runBreakerService, type BreakerTrip } from "./run-breaker.js";
 export { secretService } from "./secrets.js";
 export { gitOpsService, type GitOpsService } from "./git-ops.js";
 export { routineService } from "./routines.js";

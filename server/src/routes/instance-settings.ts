@@ -4,6 +4,7 @@ import {
   issueGraphLivenessAutoRecoveryRequestSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceGeneralSettingsSchema,
+  patchInstanceGuardsConfigSchema,
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
@@ -96,6 +97,41 @@ export function instanceSettingsRoutes(db: Db) {
         ),
       );
       res.json(updated.experimental);
+    },
+  );
+
+  router.get("/instance/settings/guards", async (req, res) => {
+    assertBoardOrgAccess(req);
+    res.json(await svc.getGuards());
+  });
+
+  router.patch(
+    "/instance/settings/guards",
+    validate(patchInstanceGuardsConfigSchema),
+    async (req, res) => {
+      assertCanManageInstanceSettings(req);
+      const updated = await svc.updateGuards(req.body);
+      const actor = getActorInfo(req);
+      const companyIds = await svc.listCompanyIds();
+      await Promise.all(
+        companyIds.map((companyId) =>
+          logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "instance.settings.guards_updated",
+            entityType: "instance_settings",
+            entityId: updated.id,
+            details: {
+              guards: updated.guards,
+              changedKeys: Object.keys(req.body).sort(),
+            },
+          }),
+        ),
+      );
+      res.json(updated.guards);
     },
   );
 

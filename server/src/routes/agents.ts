@@ -2361,6 +2361,22 @@ export function agentRoutes(
         actor.actorType === "user" ? actor.actorId : null,
       );
     }
+    const guards = await instanceSettings.getGuards();
+    if (guards.enabled && guards.budget.agentMonthlyTokens > 0) {
+      await budgets.upsertPolicy(
+        companyId,
+        {
+          scopeType: "agent",
+          scopeId: agent.id,
+          metric: guards.budget.metric,
+          amount: guards.budget.agentMonthlyTokens,
+          windowKind: guards.budget.windowKind,
+          warnPercent: guards.budget.warnPercent,
+          hardStopEnabled: guards.budget.hardStop,
+        },
+        actor.actorType === "user" ? actor.actorId : null,
+      );
+    }
 
     res.status(201).json(agent);
   });

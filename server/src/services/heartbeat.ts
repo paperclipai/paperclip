@@ -135,6 +135,7 @@ import {
   assertRunWorkspaceIsolation,
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { runBreakerService } from "./run-breaker.js";
 import {
   RECOVERY_ORIGIN_KINDS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
@@ -3015,6 +3016,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+  const runBreaker = runBreakerService(db);
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
@@ -8079,6 +8081,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       modelProfile: modelProfileApplication,
       issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
     });
+    // G3: clamp maxTurnsPerRun to the platform guard floor so any agent
+    // configured above it (including the portability default of 1000) is
+    // bounded. Agents explicitly set *below* the floor keep their tighter cap.
+    const platformGuards = await instanceSettings.getGuards();
+    if (platformGuards.enabled && platformGuards.perRun.maxTurnsPerRun > 0) {
+      const agentTurns = typeof mergedConfig.maxTurnsPerRun === "number" && mergedConfig.maxTurnsPerRun > 0
+        ? mergedConfig.maxTurnsPerRun
+        : Infinity;
+      mergedConfig.maxTurnsPerRun = Math.min(agentTurns, platformGuards.perRun.maxTurnsPerRun);
+    }
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
     const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
@@ -9044,25 +9056,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
         if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
-          const policy = parseMaxTurnContinuationPolicy(agent);
-          if (policy.enabled && policy.maxAttempts > 0) {
-            await scheduleBoundedRetryForRun(livenessRun, agent, {
-              retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
-              wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
-              maxAttempts: policy.maxAttempts,
-              delayMs: policy.delayMs,
-            });
-          } else {
+          // G3: if this run exceeded the per-run token ceiling, block the
+          // continuation so the loop cannot spin through multiple max-turn
+          // retries eating the full budget each time.
+          const runTotalTokens = (normalizedUsage?.inputTokens ?? 0)
+            + (normalizedUsage?.cachedInputTokens ?? 0)
+            + (normalizedUsage?.outputTokens ?? 0);
+          const perRunGuards = platformGuards.enabled && platformGuards.perRun.maxTokensPerRun > 0;
+          if (perRunGuards && runTotalTokens > platformGuards.perRun.maxTokensPerRun) {
             await appendRunEvent(livenessRun, await nextRunEventSeq(livenessRun.id), {
               eventType: "lifecycle",
               stream: "system",
               level: "warn",
-              message: "Max-turn continuation suppressed because the policy is disabled",
+              message: `Max-turn continuation suppressed: run used ${runTotalTokens} tokens, exceeding per-run ceiling of ${platformGuards.perRun.maxTokensPerRun}`,
               payload: {
-                retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
-                policy,
+                runTotalTokens,
+                maxTokensPerRun: platformGuards.perRun.maxTokensPerRun,
               },
             });
+          } else {
+            const policy = parseMaxTurnContinuationPolicy(agent);
+            if (policy.enabled && policy.maxAttempts > 0) {
+              await scheduleBoundedRetryForRun(livenessRun, agent, {
+                retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+                wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+                maxAttempts: policy.maxAttempts,
+                delayMs: policy.delayMs,
+              });
+            } else {
+              await appendRunEvent(livenessRun, await nextRunEventSeq(livenessRun.id), {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "warn",
+                message: "Max-turn continuation suppressed because the policy is disabled",
+                payload: {
+                  retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+                  policy,
+                },
+              });
+            }
           }
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
@@ -9916,6 +9948,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         scopeType: budgetBlock.scopeType,
         scopeId: budgetBlock.scopeId,
       });
+    }
+
+    const guards = await instanceSettings.getGuards();
+    const breakerTrip = await runBreaker.evaluate(agent.companyId, agentId, issueId, guards);
+    if (breakerTrip) {
+      await writeSkippedRequest("breaker.tripped", { error: breakerTrip.detail });
+      await runBreaker.trip(agent.companyId, agentId, breakerTrip);
+      throw conflict(breakerTrip.detail, { reason: breakerTrip.reason });
     }
 
     const invokability = await getAgentInvokability(agent);

@@ -26,6 +26,7 @@ import {
   companyPortabilityService,
   companyService,
   feedbackService,
+  instanceSettingsService,
   logActivity,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
@@ -331,6 +332,22 @@ export function companyRoutes(db: Db, storage?: StorageService) {
           scopeId: company.id,
           amount: company.budgetMonthlyCents,
           windowKind: "calendar_month_utc",
+        },
+        req.actor.userId ?? "board",
+      );
+    }
+    const guards = await instanceSettingsService(db).getGuards();
+    if (guards.enabled && guards.budget.companyMonthlyTokens > 0) {
+      await budgets.upsertPolicy(
+        company.id,
+        {
+          scopeType: "company",
+          scopeId: company.id,
+          metric: guards.budget.metric,
+          amount: guards.budget.companyMonthlyTokens,
+          windowKind: guards.budget.windowKind,
+          warnPercent: guards.budget.warnPercent,
+          hardStopEnabled: guards.budget.hardStop,
         },
         req.actor.userId ?? "board",
       );
