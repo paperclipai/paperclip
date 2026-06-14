@@ -9,7 +9,7 @@ const ALLOWLIST: RegExp[] = [
 ];
 
 // Stage 1 — hard blocks (always reject)
-const PEM_PRIVATE_KEY = /-----BEGIN (?:RSA |EC |OPENSSH |PGP |DSA )?PRIVATE KEY-----/;
+const PEM_PRIVATE_KEY = /-----BEGIN (?:RSA |EC |OPENSSH |PGP |DSA |ENCRYPTED )?PRIVATE KEY-----/;
 const KNOWN_TOKENS: { name: string; re: RegExp }[] = [
   { name: "openrouter", re: /sk-or-v1-[a-f0-9]{64}/ },
   { name: "github_pat_classic", re: /ghp_[A-Za-z0-9]{36}/ },

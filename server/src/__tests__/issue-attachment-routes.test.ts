@@ -708,6 +708,17 @@ describe("issue attachment secret-scan (ANT-2506)", () => {
     expect(storage.__calls.putFile).toBeUndefined();
   });
 
+  it("rejects a PKCS#8 encrypted private key (ENCRYPTED PRIVATE KEY header) with 422 (ANT-2658)", async () => {
+    // Regression test for ANT-2506 FINDING-1: ENCRYPTED prefix was missing from PEM regex.
+    // PKCS#8 password-protected keys still contain key material and must be blocked.
+    const pem = "-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIFHDBOBgkqhkiG9w0BBQ0wMTAbBgkq\n-----END ENCRYPTED PRIVATE KEY-----\n";
+    const { res, storage } = await uploadFile("text/plain", "encrypted.pem", Buffer.from(pem, "utf8"));
+    expect(res.status).toBe(422);
+    expect(res.body.reason).toBeUndefined();
+    expect(res.body.error).toBe("Attachment rejected: possible secret detected");
+    expect(storage.__calls.putFile).toBeUndefined();
+  });
+
   it("rejects a file containing a GitHub PAT (known token) with 422", async () => {
     const body = `deploy notes\nGITHUB_TOKEN=ghp_${"a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"}\n`;
     const { res, storage } = await uploadFile("text/plain", "notes.txt", Buffer.from(body, "utf8"));
