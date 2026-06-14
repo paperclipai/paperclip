@@ -10913,6 +10913,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
 
+        if (
+          blockedInteractionWake &&
+          activeExecutionRun?.status === "scheduled_retry" &&
+          activeExecutionRun.scheduledRetryReason === DEP_BLOCKED_RETRY_REASON
+        ) {
+          // Keep the dependency retry parked, but do not let it absorb a
+          // verified human interaction wake. The interaction should run in its
+          // bounded mode even while the dependency remains unresolved.
+          activeExecutionRun = null;
+        }
+
         if (!activeExecutionRun && dependencyReadiness && !dependencyReadiness.isDependencyReady && !blockedInteractionWake) {
           const now = new Date();
           const scheduledRetryAt = new Date(now.getTime() + DEP_BLOCKED_BASE_DELAY_MS);
