@@ -10914,6 +10914,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
 
         if (
+          activeExecutionRun?.status === "scheduled_retry" &&
+          activeExecutionRun.scheduledRetryReason === DEP_BLOCKED_RETRY_REASON &&
+          dependencyReadiness?.isDependencyReady
+        ) {
+          const now = new Date();
+          const cancelled = await tx
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: "Cancelled because dependency blockers resolved before the scheduled retry became due",
+              errorCode: "dep_blockers_resolved",
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(heartbeatRuns.id, activeExecutionRun.id),
+                eq(heartbeatRuns.status, "scheduled_retry"),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (cancelled) {
+            if (activeExecutionRun.wakeupRequestId) {
+              await tx
+                .update(agentWakeupRequests)
+                .set({
+                  status: "cancelled",
+                  finishedAt: now,
+                  error: "Cancelled because dependency blockers resolved",
+                  updatedAt: now,
+                })
+                .where(eq(agentWakeupRequests.id, activeExecutionRun.wakeupRequestId));
+            }
+            await tx
+              .update(issues)
+              .set({
+                executionRunId: null,
+                executionAgentNameKey: null,
+                executionLockedAt: null,
+                updatedAt: now,
+              })
+              .where(
+                and(
+                  eq(issues.id, issue.id),
+                  eq(issues.executionRunId, activeExecutionRun.id),
+                ),
+              );
+            activeExecutionRun = null;
+          }
+        }
+
+        if (
           blockedInteractionWake &&
           activeExecutionRun?.status === "scheduled_retry" &&
           activeExecutionRun.scheduledRetryReason === DEP_BLOCKED_RETRY_REASON
