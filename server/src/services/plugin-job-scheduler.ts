@@ -55,6 +55,9 @@ const DEFAULT_JOB_TIMEOUT_MS = 5 * 60 * 1_000;
 /** Maximum number of concurrent job executions across all plugins. */
 const DEFAULT_MAX_CONCURRENT_JOBS = 10;
 
+/** Maximum number of job dispatches per scheduler tick (prevents bursts). */
+const MAX_JOB_DISPATCH_PER_TICK = 30;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -276,10 +279,20 @@ export function createPluginJobScheduler(
 
       log.debug({ count: dueJobs.length }, "found due jobs");
 
-      // Dispatch each due job (respecting concurrency limits)
+      // Dispatch each due job (respecting concurrency limits and per-tick quota)
       const dispatches: Promise<void>[] = [];
+      let dispatchedCount = 0;
 
       for (const job of dueJobs) {
+        // Per-tick dispatch quota: stop dispatching once limit reached
+        if (dispatchedCount >= MAX_JOB_DISPATCH_PER_TICK) {
+          log.warn(
+            { dispatchedCount, maxQuota: MAX_JOB_DISPATCH_PER_TICK },
+            "plugin job scheduler dispatch quota exhausted",
+          );
+          break;
+        }
+
         // Concurrency limit
         if (activeJobs.size >= maxConcurrentJobs) {
           log.warn(
@@ -317,6 +330,7 @@ export function createPluginJobScheduler(
         }
 
         dispatches.push(dispatchJob(job));
+        dispatchedCount += 1;
       }
 
       if (dispatches.length > 0) {

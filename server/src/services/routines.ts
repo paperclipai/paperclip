@@ -66,6 +66,9 @@ const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const MAX_ROUTINE_REVISIONS = 100;
+const MAX_ROUTINE_DISPATCH_PER_TICK = 50;
+const MAX_CATCH_UP_RUNS_PER_TICK = 5;
+const ROUTINE_CREATION_RATE_WINDOW_MS = 5 * 60 * 1000;
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
   Mon: 1,
@@ -175,6 +178,15 @@ export function nextCronTickInTimeZone(expression: string, timeZone: string, aft
     cursor.setUTCMinutes(cursor.getUTCMinutes() + 1);
   }
   return null;
+}
+
+function advanceCronTicksInTimeZone(expression: string, timeZone: string, start: Date, ticks: number) {
+  let cursor: Date | null = start;
+  for (let i = 0; i < ticks; i += 1) {
+    if (!cursor) return null;
+    cursor = nextCronTickInTimeZone(expression, timeZone, cursor);
+  }
+  return cursor;
 }
 
 function nextResultText(status: string, issueId?: string | null) {
@@ -1297,9 +1309,13 @@ export function routineService(
         })
         .returning();
 
-      const nextRunAt = input.trigger?.kind === "schedule" && input.trigger.cronExpression && input.trigger.timezone
-        ? nextCronTickInTimeZone(input.trigger.cronExpression, input.trigger.timezone, triggeredAt)
-        : undefined;
+      const nextRunAt =
+        input.source !== "schedule" &&
+        input.trigger?.kind === "schedule" &&
+        input.trigger.cronExpression &&
+        input.trigger.timezone
+          ? nextCronTickInTimeZone(input.trigger.cronExpression, input.trigger.timezone, triggeredAt)
+          : undefined;
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
@@ -2415,6 +2431,24 @@ export function routineService(
       }));
     },
 
+    getRoutineCreationRateInWindow: async (routineId: string, windowMs = ROUTINE_CREATION_RATE_WINDOW_MS) => {
+      const windowStart = new Date(Date.now() - windowMs);
+      const count = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.originKind, "routine_execution"),
+            eq(issues.originId, routineId),
+            // Only count issues created within the time window
+            sql`${issues.createdAt} >= ${windowStart}`,
+          ),
+        )
+        .then((rows) => rows[0]?.count ?? 0);
+      const parsed = Number(count);
+      return Number.isFinite(parsed) ? parsed : 0;
+    },
+
     tickScheduledTriggers: async (now: Date = new Date()) => {
       const due = await db
         .select({
@@ -2437,8 +2471,15 @@ export function routineService(
         .orderBy(asc(routineTriggers.nextRunAt), asc(routineTriggers.createdAt));
 
       let triggered = 0;
+      let quotaExhausted = false;
       for (const row of due) {
         if (!row.trigger.nextRunAt || !row.trigger.cronExpression || !row.trigger.timezone) continue;
+
+        const remainingDispatchQuota = MAX_ROUTINE_DISPATCH_PER_TICK - triggered;
+        if (remainingDispatchQuota <= 0) {
+          quotaExhausted = true;
+          break;
+        }
 
         // Suppress scheduled firings while the routine's project is paused. The tick is still
         // claimed and advanced to the next single cron tick (no backfill), so resume continues
@@ -2451,12 +2492,23 @@ export function routineService(
 
         if (!projectPaused && row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
           let cursor: Date | null = row.trigger.nextRunAt;
-          runCount = 0;
-          while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
-            runCount += 1;
-            claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, cursor);
-            cursor = claimedNextRunAt;
+          let missedRunCount = 0;
+          while (cursor && cursor <= now && missedRunCount < MAX_CATCH_UP_RUNS) {
+            missedRunCount += 1;
+            cursor = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, cursor);
           }
+          runCount = Math.min(missedRunCount, MAX_CATCH_UP_RUNS_PER_TICK, remainingDispatchQuota);
+          if (runCount <= 0) {
+            continue;
+          }
+          claimedNextRunAt = advanceCronTicksInTimeZone(
+            row.trigger.cronExpression,
+            row.trigger.timezone,
+            row.trigger.nextRunAt,
+            runCount,
+          );
+        } else {
+          runCount = Math.min(runCount, remainingDispatchQuota);
         }
 
         const claimed = await db
@@ -2494,6 +2546,18 @@ export function routineService(
           });
           triggered += 1;
         }
+
+        if (triggered >= MAX_ROUTINE_DISPATCH_PER_TICK) {
+          quotaExhausted = true;
+          break;
+        }
+      }
+
+      if (quotaExhausted) {
+        logger.warn(
+          { triggered, maxQuota: MAX_ROUTINE_DISPATCH_PER_TICK },
+          "routine scheduler tick dispatch quota exhausted",
+        );
       }
 
       return { triggered };

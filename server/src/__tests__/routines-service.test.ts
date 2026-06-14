@@ -190,6 +190,139 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
   }
 
+  it("requeues capped catch-up schedule ticks instead of skipping the remainder", async () => {
+    const { routine, svc } = await seedFixture();
+    await db
+      .update(routines)
+      .set({ catchUpPolicy: "enqueue_missed_with_cap" })
+      .where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "every minute",
+      cronExpression: "* * * * *",
+      timezone: "UTC",
+    }, {});
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: new Date("2026-06-14T10:00:00.000Z") })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    const firstTick = await svc.tickScheduledTriggers(new Date("2026-06-14T10:10:00.000Z"));
+
+    expect(firstTick.triggered).toBe(5);
+    await expect(
+      db.select().from(routineRuns).where(eq(routineRuns.triggerId, trigger.id)),
+    ).resolves.toHaveLength(5);
+    await expect(svc.getTrigger(trigger.id)).resolves.toMatchObject({
+      nextRunAt: new Date("2026-06-14T10:05:00.000Z"),
+    });
+
+    const secondTick = await svc.tickScheduledTriggers(new Date("2026-06-14T10:10:00.000Z"));
+
+    expect(secondTick.triggered).toBe(5);
+    await expect(
+      db.select().from(routineRuns).where(eq(routineRuns.triggerId, trigger.id)),
+    ).resolves.toHaveLength(10);
+    await expect(svc.getTrigger(trigger.id)).resolves.toMatchObject({
+      nextRunAt: new Date("2026-06-14T10:10:00.000Z"),
+    });
+  });
+
+  it("leaves due schedule triggers queued when the per-tick dispatch quota is exhausted", async () => {
+    const { routine, svc } = await seedFixture();
+    const dueAt = new Date("2026-06-14T10:00:00.000Z");
+    await db.insert(routineTriggers).values(
+      Array.from({ length: 51 }, (_, index) => ({
+        id: randomUUID(),
+        companyId: routine.companyId,
+        routineId: routine.id,
+        kind: "schedule",
+        label: `quota ${index}`,
+        enabled: true,
+        cronExpression: "* * * * *",
+        timezone: "UTC",
+        nextRunAt: dueAt,
+        createdAt: new Date(dueAt.getTime() + index),
+        updatedAt: new Date(dueAt.getTime() + index),
+      })),
+    );
+
+    const result = await svc.tickScheduledTriggers(dueAt);
+    const triggerRows = await db
+      .select()
+      .from(routineTriggers)
+      .where(eq(routineTriggers.routineId, routine.id));
+
+    expect(result.triggered).toBe(50);
+    expect(triggerRows.filter((row) => row.nextRunAt?.getTime() === dueAt.getTime())).toHaveLength(1);
+    expect(
+      triggerRows.filter((row) => row.nextRunAt?.getTime() === new Date("2026-06-14T10:01:00.000Z").getTime()),
+    ).toHaveLength(50);
+    await expect(
+      db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id)),
+    ).resolves.toHaveLength(50);
+  });
+
+  it("keeps inner catch-up remainder queued when quota is exhausted mid-trigger", async () => {
+    const { agentId, companyId, projectId, routine, svc } = await seedFixture();
+    const dueAt = new Date("2026-06-14T10:00:00.000Z");
+    await db.insert(routineTriggers).values(
+      Array.from({ length: 49 }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        routineId: routine.id,
+        kind: "schedule",
+        label: `quota primer ${index}`,
+        enabled: true,
+        cronExpression: "* * * * *",
+        timezone: "UTC",
+        nextRunAt: dueAt,
+        createdAt: new Date(dueAt.getTime() + index),
+        updatedAt: new Date(dueAt.getTime() + index),
+      })),
+    );
+    const catchUpRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "catch-up routine",
+        description: null,
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "enqueue_missed_with_cap",
+      },
+      {},
+    );
+    const catchUpTriggerId = randomUUID();
+    await db.insert(routineTriggers).values({
+      id: catchUpTriggerId,
+      companyId,
+      routineId: catchUpRoutine.id,
+      kind: "schedule",
+      label: "catch-up remainder",
+      enabled: true,
+      cronExpression: "* * * * *",
+      timezone: "UTC",
+      nextRunAt: dueAt,
+      createdAt: new Date(dueAt.getTime() + 49),
+      updatedAt: new Date(dueAt.getTime() + 49),
+    });
+
+    const result = await svc.tickScheduledTriggers(new Date("2026-06-14T10:10:00.000Z"));
+
+    expect(result.triggered).toBe(50);
+    await expect(
+      db.select().from(routineRuns).where(eq(routineRuns.triggerId, catchUpTriggerId)),
+    ).resolves.toHaveLength(1);
+    await expect(svc.getTrigger(catchUpTriggerId)).resolves.toMatchObject({
+      nextRunAt: new Date("2026-06-14T10:01:00.000Z"),
+    });
+  });
+
   it("filters listed routines by project", async () => {
     const { companyId, agentId, projectId, routine, svc } = await seedFixture();
     const otherProjectId = randomUUID();
