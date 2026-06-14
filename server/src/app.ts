@@ -364,7 +364,8 @@ export async function createApp(
         express.static(uiDist, {
           maxAge: "1h",
           setHeaders(res, filePath) {
-            if (path.basename(filePath) === "index.html") {
+            const baseName = path.basename(filePath);
+            if (baseName === "index.html" || baseName === "sw.js") {
               res.set("Cache-Control", "no-cache");
             }
           },
