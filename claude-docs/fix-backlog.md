@@ -30,7 +30,7 @@ Shipped this session (branch `pilot/b1-dogfood`), each with a `claude-docs/` ove
 | #6 triage (solo/light/full) | ✅ shipped | `444297cf` | `gate-triage-overview.md` |
 | #3 done-gate dead-end | ✅ shipped (rode #6) | `444297cf` | `gate-triage-overview.md` |
 | #7 G3 per-run ceiling + #10 tests | ✅ shipped **as post-run enforcement** | `c8e243cd` | `per-run-ceiling-overview.md` |
-| #9 W5 targeted gate wake | ⏳ **W5a shipped**; W5b/W5c deferred | `17476dbd` | `targeted-gate-wake-overview.md` |
+| #9 W5 targeted gate wake | ⏳ **W5a + W5b shipped**; W5c pending | `17476dbd`, `fb27162a` | `targeted-gate-wake-overview.md`, `reviewer-wake-in-review-overview.md` |
 | #4 gate-agent instructions | ✅ **shipped** (identity-aware seed) | `cba094b4` | `gate-agent-instructions-overview.md` |
 | #4 backfill existing gate agents | ✅ **shipped** (re-seed script, default-dry) | `768092d8` | `gate-instruction-backfill-overview.md` |
 
@@ -49,9 +49,12 @@ Revised understanding of the **remaining** items (corrected against the code):
   12k chars) and reviewers force-fresh, the marginal value collapsed. The plan's "10×"
   claim conflated the transcript (W3) with the wake payload. Skip unless evidence shows
   review-wake payloads are still fat.
-- **#9 W5b** — reviewer wake on `in_review`. The bulk of the gate-wake value (2 of 3
-  gate types, per-leaf). Needs integration into the issues PATCH-update wake flow.
-- **#9 W5c** — raise default cadence. Only safe after W5b; low marginal value post-W2.
+- **#9 W5b** — ✅ **shipped** (`fb27162a`). Reviewer wake on `in_review` via
+  reviewGateAgentIdsFromApprovals + a becameInReview branch in the issues PATCH
+  wake-batching closure. 2 of 3 gate types now push-woken.
+- **#9 W5c** — raise default cadence (`company-portability.ts:667`, 3600s). Now
+  unblocked (all gates push-woken). Still separate; grep tests for hard-coded 3600
+  before flipping. Low marginal value post-W2, so optional.
 - **#11 CTO self-assign protocol** — eco-system prompt (`teams/agent-team/prompts/`),
   **out of this repo's scope**.
 
