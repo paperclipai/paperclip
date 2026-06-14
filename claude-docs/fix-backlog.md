@@ -33,6 +33,7 @@ Shipped this session (branch `pilot/b1-dogfood`), each with a `claude-docs/` ove
 | #9 W5 targeted gate wake | ✅ **W5a + W5b shipped**; W5c closed (superseded by W2) | `17476dbd`, `fb27162a` | `targeted-gate-wake-overview.md`, `reviewer-wake-in-review-overview.md` |
 | #4 gate-agent instructions | ✅ **shipped** (identity-aware seed) | `cba094b4` | `gate-agent-instructions-overview.md` |
 | #4 backfill existing gate agents | ✅ **shipped** (re-seed script, default-dry) | `768092d8` | `gate-instruction-backfill-overview.md` |
+| auto-provision gate team | ✅ **shipped** (catalog port + defaultInstall) | `8c8bff53`, `25b1e85b` | `gate-team-auto-provision-overview.md` |
 
 Revised understanding of the **remaining** items (corrected against the code):
 
