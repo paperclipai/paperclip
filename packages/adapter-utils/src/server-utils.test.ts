@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   applyPaperclipWorkspaceEnv,
+  applyPaperclipGitIdentityDefaults,
   appendWithByteCap,
   buildPersistentSkillSnapshot,
   buildRuntimeMountedSkillSnapshot,
@@ -64,6 +65,72 @@ describe("buildInvocationEnvForLogs", () => {
     expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(
       "env OPENAI_API_KEY=***REDACTED*** PAPERCLIP_API_KEY='***REDACTED***' custom-acp --paperclip-api-key=***REDACTED*** --token ***REDACTED***",
     );
+  });
+});
+
+describe("applyPaperclipGitIdentityDefaults", () => {
+  it("uses the host global Git identity when no Paperclip identity is configured", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-identity-"));
+    const gitConfigPath = path.join(root, ".gitconfig");
+    const previousGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    try {
+      await fs.writeFile(
+        gitConfigPath,
+        ["[user]", "\tname = Host Git User", "\temail = host@example.test", ""].join("\n"),
+        "utf8",
+      );
+      process.env.GIT_CONFIG_GLOBAL = gitConfigPath;
+      const env: Record<string, string> = {};
+
+      applyPaperclipGitIdentityDefaults(env, {});
+
+      expect(env.GIT_AUTHOR_NAME).toBe("Host Git User");
+      expect(env.GIT_AUTHOR_EMAIL).toBe("host@example.test");
+      expect(env.GIT_COMMITTER_NAME).toBe("Host Git User");
+      expect(env.GIT_COMMITTER_EMAIL).toBe("host@example.test");
+    } finally {
+      if (previousGitConfigGlobal === undefined) {
+        delete process.env.GIT_CONFIG_GLOBAL;
+      } else {
+        process.env.GIT_CONFIG_GLOBAL = previousGitConfigGlobal;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps explicit Paperclip Git identity overrides ahead of host Git defaults", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-identity-"));
+    const gitConfigPath = path.join(root, ".gitconfig");
+    const previousGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    try {
+      await fs.writeFile(
+        gitConfigPath,
+        ["[user]", "\tname = Host Git User", "\temail = host@example.test", ""].join("\n"),
+        "utf8",
+      );
+      process.env.GIT_CONFIG_GLOBAL = gitConfigPath;
+      const env: Record<string, string> = {
+        PAPERCLIP_GIT_COMMITTER_NAME: "Env Committer",
+        PAPERCLIP_GIT_COMMITTER_EMAIL: "committer@example.test",
+      };
+
+      applyPaperclipGitIdentityDefaults(env, {
+        gitAuthorName: "Configured Author",
+        gitAuthorEmail: "author@example.test",
+      });
+
+      expect(env.GIT_AUTHOR_NAME).toBe("Configured Author");
+      expect(env.GIT_AUTHOR_EMAIL).toBe("author@example.test");
+      expect(env.GIT_COMMITTER_NAME).toBe("Env Committer");
+      expect(env.GIT_COMMITTER_EMAIL).toBe("committer@example.test");
+    } finally {
+      if (previousGitConfigGlobal === undefined) {
+        delete process.env.GIT_CONFIG_GLOBAL;
+      } else {
+        process.env.GIT_CONFIG_GLOBAL = previousGitConfigGlobal;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });
 

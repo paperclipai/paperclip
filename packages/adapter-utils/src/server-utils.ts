@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
@@ -259,6 +259,79 @@ export function parseObject(value: unknown): Record<string, unknown> {
 
 export function asString(value: unknown, fallback: string): string {
   return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
+function readHostGitConfigValue(key: string): string | null {
+  try {
+    const value = execFileSync("git", ["config", "--global", "--get", key], {
+      encoding: "utf8",
+      env: process.env,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+function readPaperclipGitIdentityValue(
+  env: Record<string, string>,
+  config: Record<string, unknown>,
+  configKey: string,
+  envKey: string,
+  hostFallback: string | null,
+  fallback: string,
+): string {
+  return (
+    asString(config[configKey], "").trim() ||
+    asString(env[envKey], "").trim() ||
+    asString(process.env[envKey], "").trim() ||
+    hostFallback ||
+    fallback
+  );
+}
+
+export function applyPaperclipGitIdentityDefaults(env: Record<string, string>, config: Record<string, unknown>) {
+  const hostAuthorName = readHostGitConfigValue("user.name");
+  const hostAuthorEmail = readHostGitConfigValue("user.email");
+  const authorName = readPaperclipGitIdentityValue(
+    env,
+    config,
+    "gitAuthorName",
+    "PAPERCLIP_GIT_AUTHOR_NAME",
+    hostAuthorName,
+    "Paperclip Agent",
+  );
+  const authorEmail = readPaperclipGitIdentityValue(
+    env,
+    config,
+    "gitAuthorEmail",
+    "PAPERCLIP_GIT_AUTHOR_EMAIL",
+    hostAuthorEmail,
+    "agent@paperclip.local",
+  );
+  const committerName = readPaperclipGitIdentityValue(
+    env,
+    config,
+    "gitCommitterName",
+    "PAPERCLIP_GIT_COMMITTER_NAME",
+    null,
+    authorName,
+  );
+  const committerEmail = readPaperclipGitIdentityValue(
+    env,
+    config,
+    "gitCommitterEmail",
+    "PAPERCLIP_GIT_COMMITTER_EMAIL",
+    null,
+    authorEmail,
+  );
+
+  if (!env.GIT_AUTHOR_NAME) env.GIT_AUTHOR_NAME = authorName;
+  if (!env.GIT_AUTHOR_EMAIL) env.GIT_AUTHOR_EMAIL = authorEmail;
+  if (!env.GIT_COMMITTER_NAME) env.GIT_COMMITTER_NAME = committerName;
+  if (!env.GIT_COMMITTER_EMAIL) env.GIT_COMMITTER_EMAIL = committerEmail;
 }
 
 export function asNumber(value: unknown, fallback: number): number {
