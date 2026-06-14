@@ -1391,7 +1391,8 @@ describe("heartbeat comment wake batching", () => {
       });
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(secondPayload.paperclip).toMatchObject({
+      expect(secondPayload.paperclip).toBeUndefined();
+      expectStructuredWakePayload(secondPayload.message, {
         wake: {
           reason: "issue_commented",
           commentIds: [selfComment.id, humanComment.id],
