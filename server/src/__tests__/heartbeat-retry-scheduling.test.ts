@@ -16,6 +16,7 @@ import {
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
+  closeDbClient,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import {
@@ -46,6 +47,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   }, 20_000);
 
   afterEach(async () => {
+    // Drain detached executeRun chains before deleting rows so a settling query
+    // never races the truncation / a torn-down socket.
+    await heartbeat?.drain();
     await db.delete(heartbeatRunEvents);
     await db.delete(environmentLeases);
     await db.delete(issueRelations);
@@ -59,6 +63,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   });
 
   afterAll(async () => {
+    await closeDbClient(db);
     await tempDb?.cleanup();
   });
 
