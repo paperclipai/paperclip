@@ -22,7 +22,7 @@ const IDENTITY_ROUTABLE_BUNDLE_ROLES = new Set<DefaultAgentBundleRole>([
   "wiring-expert",
 ]);
 
-function isIdentityRoutableBundleRole(value: string): value is DefaultAgentBundleRole {
+export function isIdentityRoutableBundleRole(value: string): value is DefaultAgentBundleRole {
   return IDENTITY_ROUTABLE_BUNDLE_ROLES.has(value as DefaultAgentBundleRole);
 }
 
