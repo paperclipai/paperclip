@@ -136,22 +136,25 @@ describe("redaction", () => {
     expect(result?.argv).toEqual(["--api-key", REDACTED_EVENT_VALUE]);
   });
 
-  it("redacts _TOKEN-suffixed keys via SECRET_PAYLOAD_KEY_RE — GITHUB_TOKEN key-name regression", () => {
+  it("redacts token-containing keys via SECRET_PAYLOAD_KEY_RE — GITHUB_TOKEN key-name regression", () => {
     // sanitizeRecord uses the key-name regex; env-namespace redaction is a separate path.
-    // This test encodes that GITHUB_TOKEN, MY_API_TOKEN, etc. are redacted by the regex alone.
+    // SECRET_FIELD_NAME_PATTERN matches any key containing a secret keyword (incl. "token"),
+    // so GITHUB_TOKEN, MY_API_TOKEN, TOKEN, TOKENIZER, TOKEN_ENDPOINT are all redacted.
     const result = sanitizeRecord({
       GITHUB_TOKEN: "github_pat_secret",
       MY_API_TOKEN: { type: "plain", value: "plain-val" },
       TOKEN: "bare-token-value",
       TOKENIZER: "safe-value",
       TOKEN_ENDPOINT: "https://example.com/token",
+      SAFE_MODEL: "claude-sonnet-4-6",
     });
 
     expect(result.GITHUB_TOKEN).toBe(REDACTED_EVENT_VALUE);
     expect(result.MY_API_TOKEN).toEqual({ type: "plain", value: REDACTED_EVENT_VALUE });
     expect(result.TOKEN).toBe(REDACTED_EVENT_VALUE);
-    expect(result.TOKENIZER).toBe("safe-value");
-    expect(result.TOKEN_ENDPOINT).toBe("https://example.com/token");
+    expect(result.TOKENIZER).toBe(REDACTED_EVENT_VALUE);
+    expect(result.TOKEN_ENDPOINT).toBe(REDACTED_EVENT_VALUE);
+    expect(result.SAFE_MODEL).toBe("claude-sonnet-4-6");
   });
 });
 
