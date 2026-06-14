@@ -39,6 +39,7 @@ import {
 } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
 import { scheduleMainContentFocus } from "../lib/main-content-focus";
+import { pinDocumentScrollToZero } from "../lib/pin-document-scroll";
 import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
 import { PluginSlotMount, resolveRouteSidebarSlot, usePluginSlots } from "../plugins/slots";
@@ -345,11 +346,16 @@ export function Layout() {
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
     // Phone and tablet use window scroll; desktop uses in-element overflow.
-    document.body.style.overflow = isNarrow ? "visible" : "hidden";
+    document.body.style.overflow = isNarrow ? "visible" : "clip";
 
     return () => {
       document.body.style.overflow = previousOverflow;
     };
+  }, [isNarrow]);
+
+  useEffect(() => {
+    if (isNarrow) return;
+    return pinDocumentScrollToZero();
   }, [isNarrow]);
 
   useEffect(() => {
@@ -393,8 +399,8 @@ export function Layout() {
         className={cn(
           "bg-background text-foreground pt-[env(safe-area-inset-top)]",
           // Narrow (phone+tablet <lg): window-scroll layout, full height
-          // Desktop (≥lg): flex column with overflow-hidden for in-element scroll
-          isNarrow ? "min-h-dvh" : "flex h-dvh flex-col overflow-hidden",
+          // Desktop (>=lg): flex column with overflow-clip for in-element scroll
+          isNarrow ? "min-h-dvh" : "flex h-dvh flex-col overflow-clip",
         )}
       >
         <a
@@ -405,7 +411,7 @@ export function Layout() {
         </a>
         <WorktreeBanner />
         <DevRestartBanner devServer={health?.devServer} />
-        <div className={cn("min-h-0 flex-1", isNarrow ? "w-full" : "flex overflow-hidden")}>
+        <div className={cn("min-h-0 flex-1", isNarrow ? "w-full" : "flex overflow-clip")}>
           {/* ── Off-canvas overlay backdrop (phone + tablet) ── */}
           {isNarrow && sidebarOpen && (
             <button

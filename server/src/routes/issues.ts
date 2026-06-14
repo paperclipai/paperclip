@@ -1567,7 +1567,7 @@ export function issueRoutes(
     }
 
     const result = await svc.list(companyId, {
-      status: req.query.status as string | undefined,
+      status: req.query.status as string | string[] | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId,

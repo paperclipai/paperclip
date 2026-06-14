@@ -205,7 +205,7 @@ export function deriveIssueCommentRunLogAttribution(
 }
 
 export interface IssueFilters {
-  status?: string;
+  status?: string | readonly string[];
   assigneeAgentId?: string;
   participantAgentId?: string;
   assigneeUserId?: string;
@@ -230,6 +230,15 @@ export interface IssueFilters {
   q?: string;
   limit?: number;
   offset?: number;
+}
+
+export function parseStatusFilter(input: string | readonly string[] | undefined): string[] {
+  if (input == null) return [];
+  const entries = Array.isArray(input) ? input : typeof input === "string" ? [input] : [];
+  return entries
+    .flatMap((entry) => (typeof entry === "string" ? entry.split(",") : []))
+    .map((status) => status.trim())
+    .filter(Boolean);
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -2503,9 +2512,11 @@ export function issueService(db: Db) {
           )
         `);
       }
-      if (filters?.status) {
-        const statuses = filters.status.split(",").map((s) => s.trim());
-        conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
+      const statuses = parseStatusFilter(filters?.status);
+      if (statuses.length === 1) {
+        conditions.push(eq(issues.status, statuses[0]));
+      } else if (statuses.length > 1) {
+        conditions.push(inArray(issues.status, statuses));
       }
       if (filters?.assigneeAgentId) {
         conditions.push(eq(issues.assigneeAgentId, filters.assigneeAgentId));
@@ -2690,20 +2701,22 @@ export function issueService(db: Db) {
       });
     },
 
-    countUnreadTouchedByUser: async (companyId: string, userId: string, status?: string) => {
+    countUnreadTouchedByUser: async (
+      companyId: string,
+      userId: string,
+      status?: string | readonly string[],
+    ) => {
       const conditions = [
         eq(issues.companyId, companyId),
         isNull(issues.hiddenAt),
         nonPluginOperationIssueCondition(),
         unreadForUserCondition(companyId, userId),
       ];
-      if (status) {
-        const statuses = status.split(",").map((s) => s.trim()).filter(Boolean);
-        if (statuses.length === 1) {
-          conditions.push(eq(issues.status, statuses[0]));
-        } else if (statuses.length > 1) {
-          conditions.push(inArray(issues.status, statuses));
-        }
+      const statuses = parseStatusFilter(status);
+      if (statuses.length === 1) {
+        conditions.push(eq(issues.status, statuses[0]));
+      } else if (statuses.length > 1) {
+        conditions.push(inArray(issues.status, statuses));
       }
       const [row] = await db
         .select({ count: sql<number>`count(*)` })
