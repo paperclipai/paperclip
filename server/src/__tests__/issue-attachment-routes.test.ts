@@ -692,7 +692,8 @@ describe("issue attachment secret-scan (ANT-2506)", () => {
       Buffer.from(serviceAccountJson, "utf8"),
     );
     expect(res.status).toBe(422);
-    expect(res.body.reason).toBe("service_account_key");
+    expect(res.body.reason).toBeUndefined();
+    expect(res.body.error).toBe("Attachment rejected: possible secret detected");
     expect(res.body.error).not.toContain("private_key");
     expect(storage.__calls.putFile).toBeUndefined();
     expect(mockIssueService.createAttachment).not.toHaveBeenCalled();
@@ -702,7 +703,8 @@ describe("issue attachment secret-scan (ANT-2506)", () => {
     const pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----\n";
     const { res, storage } = await uploadFile("text/plain", "id_rsa", Buffer.from(pem, "utf8"));
     expect(res.status).toBe(422);
-    expect(res.body.reason).toBe("pem_private_key");
+    expect(res.body.reason).toBeUndefined();
+    expect(res.body.error).toBe("Attachment rejected: possible secret detected");
     expect(storage.__calls.putFile).toBeUndefined();
   });
 
@@ -710,7 +712,8 @@ describe("issue attachment secret-scan (ANT-2506)", () => {
     const body = `deploy notes\nGITHUB_TOKEN=ghp_${"a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"}\n`;
     const { res, storage } = await uploadFile("text/plain", "notes.txt", Buffer.from(body, "utf8"));
     expect(res.status).toBe(422);
-    expect(res.body.reason).toBe("known_token:github_pat_classic");
+    expect(res.body.reason).toBeUndefined();
+    expect(res.body.error).toBe("Attachment rejected: possible secret detected");
     expect(storage.__calls.putFile).toBeUndefined();
   });
 
@@ -759,7 +762,8 @@ describe("issue attachment secret-scan (ANT-2506)", () => {
       Buffer.from(serviceAccountJson, "utf8"),
     );
     expect(res.status).toBe(422);
-    expect(res.body.reason).toBe("service_account_key");
+    expect(res.body.reason).toBeUndefined();
+    expect(res.body.error).toBe("Attachment rejected: possible secret detected");
     expect(storage.__calls.putFile).toBeUndefined();
   });
 
