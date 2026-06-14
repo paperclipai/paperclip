@@ -69,13 +69,18 @@ export function signToolArguments(args: {
   invocationId: string;
   toolName: string;
   canonicalArguments: string;
+  approvalSnapshot?: unknown;
   signingSecret?: string;
 }) {
-  const payload = stableSerialize({
+  const payloadValue: Record<string, unknown> = {
     invocationId: args.invocationId,
     toolName: args.toolName,
     canonicalArguments: args.canonicalArguments,
-  });
+  };
+  if (args.approvalSnapshot !== undefined) {
+    payloadValue.approvalSnapshot = args.approvalSnapshot;
+  }
+  const payload = stableSerialize(payloadValue);
   const signature = createHmac("sha256", signingSecret(args.signingSecret)).update(payload).digest("base64url");
   return Buffer.from(JSON.stringify({ version: 1, alg: "HS256", payload, signature }), "utf8").toString("base64url");
 }
@@ -85,6 +90,7 @@ export function verifyToolArgumentsSignature(input: {
   invocationId: string;
   toolName: string;
   canonicalArguments: string;
+  approvalSnapshot?: unknown;
   signingSecret?: string;
 }) {
   if (!input.signedArguments) return false;
@@ -96,11 +102,15 @@ export function verifyToolArgumentsSignature(input: {
   }
   if (parsed.version !== 1 || parsed.alg !== "HS256") return false;
   if (typeof parsed.payload !== "string" || typeof parsed.signature !== "string") return false;
-  const expectedPayload = stableSerialize({
+  const expectedPayloadValue: Record<string, unknown> = {
     invocationId: input.invocationId,
     toolName: input.toolName,
     canonicalArguments: input.canonicalArguments,
-  });
+  };
+  if (input.approvalSnapshot !== undefined) {
+    expectedPayloadValue.approvalSnapshot = input.approvalSnapshot;
+  }
+  const expectedPayload = stableSerialize(expectedPayloadValue);
   if (parsed.payload !== expectedPayload) return false;
   const expected = createHmac("sha256", signingSecret(input.signingSecret)).update(parsed.payload).digest("base64url");
   const left = Buffer.from(parsed.signature);
@@ -108,12 +118,12 @@ export function verifyToolArgumentsSignature(input: {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-export function readSignedToolArguments(input: {
+export function readSignedToolArgumentsPayload(input: {
   signedArguments: string | null | undefined;
   invocationId: string;
   toolName: string;
   signingSecret?: string;
-}) {
+}): { arguments: unknown; approvalSnapshot?: unknown } | null {
   if (!input.signedArguments) return null;
   let parsed: { payload?: unknown };
   try {
@@ -122,7 +132,12 @@ export function readSignedToolArguments(input: {
     return null;
   }
   if (typeof parsed.payload !== "string") return null;
-  let payload: { invocationId?: unknown; toolName?: unknown; canonicalArguments?: unknown };
+  let payload: {
+    invocationId?: unknown;
+    toolName?: unknown;
+    canonicalArguments?: unknown;
+    approvalSnapshot?: unknown;
+  };
   try {
     payload = JSON.parse(parsed.payload);
   } catch {
@@ -135,15 +150,28 @@ export function readSignedToolArguments(input: {
     invocationId: input.invocationId,
     toolName: input.toolName,
     canonicalArguments: payload.canonicalArguments,
+    approvalSnapshot: payload.approvalSnapshot,
     signingSecret: input.signingSecret,
   })) {
     return null;
   }
   try {
-    return JSON.parse(payload.canonicalArguments) as unknown;
+    return {
+      arguments: JSON.parse(payload.canonicalArguments) as unknown,
+      ...(payload.approvalSnapshot !== undefined ? { approvalSnapshot: payload.approvalSnapshot } : {}),
+    };
   } catch {
     return null;
   }
+}
+
+export function readSignedToolArguments(input: {
+  signedArguments: string | null | undefined;
+  invocationId: string;
+  toolName: string;
+  signingSecret?: string;
+}) {
+  return readSignedToolArgumentsPayload(input)?.arguments ?? null;
 }
 
 export function summarizeToolValue(value: unknown) {

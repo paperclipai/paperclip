@@ -1232,6 +1232,100 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     }
   });
 
+  it("requires re-review when an approved connected MCP replay target changed", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => ({
+      body: {
+        jsonrpc: "2.0",
+        id: fakeRequest.body?.id,
+        result: {
+          content: [{ type: "text", text: "should not run after target drift" }],
+        },
+      },
+    }));
+
+    try {
+      const remoteTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "approval-drift-app",
+        toolName: "kv_set",
+        url: fake.url,
+      });
+      const remoteToolName = expectedConnectedToolName({
+        applicationKey: remoteTool.application.applicationKey,
+        connectionId: remoteTool.connection.id,
+        toolName: remoteTool.catalogEntry.toolName,
+      });
+      await allowToolsForAgent(db, company.id, agent.id, [remoteToolName]);
+      await db.insert(toolPolicies).values({
+        companyId: company.id,
+        name: "Review driftable connected writes",
+        policyType: "require_approval",
+        selectors: { connectionId: remoteTool.connection.id },
+        priority: 10,
+      });
+
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: remoteToolName,
+        parameters: { key: "approved", value: "original" },
+      }).then(
+        () => {
+          throw new Error("Expected connected MCP call to require approval");
+        },
+        (error) => expectGatewayError(error, 409, "approval_required"),
+      );
+
+      const [actionRequest] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.companyId, company.id));
+      await db
+        .update(issueThreadInteractions)
+        .set({
+          status: "accepted",
+          resolvedByAgentId: agent.id,
+          resolvedAt: new Date(),
+        })
+        .where(eq(issueThreadInteractions.id, actionRequest.interactionId!));
+
+      await db
+        .update(toolConnections)
+        .set({
+          config: { url: "https://changed.example.invalid/mcp" },
+          updatedAt: new Date(),
+        })
+        .where(eq(toolConnections.id, remoteTool.connection.id));
+
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: remoteToolName,
+        parameters: { key: "approved", value: "tampered" },
+        approvedActionRequestId: actionRequest.id,
+      }).then(
+        () => {
+          throw new Error("Expected approved connected MCP retry to fail after target drift");
+        },
+        (error) => expectGatewayError(error, 409, "approved_tool_target_changed"),
+      );
+
+      expect(fake.requests).toHaveLength(0);
+      const [afterReplayAttempt] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.id, actionRequest.id));
+      expect(afterReplayAttempt).toMatchObject({
+        issueId: issue.id,
+        status: "approved",
+      });
+    } finally {
+      await fake.close();
+    }
+  });
+
   const remoteFailureCases = [
     {
       name: "HTTP status",

@@ -36,7 +36,7 @@ import {
 } from "./tool-runtime-supervisor.js";
 import {
   canonicalToolArguments,
-  readSignedToolArguments,
+  readSignedToolArgumentsPayload,
   signToolArguments,
   summarizeToolValue,
   ToolContentValidationError,
@@ -237,6 +237,27 @@ function toolAuditMetadata(tool: ToolGatewayDescriptor): Record<string, unknown>
     risk: tool.risk,
     riskLevel: tool.risk,
   };
+}
+
+function stableSerialize(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableSerialize).join(",")}]`;
+  return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => `${JSON.stringify(key)}:${stableSerialize((value as Record<string, unknown>)[key])}`).join(",")}}`;
+}
+
+function stableHash(value: unknown): string {
+  return createHash("sha256").update(stableSerialize(value)).digest("hex");
+}
+
+function normalizeSignedApprovalSnapshot(value: unknown): Record<string, unknown> | null {
+  return asRecord(value);
+}
+
+function approvalSnapshotsMatch(reviewed: unknown, live: Record<string, unknown> | null): boolean {
+  const reviewedRecord = normalizeSignedApprovalSnapshot(reviewed);
+  if (!reviewedRecord && !live) return true;
+  if (!reviewedRecord || !live) return false;
+  return stableSerialize(reviewedRecord) === stableSerialize(live);
 }
 
 const REDACTED_ARGUMENT_SENTINEL = "***REDACTED***";
@@ -820,6 +841,7 @@ export function createToolGatewayService(
   }): Promise<never> {
     const canonicalArguments = canonicalToolArguments(input.parameters);
     const canonicalArgumentsHash = input.argumentsSummary.sha256 ?? "";
+    const approvalSnapshot = await connectedRemoteApprovalSnapshot(input.session, input.tool);
 
     if (!input.session.issueId) {
       await db
@@ -875,6 +897,7 @@ export function createToolGatewayService(
       invocationId: input.invocation.id,
       toolName: input.tool.name,
       canonicalArguments,
+      approvalSnapshot: approvalSnapshot ?? undefined,
       signingSecret: options.toolActionSigningSecret,
     });
     // Board-only technical detail for the formal-approval interaction (target=custom).
@@ -1356,6 +1379,56 @@ export function createToolGatewayService(
     return { entry, connection };
   }
 
+  async function connectedRemoteApprovalSnapshot(
+    session: ToolGatewaySession,
+    tool: ToolGatewayDescriptor,
+  ): Promise<Record<string, unknown> | null> {
+    if (tool.providerType !== "mcp_remote_http" || !tool.connectionId || !tool.catalogEntryId) {
+      return null;
+    }
+    const [row] = await db
+      .select({
+        entry: toolCatalogEntries,
+        connection: toolConnections,
+        application: toolApplications,
+      })
+      .from(toolCatalogEntries)
+      .innerJoin(toolConnections, eq(toolCatalogEntries.connectionId, toolConnections.id))
+      .innerJoin(toolApplications, eq(toolConnections.applicationId, toolApplications.id))
+      .where(and(
+        eq(toolCatalogEntries.id, tool.catalogEntryId),
+        eq(toolCatalogEntries.companyId, session.companyId),
+        eq(toolConnections.id, tool.connectionId),
+        eq(toolConnections.companyId, session.companyId),
+        eq(toolApplications.companyId, session.companyId),
+      ))
+      .limit(1);
+    if (!row) return null;
+    return {
+      applicationId: row.application.id,
+      applicationKey: row.application.applicationKey ?? null,
+      applicationStatus: row.application.status,
+      applicationType: row.application.type,
+      connectionId: row.connection.id,
+      connectionStatus: row.connection.status,
+      connectionEnabled: row.connection.enabled,
+      connectionTransport: row.connection.transport,
+      connectionConfigHash: stableHash(row.connection.config ?? {}),
+      connectionTransportConfigHash: stableHash(row.connection.transportConfig ?? {}),
+      credentialRefsHash: stableHash(row.connection.credentialRefs ?? []),
+      credentialSecretRefsHash: stableHash(row.connection.credentialSecretRefs ?? []),
+      catalogEntryId: row.entry.id,
+      catalogStatus: row.entry.status,
+      catalogEntryKind: row.entry.entryKind,
+      catalogVersionHash: row.entry.versionHash,
+      catalogSchemaHash: row.entry.schemaHash ?? null,
+      upstreamToolName: row.entry.toolName,
+      providerType: tool.providerType,
+      gatewayToolName: tool.name,
+      riskLevel: tool.risk,
+    };
+  }
+
   function responseTooLargeError() {
     return new ToolGatewayHttpError(
       502,
@@ -1638,16 +1711,10 @@ export function createToolGatewayService(
         throw new ToolGatewayHttpError(409, "Tool action request is no longer pending", "action_not_pending");
       }
       if (
-        !verifyToolArgumentsSignature({
+        !readSignedToolArgumentsPayload({
           signedArguments: actionRequest.signedArguments,
           invocationId: invocation.id,
           toolName: invocation.toolName,
-          canonicalArguments: canonicalToolArguments(readSignedToolArguments({
-            signedArguments: actionRequest.signedArguments,
-            invocationId: invocation.id,
-            toolName: invocation.toolName,
-            signingSecret: options.toolActionSigningSecret,
-          }) ?? {}),
           signingSecret: options.toolActionSigningSecret,
         })
       ) {
@@ -1759,7 +1826,7 @@ export function createToolGatewayService(
         sensitiveMode: "redact",
         promptInjectionMode: "ignore",
       });
-      let effectiveParameters = requestedParameters;
+      let effectiveParameters: unknown = requestedParameters;
       let effectiveArgumentsSummary = argumentValidation.summary;
 
       if (input.approvedActionRequestId) {
@@ -1870,15 +1937,29 @@ export function createToolGatewayService(
             );
           }
         }
-        const storedParameters = readSignedToolArguments({
+        const signedPayload = readSignedToolArgumentsPayload({
           signedArguments: actionRequest.signedArguments,
           invocationId: storedInvocation.id,
           toolName: storedInvocation.toolName,
           signingSecret: options.toolActionSigningSecret,
         });
-        if (!storedParameters) {
+        if (!signedPayload) {
           throw new ToolGatewayHttpError(409, "Approved tool action arguments signature is invalid", "signed_arguments_invalid");
         }
+        const liveApprovalSnapshot = await connectedRemoteApprovalSnapshot(session, tool);
+        if (!approvalSnapshotsMatch(signedPayload.approvalSnapshot, liveApprovalSnapshot)) {
+          throw new ToolGatewayHttpError(
+            409,
+            "Approved tool action target changed after review",
+            "approved_tool_target_changed",
+            {
+              invocationId: storedInvocation.id,
+              actionRequestId: actionRequest.id,
+              tool: tool.name,
+            },
+          );
+        }
+        const storedParameters = signedPayload.arguments;
         const storedArgumentValidation = validateToolContent({
           value: storedParameters,
           direction: "arguments",
@@ -1893,6 +1974,7 @@ export function createToolGatewayService(
             invocationId: storedInvocation.id,
             toolName: storedInvocation.toolName,
             canonicalArguments: storedCanonical,
+            approvalSnapshot: signedPayload.approvalSnapshot,
             signingSecret: options.toolActionSigningSecret,
           })
         ) {
