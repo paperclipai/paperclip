@@ -3,6 +3,7 @@ import {
   buildRuntimeApiCandidateUrls,
   choosePrimaryRuntimeApiUrl,
   collectReachableInterfaceHosts,
+  resolveRuntimeApiUrl,
 } from "../runtime-api.js";
 
 describe("runtime API discovery", () => {
@@ -143,5 +144,43 @@ describe("runtime API discovery", () => {
       "192.168.6.178",
       "fd7a:115c:a1e0::8a3a:a11d",
     ]);
+  });
+
+  describe("resolveRuntimeApiUrl", () => {
+    it("honors a pre-set runtime API URL over the derived one", () => {
+      expect(
+        resolveRuntimeApiUrl({
+          presetRuntimeApiUrl: "http://127.0.0.1:3100",
+          derivedRuntimeApiUrl: "http://pc.example.com:3100",
+        }),
+      ).toBe("http://127.0.0.1:3100");
+    });
+
+    it("trims a pre-set runtime API URL before honoring it", () => {
+      expect(
+        resolveRuntimeApiUrl({
+          presetRuntimeApiUrl: "  http://127.0.0.1:3100  ",
+          derivedRuntimeApiUrl: "http://pc.example.com:3100",
+        }),
+      ).toBe("http://127.0.0.1:3100");
+    });
+
+    it("falls back to the derived URL when the pre-set value is unset", () => {
+      expect(
+        resolveRuntimeApiUrl({
+          presetRuntimeApiUrl: undefined,
+          derivedRuntimeApiUrl: "http://pc.example.com:3100",
+        }),
+      ).toBe("http://pc.example.com:3100");
+    });
+
+    it("falls back to the derived URL when the pre-set value is blank", () => {
+      expect(
+        resolveRuntimeApiUrl({
+          presetRuntimeApiUrl: "   ",
+          derivedRuntimeApiUrl: "http://pc.example.com:3100",
+        }),
+      ).toBe("http://pc.example.com:3100");
+    });
   });
 });

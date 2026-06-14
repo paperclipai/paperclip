@@ -305,6 +305,12 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     loadConfigMock.mockReturnValue(buildTestConfig());
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;
+    // startServer() writes PAPERCLIP_RUNTIME_API_URL into process.env, and a
+    // pre-set value is now honored as the leading runtime candidate. Clear it
+    // (and the derived candidates) between tests so a prior startServer() call
+    // can't leak a runtime URL that overrides the PAPERCLIP_API_URL under test.
+    delete process.env.PAPERCLIP_RUNTIME_API_URL;
+    delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
   });
 
   afterEach(() => {
@@ -338,6 +344,21 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
       expect.arrayContaining(["http://custom-api:3100"]),
     );
     expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")[0]).toBe("http://custom-api:3100");
+  });
+
+  it("leads the runtime candidates with a pre-set PAPERCLIP_RUNTIME_API_URL", async () => {
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://127.0.0.1:9999";
+    process.env.PAPERCLIP_API_URL = "http://custom-api:3100";
+
+    await startServer();
+
+    // The pinned runtime URL is honored as the primary env var ...
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:9999");
+    // ... and leads the candidates list, so agents iterating candidates don't
+    // fall back onto the public API URL the operator decoupled from.
+    expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")[0]).toBe(
+      "http://127.0.0.1:9999",
+    );
   });
 
   it("falls back to host-based URL when PAPERCLIP_API_URL is not set", async () => {

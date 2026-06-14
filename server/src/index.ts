@@ -49,7 +49,7 @@ import {
   reconcileAdapterAvailability,
 } from "./services/adapter-registry-bootstrap.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
-import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
+import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl, resolveRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
@@ -685,8 +685,19 @@ export async function startServer(): Promise<StartedServer> {
     port: listenPort,
   });
   const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || runtimeApiUrl;
+  // A pre-set PAPERCLIP_RUNTIME_API_URL is the operator's deliberate runtime
+  // callback override (e.g. loopback behind a public tunnel). When present it
+  // wins both as the primary env var and as the leading candidate, so agents
+  // that iterate the candidates don't fall back onto the public hostname the
+  // operator decoupled from. When unset, candidates lead with the configured
+  // API URL exactly as before.
+  const presetRuntimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL?.trim() ?? "";
+  const resolvedRuntimeApiUrl = resolveRuntimeApiUrl({
+    presetRuntimeApiUrl,
+    derivedRuntimeApiUrl: runtimeApiUrl,
+  });
   const runtimeApiCandidates = buildRuntimeApiCandidateUrls({
-    preferredApiUrl: configuredApiUrl,
+    preferredApiUrl: presetRuntimeApiUrl || configuredApiUrl,
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,
     allowedHostnames: config.allowedHostnames,
     bindHost: runtimeListenHost,
@@ -694,7 +705,7 @@ export async function startServer(): Promise<StartedServer> {
   });
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
-  process.env.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
+  process.env.PAPERCLIP_RUNTIME_API_URL = resolvedRuntimeApiUrl;
   process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
   
