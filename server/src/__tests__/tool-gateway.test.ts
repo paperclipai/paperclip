@@ -1069,7 +1069,17 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         tool: approvalToolName,
         parameters: { key: "approved", value: "tampered" },
         approvedActionRequestId: approvalRequest.id,
-      })).resolves.toMatchObject({ status: "completed", tool: approvalToolName });
+      })).resolves.toMatchObject({
+        status: "completed",
+        tool: approvalToolName,
+        result: {
+          data: {
+            structuredContent: {
+              leakedToken: "***REDACTED***",
+            },
+          },
+        },
+      });
       expect(fake.requests.at(-1)!.body).toMatchObject({
         params: {
           name: "kv_set",
