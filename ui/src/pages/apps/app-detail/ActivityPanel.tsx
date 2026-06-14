@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { Agent, ToolCallEvent } from "@paperclipai/shared";
+import { humanizeConnectionDisplayName, type Agent, type ToolCallEvent } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -99,7 +99,9 @@ function humanizeEvent(
   actionRequest?: ActivityPanelProps["actionRequests"][string],
 ): { primary: string } {
   const who = agentName ?? "An agent";
-  const action = event.toolName ?? "an action";
+  // The raw gateway tool name is prefixed (e.g. `mcp.app-gallery-link-…:kv-set`);
+  // humanize it to "Kv Set" to match the cross-app Activity view (PAP-11105).
+  const action = event.toolName ? humanizeConnectionDisplayName(event.toolName) : "an action";
   switch (event.eventType) {
     case "call_completed":
       return {

@@ -476,6 +476,31 @@ describe("AppDetail", () => {
     expect(container.textContent).not.toContain("You reviewed");
   });
 
+  it("humanizes the raw gateway-prefixed tool name in activity", async () => {
+    mockParams.tab = "activity";
+    listConnectionActivityMock.mockResolvedValue({
+      events: [
+        {
+          id: "evt-1",
+          eventType: "call_completed",
+          agentId: "agent-1",
+          issueId: null,
+          actionRequestId: null,
+          toolName: "mcp.app-gallery-link-ccad39e8-6798a369:kv-set",
+          outcome: "success",
+          createdAt: new Date("2026-06-12T10:00:00Z"),
+        },
+      ],
+      issues: {},
+      actionRequests: {},
+    });
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("Coder used Kv Set");
+    expect(container.textContent).not.toContain("mcp.app-gallery-link");
+  });
+
   it("keeps the header and reconnect banner across tabs", async () => {
     mockParams.tab = "permissions";
     getConnectionMock.mockResolvedValue(connection({
