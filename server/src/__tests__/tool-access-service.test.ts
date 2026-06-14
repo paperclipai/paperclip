@@ -30,7 +30,7 @@ import {
   toolRuntimeSlots,
   toolStdioCommandTemplates,
 } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -2166,6 +2166,27 @@ describeEmbeddedPostgres("tool access service", () => {
         selectors: { catalogEntryId: updateEntry.id },
       }),
     ]);
+
+    const repeatFinish = await service.finishGalleryAppConnection(company.id, connect.connectionId, {
+      enabledCatalogEntryIds: [listEntry.id, updateEntry.id],
+      askFirstCatalogEntryIds: [updateEntry.id],
+      access: { agentIds: [agent.id, agent.id] },
+    }, { actorType: "user", actorId: "board" });
+    expect(repeatFinish.profile.id).toBe(finish.profile.id);
+    expect(repeatFinish.profileEntries).toHaveLength(2);
+    expect(repeatFinish.profileBindings).toEqual([
+      expect.objectContaining({ targetType: "agent", targetId: agent.id }),
+    ]);
+    expect(repeatFinish.policies).toEqual([
+      expect.objectContaining({
+        policyType: "require_approval",
+        enabled: true,
+        selectors: { catalogEntryId: updateEntry.id },
+      }),
+    ]);
+    await expect(db.select().from(toolProfileBindings).where(eq(toolProfileBindings.profileId, finish.profile.id))).resolves.toHaveLength(1);
+    await expect(db.select().from(toolPolicies).where(eq(toolPolicies.companyId, company.id))).resolves.toHaveLength(1);
+
     const finishedCatalog = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connect.connectionId));
     expect(finishedCatalog).toEqual(
       expect.arrayContaining([
@@ -2220,6 +2241,98 @@ describeEmbeddedPostgres("tool access service", () => {
         catalogEntryId: updateEntry.id,
       }),
     });
+  });
+
+  it("rolls back gallery app finish when a later write fails after clearing profile state", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    mockToolsList([
+      {
+        name: "list_zaps",
+        description: "List Zapier actions.",
+        inputSchema: { type: "object", properties: {} },
+        annotations: { readOnlyHint: true },
+      },
+      {
+        name: "update_zap",
+        description: "Update a Zapier action.",
+        inputSchema: { type: "object", properties: { id: { type: "string" } } },
+        annotations: { readOnlyHint: false },
+      },
+    ]);
+    const [agent] = await db.insert(agents).values({
+      companyId: company.id,
+      name: `Rollback Agent ${randomUUID()}`,
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+    }).returning();
+
+    const connect = await service.connectGalleryApp(company.id, {
+      galleryKey: "zapier",
+      name: "Zapier rollback",
+      credentialValues: { "credentials.authorization": "zap-secret" },
+    }, { actorType: "user", actorId: "board" });
+    const listEntry = connect.catalog.find((entry) => entry.toolName === "list_zaps")!;
+    const updateEntry = connect.catalog.find((entry) => entry.toolName === "update_zap")!;
+    const firstFinish = await service.finishGalleryAppConnection(company.id, connect.connectionId, {
+      enabledCatalogEntryIds: [listEntry.id, updateEntry.id],
+      askFirstCatalogEntryIds: [updateEntry.id],
+      access: { agentIds: [agent.id] },
+    }, { actorType: "user", actorId: "board" });
+
+    const entriesBefore = await db
+      .select()
+      .from(toolProfileEntries)
+      .where(eq(toolProfileEntries.profileId, firstFinish.profile.id));
+    const bindingsBefore = await db
+      .select()
+      .from(toolProfileBindings)
+      .where(eq(toolProfileBindings.profileId, firstFinish.profile.id));
+    const policiesBefore = await db
+      .select()
+      .from(toolPolicies)
+      .where(and(eq(toolPolicies.companyId, company.id), eq(toolPolicies.enabled, true)));
+
+    await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `conflict-${randomUUID()}`,
+      name: "Conflicting app profile",
+      status: "active",
+      defaultAction: "deny",
+    });
+    await db
+      .update(toolConnections)
+      .set({ name: "Conflicting app profile", updatedAt: new Date() })
+      .where(eq(toolConnections.id, connect.connectionId));
+
+    await expect(service.finishGalleryAppConnection(company.id, connect.connectionId, {
+      enabledCatalogEntryIds: [listEntry.id, updateEntry.id],
+      askFirstCatalogEntryIds: [updateEntry.id],
+      access: { agentIds: [agent.id] },
+    }, { actorType: "user", actorId: "board" })).rejects.toThrow();
+
+    const entriesAfter = await db
+      .select()
+      .from(toolProfileEntries)
+      .where(eq(toolProfileEntries.profileId, firstFinish.profile.id));
+    const bindingsAfter = await db
+      .select()
+      .from(toolProfileBindings)
+      .where(eq(toolProfileBindings.profileId, firstFinish.profile.id));
+    const policiesAfter = await db
+      .select()
+      .from(toolPolicies)
+      .where(and(eq(toolPolicies.companyId, company.id), eq(toolPolicies.enabled, true)));
+
+    expect(entriesAfter.map((entry) => entry.catalogEntryId).sort()).toEqual(
+      entriesBefore.map((entry) => entry.catalogEntryId).sort(),
+    );
+    expect(bindingsAfter.map((binding) => `${binding.targetType}:${binding.targetId}`).sort()).toEqual(
+      bindingsBefore.map((binding) => `${binding.targetType}:${binding.targetId}`).sort(),
+    );
+    expect(policiesAfter.map((policy) => policy.id).sort()).toEqual(policiesBefore.map((policy) => policy.id).sort());
   });
 
   it("reconnects a gallery app by rotating the existing credential in place (PAP-10859)", async () => {
