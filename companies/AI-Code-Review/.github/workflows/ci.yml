@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "release/*"]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  lint-typecheck:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+      - run: npm ci
+      - run: npx eslint services/ --ext .ts,.tsx
+      - run: npx tsc --noEmit
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [api, ai-review, webhook, billing]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+      - run: npm ci
+      - run: npx vitest run --project services/${{ matrix.service }}
+
+  ai-service-tests:
+    name: AI Service Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+      - run: pip install -r services/ai-review/requirements.txt
+      - run: pip install -r services/ai-review/requirements-dev.txt
+      - run: pytest services/ai-review/tests/ -v --cov=services/ai-review
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep SAST
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: p/default
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-results.sarif
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: codereview_test
+          POSTGRES_PASSWORD: testpass
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+      - run: npm ci
+      - run: npx vitest run --config vitest.integration.config.ts
+        env:
+          DATABASE_URL: postgres://postgres:testpass@localhost:5432/codereview_test
+          REDIS_URL: redis://localhost:6379
+
+  build:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: [lint-typecheck, unit-tests, security-scan]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_CI }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Build & push API service
+        run: |
+          docker build -t ${{ vars.ECR_REPOSITORY }}/api:${{ github.sha }} -f deploy/Dockerfile.api .
+          docker push ${{ vars.ECR_REPOSITORY }}/api:${{ github.sha }}
+      - name: Build & push AI Review service
+        run: |
+          docker build -t ${{ vars.ECR_REPOSITORY }}/ai-review:${{ github.sha }} -f deploy/Dockerfile.ai-review .
+          docker push ${{ vars.ECR_REPOSITORY }}/ai-review:${{ github.sha }}
+      - name: Build & push webhook service
+        run: |
+          docker build -t ${{ vars.ECR_REPOSITORY }}/webhook:${{ github.sha }} -f deploy/Dockerfile.webhook .
+          docker push ${{ vars.ECR_REPOSITORY }}/webhook:${{ github.sha }}

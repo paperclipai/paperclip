@@ -1,0 +1,36 @@
+{
+  "name": "ai-code-review-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI-powered code review platform",
+  "scripts": {
+    "dev": "docker compose -f deploy/docker-compose.yml up --build",
+    "dev:api": "node --watch services/api/main.ts",
+    "dev:webhook": "node --watch services/webhook/main.ts",
+    "dev:ai": "uvicorn services.ai-review.main:app --reload --port 8000",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "lint": "eslint services/ --ext .ts,.tsx",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write 'services/**/*.ts'",
+    "db:migrate": "node scripts/migrate.ts",
+    "db:seed": "node scripts/seed.ts",
+    "deploy": "bash deploy/scripts/deploy.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "eslint": "^9.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  },
+  "dependencies": {
+    "bullmq": "^5.0.0",
+    "fastify": "^5.0.0",
+    "ioredis": "^5.0.0",
+    "pg": "^8.13.0",
+    "stripe": "^17.0.0",
+    "zod": "^3.23.0"
+  }
+}

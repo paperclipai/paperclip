@@ -1,0 +1,40 @@
+# robots.txt for djtechnologies.in
+# Optimized for traditional + AI search engine crawlers
+
+User-agent: *
+Allow: /
+Disallow: /auth
+Disallow: /admin
+
+# Allow AI crawlers for LLM extraction (FAQ, schema, service data)
+User-agent: GPTBot
+Allow: /
+Allow: /agentic-ai
+Allow: /knowledge-base
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: Claude-Web
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+User-agent: cohere-ai
+Allow: /
+
+# Crawl rate limit
+Crawl-delay: 2
+
+# Sitemaps
+Sitemap: https://djtechnologies.in/sitemap.xml

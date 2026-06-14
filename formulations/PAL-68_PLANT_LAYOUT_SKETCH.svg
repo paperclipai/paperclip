@@ -1,0 +1,216 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 700" font-family="Arial, sans-serif">
+  <title>Paperclip Paints — Plant Layout Sketch for DISCOM Application</title>
+
+  <!-- Background -->
+  <rect x="0" y="0" width="900" height="700" fill="white"/>
+
+  <!-- Title -->
+  <text x="450" y="35" text-anchor="middle" font-size="18" font-weight="bold" fill="#1a1a1a">Paperclip Paints — Plant Layout Sketch</text>
+  <text x="450" y="55" text-anchor="middle" font-size="13" fill="#555">Plot: 20m × 15m (300 sq.m) | Building: 15m × 8m (120 sq.m)</text>
+  <text x="450" y="72" text-anchor="middle" font-size="11" fill="#888">For DISCOM 3-Phase Industrial Connection Application</text>
+
+  <!-- Plot boundary -->
+  <rect x="50" y="100" width="800" height="550" fill="#f8f9e8" stroke="#333" stroke-width="2" stroke-dasharray="8,4"/>
+  <text x="880" y="370" text-anchor="middle" font-size="11" fill="#555" transform="rotate(-90, 880, 370)">PLOT DEPTH: 15m</text>
+
+  <!-- Setback labels -->
+  <text x="450" y="95" text-anchor="middle" font-size="11" fill="#666">5m Front Setback (Loading/Unloading Apron)</text>
+  <line x1="50" y1="100" x2="850" y2="100" stroke="#999" stroke-width="1" stroke-dasharray="3,3"/>
+
+  <!-- Building footprint -->
+  <rect x="50" y="130" width="800" height="480" fill="#e8f0e8" stroke="#2a5c2a" stroke-width="2.5"/>
+  <text x="70" y="150" font-size="10" fill="#2a5c2a" font-weight="bold">15m BUILDING WIDTH →</text>
+
+  <!-- ========== ZONE 1: RAW MATERIAL STORAGE (3m × 9m) ========== -->
+  <rect x="50" y="130" width="240" height="480" fill="#f0e8d8" stroke="#8b7355" stroke-width="2"/>
+  <text x="170" y="155" text-anchor="middle" font-size="12" font-weight="bold" fill="#5c4a2e">ZONE 1: RAW MATERIAL STORAGE</text>
+  <text x="170" y="170" text-anchor="middle" font-size="10" fill="#8b7355">~40 sq.m</text>
+
+  <!-- DM Water Tank -->
+  <rect x="75" y="190" width="70" height="70" rx="5" fill="#c8e8ff" stroke="#2980b9" stroke-width="1.5"/>
+  <text x="110" y="220" text-anchor="middle" font-size="9" font-weight="bold" fill="#2980b9">DM WATER</text>
+  <text x="110" y="233" text-anchor="middle" font-size="8" fill="#2980b9">TANK 5KL</text>
+  <text x="110" y="246" text-anchor="middle" font-size="7" fill="#666">(SS304)</text>
+
+  <!-- TiO2 / Pigment Storage -->
+  <rect x="170" y="190" width="100" height="100" rx="5" fill="#f0f0f0" stroke="#666" stroke-width="1.5"/>
+  <text x="220" y="222" text-anchor="middle" font-size="9" font-weight="bold" fill="#444">TiO₂ SILO</text>
+  <text x="220" y="235" text-anchor="middle" font-size="8" fill="#666">+ BULK BAGS</text>
+  <text x="220" y="248" text-anchor="middle" font-size="7" fill="#666">(Pallet Racks)</text>
+
+  <!-- Filler Storage -->
+  <rect x="75" y="280" width="195" height="80" rx="5" fill="#f5f0e0" stroke="#a08050" stroke-width="1.5"/>
+  <text x="172" y="310" text-anchor="middle" font-size="9" font-weight="bold" fill="#7a6030">FILLERS & EXTENDERS</text>
+  <text x="172" y="325" text-anchor="middle" font-size="8" fill="#8b7355">CaCO₃ · Talc · Kaolin · Barytes</text>
+  <text x="172" y="340" text-anchor="middle" font-size="7" fill="#666">Drums & FIBC Storage</text>
+
+  <!-- Chemical drums -->
+  <rect x="75" y="380" width="195" height="60" rx="5" fill="#ffe0d0" stroke="#c0392b" stroke-width="1.5"/>
+  <text x="172" y="405" text-anchor="middle" font-size="9" font-weight="bold" fill="#c0392b">CHEMICAL DRUMS</text>
+  <text x="172" y="420" text-anchor="middle" font-size="8" fill="#8b4513">Resins · Additives · Solvents</text>
+  <text x="172" y="432" text-anchor="middle" font-size="7" fill="#c0392b">⚠ Bunded Storage · Ventilated</text>
+
+  <!-- ========== CORRIDOR / PASSAGE ========== -->
+  <rect x="290" y="130" width="30" height="480" fill="#ddd" stroke="#999" stroke-width="1"/>
+  <text x="305" y="375" text-anchor="middle" font-size="8" fill="#666" transform="rotate(-90, 305, 375)">PASSAGE / ROLL-UP DOOR</text>
+
+  <!-- ========== ZONE 2: MANUFACTURING FLOOR (6m × 9m) ========== -->
+  <rect x="320" y="130" width="320" height="480" fill="#e8f0f0" stroke="#2a5c8b" stroke-width="2"/>
+  <text x="480" y="155" text-anchor="middle" font-size="12" font-weight="bold" fill="#1a3a5c">ZONE 2: MANUFACTURING FLOOR</text>
+  <text x="480" y="170" text-anchor="middle" font-size="10" fill="#2a5c8b">~72 sq.m</text>
+
+  <!-- High Speed Disperser -->
+  <rect x="340" y="190" width="130" height="90" rx="5" fill="#d8e8d8" stroke="#1a7a1a" stroke-width="2"/>
+  <text x="405" y="216" text-anchor="middle" font-size="11" font-weight="bold" fill="#1a7a1a">HIGH-SPEED</text>
+  <text x="405" y="230" text-anchor="middle" font-size="11" font-weight="bold" fill="#1a7a1a">DISPERSER</text>
+  <text x="405" y="248" text-anchor="middle" font-size="9" fill="#2a5c2a">30 HP · VFD</text>
+  <text x="405" y="261" text-anchor="middle" font-size="8" fill="#555">1000-1500L batch</text>
+  <text x="405" y="274" text-anchor="middle" font-size="7" fill="#888">Ø14" Cowles Blade</text>
+
+  <!-- Letdown Mixer -->
+  <rect x="490" y="190" width="130" height="90" rx="5" fill="#d8e0f0" stroke="#1a3a7a" stroke-width="2"/>
+  <text x="555" y="216" text-anchor="middle" font-size="11" font-weight="bold" fill="#1a3a7a">LETDOWN MIXER</text>
+  <text x="555" y="230" text-anchor="middle" font-size="11" font-weight="bold" fill="#1a3a7a">(LOW-SPEED)</text>
+  <text x="555" y="248" text-anchor="middle" font-size="9" fill="#2a3a7a">15 HP · VFD</text>
+  <text x="555" y="261" text-anchor="middle" font-size="8" fill="#555">Anchor/Paddle Agitator</text>
+  <text x="555" y="274" text-anchor="middle" font-size="7" fill="#888">100-500 RPM</text>
+
+  <!-- Mixing Vessels -->
+  <rect x="340" y="300" width="280" height="70" rx="5" fill="#f0f0f0" stroke="#555" stroke-width="1.5"/>
+  <text x="480" y="325" text-anchor="middle" font-size="10" font-weight="bold" fill="#444">MIXING VESSELS</text>
+  <text x="480" y="340" text-anchor="middle" font-size="9" fill="#666">2 × 1000L SS304 · Jacketed</text>
+  <text x="480" y="355" text-anchor="middle" font-size="8" fill="#888">Dished bottom · Bottom discharge</text>
+
+  <!-- Transfer pump -->
+  <rect x="340" y="385" width="130" height="50" rx="5" fill="#e0e0f0" stroke="#555" stroke-width="1.5"/>
+  <text x="405" y="408" text-anchor="middle" font-size="9" font-weight="bold" fill="#444">TRANSFER PUMP</text>
+  <text x="405" y="422" text-anchor="middle" font-size="8" fill="#666">50 LPM · 3 HP · SS304</text>
+
+  <!-- In-line filter -->
+  <rect x="490" y="385" width="130" height="50" rx="5" fill="#e0e0f0" stroke="#555" stroke-width="1.5"/>
+  <text x="555" y="408" text-anchor="middle" font-size="9" font-weight="bold" fill="#444">IN-LINE FILTER</text>
+  <text x="555" y="422" text-anchor="middle" font-size="8" fill="#666">Bag filter 50µ / cartridge</text>
+
+  <!-- ========== CORRIDOR / PASSAGE ========== -->
+  <rect x="640" y="130" width="20" height="480" fill="#ddd" stroke="#999" stroke-width="1"/>
+
+  <!-- ========== ZONE 3: FILL & PACK + QC (3m × 6m) + METER ROOM ========== -->
+  <rect x="660" y="130" width="190" height="320" fill="#f0e8f0" stroke="#5c2a5c" stroke-width="2"/>
+  <text x="755" y="155" text-anchor="middle" font-size="12" font-weight="bold" fill="#3a1a3a">ZONE 3: FILL & PACK</text>
+  <text x="755" y="170" text-anchor="middle" font-size="10" fill="#5c2a5c">~27 sq.m</text>
+
+  <!-- Filling Machine -->
+  <rect x="675" y="190" width="80" height="70" rx="5" fill="#e0d8f0" stroke="#6a3a9a" stroke-width="1.5"/>
+  <text x="715" y="218" text-anchor="middle" font-size="9" font-weight="bold" fill="#4a1a7a">FILLING</text>
+  <text x="715" y="231" text-anchor="middle" font-size="9" font-weight="bold" fill="#4a1a7a">MACHINE</text>
+  <text x="715" y="248" text-anchor="middle" font-size="7" fill="#666">Semi-Auto</text>
+
+  <!-- Labeling Station -->
+  <rect x="770" y="190" width="65" height="70" rx="5" fill="#e0d8f0" stroke="#6a3a9a" stroke-width="1.5"/>
+  <text x="802" y="218" text-anchor="middle" font-size="8" font-weight="bold" fill="#4a1a7a">LABELING</text>
+  <text x="802" y="231" text-anchor="middle" font-size="8" font-weight="bold" fill="#4a1a7a">STATION</text>
+  <text x="802" y="248" text-anchor="middle" font-size="7" fill="#666">Manual</text>
+
+  <!-- QC Lab Bench -->
+  <rect x="675" y="280" width="160" height="55" rx="5" fill="#d0f0d0" stroke="#2a6a2a" stroke-width="1.5"/>
+  <text x="755" y="302" text-anchor="middle" font-size="9" font-weight="bold" fill="#2a6a2a">QC LAB BENCH</text>
+  <text x="755" y="316" text-anchor="middle" font-size="8" fill="#444">Viscometer · Hegman · pH</text>
+  <text x="755" y="328" text-anchor="middle" font-size="7" fill="#666">Balance · Opacity Drawdown</text>
+
+  <!-- Aging Oven -->
+  <rect x="675" y="345" width="75" height="40" rx="5" fill="#f0d0d0" stroke="#7a2a2a" stroke-width="1.5"/>
+  <text x="712" y="363" text-anchor="middle" font-size="8" font-weight="bold" fill="#7a2a2a">AGING</text>
+  <text x="712" y="376" text-anchor="middle" font-size="8" font-weight="bold" fill="#7a2a2a">OVEN</text>
+
+  <!-- Finished goods -->
+  <rect x="760" y="345" width="75" height="40" rx="5" fill="#f8f0d0" stroke="#8a7a2a" stroke-width="1.5"/>
+  <text x="797" y="360" text-anchor="middle" font-size="7" font-weight="bold" fill="#6a5a1a">FINISHED</text>
+  <text x="797" y="373" text-anchor="middle" font-size="7" font-weight="bold" fill="#6a5a1a">GOODS</text>
+
+  <!-- Finished Goods Pallets -->
+  <rect x="660" y="405" width="190" height="55" rx="5" fill="#f8f0d0" stroke="#8a7a2a" stroke-width="1.5"/>
+  <text x="755" y="428" text-anchor="middle" font-size="9" font-weight="bold" fill="#6a5a1a">FINISHED GOODS PALLET STORAGE</text>
+  <text x="755" y="444" text-anchor="middle" font-size="8" fill="#666">1L · 4L · 10L · 20L Packed Pails</text>
+
+  <!-- ========== EXHAUST FANS (on wall) ========== -->
+  <rect x="645" y="130" width="10" height="60" fill="#cc4444" stroke="#882222" stroke-width="1"/>
+  <text x="640" y="168" text-anchor="end" font-size="7" font-weight="bold" fill="#cc4444">EF-1</text>
+
+  <rect x="645" y="200" width="10" height="60" fill="#cc4444" stroke="#882222" stroke-width="1"/>
+  <text x="640" y="238" text-anchor="end" font-size="7" font-weight="bold" fill="#cc4444">EF-2</text>
+
+  <!-- ========== METER ROOM (east exterior wall) ========== -->
+  <rect x="660" y="460" width="80" height="65" rx="4" fill="#fff3cd" stroke="#ffc107" stroke-width="2.5"/>
+  <rect x="660" y="460" width="80" height="65" rx="4" fill="none" stroke="#e6a800" stroke-width="3" stroke-dasharray="4,2"/>
+  <text x="700" y="486" text-anchor="middle" font-size="10" font-weight="bold" fill="#856404">METER ROOM</text>
+  <text x="700" y="500" text-anchor="middle" font-size="8" fill="#856404">1.5m × 1.2m</text>
+  <text x="700" y="513" text-anchor="middle" font-size="7" fill="#999">Lockable · Ventilated</text>
+  <text x="700" y="523" text-anchor="middle" font-size="7" fill="#999">DISCOM Access</text>
+
+  <!-- Cable route from meter room -->
+  <line x1="700" y1="525" x2="700" y2="570" stroke="#c0392b" stroke-width="3" stroke-dasharray="6,3"/>
+  <line x1="700" y1="570" x2="480" y2="570" stroke="#c0392b" stroke-width="3" stroke-dasharray="6,3"/>
+  <line x1="480" y1="570" x2="480" y2="530" stroke="#c0392b" stroke-width="3" stroke-dasharray="6,3"/>
+  <text x="590" y="565" text-anchor="middle" font-size="8" fill="#c0392b" font-weight="bold">← Cable Trench (5m UG) →</text>
+  <text x="590" y="585" text-anchor="middle" font-size="7" fill="#c0392b">4C × 300 sq.mm Al XLPE + 1C × 185 sq.mm Al XLPE</text>
+
+  <!-- Main Panel Location -->
+  <rect x="445" y="490" width="70" height="40" rx="4" fill="#fff0d0" stroke="#cc7a00" stroke-width="2"/>
+  <text x="480" y="508" text-anchor="middle" font-size="8" font-weight="bold" fill="#cc7a00">MAIN</text>
+  <text x="480" y="520" text-anchor="middle" font-size="8" font-weight="bold" fill="#cc7a00">PANEL</text>
+  <text x="480" y="530" text-anchor="middle" font-size="7" fill="#999">100A TP MCCB</text>
+
+  <!-- ========== BOUNDARY DIMENSIONS ========== -->
+  <!-- Top -->
+  <line x1="50" y1="85" x2="850" y2="85" stroke="#333" stroke-width="1.5" marker-start="url(#arrowStart)" marker-end="url(#arrowEnd)"/>
+  <text x="450" y="82" text-anchor="middle" font-size="12" font-weight="bold" fill="#333">20.0 m</text>
+
+  <!-- Left -->
+  <line x1="35" y1="130" x2="35" y2="610" stroke="#333" stroke-width="1.5" marker-start="url(#arrowStartV)" marker-end="url(#arrowEndV)"/>
+  <text x="28" y="375" text-anchor="middle" font-size="12" font-weight="bold" fill="#333" transform="rotate(-90, 28, 375)">15.0 m</text>
+
+  <!-- ========== LEGEND ========== -->
+  <rect x="50" y="635" width="800" height="55" rx="5" fill="#f8f8f8" stroke="#ccc" stroke-width="1"/>
+  <text x="70" y="652" font-size="11" font-weight="bold" fill="#444">LEGEND:</text>
+
+  <rect x="140" y="640" width="12" height="12" fill="#f0e8d8" stroke="#8b7355" stroke-width="1"/>
+  <text x="158" y="651" font-size="9" fill="#555">Raw Material Storage</text>
+
+  <rect x="300" y="640" width="12" height="12" fill="#e8f0f0" stroke="#2a5c8b" stroke-width="1"/>
+  <text x="318" y="651" font-size="9" fill="#555">Manufacturing Floor</text>
+
+  <rect x="460" y="640" width="12" height="12" fill="#f0e8f0" stroke="#5c2a5c" stroke-width="1"/>
+  <text x="478" y="651" font-size="9" fill="#555">Fill & Pack + QC</text>
+
+  <rect x="610" y="640" width="12" height="12" fill="#fff3cd" stroke="#ffc107" stroke-width="2"/>
+  <text x="628" y="651" font-size="9" fill="#555">Meter Room</text>
+
+  <rect x="735" y="640" width="12" height="12" fill="#ccc" stroke="#999" stroke-width="1"/>
+  <text x="753" y="651" font-size="9" fill="#555">Passage / Corridor</text>
+
+  <text x="70" y="675" font-size="9" fill="#888">Note: Building elevation 3.5m to truss bottom. All zones have explosion-proof lighting and 2 × 2000 CFM FLP exhaust fan ventilation.</text>
+
+  <!-- Arrow markers -->
+  <defs>
+    <marker id="arrowStart" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
+      <polygon points="0,0 8,3 0,6" fill="#333"/>
+    </marker>
+    <marker id="arrowEnd" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="8,0 0,3 8,6" fill="#333"/>
+    </marker>
+    <marker id="arrowStartV" markerWidth="6" markerHeight="8" refX="3" refY="0" orient="auto">
+      <polygon points="0,0 6,0 3,8" fill="#333"/>
+    </marker>
+    <marker id="arrowEndV" markerWidth="6" markerHeight="8" refX="3" refY="8" orient="auto">
+      <polygon points="0,8 6,8 3,0" fill="#333"/>
+    </marker>
+  </defs>
+
+  <!-- Compass / North -->
+  <g transform="translate(820, 140)">
+    <circle cx="0" cy="0" r="18" fill="none" stroke="#555" stroke-width="1.5"/>
+    <polygon points="0,-15 -5,-5 0,-8 5,-5" fill="#c0392b"/>
+    <polygon points="0,15 -5,5 0,8 5,5" fill="#999"/>
+    <text x="0" y="-20" text-anchor="middle" font-size="9" font-weight="bold" fill="#c0392b">N</text>
+  </g>
+</svg>

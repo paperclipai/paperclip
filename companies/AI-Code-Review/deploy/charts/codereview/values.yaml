@@ -1,0 +1,74 @@
+environment: staging
+replicas: 2
+
+image:
+  repository: 123456789012.dkr.ecr.us-east-1.amazonaws.com/codereview
+  tag: latest
+  pullPolicy: IfNotPresent
+
+canary:
+  enabled: false
+  weight: 10
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  host: ""
+  tls: true
+
+postgres:
+  host: ""
+  port: 5432
+  database: codereview
+  existingSecret: codereview-db-credentials
+
+redis:
+  host: ""
+  port: 6379
+  existingSecret: codereview-redis-credentials
+
+resources:
+  api:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  ai-review:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+  webhook:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+autoscaling:
+  api:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  ai-review:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 60
+  webhook:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70

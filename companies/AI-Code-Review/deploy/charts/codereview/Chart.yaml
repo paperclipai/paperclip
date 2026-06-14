@@ -1,0 +1,6 @@
+apiVersion: v2
+name: codereview
+description: AI Code Review Platform Helm chart
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

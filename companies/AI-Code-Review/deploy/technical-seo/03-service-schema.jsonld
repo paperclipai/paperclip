@@ -1,0 +1,149 @@
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Product",
+      "@id": "https://djtechnologies.in/#service-shared-hosting",
+      "name": "Shared Web Hosting",
+      "description": "Perfect for small websites. cPanel control panel, 1GB SSD storage, 10GB bandwidth, free SSL certificate, and 99.9% uptime guarantee.",
+      "brand": { "@type": "Brand", "name": "DJ Technologies" },
+      "offers": {
+        "@type": "Offer",
+        "price": "45.00",
+        "priceCurrency": "USD",
+        "priceValidUntil": "2027-12-31",
+        "availability": "https://schema.org/InStock",
+        "url": "https://djtechnologies.in/#hosting",
+        "description": "Monthly shared hosting plan with instant setup"
+      },
+      "category": "Web Hosting"
+    },
+    {
+      "@type": "Product",
+      "@id": "https://djtechnologies.in/#service-vps-hosting",
+      "name": "VPS Hosting",
+      "description": "High-performance virtual server with 2 CPU cores, 4GB RAM, 50GB SSD storage, unlimited bandwidth, root access, and DDoS protection. 30 minutes setup.",
+      "brand": { "@type": "Brand", "name": "DJ Technologies" },
+      "offers": {
+        "@type": "Offer",
+        "price": "429.00",
+        "priceCurrency": "USD",
+        "priceValidUntil": "2027-12-31",
+        "availability": "https://schema.org/InStock",
+        "url": "https://djtechnologies.in/#hosting",
+        "description": "Monthly VPS hosting plan"
+      },
+      "category": "VPS Hosting"
+    },
+    {
+      "@type": "Product",
+      "@id": "https://djtechnologies.in/#service-dedicated-server",
+      "name": "Dedicated Server",
+      "description": "Enterprise-grade dedicated server with 8 CPU cores, 32GB RAM, 1TB SSD storage, unmetered bandwidth, full server control, and priority support. 24 hours setup.",
+      "brand": { "@type": "Brand", "name": "DJ Technologies" },
+      "offers": {
+        "@type": "Offer",
+        "price": "6999.00",
+        "priceCurrency": "USD",
+        "priceValidUntil": "2027-12-31",
+        "availability": "https://schema.org/InStock",
+        "url": "https://djtechnologies.in/#hosting",
+        "description": "Monthly dedicated server plan"
+      },
+      "category": "Dedicated Hosting"
+    },
+    {
+      "@type": "Service",
+      "@id": "https://djtechnologies.in/#service-agentic-ai",
+      "name": "Agentic AI Automation",
+      "description": "Deploy intelligent AI agents that work 24/7 to automate sales, customer support, content creation, and business workflows with N8N and ElevenLabs integration.",
+      "provider": { "@id": "https://djtechnologies.in/#organization" },
+      "areaServed": "Worldwide",
+      "audience": { "@type": "Audience", "audienceType": "Business" },
+      "offers": [
+        {
+          "@type": "Offer",
+          "name": "Starter AI",
+          "price": "49999",
+          "priceCurrency": "INR",
+          "description": "AI Voice Chatbot with website integration, natural voice conversations, and 30 days support."
+        },
+        {
+          "@type": "Offer",
+          "name": "Business AI",
+          "price": "99999",
+          "priceCurrency": "INR",
+          "description": "Complete voice AI with call handling, batch calling, multi-channel deployment, and 60 days support."
+        },
+        {
+          "@type": "Offer",
+          "name": "Enterprise AI",
+          "price": "199999",
+          "priceCurrency": "INR",
+          "description": "Full AI automation ecosystem with multiple agents, N8N workflows, CRM integration, and 6 months premium support."
+        }
+      ]
+    },
+    {
+      "@type": "Service",
+      "@id": "https://djtechnologies.in/#service-web-development",
+      "name": "Web & Funnel Development",
+      "description": "Professional websites, high-converting sales funnels, and Shopify stores that drive results. Including landing pages, e-commerce, and custom development.",
+      "provider": { "@id": "https://djtechnologies.in/#organization" },
+      "offers": [
+        {
+          "@type": "Offer",
+          "name": "Funnel & Landing Pages",
+          "price": "7999",
+          "priceCurrency": "INR",
+          "priceQualifier": "/year",
+          "description": "High-converting landing pages with lead capture, A/B testing, and SEO optimization."
+        },
+        {
+          "@type": "Offer",
+          "name": "Shopify Basic",
+          "price": "6999",
+          "priceCurrency": "INR",
+          "description": "Landing page with 5 product listings, payment gateway, and 1 month support."
+        },
+        {
+          "@type": "Offer",
+          "name": "Shopify Business",
+          "price": "15999",
+          "priceCurrency": "INR",
+          "description": "7 page website with logo design, content writing, 20 product listings, and 3 month support."
+        }
+      ]
+    },
+    {
+      "@type": "Service",
+      "@id": "https://djtechnologies.in/#service-mobile-app",
+      "name": "Mobile App Development",
+      "description": "Custom Android and iOS mobile applications launched in just 30 days with pre-built foundations, secure backend, and app store submission guarantee.",
+      "provider": { "@id": "https://djtechnologies.in/#organization" },
+      "offers": [
+        {
+          "@type": "Offer",
+          "name": "Android App",
+          "price": "225000",
+          "priceCurrency": "USD",
+          "description": "Pre-made Android app foundation with Play Store submission guarantee and 3 months support."
+        },
+        {
+          "@type": "Offer",
+          "name": "iOS App",
+          "price": "225000",
+          "priceCurrency": "USD",
+          "description": "Pre-made iOS app foundation with App Store submission guarantee and 3 months support."
+        },
+        {
+          "@type": "Offer",
+          "name": "Android & iOS Bundle",
+          "price": "369000",
+          "priceCurrency": "USD",
+          "description": "Both platforms with unified codebase, priority support, and 6 months premium support."
+        }
+      ]
+    }
+  ]
+}

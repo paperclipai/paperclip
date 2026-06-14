@@ -1,0 +1,71 @@
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "@id": "https://djtechnologies.in/#faq",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "What services does DJ Technologies offer?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "DJ Technologies offers comprehensive digital solutions including web development, mobile app development, AI chatbots, hosting services, and digital marketing. We specialize in creating custom solutions for businesses of all sizes."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How long does it take to develop a website?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Website development typically takes 2-6 weeks depending on complexity. Simple business websites can be completed in 2-3 weeks, while complex e-commerce or custom web applications may take 4-6 weeks."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Do you provide ongoing support and maintenance?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes, we offer comprehensive support and maintenance packages. This includes regular updates, security monitoring, backup management, and technical support to ensure your website runs smoothly."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can you help with AI integration for my business?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Absolutely! We specialize in AI chatbot development, custom AI solutions, and AI integration. Our AI systems can handle customer support, lead generation, and process automation to improve your business efficiency."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What are Agentic AI solutions and how do they work?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Agentic AI solutions are autonomous intelligent agents that can perform complex business tasks without human intervention. They use advanced AI models to understand context, make decisions, and execute actions across multiple platforms including voice calls, WhatsApp, email, and web interfaces."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How much can I save with AI automation?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Our clients typically see 70-90% reduction in manual tasks, 300% productivity increase, and ROI of 400-800% within 90 days. The average business saves ₹2-5 lakhs monthly in operational costs while increasing revenue by 200-400%."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How long does it take to implement AI agents?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Implementation typically takes 1-4 weeks depending on complexity. Starter AI deploys in 1-2 weeks, Business AI in 2-3 weeks, and Enterprise AI in 3-4 weeks. You'll see immediate results upon deployment."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What hosting plans does DJ Technologies offer?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "DJ Technologies offers shared hosting starting at $45/month, VPS hosting starting at $429/month with 2 CPU cores, 4GB RAM, and 50GB SSD storage, and dedicated servers starting at $6,999/month with 8 CPU cores, 32GB RAM, and 1TB SSD storage."
+      }
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "litellm": {
+    "model_group": {
+      "paperclip-default": {
+        "rpm": 50,
+        "tpm": 100000
+      }
+    }
+  }
+}

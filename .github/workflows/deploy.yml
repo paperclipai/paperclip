@@ -1,0 +1,55 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The stable version to deploy (e.g., 2026.318.0)
+        required: true
+        type: string
+      environment:
+        description: The target environment (staging or production)
+        required: true
+        type: string
+        default: staging
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+jobs:
+  deploy-staging:
+    if: |
+      github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging' ||
+      github.event_name == 'workflow_run' && github.event.workflow_run.event == 'workflow_dispatch' && github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_commit.message, 'chore(release): stable')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine image tag
+        id: get_image_tag
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "IMAGE_TAG=v${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            # Extract version from the commit message of the workflow_run that triggered this
+            # Example: "chore(release): stable 2026.318.0"
+            VERSION=$(echo "${{ github.event.workflow_run.head_commit.message }}" | sed -n 's/^chore(release): stable \(.*\)/\1/p')
+            echo "IMAGE_TAG=v$VERSION" >> $GITHUB_OUTPUT
+          fi
+      - name: Pull Docker image
+        run: docker pull ghcr.io/${{ github.repository }}:${{ steps.get_image_tag.outputs.IMAGE_TAG }}
+
+      - name: Deploy to Staging
+        run: echo "Simulating deployment of ghcr.io/${{ github.repository }}:${{ steps.get_image_tag.outputs.IMAGE_TAG }} to staging"
+        # Placeholder for actual deployment commands to staging environment
+
+      - name: Run Staging Smoke Tests
+        run: echo "Running smoke tests on staging environment..."
+        # Placeholder for actual smoke tests

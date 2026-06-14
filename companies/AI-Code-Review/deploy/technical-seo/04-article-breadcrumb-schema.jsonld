@@ -1,0 +1,141 @@
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "BreadcrumbList",
+      "@id": "https://djtechnologies.in/#breadcrumb",
+      "itemListElement": [
+        {
+          "@type": "ListItem",
+          "position": 1,
+          "name": "Home",
+          "item": "https://djtechnologies.in/"
+        },
+        {
+          "@type": "ListItem",
+          "position": 2,
+          "name": "Services",
+          "item": "https://djtechnologies.in/#services"
+        },
+        {
+          "@type": "ListItem",
+          "position": 3,
+          "name": "AI Agents",
+          "item": "https://djtechnologies.in/#ai-agents"
+        },
+        {
+          "@type": "ListItem",
+          "position": 4,
+          "name": "Web Development",
+          "item": "https://djtechnologies.in/#web-development"
+        },
+        {
+          "@type": "ListItem",
+          "position": 5,
+          "name": "App Development",
+          "item": "https://djtechnologies.in/#app-development"
+        },
+        {
+          "@type": "ListItem",
+          "position": 6,
+          "name": "Hosting",
+          "item": "https://djtechnologies.in/#hosting"
+        },
+        {
+          "@type": "ListItem",
+          "position": 7,
+          "name": "Knowledge Base",
+          "item": "https://djtechnologies.in/knowledge-base"
+        },
+        {
+          "@type": "ListItem",
+          "position": 8,
+          "name": "Contact",
+          "item": "https://calendly.com/djtechnologies"
+        }
+      ]
+    },
+    {
+      "@type": "WebSite",
+      "@id": "https://djtechnologies.in/#website",
+      "name": "DJ Technologies",
+      "url": "https://djtechnologies.in",
+      "description": "Revolutionary AI & Technology Solutions for Modern Businesses. Agentic AI automation, web development, mobile apps, and hosting since 2018.",
+      "inLanguage": "en",
+      "publisher": { "@id": "https://djtechnologies.in/#organization" },
+      "potentialAction": {
+        "@type": "SearchAction",
+        "target": {
+          "@type": "EntryPoint",
+          "urlTemplate": "https://djtechnologies.in/search?q={search_term_string}"
+        },
+        "query-input": "required name=search_term_string"
+      }
+    },
+    {
+      "@type": "WebPage",
+      "@id": "https://djtechnologies.in/#webpage",
+      "name": "DJ Technologies - AI Automation, Web Dev, Hosting & Digital Solutions",
+      "description": "Leading AI Automation & Technology Partner since 2018. Agentic AI, web development, mobile apps, hosting, and digital marketing solutions for modern businesses.",
+      "url": "https://djtechnologies.in/",
+      "inLanguage": "en",
+      "about": {
+        "@type": "Thing",
+        "name": "AI Automation and Technology Solutions"
+      },
+      "primaryImageOfPage": {
+        "@type": "ImageObject",
+        "url": "https://djtechnologies.in/lovable-uploads/f73fa137-19cd-48ab-b80b-dd435c0b623c.png"
+      },
+      "breadcrumb": { "@id": "https://djtechnologies.in/#breadcrumb" }
+    },
+    {
+      "@type": "Article",
+      "@id": "https://djtechnologies.in/knowledge-base/#article-platform-overview",
+      "headline": "DJ Technologies Service Portfolio - Platform Overview",
+      "description": "Comprehensive overview of all DJ Technologies services and solutions including AI automation, web development, hosting, and digital marketing.",
+      "image": "https://djtechnologies.in/lovable-uploads/f73fa137-19cd-48ab-b80b-dd435c0b623c.png",
+      "datePublished": "2025-01-01",
+      "dateModified": "2025-06-01",
+      "author": {
+        "@type": "Organization",
+        "name": "DJ Technologies",
+        "url": "https://djtechnologies.in"
+      },
+      "publisher": {
+        "@id": "https://djtechnologies.in/#organization"
+      },
+      "mainEntityOfPage": {
+        "@type": "WebPage",
+        "@id": "https://djtechnologies.in/knowledge-base"
+      },
+      "articleSection": "Getting Started",
+      "isPartOf": {
+        "@type": "CollectionPage",
+        "name": "DJ Technologies Knowledge Base",
+        "url": "https://djtechnologies.in/knowledge-base"
+      }
+    },
+    {
+      "@type": "Article",
+      "@id": "https://djtechnologies.in/agentic-ai/#article",
+      "headline": "Revolutionary Agentic AI Solutions for Business Transformation",
+      "description": "Deploy intelligent AI agents that work 24/7, automate complex workflows with N8N, and provide human-like customer interactions with ElevenLabs voice AI.",
+      "image": "https://djtechnologies.in/lovable-uploads/f73fa137-19cd-48ab-b80b-dd435c0b623c.png",
+      "datePublished": "2025-01-01",
+      "dateModified": "2025-06-01",
+      "author": {
+        "@type": "Organization",
+        "name": "DJ Technologies"
+      },
+      "publisher": {
+        "@id": "https://djtechnologies.in/#organization"
+      },
+      "mainEntityOfPage": {
+        "@type": "WebPage",
+        "@id": "https://djtechnologies.in/agentic-ai"
+      },
+      "articleSection": "AI Solutions"
+    }
+  ]
+}

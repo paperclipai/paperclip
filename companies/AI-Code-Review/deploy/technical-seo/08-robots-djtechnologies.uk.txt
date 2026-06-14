@@ -1,0 +1,26 @@
+# robots.txt for djtechnologies.uk
+# Optimized for traditional + AI search engine crawlers
+
+User-agent: *
+Allow: /
+Disallow: /auth
+Disallow: /admin
+
+# AI crawlers
+User-agent: GPTBot
+Allow: /
+User-agent: ChatGPT-User
+Allow: /
+User-agent: Claude-Web
+Allow: /
+User-agent: PerplexityBot
+Allow: /
+User-agent: Google-Extended
+Allow: /
+User-agent: anthropic-ai
+Allow: /
+
+# Crawl rate limit
+Crawl-delay: 2
+
+Sitemap: https://djtechnologies.uk/sitemap.xml

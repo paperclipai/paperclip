@@ -1,0 +1,146 @@
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": "https://djtechnologies.in/#organization",
+      "name": "DJ Technologies",
+      "url": "https://djtechnologies.in",
+      "logo": {
+        "@type": "ImageObject",
+        "url": "https://djtechnologies.in/lovable-uploads/f73fa137-19cd-48ab-b80b-dd435c0b623c.png",
+        "width": 200,
+        "height": 60
+      },
+      "description": "Leading AI Automation & Technology Partner since 2018. Agentic AI, web development, mobile apps, hosting, and digital marketing solutions.",
+      "foundingDate": "2018",
+      "slogan": "Digital Growth Partner",
+      "sameAs": [
+        "https://twitter.com/djtechnologies",
+        "https://linkedin.com/company/djtechnologies",
+        "https://github.com/djtechnologies"
+      ],
+      "address": [
+        {
+          "@type": "PostalAddress",
+          "streetAddress": "57 Ring Road",
+          "addressLocality": "Indore",
+          "addressRegion": "Madhya Pradesh",
+          "postalCode": "452001",
+          "addressCountry": "IN"
+        },
+        {
+          "@type": "PostalAddress",
+          "streetAddress": "Suite 10 Capital House, 61 Amhurst Road",
+          "addressLocality": "London",
+          "postalCode": "E8 1LL",
+          "addressCountry": "GB"
+        }
+      ],
+      "contactPoint": [
+        {
+          "@type": "ContactPoint",
+          "telephone": "+91-797-448-8139",
+          "contactType": "sales",
+          "availableLanguage": ["English", "Hindi"]
+        }
+      ],
+      "taxID": "23ALNPP8994N1ZY",
+      "numberOfEmployees": {
+        "@type": "QuantitativeValue",
+        "value": "50+"
+      }
+    },
+    {
+      "@type": "LocalBusiness",
+      "@id": "https://djtechnologies.in/#localbusiness-india",
+      "parentOrganization": {
+        "@id": "https://djtechnologies.in/#organization"
+      },
+      "name": "DJ Technologies India",
+      "description": "India office of DJ Technologies - AI automation, web development, and hosting services.",
+      "url": "https://djtechnologies.in",
+      "image": "https://djtechnologies.in/lovable-uploads/f73fa137-19cd-48ab-b80b-dd435c0b623c.png",
+      "telephone": "+91-797-448-8139",
+      "address": {
+        "@type": "PostalAddress",
+        "streetAddress": "57 Ring Road",
+        "addressLocality": "Indore",
+        "addressRegion": "Madhya Pradesh",
+        "postalCode": "452001",
+        "addressCountry": "IN"
+      },
+      "geo": {
+        "@type": "GeoCoordinates",
+        "latitude": 22.7196,
+        "longitude": 75.8577
+      },
+      "openingHoursSpecification": {
+        "@type": "OpeningHoursSpecification",
+        "dayOfWeek": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
+        "opens": "09:00",
+        "closes": "18:00"
+      },
+      "priceRange": "$$",
+      "areaServed": ["India", "United Kingdom", "United States", "Canada", "Australia", "UAE"],
+      "currenciesAccepted": ["INR", "USD", "GBP"],
+      "paymentAccepted": ["Credit Card", "Debit Card", "Bank Transfer", "UPI", "PayPal"],
+      "hasOfferCatalog": {
+        "@type": "OfferCatalog",
+        "name": "Services",
+        "itemListElement": [
+          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Agentic AI Automation" } },
+          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Web Development" } },
+          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Mobile App Development" } },
+          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "AI Chatbots" } },
+          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Web Hosting" } },
+          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Digital Marketing" } }
+        ]
+      }
+    },
+    {
+      "@type": "LocalBusiness",
+      "@id": "https://djtechnologies.in/#localbusiness-uk",
+      "parentOrganization": {
+        "@id": "https://djtechnologies.in/#organization"
+      },
+      "name": "DJ Technologies UK",
+      "description": "United Kingdom office of DJ Technologies - Enterprise AI and hosting solutions.",
+      "url": "https://djtechnologies.uk",
+      "image": "https://djtechnologies.uk/lovable-uploads/f73fa137-19cd-48ab-b80b-dd435c0b623c.png",
+      "telephone": "+91-797-448-8139",
+      "address": {
+        "@type": "PostalAddress",
+        "streetAddress": "Suite 10 Capital House, 61 Amhurst Road",
+        "addressLocality": "London",
+        "postalCode": "E8 1LL",
+        "addressCountry": "GB"
+      },
+      "geo": {
+        "@type": "GeoCoordinates",
+        "latitude": 51.5503,
+        "longitude": -0.0612
+      },
+      "openingHoursSpecification": {
+        "@type": "OpeningHoursSpecification",
+        "dayOfWeek": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+        "opens": "09:00",
+        "closes": "18:00"
+      },
+      "priceRange": "$$$",
+      "areaServed": ["United Kingdom", "Europe", "United States"],
+      "currenciesAccepted": ["GBP", "USD", "EUR"],
+      "paymentAccepted": ["Credit Card", "Debit Card", "Bank Transfer", "PayPal"],
+      "hasOfferCatalog": {
+        "@type": "OfferCatalog",
+        "name": "Services",
+        "itemListElement": [
+          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Enterprise AI Automation" } },
+          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Dedicated Servers" } },
+          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "VPS Hosting" } },
+          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Cloud Solutions" } }
+        ]
+      }
+    }
+  ]
+}

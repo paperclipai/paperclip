@@ -1,0 +1,137 @@
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Table",
+      "@id": "https://djtechnologies.in/#comparison-hosting",
+      "name": "DJ Technologies Hosting Plans Comparison",
+      "description": "Comparison of Shared Hosting, VPS Hosting, and Dedicated Server plans with pricing, features, and specifications.",
+      "about": {
+        "@type": "Thing",
+        "name": "Web Hosting Plans"
+      }
+    },
+    {
+      "@type": "Product",
+      "@id": "https://djtechnologies.in/#product-shared-hosting",
+      "name": "Shared Hosting",
+      "brand": { "@type": "Brand", "name": "DJ Technologies" },
+      "description": "Perfect for small websites. cPanel Control Panel, 1 GB SSD Storage, 10 GB Bandwidth, Free SSL Certificate, Email Accounts, 99.9% Uptime.",
+      "offers": {
+        "@type": "Offer",
+        "price": "45.00",
+        "priceCurrency": "USD",
+        "priceQualifier": "Monthly",
+        "priceValidUntil": "2027-12-31",
+        "availability": "https://schema.org/InStock",
+        "url": "https://djtechnologies.in/"
+      },
+      "category": "Web Hosting",
+      "audience": { "@type": "Audience", "audienceType": "Small Business / Startup" }
+    },
+    {
+      "@type": "Product",
+      "@id": "https://djtechnologies.in/#product-vps-hosting",
+      "name": "VPS Hosting",
+      "brand": { "@type": "Brand", "name": "DJ Technologies" },
+      "description": "High-performance virtual server. 2 CPU Cores, 4 GB RAM, 50 GB SSD Storage, Unlimited Bandwidth, Root Access, 24/7 Support, DDoS Protection. 30 minute setup.",
+      "offers": {
+        "@type": "Offer",
+        "price": "429.00",
+        "priceCurrency": "USD",
+        "priceQualifier": "Monthly",
+        "priceValidUntil": "2027-12-31",
+        "availability": "https://schema.org/InStock",
+        "url": "https://djtechnologies.in/"
+      },
+      "category": "VPS Hosting",
+      "audience": { "@type": "Audience", "audienceType": "Growing Business" }
+    },
+    {
+      "@type": "Product",
+      "@id": "https://djtechnologies.in/#product-dedicated-server",
+      "name": "Dedicated Server",
+      "brand": { "@type": "Brand", "name": "DJ Technologies" },
+      "description": "Enterprise-grade power. 8 CPU Cores, 32 GB RAM, 1 TB SSD Storage, Unmetered Bandwidth, Full Server Control, Priority Support, Advanced Security. 24 hour setup.",
+      "offers": {
+        "@type": "Offer",
+        "price": "6999.00",
+        "priceCurrency": "USD",
+        "priceQualifier": "Monthly",
+        "priceValidUntil": "2027-12-31",
+        "availability": "https://schema.org/InStock",
+        "url": "https://djtechnologies.in/"
+      },
+      "category": "Dedicated Hosting",
+      "audience": { "@type": "Audience", "audienceType": "Enterprise" }
+    },
+    {
+      "@type": "Product",
+      "@id": "https://djtechnologies.in/#product-whatsapp-ai-agent",
+      "name": "$100M WhatsApp Sales Agents",
+      "brand": { "@type": "Brand", "name": "DJ Technologies" },
+      "description": "Automated lead qualification, appointment booking, and follow-up sequences that convert 40% more prospects into customers. 24/7 Lead Response, Multi-language Support.",
+      "offers": {
+        "@type": "Offer",
+        "price": "25000",
+        "priceCurrency": "USD",
+        "priceQualifier": "/month",
+        "priceValidUntil": "2027-12-31",
+        "availability": "https://schema.org/InStock",
+        "url": "https://djtechnologies.in/agentic-ai"
+      },
+      "category": "AI Agent",
+      "audience": { "@type": "Audience", "audienceType": "Sales Teams" }
+    },
+    {
+      "@type": "Product",
+      "@id": "https://djtechnologies.in/#product-email-outreach-ai",
+      "name": "$100M Email Outreach AI",
+      "brand": { "@type": "Brand", "name": "DJ Technologies" },
+      "description": "Personalized email campaigns, automated sequences, and response handling that achieve 45% open rates. A/B Testing, CRM Integration.",
+      "offers": {
+        "@type": "Offer",
+        "price": "20000",
+        "priceCurrency": "USD",
+        "priceQualifier": "/month",
+        "priceValidUntil": "2027-12-31",
+        "availability": "https://schema.org/InStock",
+        "url": "https://djtechnologies.in/agentic-ai"
+      },
+      "category": "AI Agent",
+      "audience": { "@type": "Audience", "audienceType": "Marketing Teams" }
+    },
+    {
+      "@type": "Product",
+      "@id": "https://djtechnologies.in/#product-social-media-ai",
+      "name": "Social Media Growth AI",
+      "brand": { "@type": "Brand", "name": "DJ Technologies" },
+      "description": "Content creation, posting automation, engagement tracking, and growth analytics that increase followers by 300%.",
+      "offers": {
+        "@type": "Offer",
+        "price": "15000",
+        "priceCurrency": "USD",
+        "priceQualifier": "/month",
+        "priceValidUntil": "2027-12-31",
+        "availability": "https://schema.org/InStock"
+      },
+      "category": "AI Agent"
+    },
+    {
+      "@type": "Product",
+      "@id": "https://djtechnologies.in/#product-customer-service-ai",
+      "name": "Customer Service AI",
+      "brand": { "@type": "Brand", "name": "DJ Technologies" },
+      "description": "Handle 90% of customer queries automatically with intelligent chatbots, multi-channel support, escalation rules, and analytics dashboard.",
+      "offers": {
+        "@type": "Offer",
+        "price": "18000",
+        "priceCurrency": "USD",
+        "priceQualifier": "/month",
+        "priceValidUntil": "2027-12-31",
+        "availability": "https://schema.org/InStock"
+      },
+      "category": "AI Agent"
+    }
+  ]
+}

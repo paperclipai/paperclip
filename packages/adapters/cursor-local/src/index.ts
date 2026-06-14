@@ -40,7 +40,7 @@ const CURSOR_FALLBACK_MODEL_IDS = [
   "gpt-5.1-codex-max-high",
   "gpt-5.2-high",
   "gpt-5.1-high",
-  "gpt-5.1-codex-mini",
+
   "opus-4.6-thinking",
   "opus-4.6",
   "opus-4.5",
@@ -64,7 +64,7 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
     label: "Cheap",
     description: "Use Cursor's known Codex mini model as the budget lane instead of assuming auto is cheap.",
     adapterConfig: {
-      model: "gpt-5.1-codex-mini",
+      model: DEFAULT_CURSOR_LOCAL_MODEL,
     },
     source: "adapter_default",
   },

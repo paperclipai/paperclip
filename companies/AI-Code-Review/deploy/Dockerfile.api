@@ -1,0 +1,18 @@
+FROM node:22-alpine AS builder
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+COPY services/api ./services/api
+COPY packages ./packages
+RUN npx tsc --project services/api/tsconfig.json
+
+FROM node:22-alpine AS runner
+WORKDIR /app
+RUN addgroup -S app && adduser -S app -G app
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+USER app
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+CMD ["node", "dist/services/api/main.js"]

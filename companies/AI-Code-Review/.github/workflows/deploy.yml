@@ -1,0 +1,102 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - production
+      image_tag:
+        description: "Docker image tag to deploy (default: commit SHA)"
+        required: false
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  EKS_CLUSTER_STAGING: ${{ vars.EKS_CLUSTER_STAGING || 'codereview-staging' }}
+  EKS_CLUSTER_PROD: ${{ vars.EKS_CLUSTER_PROD || 'codereview-prod' }}
+
+jobs:
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    environment: staging
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_CI }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_STAGING }} --region ${{ env.AWS_REGION }}
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install codereview ./deploy/charts/codereview \
+            --namespace codereview \
+            --create-namespace \
+            --set image.tag=${{ github.sha }} \
+            --set environment=staging \
+            --wait --timeout 10m
+      - name: Smoke test
+        run: |
+          curl -sf --max-time 30 https://staging.codereview.ai/health && echo "Health check passed" || exit 1
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://codereview.ai
+    needs: [deploy-staging]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_CI }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_PROD }} --region ${{ env.AWS_REGION }}
+      - name: Deploy with Helm (canary 10%)
+        run: |
+          helm upgrade --install codereview ./deploy/charts/codereview \
+            --namespace codereview \
+            --create-namespace \
+            --set image.tag=${{ github.sha }} \
+            --set environment=production \
+            --set canary.enabled=true \
+            --set canary.weight=10 \
+            --wait --timeout 10m
+      - name: Wait for canary health
+        run: sleep 60
+      - name: Promote to 100%
+        run: |
+          helm upgrade --install codereview ./deploy/charts/codereview \
+            --namespace codereview \
+            --set image.tag=${{ github.sha }} \
+            --set environment=production \
+            --set canary.enabled=false \
+            --wait --timeout 10m
+      - name: Post-deploy health check
+        run: |
+          curl -sf --max-time 30 https://codereview.ai/health && echo "Health check passed" || exit 1
+      - name: Notify
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          curl -X POST ${{ vars.SLACK_WEBHOOK_URL }} \
+            -H "Content-Type: application/json" \
+            -d "{\"text\": \"Deploy to production: $STATUS\nCommit: ${{ github.sha }}\nWorkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
