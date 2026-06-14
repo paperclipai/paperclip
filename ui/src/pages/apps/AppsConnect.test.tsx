@@ -266,18 +266,21 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   // PAP-11091: discoverability copy for remote MCP URLs — the link field
-  // advertises that any remote tool URL (incl. a local MCP server) works, and
-  // the placeholder shows both an https and a localhost MCP example.
+  // advertises that any remote tool URL (incl. a local MCP server) works. Per
+  // the UX re-review, the localhost example lives in the body copy (legible at
+  // every viewport) rather than the placeholder, which truncated on mobile.
   it("advertises that remote/local MCP URLs work under 'Connect with a link'", async () => {
     await render();
 
     expect(container.textContent).toContain(
-      "Any remote tool URL works here — including a local MCP server you're running yourself.",
+      "Any remote tool URL works here — including a local MCP server like",
     );
+    expect(container.textContent).toContain("http://127.0.0.1:8848/mcp");
     const linkInput = Array.from(container.querySelectorAll<HTMLInputElement>("input")).find((i) =>
       i.getAttribute("placeholder")?.startsWith("https://example.com/actions"),
     );
-    expect(linkInput?.getAttribute("placeholder")).toContain("http://127.0.0.1:8848/mcp");
+    // Placeholder stays a single, short example so it never truncates.
+    expect(linkInput?.getAttribute("placeholder")).toBe("https://example.com/actions");
   });
 
   // Reconnect from the app page: ?link/?name/?applicationId prefill skips the

@@ -478,7 +478,8 @@ function GalleryStep({
             Paste a setup link from an app that is not listed here.
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Any remote tool URL works here — including a local MCP server you're running yourself.
+            Any remote tool URL works here — including a local MCP server like{" "}
+            <code className="rounded bg-muted px-1 py-0.5 text-[0.7rem]">http://127.0.0.1:8848/mcp</code>.
           </p>
           {matchedEntry && (
             <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2">
@@ -512,7 +513,7 @@ function GalleryStep({
               onKeyDown={(e) => {
                 if (e.key === "Enter") continueWithLink();
               }}
-              placeholder="https://example.com/actions  or  http://127.0.0.1:8848/mcp"
+              placeholder="https://example.com/actions"
               className="h-10"
             />
             <Button type="button" variant="outline" onClick={continueWithLink}>
