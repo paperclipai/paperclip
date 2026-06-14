@@ -4,6 +4,7 @@ import {
   readSignedToolArguments,
   resolveToolActionSigningSecret,
   signToolArguments,
+  ToolActionSigningSecretMissingError,
   ToolContentValidationError,
   validateToolContent,
   verifyToolArgumentsSignature,
@@ -53,6 +54,9 @@ describe("tool content guards", () => {
         PAPERCLIP_AGENT_JWT_SECRET: "agent-jwt-secret",
         BETTER_AUTH_SECRET: "auth-secret",
       }),
+    ).toThrow(ToolActionSigningSecretMissingError);
+    expect(() =>
+      resolveToolActionSigningSecret({}),
     ).toThrow("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET");
   });
 

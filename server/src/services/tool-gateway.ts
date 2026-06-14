@@ -47,6 +47,7 @@ import {
   readSignedToolArgumentsPayload,
   signToolArguments,
   summarizeToolValue,
+  ToolActionSigningSecretMissingError,
   ToolContentValidationError,
   validateToolContent,
   verifyToolArgumentsSignature,
@@ -909,13 +910,34 @@ export function createToolGatewayService(
     }
     const actionRequest = input.actionRequest;
 
-    const signedArguments = signToolArguments({
-      invocationId: input.invocation.id,
-      toolName: input.tool.name,
-      canonicalArguments,
-      approvalSnapshot: approvalSnapshot ?? undefined,
-      signingSecret: options.toolActionSigningSecret,
-    });
+    let signedArguments: ReturnType<typeof signToolArguments>;
+    try {
+      signedArguments = signToolArguments({
+        invocationId: input.invocation.id,
+        toolName: input.tool.name,
+        canonicalArguments,
+        approvalSnapshot: approvalSnapshot ?? undefined,
+        signingSecret: options.toolActionSigningSecret,
+      });
+    } catch (error) {
+      if (error instanceof ToolActionSigningSecretMissingError) {
+        await db
+          .update(toolInvocations)
+          .set({
+            status: "failed",
+            errorCode: "signing_secret_unconfigured",
+            errorMessage: error.message,
+            completedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(toolInvocations.id, input.invocation.id));
+        throw new ToolGatewayHttpError(500, error.message, "signing_secret_unconfigured", {
+          invocationId: input.invocation.id,
+          tool: input.tool.name,
+        });
+      }
+      throw error;
+    }
     // Board-only technical detail for the formal-approval interaction (target=custom).
     const detailsMarkdown = [
       `Tool: \`${input.tool.name}\``,

@@ -44,10 +44,20 @@ function scanPromptInjection(value: unknown): string[] {
     .map((pattern) => pattern.code);
 }
 
+export class ToolActionSigningSecretMissingError extends Error {
+  constructor() {
+    super(
+      "PAPERCLIP_TOOL_ACTION_SIGNING_SECRET is not configured; signed tool action approvals cannot be issued. " +
+        "Set PAPERCLIP_TOOL_ACTION_SIGNING_SECRET in this instance's environment (worktrees inherit it from .paperclip/.env).",
+    );
+    this.name = "ToolActionSigningSecretMissingError";
+  }
+}
+
 export function resolveToolActionSigningSecret(env: ToolActionSigningSecretEnv = process.env as ToolActionSigningSecretEnv) {
   const secret = env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET?.trim();
   if (!secret) {
-    throw new Error("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET is required for signed tool action approvals");
+    throw new ToolActionSigningSecretMissingError();
   }
   return secret;
 }
