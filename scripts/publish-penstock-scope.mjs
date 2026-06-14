@@ -32,7 +32,9 @@
  * is `workflow_dispatch`-only, so nothing publishes on push.
  *
  * Usage:
- *   node scripts/publish-penstock-scope.mjs --version 2026.614.0 [--publish] [--provenance]
+ *   node scripts/publish-penstock-scope.mjs --version 2026.614.0            # dry-run (default)
+ *   node scripts/publish-penstock-scope.mjs --version 2026.614.0 --bootstrap # one-time local 2FA first-publish
+ *   node scripts/publish-penstock-scope.mjs --version 2026.614.0 --publish --provenance  # CI/OIDC (the workflow)
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -44,8 +46,14 @@ const getArg = (name) => {
   return i >= 0 ? args[i + 1] : undefined;
 };
 const version = getArg("--version");
-const doPublish = args.includes("--publish");
-const provenance = args.includes("--provenance");
+// --bootstrap: the one-time FIRST publish of each brand-new @penstock/* package,
+// run locally by a maintainer with `npm login` + 2FA. npm can't OIDC-publish a
+// package that doesn't exist yet, so the first version is published by hand; every
+// release after that goes through the OIDC workflow. Bootstrap = publish WITHOUT
+// provenance (provenance attestation requires the CI OIDC runner).
+const bootstrap = args.includes("--bootstrap");
+const doPublish = args.includes("--publish") || bootstrap;
+const provenance = args.includes("--provenance") && !bootstrap;
 
 // Mirror upstream's YYYY.<M><DD>.N scheme (no leading zero on month, e.g. 2026.614.0).
 if (!version || !/^\d{4}\.\d{3,4}\.\d+$/.test(version)) {
@@ -101,6 +109,13 @@ function buildPublishManifest(pkg) {
   }
   next.publishConfig = { access: "public" };
   return next;
+}
+
+if (bootstrap) {
+  console.log(
+    "Bootstrap mode: local 2FA publish, no provenance. " +
+      "Ensure `npm whoami` is an owner of the @penstock scope and 2FA is ready.",
+  );
 }
 
 let failed = false;
