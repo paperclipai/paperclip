@@ -30,7 +30,7 @@ Shipped this session (branch `pilot/b1-dogfood`), each with a `claude-docs/` ove
 | #6 triage (solo/light/full) | ✅ shipped | `444297cf` | `gate-triage-overview.md` |
 | #3 done-gate dead-end | ✅ shipped (rode #6) | `444297cf` | `gate-triage-overview.md` |
 | #7 G3 per-run ceiling + #10 tests | ✅ shipped **as post-run enforcement** | `c8e243cd` | `per-run-ceiling-overview.md` |
-| #9 W5 targeted gate wake | ⏳ **W5a + W5b shipped**; W5c pending | `17476dbd`, `fb27162a` | `targeted-gate-wake-overview.md`, `reviewer-wake-in-review-overview.md` |
+| #9 W5 targeted gate wake | ✅ **W5a + W5b shipped**; W5c closed (superseded by W2) | `17476dbd`, `fb27162a` | `targeted-gate-wake-overview.md`, `reviewer-wake-in-review-overview.md` |
 | #4 gate-agent instructions | ✅ **shipped** (identity-aware seed) | `cba094b4` | `gate-agent-instructions-overview.md` |
 | #4 backfill existing gate agents | ✅ **shipped** (re-seed script, default-dry) | `768092d8` | `gate-instruction-backfill-overview.md` |
 
@@ -52,9 +52,15 @@ Revised understanding of the **remaining** items (corrected against the code):
 - **#9 W5b** — ✅ **shipped** (`fb27162a`). Reviewer wake on `in_review` via
   reviewGateAgentIdsFromApprovals + a becameInReview branch in the issues PATCH
   wake-batching closure. 2 of 3 gate types now push-woken.
-- **#9 W5c** — raise default cadence (`company-portability.ts:667`, 3600s). Now
-  unblocked (all gates push-woken). Still separate; grep tests for hard-coded 3600
-  before flipping. Low marginal value post-W2, so optional.
+- **#9 W5c** — ❌ **closed, superseded by W2** (mirrors W4←W3). Recon of
+  `heartbeat.ts:11241 tickTimers` shows `intervalSec` no longer gates the burn it
+  targeted: idle timer ticks are already a free `continue` post-W2
+  (`hasActionableWork` pre-check at 11268), and issue monitors/retries tick on their
+  own schedule (`tickDueIssueMonitors`, 11289) independent of the interval. So
+  `intervalSec` now only paces the re-poll of agents that **have** actionable work —
+  raising it adds latency to real work for a trivial drop in cheap DB checks. If
+  idle-check cost is ever observed, the right lever is per-agent `intervalSec`
+  overrides on noisy exec agents, not a global default change.
 - **#11 CTO self-assign protocol** — eco-system prompt (`teams/agent-team/prompts/`),
   **out of this repo's scope**.
 
