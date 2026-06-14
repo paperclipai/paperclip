@@ -317,9 +317,21 @@ async function main() {
     "PAPERCLIP_WORKTREE_NAME=" + JSON.stringify(worktreeName),
   ];
 
-  const agentJwtSecret = nonEmpty(sourceEnvEntries.PAPERCLIP_AGENT_JWT_SECRET);
-  if (agentJwtSecret) {
-    envLines.push("PAPERCLIP_AGENT_JWT_SECRET=" + JSON.stringify(agentJwtSecret));
+  // Secrets that must be carried over from the source instance so the worktree's
+  // dev server behaves like the real one. PAPERCLIP_TOOL_ACTION_SIGNING_SECRET is
+  // required for signed tool-gateway approvals (ask-first MCP policies); without
+  // it the first gated POST /tool-gateway/tools/call returns Internal server error.
+  // BETTER_AUTH_SECRET keeps auth tokens compatible across the source/worktree pair.
+  const propagatedSecretKeys = [
+    "PAPERCLIP_AGENT_JWT_SECRET",
+    "PAPERCLIP_TOOL_ACTION_SIGNING_SECRET",
+    "BETTER_AUTH_SECRET",
+  ];
+  for (const key of propagatedSecretKeys) {
+    const value = nonEmpty(sourceEnvEntries[key]);
+    if (value) {
+      envLines.push(key + "=" + JSON.stringify(value));
+    }
   }
 
   fs.writeFileSync(envPath, `${envLines.join("\n")}\n`, { mode: 0o600 });
