@@ -137,6 +137,7 @@ import {
 import { instanceSettingsService } from "./instance-settings.js";
 import { runBreakerService } from "./run-breaker.js";
 import { instructionReadinessService } from "./instruction-readiness.js";
+import { perRunCeilingService, resolveEffectiveMaxTurns } from "./per-run-ceiling.js";
 import { agentInstructionsService } from "./agent-instructions.js";
 import { hasActionableWork } from "./actionable-work.js";
 import {
@@ -3021,6 +3022,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const budgets = budgetService(db, budgetHooks);
   const runBreaker = runBreakerService(db);
   const instructionReadiness = instructionReadinessService(db);
+  const perRunCeiling = perRunCeilingService(db);
   const agentInstructions = agentInstructionsService();
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
@@ -7564,6 +7566,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         occurredAt: new Date(),
       });
     }
+
+    // G3 per-run token ceiling (post-run hard enforcement). A single run that
+    // burns past the ceiling — but stays under the monthly budget — would slip
+    // both the windowed budget and the loop breaker. Pause the agent + open an
+    // incident so the next run can't proceed without operator review.
+    if (hasTokenUsage) {
+      const guards = await instanceSettings.getGuards();
+      if (guards.enabled && guards.perRun.maxTokensPerRun > 0) {
+        const runTotalTokens = inputTokens + cachedInputTokens + outputTokens;
+        const fault = perRunCeiling.evaluate(runTotalTokens, guards.perRun.maxTokensPerRun);
+        if (fault) {
+          await perRunCeiling.trip(agent.companyId, agent.id, fault);
+        }
+      }
+    }
   }
 
   async function startNextQueuedRunForAgent(agentId: string) {
@@ -8105,10 +8122,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // bounded. Agents explicitly set *below* the floor keep their tighter cap.
     const platformGuards = await instanceSettings.getGuards();
     if (platformGuards.enabled && platformGuards.perRun.maxTurnsPerRun > 0) {
-      const agentTurns = typeof mergedConfig.maxTurnsPerRun === "number" && mergedConfig.maxTurnsPerRun > 0
-        ? mergedConfig.maxTurnsPerRun
-        : Infinity;
-      mergedConfig.maxTurnsPerRun = Math.min(agentTurns, platformGuards.perRun.maxTurnsPerRun);
+      mergedConfig.maxTurnsPerRun = resolveEffectiveMaxTurns(
+        typeof mergedConfig.maxTurnsPerRun === "number" ? mergedConfig.maxTurnsPerRun : null,
+        platformGuards.perRun.maxTurnsPerRun,
+      );
     }
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
