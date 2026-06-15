@@ -286,6 +286,24 @@ describe("Sidebar", () => {
     });
   });
 
+  it("shows an Approvals nav item between Goals and Artifacts", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    const root = await renderSidebar();
+
+    const approvalsLink = [...container.querySelectorAll("a")].find(
+      (anchor) => anchor.textContent === "Approvals",
+    );
+    expect(approvalsLink?.getAttribute("href")).toBe("/approvals");
+
+    const navText = container.querySelector("nav")?.textContent ?? "";
+    expect(navText.indexOf("Goals")).toBeLessThan(navText.indexOf("Approvals"));
+    expect(navText.indexOf("Approvals")).toBeLessThan(navText.indexOf("Artifacts"));
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
   it("shows the Conference Room nav item when conference room chat is enabled (PAP-137)", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
